@@ -113,6 +113,19 @@ description: $(repeat a 501)
   echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -q "Invalid effort"
 }
 
+# grep -q exits at the first match; if the frontmatter is still being piped in, the writer gets
+# SIGPIPE and pipefail turns a present field into "missing". A large frontmatter makes it deterministic.
+@test "description near the top of a large frontmatter is not reported missing" {
+  run run_hook "---
+name: foo
+description: does x
+when_to_use: when y
+metadata:
+$(repeat $'  k: v\n' 50000)---"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "valid frontmatter passes through (exit 0, no output)" {
   run run_hook $'---\nname: foo\ndescription: does x\nmodel: haiku\neffort: low\n---'
   [ "$status" -eq 0 ]

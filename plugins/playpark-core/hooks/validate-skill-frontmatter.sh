@@ -51,7 +51,9 @@ if [[ -z $NAME ]]; then
   ERRORS+=("Missing required field: name")
 fi
 
-if ! echo "$FRONTMATTER" | grep -qE '^description:'; then
+# Here-strings, not `echo | grep -q`: grep -q exits at the first match, the echo then dies of SIGPIPE,
+# and pipefail would turn a present field into a missing one.
+if ! grep -qE '^description:' <<<"$FRONTMATTER"; then
   ERRORS+=("Missing required field: description")
 else
   DESC_VALUE=$(field_value description)
@@ -62,7 +64,7 @@ else
   fi
 
   WHEN_VALUE=""
-  if echo "$FRONTMATTER" | grep -qE '^when_to_use:'; then
+  if grep -qE '^when_to_use:' <<<"$FRONTMATTER"; then
     WHEN_VALUE=$(field_value when_to_use)
   fi
 
