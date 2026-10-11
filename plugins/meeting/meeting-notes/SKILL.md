@@ -35,7 +35,7 @@ description: >
 | `transcripts_dir` | `<output_dir>/transcripts` | 全文の保存先。相手の発言全文を含むので git 管理外にする |
 | `save_transcript` | `true` | 全文を保存するか（`--no-transcript` が優先） |
 
-`<cwd>/skill-config.json` → `~/.config/skills/config.json` の順に `meeting-notes` セクションを Read し、無いキーは既定値を使う。
+`meeting-notes` セクションを、プロジェクト（git root の `skill-config.json`、無ければ `.claude/skill-config.json`）→ グローバル（`~/.config/skills/config.json`）の順に探して Read し、無いキーは既定値を使う。
 
 ## 入力ファイル (DIR 内)
 
