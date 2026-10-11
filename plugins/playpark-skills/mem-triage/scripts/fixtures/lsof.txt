@@ -1,0 +1,6 @@
+p110
+fcwd
+n/Users/x/proj-a
+p120
+fcwd
+n/Users/x/proj-b

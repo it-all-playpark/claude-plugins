@@ -1,0 +1,33 @@
+    1     0 3-00:00:00 ??       /sbin/launchd
+  100     1 3-00:00:00 ??       /Applications/Ghostty.app/Contents/MacOS/ghostty
+  101   100 3-00:00:00 ttys001  /usr/bin/login
+  102   101 3-00:00:00 ttys001  -fish
+  104   100 05:00:00   ttys002  /usr/bin/login
+  105   104 05:00:00   ttys002  -fish
+  110   102 2-01:00:00 ttys001  /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-neovim-unwrapped-0.12.4/bin/nvim
+  111   110 2-01:00:00 ttys001  /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-neovim-unwrapped-0.12.4/bin/nvim
+  112   111 2-00:59:00 ??       node
+  120   105 01:00:00   ttys002  /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-neovim-unwrapped-0.12.5/bin/nvim
+  121   120 01:00:00   ttys002  /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-neovim-unwrapped-0.12.5/bin/nvim
+  122   121 59:00      ??       node
+  130     1 5-00:00:00 ??       node
+  200     1 2-00:00:00 ??       /Applications/Claude.app/Contents/MacOS/Claude
+  201   200 2-00:00:00 ??       /Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer)
+  202   200 1-00:00:00 ??       /Applications/Claude.app/Contents/Helpers/disclaimer
+  203   202 1-00:00:00 ??       /Users/x/Library/Application Support/Claude/claude-code/2.1.295/0123456789ab/claude.app/Contents/MacOS/claude
+  300     1 3-00:00:00 ??       /Users/x/.local/opt/claude-code/claude
+  301   300 2-00:00:00 ??       /Users/x/.local/opt/claude-code/claude
+  302   300 2-00:00:00 ??       /Users/x/.local/opt/claude-code/claude
+  310   105 04:00:00   ttys002  /Users/x/.local/share/mise/installs/claude-code/latest/claude
+  311   310 04:00:00   ttys002  node
+  312   310 03:00:00   ttys002  /bin/zsh
+  313   312 03:00:00   ttys002  node
+  315   310 02:00:00   ttys002  /bin/zsh
+  316   315 02:00:00   ttys002  node
+  400     1 3-00:00:00 ??       /Applications/OrbStack.app/Contents/Frameworks/OrbStack Helper.app/Contents/MacOS/OrbStack Helper
+  500     1 1-00:00:00 ??       /Applications/Dia.app/Contents/MacOS/Dia
+  501   500 1-00:00:00 ??       /Applications/Dia.app/Contents/Frameworks/Dia Framework.framework/Helpers/Browser Helper (Renderer).app/Contents/MacOS/Browser Helper (Renderer)
+  502   500 10:00:00   ??       /Applications/Dia.app/Contents/Frameworks/Dia Framework.framework/Helpers/Browser Helper (Renderer).app/Contents/MacOS/Browser Helper (Renderer)
+  600     1 3-00:00:00 ??       /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+  601     1 3-00:00:00 ??       /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder
+  700     1 3-00:00:00 ??       /usr/local/bin/python3.11
