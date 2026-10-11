@@ -187,14 +187,14 @@ PLUGIN_NAMES=(dev-flow playpark-core playpark-skills)
 
 # --- 7/8. dead path invariant -----------------------------------------------
 
-@test "tracked な *.sh に旧 skills repo の ghq 絶対パスが残っていない" {
-    run git -C "$REPO_ROOT" grep -nIF -e 'ghq/github.com/it-all-playpark/skills/' -- '*.sh' ':(exclude)tests/'
+@test "tracked な *.sh にrepo clone の ghq 絶対パスが残っていない" {
+    run git -C "$REPO_ROOT" grep -nIF -e 'ghq/github.com/it-all-playpark/claude-plugins/' -- '*.sh' ':(exclude)tests/'
     echo "$output"
     [ "$status" -ne 0 ]
 }
 
-@test "新規 hook (untracked) にも旧 skills repo の ghq 絶対パスが残っていない" {
-    run bash -c "grep -rlF 'ghq/github.com/it-all-playpark/skills/' '$REPO_ROOT/plugins/dev-flow/hooks' '$REPO_ROOT/plugins/playpark-core/hooks'"
+@test "新規 hook (untracked) にもrepo clone の ghq 絶対パスが残っていない" {
+    run bash -c "grep -rlF 'ghq/github.com/it-all-playpark/claude-plugins/' '$REPO_ROOT/plugins/dev-flow/hooks' '$REPO_ROOT/plugins/playpark-core/hooks'"
     echo "$output"
     [ "$status" -ne 0 ]
     [ -z "$output" ]
