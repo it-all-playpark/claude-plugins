@@ -156,6 +156,22 @@ test('[devflow-skill-wrapper] Jev 節に要否・効かないときの needs_cla
   for (const p of prefixes) {
     assert.ok(section.includes(`\`${p}\``), `dev-flow/SKILL.md「Jev」節のインターフェースに理由の先頭語 '${p}' が無い（prerun-analyze.sh とずれている）`);
   }
+  // 第三者が jev-classify を自作できるよう、questions / answers の形も prerun-analyze.sh が実際に送る・読むものと揃える
+  const readKeys = [...analyzeSrc.matchAll(/\.answers(?:\.(\w+)|\[\$q\])\.(\w+)/g)].map((m) => [m[1] ?? 'ac_<n>', m[2]]);
+  assert.ok(readKeys.length >= 4, `prerun-analyze.sh から読む answers のキーを取れない: ${JSON.stringify(readKeys)}`);
+  for (const [id, field] of readKeys) {
+    assert.ok(section.includes(`\`${id}\``), `dev-flow/SKILL.md「Jev」節に質問 id '${id}' が無い（prerun-analyze.sh とずれている）`);
+    assert.ok(section.includes(`"${field}"`), `dev-flow/SKILL.md「Jev」節に応答のキー '${field}' が無い（prerun-analyze.sh とずれている）`);
+  }
+  const qTypes = new Set([...analyzeSrc.matchAll(/"type":"(\w+)"|type: "(\w+)"/g)].map((m) => m[1] ?? m[2]));
+  assert.ok(qTypes.size >= 2, `prerun-analyze.sh から質問の型を取れない: ${JSON.stringify([...qTypes])}`);
+  for (const t of qTypes) {
+    assert.ok(section.includes(`"type":"${t}"`), `dev-flow/SKILL.md「Jev」節に質問の型 '${t}' が無い（prerun-analyze.sh とずれている）`);
+  }
+  const choices = Object.keys(JSON.parse(analyzeSrc.match(/COMMENT_Q='(.*)'$/m)[1]).kind.criteria);
+  for (const c of choices) {
+    assert.ok(section.includes(`\`${c}\``), `dev-flow/SKILL.md「Jev」節に選択肢 '${c}' が無い（prerun-analyze.sh とずれている）`);
+  }
 });
 
 // (j) args.base を渡す旧形式が残存していない（base は dev-flow-prerun が解決する）
