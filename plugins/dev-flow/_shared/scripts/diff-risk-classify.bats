@@ -675,6 +675,21 @@ assert_hit() {
     printf '%s\n' "$output" | jq -e '[.hits[] | select(.class == "test-weakening" and .pattern == "skip")] | length > 0'
 }
 
+# A match near the top of a large added text must not be lost to SIGPIPE under pipefail
+# (grep -q exits early while the added text is still being written). Large makes it deterministic.
+@test "TW-a3 test-weakening POSITIVE: test.skip( at the top of a large added test file still hits pattern skip" {
+    mkdir -p "$REPO/src"
+    {
+        printf "test.skip('checks value', () => {});\n"
+        for i in $(seq 20000); do printf 'const v%d = %d;\n' "$i" "$i"; done
+    } > "$REPO/src/big.test.ts"
+    git -C "$REPO" add -A
+    git -C "$REPO" commit -q -m change
+    run bash -c "cd '$REPO' && '$SCRIPT' '$BASE'"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | jq -e '[.hits[] | select(.class == "test-weakening" and .pattern == "skip")] | length > 0'
+}
+
 # ---------------------------------------------------------------------------
 # [TW-a2] test-weakening POSITIVE: Ruby / PHP のテストファイル (*_spec.rb /
 # *_test.rb / *Test.php) も test-weakening の対象 (issue #883)。同じ追加行を

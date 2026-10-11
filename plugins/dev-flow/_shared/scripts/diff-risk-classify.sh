@@ -165,6 +165,8 @@ fi
 
 hits=""
 
+# Matches use here-strings, not `echo | grep -q`: grep -q exits at the first match, the writer dies of
+# SIGPIPE, and pipefail turns a hit into a miss (a dropped hit silently lowers the security floor).
 while IFS= read -r file; do
     [[ -z "$file" ]] && continue
 
@@ -172,7 +174,7 @@ while IFS= read -r file; do
     # ではないため danger-grep 対象から除外する。docs 本文に含まれる "auth"/"exec" 等の
     # security 語彙による content-based class の false-positive を防ぐ(issue #155)。
     # filename-based class(config/dependency/data-migration)も docs には該当しない。
-    if echo "$file" | grep -Eiq '\.(md|mdx|txt)$|(^|/)docs/'; then
+    if grep -Eiq '\.(md|mdx|txt)$|(^|/)docs/' <<<"$file"; then
         continue
     fi
 
@@ -182,7 +184,7 @@ while IFS= read -r file; do
         # Strategy: if the path is in UNTRACKED_SET, treat the whole file content
         # as "added". Otherwise use two-point diff from merge-base.
         _is_untracked=false
-        if [[ -n "$UNTRACKED_SET" ]] && printf '%s\n' "$UNTRACKED_SET" | grep -qxF "$file"; then
+        if [[ -n "$UNTRACKED_SET" ]] && grep -qxF -- "$file" <<<"$UNTRACKED_SET"; then
             _is_untracked=true
         fi
 
@@ -219,8 +221,8 @@ while IFS= read -r file; do
     fi
 
     # 1. auth
-    if echo "$file" | grep -Eiq 'auth' || \
-       echo "$added" | grep -Eiq 'authoriz|authenticat|requireAuth|isAdmin|hasPermission|jwt|session|login|logout|bearer'; then
+    if grep -Eiq 'auth' <<<"$file" || \
+       grep -Eiq 'authoriz|authenticat|requireAuth|isAdmin|hasPermission|jwt|session|login|logout|bearer' <<<"$added"; then
         hits="${hits}${file}"$'\t'"auth"$'\t'$'\n'
     fi
 
@@ -231,21 +233,21 @@ while IFS= read -r file; do
     #     plus aes- (hyphen already acts as right boundary).
     # createHmac is in P1 (left boundary) to ensure `createHmac(` is caught even after
     # bare `hmac` is boundary-tightened in P2.
-    if echo "$added" | grep -Eiq '(^|[^[:alnum:]_])(crypto\.|createHash|createCipher|createHmac|bcrypt|scrypt|randomBytes|pbkdf2)' || \
-       echo "$added" | grep -Eiq '(^|[^[:alnum:]_])(hmac|rsa)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])aes-'; then
+    if grep -Eiq '(^|[^[:alnum:]_])(crypto\.|createHash|createCipher|createHmac|bcrypt|scrypt|randomBytes|pbkdf2)' <<<"$added" || \
+       grep -Eiq '(^|[^[:alnum:]_])(hmac|rsa)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])aes-' <<<"$added"; then
         hits="${hits}${file}"$'\t'"crypto"$'\t'$'\n'
     fi
 
     # 3. config
-    if echo "$file" | grep -Eiq '(^|/)\.env($|\.)' || \
-       echo "$file" | grep -Eiq 'config/.*\.(ya?ml|json|toml)$' || \
-       echo "$added" | grep -Eiq 'process\.env\.|[A-Z_]{3,}_(KEY|TOKEN|SECRET|PASSWORD)[[:space:]]*='; then
+    if grep -Eiq '(^|/)\.env($|\.)' <<<"$file" || \
+       grep -Eiq 'config/.*\.(ya?ml|json|toml)$' <<<"$file" || \
+       grep -Eiq 'process\.env\.|[A-Z_]{3,}_(KEY|TOKEN|SECRET|PASSWORD)[[:space:]]*=' <<<"$added"; then
         hits="${hits}${file}"$'\t'"config"$'\t'$'\n'
     fi
 
     # 4. data-migration
-    if echo "$file" | grep -Eiq 'migrations?/|/migrate' || \
-       echo "$added" | grep -Eiq 'ALTER TABLE|DROP TABLE|CREATE TABLE|ADD COLUMN|DROP COLUMN|RENAME COLUMN'; then
+    if grep -Eiq 'migrations?/|/migrate' <<<"$file" || \
+       grep -Eiq 'ALTER TABLE|DROP TABLE|CREATE TABLE|ADD COLUMN|DROP COLUMN|RENAME COLUMN' <<<"$added"; then
         hits="${hits}${file}"$'\t'"data-migration"$'\t'$'\n'
     fi
 
@@ -253,9 +255,9 @@ while IFS= read -r file; do
     # _lib/ は repo 内部専用ライブラリ、tools/ は repo 内部の generator/dev CLI 置き場で、
     # いずれも外部 API surface ではないため public-api critical の構造的 false positive を除外する。
     # 緩和はこのクラス限定（他 6 クラスは _lib/ / tools/ でも従来どおり判定する）。
-    if echo "$file" | grep -Eq '(^|/)(_lib|tools)/'; then
+    if grep -Eq '(^|/)(_lib|tools)/' <<<"$file"; then
         : # _lib / tools are repo-internal; skip public-api check only
-    elif echo "$added" | grep -Eiq 'export (default |async )?(function|class|const)|module\.exports|@(Get|Post|Put|Delete|Patch)\(|openapi|paths:'; then
+    elif grep -Eiq 'export (default |async )?(function|class|const)|module\.exports|@(Get|Post|Put|Delete|Patch)\(|openapi|paths:' <<<"$added"; then
         hits="${hits}${file}"$'\t'"public-api"$'\t'$'\n'
     fi
 
@@ -265,12 +267,12 @@ while IFS= read -r file; do
     # critical floor (issue #616). `new Function` still catches the real sink. eval/exec/spawn
     # carry a left word boundary so identifier suffixes (myEval( / respawn() do not match,
     # matching the crypto-class idiom above.
-    if echo "$added" | grep -Eq '(^|[^[:alnum:]_])eval\(|child_process|(^|[^[:alnum:]_])exec(Sync|File)?\(|(^|[^[:alnum:]_])spawn\(|pickle\.loads|yaml\.load\(|new Function|deserialize|Marshal\.load'; then
+    if grep -Eq '(^|[^[:alnum:]_])eval\(|child_process|(^|[^[:alnum:]_])exec(Sync|File)?\(|(^|[^[:alnum:]_])spawn\(|pickle\.loads|yaml\.load\(|new Function|deserialize|Marshal\.load' <<<"$added"; then
         hits="${hits}${file}"$'\t'"exec-sink"$'\n'
     fi
 
     # 7. dependency
-    if echo "$file" | grep -Eiq '(^|/)(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|requirements\.txt|Pipfile|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|Gemfile|Gemfile\.lock|composer\.json)$'; then
+    if grep -Eiq '(^|/)(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|requirements\.txt|Pipfile|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|Gemfile|Gemfile\.lock|composer\.json)$' <<<"$file"; then
         hits="${hits}${file}"$'\t'"dependency"$'\t'$'\n'
     fi
 
@@ -280,33 +282,33 @@ while IFS= read -r file; do
     # against these exact case-sensitive patterns. File-deletion detection and assert/expect
     # net-reduction checks are NOT implemented here (spike FP 3-4/25, follow-up only).
     _is_test_file=false
-    if echo "$file" | grep -Eq '\.(test|spec)\.|\.bats$|_test\.|_spec\.rb$|Test\.php$'; then
+    if grep -Eq '\.(test|spec)\.|\.bats$|_test\.|_spec\.rb$|Test\.php$' <<<"$file"; then
         _is_test_file=true
     fi
     _is_test_cfg_file=false
-    if echo "$file" | grep -Eq '(^|/)(vitest|vite|jest)\.config\.(js|ts|mjs|cjs|mts|cts)$'; then
+    if grep -Eq '(^|/)(vitest|vite|jest)\.config\.(js|ts|mjs|cjs|mts|cts)$' <<<"$file"; then
         _is_test_cfg_file=true
     fi
 
     if [[ "$_is_test_file" == true ]]; then
-        if echo "$added" | grep -Eq '\b(test|it|describe)\.skip\b|\b(xit|xtest|xdescribe)[[:space:]]*\('; then
+        if grep -Eq '\b(test|it|describe)\.skip\b|\b(xit|xtest|xdescribe)[[:space:]]*\(' <<<"$added"; then
             hits="${hits}${file}"$'\t'"test-weakening"$'\t'"skip"$'\n'
         fi
-        if echo "$added" | grep -Eq '\b(test|it|describe)\.only\b'; then
+        if grep -Eq '\b(test|it|describe)\.only\b' <<<"$added"; then
             hits="${hits}${file}"$'\t'"test-weakening"$'\t'"only"$'\n'
         fi
-        if echo "$added" | grep -Eq '\b(test|it)\.todo\b'; then
+        if grep -Eq '\b(test|it)\.todo\b' <<<"$added"; then
             hits="${hits}${file}"$'\t'"test-weakening"$'\t'"todo"$'\n'
         fi
-        if echo "$added" | grep -Eq '\b(test|it)\.fails\b'; then
+        if grep -Eq '\b(test|it)\.fails\b' <<<"$added"; then
             hits="${hits}${file}"$'\t'"test-weakening"$'\t'"xfail"$'\n'
         fi
-        if echo "$added" | grep -Eq "expect\((true|1|'x')\)\.to(Be|Equal|BeTruthy)\("; then
+        if grep -Eq "expect\((true|1|'x')\)\.to(Be|Equal|BeTruthy)\(" <<<"$added"; then
             hits="${hits}${file}"$'\t'"test-weakening"$'\t'"tautology"$'\n'
         fi
     fi
     if [[ "$_is_test_file" == true || "$_is_test_cfg_file" == true ]]; then
-        if echo "$added" | grep -Eq '(test\.exclude|exclude:[[:space:]]*\[)'; then
+        if grep -Eq '(test\.exclude|exclude:[[:space:]]*\[)' <<<"$added"; then
             hits="${hits}${file}"$'\t'"test-weakening"$'\t'"exclude-cfg"$'\n'
         fi
     fi
