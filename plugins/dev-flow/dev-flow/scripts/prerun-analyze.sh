@@ -3,7 +3,7 @@
 #
 # `analyze-issue <N> [--repo R] --contract` の決定論 parse を実行し、決定論で解けない 3 理由
 # （breaking keyword hit / comments present / 観測型 AC の絞り込み hit）だけを Jev（有界判定モデル、
-# _shared/scripts/jev-classify.sh）に回して、dev-flow.js の Setup 末尾の analyze ゲートが whitelist 検証するだけで
+# PATH 上の Jev クライアント `jev-classify`。インターフェースは dev-flow/SKILL.md の Jev 節）に回して、dev-flow.js の Setup 末尾の analyze ゲートが whitelist 検証するだけで
 # REQ を組める analyze JSON を stdout 1 行で返す。LLM が issue を転写する工程は持たない（転写者がいなければ
 # provenance 突合も comment_count 突合も要らない — その代わり breaking / comment の Jev の低確信・応答なし・無効は
 # 全て fail-closed で `uncertain[]` に積み、Workflow 側のゲートが needs_clarification に倒す）。
@@ -49,11 +49,12 @@
 #                                 Workflow の analyze ゲートが AC の文面と title だけを読む分類 agent に 1 回で渡し、
 #                                 そこでも決まらなければ観測型（true）として扱う（観測型への誤判定は人手 AC 待ちの
 #                                 HOLD で止まるだけだが、逆は evaluator のコード読みだけで達成扱いになるため）
-#   Jev が空 stdout（失敗）      → 該当判定は uncertain（観測型 AC は null）。jev-classify.sh の --reason-file が返す失敗理由
+#   Jev が空 stdout（失敗）      → 該当判定は uncertain（観測型 AC は null）。jev-classify の --reason-file が返す失敗理由
 #                                 （jev-broker に接続できない / jev-broker 経由の失敗 / 鍵なし / Keychain に
 #                                 届かない / Keychain 読み取り失敗 / タイムアウト / 通信失敗 / 応答不正）を
 #                                 文言に載せる（「応答なし」だけでは人間が切り分けられない）。「Keychain に
 #                                 届かない」は sandbox 内・bg job でも出るので、ロック中とは限らない
+#   jev-classify が PATH に無い  → Jev 未導入として同じく uncertain（観測型 AC は null）
 #   DEVFLOW_JEV_DISABLE=1       → Jev を呼ばず該当判定は uncertain（観測型 AC は null。private repo 向け opt-out）
 #
 # uncertain の「明記せよ」文言は analyze-issue.sh の breaking キーワード（breaking / incompatible /
@@ -61,7 +62,8 @@
 # なるのを避けるため。
 #
 # 環境変数: DEVFLOW_JEV_DISABLE=1 / DEVFLOW_JEV_MAX_TIME（既定 10 秒。hook 既定の 2 秒では issue 本文が
-# 長いと落ちる）。jev-classify.sh には常に --redact と --reason-file を付ける。
+# 長いと落ちる）/ DEVFLOW_JEV_CLASSIFY（Jev クライアントのコマンド名、既定 jev-classify）。
+# jev-classify には常に --redact と --reason-file を付ける。
 
 set -euo pipefail
 
@@ -71,7 +73,8 @@ has_jq || { echo "jq is required" >&2; exit 127; }
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ANALYZE_ISSUE="$PLUGIN_ROOT/dev-issue-analyze/scripts/analyze-issue.sh"
-JEV_CLASSIFY="$PLUGIN_ROOT/_shared/scripts/jev-classify.sh"
+JEV_CLASSIFY_CMD="${DEVFLOW_JEV_CLASSIFY:-jev-classify}"
+JEV_CLASSIFY="$(command -v "$JEV_CLASSIFY_CMD" || true)"
 ISSUE_BLOCKERS="$PLUGIN_ROOT/_lib/scripts/issue-blockers.sh"
 AC_OBS_PREFILTER="$PLUGIN_ROOT/_lib/scripts/ac-observational-prefilter.mjs"
 JEV_CONF_MIN="0.9"
@@ -152,10 +155,14 @@ jev_call() {
     local state="$1" questions="$2"
     : >"$JEV_REASON_FILE"
     [[ "$JEV_DISABLED" == true ]] && return 0
+    if [[ -z "$JEV_CLASSIFY" ]]; then
+        printf 'not installed (%s not on PATH)\n' "$JEV_CLASSIFY_CMD" >"$JEV_REASON_FILE"
+        return 0
+    fi
     printf '%s' "$state" | "$JEV_CLASSIFY" --redact --questions "$questions" --reason-file "$JEV_REASON_FILE" 2>/dev/null || true
 }
 
-# 直前の jev_call が判定値を返さなかった理由（jev-classify.sh の reason を原因別の見出し付きで載せる）
+# 直前の jev_call が判定値を返さなかった理由（jev-classify の reason を原因別の見出し付きで載せる）
 jev_unavailable_reason() {
     if [[ "$JEV_DISABLED" == true ]]; then
         printf 'Jev 無効（DEVFLOW_JEV_DISABLE=1）'
@@ -165,6 +172,7 @@ jev_unavailable_reason() {
     reason="$(head -n 1 "$JEV_REASON_FILE" 2>/dev/null || true)"
     case "$reason" in
         "") printf 'Jev 応答なし（応答に判定値が無い）'; return ;;
+        "not installed"*) label="jev-classify が PATH に無い（Jev 未導入）" ;;
         "broker unreachable"*) label="jev-broker に接続できない" ;;
         "broker request failed"*) label="jev-broker 経由の呼び出し失敗" ;;
         "keychain unreachable"*) label="Keychain に届かない（ロック中・sandbox 内・bg job など別セッション）" ;;

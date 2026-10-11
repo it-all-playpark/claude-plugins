@@ -3,12 +3,13 @@ bats_require_minimum_version 1.5.0
 
 # Tests for dev-flow/scripts/prerun-analyze.sh (issue #690)
 #
-# ネットワークには出ない。gh は fixture JSON を返す stub、Jev は偽 curl（PATH 先頭）で応答を
-# 制御する。偽 curl は request body の state に埋め込んだマーカーで応答を決める:
+# ネットワークには出ない。gh は fixture JSON を返す stub、Jev は偽 jev-classify（PATH 先頭）で応答を
+# 制御する。偽 jev-classify は stdin の state に埋め込んだマーカーで応答を決める:
 #   noul 質問 <id> → `[[jev:<id>:<p>]]`、無ければ `[[jev:noul:<p>]]`（全 noul 質問に同じ p）
 #   choice 質問 kind → `[[jev:<choice>:<p>]]`
-# どの質問にも値が無ければ非 JSON（<html>502</html>）を返す。FAKE_CURL_EXIT を置くとその exit code で落ちる。
-# これで comment ごとに別の判定を返せる（1 request = 1 comment）。Keychain は偽 security（FAKE_SECURITY_EXIT）。
+# どの質問にも値が無ければ空 stdout と reason `bad response …` を返す。FAKE_JEV_REASON を置くとその理由で
+# 空 stdout を返す（クライアントの失敗理由 → prerun の見出しの対応を見る）。
+# これで comment ごとに別の判定を返せる（1 request = 1 comment）。
 
 SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/prerun-analyze.sh"
 
@@ -50,32 +51,33 @@ cat "$GH_STUB_FIXTURE"
 STUB
     chmod +x "$WORK/bin/gh"
 
-    # ---- curl stub (Jev) ----
-    CURL_LOG="$WORK/curl.log"
-    : >"$CURL_LOG"
-    cat >"$WORK/bin/curl" <<'FAKE'
+    # ---- jev-classify stub (Jev) ----
+    JEV_LOG="$WORK/jev.log"
+    : >"$JEV_LOG"
+    cat >"$WORK/bin/jev-classify" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
-body=""
+questions=""
+reason_file=""
+printf '%s\n' "$*" >>"$JEV_LOG.argv"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-  -d) body="$2"; shift 2 ;;
-  --max-time) printf 'max-time=%s\n' "$2" >>"$CURL_LOG"; shift 2 ;;
-  -H|--config) shift 2 ;;
+  --questions) questions="$2"; shift 2 ;;
+  --reason-file) reason_file="$2"; shift 2 ;;
   *) shift ;;
   esac
 done
-cat >/dev/null
-state="$(printf '%s' "$body" | jq -r '.state')"
-printf 'call\n' >>"$CURL_LOG"
-printf '%s' "$body" | jq -c '.questions' >>"$CURL_LOG.questions"
-printf '%s' "$state" >"$CURL_LOG.state"
-if [[ -n "${FAKE_CURL_EXIT:-}" ]]; then
-  echo "curl: (${FAKE_CURL_EXIT}) simulated failure" >&2
-  exit "$FAKE_CURL_EXIT"
+state="$(cat)"
+printf 'call\n' >>"$JEV_LOG"
+printf 'max-time=%s\n' "${JEV_MAX_TIME:-}" >>"$JEV_LOG"
+printf '%s' "$questions" | jq -c '.' >>"$JEV_LOG.questions"
+printf '%s' "$state" >"$JEV_LOG.state"
+if [[ -n "${FAKE_JEV_REASON:-}" ]]; then
+  [[ -n "$reason_file" ]] && printf '%s\n' "$FAKE_JEV_REASON" >"$reason_file"
+  exit 0
 fi
 answers='{}'
-for q in $(printf '%s' "$body" | jq -r '.questions | to_entries[] | select(.value.type == "noul") | .key'); do
+for q in $(printf '%s' "$questions" | jq -r 'to_entries[] | select(.value.type == "noul") | .key'); do
   p=""
   if [[ "$state" =~ \[\[jev:${q}:([0-9.]+)\]\] ]]; then
     p="${BASH_REMATCH[1]}"
@@ -84,34 +86,23 @@ for q in $(printf '%s' "$body" | jq -r '.questions | to_entries[] | select(.valu
   fi
   [[ -n "$p" ]] && answers="$(jq -c --arg q "$q" --argjson p "$p" '. + {($q): {type: "noul", noul: $p}}' <<<"$answers")"
 done
-if printf '%s' "$body" | jq -e '.questions.kind.type == "choice"' >/dev/null \
+if printf '%s' "$questions" | jq -e '.kind.type == "choice"' >/dev/null \
   && [[ "$state" =~ \[\[jev:(override|conflict|resolved|unrelated):([0-9.]+)\]\] ]]; then
   c="${BASH_REMATCH[1]}"; p="${BASH_REMATCH[2]}"
   answers="$(jq -c --arg c "$c" --argjson p "$p" '. + {kind: {type: "choice", choice: $c, probabilities: {($c): $p}}}' <<<"$answers")"
 fi
 if [[ "$answers" == '{}' ]]; then
-  echo '<html>502</html>'
+  [[ -n "$reason_file" ]] && echo 'bad response (no .answers object): <html>502</html>' >"$reason_file"
   exit 0
 fi
 jq -cn --argjson a "$answers" '{model: "typesafe-ai/jev", answers: $a, usage: {input_tokens: 1, output_tokens: 0}}'
 FAKE
-    chmod +x "$WORK/bin/curl"
+    chmod +x "$WORK/bin/jev-classify"
 
-    # ---- security stub (Keychain) ----
-    cat >"$WORK/bin/security" <<'FAKE'
-#!/usr/bin/env bash
-exit "${FAKE_SECURITY_EXIT:-44}"
-FAKE
-    chmod +x "$WORK/bin/security"
-
-    export GH_LOG CURL_LOG GH_STUB_ISSUES_DIR
+    export GH_LOG JEV_LOG GH_STUB_ISSUES_DIR
     unset GH_STUB_DEPS_FIXTURE GH_STUB_DEPS_FAIL
     export PATH="$WORK/bin:$PATH"
-    # 実機の jev-broker ソケットを拾わない（Keychain 経路の理由文言を検証するため）
-    export JEV_BROKER_SOCKET="$WORK/no-broker.sock"
-    export AI_GATEWAY_API_KEY="vck_test_key"
-    export JEV_KEYCHAIN_SERVICE="prerun-analyze-bats-nonexistent"
-    unset DEVFLOW_JEV_DISABLE
+    unset DEVFLOW_JEV_DISABLE DEVFLOW_JEV_CLASSIFY FAKE_JEV_REASON
 }
 
 # fixture <path> <title> <body> [comments_json] [author_login] [updated_at]
@@ -143,7 +134,7 @@ AC_BODY="## 概要
 - [ ] AC one
 - [ ] AC two"
 
-curl_calls() { grep -c '^call$' "$CURL_LOG" || true; }
+jev_calls() { grep -c '^call$' "$JEV_LOG" || true; }
 
 # ---- contract 経路（Jev 不要）----
 
@@ -156,7 +147,7 @@ curl_calls() { grep -c '^call$' "$CURL_LOG" || true; }
     echo "$output" | jq -e '.breaking_change == false and .breaking_keyword_scan == false and .comment_overrides == [] and .comment_conflicts == [] and .uncertain == []'
     echo "$output" | jq -e '(.issue_body | type) == "string" and .issue_body_truncated == false and .comment_count == 0 and .contract == "t1"'
     echo "$output" | jq -e '.ac_observational == [false, false] and .ac_observational_evidence == ["正規表現の絞り込みに当たらない", "正規表現の絞り込みに当たらない"]'
-    [ "$(curl_calls)" -eq 0 ]
+    [ "$(jev_calls)" -eq 0 ]
 }
 
 @test "AC 見出し無し -> ok:true で acceptance_criteria は空（ゲート判定は Workflow 側）" {
@@ -249,7 +240,7 @@ Blocked by #13
     echo "$output" | jq -e '.breaking_keyword_scan == true and .breaking_change == true and .analyze_path == "jev"'
     echo "$output" | jq -e '.jev_reasons == ["breaking_keyword_scan true"] and .uncertain == []'
     echo "$output" | jq -e '.breaking_evidence | test("0.95")'
-    [ "$(curl_calls)" -eq 1 ]
+    [ "$(jev_calls)" -eq 1 ]
 }
 
 @test "breaking keyword + Jev noul p<=0.1 -> breaking_change=false, uncertain 空" {
@@ -275,7 +266,7 @@ breaking を避ける。[[jev:noul:0.04]]"
     run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.breaking_keyword_scan == true and .breaking_change == false and (.uncertain | length) == 1 and (.uncertain[0] | test("Jev 応答なし（応答不正: bad response"))'
-    [ "$(curl_calls)" -eq 1 ]
+    [ "$(jev_calls)" -eq 1 ]
 }
 
 # ---- 互換性判定の 2 問分割（issue #728）----
@@ -286,10 +277,10 @@ breaking を避ける。[[jev:noul:0.04]]"
 [[jev:noul:0.02]]"
     run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
-    [ "$(curl_calls)" -eq 1 ]
-    jq -e 'keys == ["breaking", "migration"] and .breaking.type == "noul" and .migration.type == "noul"' "$CURL_LOG.questions"
-    jq -e '.breaking.instructions | test("後方互換") and test("読み込み時に無視・破棄")' "$CURL_LOG.questions"
-    jq -e '.migration.instructions | test("既存データ") and test("読み込み時に無視・破棄")' "$CURL_LOG.questions"
+    [ "$(jev_calls)" -eq 1 ]
+    jq -e 'keys == ["breaking", "migration"] and .breaking.type == "noul" and .migration.type == "noul"' "$JEV_LOG.questions"
+    jq -e '.breaking.instructions | test("後方互換") and test("読み込み時に無視・破棄")' "$JEV_LOG.questions"
+    jq -e '.migration.instructions | test("既存データ") and test("読み込み時に無視・破棄")' "$JEV_LOG.questions"
 }
 
 @test "設定項目を削除し古い値は読み込み時に捨てる issue -> 互換性判定で uncertain にならない（breaking_change=false）" {
@@ -334,46 +325,42 @@ breaking を避ける。[[jev:noul:0.04]]"
 
 # ---- Jev が判定を返さない理由（issue #728）----
 
-@test "Keychain に届かない（security exit 36）-> uncertain に原因と exit code が出る、curl 未呼び出し" {
+# jev_reason_label <reason> <見出し>: クライアントの reason 1 行が uncertain に見出し付きでそのまま載る
+jev_reason_label() {
     fixture "$WORK/i.json" "feat: migration" "$AC_BODY
 
 [[jev:noul:0.95]]"
-    unset AI_GATEWAY_API_KEY
-    FAKE_SECURITY_EXIT=36 run_analyze "$WORK/i.json"
+    FAKE_JEV_REASON="$1" run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '(.uncertain | length) == 1 and (.uncertain[0] | test("Keychain に届かない（ロック中・sandbox 内・bg job など別セッション）") and test("security exit 36"))'
-    [ "$(curl_calls)" -eq 0 ]
+    echo "$output" | jq -e --arg label "$2" --arg reason "$1" \
+        '(.uncertain | length) == 1 and (.uncertain[0] | contains("Jev 応答なし（" + $label + ": " + $reason + "）"))'
 }
 
-@test "Keychain を読めない（sandbox 内等、security がその他の exit code）-> uncertain に読み取り失敗と exit code" {
+@test "クライアントの失敗理由ごとに uncertain の見出しが付く（Keychain / 鍵なし / timeout / 通信失敗 / broker）" {
+    jev_reason_label 'keychain unreachable (security exit 36: errSecInteractionNotAllowed)' 'Keychain に届かない（ロック中・sandbox 内・bg job など別セッション）'
+    jev_reason_label 'keychain read failed (security exit 51)' 'Keychain から API 鍵を読めない'
+    jev_reason_label "no API key (keychain item 'x' not found: security exit 44)" 'API 鍵が無い'
+    jev_reason_label 'timeout (curl exit 28, --max-time 10s)' 'タイムアウト（DEVFLOW_JEV_MAX_TIME）'
+    jev_reason_label 'request failed (curl exit 7): x' '通信失敗'
+    jev_reason_label 'broker unreachable (curl exit 7 on /s); keychain unreachable (security exit 36)' 'jev-broker に接続できない'
+    jev_reason_label 'broker request failed (curl exit 22): x' 'jev-broker 経由の呼び出し失敗'
+}
+
+@test "comment の判定でも失敗理由が comment ごとの uncertain に載る" {
     fixture "$WORK/i.json" "feat: x" "$AC_BODY" "[$(comment alice OWNER 'a [[jev:override:0.99]]')]" reporter
-    unset AI_GATEWAY_API_KEY
-    FAKE_SECURITY_EXIT=51 run_analyze "$WORK/i.json"
+    FAKE_JEV_REASON='keychain read failed (security exit 51)' run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.comment_conflicts == [] and (.uncertain | length) == 1 and (.uncertain[0] | test("comment #1 by alice") and test("Keychain から API 鍵を読めない") and test("security exit 51"))'
-    [ "$(curl_calls)" -eq 0 ]
 }
 
-@test "Keychain に item が無い（security exit 44）-> uncertain に API 鍵なし" {
+@test "jev-classify が PATH に無い -> Jev 未導入として uncertain（fail-closed）" {
     fixture "$WORK/i.json" "feat: migration" "$AC_BODY
 
 [[jev:noul:0.95]]"
-    unset AI_GATEWAY_API_KEY
-    FAKE_SECURITY_EXIT=44 run_analyze "$WORK/i.json"
+    DEVFLOW_JEV_CLASSIFY=jev-classify-not-installed run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.uncertain[0] | test("API 鍵が無い") and test("not found: security exit 44")'
-}
-
-@test "curl タイムアウト（exit 28）/ 通信失敗 -> uncertain に原因別の文言" {
-    fixture "$WORK/i.json" "feat: migration" "$AC_BODY
-
-[[jev:noul:0.95]]"
-    FAKE_CURL_EXIT=28 run_analyze "$WORK/i.json"
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.uncertain[0] | test("タイムアウト") and test("curl exit 28") and test("--max-time 10s")'
-    FAKE_CURL_EXIT=7 run_analyze "$WORK/i.json"
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.uncertain[0] | test("通信失敗") and test("curl exit 7")'
+    echo "$output" | jq -e '.breaking_change == false and (.uncertain | length) == 1 and (.uncertain[0] | test("jev-classify が PATH に無い（Jev 未導入）") and test("jev-classify-not-installed not on PATH"))'
+    [ "$(jev_calls)" -eq 0 ]
 }
 
 @test "title の ! marker -> 決定論で breaking_change=true（Jev 未呼び出し）" {
@@ -381,7 +368,7 @@ breaking を避ける。[[jev:noul:0.04]]"
     run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.breaking_change == true and (.breaking_evidence | test("!")) and .uncertain == [] and .analyze_path == "contract"'
-    [ "$(curl_calls)" -eq 0 ]
+    [ "$(jev_calls)" -eq 0 ]
 }
 
 @test "DEVFLOW_JEV_DISABLE=1 -> Jev を呼ばず breaking 判定は uncertain" {
@@ -391,7 +378,7 @@ breaking を避ける。[[jev:noul:0.04]]"
     DEVFLOW_JEV_DISABLE=1 run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.breaking_change == false and (.uncertain | length) == 1 and (.uncertain[0] | test("DEVFLOW_JEV_DISABLE=1"))'
-    [ "$(curl_calls)" -eq 0 ]
+    [ "$(jev_calls)" -eq 0 ]
 }
 
 @test "Jev の --max-time は DEVFLOW_JEV_MAX_TIME（既定 10 秒）" {
@@ -400,11 +387,11 @@ breaking を避ける。[[jev:noul:0.04]]"
 [[jev:noul:0.95]]"
     run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
-    grep -q '^max-time=10$' "$CURL_LOG"
-    : >"$CURL_LOG"
+    grep -q '^max-time=10$' "$JEV_LOG"
+    : >"$JEV_LOG"
     DEVFLOW_JEV_MAX_TIME=25 run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
-    grep -q '^max-time=25$' "$CURL_LOG"
+    grep -q '^max-time=25$' "$JEV_LOG"
 }
 
 # ---- comment choice 3 分岐 × 権限 2 分岐 ----
@@ -443,7 +430,7 @@ breaking を避ける。[[jev:noul:0.04]]"
     run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.comment_overrides == [] and .comment_conflicts == [] and .uncertain == [] and .analyze_path == "jev"'
-    [ "$(curl_calls)" -eq 2 ]
+    [ "$(jev_calls)" -eq 2 ]
 }
 
 @test "comment の未決事項が本文で決着済み（resolved 高確信）-> comment_conflicts にも overrides にも積まない（issue #728）" {
@@ -464,18 +451,18 @@ breaking を避ける。[[jev:noul:0.04]]"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.analyze_path == "jev" and .comment_conflicts == [] and .comment_overrides == [] and .uncertain == []'
     # choice に resolved があり、state に前後関係（issue updated_at > 最新 comment created_at）が載る
-    tail -n 1 "$CURL_LOG.questions" | jq -e '.kind.criteria | keys == ["conflict", "override", "resolved", "unrelated"]'
-    grep -q 'issue の updated_at: 2026-01-02T00:00:00Z' "$CURL_LOG.state"
-    grep -q '最新 comment の created_at: 2026-01-01T00:00:00Z' "$CURL_LOG.state"
-    grep -q 'issue は最新 comment より後に更新されている' "$CURL_LOG.state"
+    tail -n 1 "$JEV_LOG.questions" | jq -e '.kind.criteria | keys == ["conflict", "override", "resolved", "unrelated"]'
+    grep -q 'issue の updated_at: 2026-01-02T00:00:00Z' "$JEV_LOG.state"
+    grep -q '最新 comment の created_at: 2026-01-01T00:00:00Z' "$JEV_LOG.state"
+    grep -q 'issue は最新 comment より後に更新されている' "$JEV_LOG.state"
 }
 
 @test "comment 後に issue が更新されていない -> state に「後に更新されている」行を載せない" {
     fixture "$WORK/i.json" "feat: x" "$AC_BODY" "[$(comment alice OWNER 'q [[jev:unrelated:0.98]]')]" reporter "2026-01-01T00:00:00Z"
     run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
-    grep -q 'issue の updated_at: 2026-01-01T00:00:00Z' "$CURL_LOG.state"
-    ! grep -q 'issue は最新 comment より後に更新されている' "$CURL_LOG.state"
+    grep -q 'issue の updated_at: 2026-01-01T00:00:00Z' "$JEV_LOG.state"
+    ! grep -q 'issue は最新 comment より後に更新されている' "$JEV_LOG.state"
 }
 
 @test "comment resolved でも低確信（p<0.9）-> comment_conflicts（fail-closed）" {
@@ -499,12 +486,12 @@ breaking を避ける。[[jev:noul:0.04]]"
     echo "$output" | jq -e '.comment_overrides == [] and .comment_conflicts == [] and (.uncertain | length) == 1 and (.uncertain[0] | test("comment #1 by alice") and test("Jev 応答なし"))'
 }
 
-@test "DEVFLOW_JEV_DISABLE=1 で comments あり -> 全 comment が uncertain、curl 未呼び出し" {
+@test "DEVFLOW_JEV_DISABLE=1 で comments あり -> 全 comment が uncertain、Jev 未呼び出し" {
     fixture "$WORK/i.json" "feat: x" "$AC_BODY" "[$(comment alice OWNER 'a [[jev:override:0.99]]'), $(comment bob NONE 'b [[jev:unrelated:0.99]]')]" reporter
     DEVFLOW_JEV_DISABLE=1 run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '(.uncertain | length) == 2 and all(.uncertain[]; test("DEVFLOW_JEV_DISABLE=1")) and .analyze_path == "jev"'
-    [ "$(curl_calls)" -eq 0 ]
+    [ "$(jev_calls)" -eq 0 ]
 }
 
 @test "breaking keyword + comments 同時 -> jev_reasons に両方、判定は独立" {
@@ -517,23 +504,15 @@ breaking を避ける。[[jev:noul:0.04]]"
     echo "$output" | jq -e '.breaking_change == true and (.comment_overrides | length) == 1'
 }
 
-@test "Jev への state は --redact 済み（token 値が送られない）" {
+@test "Jev は常に --redact と --reason-file 付きで呼ぶ（breaking / comment / 観測型 AC の全経路）" {
     fixture "$WORK/i.json" "feat: migration" "$AC_BODY
 
-TOKEN=supersecret1 [[jev:noul:0.95]]"
-    cat >"$WORK/bin/curl" <<'FAKE'
-#!/usr/bin/env bash
-body=""
-while [[ $# -gt 0 ]]; do case "$1" in -d) body="$2"; shift 2 ;; --max-time|-H|--config) shift 2 ;; *) shift ;; esac; done
-cat >/dev/null
-printf '%s' "$body" | jq -r '.state' >"$CURL_LOG.state"
-echo '{"answers":{"breaking":{"type":"noul","noul":0.95}}}'
-FAKE
-    chmod +x "$WORK/bin/curl"
+TOKEN=supersecret1 [[jev:noul:0.95]]" "[$(comment reporter NONE '訂正 [[jev:override:0.95]]')]" reporter
     run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
-    ! grep -q supersecret1 "$CURL_LOG.state"
-    grep -q '<redacted>' "$CURL_LOG.state"
+    [ "$(jev_calls)" -eq 2 ]
+    [ "$(grep -c -- '--redact' "$JEV_LOG.argv")" -eq 2 ]
+    [ "$(grep -c -- '--reason-file ' "$JEV_LOG.argv")" -eq 2 ]
 }
 
 # ---- 観測型 AC（issue #859）: 正規表現の絞り込み → Jev ----
@@ -566,7 +545,7 @@ REG_MARKERS="[[jev:ac_2:0.04]] [[jev:ac_3:0.5]] [[jev:ac_4:0.96]] [[jev:ac_5:0.0
     echo "$output" | jq -e --argjson n "$NPOS" '(.ac_observational | length) == ($n + 5) and (.ac_observational[:$n] | all(. == true)) and (.ac_observational[$n:] | all(. == false))'
     echo "$output" | jq -e --argjson n "$NPOS" 'all(.ac_observational_evidence[:$n][]; test("Jev noul 観測型 p=0.97"))'
     echo "$output" | jq -e '.uncertain == [] and .analyze_path == "jev"'
-    [ "$(curl_calls)" -eq 1 ]
+    [ "$(jev_calls)" -eq 1 ]
 }
 
 @test "観測型 AC の回帰（acme/webapp）: 絞り込みに当たった AC だけを title と AC 文面で 1 request に聞き、Jev の p で true / false / null に振り分ける" {
@@ -580,19 +559,19 @@ REG_MARKERS="[[jev:ac_2:0.04]] [[jev:ac_3:0.5]] [[jev:ac_4:0.96]] [[jev:ac_5:0.0
     echo "$output" | jq -e '.ac_observational_evidence[0] == "正規表現の絞り込みに当たらない" and (.ac_observational_evidence[1] | test("p=0.04")) and (.ac_observational_evidence[2] | test("低確信") and test("p=0.5") and test("分類 agent")) and (.ac_observational_evidence[3] | test("p=0.96"))'
     echo "$output" | jq -e '.jev_reasons == ["observational_ac prefilter hit (AC-2, AC-3, AC-4, AC-5)"] and .analyze_path == "jev"'
     echo "$output" | jq -e '.uncertain == [] and .comment_conflicts == []' # null は needs_clarification にしない
-    [ "$(curl_calls)" -eq 1 ]
-    jq -e '(keys | sort) == ["ac_2", "ac_3", "ac_4", "ac_5"] and all(.[]; .type == "noul")' "$CURL_LOG.questions"
-    jq -e '.ac_5.instructions | test("AC-5") and test("コードとテストを読むだけでは確かめられず、実行した結果・ログ・計測を観測しないと確かめられないか") and test("テストコードやソースコード自体の書き方・構成について述べているなら no")' "$CURL_LOG.questions"
+    [ "$(jev_calls)" -eq 1 ]
+    jq -e '(keys | sort) == ["ac_2", "ac_3", "ac_4", "ac_5"] and all(.[]; .type == "noul")' "$JEV_LOG.questions"
+    jq -e '.ac_5.instructions | test("AC-5") and test("コードとテストを読むだけでは確かめられず、実行した結果・ログ・計測を観測しないと確かめられないか") and test("テストコードやソースコード自体の書き方・構成について述べているなら no")' "$JEV_LOG.questions"
     # state は title と当たった AC の文面だけ（当たらない AC と本文は送らない）
-    grep -q 'AC-5: 件数の直書きを、元データ（GUIDE_SLUGS 等）の長さとの比較か、件数に依存しない不変条件に置き換える' "$CURL_LOG.state"
-    ! grep -q '本番コードは変更しない' "$CURL_LOG.state" || false
-    ! grep -q '説明。' "$CURL_LOG.state" || false
+    grep -q 'AC-5: 件数の直書きを、元データ（GUIDE_SLUGS 等）の長さとの比較か、件数に依存しない不変条件に置き換える' "$JEV_LOG.state"
+    ! grep -q '本番コードは変更しない' "$JEV_LOG.state" || false
+    ! grep -q '説明。' "$JEV_LOG.state" || false
 }
 
 @test "観測型 AC: Jev が応答しない（bg セッション等）-> 当たった AC は null（uncertain には積まない）、理由を根拠に載せる" {
     ACS="$(controls_json 'm.APP_REPO_REGRESSION_ACS.map((r) => r.ac)')"
     fixture "$WORK/i.json" "test(video): 件数の直書きを整理" "$(printf '%s' "$ACS" | ac_body)"
-    FAKE_CURL_EXIT=28 run_analyze "$WORK/i.json"
+    FAKE_JEV_REASON='timeout (curl exit 28, --max-time 10s)' run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ac_observational == [false, null, null, null, null] and .uncertain == []'
     echo "$output" | jq -e 'all(.ac_observational_evidence[1:][]; test("Jev 応答なし") and test("タイムアウト") and test("分類 agent"))'
@@ -605,7 +584,7 @@ REG_MARKERS="[[jev:ac_2:0.04]] [[jev:ac_3:0.5]] [[jev:ac_4:0.96]] [[jev:ac_5:0.0
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ac_observational == [false, null, null, null, null] and .uncertain == []'
     echo "$output" | jq -e 'all(.ac_observational_evidence[1:][]; test("DEVFLOW_JEV_DISABLE=1"))'
-    [ "$(curl_calls)" -eq 0 ]
+    [ "$(jev_calls)" -eq 0 ]
 }
 
 @test "観測型 AC: 正規表現の絞り込みが実行できない（node 失敗）-> 全 AC を null にして分類 agent に回す" {
@@ -617,7 +596,7 @@ REG_MARKERS="[[jev:ac_2:0.04]] [[jev:ac_3:0.5]] [[jev:ac_4:0.96]] [[jev:ac_5:0.0
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .ac_observational == [null, null, null, null, null] and .uncertain == []'
     echo "$output" | jq -e 'all(.ac_observational_evidence[]; test("正規表現の絞り込みを実行できない") and test("node: broken"))'
-    [ "$(curl_calls)" -eq 0 ]
+    [ "$(jev_calls)" -eq 0 ]
 }
 
 # ---- 引数 ----
@@ -627,34 +606,4 @@ REG_MARKERS="[[jev:ac_2:0.04]] [[jev:ac_3:0.5]] [[jev:ac_4:0.96]] [[jev:ac_5:0.0
     [ "$status" -eq 2 ]
     run "$SCRIPT" --issue abc
     [ "$status" -eq 2 ]
-}
-
-# ---- jev-broker 経由の失敗理由 ----
-
-# use_socket: JEV_BROKER_SOCKET を実在する Unix ソケットに向ける（偽 curl は接続しない）。
-# sandbox 内では bind が拒否されるため、そのときは OS が既に持つソケットを借りる
-use_socket() {
-    local path="$WORK/broker.sock" existing
-    if python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$path" 2>/dev/null; then
-        export JEV_BROKER_SOCKET="$path"
-        return
-    fi
-    for existing in /var/run/mDNSResponder /nix/var/nix/daemon-socket/socket /var/run/docker.sock; do
-        if [[ -S $existing ]]; then
-            export JEV_BROKER_SOCKET="$existing"
-            return
-        fi
-    done
-    skip "Unix ソケットを用意できない（bind 拒否かつ既存ソケットなし）"
-}
-
-@test "jev-broker に接続できず Keychain にも届かない -> uncertain に broker の見出しと両方の理由" {
-    fixture "$WORK/i.json" "feat: migration" "$AC_BODY
-
-[[jev:noul:0.95]]"
-    unset AI_GATEWAY_API_KEY
-    use_socket
-    FAKE_CURL_EXIT=7 FAKE_SECURITY_EXIT=36 run_analyze "$WORK/i.json"
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '(.uncertain | length) == 1 and (.uncertain[0] | test("jev-broker に接続できない") and test("curl exit 7") and test("security exit 36"))'
 }

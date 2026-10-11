@@ -112,7 +112,7 @@ flowchart TD
 
 analyze ゲートは Workflow 内では純関数の検証と上図のゲート判定だけで、ゲート自体の spawn は 0。
 issue を LLM が転写する工程が無いので provenance 突合・comment_count 突合・scope 切断時の
-再実行も無い。決定論で解けない 2 理由だけを prerun が Jev（有界判定モデル、`_shared/scripts/jev-classify.sh`）に回す:
+再実行も無い。決定論で解けない 2 理由だけを prerun が Jev（有界判定モデル、PATH 上の `jev-classify`）に回す:
 breaking keyword hit は noul 2 問（後方互換を保たない API / 形式の変更か・既存データの変換を要するか。
 古い値を読み込み時に捨てるだけなら両方 no。どちらかが p ≥ 0.9 で `breaking_change=true`、両方 p ≤ 0.1 で
 false、それ以外は `uncertain`）、comments present は comment ごとに choice
