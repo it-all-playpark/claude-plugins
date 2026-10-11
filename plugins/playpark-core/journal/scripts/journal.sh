@@ -452,7 +452,7 @@ cmd_hook_capture() {
     fi
 
     # Read active skill context from state file (written by PreToolUse Skill hook).
-    # TTL (30 min) ガード: UserPromptSubmit hook がクリアし損ねたケース
+    # TTL (30 min) ガード: UserPromptSubmit hook (clear-skill-ctx) がクリアし損ねたケース
     # (skill が完了 log を呼ばずに死亡 等) でも誤帰属が無限に続かないよう保険を入れる。
     local active_skill=""
     local state_file="/tmp/claude-skill-ctx-${session_id}"
@@ -542,6 +542,17 @@ cmd_track_skill() {
     [[ -z "$skill_name" || -z "$session_id" ]] && return 0
 
     echo "$skill_name" > "/tmp/claude-skill-ctx-${session_id}"
+}
+
+# Clear active skill: called by UserPromptSubmit hook so a new prompt is not
+# attributed to the skill tracked in the previous turn
+cmd_clear_skill_ctx() {
+    local input session_id
+    input=$(cat)
+    session_id=$(echo "$input" | jq -r '.session_id // empty' 2>/dev/null) || return 0
+    [[ -z "$session_id" ]] && return 0
+
+    rm -f "/tmp/claude-skill-ctx-${session_id}"
 }
 
 # ============================================================================
@@ -637,6 +648,7 @@ case "$SUBCMD" in
     log) cmd_log "$@" ;;
     hook-capture) cmd_hook_capture ;;
     track-skill) cmd_track_skill ;;
+    clear-skill-ctx) cmd_clear_skill_ctx ;;
     query) cmd_query "$@" ;;
     stats) cmd_stats "$@" ;;
     prune) cmd_prune "$@" ;;
@@ -648,6 +660,7 @@ Subcommands:
   log <skill> <outcome>  Record skill execution
   hook-capture           Capture failures from PostToolUse hook (reads stdin)
   track-skill            Track active skill from PreToolUse Skill hook (reads stdin)
+  clear-skill-ctx        Clear tracked skill from UserPromptSubmit hook (reads stdin)
   query [--since] [--skill] [--outcome] [--source <skill|hook>]  Query entries
   stats [--since] [--source <skill|hook>]  Show summary statistics (default: skill)
   prune [--days 30] [--keep a,b] [--dry-run]  Delete old entries except dev-flow family
