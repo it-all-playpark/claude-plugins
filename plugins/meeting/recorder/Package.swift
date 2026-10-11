@@ -8,7 +8,7 @@ let infoPlist = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appe
 
 let package = Package(
     name: "meeting-rec",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS("15.0")],
     targets: [
         .executableTarget(
             name: "meeting-rec",
