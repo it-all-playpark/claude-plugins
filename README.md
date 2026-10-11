@@ -66,8 +66,7 @@ Use skills in Claude Code:
    dev-flow 専用 hook（`stop-devflow-telemetry.sh` / `pretool-inline-edit-guard.sh` /
    `pretool-bash-inline-commit-gate.sh`）は `plugins/dev-flow/hooks/hooks.json`、全 skill 共通
    hook（journal hook-capture・track-skill・clear-skill-ctx / `validate-skill-frontmatter.sh` /
-   `posttool-secret-mask.sh` / `pretool-context-guard.sh`）は `plugins/playpark-core/hooks/hooks.json`、
-   zombie-kill の SessionStart 起動は `plugins/playpark-skills/hooks/hooks.json` から、それぞれ
+   `posttool-secret-mask.sh` / `pretool-context-guard.sh`）は `plugins/playpark-core/hooks/hooks.json` から、それぞれ
    `${CLAUDE_PLUGIN_ROOT}` 経由で発火します。同じ hook を settings.json に直接登録していた場合は
    そちらを削除してください（残すと二重に発火し、hook-capture が二重記録されます）。
 
@@ -449,7 +448,6 @@ config = load_skill_config("ga-analyzer")
 |--------|------|
 | `skill-creator` | 新規スキル作成ガイド（当リポジトリ規約版） |
 | `find-skills` | スキル検索・インストール支援 🔗 |
-| `claude-zombie-kill` | ゾンビClaude Codeセッション検出・終了 |
 | `mem-triage` | macOS のメモリをアプリ・端末から起動したもの・launchd の常駐の塊ごとに合算し、解放方法と「聞かずに消してよいか」を示す（kill はユーザーが実行） |
 | `memory-cli` | memvid CLI によるセッション・プロジェクト横断の永続メモリ（BM25 + semantic のハイブリッド検索） |
 | `sandbox-tune` | transcript から sandbox 拒否・permission 拒否・人間への実行依頼を型ごとに集計し、設定 repo の git log と突き合わせて settings 修正の候補を根拠付きで出す（issue 化は `--issue` のときだけ） |
