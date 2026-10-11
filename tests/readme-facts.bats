@@ -43,7 +43,7 @@ readme_config_keys() {
                 grep -oE '^  "[a-z0-9-]+": \{' <<< "$global_example" | grep -oE '[a-z0-9-]+'; } | sort -u)"
     [ -n "$names" ]
     while IFS= read -r name; do
-        [ -f "$REPO_ROOT/plugins/playpark-skills/$name/SKILL.md" ] || jq -e --arg n "$name" '.skills | has($n)' "$LOCK" >/dev/null || {
+        compgen -G "$REPO_ROOT/plugins/*/$name/SKILL.md" >/dev/null || jq -e --arg n "$name" '.skills | has($n)' "$LOCK" >/dev/null || {
             echo "README の設定節に実在しない skill: $name"
             return 1
         }

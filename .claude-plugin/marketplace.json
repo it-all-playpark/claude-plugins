@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "playpark",
-  "description": "playpark LLC marketplace: playpark-core (shared base), dev-flow (issue-to-LGTM workflows + 7 dev-flow agents), playpark-skills (personal skills), host-exec (approved host execution outside the sandbox)",
+  "description": "playpark LLC marketplace: playpark-core (shared base), dev-flow (issue-to-LGTM workflows + 7 dev-flow agents), playpark-skills (personal skills), host-exec (approved host execution outside the sandbox), meeting (auto meeting recording + local transcription + notes)",
   "owner": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
   "plugins": [
     {
@@ -26,6 +26,12 @@
       "name": "host-exec",
       "description": "Adds a tool that runs sandbox-blocked commands on the host after per-run approval, withholding secrets found in the output",
       "source": "./plugins/host-exec",
+      "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" }
+    },
+    {
+      "name": "meeting",
+      "description": "Auto-records Zoom / Google Meet / Teams meetings on macOS (even ones you don't host), transcribes them locally with Whisper + pyannote speaker diarization, and turns them into meeting notes",
+      "source": "./plugins/meeting",
       "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" }
     }
   ]
