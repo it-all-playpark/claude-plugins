@@ -65,7 +65,7 @@ Use skills in Claude Code:
 
    dev-flow 専用 hook（`stop-devflow-telemetry.sh` / `pretool-inline-edit-guard.sh` /
    `pretool-bash-inline-commit-gate.sh`）は `plugins/dev-flow/hooks/hooks.json`、全 skill 共通
-   hook（journal hook-capture・track-skill / `validate-skill-frontmatter.sh` /
+   hook（journal hook-capture・track-skill・clear-skill-ctx / `validate-skill-frontmatter.sh` /
    `posttool-secret-mask.sh` / `pretool-context-guard.sh`）は `plugins/playpark-core/hooks/hooks.json`、
    zombie-kill の SessionStart 起動は `plugins/playpark-skills/hooks/hooks.json` から、それぞれ
    `${CLAUDE_PLUGIN_ROOT}` 経由で発火します。同じ hook を settings.json に直接登録していた場合は

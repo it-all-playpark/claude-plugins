@@ -65,3 +65,15 @@ run_hook_cmd() {
   run cat "/tmp/claude-skill-ctx-${SID}"
   [ "$output" = "foo" ]
 }
+
+@test "UserPromptSubmit hook clears the session state file written by track-skill" {
+  [ "$TMP_OK" = 1 ] || skip "/tmp not writable in this sandbox"
+
+  echo foo > "/tmp/claude-skill-ctx-${SID}"
+  cmd=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$HOOKS_JSON")
+  payload=$(jq -n --arg sid "$SID" '{prompt:"next",session_id:$sid}')
+
+  run run_hook_cmd "$payload" "$cmd"
+  [ "$status" -eq 0 ]
+  [ ! -f "/tmp/claude-skill-ctx-${SID}" ]
+}

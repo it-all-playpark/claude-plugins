@@ -48,6 +48,18 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/journal/scripts/journal.sh\" clear-skill-ctx",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "PostToolUseFailure": [
       {
         "matcher": "",
