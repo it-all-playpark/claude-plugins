@@ -7,6 +7,7 @@ bats_require_minimum_version 1.5.0
 # 制御する。偽 jev-classify は stdin の state に埋め込んだマーカーで応答を決める:
 #   noul 質問 <id> → `[[jev:<id>:<p>]]`、無ければ `[[jev:noul:<p>]]`（全 noul 質問に同じ p）
 #   choice 質問 kind → `[[jev:<choice>:<p>]]`
+# <p> は JSON 値をそのまま応答に載せる（`true` / `"0.95"` 等、数値以外の確率を返す client を再現できる）。
 # どの質問にも値が無ければ空 stdout と reason `bad response …` を返す。FAKE_JEV_REASON を置くとその理由で
 # 空 stdout を返す（クライアントの失敗理由 → prerun の見出しの対応を見る）。
 # これで comment ごとに別の判定を返せる（1 request = 1 comment）。
@@ -79,15 +80,15 @@ fi
 answers='{}'
 for q in $(printf '%s' "$questions" | jq -r 'to_entries[] | select(.value.type == "noul") | .key'); do
   p=""
-  if [[ "$state" =~ \[\[jev:${q}:([0-9.]+)\]\] ]]; then
+  if [[ "$state" =~ \[\[jev:${q}:([^]]+)\]\] ]]; then
     p="${BASH_REMATCH[1]}"
-  elif [[ "$state" =~ \[\[jev:noul:([0-9.]+)\]\] ]]; then
+  elif [[ "$state" =~ \[\[jev:noul:([^]]+)\]\] ]]; then
     p="${BASH_REMATCH[1]}"
   fi
   [[ -n "$p" ]] && answers="$(jq -c --arg q "$q" --argjson p "$p" '. + {($q): {type: "noul", noul: $p}}' <<<"$answers")"
 done
 if printf '%s' "$questions" | jq -e '.kind.type == "choice"' >/dev/null \
-  && [[ "$state" =~ \[\[jev:(override|conflict|resolved|unrelated):([0-9.]+)\]\] ]]; then
+  && [[ "$state" =~ \[\[jev:(override|conflict|resolved|unrelated):([^]]+)\]\] ]]; then
   c="${BASH_REMATCH[1]}"; p="${BASH_REMATCH[2]}"
   answers="$(jq -c --arg c "$c" --argjson p "$p" '. + {kind: {type: "choice", choice: $c, probabilities: {($c): $p}}}' <<<"$answers")"
 fi
@@ -321,6 +322,36 @@ breaking を避ける。[[jev:noul:0.04]]"
     # 指示どおり body に書いた語で analyze-issue.sh のキーワード判定（breaking|incompatible|migration|破壊的|非互換）に
     # 再び掛からないこと
     echo "$output" | jq -e '.uncertain[0] | split("— ")[1] | (test("明記せよ") and (test("breaking|incompatible|migration|破壊的|非互換"; "i") | not))'
+}
+
+# ---- 確率値の型と範囲（issue #940）----
+
+@test "互換性判定: Jev の noul が true（数値でない）-> 判定値なしとして uncertain に積む（no に倒さない）" {
+    fixture "$WORK/i.json" "feat: migration" "$AC_BODY
+
+[[jev:noul:true]]"
+    run_analyze "$WORK/i.json"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.breaking_keyword_scan == true and .breaking_change == false and (.uncertain | length) == 1 and (.uncertain[0] | test("breaking_keyword_scan") and test("Jev 応答なし"))'
+}
+
+@test "互換性判定: noul が false / null / 文字列 / 範囲外 -> どれも uncertain（yes にも no にも倒さない）" {
+    for p in false null '"0.95"' 1.5 -0.5; do
+        fixture "$WORK/i.json" "feat: migration" "$AC_BODY
+
+[[jev:noul:${p}]]"
+        run_analyze "$WORK/i.json"
+        [ "$status" -eq 0 ]
+        echo "$output" | jq -e '.breaking_change == false and (.uncertain | length) == 1 and (.uncertain[0] | test("Jev 応答なし"))' \
+            || { echo "noul=${p}: $output"; false; }
+    done
+}
+
+@test "comment: 選んだ選択肢の確率が true / 範囲外 -> uncertain（override・conflict に振り分けない）" {
+    fixture "$WORK/i.json" "feat: x" "$AC_BODY" "[$(comment reporter NONE 'a [[jev:override:true]]'), $(comment reporter NONE 'b [[jev:override:1.5]]')]" reporter
+    run_analyze "$WORK/i.json"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.comment_overrides == [] and .comment_conflicts == [] and (.uncertain | length) == 2 and (.uncertain[0] | test("comment #1") and test("Jev 応答なし")) and (.uncertain[1] | test("comment #2"))'
 }
 
 # ---- Jev が判定を返さない理由（issue #728）----
@@ -575,6 +606,15 @@ REG_MARKERS="[[jev:ac_2:0.04]] [[jev:ac_3:0.5]] [[jev:ac_4:0.96]] [[jev:ac_5:0.0
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ac_observational == [false, null, null, null, null] and .uncertain == []'
     echo "$output" | jq -e 'all(.ac_observational_evidence[1:][]; test("Jev 応答なし") and test("タイムアウト") and test("分類 agent"))'
+}
+
+@test "観測型 AC: Jev の noul が true / 文字列（数値でない）-> 当たった AC は null（false に倒さない、issue #940）" {
+    ACS="$(controls_json 'm.APP_REPO_REGRESSION_ACS.map((r) => r.ac)')"
+    fixture "$WORK/i.json" "test(video): 件数の直書きを整理 [[jev:ac_2:true]] [[jev:ac_3:\"0.95\"]] [[jev:ac_4:0.96]] [[jev:ac_5:true]]" "$(printf '%s' "$ACS" | ac_body)"
+    run_analyze "$WORK/i.json"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ac_observational == [false, null, null, true, null] and .uncertain == []'
+    echo "$output" | jq -e '[.ac_observational_evidence[1, 2, 4]] | all(test("Jev 応答なし") and test("分類 agent"))'
 }
 
 @test "観測型 AC: DEVFLOW_JEV_DISABLE=1 -> Jev を呼ばず当たった AC は null" {

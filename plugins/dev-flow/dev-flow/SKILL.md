@@ -111,7 +111,9 @@ Jev のクライアントは plugin に同梱せず、公開された参照実�
   - choice: `{"choice":"<選んだ選択肢>","probabilities":{"<選択肢>":<確率>,…}}`（選んだ選択肢の確率は必須）
 
   plugin は確率 0.9 以上を yes / その選択肢、0.1 以下を no とし、その間は低確信として安全側（uncertain・
-  conflict・分類 agent）に倒す。答えられない質問は id ごと省いてよい（その判定だけ uncertain になる）。
+  conflict・分類 agent）に倒す。確率は 0〜1 の数値。それ以外（`true` / `false` / `null` / 文字列 / 範囲外）は
+  判定値なしと同じく uncertain（観測型 AC は分類 agent）になる。答えられない質問は id ごと省いてよい（その判定だけ
+  uncertain になる）。
   最小の実装例は `dev-flow/scripts/prerun-analyze.bats` の偽 `jev-classify`、質問の全文は
   `dev-flow/scripts/prerun-analyze.sh`
 - 失敗時は stdout を空にし、理由 1 行を `--reason-file` に書く。exit は常に 0。理由の先頭語（`no API key` /
