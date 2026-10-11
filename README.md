@@ -35,12 +35,6 @@ Marketplaces で auto-update を有効化。`DISABLE_AUTOUPDATER=1` 環境では
 見せ、Claude が書き換えられる場所の実行ファイルや一時ディレクトリの cwd、スクリプトの中身を動かすコマンドには
 警告を添えます。
 
-`playpark-skills` は SessionStart hook（`plugins/playpark-skills/hooks/hooks.json`）を持ちます。
-起動（`startup`）ごとに `ps aux` の行に `claude` を含み 48 時間超経過したプロセス（自身と
-`chrome-native-host` を除く。パスに `.claude` を含む MCP server 等も一致する）を検出しますが、
-既定では検出結果を報告するだけで終了させません。環境変数 `ZOMBIE_KILL_AUTO=1` を設定したときだけ、
-確認なしで SIGTERM を送り、1 秒後も残るプロセスに SIGKILL を送ります。
-
 Use skills in Claude Code:
 
 ```
