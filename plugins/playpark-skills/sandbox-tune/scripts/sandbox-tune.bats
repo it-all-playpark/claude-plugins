@@ -199,11 +199,14 @@ sandbox:unix_socket:/run/db/x.sock 1 1" ]
   result $f S1 2026-09-10T00:10:01Z h8 $'$ bash -c ...\nexit code: 0'
   hexec $f S1 2026-09-10T00:11:00Z h9 'launchctl は sandbox 内で動かない' bash -c 'launchctl list'
   result $f S1 2026-09-10T00:11:01Z h9 $'$ bash -c ...\nexit code: 0'
+  # shell の -e は errexit なのでインラインではなく、スクリプト名の型にまとめる
+  hexec $f S1 2026-09-10T00:12:00Z h10 'launchctl は sandbox 内で動かない' bash -e /w/new/scripts/install.sh
+  result $f S1 2026-09-10T00:12:01Z h10 $'$ bash -e /w/new/scripts/install.sh\nexit code: 0'
   run collect
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | ids)" = "host_exec:declined:gh pr 1 1
 host_exec:ran:bash -c 2 1
-host_exec:ran:bash install.sh 2 1
+host_exec:ran:bash install.sh 3 1
 host_exec:ran:git fetch 2 1
 host_exec:ran:git merge 1 1
 host_exec:refused:rm 1 1
