@@ -194,9 +194,15 @@ sandbox:unix_socket:/run/db/x.sock 1 1" ]
   result $f S1 2026-09-10T00:08:01Z b3 'This session is isolated in the worktree /w/repo/.claude/worktrees/x, but this command redirects git to the shared checkout via -C. Refusing to run it.'
   hexec $f S1 2026-09-10T00:09:00Z h7 '分離中は dotfiles の git を書けない' git -C /w/dotfiles merge --ff-only origin/main
   result $f S1 2026-09-10T00:09:01Z h7 $'$ git -C /w/dotfiles merge --ff-only origin/main\nexit code: 0'
+  # インラインのスクリプトは文字列が毎回違っても インタプリタ名＋フラグの 1 型
+  hexec $f S1 2026-09-10T00:10:00Z h8 'launchctl は sandbox 内で動かない' bash -c 'cd /w/x && ./run.sh'
+  result $f S1 2026-09-10T00:10:01Z h8 $'$ bash -c ...\nexit code: 0'
+  hexec $f S1 2026-09-10T00:11:00Z h9 'launchctl は sandbox 内で動かない' bash -c 'launchctl list'
+  result $f S1 2026-09-10T00:11:01Z h9 $'$ bash -c ...\nexit code: 0'
   run collect
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | ids)" = "host_exec:declined:gh pr 1 1
+host_exec:ran:bash -c 2 1
 host_exec:ran:bash install.sh 2 1
 host_exec:ran:git fetch 2 1
 host_exec:ran:git merge 1 1

@@ -211,13 +211,22 @@ def first_positional($b):
   else .[0] end;
 
 # 型のキーに使うコマンド名。インタプリタにスクリプトを渡す形はファイル名まで付ける
-# （repo の移動でパスが変わっても同じスクリプトを 1 つの型にまとめる）
+# （repo の移動でパスが変わっても同じスクリプトを 1 つの型にまとめる）。
+# `bash -c <文字列>` / `node -e <文字列>` は文字列が毎回違うので、インタプリタ名＋フラグを型にする
+# 最初の位置引数より前にある -c / -e（`-lc` のような束ねた形を含む）
+def eval_flag:
+  if length == 0 or (.[0] | startswith("-") | not) then null
+  elif (.[0] | test("\\A-[A-Za-z]*[ce]\\z")) then .[0]
+  else .[1:] | eval_flag end;
+def interpreters: ["bash", "sh", "zsh", "fish", "node", "deno", "bun", "tsx", "python", "python3", "ruby", "perl"];
 def host_exec_head:
   ((.[0] // "") | sub("\\A.*/"; "")) as $b
   | (.[1:] | first_positional($b)) as $p
+  | (.[1:] | eval_flag) as $eval
   | if $b == "" then ""
+    elif $eval != null and ($b | IN(interpreters[])) then (.[0] | home_rel) + " " + $eval
     elif ($p // "" | test("\\A[a-z][a-z0-9:_-]*\\z")) then (.[0] | home_rel) + " " + $p
-    elif $p != null and ($b | IN("bash", "sh", "zsh", "fish", "node", "deno", "bun", "tsx", "python", "python3", "ruby", "perl"))
+    elif $p != null and ($b | IN(interpreters[]))
       and ($p | test("[/.]")) then (.[0] | home_rel) + " " + ($p | sub("\\A.*/"; ""))
     else .[0] | home_rel end;
 
