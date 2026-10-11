@@ -54,6 +54,7 @@
 #                                 届かない / Keychain 読み取り失敗 / タイムアウト / 通信失敗 / 応答不正）を
 #                                 文言に載せる（「応答なし」だけでは人間が切り分けられない）。「Keychain に
 #                                 届かない」は sandbox 内・bg job でも出るので、ロック中とは限らない
+#   確率が 0〜1 の数値でない      → 判定値なしと同じく uncertain（観測型 AC は null）。true / 文字列 / 範囲外を含む
 #   jev-classify が PATH に無い  → Jev 未導入として同じく uncertain（観測型 AC は null）
 #   DEVFLOW_JEV_DISABLE=1       → Jev を呼ばず該当判定は uncertain（観測型 AC は null。private repo 向け opt-out）
 #
@@ -171,7 +172,7 @@ jev_unavailable_reason() {
     local reason label
     reason="$(head -n 1 "$JEV_REASON_FILE" 2>/dev/null || true)"
     case "$reason" in
-        "") printf 'Jev 応答なし（応答に判定値が無い）'; return ;;
+        "") printf 'Jev 応答なし（応答に判定値（0〜1 の数値）が無い）'; return ;;
         "not installed"*) label="jev-classify が PATH に無い（Jev 未導入）" ;;
         "broker unreachable"*) label="jev-broker に接続できない" ;;
         "broker request failed"*) label="jev-broker 経由の呼び出し失敗" ;;
@@ -190,6 +191,14 @@ jev_unavailable_reason() {
 conf_at_least() { jq -n --argjson p "$1" --argjson m "$2" '$p >= $m' | grep -q true; }
 conf_at_most() { jq -n --argjson p "$1" --argjson m "$2" '$p <= $m' | grep -q true; }
 
+# jev_prob <応答 JSON> <jq の取り出し式> [jq の引数…] → 確率値（0〜1 の数値のときだけ。それ以外は空 = 判定値なし）
+# true / 文字列を通すと閾値比較が jq の型順序（boolean < number）で no 側に倒れる（fail-open）ため型と範囲を見る
+jev_prob() {
+    local resp="$1" expr="$2"
+    shift 2
+    printf '%s' "$resp" | jq -r "$@" "$expr"' | select(type == "number" and . >= 0 and . <= 1)' 2>/dev/null || true
+}
+
 JEV_REASONS=()
 UNCERTAIN=()
 OVERRIDES=()
@@ -205,8 +214,8 @@ elif [[ "$BREAKING_KW" == "true" ]]; then
     JEV_REASONS+=("breaking_keyword_scan true")
     BREAKING_Q='{"breaking":{"type":"noul","instructions":"この issue の実装は、既存の API / schema / データ形式 / 設定形式を、既存の呼び出し側・既存データ・既存設定がそのままでは動かなくなる形（後方互換を保たない形）に変えるか。項目や設定を削除しても、古い値を読み込み時に無視・破棄して従来どおり動くなら後方互換なので no。『breaking を避ける』『非互換にしない』『breaking floor を変更しない』のような回避・不変条件への言及だけなら no。"},"migration":{"type":"noul","instructions":"この issue の実装は、保存済みの既存データ（DB のレコード・ファイル・設定ファイルの値など）を新しい形式へ書き換える変換処理や移行手順を必要とするか。古い値を読み込み時に無視・破棄するだけで既存データを書き換えないなら no。変換が不要と明記されていれば no。"}}'
     RESP="$(jev_call "# Issue: ${TITLE}"$'\n\n'"${ISSUE_BODY}" "$BREAKING_Q")"
-    PB="$(printf '%s' "$RESP" | jq -r '.answers.breaking.noul // empty' 2>/dev/null || true)"
-    PM="$(printf '%s' "$RESP" | jq -r '.answers.migration.noul // empty' 2>/dev/null || true)"
+    PB="$(jev_prob "$RESP" '.answers.breaking.noul')"
+    PM="$(jev_prob "$RESP" '.answers.migration.noul')"
     # 明記の指示文は analyze-issue.sh の breaking キーワードを含めない（書いた語で再び Jev 判定の対象になる）
     COMPAT_ASK="issue body に「後方互換を保たない API / 形式の変更: あり / なし」と「既存データの変換: 要 / 不要」を明記せよ"
     CONF_MAX_NO="$(jq -n --argjson m "$JEV_CONF_MIN" '1 - $m')"
@@ -264,7 +273,7 @@ if [[ "$COMMENT_COUNT" -gt 0 ]]; then
         STATE="# Issue（author: ${ISSUE_AUTHOR:-unknown}, updated_at: ${ISSUE_UPDATED_AT:-?}）: ${TITLE}"$'\n\n'"${ISSUE_BODY}"$'\n\n'"# Comment（author: ${C_AUTHOR:-unknown}, association: ${C_ASSOC:-?}, created_at: ${C_AT:-?}）"$'\n'"${C_BODY}"$'\n\n'"${TIMELINE}"
         RESP="$(jev_call "$STATE" "$COMMENT_Q")"
         CHOICE="$(printf '%s' "$RESP" | jq -r '.answers.kind.choice // empty' 2>/dev/null || true)"
-        CP="$(printf '%s' "$RESP" | jq -r '.answers.kind as $k | $k.probabilities[$k.choice] // empty' 2>/dev/null || true)"
+        CP="$(jev_prob "$RESP" '.answers.kind as $k | $k.probabilities[$k.choice]')"
         if [[ -z "$CHOICE" || -z "$CP" ]]; then
             UNCERTAIN+=("${C_LABEL} — $(jev_unavailable_reason)。comment が body を訂正しているなら issue body に反映せよ")
             continue
@@ -324,7 +333,7 @@ if [[ "$AC_COUNT" -gt 0 ]]; then
             RESP="$(jev_call "$OBS_STATE" "$OBS_Q")"
             CONF_MAX_NO="$(jq -n --argjson m "$JEV_CONF_MIN" '1 - $m')"
             for i in $(printf '%s' "$HITS_JSON" | jq -r '.[]'); do
-                P="$(printf '%s' "$RESP" | jq -r --arg q "ac_$((i + 1))" '.answers[$q].noul // empty' 2>/dev/null || true)"
+                P="$(jev_prob "$RESP" '.answers[$q].noul' --arg q "ac_$((i + 1))")"
                 if [[ -z "$P" ]]; then
                     OBS_VALUES[i]="null"
                     OBS_EVIDENCE[i]="正規表現の絞り込みに当たったが $(jev_unavailable_reason) — 分類 agent に回す"
