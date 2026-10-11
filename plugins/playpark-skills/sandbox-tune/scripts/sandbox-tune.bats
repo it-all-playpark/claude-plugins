@@ -44,6 +44,18 @@ result() {
       message: {role: "user", content: [{type: "tool_result", tool_use_id: $id, content: $x, is_error: true}]}} + $e' >>"$P/$1"
 }
 
+# host-exec の tool_use: <file> <sessionId> <timestamp> <tool_use_id> <reason> <argv...>
+hexec() {
+  local f="$1" s="$2" t="$3" id="$4" reason="$5"
+  shift 5
+  # argv の `--x` を jq のオプションとして読ませないよう、JSON 配列にしてから渡す
+  local argv
+  argv="$(printf '%s\n' "$@" | jq -R . | jq -sc .)"
+  jq -nc --arg s "$s" --arg t "$t" --arg id "$id" --arg r "$reason" --argjson a "$argv" \
+    '{type: "assistant", sessionId: $s, timestamp: $t, isSidechain: false, cwd: "/w/repo", uuid: ("u-" + $id),
+      message: {id: ("m-" + $id), role: "assistant", content: [{type: "tool_use", id: $id, name: "mcp__host-exec__run", input: {argv: $a, reason: $r}}]}}' >>"$P/$f"
+}
+
 # assistant の文: <file> <sessionId> <timestamp> <message id> <本文>
 say() {
   jq -nc --arg s "$2" --arg t "$3" --arg id "$4" --arg x "$5" \
@@ -153,6 +165,53 @@ sandbox:unix_socket:/run/db/x.sock 1 1" ]
   run collect
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | ids)" = "request:request:touch 1 1" ]
+}
+
+@test "collect: host-exec の実行を結末とコマンドで型にし、直前の Bash が拒否されていたかを数える" {
+  local f=proj-a/s1.jsonl
+  # Bash が sandbox に拒否された直後の host-exec
+  use $f S1 2026-09-10T00:00:00Z b1 'git -C /w/dotfiles fetch origin'
+  result $f S1 2026-09-10T00:00:01Z b1 'error: cannot open .git/FETCH_HEAD: Operation not permitted'
+  hexec $f S1 2026-09-10T00:01:00Z h1 '分離中は dotfiles の git を書けない' git -C /w/dotfiles fetch origin
+  result $f S1 2026-09-10T00:01:01Z h1 $'$ git -C /w/dotfiles fetch origin\nexit code: 0'
+  # 間に成功した Bash を挟むと、次の host-exec は Bash を試さずに来たものとして数える
+  use $f S1 2026-09-10T00:02:00Z b2 'ls'
+  result $f S1 2026-09-10T00:02:01Z b2 'README.md'
+  hexec $f S1 2026-09-10T00:03:00Z h2 'origin を更新する' git -c core.x=1 -C /w/other fetch
+  result $f S1 2026-09-10T00:03:01Z h2 $'$ git -c core.x=1 -C /w/other fetch\nexit code: 0'
+  # パスが違っても同じスクリプトは 1 つの型（repo の移動前後）
+  hexec $f S1 2026-09-10T00:04:00Z h3 'launchctl は sandbox 内で動かない' bash /w/old/scripts/install.sh --uninstall
+  result $f S1 2026-09-10T00:04:01Z h3 $'$ bash /w/old/scripts/install.sh --uninstall\nexit code: 0'
+  hexec $f S1 2026-09-10T00:05:00Z h4 'launchctl は sandbox 内で動かない' bash /w/new/scripts/install.sh --install
+  result $f S1 2026-09-10T00:05:01Z h4 'host-exec: the command ran (exit code 0), but its output was withheld because it contained: JWT.'
+  # 拒否は permission-rule として記録されるが、permission の型にはしない
+  hexec $f S1 2026-09-10T00:06:00Z h5 'PR を見る' gh pr view 1
+  result $f S1 2026-09-10T00:06:01Z h5 '<tool_use_error>host-exec: the user declined to run this command.</tool_use_error>' '{"toolDenialKind":"permission-rule"}'
+  hexec $f S1 2026-09-10T00:07:00Z h6 '消す' rm -rf /w/x
+  result $f S1 2026-09-10T00:07:01Z h6 '<tool_use_error>host-exec: refused (再帰的な強制削除). Do not retry this command another way.</tool_use_error>' '{"toolDenialKind":"permission-rule"}'
+  # worktree 分離ガードの拒否（toolDenialKind なしで記録される）も直前の拒否として数える
+  use $f S1 2026-09-10T00:08:00Z b3 'git -C /w/dotfiles merge --ff-only origin/main'
+  result $f S1 2026-09-10T00:08:01Z b3 'This session is isolated in the worktree /w/repo/.claude/worktrees/x, but this command redirects git to the shared checkout via -C. Refusing to run it.'
+  hexec $f S1 2026-09-10T00:09:00Z h7 '分離中は dotfiles の git を書けない' git -C /w/dotfiles merge --ff-only origin/main
+  result $f S1 2026-09-10T00:09:01Z h7 $'$ git -C /w/dotfiles merge --ff-only origin/main\nexit code: 0'
+  run collect
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | ids)" = "host_exec:declined:gh pr 1 1
+host_exec:ran:bash install.sh 2 1
+host_exec:ran:git fetch 2 1
+host_exec:ran:git merge 1 1
+host_exec:refused:rm 1 1
+permission:worktree-guard:Bash * 1 1
+sandbox:path:/w/repo/.git/FETCH_HEAD 1 1" ]
+  [ "$(printf '%s' "$output" | jq -c '.types[] | select(.id == "host_exec:ran:git merge") | .after_block')" = 1 ]
+  [ "$(printf '%s' "$output" | jq -c '.types[] | select(.id == "host_exec:ran:git fetch") | [.after_block, .examples[0]]')" \
+    = '[1,"理由: 分離中は dotfiles の git を書けない / $ git -C /w/dotfiles fetch origin"]' ]
+  [ "$(printf '%s' "$output" | jq -c '[.types[] | select(.category != "host_exec") | has("after_block")] | any')" = false ]
+  cd "$WORK"
+  run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
+  [ "$status" -eq 0 ]
+  grep -q '^- 種別: host-exec / ran$' "$WORK/claudedocs/sandbox-tune-2026-10-01.md"
+  grep -q '^- 直前の Bash が拒否されていた: 1 / 2 件' "$WORK/claudedocs/sandbox-tune-2026-10-01.md"
 }
 
 @test "redact: 秘密の形をしたものを伏せ、通常のパスやコマンドは残す" {

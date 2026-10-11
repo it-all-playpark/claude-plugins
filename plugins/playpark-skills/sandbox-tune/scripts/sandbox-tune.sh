@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sandbox-tune: transcript から sandbox 拒否・人間への実行依頼・permission 拒否を型ごとに集計し、
+# sandbox-tune: transcript から sandbox 拒否・人間への実行依頼・permission 拒否・host-exec の実行を型ごとに集計し、
 # 設定 repo の git log と突き合わせてレポートにする。外部へは draft → post を明示したときだけ出す。
 #
 # Usage:
