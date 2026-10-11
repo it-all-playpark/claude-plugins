@@ -137,8 +137,9 @@ test('[devflow-skill-wrapper] deps install は手順2b の別 Bash 呼び出し�
 });
 
 // (n) issue #898: Jev の要否・効かないときの挙動・設定方法を、作者環境（jev-broker / Keychain）に依らず書く。
-//     設定は jev-classify.sh の経路選択順（AI_GATEWAY_API_KEY → JEV_BROKER_SOCKET → Keychain service）に揃え、
-//     AI_GATEWAY_API_KEY を第一の方法に、jev-broker は任意と明記する。
+//     設定は作者の jev-classify の経路選択順（AI_GATEWAY_API_KEY → JEV_BROKER_SOCKET → Keychain service）に揃え、
+//     AI_GATEWAY_API_KEY を第一の方法に、jev-broker は任意と明記する。クライアントは plugin に同梱しないので、
+//     インターフェースの理由の先頭語は prerun-analyze.sh が見出しを付け分ける先頭語と一致させる。
 test('[devflow-skill-wrapper] Jev 節に要否・効かないときの needs_clarification・AI_GATEWAY_API_KEY 第一の設定方法を書く', () => {
   const start = src.indexOf('## Jev');
   assert.ok(start >= 0, 'dev-flow/SKILL.md に `## Jev` 節が無い');
@@ -149,9 +150,11 @@ test('[devflow-skill-wrapper] Jev 節に要否・効かないときの needs_cla
   const order = ['AI_GATEWAY_API_KEY', 'JEV_BROKER_SOCKET', 'vercel-ai-gateway'].map((s) => section.indexOf(s));
   assert.ok(order.every((i) => i >= 0), `dev-flow/SKILL.md「Jev」節に設定経路の名前が欠けている: ${JSON.stringify(order)}`);
   assert.ok(order[0] < order[1] && order[1] < order[2], 'dev-flow/SKILL.md「Jev」節の設定方法が AI_GATEWAY_API_KEY → broker → Keychain の順になっていない');
-  const jevSrc = readFileSync(join(repoRoot, '_shared/scripts/jev-classify.sh'), 'utf8');
-  for (const s of ['AI_GATEWAY_API_KEY', 'JEV_BROKER_SOCKET', 'JEV_KEYCHAIN_SERVICE:-vercel-ai-gateway']) {
-    assert.ok(jevSrc.includes(s), `jev-classify.sh に '${s}' が無い（SKILL.md の Jev 節と実装がずれている）`);
+  const analyzeSrc = readFileSync(join(repoRoot, 'dev-flow/scripts/prerun-analyze.sh'), 'utf8');
+  const prefixes = [...analyzeSrc.matchAll(/^\s+"([a-zA-Z ]+)"\*\) label=/gm)].map((m) => m[1]).filter((p) => p !== 'not installed');
+  assert.ok(prefixes.length >= 8, `prerun-analyze.sh から理由の先頭語を読めない: ${JSON.stringify(prefixes)}`);
+  for (const p of prefixes) {
+    assert.ok(section.includes(`\`${p}\``), `dev-flow/SKILL.md「Jev」節のインターフェースに理由の先頭語 '${p}' が無い（prerun-analyze.sh とずれている）`);
   }
 });
 

@@ -94,15 +94,23 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
 
 ## Jev（issue analyze の意味判定）
 
-prerun の analyze は、正規表現では決められない判定を Jev（Vercel AI Gateway 経由の判定専用モデル。
-`_shared/scripts/jev-classify.sh`）に聞く。
+prerun の analyze は、正規表現では決められない判定を Jev（Vercel AI Gateway 経由の判定専用モデル）に聞く。
+Jev のクライアントは plugin に同梱しない。PATH 上の `jev-classify`（`DEVFLOW_JEV_CLASSIFY` で別名にできる）を
+次のインターフェースで呼ぶ:
+
+- 入力: stdin に state、引数 `--questions '<TypeSafe の questions JSON>' --redact --reason-file <path>`
+  （`--redact` は送信前に token / password 等を伏せる。`JEV_MAX_TIME` に `DEVFLOW_JEV_MAX_TIME` を渡す）
+- 出力: 成功時は TypeSafe の応答 JSON（`.answers.<id>`）を stdout に出す。失敗時は stdout を空にし、理由 1 行を
+  `--reason-file` に書く。exit は常に 0。理由の先頭語（`no API key` / `keychain unreachable` /
+  `keychain read failed` / `broker unreachable` / `broker request failed` / `timeout` / `request failed` /
+  `bad response`）で uncertain の見出しを変える
 
 - **要否**: 必須ではない。Jev を呼ぶのは、title / body に breaking 系キーワードがある issue、comment が付いた
   issue、観測型に見える AC を持つ issue だけで、どれにも当たらない issue は Jev が無くても同じ結果になる
-- **効かないときの挙動**: 鍵が無い・届かない・タイムアウト・低確信のとき、breaking と comment の判定は
+- **効かないときの挙動**: `jev-classify` が PATH に無い・鍵が無い・届かない・タイムアウト・低確信のとき、breaking と comment の判定は
   uncertain に積まれ、run は Setup 末尾の analyze ゲートで**必ず needs_clarification で止まる**（実装に進まない）。
   観測型 AC の判定だけは止まらず、分類 agent の 1 spawn に回る。`DEVFLOW_JEV_DISABLE=1` で切ったときも同じ
-- **設定方法**（`jev-classify.sh` は上から順に試す）:
+- **鍵の設定**（作者の `jev-classify` 実装は上から順に試す。別実装ならその実装に従う）:
   1. 環境変数 `AI_GATEWAY_API_KEY`（Vercel AI Gateway の API key `vck_…`）— 第一の方法。`dev-flow-prerun` を
      実行する Claude Code セッションの環境に置く（起動前のシェルで export する、または settings.json の `env`）。
      鍵は Bash ツールの環境から見える。sandbox 下では network の許可に `ai-gateway.vercel.sh` が要る

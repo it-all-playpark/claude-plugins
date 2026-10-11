@@ -57,7 +57,7 @@ test('[analyze-comments-routing] prerun-analyze.sh は権限判定（報告者�
   assert.ok(scriptSrc.includes('"$C_AUTHOR" == "$ISSUE_AUTHOR"'), '報告者本人の判定が無い');
   assert.ok(/"OWNER" \|\| .*"MEMBER" \|\| .*"COLLABORATOR"/.test(scriptSrc), 'OWNER/MEMBER/COLLABORATOR の判定が無い');
   assert.ok(scriptSrc.includes('"$JEV_CLASSIFY" --redact --questions'), 'Jev 呼び出しに --redact が無い');
-  assert.ok(scriptSrc.includes('_shared/scripts/jev-classify.sh'), 'jev-classify.sh の参照が skills 側の正本でない');
+  assert.ok(scriptSrc.includes('${DEVFLOW_JEV_CLASSIFY:-jev-classify}'), 'Jev クライアントを PATH 上の jev-classify から引いていない');
   assert.ok(scriptSrc.includes('DEVFLOW_JEV_DISABLE'), 'DEVFLOW_JEV_DISABLE の opt-out が無い');
 });
 

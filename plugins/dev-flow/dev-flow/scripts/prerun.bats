@@ -38,7 +38,7 @@ setup() {
 
     # analyze 段（Segment 6）が内蔵する gh を stub する。GH_STUB_FIXTURE 未設定なら失敗
     # （analyze.ok:false 経路）。dependencies API（blocked_by）は依存なし（[]）を返す。
-    # Jev は鍵無しで呼ばれない（Keychain も存在しない service 名にし、実機の jev-broker ソケットも拾わない）。
+    # Jev は呼ばれない（マシンに入っている jev-classify を拾わないよう、存在しないコマンド名を指す）。
     STUB_DIR="$BATS_TEST_TMPDIR/stub-bin"
     mkdir -p "$STUB_DIR"
     cat >"$STUB_DIR/gh" <<'STUB'
@@ -55,9 +55,7 @@ cat "$GH_STUB_FIXTURE"
 STUB
     chmod +x "$STUB_DIR/gh"
     export PATH="$STUB_DIR:$PATH"
-    export AI_GATEWAY_API_KEY=""
-    export JEV_KEYCHAIN_SERVICE="prerun-bats-nonexistent"
-    export JEV_BROKER_SOCKET="$BATS_TEST_TMPDIR/no-broker.sock"
+    export DEVFLOW_JEV_CLASSIFY=jev-classify-not-installed
     unset GH_STUB_FIXTURE
 }
 
