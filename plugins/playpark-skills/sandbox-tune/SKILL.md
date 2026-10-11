@@ -1,12 +1,13 @@
 ---
 name: sandbox-tune
 description: >-
-  Aggregates sandbox denials, permission denials, and "please run this in your terminal" requests from
-  Claude Code transcripts by type, checks them against the settings repo's git log (resolved / remaining),
+  Aggregates sandbox denials, permission denials, "please run this in your terminal" requests, and host-exec
+  (out-of-sandbox) runs from Claude Code transcripts by type, checks them against the settings repo's git log (resolved / remaining),
   and proposes settings / wrapper / hook fixes with a safety review. Writes a local Markdown report; drafts issues only with --issue.
   Use when: (1) user asks why the agent keeps asking them to run commands, or which sandbox denials still recur,
   (2) user wants settings.json / excludedCommands / allowUnixSockets fix candidates backed by evidence,
-  (3) keywords: sandbox-tune, sandbox 拒否, Operation not permitted, EPERM, 人間に実行依頼, 通常のターミナルで, settings 修正, permission 拒否.
+  (3) user asks whether host-exec is being used for things settings should fix,
+  (4) keywords: sandbox-tune, sandbox 拒否, Operation not permitted, EPERM, 人間に実行依頼, 通常のターミナルで, settings 修正, permission 拒否, host-exec.
   Accepts args: [--days N] [--issue] [--allow-public]
 ---
 
@@ -58,7 +59,12 @@ ST config               # 検証済みの設定（criteriaFiles の絶対パス�
 
 - 型は「拒否された対象」で分ける: `sandbox:path:<書き込み先>` / `sandbox:unix_socket:<path>` / `sandbox:network:<host>` /
   `sandbox:command:<コマンド>`（対象が出ない拒否）/ `sandbox:launch_services:<コマンド>`（`open` 等の `-10822`）/
-  `request:request:<コマンド>`（人間への実行依頼）/ `permission:<kind>:<tool> <対象>`（kind は permission-rule / hook / automode-blocked / user-rejected 等）
+  `request:request:<コマンド>`（人間への実行依頼）/ `permission:<kind>:<tool> <対象>`（kind は permission-rule / hook / automode-blocked / user-rejected /
+  worktree-guard 等。worktree-guard はコマンドの形で拒否するのでコマンド名で割らず `Bash *` の 1 型）/
+  `host_exec:<ran|declined|refused>:<コマンド>`（host-exec plugin で sandbox の外に出した実行。ran は承認されて実行、declined は人間が拒否、
+  refused は host-exec 自身の拒否パターン。`git -C <dir>` の値は飛ばし、インタプリタに渡したスクリプトはファイル名でまとめる）
+- `host_exec` の型には `after_block`（同じ transcript で直前の Bash が sandbox / permission に拒否されていた件数）が付く。
+  残りは Bash を試さずに host-exec へ行ったもの。代表例は `理由: <Claude が書いた reason> / $ <argv>`
 - 各型に `count`・`sessions`（`sessionId` で数える）・`first_seen`・`last_seen`・`projects`・伏せ字済みの代表例（2 件まで）が付く
 - subagent の transcript と `isSidechain` の行、grep / cat 等の出力やファイル本文に拒否の文言が含まれていただけの行、
   依頼の文に書かれたコマンドやエラー文は数えない
@@ -77,7 +83,14 @@ ST config               # 検証済みの設定（criteriaFiles の絶対パス�
    - **修正案**: settings のキー（`sandbox.filesystem.allowWrite` / `sandbox.network.allowUnixSockets` / `sandbox.excludedCommands` / `permissions.allow` 等）、
      wrapper、hook、手順の変更のいずれか。設定 repo のどのファイルのどこを変えるかまで書く
    - **安全性の評価**: 下の基準それぞれに照らして可否を書く。基準に反する修正案は出さず、手順の変更（作業場所を変える等）を代わりに出す
-4. 結果をユーザーに表で示す（型 / 件数・最終発生 / 原因 / 修正案 / 安全性）
+4. `host_exec:ran:*` の型は、承認が形骸化しないよう次のどれかに振り分ける（理由は代表例の reason と `after_block` から言える範囲で書く）
+   - **組み込み保護**: 起動元 repo の `.git`・`~/.claude/projects` 等、設定で外せないもの。一回限りなら host-exec のままでよい
+   - **settings で直す**: sandbox の書き込み・socket・ネットワーク許可で Bash から通せるもの。上の修正案・安全性と同じ手順で出す
+   - **手順で直す**: `after_block` が 0 で、同じことが Bash で通る見込みがあるもの（reason が思い込みで、Bash を試していない）や、
+     作業するセッション・場所を変えれば要らないもの。手順・ルールの変更を出す
+   - **一回限り**: repo の移動など再発しないもの。修正案なし
+   同じ型が複数 session で繰り返すなら、組み込み保護以外は直す対象として扱う
+5. 結果をユーザーに表で示す（型 / 件数・最終発生 / 原因 / 修正案 / 安全性）
 
 ### 安全性の基準
 

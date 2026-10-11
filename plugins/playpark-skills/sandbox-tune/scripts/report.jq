@@ -4,7 +4,7 @@ include "redact";
 def cell: tostring | gsub("\\|"; "\\|") | gsub("\\n"; " ");
 
 def category_label:
-  {sandbox: "sandbox 拒否", request: "人間への実行依頼", permission: "permission 拒否"}[.] // .;
+  {sandbox: "sandbox 拒否", request: "人間への実行依頼", permission: "permission 拒否", host_exec: "host-exec"}[.] // .;
 
 def evidence_cell:
   if .status == null then "-"
@@ -16,6 +16,7 @@ def detail:
   + "- 種別: \(.category | category_label) / \(.kind)\n"
   + "- 件数: \(.count) 件 / \(.sessions) session（\(.first_seen) 〜 \(.last_seen)）\n"
   + "- projects: \(.projects | join(", "))\n"
+  + (if .after_block != null then "- 直前の Bash が拒否されていた: \(.after_block) / \(.count) 件（残りは Bash を試さずに host-exec へ行った）\n" else "" end)
   + (if .status then
        "- 判定: **\(.status)** — "
        + (if .evidence.commit then

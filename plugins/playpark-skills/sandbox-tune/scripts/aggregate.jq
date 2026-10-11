@@ -20,5 +20,6 @@ def aggregate:
       projects: (map(.project) | unique),
       examples: (map(.example) | first_n(2)),
       occurrences: map(.ts)
-    })
+    }
+    + (if .[0].cat == "host_exec" then {after_block: map(select(.after_block == true)) | length} else {} end))
   | sort_by(-.count, .id);

@@ -5,6 +5,9 @@
 #   sandbox    Bash の tool_result に出た sandbox 由来の拒否
 #   request    assistant が人間にコマンドの実行を頼んだ発言
 #   permission permission の拒否（permission rule / hook / auto mode classifier / 人間の reject）
+#   host_exec  host-exec plugin（mcp__host-exec__run）で sandbox の外に出した実行。kind は ran / declined / refused。
+#              人間への依頼を置き換える経路なので、頻度が上がると承認が形骸化する。settings や手順で直すべきものが
+#              ここに流れていないかを見るために数える
 #
 # 誤検出を避けるための不変条件:
 #   - sandbox は Bash の tool_result だけを見る。assistant の文・人間の `!` 実行の出力（user の文字列 content）は見ない
@@ -135,16 +138,22 @@ def event($l; $cat; $kind; $target; $id; $example):
   | .ts = (.epoch | todate)
   | .needle = needle_of;
 
+def worktree_guard_re: "\\A(?:Error: )?This session is isolated in the worktree \\S+, but this command";
+
 def permission_events($l; $r; $tu; $txt):
   # hook の deny は permission rule と同じ kind で記録されるが、直す場所（hook）が違うので分ける
+  # worktree 分離ガードは toolDenialKind を付けずに記録され、設定では外せない（コマンドの形を変えて直す）
   (if ($txt | test("\\APreToolUse:\\S+ hook error")) then "hook"
+   elif ($txt | test(worktree_guard_re)) then "worktree-guard"
    else $l.toolDenialKind end
    // (if ($txt | test("doesn't want to proceed")) then "user-rejected"
        elif ($txt | test("auto mode classifier")) then "automode-blocked"
        else "permission-rule" end)) as $kind
   | ($tu.name // ([ $txt | capture("Permission to use (?<t>\\S+)") ] | .[0].t) // "unknown") as $tool
   | ($tu.command // ([ $txt | capture("with command (?<c>[\\s\\S]*) has been denied") ] | .[0].c)) as $cmd
-  | (if $tool == "Bash" and $cmd != null then ($cmd | cmd_head)
+  # worktree-guard はコマンド名でなく形（ループ・-C・複文）で拒否するので、コマンド名で割らず 1 つの型にする
+  | (if $kind == "worktree-guard" then "*"
+     elif $tool == "Bash" and $cmd != null then ($cmd | cmd_head)
      elif $tu.file_path then ($tu.file_path | norm_path)
      else $tool end) as $target
   | event($l; "permission"; $kind; "\($tool) \($target)"; "permission:" + $r.tool_use_id; $txt)
@@ -192,32 +201,95 @@ def request_events($l):
   | .[]
   | event($l; "request"; "request"; .head; "request:\($mid):\(.head)"; .cmd);
 
+def host_exec_tool: "mcp__host-exec__run";
+
+# argv の最初の位置引数（git の -C / -c は値ごと飛ばす。`git -C <repo> fetch` を `git fetch` にまとめる）
+def first_positional($b):
+  if length == 0 then null
+  elif (.[0] | startswith("-")) then
+    (if $b == "git" and (.[0] | IN("-C", "-c")) then .[2:] else .[1:] end) | first_positional($b)
+  else .[0] end;
+
+# 型のキーに使うコマンド名。インタプリタにスクリプトを渡す形はファイル名まで付ける
+# （repo の移動でパスが変わっても同じスクリプトを 1 つの型にまとめる）。
+# `bash -c <文字列>` / `node -e <文字列>` は文字列が毎回違うので、インタプリタ名＋フラグを型にする
+# 最初の位置引数より前にあるインラインコードのフラグ（`-lc` のような束ねた形を含む）。
+# 文字はインタプリタごとに違う: shell の -e は errexit、node -c / perl -c は構文チェックで、
+# どちらもスクリプトファイルを取るのでインラインとみなさない
+def eval_letter($b):
+  if $b | IN("bash", "sh", "zsh", "fish", "python", "python3") then "c"
+  elif $b | IN("node", "bun", "tsx", "perl", "ruby") then "e"
+  else null end;
+def eval_flag($b):
+  eval_letter($b) as $l
+  | if $l == null or length == 0 or (.[0] | startswith("-") | not) then null
+    elif (.[0] | test("\\A-[A-Za-z]*" + $l + "\\z")) then .[0]
+    else .[1:] | eval_flag($b) end;
+def interpreters: ["bash", "sh", "zsh", "fish", "node", "deno", "bun", "tsx", "python", "python3", "ruby", "perl"];
+def host_exec_head:
+  ((.[0] // "") | sub("\\A.*/"; "")) as $b
+  | (.[1:] | first_positional($b)) as $p
+  | (.[1:] | eval_flag($b)) as $eval
+  | if $b == "" then ""
+    elif $eval != null and ($b | IN(interpreters[])) then (.[0] | home_rel) + " " + $eval
+    elif ($p // "" | test("\\A[a-z][a-z0-9:_-]*\\z")) then (.[0] | home_rel) + " " + $p
+    elif $p != null and ($b | IN(interpreters[]))
+      and ($p | test("[/.]")) then (.[0] | home_rel) + " " + ($p | sub("\\A.*/"; ""))
+    else .[0] | home_rel end;
+
+# host-exec の tool_result の文面（register.ts の deny / result）から結末を決める
+def host_exec_outcome:
+  if test("\\A(?:<tool_use_error>)?host-exec: (?:the user declined|nobody approved)") then "declined"
+  elif test("\\A\\$ |\\Ahost-exec: the command (?:ran|could not start)") then "ran"
+  else "refused" end;
+
+# $blocked: 同じ transcript で直前の Bash が sandbox / permission に拒否されていたか。
+# false なら Bash を試さずに host-exec へ行った（settings で通るものまで流れている兆候）
+def host_exec_events($l; $r; $tu; $txt; $blocked):
+  ($tu.argv // []) as $argv
+  | ($argv | host_exec_head) as $head
+  | select($head != "")
+  | event($l; "host_exec"; ($txt | host_exec_outcome); $head; "host_exec:" + $r.tool_use_id;
+          "理由: \($tu.reason // "(なし)") / $ \($argv | join(" "))")
+  | .after_block = $blocked;
+
 def tool_entry:
   {name, command: ((.input.command // null) | if type == "string" then .[0:2000] else null end),
-   file_path: (.input.file_path // .input.notebook_path // null)};
+   file_path: (.input.file_path // .input.notebook_path // null)}
+  + (if .name == host_exec_tool then
+       {argv: ((.input.argv // []) | if type == "array" then map(tostring) else [] end),
+        reason: ((.input.reason // null) | if type == "string" then .[0:500] else null end)}
+     else {} end);
 
 def in_window($l): ($l.timestamp | epoch_of) as $e | $e != null and $e >= $since and $e <= $until;
 
 foreach (inputs | fromjson? | select(type == "object")) as $l (
-  {file: null, tools: {}, out: []};
-  (if .file != input_filename then .file = input_filename | .tools = {} else . end)
+  {file: null, tools: {}, blocked: false, out: []};
+  (if .file != input_filename then .file = input_filename | .tools = {} | .blocked = false else . end)
   | .out = []
   | if (input_filename | test("/subagents/")) or $l.isSidechain == true then .
     elif $l.type == "assistant" then
       .tools += ([ $l.message.content[]? | select(type == "object" and .type == "tool_use") | {key: .id, value: tool_entry} ] | from_entries)
       | if in_window($l) then .out = [ request_events($l) ] else . end
-    elif $l.type == "user" and in_window($l) then
+    elif $l.type == "user" and ($l.timestamp | epoch_of) != null then
+      # 期間外の行も「直前の Bash が拒否されたか」の追跡には使うので、事象は作ってから期間で絞る
       .tools as $tools
-      | .out = [
-          $l.message.content[]? | select(type == "object" and .type == "tool_result") as $r
+      | .blocked as $blocked
+      | [ $l.message.content[]? | select(type == "object" and .type == "tool_result") as $r
           | ($tools[$r.tool_use_id] // {}) as $tu
           | ($r.content | text_of) as $txt
-          | if ($l.toolDenialKind != null and $r.is_error == true)
-               or ($txt | test("\\A(?:Error: )?(?:Permission to use [\\s\\S]* has been denied|Permission for this action [\\s\\S]*denied|The user doesn't want to proceed with this tool use|PreToolUse:\\S+ hook error)"))
-            then permission_events($l; $r; $tu; $txt)
-            elif $tu.name == "Bash" then sandbox_events($l; $r; $tu; $txt)
-            else empty end
-        ]
+          | {bash: ($tu.name == "Bash"),
+             events: [
+               # host-exec の拒否は permission-rule として記録されるが、permission の型にすると中身（argv）が落ちるので先に拾う
+               if $tu.name == host_exec_tool then host_exec_events($l; $r; $tu; $txt; $blocked)
+               elif ($l.toolDenialKind != null and $r.is_error == true)
+                 or ($txt | test("\\A(?:Error: )?(?:Permission to use [\\s\\S]* has been denied|Permission for this action [\\s\\S]*denied|The user doesn't want to proceed with this tool use|PreToolUse:\\S+ hook error)"))
+                 or ($txt | test(worktree_guard_re))
+               then permission_events($l; $r; $tu; $txt)
+               elif $tu.name == "Bash" then sandbox_events($l; $r; $tu; $txt)
+               else empty end ]} ] as $rs
+      | .out = (if in_window($l) then [ $rs[].events[] ] else [] end)
+      | .blocked = (if any($rs[]; .bash) then any($rs[] | select(.bash); .events | length > 0) else $blocked end)
     else . end;
   .out[]
 )
