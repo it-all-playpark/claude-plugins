@@ -505,14 +505,18 @@ jev_reason_label() {
 }
 
 @test "Jev は常に --redact と --reason-file 付きで呼ぶ（breaking / comment / 観測型 AC の全経路）" {
+    # AC-3 は観測型の絞り込みに当たる（APP_REPO_REGRESSION_ACS の table-4）
     fixture "$WORK/i.json" "feat: migration" "$AC_BODY
+- [ ] 実行ログに 1 件以上記録される
 
-TOKEN=supersecret1 [[jev:noul:0.95]]" "[$(comment reporter NONE '訂正 [[jev:override:0.95]]')]" reporter
+[[jev:noul:0.95]]" "[$(comment reporter NONE '訂正 [[jev:override:0.95]]')]" reporter
     run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
-    [ "$(jev_calls)" -eq 2 ]
-    [ "$(grep -c -- '--redact' "$JEV_LOG.argv")" -eq 2 ]
-    [ "$(grep -c -- '--reason-file ' "$JEV_LOG.argv")" -eq 2 ]
+    echo "$output" | jq -e '.jev_reasons == ["breaking_keyword_scan true", "comments present (1)", "observational_ac prefilter hit (AC-3)"]'
+    [ "$(jev_calls)" -eq 3 ]
+    [ "$(wc -l <"$JEV_LOG.argv")" -eq 3 ]
+    [ "$(grep -c -- '--redact' "$JEV_LOG.argv")" -eq 3 ]
+    [ "$(grep -c -- '--reason-file ' "$JEV_LOG.argv")" -eq 3 ]
 }
 
 # ---- 観測型 AC（issue #859）: 正規表現の絞り込み → Jev ----
