@@ -11,7 +11,9 @@ from align import (  # noqa: E402
     Turn,
     build_utterances,
     fmt_ts,
+    Utterance,
     merge_tracks,
+    pick_clips,
     relabel,
     render_markdown,
     speaker_for,
@@ -87,6 +89,39 @@ class RenderTest(unittest.TestCase):
 
     def test_fmt_ts(self):
         self.assertEqual(fmt_ts(3725.9), "01:02:05")
+
+
+class PickClipsTest(unittest.TestCase):
+    def utts(self):
+        return [
+            Utterance(0, 2, "話者A", "短い", "system"),
+            Utterance(3, 6, "話者A", "長い", "system"),
+            Utterance(4, 20, "話者B", "別人", "system"),
+            Utterance(10, 12, "話者A", "同じ長さで後", "system"),
+            Utterance(1, 9, "自分", "マイク", "mic"),
+        ]
+
+    def span(self, clips):
+        return [(c.start, c.end, c.text) for c in clips]
+
+    def test_longest_first_until_total(self):
+        # 3 秒 → 2 秒 (同じ長さなら早い方) で合計 5 秒。他の話者は混ぜない
+        self.assertEqual(self.span(pick_clips(self.utts(), "話者A")), [(3, 6, "長い"), (0, 2, "短い")])
+
+    def test_long_utterance_is_cut_to_total(self):
+        clips = pick_clips(self.utts(), "話者B")
+        self.assertEqual(self.span(clips), [(4, 9, "別人")])
+
+    def test_keeps_source_for_choosing_the_track(self):
+        clips = pick_clips(self.utts(), "自分")
+        self.assertEqual([(c.source, c.start, c.end) for c in clips], [("mic", 1, 6)])
+
+    def test_stops_when_remainder_is_too_short(self):
+        utts = [Utterance(0, 4.8, "話者A", "a", "system"), Utterance(5, 7, "話者A", "b", "system")]
+        self.assertEqual(self.span(pick_clips(utts, "話者A")), [(0, 4.8, "a")])
+
+    def test_unknown_speaker_gives_nothing(self):
+        self.assertEqual(pick_clips(self.utts(), "話者Z"), [])
 
 
 if __name__ == "__main__":

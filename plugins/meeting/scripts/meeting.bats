@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
-# meeting.sh の macOS 非依存部分（引数処理・未インストール時の案内・録音一覧・launchd plist 生成）のテスト。
-# 録音 / ビルド / launchctl は macOS 実機でしか動かないので対象外。
+# meeting.sh の macOS 非依存部分（引数処理・未インストール時の案内・録音一覧・launchd plist 生成・
+# 話者の声の切り出し・議事録の話者名の後入れ）のテスト。
+# 録音 / ビルド / launchctl / 実際の再生は macOS 実機でしか動かないので対象外 (ffmpeg / afplay は stub)。
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/meeting.sh"
@@ -8,7 +9,7 @@ setup() {
     export MEETING_HOME="$BATS_TEST_TMPDIR/meetings"
     export MEETING_PREFIX="$BATS_TEST_TMPDIR/prefix"
     mkdir -p "$HOME" "$MEETING_HOME"
-    unset MEETING_AUTO_NOTES MEETING_NOTES_DIR MEETING_APPS
+    unset MEETING_AUTO_NOTES MEETING_NOTES_DIR MEETING_APPS MEETING_CALENDAR_TOOLS
 }
 
 @test "引数なしは usage を出して exit 2" {
@@ -65,7 +66,8 @@ setup() {
 
 @test "print-plist は固定パスのバイナリを --watch で起動し、設定を環境変数で引き継ぐ" {
     command -v python3 >/dev/null 2>&1 || skip "python3 not available"
-    MEETING_AUTO_NOTES=1 MEETING_NOTES_DIR=/tmp/vault run bash "$SCRIPT" print-plist
+    MEETING_AUTO_NOTES=1 MEETING_NOTES_DIR=/tmp/vault MEETING_CALENDAR_TOOLS=mcp__cal__list_events \
+        run bash "$SCRIPT" print-plist
     [ "$status" -eq 0 ]
     echo "$output" > "$BATS_TEST_TMPDIR/p.plist"
     run python3 - "$BATS_TEST_TMPDIR/p.plist" "$MEETING_PREFIX" "$MEETING_HOME" <<'PY'
@@ -76,23 +78,34 @@ assert p["Label"] == "jp.co.playpark.meeting-watch", p["Label"]
 assert p["ProgramArguments"] == [f"{prefix}/bin/meeting-rec", "--watch", "--home", home, "--on-stop", f"{prefix}/bin/meeting"], p["ProgramArguments"]
 env = p["EnvironmentVariables"]
 assert env["MEETING_AUTO_NOTES"] == "1" and env["MEETING_NOTES_DIR"] == "/tmp/vault" and env["MEETING_HOME"] == home, env
+assert env["MEETING_CALENDAR_TOOLS"] == "mcp__cal__list_events", env
 assert "PATH" in env and p["KeepAlive"] and p["RunAtLoad"]
 PY
     echo "$output"
     [ "$status" -eq 0 ]
 }
 
-@test "post の自動議事録は git の確認だけ許可し Web を閉じた claude -p にプロンプトを渡す" {
-    # 文字起こし (第三者の発言) を読む非対話の claude なので、許可ツールとプロンプトの位置を固定する
+# uv / osascript / claude を stub に差し替える。claude は cwd と引数を記録し、$BATS_TEST_TMPDIR/note.md が
+# あれば cwd の meetings/ に置く (議事録を書いたことにする)。osascript は通知の引数を記録する
+stub_tools() {
     mkdir -p "$MEETING_PREFIX/bin" "$MEETING_PREFIX/transcribe" "$BATS_TEST_TMPDIR/stub" "$BATS_TEST_TMPDIR/notes"
     : > "$MEETING_PREFIX/bin/meeting-rec"
     chmod +x "$MEETING_PREFIX/bin/meeting-rec"
     : > "$MEETING_PREFIX/transcribe/transcribe.py"
     printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/stub/uv"
-    printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/stub/osascript"
-    printf '#!/bin/sh\npwd -P > "%s/claude.cwd"\nfor a in "$@"; do printf "%%s\\n" "$a"; done > "%s/claude.args"\n' \
-        "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$BATS_TEST_TMPDIR/stub/claude"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "%s/osascript.args"\n' "$BATS_TEST_TMPDIR" > "$BATS_TEST_TMPDIR/stub/osascript"
+    cat > "$BATS_TEST_TMPDIR/stub/claude" <<EOF
+#!/bin/sh
+pwd -P > "$BATS_TEST_TMPDIR/claude.cwd"
+for a in "\$@"; do printf "%s\\n" "\$a"; done > "$BATS_TEST_TMPDIR/claude.args"
+if [ -f "$BATS_TEST_TMPDIR/note.md" ]; then mkdir -p meetings && cp "$BATS_TEST_TMPDIR/note.md" meetings/; fi
+EOF
     chmod +x "$BATS_TEST_TMPDIR/stub/"*
+}
+
+@test "post の自動議事録は git の確認だけ許可し Web を閉じた claude -p にプロンプトを渡す" {
+    # 文字起こし (第三者の発言) を読む非対話の claude なので、許可ツールとプロンプトの位置を固定する
+    stub_tools
     dir="$MEETING_HOME/2026-01-01_1000-Zoom"
     mkdir -p "$dir"
 
@@ -108,4 +121,190 @@ PY
     grep -qxF -- 'Bash(git check-ignore:*),Bash(git rev-parse:*)' "$BATS_TEST_TMPDIR/claude.args"
     grep -qxF -- '--disallowedTools' "$BATS_TEST_TMPDIR/claude.args"
     grep -qxF -- 'WebFetch,WebSearch' "$BATS_TEST_TMPDIR/claude.args"
+    # 名前が全員確定した議事録なら meeting name は案内しない
+    grep -qF "議事録を作成しました: 2026-01-01_1000-Zoom" "$BATS_TEST_TMPDIR/osascript.args"
+    run grep -qF "meeting name" "$BATS_TEST_TMPDIR/osascript.args"
+    [ "$status" -eq 1 ]
+}
+
+@test "post は MEETING_CALENDAR_TOOLS のツールを --allowedTools に足す" {
+    stub_tools
+    dir="$MEETING_HOME/2026-01-01_1000-Zoom"
+    mkdir -p "$dir"
+
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_AUTO_NOTES=1 MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" \
+        MEETING_CALENDAR_TOOLS="mcp__cal__list_events,mcp__cal__get_event" run bash "$SCRIPT" post "$dir"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qxF -- 'Bash(git check-ignore:*),Bash(git rev-parse:*),mcp__cal__list_events,mcp__cal__get_event' \
+        "$BATS_TEST_TMPDIR/claude.args"
+}
+
+@test "post は議事録に未確定の話者が残れば人数と meeting name を通知する" {
+    stub_tools
+    dir="$MEETING_HOME/2026-01-01_1000-Zoom"
+    mkdir -p "$dir"
+    printf -- '---\ntags: [meeting]\nrecording: %s\nunresolved_speakers: [話者A, 話者B]\n---\n\n# Zoom 会議\n' "$dir" \
+        > "$BATS_TEST_TMPDIR/note.md"
+
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_AUTO_NOTES=1 MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" \
+        run bash "$SCRIPT" post "$dir"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    cat "$BATS_TEST_TMPDIR/osascript.args"
+    grep -qF "未確定の話者 2 人" "$BATS_TEST_TMPDIR/osascript.args"
+    grep -qF "meeting name" "$BATS_TEST_TMPDIR/osascript.args"
+}
+
+# 話者A (system) と 自分 (mic) の発言を持つ録音を作る
+make_recording() {
+    dir="$MEETING_HOME/2026-01-01_1000-Zoom"
+    mkdir -p "$dir"
+    : > "$dir/system.wav"
+    : > "$dir/mic.wav"
+    cat > "$dir/transcript.json" <<'EOF'
+{"utterances": [
+  {"start": 1.0, "end": 3.0, "speaker": "話者A", "text": "はい", "source": "system"},
+  {"start": 4.0, "end": 7.5, "speaker": "話者A", "text": "田中です", "source": "system"},
+  {"start": 8.0, "end": 20.0, "speaker": "自分", "text": "よろしくお願いします", "source": "mic"}
+]}
+EOF
+}
+
+stub_player() {
+    mkdir -p "$BATS_TEST_TMPDIR/stub"
+    # ffmpeg は引数を 1 行に記録し、最後の引数 (出力先) を作る
+    printf '#!/bin/sh\necho "$*" >> "%s/ffmpeg.args"\nfor a; do out="$a"; done\n: > "$out"\n' "$BATS_TEST_TMPDIR" \
+        > "$BATS_TEST_TMPDIR/stub/ffmpeg"
+    printf '#!/bin/sh\necho "$1" >> "%s/afplay.args"\n' "$BATS_TEST_TMPDIR" > "$BATS_TEST_TMPDIR/stub/afplay"
+    chmod +x "$BATS_TEST_TMPDIR/stub/"*
+}
+
+@test "play は話者の長い発言から合計約 5 秒を system.wav から切り出して再生する" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    make_recording
+    stub_player
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" play "$dir" 話者A
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "${lines[0]}" = "[00:00:04] 田中です" ]
+    [ "${lines[1]}" = "[00:00:01] はい" ]
+    mapfile -t cuts < "$BATS_TEST_TMPDIR/ffmpeg.args"
+    [ "${#cuts[@]}" -eq 2 ]
+    [[ "${cuts[0]}" == *"-ss 4.00 -t 3.50 -i $dir/system.wav "* ]]
+    [[ "${cuts[1]}" == *"-ss 1.00 -t 1.50 -i $dir/system.wav "* ]]
+    [ "$(wc -l < "$BATS_TEST_TMPDIR/afplay.args")" -eq 2 ]
+}
+
+@test "play は 自分 を mic.wav から切り出す" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    make_recording
+    stub_player
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" play "$dir" 自分
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$BATS_TEST_TMPDIR/ffmpeg.args")" == *"-ss 8.00 -t 5.00 -i $dir/mic.wav "* ]]
+}
+
+@test "play は引数が足りない・発言の無いラベルで失敗する" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    make_recording
+    stub_player
+    run bash "$SCRIPT" play "$dir"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"meeting play <DIR> <話者ラベル>"* ]]
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" play "$dir" 話者Z
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"話者Z の発言がありません"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/afplay.args" ]
+}
+
+# notes/meetings/<name>.md に議事録を置く。$3 は unresolved_speakers の値 (空なら行を書かない)
+write_note() {
+    local name="$1" rec="$2" unresolved="$3"
+    mkdir -p "$BATS_TEST_TMPDIR/notes/meetings/transcripts"
+    {
+        printf -- '---\ntags: [meeting]\nattendees: [自分, 話者A, 話者B]\nrecording: %s\n' "$rec"
+        [ -z "$unresolved" ] || printf 'unresolved_speakers: [%s]\n' "$unresolved"
+        printf 'transcript: "[[meetings/transcripts/%s]]"\n---\n\n# 定例\n\n- 話者A が提案し、話者B と 話者AB が合意\n' "$name"
+    } > "$BATS_TEST_TMPDIR/notes/meetings/$name.md"
+    printf '# 定例\n\n**[00:00:01] 話者A**: はい\n\n**[00:00:05] 話者B**: どうも\n' \
+        > "$BATS_TEST_TMPDIR/notes/meetings/transcripts/$name.md"
+}
+
+@test "name は未確定の話者が残る議事録が無ければ claude を起動せずに終わる" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_tools
+    write_note 2026-01-01-a "$MEETING_HOME/2026-01-01_1000-a" ""
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run bash "$SCRIPT" name
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"未確定の話者が残る議事録はありません"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/claude.args" ]
+
+    # DIR 指定でも、その議事録に未確定の話者が無ければ何もしない
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" \
+        run bash "$SCRIPT" name "$MEETING_HOME/2026-01-01_1000-a/"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"未確定の話者はありません"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/claude.args" ]
+}
+
+@test "name は DIR 省略時に未確定の話者が残る最新の録音を選んで /meeting-notes --name-unresolved を起動する" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_tools
+    write_note 2026-01-01-a "$MEETING_HOME/2026-01-01_1000-a" "話者A"
+    write_note 2026-01-02-b "$MEETING_HOME/2026-01-02_1000-b" "話者B"
+    write_note 2026-01-03-c "$MEETING_HOME/2026-01-03_1000-c" ""
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run bash "$SCRIPT" name
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/claude.cwd")" = "$(cd "$BATS_TEST_TMPDIR/notes" && pwd -P)" ]
+    mapfile -t args < "$BATS_TEST_TMPDIR/claude.args"
+    [ "${args[0]}" = "--add-dir" ]
+    [ "${args[1]}" = "$MEETING_HOME/2026-01-02_1000-b" ]
+    [ "${args[2]}" = "/meeting-notes $MEETING_HOME/2026-01-02_1000-b --name-unresolved $BATS_TEST_TMPDIR/notes/meetings/2026-01-02-b.md" ]
+}
+
+@test "name は議事録の無い DIR・不明なオプション・2 つ目の DIR で失敗する" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_tools
+    MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run bash "$SCRIPT" name "$MEETING_HOME/2026-01-09_1000-x"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"議事録が"*"ありません"* ]]
+    run bash "$SCRIPT" name --bogus
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"不明なオプション: --bogus"* ]]
+    run bash "$SCRIPT" name a b
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"DIR は 1 つだけ"* ]]
+    run bash "$SCRIPT" name --set
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"話者A=田中"* ]]
+}
+
+@test "name --set は議事録と全文のラベルを置き換え、答えた話者を unresolved_speakers から外す" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    write_note 2026-01-01-a "$rec" "話者A, 話者B"
+    note="$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md"
+    MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run bash "$SCRIPT" name "$rec" --set "話者A=田中"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"未確定の話者: 話者B"* ]]
+    grep -qxF 'unresolved_speakers: [話者B]' "$note"
+    grep -qxF 'attendees: [自分, 田中, 話者B]' "$note"
+    grep -qxF -- '- 田中 が提案し、話者B と 話者AB が合意' "$note"
+    grep -qxF "recording: $rec" "$note"
+    grep -qxF '**[00:00:01] 田中**: はい' "$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
+
+    # 最後の 1 人に名前が入ると unresolved_speakers の行ごと消え、以後 name は何もしない
+    MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run bash "$SCRIPT" name "$rec" --set "話者B=佐藤"
+    [ "$status" -eq 0 ]
+    run grep -q '^unresolved_speakers:' "$note"
+    [ "$status" -eq 1 ]
+    grep -qxF '**[00:00:05] 佐藤**: どうも' "$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
+    MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run bash "$SCRIPT" name
+    [[ "$output" == *"未確定の話者が残る議事録はありません"* ]]
 }

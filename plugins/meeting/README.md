@@ -72,6 +72,10 @@ meeting uninstall
 - **全自動の議事録（`MEETING_AUTO_NOTES=1`）**: 相手の発言を含む文字起こしを、`MEETING_NOTES_DIR` 配下を編集できる
   非対話の Claude に読ませる。書き込みを議事録と全文に限るのは skill の指示だけなので、`MEETING_NOTES_DIR` には
   議事録専用のディレクトリを指定する。
+- **全自動での話者名**: 全自動では名前を確定できなかった話者をラベルのまま残し、議事録の frontmatter に
+  `unresolved_speakers` として記録する（完了通知に人数が出る）。後から `meeting name` で名前を入れられる。
+  カレンダーの参加者を使わせるには、カレンダー連携の MCP ツール名を `MEETING_CALENDAR_TOOLS`（`,` 区切り）に
+  入れて `meeting install` し直す（非対話の claude は許可していないツールを使えない。ツール名は環境ごとに違うので既定値は無い）。
 - **ヘッドホン推奨**: スピーカーだと相手の声がマイクにも入り、`自分` として二重に文字起こしされる。
 
 ## 手動で使う
@@ -81,8 +85,14 @@ meeting rec 週次定例                  # 録音開始。Ctrl-C で停止 → 
 meeting rec 商談 --app zoom           # Zoom の音だけ録る
 meeting notes                         # 最新の録音から議事録（MEETING_NOTES_DIR か cwd で claude を起動）
 meeting transcribe <DIR> --num-speakers 3 --prompt "固有名詞, 社内用語"
+meeting play <DIR> 話者A              # その話者の声を約 5 秒再生（自分 は mic.wav から）
+meeting name                          # 未確定の話者が残る最新の議事録に「この発言は誰？」で名前を入れる
 meeting ls
 ```
+
+`/meeting-notes`（対話時）は名前が確定しない話者ごとに、代表的な発言を見せ `meeting play` で声を鳴らしてから
+「この発言は誰？」と聞く。`meeting name` は同じ質問を未確定の話者だけに行い、議事録本文と全文のラベルを置き換える
+（要約は作り直さない）。
 
 自動録音と手動録音を同時に動かすと二重に録れる。
 
