@@ -1,9 +1,9 @@
 #!/usr/bin/env bats
 # plugin-manifest.bats - Regression tests for the marketplace layout
-# (playpark-core / dev-flow / playpark-skills / host-exec, issue #571).
+# (playpark-core / dev-flow / playpark-skills / host-exec / meeting, issue #571).
 #
 # Invariants pinned here:
-#   - marketplace.json lists exactly the 4 plugins, each sourced from
+#   - marketplace.json lists exactly the 5 plugins, each sourced from
 #     ./plugins/<name>, so they can be installed independently.
 #   - Each plugin.json is valid, its name matches its directory, skills
 #     is ["./"] for the skill-shipping plugins and absent for host-exec
@@ -32,8 +32,8 @@ REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 MARKETPLACE_JSON="$REPO_ROOT/.claude-plugin/marketplace.json"
 ROOT_PLUGIN_JSON="$REPO_ROOT/.claude-plugin/plugin.json"
 
-PLUGIN_NAMES=(playpark-core dev-flow playpark-skills host-exec)
-SKILL_PLUGIN_NAMES=(playpark-core dev-flow playpark-skills)
+PLUGIN_NAMES=(playpark-core dev-flow playpark-skills host-exec meeting)
+SKILL_PLUGIN_NAMES=(playpark-core dev-flow playpark-skills meeting)
 
 plugin_json_path() {
     echo "$REPO_ROOT/plugins/$1/.claude-plugin/plugin.json"
@@ -52,16 +52,16 @@ plugin_json_path() {
     [ ! -f "$ROOT_PLUGIN_JSON" ]
 }
 
-@test "marketplace.json の plugins は 4 件である" {
+@test "marketplace.json の plugins は 5 件である" {
     run jq -r '.plugins | length' "$MARKETPLACE_JSON"
     [ "$status" -eq 0 ]
-    [ "$output" = "4" ]
+    [ "$output" = "5" ]
 }
 
-@test "marketplace.json の plugins[].name が playpark-core/dev-flow/playpark-skills/host-exec に完全一致する" {
+@test "marketplace.json の plugins[].name が playpark-core/dev-flow/playpark-skills/host-exec/meeting に完全一致する" {
     run jq -r '[.plugins[].name] | sort | join(",")' "$MARKETPLACE_JSON"
     [ "$status" -eq 0 ]
-    [ "$output" = "dev-flow,host-exec,playpark-core,playpark-skills" ]
+    [ "$output" = "dev-flow,host-exec,meeting,playpark-core,playpark-skills" ]
 }
 
 @test "marketplace.json の各 plugins[].source が ./plugins/<name> である" {
@@ -165,7 +165,7 @@ plugin_json_path() {
 }
 
 @test "dev-flow 以外の plugin.json に workflows キーが存在しない" {
-    for name in playpark-core playpark-skills host-exec; do
+    for name in playpark-core playpark-skills host-exec meeting; do
         pj="$(plugin_json_path "$name")"
         run jq -r 'has("workflows")' "$pj"
         [ "$status" -eq 0 ]
