@@ -120,13 +120,13 @@ meeting ls
 
 議事録をチームで読めるよう Google Drive に置くには、Google Drive for desktop の同期フォルダを `output_dir` に指定する
 （`MEETING_NOTES_DIR` の外でよい。自動議事録の claude にはそのフォルダを `--add-dir` で渡し、`meeting name` もそこを探す）。
-全文は共有先に入れず、`MEETING_NOTES_DIR` 側の git 管理外に残す:
+`output_dir` が外にあるとき、全文の既定の保存先は共有先ではなく `MEETING_NOTES_DIR` 側の `meetings/transcripts` になる
+（git 管理外にしておく）:
 
 ```json
 {
   "meeting-notes": {
-    "output_dir": "~/Library/CloudStorage/GoogleDrive-<you>/Shared drives/<team>/議事録",
-    "transcripts_dir": "meetings/transcripts"
+    "output_dir": "~/Library/CloudStorage/GoogleDrive-<you>/Shared drives/<team>/議事録"
   }
 }
 ```

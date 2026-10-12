@@ -192,7 +192,7 @@ cmd_post() {
     # MEETING_CALENDAR_TOOLS で渡す (ツール名は環境ごとに違うので既定値は持たない)
     local allowed="Bash(git check-ignore:*),Bash(git rev-parse:*)" ext add=()
     [[ -n "${MEETING_CALENDAR_TOOLS:-}" ]] && allowed+=",$MEETING_CALENDAR_TOOLS"
-    ext="$(outside_notes_dir "$MEETING_NOTES_DIR")" || { notify "議事録の保存先を作れません: $(basename "$dir")"; exit 1; }
+    ext="$(outside_notes_dir --create "$MEETING_NOTES_DIR")" || { notify "議事録の保存先を作れません: $(basename "$dir")"; exit 1; }
     [[ -n "$ext" ]] && add=(--add-dir "$ext")
     (cd "$MEETING_NOTES_DIR" && claude -p "/meeting-notes $dir --non-interactive" \
       --permission-mode acceptEdits --add-dir "$dir" ${add[@]+"${add[@]}"} \
@@ -223,18 +223,22 @@ cmd_notes() {
   [[ -f "$dir/transcript.json" ]] || die "$dir/transcript.json がありません。先に meeting transcribe"
   command -v claude >/dev/null || die "claude (Claude Code) がありません"
   local root="${MEETING_NOTES_DIR:-$PWD}" ext add=()
-  ext="$(outside_notes_dir "$root")" || die "議事録の保存先を作れません"
+  ext="$(outside_notes_dir --create "$root")" || die "議事録の保存先を作れません"
   [[ -n "$ext" ]] && add=(--add-dir "$ext")
   cd "$root" && claude --add-dir "$dir" ${add[@]+"${add[@]}"} "/meeting-notes $dir"
 }
 
-# skill-config の output_dir が root の外 (Drive の同期フォルダ等) なら作って出す。中なら何も出さない
+# skill-config の output_dir が root の外 (Drive の同期フォルダ等) なら出す。中なら何も出さない。
+# 作るのは議事録を書く経路 (--create) だけ。探すだけの経路は、無ければ出さない (共有先に空フォルダを作らない)
 outside_notes_dir() {
-  local base out
+  local create=0 base out
+  [[ "$1" == --create ]] && { create=1; shift; }
   base="$(cd "$1" && pwd -P)" || return 1
   out="$(note_tool outdir "$base")" || return 1
   case "$out/" in "$base"/*) return 0 ;; esac
-  mkdir -p "$out" || return 1
+  if [[ "$create" == 1 ]]; then mkdir -p "$out" || return 1
+  elif [[ ! -d "$out" ]]; then return 0
+  fi
   echo "$out"
 }
 
@@ -419,7 +423,7 @@ cmd_name() {
     esac
   done
   local root="${MEETING_NOTES_DIR:-$PWD}" ext found note labels
-  ext="$(outside_notes_dir "$root")" || die "議事録の保存先を作れません"
+  ext="$(outside_notes_dir "$root")" || die "議事録の保存先を解決できません"
   found="$(note_tool find "$dir" "$root" ${ext:+"$ext"})"
   if [[ -z "$found" ]]; then
     [[ -z "$dir" ]] || die "$dir の議事録が $root${ext:+ / $ext} にありません (frontmatter の recording: で探します)"

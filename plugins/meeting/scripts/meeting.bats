@@ -362,6 +362,15 @@ write_note() {
     global_output_dir "~/Google Drive/議事録"
     out="$HOME/Google Drive/議事録"
     rec="$MEETING_HOME/2026-01-01_1000-a"
+    write_note 2026-01-01-c "$MEETING_HOME/2026-01-01_1000-c" ""
+
+    # 探すだけの name は output_dir が無くても作らない (共有先に空フォルダを作らない)
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run bash "$SCRIPT" name
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"未確定の話者が残る議事録はありません"* ]]
+    [ ! -e "$HOME/Google Drive" ]
+
     write_note 2026-01-01-a "$rec" "話者A"
     mkdir -p "$out"
     mv "$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md" "$out/"
