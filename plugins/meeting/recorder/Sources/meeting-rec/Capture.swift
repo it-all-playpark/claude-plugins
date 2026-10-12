@@ -145,17 +145,52 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
 // MARK: - Microphone
 
+/// 固定したマイクを UID で持ち、繋ぐたびに AudioDeviceID を引き直す。
+/// Bluetooth 機器は接続し直すと別の AudioDeviceID になることがあるので、ID は持ち越さない。
+/// 見つからない間はシステム既定の入力を返し、見失った / 戻ったことをログに出す
+struct MicDevice {
+    let uid: String
+    var lookup: (String) -> AudioDeviceID? = audioDeviceID(uid:)
+    var defaultInput: () -> AudioDeviceID? = defaultInputDevice
+    private(set) var missing = false
+
+    init(uid: String) { self.uid = uid }
+
+    mutating func resolve() -> AudioDeviceID? {
+        if let id = lookup(uid) {
+            if missing { log("マイク \(uid) が戻ったため、このマイクで録音を続けます") }
+            missing = false
+            return id
+        }
+        let fallback = defaultInput()
+        if !missing {
+            log(fallback == nil
+                ? "マイク \(uid) が見つからず、システム既定の入力もないため、マイクの録音が止まっています"
+                : "マイク \(uid) が見つからないため、戻るまでシステム既定の入力で録音します")
+        }
+        missing = true
+        return fallback
+    }
+}
+
 /// マイクは ScreenCaptureKit (captureMicrophone) ではなく AVAudioEngine で入力デバイスを直接開く。
-/// 録音中に入力デバイスやフォーマットが変わっても (Bluetooth の接続し直し等)、
-/// AVAudioEngineConfigurationChange を受けて繋ぎ直し、同じ mic.wav に録り続けるため
+/// 録音中に入力デバイスやフォーマットが変わっても、AVAudioEngineConfigurationChange を受けて繋ぎ直し、
+/// 同じ mic.wav に録り続けるため。
+/// デバイスを固定したとき (--mic-device / 自動録音) は繋ぐたびに UID から引き直すので (MicDevice)、
+/// Bluetooth の接続し直しで AudioDeviceID が変わってもそのデバイスに戻る。見つからない間はシステム既定の入力で録る
 final class MicCapture {
     private let engine = AVAudioEngine()
     private let lock = NSLock()  // 繋ぎ直し (通知スレッド) と stop の競合よけ
     private var stopped = false
     private let writer: TrackWriter
     private let queue: DispatchQueue
-    private let deviceID: AudioDeviceID?
+    private var device: MicDevice?
     private var observer: NSObjectProtocol?
+    private var devicesListener: AudioObjectPropertyListenerBlock?
+    private let devicesQueue = DispatchQueue(label: "meeting-rec.mic-devices")
+    private var devicesAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
     /// Bluetooth のモード切替やデバイス変更で入力のサンプルレート・チャンネル数が途中で変わっても
     /// 1 つの WAV に書き続けられるよう、常にこの形式に変換してから書く
     private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
@@ -164,10 +199,8 @@ final class MicCapture {
         self.writer = writer
         self.queue = queue
         if let uid = deviceUID {
-            guard let id = audioDeviceID(uid: uid) else { throw CaptureError.noMicDevice(uid) }
-            deviceID = id
-        } else {
-            deviceID = nil
+            guard audioDeviceID(uid: uid) != nil else { throw CaptureError.noMicDevice(uid) }
+            device = MicDevice(uid: uid)
         }
     }
 
@@ -181,9 +214,24 @@ final class MicCapture {
         observer = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { [weak self] _ in self?.restart() }
+        // 既定の入力で録っている間に固定したマイクが戻っても、構成変更の通知は来ないことがある。
+        // デバイスの抜き差しも見て、繋ぐべきデバイスが変わったら繋ぎ直す
+        if device != nil {
+            let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in self?.devicesChanged() }
+            if AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &devicesAddress, devicesQueue, listener) == noErr
+            {
+                devicesListener = listener
+            }
+        }
     }
 
     func stop() {
+        // 解除はロックの外で: 実行中のコールバック (devicesChanged はロックを取る) の終了を待つことがある
+        if let l = devicesListener {
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &devicesAddress, devicesQueue, l)
+            devicesListener = nil
+        }
         lock.lock(); defer { lock.unlock() }
         stopped = true
         if let o = observer { NotificationCenter.default.removeObserver(o) }
@@ -196,6 +244,20 @@ final class MicCapture {
         lock.lock(); defer { lock.unlock() }
         guard !stopped else { return }
         log("マイクの入力構成が変わったため繋ぎ直します")
+        reconnect()
+    }
+
+    private func devicesChanged() {
+        lock.lock(); defer { lock.unlock() }
+        guard !stopped, let unit = engine.inputNode.audioUnit, let want = device?.resolve(),
+              currentDevice(unit) != want
+        else { return }
+        log("マイクの接続が変わったため繋ぎ直します")
+        reconnect()
+    }
+
+    /// lock を持って呼ぶ。失敗しても次の構成変更 / デバイスの抜き差しでまた繋ぎ直す
+    private func reconnect() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         do {
@@ -209,7 +271,7 @@ final class MicCapture {
     private func attach() throws {
         let input = engine.inputNode
         // 設定すると構成変更の通知が来るので、既にそのデバイスなら触らない (繋ぎ直しのループよけ)
-        if var id = deviceID, let unit = input.audioUnit, currentDevice(unit) != id {
+        if var id = device?.resolve(), let unit = input.audioUnit, currentDevice(unit) != id {
             let st = AudioUnitSetProperty(
                 unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
                 &id, UInt32(MemoryLayout<AudioDeviceID>.size))
@@ -272,6 +334,16 @@ private func audioDeviceID(uid: String) -> AudioDeviceID? {
         AudioObjectGetPropertyData(
             AudioObjectID(kAudioObjectSystemObject), &addr, UInt32(MemoryLayout<CFString>.size), $0, &size, &id)
     }
+    return st == noErr && id != kAudioObjectUnknown ? id : nil
+}
+
+private func defaultInputDevice() -> AudioDeviceID? {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultInputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var id = AudioDeviceID(kAudioObjectUnknown)
+    var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    let st = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &id)
     return st == noErr && id != kAudioObjectUnknown ? id : nil
 }
 
