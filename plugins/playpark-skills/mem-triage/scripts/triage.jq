@@ -12,7 +12,7 @@
 #   - シェル・端末多重化・launchd・macOS 本体の直下で起動されたプロセスを根にして、子孫を全部足す
 #     （nvim の下の language server、claude の下の MCP server やブラウザ、アプリの下のヘルパーや同梱の .app が親の塊に入る）
 #   - 根が .app の中の実行ファイルならアプリの塊（名前は最も外側の .app）、それ以外は根の pid の塊
-#   - macOS 本体（/System 等）は 1 つの塊、シェル・端末多重化そのものも 1 つの塊
+#   - macOS 本体（/System 等。/System/Applications の標準アプリは除く）・WebKit のタブ・シェルと端末多重化は、それぞれ 1 つの塊
 # メモリは top の MEM（物理フットプリント、圧縮分を含む）。共有メモリの数え方が違うので合計は物理メモリと一致しない。
 
 def sections:
@@ -50,16 +50,22 @@ def basename: sub(".*/"; "");
 # 実行ファイルのパスで最も外側の X.app の X
 def appname: if startswith("/") then ((capture("^.*?/(?<a>[^/]+)\\.app/") | .a) // null) else null end;
 
-def is_system: test("^/(System|usr/libexec|usr/sbin|sbin|Library/Apple)/");
+# 標準アプリ（Safari・プレビュー等）は /System 配下でも閉じられるアプリとして扱う
+def is_system: test("^/(System|usr/libexec|usr/sbin|sbin|Library/Apple)/") and (test("/System/Applications/") | not);
+
+# WebKit のタブは launchd が起動する XPC service で、どのアプリ（Safari・メール等）のタブかを親から辿れない
+def is_webcontent: test("/com\\.apple\\.WebKit\\.WebContent$");
 
 # 子を別の塊として切り出す親（ここで起動されたものがユーザーの起動単位になる）
 def is_container: .pid == 1 or (.name | IN("zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "login", "tmux", "screen", "zellij"));
 
-# 同じプログラムの別の版かを見るための鍵（nix store のハッシュと版番号を伏せる）
-def version_key: sub("/nix/store/[a-z0-9]{32}-"; "/nix/store/*-") | gsub("[0-9]+(\\.[0-9]+)+"; "V");
+# 同じプログラムの別の版かを見るための鍵（nix store のハッシュと、版番号の先頭以外を伏せる）。
+# 先頭を残すのは、node 20 と 22 のように意図して並べて使う別メジャー版を「更新前の版」と取り違えないため
+def version_key: sub("/nix/store/[a-z0-9]{32}-"; "/nix/store/*-") | gsub("(?<m>[0-9]+)(\\.[0-9]+)+"; "\(.m).V");
 
 def unit_of($by):
-  if .kind == "system" then "system"
+  if .kind == "webkit" then "webkit"
+  elif .kind == "system" then "system"
   elif .container then "shells"
   else
     ($by[.ppid | tostring]) as $parent
@@ -96,7 +102,8 @@ sections as $s
     | .age_sec = (.etime | etime_sec)
     | .app = (.comm | appname)
     | .container = is_container
-    | .kind = (if (.comm | is_system) or .pid == 1 then "system"
+    | .kind = (if (.comm | is_webcontent) then "webkit"
+               elif (.comm | is_system) or .pid == 1 then "system"
                elif .app != null then "app"
                elif .container then "shell"
                else "process" end)] as $procs
@@ -113,7 +120,7 @@ sections as $s
     | (map(.mem) | add) as $total
     | {
         id: $u,
-        kind: (if ($u | startswith("pid:")) then "process" elif $u == "system" then "system" elif $u == "shells" then "shell" else "app" end),
+        kind: (if ($u | startswith("pid:")) then "process" elif $u == "system" then "system" elif $u == "shells" then "shell" elif $u == "webkit" then "webkit" else "app" end),
         mem_bytes: $total,
         mem: ($total | human),
         procs: length,
@@ -133,6 +140,7 @@ sections as $s
         | .kill = "kill \($r.pid)"
       elif .kind == "app" then .name = $u[4:]
       elif .kind == "system" then .name = "macOS"
+      elif .kind == "webkit" then .name = "WebKit のタブ（Safari 等）"
       else .name = "シェル・端末" end)
 | sort_by(-.mem_bytes) as $units
 | if $mode == "pids" then

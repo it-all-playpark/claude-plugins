@@ -31,3 +31,8 @@
   600 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon
   601 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder
   700 /usr/local/bin/python3.11 /Users/x/bin/agent.py
+  800 /System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari
+  801 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+  802 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+  810 /nix/store/cccccccccccccccccccccccccccccccc-nodejs-20.11.0/bin/node /Users/x/proj-d/server.js
+  811 /nix/store/dddddddddddddddddddddddddddddddd-nodejs-22.1.0/bin/node /Users/x/proj-e/server.js

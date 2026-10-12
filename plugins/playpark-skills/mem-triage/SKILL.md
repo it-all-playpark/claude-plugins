@@ -55,7 +55,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/mem-triage/scripts/mem-triage.sh [--top N]
 | キー | 中身 |
 |------|------|
 | `summary` | `used` / `wired` / `compressor` / `unused`（top の PhysMem）、`swap_used` / `swap_total`、`free_percent`（memory_pressure）、`processes`、`units` |
-| `units[]` | 塊。`id` / `kind`（`app` / `process` / `system` / `shell`）/ `name` / `mem` / `procs` / `top`（重い 3 プロセス）/ `current_session` |
+| `units[]` | 塊。`id` / `kind`（`app` / `process` / `system` / `shell` / `webkit`）/ `name` / `mem` / `procs` / `top`（重い 3 プロセス）/ `current_session` |
 | `units[]`（`kind: process` のみ） | `root`（`pid` / `tty` / `age` / `cwd` / `args`）、`flags`、`role`、`safe_kill`、`kill` |
 | `safe_kill[]` | 聞かずに消してよいもの（`--top` の外も含む全件） |
 
@@ -75,7 +75,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/mem-triage/scripts/mem-triage.sh [--top N]
 正体と解放方法は [release-hints.md](references/release-hints.md) を読んで書く。判断は次の 3 つのどれかにする:
 
 - **消してよい**: `safe_kill: true` のものだけ
-- **要確認**: それ以外の `process` と `app`。作業中かどうかは本人にしか分からないので、`older_build`・`age`・`cwd`・`tty` を判断材料として添える
+- **要確認**: それ以外の `process` と `app`、`webkit`。作業中かどうかは本人にしか分からないので、`older_build`・`age`・`cwd`・`tty` を判断材料として添える
 - **消さない**: `system`・`shell`・`role: claude-daemon`・`current_session: true`
 
 ## Step 3: 解放をユーザーに渡す

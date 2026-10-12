@@ -28,6 +28,11 @@ mem-triage の `units[]` を表にするときに、正体と解放方法を書�
 | ターミナル（Ghostty / iTerm2 / WezTerm 等） | 端末本体だけ。中で動く nvim・claude は別の塊 | 中のプロセスを閉じる方が効く |
 | 常駐ユーティリティが数 GB | リークの疑い（推測） | アプリを再起動して減るか見る |
 
+## webkit
+
+- `webkit`（WebKit のタブ）は Safari・メール等が WebKit で開いたページの実体。launchd が起動するため、どのアプリのタブかは
+  プロセスからは分からない。Safari の使っていないタブを閉じるよう勧め、減らなければメール等の WebKit を使うアプリを疑う
+
 ## system / shell
 
 - `system`（macOS 本体: WindowServer・Finder 等）と `shell`（シェル・login・tmux・zellij）は消さない。大きければ再起動の判断材料として伝えるだけ

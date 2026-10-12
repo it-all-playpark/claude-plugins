@@ -31,3 +31,8 @@
   600     1 3-00:00:00 ??       /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
   601     1 3-00:00:00 ??       /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder
   700     1 3-00:00:00 ??       /usr/local/bin/python3.11
+  800     1 1-00:00:00 ??       /System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari
+  801     1 1-00:00:00 ??       /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+  802     1 05:00:00   ??       /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+  810   105 2-00:00:00 ttys002  /nix/store/cccccccccccccccccccccccccccccccc-nodejs-20.11.0/bin/node
+  811   105 01:00:00   ttys002  /nix/store/dddddddddddddddddddddddddddddddd-nodejs-22.1.0/bin/node

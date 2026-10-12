@@ -2,7 +2,8 @@
 # mem-triage.sh のテスト。fixtures/ は実機の ps / top / sysctl / memory_pressure / lsof の出力形式を模したもの。
 #   - Ghostty の 2 つのタブで nvim（古い版と新しい版）と claude を起動し、claude の Bash から dev server と stdio サーバーを起動
 #   - launchd 直下に、親を失った stdio language server・claude daemon・常駐の python
-#   - Claude.app / Dia / OrbStack のヘルパーと macOS 本体
+#   - Claude.app / Dia / OrbStack のヘルパーと macOS 本体、Safari と WebKit のタブ
+#   - 別メジャー版の node（20 と 22）を同じタブで並べて起動
 
 setup() {
   SCRIPT="$BATS_TEST_DIRNAME/mem-triage.sh"
@@ -62,6 +63,19 @@ unit() {
   [ "$(jq -r .root.age <<<"$(unit pid:110)")" = "2d1h" ]
 }
 
+@test "別メジャー版を並べて動かしているものには older_build を付けない" {
+  triage
+  [ "$(jq -c .flags <<<"$(unit pid:810)")" = "[]" ]
+  [ "$(jq -c .flags <<<"$(unit pid:811)")" = "[]" ]
+}
+
+@test "/System/Applications の標準アプリはアプリの塊、WebKit のタブは専用の塊になり、macOS 本体に入らない" {
+  triage
+  [ "$(jq -r .kind <<<"$(unit app:Safari)")" = "app" ]
+  [ "$(jq -c '[.kind, .procs]' <<<"$(unit webkit)")" = '["webkit",2]' ]
+  [ "$(jq -r .procs <<<"$(unit system)")" = "3" ]
+}
+
 @test "claude は daemon と対話セッションを起動引数で見分ける" {
   triage
   [ "$(jq -r .role <<<"$(unit pid:300)")" = "claude-daemon" ]
@@ -80,12 +94,12 @@ unit() {
   run bash "$SCRIPT" --from "$FIX" --top 3
   [ "$status" -eq 0 ]
   [ "$(jq -c '[.units[].id]' <<<"$output")" = '["app:OrbStack","app:Dia","app:Claude"]' ]
-  [ "$(jq -r .summary.units <<<"$output")" = "14" ]
+  [ "$(jq -r .summary.units <<<"$output")" = "18" ]
 }
 
 @test "summary は top のヘッダ・swap・memory_pressure から読む" {
   triage
-  [ "$(jq -c '.summary | [.used, .compressor, .swap_used, .swap_total, .free_percent, .processes]' <<<"$output")" = '["31G","10G","2G","3G",54,33]' ]
+  [ "$(jq -c '.summary | [.used, .compressor, .swap_used, .swap_total, .free_percent, .processes]' <<<"$output")" = '["31G","10G","2G","3G",54,38]' ]
 }
 
 @test "lsof の作業ディレクトリが塊の根に付き、引けなかった根は null になる" {
