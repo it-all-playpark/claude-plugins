@@ -356,7 +356,6 @@ final class CaptureSession {
             mic: o.withMic ? TrackWriter(url: outDir.appendingPathComponent("mic.wav"), origin: origin) : nil
         )
         recorder.onError = onError
-        let mic = try recorder.mic.map { try MicCapture(writer: $0, queue: recorder.queue, deviceUID: o.micDeviceID) }
 
         let stream = SCStream(filter: filter, configuration: config, delegate: recorder)
         do {
@@ -366,12 +365,22 @@ final class CaptureSession {
         } catch {
             throw CaptureError.start(error)
         }
-        do {
-            try mic?.start()
-        } catch {
-            mic?.stop()
-            try? await stream.stopCapture()
-            throw error as? CaptureError ?? CaptureError.start(error)
+        // マイクは副トラック。開けなくても会議 (system.wav) は録り続ける。
+        // ここで throw すると自動録音はその会議を丸ごと skip してしまう
+        var mic: MicCapture?
+        if let writer = recorder.mic {
+            do {
+                let m = try MicCapture(writer: writer, queue: recorder.queue, deviceUID: o.micDeviceID)
+                do {
+                    try m.start()
+                    mic = m
+                } catch {
+                    m.stop()
+                    throw error
+                }
+            } catch {
+                log("マイクを開始できないため、自分の声 (mic.wav) は録音しません: \(error)")
+            }
         }
         return CaptureSession(outDir: outDir, recorder: recorder, stream: stream, mic: mic)
     }
