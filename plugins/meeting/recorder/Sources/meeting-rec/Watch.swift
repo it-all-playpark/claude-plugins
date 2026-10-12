@@ -16,6 +16,7 @@ struct AudioProcess {
     let bundleID: String
     let input: Bool  // マイク使用中
     let output: Bool  // 音声出力中
+    let inputDevices: [AudioDeviceID]  // いま入力に使っているデバイス
 }
 
 private func prop<T>(_ obj: AudioObjectID, _ selector: AudioObjectPropertySelector, _ initial: T) -> T? {
@@ -49,8 +50,41 @@ func audioProcesses() -> [AudioProcess] {
             bid = s.takeRetainedValue() as String
         }
         if bid.isEmpty { bid = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "" }
-        return AudioProcess(pid: pid, bundleID: bid, input: input, output: output)
+        return AudioProcess(
+            pid: pid, bundleID: bid, input: input, output: output,
+            // global scope では空が返る。入力デバイスは input scope で聞く
+            inputDevices: input ? objectIDs(id, kAudioProcessPropertyDevices, scope: kAudioObjectPropertyScopeInput) : [])
     }
+}
+
+private func objectIDs(
+    _ obj: AudioObjectID, _ selector: AudioObjectPropertySelector,
+    scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+) -> [AudioObjectID] {
+    var addr = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(obj, &addr, 0, nil, &size) == noErr, size > 0 else { return [] }
+    var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(obj, &addr, 0, nil, &size, &ids) == noErr else { return [] }
+    return ids
+}
+
+private func stringProp(_ obj: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+    guard let cf = prop(obj, selector, Unmanaged<CFString>?.none), let s = cf else { return nil }
+    return s.takeRetainedValue() as String
+}
+
+/// 会議アプリがマイク入力に使っているデバイス (UID, 名前)。
+/// 既定の入力は BlackHole 等の仮想デバイスに戻っていることがあり、それを録ると全サンプル 0 になる
+/// (会議アプリは自分の設定で選んだマイクを直接開くので気付けない)。アプリが拾っているマイクを録る
+func meetingMicDevice(_ app: MeetingApp, _ procs: [AudioProcess]) -> (uid: String, name: String)? {
+    let inputs = procs.filter { $0.input && $0.bundleID.hasPrefix(app.prefix) }.flatMap(\.inputDevices)
+    // 会議アプリが自前の仮想デバイスも開いている場合に備え、実デバイスを優先する
+    let isVirtual = { (d: AudioDeviceID) in prop(d, kAudioDevicePropertyTransportType, UInt32(0)) == kAudioDeviceTransportTypeVirtual }
+    guard let d = inputs.first(where: { !isVirtual($0) }) ?? inputs.first,
+          let uid = stringProp(d, kAudioDevicePropertyDeviceUID)
+    else { return nil }
+    return (uid, stringProp(d, kAudioObjectPropertyName) ?? uid)
 }
 
 // MARK: - Meeting apps
@@ -244,14 +278,17 @@ func runWatch(_ o: WatchOptions) async -> Never {
                         dir = o.home.appendingPathComponent("\(base)-\(n)")
                         n += 1
                     }
+                    var capture = o.capture
+                    let mic = capture.withMic && capture.micDeviceID == nil ? meetingMicDevice(a, procs) : nil
+                    if let m = mic { capture.micDeviceID = m.uid }
                     do {
-                        session = try await CaptureSession.start(outDir: dir, options: o.capture) { err in
+                        session = try await CaptureSession.start(outDir: dir, options: capture) { err in
                             flags.set(error: "\(err)")
                         }
                         app = a
                         lastSeen = now
                         updateMeta(dir, ["title": "\(a.name) 会議", "app": a.name, "auto": true, "started_at": nowISO()])
-                        log("録音開始: \(a.name) → \(dir.path)")
+                        log("録音開始: \(a.name) → \(dir.path) (マイク: \(mic?.name ?? "システム既定"))")
                         notify("\(a.name) の会議を録音中 (破棄: meeting skip)")
                     } catch CaptureError.permission(let e) {
                         // 許可ダイアログに答えている最中かもしれないので、この会議を諦めず startDelay ごとに再試行する
