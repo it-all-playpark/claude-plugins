@@ -76,6 +76,9 @@ meeting uninstall
   `unresolved_speakers` として記録する（完了通知に人数が出る）。後から `meeting name` で名前を入れられる。
   カレンダーの参加者を使わせるには、カレンダー連携の MCP ツール名を `MEETING_CALENDAR_TOOLS`（`,` 区切り）に
   入れて `meeting install` し直す（非対話の claude は許可していないツールを使えない。ツール名は環境ごとに違うので既定値は無い）。
+  claude.ai の Google Calendar コネクタなら `mcp__claude_ai_Google_Calendar__list_events`。claude.ai のコネクタは
+  `ANTHROPIC_API_KEY` が設定されていると読み込まれない（常駐はこの変数を引き継がないが、`meeting post` を手で実行する
+  シェルに置いてあると参加者を取れない）。
 - **ヘッドホン推奨**: スピーカーだと相手の声がマイクにも入り、`自分` として二重に文字起こしされる。
 
 ## 手動で使う
