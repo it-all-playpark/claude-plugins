@@ -178,8 +178,11 @@ cmd_post() {
     exit 1
   fi
   if [[ "${MEETING_AUTO_NOTES:-0}" == 1 && -n "${MEETING_NOTES_DIR:-}" ]] && command -v claude >/dev/null; then
-    # 文字起こしは第三者の発言をそのまま含む。-p では許可の確認ができず未許可のツールは拒否されるので、
-    # skill の .gitignore 確認に要る git だけを許し、Web アクセスは明示的に閉じる。
+    # 文字起こしは第三者の発言をそのまま含むのに、-p では許可の確認ができない。ここで足すのは skill の
+    # .gitignore 確認に要る git の許可と Web アクセスの禁止だけで、それ以外は絞れていない:
+    # acceptEdits なので MEETING_NOTES_DIR 配下と録音 DIR のファイルはどれでも編集でき、ユーザー設定の
+    # permissions.allow もそのまま効く。書き込みを議事録と全文の 2 ファイルに限っているのは SKILL.md の規則だけ
+    # (output_dir は skill-config で決まるため、ここでパス単位の許可にすると探索を二重に持つことになる)。
     # プロンプトは可変長の --allowedTools に飲まれないよう -p の直後に置く
     (cd "$MEETING_NOTES_DIR" && claude -p "/meeting-notes $dir --non-interactive" \
       --permission-mode acceptEdits --add-dir "$dir" \
