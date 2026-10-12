@@ -155,6 +155,27 @@ def merge_tracks(*tracks: list[Utterance]) -> list[Utterance]:
     return out
 
 
+def pick_clips(utts: list[Utterance], speaker: str, total: float = 5.0, min_clip: float = 0.5) -> list[Utterance]:
+    """話者の声を確かめるために再生する区間 (meeting play)。
+
+    その話者の発話を長い順 (同じ長さなら早い順) に取り、各発話の頭から合計 total 秒になるまで切り出す。
+    残りが min_clip 秒を切ったら止める (短すぎる断片は聞き分けに役立たない)。
+    """
+    cands = sorted(
+        (u for u in utts if u.speaker == speaker and u.end > u.start),
+        key=lambda u: (-(u.end - u.start), u.start),
+    )
+    clips: list[Utterance] = []
+    left = total
+    for u in cands:
+        if left < min_clip:
+            break
+        dur = min(u.end - u.start, left)
+        clips.append(Utterance(u.start, u.start + dur, u.speaker, u.text, u.source))
+        left -= dur
+    return clips
+
+
 def fmt_ts(sec: float) -> str:
     s = int(sec)
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"

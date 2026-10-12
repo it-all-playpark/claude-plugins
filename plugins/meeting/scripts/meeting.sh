@@ -10,12 +10,16 @@
 #   meeting rec [タイトル] [rec opts]   手動で録音開始。Ctrl-C で停止 → 自動で文字起こし
 #   meeting transcribe [DIR] [opts]     文字起こし + 話者分離だけやり直す
 #   meeting notes [DIR]                 Claude Code の /meeting-notes で議事録を作成
+#   meeting play <DIR> <話者ラベル>     その話者の声を約 5 秒再生する (自分 は mic.wav から)
+#   meeting name [DIR]                  議事録の未確定の話者 (unresolved_speakers) に名前を入れる
+#                                       DIR 省略時は未確定の話者が残る最新の録音
 #   meeting ls                          録音一覧
 #
 # 環境変数:
 #   MEETING_HOME          録音の保存先 (default: ~/Meetings)
-#   MEETING_NOTES_DIR     議事録を置くリポジトリ / vault。notes と自動議事録はここで claude を起動する
+#   MEETING_NOTES_DIR     議事録を置くリポジトリ / vault。notes / name と自動議事録はここで claude を起動する
 #   MEETING_AUTO_NOTES=1  文字起こし後に議事録作成まで自動実行 (MEETING_NOTES_DIR が必要)
+#   MEETING_CALENDAR_TOOLS 自動議事録の claude -p に許可するカレンダー連携のツール名 (, 区切り。既定なし)
 #   MEETING_APPS          検知対象の上書き "us.zoom.=Zoom,com.microsoft.teams=Teams"
 #   MEETING_PREFIX        インストール先 (default: ${XDG_DATA_HOME:-~/.local/share}/meeting-rec)
 #   MEETING_BIN_DIR       meeting コマンドの symlink 先 (default: ~/.local/bin)
@@ -89,7 +93,7 @@ cmd_print_plist() {
 import os, plistlib, sys
 label, rec, home, selfp, logp = sys.argv[1:]
 env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "MEETING_HOME": home, "HOME": os.environ["HOME"], "LANG": "ja_JP.UTF-8"}
-for k in ("MEETING_AUTO_NOTES", "MEETING_NOTES_DIR", "MEETING_APPS", "MEETING_PREFIX", "MEETING_ASR_MODEL", "MEETING_DIAR_MODEL"):
+for k in ("MEETING_AUTO_NOTES", "MEETING_NOTES_DIR", "MEETING_CALENDAR_TOOLS", "MEETING_APPS", "MEETING_PREFIX", "MEETING_ASR_MODEL", "MEETING_DIAR_MODEL"):
     if os.environ.get(k):
         env[k] = os.environ[k]
 sys.stdout.buffer.write(plistlib.dumps({
@@ -183,12 +187,23 @@ cmd_post() {
     # acceptEdits なので MEETING_NOTES_DIR 配下と録音 DIR のファイルはどれでも編集でき、ユーザー設定の
     # permissions.allow もそのまま効く。書き込みを議事録と全文の 2 ファイルに限っているのは SKILL.md の規則だけ
     # (output_dir は skill-config で決まるため、ここでパス単位の許可にすると探索を二重に持つことになる)。
-    # プロンプトは可変長の --allowedTools に飲まれないよう -p の直後に置く
+    # プロンプトは可変長の --allowedTools に飲まれないよう -p の直後に置く。
+    # -p では許可されていない MCP ツールは拒否されるので、カレンダーの参加者を使うにはツール名を
+    # MEETING_CALENDAR_TOOLS で渡す (ツール名は環境ごとに違うので既定値は持たない)
+    local allowed="Bash(git check-ignore:*),Bash(git rev-parse:*)"
+    [[ -n "${MEETING_CALENDAR_TOOLS:-}" ]] && allowed+=",$MEETING_CALENDAR_TOOLS"
     (cd "$MEETING_NOTES_DIR" && claude -p "/meeting-notes $dir --non-interactive" \
       --permission-mode acceptEdits --add-dir "$dir" \
-      --allowedTools "Bash(git check-ignore:*),Bash(git rev-parse:*)" \
+      --allowedTools "$allowed" \
       --disallowedTools "WebFetch,WebSearch") || { notify "議事録の作成に失敗しました: $(basename "$dir")"; exit 1; }
-    notify "議事録を作成しました: $(basename "$dir")"
+    local unresolved labels
+    unresolved="$(note_tool find "$MEETING_NOTES_DIR" "$dir" | cut -f3)" || true
+    if [[ -n "$unresolved" ]]; then
+      IFS=, read -ra labels <<< "$unresolved"
+      notify "議事録を作成しました: $(basename "$dir") — 名前が未確定の話者 ${#labels[@]} 人 (meeting name で名前を入れられます)"
+    else
+      notify "議事録を作成しました: $(basename "$dir")"
+    fi
   else
     notify "文字起こし完了: $(basename "$dir") — meeting notes で議事録化"
   fi
@@ -206,6 +221,178 @@ cmd_notes() {
   [[ -f "$dir/transcript.json" ]] || die "$dir/transcript.json がありません。先に meeting transcribe"
   command -v claude >/dev/null || die "claude (Claude Code) がありません"
   cd "${MEETING_NOTES_DIR:-$PWD}" && claude --add-dir "$dir" "/meeting-notes $dir"
+}
+
+# 話者の声を確かめる (/meeting-notes の「この発言は誰？」で質問の前に鳴らす)。
+# どの区間を鳴らすかは align.pick_clips が決め、発言の source でトラックを選ぶ (自分 = mic.wav)
+cmd_play() {
+  [[ $# -eq 2 ]] || die "使い方: meeting play <DIR> <話者ラベル>"
+  local dir="${1%/}" label="$2"
+  [[ -f "$dir/transcript.json" ]] || die "$dir/transcript.json がありません。先に meeting transcribe"
+  command -v ffmpeg >/dev/null || die "ffmpeg がありません"
+  command -v afplay >/dev/null || die "afplay がありません (macOS 専用)"
+  local clips
+  clips="$(python3 - "$SRC/transcribe" "$dir/transcript.json" "$label" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from align import Utterance, fmt_ts, pick_clips
+utts = [Utterance(**u) for u in json.load(open(sys.argv[2]))["utterances"]]
+for c in pick_clips(utts, sys.argv[3]):
+    wav = "mic.wav" if c.source == "mic" else "system.wav"
+    print(f"{wav}\t{c.start:.2f}\t{c.end - c.start:.2f}\t[{fmt_ts(c.start)}] {c.text}")
+PY
+)"
+  [[ -n "$clips" ]] || die "$label の発言がありません"
+  local tmp wav start dur line i=0
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/meeting-play.XXXXXX")"
+  trap "rm -rf '$tmp'" EXIT
+  while IFS=$'\t' read -r wav start dur line; do
+    [[ -f "$dir/$wav" ]] || die "$dir/$wav がありません"
+    echo "$line"
+    ffmpeg -nostdin -loglevel error -y -ss "$start" -t "$dur" -i "$dir/$wav" "$tmp/$i.wav"
+    afplay "$tmp/$i.wav" < /dev/null
+    i=$((i + 1))
+  done <<< "$clips"
+}
+
+# 議事録 = frontmatter の recording: が録音 DIR を指す Markdown。保存先は skill-config で決まるので root 配下を全部見る
+#   find <root> [DIR]       DIR の議事録 (DIR 省略時は unresolved_speakers が残る最新の録音の議事録) を
+#                           「議事録<TAB>録音 DIR<TAB>未確定のラベル (, 区切り)」で出す。無ければ何も出さない
+#   set <root> <議事録> <話者A=田中,...>
+#                           議事録と全文 (frontmatter の transcript:) のラベルを置き換え、unresolved_speakers から外す
+note_tool() {
+  python3 - "$@" <<'PY'
+import os, re, sys
+
+def unq(v):
+    return v.strip().strip("\"'")
+
+def labels_of(v):
+    v = v.strip()
+    if v.startswith("[") and v.endswith("]"):
+        v = v[1:-1]
+    return [unq(x) for x in v.split(",") if unq(x)]
+
+def split_note(text):
+    """(frontmatter の行, 本文)。frontmatter が無ければ None。"""
+    lines = text.split("\n")
+    if not lines or lines[0] != "---":
+        return None
+    for i in range(1, len(lines)):
+        if lines[i] == "---":
+            return lines[1:i], "\n".join(lines[i + 1:])
+    return None
+
+def fields(fm_lines):
+    out = {}
+    for line in fm_lines:
+        k, sep, v = line.partition(":")
+        if sep:
+            out[k.strip()] = v.strip()
+    return out
+
+def notes(root):
+    for d, subdirs, files in os.walk(root):
+        subdirs[:] = sorted(s for s in subdirs if not s.startswith("."))
+        for name in sorted(files):
+            if not name.endswith(".md"):
+                continue
+            path = os.path.join(d, name)
+            try:
+                parts = split_note(open(path, encoding="utf-8").read())
+            except (OSError, UnicodeDecodeError):
+                continue
+            fm = fields(parts[0]) if parts else {}
+            if fm.get("recording"):
+                yield path, unq(fm["recording"]), labels_of(fm.get("unresolved_speakers", ""))
+
+def find(root, want=None):
+    hits = list(notes(root))
+    if want:
+        hits = [h for h in hits if os.path.realpath(h[1]) == os.path.realpath(want)]
+    else:
+        hits = sorted((h for h in hits if h[2]), key=lambda h: os.path.basename(h[1].rstrip("/")))
+    if hits:
+        path, rec, labels = hits[-1]
+        print(f"{path}\t{rec}\t{','.join(labels)}")
+
+def set_names(root, note, spec):
+    names = {}
+    for pair in spec.split(","):
+        k, sep, v = pair.partition("=")
+        if sep and k.strip() and v.strip():
+            names[k.strip()] = v.strip()
+    if not names:
+        sys.exit("meeting: --set には 話者A=田中,話者B=佐藤 の形で渡してください")
+    # 話者A を置き換えるとき 話者AB や 話者27 の頭を巻き込まない
+    pat = re.compile("(?:" + "|".join(re.escape(k) for k in sorted(names, key=len, reverse=True)) + ")(?![A-Za-z0-9])")
+    sub = lambda s: pat.sub(lambda m: names[m.group(0)], s)
+
+    fm_lines, body = split_note(open(note, encoding="utf-8").read())
+    out, transcript, left = [], None, []
+    for line in fm_lines:
+        k, _, v = line.partition(":")
+        if k.strip() == "unresolved_speakers":
+            left = [x for x in labels_of(v) if x not in names]
+            if left:
+                out.append(f"unresolved_speakers: [{', '.join(left)}]")
+            continue
+        if k.strip() == "transcript":
+            transcript = unq(v).removeprefix("[[").removesuffix("]]").split("|")[0]
+        out.append(sub(line))
+    with open(note, "w", encoding="utf-8") as f:
+        f.write("\n".join(["---", *out, "---"]) + "\n" + sub(body))
+    print(f"✓ {note}")
+
+    if transcript:
+        path = transcript if transcript.endswith(".md") else transcript + ".md"
+        path = os.path.join(root, path)
+        if os.path.isfile(path):
+            text = open(path, encoding="utf-8").read()
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(sub(text))
+            print(f"✓ {path}")
+        else:
+            print(f"! 全文が見つかりません: {path}", file=sys.stderr)
+    print("未確定の話者: " + (", ".join(left) if left else "なし"))
+
+cmd = sys.argv[1]
+if cmd == "find":
+    find(*sys.argv[2:4])
+elif cmd == "set":
+    set_names(*sys.argv[2:5])
+PY
+}
+
+# 全自動で名前を確定できなかった話者に後から名前を入れる。要約は作り直さず、ラベルを置き換えるだけ。
+# --set なしは claude の /meeting-notes --name-unresolved で「この発言は誰？」と聞き、答えを --set で反映する
+cmd_name() {
+  local dir="" spec=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --set) [[ $# -ge 2 ]] || die "--set には 話者A=田中,話者B=佐藤 の形で渡してください"; spec="$2"; shift 2 ;;
+      -*) die "不明なオプション: $1" ;;
+      *) [[ -z "$dir" ]] || die "DIR は 1 つだけ指定できます"; dir="${1%/}"; shift ;;
+    esac
+  done
+  local root="${MEETING_NOTES_DIR:-$PWD}" found note labels
+  found="$(note_tool find "$root" ${dir:+"$dir"})"
+  if [[ -z "$found" ]]; then
+    [[ -z "$dir" ]] || die "$dir の議事録が $root にありません (frontmatter の recording: で探します)"
+    echo "未確定の話者が残る議事録はありません ($root)"
+    return 0
+  fi
+  IFS=$'\t' read -r note dir labels <<< "$found"
+  if [[ -z "$labels" ]]; then
+    echo "未確定の話者はありません: $note"
+    return 0
+  fi
+  if [[ -n "$spec" ]]; then
+    note_tool set "$root" "$note" "$spec"
+    return
+  fi
+  command -v claude >/dev/null || die "claude (Claude Code) がありません"
+  cd "$root" && claude --add-dir "$dir" "/meeting-notes $dir --name-unresolved $note"
 }
 
 cmd_ls() {
@@ -234,6 +421,8 @@ case "$sub" in
   print-plist) cmd_print_plist ;;
   transcribe|tr) cmd_transcribe "$@" ;;
   notes) cmd_notes "$@" ;;
+  play) cmd_play "$@" ;;
+  name) cmd_name "$@" ;;
   ls) cmd_ls ;;
   -h|--help|help) usage ;;
   *) usage; exit 2 ;;
