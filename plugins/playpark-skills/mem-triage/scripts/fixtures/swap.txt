@@ -1,0 +1,1 @@
+total = 3072.00M  used = 2048.25M  free = 1023.75M  (encrypted)

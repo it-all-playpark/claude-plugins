@@ -1,9 +1,9 @@
 #!/usr/bin/env bats
-# plugin-hooks.bats - 3 plugin (dev-flow / playpark-core / playpark-skills) 横断の
+# plugin-hooks.bats - hook を持つ 2 plugin (dev-flow / playpark-core) 横断の
 # hooks/hooks.json 構造 invariant テスト（issue #572）。
 #
 # Invariants pinned here:
-#   - 3 plugin すべてに hooks/hooks.json が存在し valid JSON である。
+#   - 2 plugin すべてに hooks/hooks.json が存在し valid JSON である。
 #   - hooks.json 内の全 command は ${CLAUDE_PLUGIN_ROOT} 経由で参照する（dotfiles 由来の
 #     絶対パス $HOME/.claude/hooks・~/.claude/skills・$HOME/.claude/skills・ghq/github.com
 #     を含む command は 0 件）。
@@ -11,7 +11,7 @@
 #     git index 上 tracked なファイルに限り mode 100755 も確認する（新規 hook は
 #     implementer が git add/commit しない規約のため untracked のまま — index 検査は
 #     tracked のみに限定し、untracked をスキップする）。
-#   - dev-flow / playpark-core / playpark-skills それぞれの参照 rel 集合・
+#   - dev-flow / playpark-core それぞれの参照 rel 集合・
 #     event/matcher 配線が計画どおりである。
 #   - plugin hook script が dotfiles 側の絶対パス（旧 skills repo の ghq パス・
 #     $HOME/.claude/hooks/）を参照していない（dead path 不在）。
@@ -34,24 +34,24 @@ plugin_root_refs() {
     all_commands "$1" | grep -oE '\$\{CLAUDE_PLUGIN_ROOT\}/[^" ]+' | sed 's#^\${CLAUDE_PLUGIN_ROOT}/##' | sort -u
 }
 
-PLUGIN_NAMES=(dev-flow playpark-core playpark-skills)
+PLUGIN_NAMES=(dev-flow playpark-core)
 
 # --- 1. hooks.json の存在・構造 ---------------------------------------------
 
-@test "3 plugin すべてに plugins/<name>/hooks/hooks.json が存在する" {
+@test "2 plugin すべてに plugins/<name>/hooks/hooks.json が存在する" {
     for name in "${PLUGIN_NAMES[@]}"; do
         [ -f "$(hooks_json_path "$name")" ]
     done
 }
 
-@test "3 plugin すべての hooks.json が valid JSON である" {
+@test "2 plugin すべての hooks.json が valid JSON である" {
     for name in "${PLUGIN_NAMES[@]}"; do
         run jq empty "$(hooks_json_path "$name")"
         [ "$status" -eq 0 ]
     done
 }
 
-@test "3 plugin すべての hooks.json の .hooks は object である" {
+@test "2 plugin すべての hooks.json の .hooks は object である" {
     for name in "${PLUGIN_NAMES[@]}"; do
         run jq -r '.hooks | type' "$(hooks_json_path "$name")"
         [ "$status" -eq 0 ]
@@ -156,35 +156,6 @@ PLUGIN_NAMES=(dev-flow playpark-core playpark-skills)
     [ "$output" = "Write(*/SKILL.md)" ]
 }
 
-# --- 6. playpark-skills: 参照・配線 -----------------------------------------
-
-@test "playpark-skills の参照 rel が zombie-kill.sh のみである" {
-    expected="claude-zombie-kill/scripts/zombie-kill.sh"
-    actual="$(plugin_root_refs playpark-skills)"
-    [ "$actual" = "$expected" ]
-}
-
-@test "playpark-skills の .hooks.SessionStart[0].matcher は startup である" {
-    run jq -r '.hooks.SessionStart[0].matcher' "$(hooks_json_path playpark-skills)"
-    [ "$status" -eq 0 ]
-    [ "$output" = "startup" ]
-}
-
-@test "playpark-skills の SessionStart command は zombie-kill.sh を --hook --min-hours 48 で起動し（--force で無条件 kill しない）\$HOME / .claude/skills に依存しない" {
-    run jq -r '.hooks.SessionStart[0].hooks[0].command' "$(hooks_json_path playpark-skills)"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *'${CLAUDE_PLUGIN_ROOT}/claude-zombie-kill/scripts/zombie-kill.sh'* ]]
-    [[ "$output" == *"--hook --min-hours 48"* ]]
-    [[ "$output" != *"--force"* ]]
-    [[ "$output" != *'.claude/skills'* ]]
-    [[ "$output" != *'$HOME'* ]]
-}
-
-@test "playpark-skills の zombie-kill.sh が bash -n の構文検査を通る" {
-    run bash -n "$REPO_ROOT/plugins/playpark-skills/claude-zombie-kill/scripts/zombie-kill.sh"
-    [ "$status" -eq 0 ]
-}
-
 # --- 7/8. dead path invariant -----------------------------------------------
 
 @test "tracked な *.sh にrepo clone の ghq 絶対パスが残っていない" {
@@ -201,7 +172,7 @@ PLUGIN_NAMES=(dev-flow playpark-core playpark-skills)
 }
 
 @test "plugin hook が dotfiles hook dir (.claude/hooks/) を参照していない" {
-    run bash -c "grep -rlF '.claude/hooks/' '$REPO_ROOT/plugins/dev-flow/hooks' '$REPO_ROOT/plugins/playpark-core/hooks' '$REPO_ROOT/plugins/playpark-skills/hooks'"
+    run bash -c "grep -rlF '.claude/hooks/' '$REPO_ROOT/plugins/dev-flow/hooks' '$REPO_ROOT/plugins/playpark-core/hooks'"
     echo "$output"
     [ -z "$output" ]
 }
@@ -229,14 +200,4 @@ PLUGIN_NAMES=(dev-flow playpark-core playpark-skills)
     [[ "$hooks_line" == *"PreToolUse"* ]]
     [[ "$hooks_line" == *"PostToolUse"* ]]
     [[ "$hooks_line" == *"PostToolUseFailure"* ]]
-}
-
-@test "claude CLI: playpark-skills plugin の Hooks 行に SessionStart が含まれる" {
-    command -v claude >/dev/null 2>&1 || skip "claude CLI not available"
-    run claude --plugin-dir "$REPO_ROOT/plugins/playpark-skills" plugin details playpark-skills
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Hooks ("* ]]
-    [[ "$output" != *"Hooks (0)"* ]]
-    hooks_line="$(echo "$output" | grep 'Hooks (')"
-    [[ "$hooks_line" == *"SessionStart"* ]]
 }

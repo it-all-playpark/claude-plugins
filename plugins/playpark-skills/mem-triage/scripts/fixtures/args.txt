@@ -1,0 +1,41 @@
+    1 /sbin/launchd
+  100 /Applications/Ghostty.app/Contents/MacOS/ghostty
+  101 /usr/bin/login -flp x /bin/bash --noprofile --norc -c exec -l fish
+  102 -fish
+  104 /usr/bin/login -flp x /bin/bash --noprofile --norc -c exec -l fish
+  105 -fish
+  110 /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-neovim-unwrapped-0.12.4/bin/nvim .
+  111 /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-neovim-unwrapped-0.12.4/bin/nvim --embed .
+  112 node --experimental-sqlite /Users/x/.local/share/nvim/lazy/copilot.lua/copilot/js/language-server.js --stdio
+  120 /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-neovim-unwrapped-0.12.5/bin/nvim .
+  121 /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-neovim-unwrapped-0.12.5/bin/nvim --embed .
+  122 node --experimental-sqlite /Users/x/.local/share/nvim/lazy/copilot.lua/copilot/js/language-server.js --stdio
+  130 node /Users/x/.local/share/nvim/mason/bin/vscode-json-language-server --stdio
+  200 /Applications/Claude.app/Contents/MacOS/Claude
+  201 /Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer) --type=renderer
+  202 /Applications/Claude.app/Contents/Helpers/disclaimer --pgroup -- /Users/x/Library/Application Support/Claude/claude-code/2.1.295/0123456789ab/claude.app/Contents/MacOS/claude
+  203 /Users/x/Library/Application Support/Claude/claude-code/2.1.295/0123456789ab/claude.app/Contents/MacOS/claude --output-format stream-json
+  300 /Users/x/.local/opt/claude-code/claude daemon run --origin transient
+  301 claude bg-spare --bg-spare /tmp/cc-daemon-501/spare/a.claim.sock
+  302 claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/spare/a.pty.sock
+  310 claude
+  311 node /Users/x/mcp/server.js
+  312 /bin/zsh -c pnpm dev
+  313 node /Users/x/proj-c/node_modules/.bin/next dev
+  315 /bin/zsh -c node /Users/x/mcp/lsp-proxy.js --stdio
+  316 node /Users/x/mcp/lsp-proxy.js --stdio
+  400 /Applications/OrbStack.app/Contents/Frameworks/OrbStack Helper.app/Contents/MacOS/OrbStack Helper vmgr
+  500 /Applications/Dia.app/Contents/MacOS/Dia
+  501 /Applications/Dia.app/Contents/Frameworks/Dia Framework.framework/Helpers/Browser Helper (Renderer).app/Contents/MacOS/Browser Helper (Renderer) --type=renderer
+  502 /Applications/Dia.app/Contents/Frameworks/Dia Framework.framework/Helpers/Browser Helper (Renderer).app/Contents/MacOS/Browser Helper (Renderer) --type=renderer
+  600 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon
+  601 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder
+  700 /usr/local/bin/python3.11 /Users/x/bin/agent.py
+  800 /System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari
+  801 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+  802 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+  810 /nix/store/cccccccccccccccccccccccccccccccc-nodejs-20.11.0/bin/node /Users/x/proj-d/server.js
+  811 /nix/store/dddddddddddddddddddddddddddddddd-nodejs-22.1.0/bin/node /Users/x/proj-e/server.js
+  830 node /Users/x/.npm/supergateway/dist/index.js --stdio npx-server --port 8000
+  840 /opt/homebrew/Cellar/python@3.11/3.11.9/bin/python3.11 /Users/x/proj-f/app.py
+  841 /opt/homebrew/Cellar/python@3.12/3.12.4/bin/python3.12 /Users/x/proj-g/app.py
