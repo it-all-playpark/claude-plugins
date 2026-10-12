@@ -391,7 +391,7 @@ def set_names(root, note, spec):
 
     if transcript:
         path = transcript if transcript.endswith(".md") else transcript + ".md"
-        path = os.path.join(root, path)
+        path = os.path.join(root, os.path.expanduser(path))
         if os.path.isfile(path):
             text = open(path, encoding="utf-8").read()
             with open(path, "w", encoding="utf-8") as f:

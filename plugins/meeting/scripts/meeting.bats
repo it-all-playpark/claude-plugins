@@ -390,3 +390,17 @@ write_note() {
     [ "$status" -eq 1 ]
     grep -qxF '**[00:00:01] 田中**: はい' "$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
 }
+
+@test "name --set は transcripts_dir が ~ 始まりの全文もホーム基準で書き換える" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    write_note 2026-01-01-a "$rec" "話者A"
+    note="$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md"
+    mkdir -p "$HOME/tx"
+    mv "$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md" "$HOME/tx/"
+    sed -i.bak 's|^transcript: .*|transcript: "[[~/tx/2026-01-01-a]]"|' "$note"
+    MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run bash "$SCRIPT" name "$rec" --set "話者A=田中"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qxF '**[00:00:01] 田中**: はい' "$HOME/tx/2026-01-01-a.md"
+}
