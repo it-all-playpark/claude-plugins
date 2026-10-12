@@ -114,7 +114,25 @@ meeting ls
 ```
 
 議事録の保存先は `skill-config.json` の `meeting-notes` セクションで変えられる（`output_dir` / `transcripts_dir` / `save_transcript`）。
+自動録音の議事録は常に `MEETING_NOTES_DIR` で作られるので、設定は `MEETING_NOTES_DIR` の repo の `skill-config.json` か、
+どこから `/meeting-notes` を打っても揃うグローバルの `~/.config/skills/config.json` に書く。
 全文の文字起こしには相手の発言がそのまま入るので、`transcripts_dir` は `.gitignore` に入れておく。
+
+議事録をチームで読めるよう Google Drive に置くには、Google Drive for desktop の同期フォルダを `output_dir` に指定する
+（`MEETING_NOTES_DIR` の外でよい。自動議事録の claude にはそのフォルダを `--add-dir` で渡し、`meeting name` もそこを探す）。
+`output_dir` が外にあるとき、全文の既定の保存先は共有先ではなく `MEETING_NOTES_DIR` 側の `meetings/transcripts` になる
+（git 管理外にしておく）:
+
+```json
+{
+  "meeting-notes": {
+    "output_dir": "~/Library/CloudStorage/GoogleDrive-<you>/Shared drives/<team>/議事録"
+  }
+}
+```
+
+Claude Code の sandbox を使っている場合、`meeting name` は Bash から議事録を書き換えるので、`output_dir` を
+sandbox の書き込み許可（`sandbox.filesystem.allowWrite`）に入れておく。
 
 | 環境変数 | 既定 |
 |---|---|
