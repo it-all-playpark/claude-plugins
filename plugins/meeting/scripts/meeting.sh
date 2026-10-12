@@ -184,20 +184,22 @@ cmd_post() {
   if [[ "${MEETING_AUTO_NOTES:-0}" == 1 && -n "${MEETING_NOTES_DIR:-}" ]] && command -v claude >/dev/null; then
     # 文字起こしは第三者の発言をそのまま含むのに、-p では許可の確認ができない。ここで足すのは skill の
     # .gitignore 確認に要る git の許可と Web アクセスの禁止だけで、それ以外は絞れていない:
-    # acceptEdits なので MEETING_NOTES_DIR 配下と録音 DIR のファイルはどれでも編集でき、ユーザー設定の
-    # permissions.allow もそのまま効く。書き込みを議事録と全文の 2 ファイルに限っているのは SKILL.md の規則だけ
-    # (output_dir は skill-config で決まるため、ここでパス単位の許可にすると探索を二重に持つことになる)。
+    # acceptEdits なので MEETING_NOTES_DIR 配下・録音 DIR・(外にあれば) output_dir のファイルはどれでも編集でき、
+    # ユーザー設定の permissions.allow もそのまま効く。書き込みを議事録と全文の 2 ファイルに限っているのは
+    # SKILL.md の規則だけ。output_dir が外にあるときに --add-dir しないと、-p では Write が許可待ちのまま失敗する。
     # プロンプトは可変長の --allowedTools に飲まれないよう -p の直後に置く。
     # -p では許可されていない MCP ツールは拒否されるので、カレンダーの参加者を使うにはツール名を
     # MEETING_CALENDAR_TOOLS で渡す (ツール名は環境ごとに違うので既定値は持たない)
-    local allowed="Bash(git check-ignore:*),Bash(git rev-parse:*)"
+    local allowed="Bash(git check-ignore:*),Bash(git rev-parse:*)" ext add=()
     [[ -n "${MEETING_CALENDAR_TOOLS:-}" ]] && allowed+=",$MEETING_CALENDAR_TOOLS"
+    ext="$(outside_notes_dir "$MEETING_NOTES_DIR")" || { notify "議事録の保存先を作れません: $(basename "$dir")"; exit 1; }
+    [[ -n "$ext" ]] && add=(--add-dir "$ext")
     (cd "$MEETING_NOTES_DIR" && claude -p "/meeting-notes $dir --non-interactive" \
-      --permission-mode acceptEdits --add-dir "$dir" \
+      --permission-mode acceptEdits --add-dir "$dir" ${add[@]+"${add[@]}"} \
       --allowedTools "$allowed" \
       --disallowedTools "WebFetch,WebSearch") || { notify "議事録の作成に失敗しました: $(basename "$dir")"; exit 1; }
     local unresolved labels
-    unresolved="$(note_tool find "$MEETING_NOTES_DIR" "$dir" | cut -f3)" || true
+    unresolved="$(note_tool find "$dir" "$MEETING_NOTES_DIR" ${ext:+"$ext"} | cut -f3)" || true
     if [[ -n "$unresolved" ]]; then
       IFS=, read -ra labels <<< "$unresolved"
       notify "議事録を作成しました: $(basename "$dir") — 名前が未確定の話者 ${#labels[@]} 人 (meeting name で名前を入れられます)"
@@ -220,7 +222,20 @@ cmd_notes() {
   local dir="${1:-$(latest_dir)}"
   [[ -f "$dir/transcript.json" ]] || die "$dir/transcript.json がありません。先に meeting transcribe"
   command -v claude >/dev/null || die "claude (Claude Code) がありません"
-  cd "${MEETING_NOTES_DIR:-$PWD}" && claude --add-dir "$dir" "/meeting-notes $dir"
+  local root="${MEETING_NOTES_DIR:-$PWD}" ext add=()
+  ext="$(outside_notes_dir "$root")" || die "議事録の保存先を作れません"
+  [[ -n "$ext" ]] && add=(--add-dir "$ext")
+  cd "$root" && claude --add-dir "$dir" ${add[@]+"${add[@]}"} "/meeting-notes $dir"
+}
+
+# skill-config の output_dir が root の外 (Drive の同期フォルダ等) なら作って出す。中なら何も出さない
+outside_notes_dir() {
+  local base out
+  base="$(cd "$1" && pwd -P)" || return 1
+  out="$(note_tool outdir "$base")" || return 1
+  case "$out/" in "$base"/*) return 0 ;; esac
+  mkdir -p "$out" || return 1
+  echo "$out"
 }
 
 # 話者の声を確かめる (/meeting-notes の「この発言は誰？」で質問の前に鳴らす)。
@@ -255,14 +270,16 @@ PY
   done <<< "$clips"
 }
 
-# 議事録 = frontmatter の recording: が録音 DIR を指す Markdown。保存先は skill-config で決まるので root 配下を全部見る
-#   find <root> [DIR]       DIR の議事録 (DIR 省略時は unresolved_speakers が残る最新の録音の議事録) を
+# 議事録 = frontmatter の recording: が録音 DIR を指す Markdown。output_dir を変えても前の議事録を見失わないよう、
+# 探索は root 配下を全部見て、output_dir が root の外 (Drive の同期フォルダ等) ならそこも見る (notes_roots)
+#   outdir <base>           skill-config の output_dir (既定 meetings) を base 相対で絶対パスにして出す
+#   find <DIR|""> <root>... DIR の議事録 (DIR が空なら unresolved_speakers が残る最新の録音の議事録) を
 #                           「議事録<TAB>録音 DIR<TAB>未確定のラベル (, 区切り)」で出す。無ければ何も出さない
 #   set <root> <議事録> <話者A=田中,...>
 #                           議事録と全文 (frontmatter の transcript:) のラベルを置き換え、unresolved_speakers から外す
 note_tool() {
   python3 - "$@" <<'PY'
-import os, re, sys
+import json, os, re, sys
 
 def unq(v):
     return v.strip().strip("\"'")
@@ -306,8 +323,32 @@ def notes(root):
             if fm.get("recording"):
                 yield path, unq(fm["recording"]), labels_of(fm.get("unresolved_speakers", ""))
 
-def find(root, want=None):
-    hits = list(notes(root))
+def output_dir(base):
+    """SKILL.md と同じ順 (git root の skill-config.json → .claude/skill-config.json → グローバル) で
+    最初に見つかった meeting-notes セクションの output_dir を、base 相対で絶対パスにする。"""
+    top, d = None, os.path.abspath(base)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            top = d
+            break
+        if os.path.dirname(d) == d:
+            break
+        d = os.path.dirname(d)
+    paths = [os.path.join(top, "skill-config.json"), os.path.join(top, ".claude", "skill-config.json")] if top else []
+    paths.append(os.path.expanduser("~/.config/skills/config.json"))
+    out = "meetings"
+    for p in paths:
+        try:
+            sec = json.load(open(p, encoding="utf-8")).get("meeting-notes")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(sec, dict):
+            out = sec.get("output_dir") or out
+            break
+    print(os.path.normpath(os.path.join(os.path.abspath(base), os.path.expanduser(out))))
+
+def find(roots, want=None):
+    hits = [h for root in roots for h in notes(root)]
     if want:
         hits = [h for h in hits if os.path.realpath(h[1]) == os.path.realpath(want)]
     else:
@@ -358,7 +399,9 @@ def set_names(root, note, spec):
 
 cmd = sys.argv[1]
 if cmd == "find":
-    find(*sys.argv[2:4])
+    find(sys.argv[3:], sys.argv[2] or None)
+elif cmd == "outdir":
+    output_dir(sys.argv[2])
 elif cmd == "set":
     set_names(*sys.argv[2:5])
 PY
@@ -375,11 +418,12 @@ cmd_name() {
       *) [[ -z "$dir" ]] || die "DIR は 1 つだけ指定できます"; dir="${1%/}"; shift ;;
     esac
   done
-  local root="${MEETING_NOTES_DIR:-$PWD}" found note labels
-  found="$(note_tool find "$root" ${dir:+"$dir"})"
+  local root="${MEETING_NOTES_DIR:-$PWD}" ext found note labels
+  ext="$(outside_notes_dir "$root")" || die "議事録の保存先を作れません"
+  found="$(note_tool find "$dir" "$root" ${ext:+"$ext"})"
   if [[ -z "$found" ]]; then
-    [[ -z "$dir" ]] || die "$dir の議事録が $root にありません (frontmatter の recording: で探します)"
-    echo "未確定の話者が残る議事録はありません ($root)"
+    [[ -z "$dir" ]] || die "$dir の議事録が $root${ext:+ / $ext} にありません (frontmatter の recording: で探します)"
+    echo "未確定の話者が残る議事録はありません ($root${ext:+ / $ext})"
     return 0
   fi
   IFS=$'\t' read -r note dir labels <<< "$found"
@@ -392,7 +436,7 @@ cmd_name() {
     return
   fi
   command -v claude >/dev/null || die "claude (Claude Code) がありません"
-  cd "$root" && claude --add-dir "$dir" "/meeting-notes $dir --name-unresolved $note"
+  cd "$root" && claude --add-dir "$dir" ${ext:+--add-dir "$ext"} "/meeting-notes $dir --name-unresolved $note"
 }
 
 cmd_ls() {

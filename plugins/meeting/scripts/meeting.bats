@@ -156,6 +156,53 @@ EOF
     grep -qF "meeting name" "$BATS_TEST_TMPDIR/osascript.args"
 }
 
+# グローバル設定で output_dir を MEETING_NOTES_DIR の外 (Drive の同期フォルダ想定) に向ける
+global_output_dir() {
+    mkdir -p "$HOME/.config/skills"
+    printf '{"meeting-notes": {"output_dir": "%s", "transcripts_dir": "meetings/transcripts"}}\n' "$1" \
+        > "$HOME/.config/skills/config.json"
+}
+
+@test "post は output_dir が MEETING_NOTES_DIR の外なら作って --add-dir で渡し、そこの議事録から通知する" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_tools
+    global_output_dir "~/Google Drive/議事録"
+    out="$HOME/Google Drive/議事録"
+    dir="$MEETING_HOME/2026-01-01_1000-Zoom"
+    mkdir -p "$dir"
+
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_AUTO_NOTES=1 MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" \
+        run bash "$SCRIPT" post "$dir"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ -d "$out" ]
+    grep -qxF -- "$out" "$BATS_TEST_TMPDIR/claude.args"
+
+    printf -- '---\nrecording: %s\nunresolved_speakers: [話者A]\n---\n' "$dir" > "$out/2026-01-01-zoom.md"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_AUTO_NOTES=1 MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" \
+        run bash "$SCRIPT" post "$dir"
+    [ "$status" -eq 0 ]
+    grep -qF "未確定の話者 1 人" "$BATS_TEST_TMPDIR/osascript.args"
+}
+
+@test "post は output_dir が MEETING_NOTES_DIR の中なら --add-dir を足さない" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_tools
+    global_output_dir "~/Google Drive/議事録"
+    # プロジェクトの skill-config.json がグローバルより優先される
+    mkdir -p "$BATS_TEST_TMPDIR/notes/.git"
+    printf '{"meeting-notes": {"output_dir": "minutes"}}\n' > "$BATS_TEST_TMPDIR/notes/skill-config.json"
+    dir="$MEETING_HOME/2026-01-01_1000-Zoom"
+    mkdir -p "$dir"
+
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_AUTO_NOTES=1 MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" \
+        run bash "$SCRIPT" post "$dir"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(grep -cxF -- '--add-dir' "$BATS_TEST_TMPDIR/claude.args")" -eq 1 ]
+    [ ! -e "$HOME/Google Drive" ]
+}
+
 # 話者A (system) と 自分 (mic) の発言を持つ録音を作る
 make_recording() {
     dir="$MEETING_HOME/2026-01-01_1000-Zoom"
@@ -307,4 +354,30 @@ write_note() {
     grep -qxF '**[00:00:05] 佐藤**: どうも' "$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
     MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run bash "$SCRIPT" name
     [[ "$output" == *"未確定の話者が残る議事録はありません"* ]]
+}
+
+@test "name は MEETING_NOTES_DIR の外の output_dir にある議事録を見つけ、全文は MEETING_NOTES_DIR 相対で書き換える" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_tools
+    global_output_dir "~/Google Drive/議事録"
+    out="$HOME/Google Drive/議事録"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    write_note 2026-01-01-a "$rec" "話者A"
+    mkdir -p "$out"
+    mv "$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md" "$out/"
+
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run bash "$SCRIPT" name
+    echo "$output"
+    [ "$status" -eq 0 ]
+    mapfile -t args < "$BATS_TEST_TMPDIR/claude.args"
+    [ "${args[2]}" = "--add-dir" ]
+    [ "${args[3]}" = "$out" ]
+    [ "${args[4]}" = "/meeting-notes $rec --name-unresolved $out/2026-01-01-a.md" ]
+
+    MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run bash "$SCRIPT" name "$rec" --set "話者A=田中"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    run grep -q '^unresolved_speakers:' "$out/2026-01-01-a.md"
+    [ "$status" -eq 1 ]
+    grep -qxF '**[00:00:01] 田中**: はい' "$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
 }

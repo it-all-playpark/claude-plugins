@@ -32,8 +32,8 @@ description: >
 
 | キー | 既定 | 説明 |
 |------|------|------|
-| `output_dir` | `meetings` | 議事録の保存先（cwd 相対） |
-| `transcripts_dir` | `<output_dir>/transcripts` | 全文の保存先。相手の発言全文を含むので git 管理外にする |
+| `output_dir` | `meetings` | 議事録の保存先。cwd 相対、または絶対パス・`~` 始まり（Google Drive の同期フォルダなど cwd の外も可） |
+| `transcripts_dir` | `<output_dir>/transcripts` | 全文の保存先（`output_dir` と同じ書き方）。相手の発言全文を含むので git 管理外にし、共有フォルダには置かない。`output_dir` を共有フォルダにするなら cwd 相対で明示する |
 | `save_transcript` | `true` | 全文を保存するか（`--no-transcript` が優先） |
 
 `meeting-notes` セクションを、プロジェクト（git root の `skill-config.json`、無ければ `.claude/skill-config.json`）→ グローバル（`~/.config/skills/config.json`）の順に探して Read し、無いキーは既定値を使う。
