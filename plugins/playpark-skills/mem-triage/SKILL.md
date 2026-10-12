@@ -46,8 +46,10 @@ bash ${CLAUDE_PLUGIN_ROOT}/mem-triage/scripts/mem-triage.sh [--top N]
 
 - **この形のまま単独で実行する**。プロセス一覧（ps / top / lsof）は sandbox 内では読めないため、plugin cache 配下の
   スクリプトとして sandbox の外で動かす。パイプ・リダイレクト・`cd … &&`・変数代入の前置を付けると sandbox 内に戻り exit 3 になる
-- 前提条件: sandbox を有効にしている環境では、plugin cache（`~/.claude/plugins/cache/<marketplace>/*`）を `bash` 付きで
-  `sandbox.excludedCommands` に入れておく。exit 3 が出たらこれをユーザーに案内する（自分で回避しない）
+- 前提条件: sandbox を有効にしている環境では、このスクリプト 1 本だけを `sandbox.excludedCommands` に入れておく
+  （例: `bash ~/.claude/plugins/cache/<marketplace>/playpark-skills/*/mem-triage/scripts/mem-triage.sh*`）。
+  marketplace 配下を丸ごと入れると、書き込みを持つ他の skill のスクリプトまで sandbox の外で動くので案内しない。
+  exit 3 が出たらこれをユーザーに案内する（自分で回避しない）
 - macOS 専用（それ以外は exit 2）
 
 出力は 1 行の JSON:
@@ -81,7 +83,9 @@ bash ${CLAUDE_PLUGIN_ROOT}/mem-triage/scripts/mem-triage.sh [--top N]
 ## Step 3: 解放をユーザーに渡す
 
 - **kill は自分で実行しない**。ユーザーが選んだものを `! kill <pid>` の形で示す（`消してよい` はまとめて 1 行: `! kill 130 131`）
-- `process` の塊は根の pid（`kill` フィールド）を止めれば子も終わる。未保存の作業がありうるもの（nvim 等）は、まずその端末で閉じることを勧める
+- `process` の塊は根の pid（`kill` フィールド）を止めると多くは子も終わるが、SIGTERM は子に伝わらないので
+  `npm exec` 経由の子などが launchd 直下に残ることがある。止めた後に Step 1 を再実行し、残った子（`orphan_stdio` 等）を確かめる。
+  未保存の作業がありうるもの（nvim 等）は、まずその端末で閉じることを勧める
 - アプリは終了（⌘Q）を案内する
 - 解放後に確かめたいと言われたら Step 1 を再実行し、前回との差を示す
 

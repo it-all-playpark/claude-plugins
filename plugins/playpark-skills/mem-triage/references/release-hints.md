@@ -8,7 +8,7 @@ mem-triage の `units[]` を表にするときに、正体と解放方法を書�
 | 見分け方 | 正体 | 解放方法 |
 |----------|------|----------|
 | `name: nvim` で `top` に `language-server`・`--stdio` の node がいる | エディタ 1 つと、その LSP / Copilot | その端末で `:qa`。言語サーバーは nvim を閉じれば一緒に終わる |
-| `flags` に `older_build` | 更新前の版のまま開きっぱなし | 新しい版で開き直してよいか本人に聞く |
+| `flags` に `older_build` | 更新前の版のまま開きっぱなし。ただし nix の devshell ごとの別ビルド（同じ版名の別 derivation）でも付くので、`cwd` が別プロジェクトなら更新前とは限らない | 新しい版で開き直してよいか本人に聞く |
 | `flags` に `orphan_stdio` | 親（エディタ・Claude Code 等）が死んで残った stdio サーバー。誰にも繋がっていない | `kill <pid>`（聞かずに消してよい） |
 | `role: claude-cli` | 対話中の Claude Code セッション（`top` の node 等は MCP server） | そのセッションを `/exit`。`current_session` なら触れない |
 | `role: claude-agents` | `claude agents`（バックグラウンドセッションの一覧画面）を端末で開いたもの | 使っていないタブなら閉じてよい。bg セッション本体は `claude-daemon` の配下で動いていて、この画面の子ではない |
