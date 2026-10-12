@@ -1,0 +1,8 @@
+{
+  "name": "meeting",
+  "description": "Auto-records Zoom / Google Meet / Teams meetings on macOS (even ones you don't host), transcribes them locally with Whisper + pyannote speaker diarization, and turns them into meeting notes",
+  "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
+  "repository": "https://github.com/it-all-playpark/claude-plugins",
+  "license": "MIT",
+  "skills": ["./"]
+}

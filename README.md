@@ -9,7 +9,7 @@ Built and maintained by [playpark LLC](https://www.playpark.co.jp/) — an AI de
 
 ## Quick Start
 
-本 repo は 4 つの Claude Code plugin（`playpark-core` / `dev-flow` / `playpark-skills` / `host-exec`）に
+本 repo は 5 つの Claude Code plugin（`playpark-core` / `dev-flow` / `playpark-skills` / `host-exec` / `meeting`）に
 分かれています。導入方法は用途によって 2 通りあります。
 
 ### 配布側インストール（copy mode）
@@ -26,6 +26,7 @@ Marketplaces で auto-update を有効化。`DISABLE_AUTOUPDATER=1` 環境では
 /plugin install dev-flow@playpark         # issue-to-LGTM ワークフロー（playpark-core は dependencies で自動解決）
 /plugin install playpark-skills@playpark  # 個人用スキル一式（任意）
 /plugin install host-exec@playpark        # sandbox 外での承認付き実行ツール（任意）
+/plugin install meeting@playpark          # 会議の自動録音・ローカル文字起こし・議事録（macOS、任意）
 ```
 
 `host-exec` は hooks module（`plugins/host-exec/hooks/register.ts`）で `mcp__host-exec__run` ツールを
@@ -34,6 +35,11 @@ Marketplaces で auto-update を有効化。`DISABLE_AUTOUPDATER=1` 環境では
 選ばせます。実行ファイルは許可リストで絞らず、承認ダイアログに PATH で解決した実体・argv・cwd をエスケープして
 見せ、Claude が書き換えられる場所の実行ファイルや一時ディレクトリの cwd、スクリプトの中身を動かすコマンドには
 警告を添えます。
+
+`meeting` は macOS 専用です。会議アプリ（Zoom / Google Meet / Teams 等）がマイクを使い始めたら自動で録音し、
+Whisper と pyannote でローカルに文字起こし・話者分離して `/meeting-notes` で議事録にします。常駐（launchd）は
+`meeting install` を実行したときだけ登録され、録音バイナリは plugin の外の固定パスにビルドされます。
+詳細は [`plugins/meeting/README.md`](plugins/meeting/README.md)。
 
 `playpark-skills` は SessionStart hook（`plugins/playpark-skills/hooks/hooks.json`）を持ちます。
 起動（`startup`）ごとに `ps aux` の行に `claude` を含み 48 時間超経過したプロセス（自身と
@@ -281,6 +287,14 @@ skill-config.json                              # プロジェクト設定（リ�
 | `top_n` | number | 上位N件取得 |
 | `title_strip_patterns` | string[] | タイトルから除去する正規表現 |
 
+#### meeting-notes
+
+| キー | 型 | 説明 |
+|------|-----|------|
+| `output_dir` | string | 議事録の保存先（デフォルト: `"meetings"`） |
+| `transcripts_dir` | string | 全文の文字起こしの保存先（デフォルト: `"<output_dir>/transcripts"`。git 管理外にする） |
+| `save_transcript` | boolean | 全文の文字起こしを保存するか（デフォルト: `true`） |
+
 #### seo-strategy
 
 | キー | 型 | 説明 |
@@ -443,6 +457,12 @@ config = load_skill_config("ga-analyzer")
 |--------|------|
 | `slack-cli` | Slack操作CLI（チャンネル/メッセージ/スレッド/リアクション） |
 
+### 会議
+
+| スキル | 説明 |
+|--------|------|
+| `meeting-notes` | `meeting` plugin が録音・文字起こしした会議（話者識別付き）から議事録を作成（要約・決定事項・TODO） |
+
 ### ユーティリティ
 
 | スキル | 説明 |
@@ -469,7 +489,7 @@ Claude Code内で `/スキル名` を実行:
 
 ## 構造
 
-本 repo は 4 plugin 構成です（`.claude-plugin/marketplace.json` に登録）。
+本 repo は 5 plugin 構成です（`.claude-plugin/marketplace.json` に登録）。
 
 ```
 skills/
@@ -507,14 +527,19 @@ skills/
 │   │   ├── <skill-name> -> .agents/skills/<name>  # 外部スキル（symlink・gitignored）
 │   │   ├── .agents/skills/               # 外部スキル実体（gitignored）
 │   │   └── skills-lock.json              # 外部スキルの lockfile（tracked）
-│   └── host-exec/                        # sandbox 外の承認付き実行ツール plugin（skill なし）
-│       ├── hooks/register.ts             # ツール登録と 3 段のゲート
-│       └── tests/host-exec.test.ts       # claude plugin test で実行
+│   ├── host-exec/                        # sandbox 外の承認付き実行ツール plugin（skill なし）
+│   │   ├── hooks/register.ts             # ツール登録と 3 段のゲート
+│   │   └── tests/host-exec.test.ts       # claude plugin test で実行
+│   └── meeting/                          # 会議の自動録音・文字起こし・議事録 plugin（macOS）
+│       ├── bin/meeting                   # CLI（setup で固定パスにインストール）
+│       ├── recorder/                     # Swift: ScreenCaptureKit 録音 + CoreAudio で会議検知
+│       ├── transcribe/                   # Python: mlx-whisper + pyannote
+│       └── meeting-notes/SKILL.md
 ├── tools/                                 # sync-inlines.mjs 等 repo 全体ツール
 ├── tests/                                 # bats / vitest ランナーと横断テスト
 ├── docs/                                  # dev-flow-atlas.md 等ドキュメント
 ├── .claude/rules/                         # dev-flow.md（正典）
-├── .claude-plugin/marketplace.json        # 4 plugin の登録
+├── .claude-plugin/marketplace.json        # 5 plugin の登録
 ├── .gitignore                             # 外部スキルsymlink・実体を自動管理
 └── README.md
 ```

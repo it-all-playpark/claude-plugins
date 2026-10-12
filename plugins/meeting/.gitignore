@@ -1,0 +1,3 @@
+# swift build の中間生成物（meeting setup は $MEETING_PREFIX/build を使うが、手元で直接ビルドした場合）
+recorder/.build/
+__pycache__/
