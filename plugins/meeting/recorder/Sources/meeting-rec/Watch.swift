@@ -3,9 +3,11 @@
 // 検知方法: CoreAudio のプロセスオブジェクト (macOS 14+) から「いまマイク入力を使っている
 // プロセス」の bundle id を取り、既知の会議アプリと照合する。主催者・URL・カレンダーに依存しない。
 
+import AVFoundation
 import AppKit
 import CoreAudio
 import Foundation
+import ScreenCaptureKit
 
 // MARK: - Mic users (CoreAudio)
 
@@ -109,6 +111,22 @@ func notify(_ message: String, title: String = "meeting-rec") {
     try? p.run()
 }
 
+// MARK: - Permissions
+
+/// 常駐の起動時 (meeting install 直後) に画面収録とマイクの許可を求める。
+/// 最初の会議で初めて求めると、ダイアログに答える前に録音開始が TCC で拒否され、その会議を録り逃す
+func requestPermissions() async {
+    do {
+        _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+    } catch {
+        log("画面収録の権限がありません。ダイアログかシステム設定で meeting-rec を許可すると録音できます: \(error)")
+        notify("meeting-rec に「画面収録とシステムオーディオ録音」を許可してください")
+    }
+    if !(await AVCaptureDevice.requestAccess(for: .audio)) {
+        log("マイクの権限がありません。自分の声 (mic.wav) は録音されません")
+    }
+}
+
 // MARK: - Watch loop
 
 struct WatchOptions {
@@ -152,6 +170,7 @@ func runWatch(_ o: WatchOptions) async -> Never {
     var firstSeen: Date?
     var lastSeen = Date()
     var skipping = false  // この会議は録らない (skip / 開始失敗)。会議アプリがマイクを離したら解除
+    var permissionNotified = false  // 権限待ちの通知をこの会議で出したか
 
     func postProcess(_ dir: URL) {
         guard let cmd = o.onStop else { return }
@@ -181,6 +200,7 @@ func runWatch(_ o: WatchOptions) async -> Never {
         postProcess(s.outDir)
     }
 
+    await requestPermissions()
     log("会議の検知を開始 (対象: \(o.apps.map(\.name).joined(separator: ", ")))")
     while true {
         let f = flags.take()
@@ -233,6 +253,15 @@ func runWatch(_ o: WatchOptions) async -> Never {
                         updateMeta(dir, ["title": "\(a.name) 会議", "app": a.name, "auto": true, "started_at": nowISO()])
                         log("録音開始: \(a.name) → \(dir.path)")
                         notify("\(a.name) の会議を録音中 (破棄: meeting skip)")
+                    } catch CaptureError.permission(let e) {
+                        // 許可ダイアログに答えている最中かもしれないので、この会議を諦めず startDelay ごとに再試行する
+                        try? FileManager.default.removeItem(at: dir)
+                        firstSeen = nil
+                        if !permissionNotified {
+                            log("画面収録の権限待ち (許可されたら録音を開始): \(e)")
+                            notify("meeting-rec に「画面収録とシステムオーディオ録音」を許可すると録音を開始します")
+                            permissionNotified = true
+                        }
                     } catch {
                         log("録音開始に失敗: \(error)")
                         notify("録音を開始できませんでした: \(error)")
@@ -244,6 +273,7 @@ func runWatch(_ o: WatchOptions) async -> Never {
         } else {
             firstSeen = nil
             skipping = false
+            permissionNotified = false
         }
 
         try? await Task.sleep(nanoseconds: UInt64(o.poll * 1_000_000_000))

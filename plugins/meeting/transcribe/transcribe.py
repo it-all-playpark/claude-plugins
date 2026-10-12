@@ -90,19 +90,8 @@ def transcribe(audio, args) -> list[dict]:
 
 def diarize(audio, args) -> list[Turn]:
     import torch
-    from pyannote.audio import Pipeline
 
-    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
-    try:
-        pipe = Pipeline.from_pretrained(args.diar_model, token=token)  # pyannote >= 4
-    except TypeError:
-        pipe = Pipeline.from_pretrained(args.diar_model, use_auth_token=token)  # pyannote 3.x
-    if pipe is None:
-        raise SystemExit(
-            f"話者分離モデル {args.diar_model} を取得できません。\n"
-            f"  1) https://huggingface.co/{args.diar_model} で利用規約に同意\n"
-            "  2) HF_TOKEN 環境変数を設定 (または `hf auth login`)"
-        )
+    pipe = load_pipeline(args.diar_model)
     device = args.device or ("mps" if torch.backends.mps.is_available() else "cpu")
     pipe.to(torch.device(device))
 
@@ -125,9 +114,39 @@ def diarize(audio, args) -> list[Turn]:
     return [Turn(seg.start, seg.end, spk) for seg, _, spk in ann.itertracks(yield_label=True)]
 
 
+def load_pipeline(model: str):
+    from pyannote.audio import Pipeline
+
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    try:
+        pipe = Pipeline.from_pretrained(model, token=token)  # pyannote >= 4
+    except TypeError:
+        pipe = Pipeline.from_pretrained(model, use_auth_token=token)  # pyannote 3.x
+    if pipe is None:
+        raise SystemExit(
+            f"話者分離モデル {model} を取得できません。\n"
+            f"  1) https://huggingface.co/{model} で利用規約に同意\n"
+            "  2) HF_TOKEN 環境変数を設定 (または `hf auth login`)"
+        )
+    return pipe
+
+
+def prefetch(args) -> None:
+    """モデルを先に取得しておく。自動録音後の初回の文字起こしがダウンロード失敗で落ちないように。"""
+    from huggingface_hub import snapshot_download
+
+    log(f"{args.asr_model} を取得中")
+    snapshot_download(repo_id=args.asr_model)
+    if not args.no_diarize:
+        log(f"{args.diar_model} を取得中")
+        load_pipeline(args.diar_model)
+    log("モデルの取得が完了しました")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("dir", type=Path, help="meeting-rec の出力ディレクトリ")
+    ap.add_argument("dir", type=Path, nargs="?", help="meeting-rec の出力ディレクトリ")
+    ap.add_argument("--prefetch", action="store_true", help="モデルを取得するだけで終わる (meeting setup が使う)")
     ap.add_argument("--language", default="ja", help="ja / en / auto (default: ja)")
     ap.add_argument("--prompt", default="", help="固有名詞・専門用語のヒント (Whisper initial_prompt)")
     ap.add_argument("--me", default="自分", help="mic.wav の話者名 (default: 自分)")
@@ -139,6 +158,11 @@ def main() -> None:
     ap.add_argument("--device", help="pyannote の実行デバイス (default: mps があれば mps)")
     ap.add_argument("--no-diarize", action="store_true", help="相手側を話者分離しない")
     args = ap.parse_args()
+    if args.prefetch:
+        prefetch(args)
+        return
+    if args.dir is None:
+        ap.error("dir が必要です")
 
     d: Path = args.dir.expanduser().resolve()
     meta_path = d / "meta.json"

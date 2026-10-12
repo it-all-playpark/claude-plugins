@@ -35,9 +35,11 @@ final class TrackWriter {
         guard sb.isValid, sb.numSamples > 0, let fd = sb.formatDescription else { return }
         do {
             try sb.withAudioBufferList { abl, _ in
-                let fmt = AVAudioFormat(cmAudioFormatDescription: fd)
-                guard let pcm = AVAudioPCMBuffer(pcmFormat: fmt, bufferListNoCopy: abl.unsafePointer)
+                guard let raw = AVAudioPCMBuffer(
+                    pcmFormat: AVAudioFormat(cmAudioFormatDescription: fd), bufferListNoCopy: abl.unsafePointer)
                 else { return }
+                let pcm = downmix(raw)
+                let fmt = pcm.format
                 if file == nil {
                     file = try AVAudioFile(
                         forWriting: url, settings: fmt.settings,
@@ -51,6 +53,29 @@ final class TrackWriter {
         } catch {
             log("write error (\(url.lastPathComponent)): \(error)")
         }
+    }
+
+    /// マイクは config.channelCount が効かず入力デバイスのチャンネル数で届く (仮想デバイスで 8ch など)。
+    /// 文字起こしは mono しか使わないので、平均して mono にしてから書く
+    private func downmix(_ pcm: AVAudioPCMBuffer) -> AVAudioPCMBuffer {
+        let fmt = pcm.format
+        guard fmt.channelCount > 1, fmt.commonFormat == .pcmFormatFloat32, let src = pcm.floatChannelData,
+              let mono = AVAudioFormat(
+                  commonFormat: .pcmFormatFloat32, sampleRate: fmt.sampleRate, channels: 1, interleaved: false),
+              let out = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: pcm.frameLength),
+              let dst = out.floatChannelData?[0]
+        else { return pcm }
+        out.frameLength = pcm.frameLength
+        let n = Int(fmt.channelCount)
+        for f in 0..<Int(pcm.frameLength) {
+            var sum: Float = 0
+            for c in 0..<n {
+                // interleaved は先頭チャンネルのポインタに stride 間隔で全チャンネルが並ぶ
+                sum += fmt.isInterleaved ? src[0][f * pcm.stride + c] : src[c][f]
+            }
+            dst[f] = sum / Float(n)
+        }
+        return out
     }
 
     private func padSilence(until pts: CMTime, format fmt: AVAudioFormat) throws {

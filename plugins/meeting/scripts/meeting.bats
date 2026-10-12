@@ -81,3 +81,31 @@ PY
     echo "$output"
     [ "$status" -eq 0 ]
 }
+
+@test "post の自動議事録は git の確認だけ許可し Web を閉じた claude -p にプロンプトを渡す" {
+    # 文字起こし (第三者の発言) を読む非対話の claude なので、許可ツールとプロンプトの位置を固定する
+    mkdir -p "$MEETING_PREFIX/bin" "$MEETING_PREFIX/transcribe" "$BATS_TEST_TMPDIR/stub" "$BATS_TEST_TMPDIR/notes"
+    : > "$MEETING_PREFIX/bin/meeting-rec"
+    chmod +x "$MEETING_PREFIX/bin/meeting-rec"
+    : > "$MEETING_PREFIX/transcribe/transcribe.py"
+    printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/stub/uv"
+    printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/stub/osascript"
+    printf '#!/bin/sh\npwd -P > "%s/claude.cwd"\nfor a in "$@"; do printf "%%s\\n" "$a"; done > "%s/claude.args"\n' \
+        "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$BATS_TEST_TMPDIR/stub/claude"
+    chmod +x "$BATS_TEST_TMPDIR/stub/"*
+    dir="$MEETING_HOME/2026-01-01_1000-Zoom"
+    mkdir -p "$dir"
+
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_AUTO_NOTES=1 MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" \
+        run bash "$SCRIPT" post "$dir"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/claude.cwd")" = "$(cd "$BATS_TEST_TMPDIR/notes" && pwd -P)" ]
+    mapfile -t args < "$BATS_TEST_TMPDIR/claude.args"
+    [ "${args[0]}" = "-p" ]
+    [ "${args[1]}" = "/meeting-notes $dir --non-interactive" ]
+    grep -qxF -- '--allowedTools' "$BATS_TEST_TMPDIR/claude.args"
+    grep -qxF -- 'Bash(git check-ignore:*),Bash(git rev-parse:*)' "$BATS_TEST_TMPDIR/claude.args"
+    grep -qxF -- '--disallowedTools' "$BATS_TEST_TMPDIR/claude.args"
+    grep -qxF -- 'WebFetch,WebSearch' "$BATS_TEST_TMPDIR/claude.args"
+}

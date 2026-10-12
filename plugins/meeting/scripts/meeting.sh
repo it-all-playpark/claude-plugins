@@ -68,9 +68,14 @@ cmd_setup() {
   echo "✓ インストール先: $PREFIX"
   echo "✓ $BIN_DIR/meeting (PATH に $BIN_DIR を入れてください)"
 
-  if [[ -z "${HF_TOKEN:-}" && ! -f "$HOME/.cache/huggingface/token" ]]; then
-    echo "! Hugging Face トークン未設定: https://huggingface.co/pyannote/speaker-diarization-community-1 で規約同意後、"
-    echo "  \`uvx --from huggingface_hub hf auth login\` を実行してください"
+  # 依存とモデル (数 GB) をここで取得しておく。自動録音の後処理で初めて取得すると、ダウンロード失敗が
+  # 「文字起こしに失敗」の通知になってその会議の文字起こしが残らない
+  if uv run --script "$TRANSCRIBE" --prefetch; then
+    echo "✓ 文字起こし・話者分離のモデルを取得しました"
+  else
+    echo "! モデルを取得できませんでした。話者分離は https://huggingface.co/pyannote/speaker-diarization-community-1 で"
+    echo "  規約同意後に \`uvx --from huggingface_hub hf auth login\` が必要です。ダウンロード自体が失敗する場合は"
+    echo "  HF_HUB_DISABLE_XET=1 を付けて meeting setup をやり直してください"
   fi
   if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
     launchctl kickstart -k "gui/$(id -u)/$LABEL"
@@ -108,7 +113,7 @@ cmd_install() {
   launchctl bootstrap "gui/$(id -u)" "$PLIST"
   echo "✓ 常駐登録しました: $PLIST"
   echo "  会議アプリがマイクを使い始めると自動で録音します。ログ: meeting log"
-  echo "  初回は「画面収録とシステムオーディオ録音」「マイク」で meeting-rec を許可してください"
+  echo "  これから出るダイアログで「画面収録とシステムオーディオ録音」「マイク」を meeting-rec に許可してください"
   echo "  (ダイアログが出ない場合: システム設定 > プライバシーとセキュリティ で $REC_BIN を追加)"
 }
 
@@ -173,8 +178,13 @@ cmd_post() {
     exit 1
   fi
   if [[ "${MEETING_AUTO_NOTES:-0}" == 1 && -n "${MEETING_NOTES_DIR:-}" ]] && command -v claude >/dev/null; then
-    (cd "$MEETING_NOTES_DIR" && claude -p --permission-mode acceptEdits --add-dir "$dir" \
-      "/meeting-notes $dir --non-interactive") || { notify "議事録の作成に失敗しました: $(basename "$dir")"; exit 1; }
+    # 文字起こしは第三者の発言をそのまま含む。-p では許可の確認ができず未許可のツールは拒否されるので、
+    # skill の .gitignore 確認に要る git だけを許し、Web アクセスは明示的に閉じる。
+    # プロンプトは可変長の --allowedTools に飲まれないよう -p の直後に置く
+    (cd "$MEETING_NOTES_DIR" && claude -p "/meeting-notes $dir --non-interactive" \
+      --permission-mode acceptEdits --add-dir "$dir" \
+      --allowedTools "Bash(git check-ignore:*),Bash(git rev-parse:*)" \
+      --disallowedTools "WebFetch,WebSearch") || { notify "議事録の作成に失敗しました: $(basename "$dir")"; exit 1; }
     notify "議事録を作成しました: $(basename "$dir")"
   else
     notify "文字起こし完了: $(basename "$dir") — meeting notes で議事録化"
