@@ -84,6 +84,15 @@ const SECRET_PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [/\b[A-Z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*[=:]\s*["']?[^\s"']{6,}/g, '秘密っぽい環境変数'],
 ]
 
+/**
+ * Bash の失敗が sandbox に拒否されたものだと分かる印。Claude Code の system prompt は
+ * 「ユーザーに `!` で実行してもらう」を常に勧めるので、この失敗のときだけ host-exec を思い出させる。
+ */
+const SANDBOX_DENIAL_MARKERS = ['Operation not permitted', 'sandbox_violations', 'EPERM']
+const SANDBOX_HINT =
+  'This Bash failure comes from the sandbox. Before asking the user to run the command themselves with `!`, ' +
+  'run it with the mcp__host-exec__run tool (it runs outside the sandbox after the user approves).'
+
 const MAX_TIMEOUT_SEC = 600
 const RUN = '実行する'
 const PASS_MASKED = 'マスクして渡す'
@@ -208,6 +217,8 @@ export const register: Register = on => {
         },
         required: ['argv', 'reason'],
       },
+      // deferred だと ToolSearch で読み込むまで description（人間に頼む代わりに使え）が見えない
+      isDeferred: false,
     })
     return next(e)
   })
@@ -367,4 +378,13 @@ export const register: Register = on => {
   }).catch(($, e, next) =>
     next.called ? next(e) : { deny: 'host-exec: its guard failed, so the command was not run.' },
   )
+
+  // 結果は変えず、sandbox に拒否された失敗のときだけ host-exec を使うよう context を添える
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const r = await next(e)
+    const out = r as unknown as { isError?: boolean; text?: unknown; context?: string[] }
+    const text = typeof out.text === 'string' ? out.text : ''
+    if (out.isError !== true || !SANDBOX_DENIAL_MARKERS.some(m => text.includes(m))) return r
+    return { ...r, context: [...(out.context ?? []), SANDBOX_HINT] }
+  })
 }

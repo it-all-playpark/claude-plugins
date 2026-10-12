@@ -59,7 +59,54 @@ function host(on: any) {
   })
 }
 
+/** Bash の実行結果を返すスタブ。text はエンジンがモデルに渡す文字列で、host-exec はこれを読む */
+function stubBash(on: any, out: { result: unknown; text: string; isError?: boolean }) {
+  on('tool.call', { tool: 'Bash' }, async () => out)
+}
+
 describe('host-exec', () => {
+  test('ツールは deferred にせず、schema と description を常に prompt に載せる', async ($, on) => {
+    const specs: any[] = []
+    on('tool.register', async ($: any, e: any) => {
+      specs.push(e)
+      return { value: undefined }
+    })
+    on('session.start', async ($: any, e: any) => e)
+    await $.session.start({ cwd: '/w/repo' } as any)
+    expect(specs.length).toBe(1)
+    expect(specs[0].name).toBe('run')
+    expect(specs[0].isDeferred).toBe(false)
+  })
+
+  for (const [mark, text] of [
+    ['Operation not permitted', 'ls: /Users/x/.ssh: Operation not permitted'],
+    ['sandbox_violations', 'curl: (56) CONNECT tunnel failed\n<sandbox_violations>\napi.example.com denied\n</sandbox_violations>'],
+    ['EPERM', 'Error: EPERM: operation not permitted, open \'/Users/x/.config/app.json\''],
+  ]) {
+    test(`sandbox に拒否された Bash の失敗（${mark}）には、結果を変えずに host-exec を使う context を 1 件添える`, async ($, on) => {
+      const out = { result: { stdout: '', stderr: text, interrupted: false }, text, isError: true }
+      stubBash(on, out)
+      const r: any = await $.tool.call({ tool: 'Bash', command: 'x' } as any)
+      expect(r.result).toEqual(out.result)
+      expect(r.text).toBe(text)
+      expect(r.isError).toBe(true)
+      expect(r.context.length).toBe(1)
+      expect(r.context[0]).toContain(TOOL)
+    })
+  }
+
+  for (const [kind, out] of [
+    ['成功', { result: { stdout: 'a.txt', stderr: '', interrupted: false }, text: 'a.txt' }],
+    ['sandbox と無関係な失敗', { result: { stdout: '', stderr: 'zsh: command not found: kubectl', interrupted: false }, text: 'zsh: command not found: kubectl', isError: true }],
+  ] as const) {
+    test(`Bash の${kind}には context を足さず、結果もそのまま返す`, async ($, on) => {
+      stubBash(on, out)
+      const r: any = await $.tool.call({ tool: 'Bash', command: 'x' } as any)
+      expect(r).toEqual(out)
+      expect(r.context).toBeUndefined()
+    })
+  }
+
   test('許可リストの無い任意の実行ファイルも、PATH で解決したパスを見せて承認後に実行する', async ($, on) => {
     const asked: string[] = []
     const ran: string[][] = []
