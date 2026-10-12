@@ -5,9 +5,9 @@ Whisper で文字起こし・pyannote で話者分離して、`/meeting-notes` �
 Zoom / Google Meet / Teams などアプリを問わず使え、処理はすべてローカル（Apple Silicon）で完結する。
 
 ```
-meeting-rec (Swift, ScreenCaptureKit)      transcribe.py                      /meeting-notes
-  system.wav  … 相手の声 ─────────────▶  mlx-whisper (large-v3-turbo)  ──▶  議事録 Markdown
-  mic.wav     … 自分の声 ─────────────▶  pyannote (相手側だけ話者分離)       (TL;DR / 決定事項 / TODO)
+meeting-rec (Swift)                        transcribe.py                      /meeting-notes
+  system.wav  … 相手の声 (ScreenCaptureKit) ──▶  mlx-whisper (large-v3-turbo)  ──▶  議事録 Markdown
+  mic.wav     … 自分の声 (AVAudioEngine) ───▶  pyannote (相手側だけ話者分離)       (TL;DR / 決定事項 / TODO)
 ```
 
 自分の声（マイク）と相手の声（システム音声）を**別トラック**で録るので「自分」は話者分離なしで確定し、
@@ -80,6 +80,9 @@ meeting uninstall
   `ANTHROPIC_API_KEY` が設定されていると読み込まれない（常駐はこの変数を引き継がないが、`meeting post` を手で実行する
   シェルに置いてあると参加者を取れない）。
 - **ヘッドホン推奨**: スピーカーだと相手の声がマイクにも入り、`自分` として二重に文字起こしされる。
+- **マイクの選び方**: 自動録音は、検知した会議アプリがいま入力に使っているデバイスで録る（`meeting log` の
+  「録音開始」行に `(マイク: <名前>)` と出る）。引けないときはシステム既定の入力。会議アプリ自体が仮想デバイス
+  （BlackHole 等）を拾っていると mic.wav は無音になるので、`mic.wav` が無音ならこの行のマイク名を確かめる。
 
 ## 手動で使う
 

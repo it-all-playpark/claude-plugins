@@ -1,6 +1,8 @@
-// ScreenCaptureKit でシステム音声とマイクを別トラックの WAV に録音する。
+// システム音声 (ScreenCaptureKit) とマイク (AVAudioEngine) を別トラックの WAV に録音する。
 
 import AVFoundation
+import AudioToolbox
+import CoreAudio
 import CoreMedia
 import Foundation
 import ScreenCaptureKit
@@ -38,21 +40,34 @@ final class TrackWriter {
                 guard let raw = AVAudioPCMBuffer(
                     pcmFormat: AVAudioFormat(cmAudioFormatDescription: fd), bufferListNoCopy: abl.unsafePointer)
                 else { return }
-                let pcm = downmix(raw)
-                let fmt = pcm.format
-                if file == nil {
-                    file = try AVAudioFile(
-                        forWriting: url, settings: fmt.settings,
-                        commonFormat: fmt.commonFormat, interleaved: fmt.isInterleaved)
-                    format = fmt
-                }
-                try padSilence(until: sb.presentationTimeStamp, format: fmt)
-                try file?.write(from: pcm)
-                framesWritten += AVAudioFramePosition(pcm.frameLength)
+                try write(raw, at: sb.presentationTimeStamp)
             }
         } catch {
             log("write error (\(url.lastPathComponent)): \(error)")
         }
+    }
+
+    /// pts は host clock 上の時刻 (origin と同じ時計)
+    func append(_ pcm: AVAudioPCMBuffer, at pts: CMTime) {
+        do {
+            try write(pcm, at: pts)
+        } catch {
+            log("write error (\(url.lastPathComponent)): \(error)")
+        }
+    }
+
+    private func write(_ raw: AVAudioPCMBuffer, at pts: CMTime) throws {
+        let pcm = downmix(raw)
+        let fmt = pcm.format
+        if file == nil {
+            file = try AVAudioFile(
+                forWriting: url, settings: fmt.settings,
+                commonFormat: fmt.commonFormat, interleaved: fmt.isInterleaved)
+            format = fmt
+        }
+        try padSilence(until: pts, format: fmt)
+        try file?.write(from: pcm)
+        framesWritten += AVAudioFramePosition(pcm.frameLength)
     }
 
     /// マイクは config.channelCount が効かず入力デバイスのチャンネル数で届く (仮想デバイスで 8ch など)。
@@ -117,8 +132,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didOutputSampleBuffer sb: CMSampleBuffer, of type: SCStreamOutputType) {
         switch type {
         case .audio: system.append(sb)
-        case .microphone: mic?.append(sb)
         case .screen: break  // 映像は使わない (SCStream の仕様上ダミーで受けている)
+        case .microphone: break  // マイクは MicCapture で録る
         @unknown default: break
         }
     }
@@ -126,6 +141,138 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         onError?(error)
     }
+}
+
+// MARK: - Microphone
+
+/// マイクは ScreenCaptureKit (captureMicrophone) ではなく AVAudioEngine で入力デバイスを直接開く。
+/// 録音中に入力デバイスやフォーマットが変わっても (Bluetooth の接続し直し等)、
+/// AVAudioEngineConfigurationChange を受けて繋ぎ直し、同じ mic.wav に録り続けるため
+final class MicCapture {
+    private let engine = AVAudioEngine()
+    private let lock = NSLock()  // 繋ぎ直し (通知スレッド) と stop の競合よけ
+    private var stopped = false
+    private let writer: TrackWriter
+    private let queue: DispatchQueue
+    private let deviceID: AudioDeviceID?
+    private var observer: NSObjectProtocol?
+    /// Bluetooth のモード切替やデバイス変更で入力のサンプルレート・チャンネル数が途中で変わっても
+    /// 1 つの WAV に書き続けられるよう、常にこの形式に変換してから書く
+    private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
+
+    init(writer: TrackWriter, queue: DispatchQueue, deviceUID: String?) throws {
+        self.writer = writer
+        self.queue = queue
+        if let uid = deviceUID {
+            guard let id = audioDeviceID(uid: uid) else { throw CaptureError.noMicDevice(uid) }
+            deviceID = id
+        } else {
+            deviceID = nil
+        }
+    }
+
+    func start() throws {
+        lock.lock(); defer { lock.unlock() }
+        try attach()
+        try engine.start()
+        // 入力デバイスやそのフォーマットが変わるとエンジンが止まるので、繋ぎ直して録り続ける。
+        // エンジンは作り直さない: 新しいエンジンにデバイスを設定すると、それ自体がまた構成変更の通知になり
+        // 繋ぎ直しが無限に続く
+        observer = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in self?.restart() }
+    }
+
+    func stop() {
+        lock.lock(); defer { lock.unlock() }
+        stopped = true
+        if let o = observer { NotificationCenter.default.removeObserver(o) }
+        observer = nil
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+    }
+
+    private func restart() {
+        lock.lock(); defer { lock.unlock() }
+        guard !stopped else { return }
+        log("マイクの入力構成が変わったため繋ぎ直します")
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        do {
+            try attach()
+            try engine.start()
+        } catch {
+            log("マイクの再開に失敗: \(error)")
+        }
+    }
+
+    private func attach() throws {
+        let input = engine.inputNode
+        // 設定すると構成変更の通知が来るので、既にそのデバイスなら触らない (繋ぎ直しのループよけ)
+        if var id = deviceID, let unit = input.audioUnit, currentDevice(unit) != id {
+            let st = AudioUnitSetProperty(
+                unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                &id, UInt32(MemoryLayout<AudioDeviceID>.size))
+            if st != noErr { throw CaptureError.start(NSError(domain: NSOSStatusErrorDomain, code: Int(st))) }
+        }
+        // tap のサンプルレートはハードウェアの入力と一致していないと NSException になる。
+        // outputFormat はデバイス切替直後に古い値のことがあるので、ハードウェア側の inputFormat を使う
+        let fmt = input.inputFormat(forBus: 0)
+        guard fmt.sampleRate > 0, fmt.channelCount > 0, let conv = AVAudioConverter(from: fmt, to: target) else {
+            throw CaptureError.start(NSError(
+                domain: "meeting-rec", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "マイクの入力フォーマットを扱えません: \(fmt)"]))
+        }
+        conv.downmix = true
+        input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { [weak self] buf, when in
+            self?.write(buf, when: when, converter: conv)
+        }
+    }
+
+    private func write(_ buf: AVAudioPCMBuffer, when: AVAudioTime, converter: AVAudioConverter) {
+        let cap = AVAudioFrameCount(Double(buf.frameLength) * target.sampleRate / buf.format.sampleRate) + 1
+        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: cap) else { return }
+        var fed = false
+        var err: NSError?
+        converter.convert(to: out, error: &err) { _, status in
+            if fed {
+                status.pointee = .noDataNow
+                return nil
+            }
+            fed = true
+            status.pointee = .haveData
+            return buf
+        }
+        if let err { log("マイクの変換に失敗: \(err)"); return }
+        guard out.frameLength > 0 else { return }
+        // system.wav (ScreenCaptureKit の PTS) と同じ host clock に載せて時間軸を揃える
+        let pts = when.isHostTimeValid
+            ? CMClockMakeHostTimeFromSystemUnits(when.hostTime)
+            : CMClockGetTime(CMClockGetHostTimeClock())
+        queue.sync { writer.append(out, at: pts) }
+    }
+}
+
+private func currentDevice(_ unit: AudioUnit) -> AudioDeviceID? {
+    var id = AudioDeviceID(kAudioObjectUnknown)
+    var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    let st = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, &size)
+    return st == noErr ? id : nil
+}
+
+/// CoreAudio のデバイス UID (= AVCaptureDevice.uniqueID) から AudioDeviceID を引く
+private func audioDeviceID(uid: String) -> AudioDeviceID? {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var cfUID = uid as CFString
+    var id = AudioDeviceID(kAudioObjectUnknown)
+    var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    let st = withUnsafePointer(to: &cfUID) {
+        AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &addr, UInt32(MemoryLayout<CFString>.size), $0, &size, &id)
+    }
+    return st == noErr && id != kAudioObjectUnknown ? id : nil
 }
 
 // MARK: - Session
@@ -140,6 +287,7 @@ enum CaptureError: Error, CustomStringConvertible {
     case permission(Error)
     case noDisplay
     case noMatchingApp([String])
+    case noMicDevice(String)
     case start(Error)
 
     var description: String {
@@ -148,6 +296,7 @@ enum CaptureError: Error, CustomStringConvertible {
             return "画面収録の権限がありません。システム設定 > プライバシーとセキュリティ > 画面収録とシステムオーディオ録音 で許可してください。(\(e))"
         case .noDisplay: return "ディスプレイが見つかりません"
         case .noMatchingApp(let f): return "--app に一致する起動中アプリがありません: \(f). --list-apps で確認してください"
+        case .noMicDevice(let id): return "--mic-device に一致するマイクがありません: \(id). --list-apps で確認してください"
         case .start(let e): return "録音を開始できません: \(e)"
         }
     }
@@ -157,11 +306,13 @@ final class CaptureSession {
     let outDir: URL
     let recorder: Recorder
     private let stream: SCStream
+    private let mic: MicCapture?
 
-    private init(outDir: URL, recorder: Recorder, stream: SCStream) {
+    private init(outDir: URL, recorder: Recorder, stream: SCStream, mic: MicCapture?) {
         self.outDir = outDir
         self.recorder = recorder
         self.stream = stream
+        self.mic = mic
     }
 
     static func start(outDir: URL, options o: CaptureOptions, onError: @escaping (Error) -> Void) async throws -> CaptureSession {
@@ -192,8 +343,6 @@ final class CaptureSession {
         config.excludesCurrentProcessAudio = true
         config.sampleRate = 48_000
         config.channelCount = 1
-        config.captureMicrophone = o.withMic
-        if let id = o.micDeviceID { config.microphoneCaptureDeviceID = id }
         // 映像は不要なので最小に
         config.width = 128
         config.height = 72
@@ -212,14 +361,28 @@ final class CaptureSession {
         do {
             try stream.addStreamOutput(recorder, type: .screen, sampleHandlerQueue: recorder.queue)
             try stream.addStreamOutput(recorder, type: .audio, sampleHandlerQueue: recorder.queue)
-            if o.withMic {
-                try stream.addStreamOutput(recorder, type: .microphone, sampleHandlerQueue: recorder.queue)
-            }
             try await stream.startCapture()
         } catch {
             throw CaptureError.start(error)
         }
-        return CaptureSession(outDir: outDir, recorder: recorder, stream: stream)
+        // マイクは副トラック。開けなくても会議 (system.wav) は録り続ける。
+        // ここで throw すると自動録音はその会議を丸ごと skip してしまう
+        var mic: MicCapture?
+        if let writer = recorder.mic {
+            do {
+                let m = try MicCapture(writer: writer, queue: recorder.queue, deviceUID: o.micDeviceID)
+                do {
+                    try m.start()
+                    mic = m
+                } catch {
+                    m.stop()
+                    throw error
+                }
+            } catch {
+                log("マイクを開始できないため、自分の声 (mic.wav) は録音しません: \(error)")
+            }
+        }
+        return CaptureSession(outDir: outDir, recorder: recorder, stream: stream, mic: mic)
     }
 
     /// 経過秒数 (system, mic)
@@ -229,6 +392,7 @@ final class CaptureSession {
 
     @discardableResult
     func stop() async -> (system: Double, mic: Double) {
+        mic?.stop()
         try? await stream.stopCapture()
         recorder.queue.sync {
             recorder.system.close()
