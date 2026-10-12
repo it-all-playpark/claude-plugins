@@ -36,3 +36,6 @@
   802 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
   810 /nix/store/cccccccccccccccccccccccccccccccc-nodejs-20.11.0/bin/node /Users/x/proj-d/server.js
   811 /nix/store/dddddddddddddddddddddddddddddddd-nodejs-22.1.0/bin/node /Users/x/proj-e/server.js
+  830 node /Users/x/.npm/supergateway/dist/index.js --stdio npx-server --port 8000
+  840 /opt/homebrew/Cellar/python@3.11/3.11.9/bin/python3.11 /Users/x/proj-f/app.py
+  841 /opt/homebrew/Cellar/python@3.12/3.12.4/bin/python3.12 /Users/x/proj-g/app.py

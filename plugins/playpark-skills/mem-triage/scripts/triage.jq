@@ -59,9 +59,9 @@ def is_webcontent: test("/com\\.apple\\.WebKit\\.WebContent$");
 # 子を別の塊として切り出す親（ここで起動されたものがユーザーの起動単位になる）
 def is_container: .pid == 1 or (.name | IN("zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "login", "tmux", "screen", "zellij"));
 
-# 同じプログラムの別の版かを見るための鍵（nix store のハッシュと、版番号の先頭以外を伏せる）。
-# 先頭を残すのは、node 20 と 22 のように意図して並べて使う別メジャー版を「更新前の版」と取り違えないため
-def version_key: sub("/nix/store/[a-z0-9]{32}-"; "/nix/store/*-") | gsub("(?<m>[0-9]+)(\\.[0-9]+)+"; "\(.m).V");
+# 同じプログラムの別の版かを見るための鍵（nix store のハッシュと、版番号の major.minor より後ろを伏せる）。
+# major.minor を残すのは、node 20 と 22、python 3.11 と 3.12 のように意図して並べて使う版を「更新前の版」と取り違えないため
+def version_key: sub("/nix/store/[a-z0-9]{32}-"; "/nix/store/*-") | gsub("(?<m>[0-9]+\\.[0-9]+)(\\.[0-9]+)*"; "\(.m).V");
 
 def unit_of($by):
   if .kind == "webkit" then "webkit"
@@ -81,8 +81,11 @@ def claude_role:
   elif (.args | test("\\s(-p|--print)(\\s|$)")) then "claude-print"
   else "claude-cli" end;
 
+# 待ち受けの引数があるものは stdio を HTTP 等へ中継する常駐ゲートウェイで、親が無くても使われている
 def orphan_stdio:
-  .ppid == 1 and .tty == "??" and (.args | test("(^|\\s)--stdio(\\s|$)|@modelcontextprotocol/server-"));
+  .ppid == 1 and .tty == "??"
+  and (.args | test("(^|\\s)--stdio(\\s|$)|@modelcontextprotocol/server-"))
+  and (.args | test("(^|\\s)--(port|listen|sse|host)(=|\\s|$)") | not);
 
 def short: if length > 120 then .[:117] + "..." else . end;
 

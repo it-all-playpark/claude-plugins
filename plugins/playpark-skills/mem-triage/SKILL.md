@@ -59,7 +59,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/mem-triage/scripts/mem-triage.sh [--top N]
 | `units[]`（`kind: process` のみ） | `root`（`pid` / `tty` / `age` / `cwd` / `args`）、`flags`、`role`、`safe_kill`、`kill` |
 | `safe_kill[]` | 聞かずに消してよいもの（`--top` の外も含む全件） |
 
-- `flags`: `orphan_stdio`（launchd 直下・端末なしの stdio サーバー。親が死んで誰も使っていない）、`detached`（launchd 直下・端末なしの
+- `flags`: `orphan_stdio`（launchd 直下・端末なしの stdio サーバー。親が死んで誰も使っていない。`--port` 等で待ち受ける常駐ゲートウェイは除く）、`detached`（launchd 直下・端末なしの
   それ以外。常駐か、親が死んだか）、`older_build`（同じプログラムの新しい版が別に動いている。更新前から開きっぱなし）
 - `role`（claude のみ）: `claude-daemon` / `claude-agents` / `claude-print` / `claude-cli`
 - `current_session: true` の塊は、いまこの集計を走らせている Claude Code のセッション自身か、その起動元（シェル・端末アプリ）

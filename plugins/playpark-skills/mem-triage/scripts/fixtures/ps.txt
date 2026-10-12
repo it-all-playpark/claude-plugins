@@ -36,3 +36,6 @@
   802     1 05:00:00   ??       /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
   810   105 2-00:00:00 ttys002  /nix/store/cccccccccccccccccccccccccccccccc-nodejs-20.11.0/bin/node
   811   105 01:00:00   ttys002  /nix/store/dddddddddddddddddddddddddddddddd-nodejs-22.1.0/bin/node
+  830     1 4-00:00:00 ??       node
+  840   105 2-00:00:00 ttys002  /opt/homebrew/Cellar/python@3.11/3.11.9/bin/python3.11
+  841   105 01:00:00   ttys002  /opt/homebrew/Cellar/python@3.12/3.12.4/bin/python3.12
