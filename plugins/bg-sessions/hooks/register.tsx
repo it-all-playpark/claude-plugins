@@ -103,6 +103,11 @@ async function switchTo($: Engine, s: BgSession): Promise<void> {
       $.ui.toast(`bg-sessions: ${s.repo} の zellij セッションがありません`)
       return
     }
+    // 今いるセッションへの switch-session は何も変わらず、押しても反応しないように見える
+    if (target === (await $.env.get('ZELLIJ_SESSION_NAME'))) {
+      $.ui.toast(`bg-sessions: すでに ${target} にいます`)
+      return
+    }
     const moved = await $.process.run(['zellij', 'action', 'switch-session', target], { timeoutMs: 5000 })
     if (moved.exitCode !== 0) {
       $.ui.toast(`bg-sessions: ${target} へ移動できませんでした: ${moved.stderr.trim() || `exit ${moved.exitCode}`}`)
@@ -118,6 +123,15 @@ async function openList($: Engine): Promise<void> {
   void refresh($)
   await $.ui.open({ id: PANE, title: 'bg sessions', focus: true, closeOnEscape: true })
 }
+
+/**
+ * 実行中・入力待ちのセッションに先頭から割り当てる hotkey（vim のホームポジション）。帯と一覧で同じ割り当て。
+ * 数字にしないのは、帯の Button の数字 hotkey は空の composer で数字を打っただけで押されるため（英字は帯か
+ * ペインがフォーカスを持つときだけ効く）。
+ */
+const KEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'] as const
+const hotkeyOf = (list: BgSession[], s: BgSession): string | undefined =>
+  s.status === 'stale' ? undefined : KEYS[list.filter(x => x.status !== 'stale').indexOf(s)]
 
 const LABEL = { running: '実行中  ', waiting: '入力待ち', stale: '放置    ' } as const
 const MARK = { running: '●', waiting: '◐', stale: '○' } as const
@@ -138,17 +152,6 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // DEBUG（commit しない）: Enter が押下にならない原因の切り分け
-  let debugSeq = 0
-  on('ui.focus', async ($, e, next) => {
-    if (e.requestId === PANE) $.ui.status(`bg-dbg #${++debugSeq} focus ${e.element ?? '(none)'} by ${e.origin.kind}`)
-    return next(e)
-  })
-  on('ui.press', async ($, e, next) => {
-    if (e.requestId === PANE) $.ui.status(`bg-dbg #${++debugSeq} press ${e.element}`)
-    return next(e)
-  })
-
   on('command.run', { command: 'bg-sessions' }, async $ => {
     try {
       await openList($)
@@ -162,27 +165,35 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey) return next(e)
     const list = await read($, sessions)
     if (!list) return next(e)
-    const running = list.filter(s => s.status === 'running')
-    const waiting = list.filter(s => s.status === 'waiting')
-    const stale = list.filter(s => s.status === 'stale')
+    const active = list.filter(s => s.status !== 'stale')
+    const staleCount = list.length - active.length
     // 放置しかないときは出さない
-    if (running.length + waiting.length === 0) return next(e)
+    if (active.length === 0) return next(e)
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    const wide = e.props.bodyColumns >= 80
+    const shown = active.slice(0, KEYS.length)
+    const label = (s: BgSession) => [<Text color={COLOR[s.status]}>{MARK[s.status]}</Text>, ` ${where(s)}`]
+    // ctrl+x tab で帯にフォーカスすると先頭に乗り、英字 hotkey か Enter でその repo の zellij セッションへ移る
     return (
-      <Box key="bg-band" flexDirection="row" gap={2}>
-        <Text wrap="truncate-end">
-          <Text dimColor>bg </Text>
-          <Text color="success">● {wide ? `${running.length} 実行中` : running.length}</Text>
-          {wide && running.length > 0 ? ` ${running.map(where).join(' · ')}` : ''}
-          {'  '}
-          <Text color="warning">◐ {wide ? `${waiting.length} 入力待ち` : waiting.length}</Text>
-          {'  '}
-          <Text dimColor>○ {wide ? `${stale.length} 放置` : stale.length}</Text>
-        </Text>
-        {/* ctrl+x tab で帯にフォーカスしたら Enter で一覧が開くよう、ここに初期フォーカスを置く */}
-        <Button key="bg-open" label="一覧" hotkey="b" plain autoFocus onPress={() => openList($)} />
+      <Box key="bg-band" flexDirection="row" flexWrap="wrap" columnGap={2}>
+        <Text dimColor>bg</Text>
+        {shown.map((s, i) =>
+          zellijSwitch ? (
+            <Button
+              key={`band-${s.id}`}
+              plain
+              hotkey={KEYS[i]}
+              {...(i === 0 ? { autoFocus: true as const } : {})}
+              onPress={() => switchTo($, s)}
+            >
+              {label(s)}
+            </Button>
+          ) : (
+            <Text>{label(s)}</Text>
+          ),
+        )}
+        {active.length > shown.length && <Text dimColor>+{active.length - shown.length}</Text>}
+        {staleCount > 0 && <Text dimColor>○ {staleCount} 放置</Text>}
       </Box>
     )
   })
@@ -203,7 +214,8 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {failed && <Text color="error">更新に失敗しました: {failed}</Text>}
         {shown.length === 0 && <Text dimColor>bg で動いているセッションはありません。</Text>}
-        {shown.map((s, i) => {
+        {shown.map(s => {
+          const hotkey = hotkeyOf(list, s)
           const cells = [
             <Text color={COLOR[s.status]}>{MARK[s.status]} {wide ? LABEL[s.status] : ''}</Text>,
             ` ${pad(s.repo, 16)} ${pad(s.worktree ?? '—', 12)} `,
@@ -211,13 +223,12 @@ export const register: Register = (on, options) => {
             <Text dimColor>{pad(ago(now - s.updatedAt), 5)}</Text>,
             wide ? ` ${s.name}` : '',
           ]
-          // 数字の hotkey はフォーカスを取るこのペインだけに付ける（帯に付けると空の composer で数字を打つと押される）
           return zellijSwitch ? (
             <Button
               key={s.id}
               plain
-              {...(i < 9 ? { hotkey: String(i + 1) } : {})}
-              {...(i === 0 ? { autoFocus: true as const } : {})}
+              {...(hotkey ? { hotkey } : {})}
+              {...(hotkey === KEYS[0] ? { autoFocus: true as const } : {})}
               onPress={() => switchTo($, s)}
             >
               {cells}
@@ -231,7 +242,7 @@ export const register: Register = (on, options) => {
         {staleCount > 0 && (
           <Button
             key="bg-stale"
-            hotkey="s"
+            hotkey="z"
             plain
             dimColor
             label={withStale ? '放置を隠す' : `放置 ${staleCount} 件（3 日以上更新なし）を表示`}

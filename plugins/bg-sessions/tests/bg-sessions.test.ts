@@ -18,8 +18,6 @@ type WorldOptions = {
   /** 実行した zellij の argv を記録する */
   ran?: string[][]
   toasts?: string[]
-  /** $.ui.open に渡された引数を記録する */
-  opened?: any[]
 }
 
 /**
@@ -36,10 +34,7 @@ function world(on: any, agents: Agent[], transcripts: Record<string, Transcript>
     opts.toasts?.push(e.text)
     return { value: undefined }
   })
-  on('ui.open', async ($: any, e: any) => {
-    opts.opened?.push(e)
-    return { value: { isPlaced: true } }
-  })
+  on('ui.open', async () => ({ value: { isPlaced: true } }))
   on('ui.close', async () => ({ value: undefined }))
   const files: Record<string, Transcript> = {}
   for (const [id, t] of Object.entries(transcripts)) files[`${PROJECTS}/${t.dir}/${id}-sid.jsonl`] = t
@@ -123,57 +118,46 @@ const TRANSCRIPTS: Record<string, Transcript> = {
 }
 
 describe('bg-sessions', () => {
-  test('帯に実行中・入力待ち・放置の件数と、実行中の repo/worktree を transcript の最終行から出す', async ($, on) => {
+  test('帯に実行中・入力待ちのセッションを repo/worktree（transcript の最終行から）で並べ、放置は件数だけ出す', async ($, on) => {
     const clock = world(on, AGENTS, TRANSCRIPTS)
     await start($, clock)
     const ui = await band($)
     const text = (await ui.find({ key: 'bg-band' }))?.text ?? ''
-    expect(text).toContain('1 実行中')
     expect(text).toContain('app/df-12')
-    expect(text).toContain('1 入力待ち')
+    expect(text).toContain('api')
     expect(text).toContain('1 放置')
-    // 自分自身と対話セッションは数えない
+    expect(text).not.toContain('old')
+    // 自分自身と対話セッションは出さない
     expect(text).not.toContain('mine')
     expect(text).not.toContain('front')
+    // zellij_switch が off なら押せるものは無い
+    expect(await ui.findAll({ type: 'Button' })).toEqual([])
   })
 
   test('作業していないセッションは最終更新から 3 日経つと放置に入る', async ($, on) => {
     const clock = world(on, [
-      { id: 'fresh', cwd: '/Users/x/ghq/acme/a', state: 'blocked' },
-      { id: 'edge', cwd: '/Users/x/ghq/acme/b', state: 'blocked' },
-      { id: 'busy', cwd: '/Users/x/ghq/acme/c', state: 'working' },
+      { id: 'fresh', cwd: '/Users/x/ghq/acme/fresh', state: 'blocked' },
+      { id: 'edge', cwd: '/Users/x/ghq/acme/edge', state: 'blocked' },
+      { id: 'busy', cwd: '/Users/x/ghq/acme/busy', state: 'working' },
     ], {
-      fresh: { dir: '-Users-x-ghq-acme-a', mtimeMs: NOW - 3 * DAY + 60_000, cwd: '/Users/x/ghq/acme/a', branch: 'main' },
-      edge: { dir: '-Users-x-ghq-acme-b', mtimeMs: NOW - 3 * DAY, cwd: '/Users/x/ghq/acme/b', branch: 'main' },
+      fresh: { dir: '-Users-x-ghq-acme-fresh', mtimeMs: NOW - 3 * DAY + 60_000, cwd: '/Users/x/ghq/acme/fresh', branch: 'main' },
+      edge: { dir: '-Users-x-ghq-acme-edge', mtimeMs: NOW - 3 * DAY, cwd: '/Users/x/ghq/acme/edge', branch: 'main' },
       // 作業中なら古くても実行中のまま
-      busy: { dir: '-Users-x-ghq-acme-c', mtimeMs: NOW - 5 * DAY, cwd: '/Users/x/ghq/acme/c', branch: 'main' },
+      busy: { dir: '-Users-x-ghq-acme-busy', mtimeMs: NOW - 5 * DAY, cwd: '/Users/x/ghq/acme/busy', branch: 'main' },
     })
     await start($, clock)
     const text = (await (await band($)).find({ key: 'bg-band' }))?.text ?? ''
-    expect(text).toContain('1 実行中')
-    expect(text).toContain('1 入力待ち')
+    expect(text).toContain('fresh')
+    expect(text).toContain('busy')
+    expect(text).not.toContain('edge')
     expect(text).toContain('1 放置')
-  })
-
-  test('ctrl+x tab で帯にフォーカスすると「一覧」に乗り、押すと /bg-sessions と同じペインがフォーカス付きで開く', async ($, on) => {
-    const opened: any[] = []
-    const clock = world(on, AGENTS, TRANSCRIPTS, { opened })
-    await start($, clock)
-    const ui = await band($)
-    const open = await ui.find({ key: 'bg-open' })
-    expect(open?.props.autoFocus).toBe(true)
-    // 帯に数字の hotkey を付けない（空の composer で数字を打つと押されるため）
-    expect((await ui.findAll({ type: 'Button' })).every(b => !/^[0-9]$/.test(String(b.props.hotkey ?? '')))).toBe(true)
-
-    await ui.press({ key: 'bg-open' })
-    expect(opened).toContainEqual(expect.objectContaining({ id: 'bg-sessions', focus: true }))
   })
 
   test('コマンド名の登録を拒否されても帯は出る', async ($, on) => {
     const clock = world(on, AGENTS, TRANSCRIPTS, { registerDeny: '"/bg-sessions" refused: it is a built-in' })
     await start($, clock)
     const text = (await (await band($)).find({ key: 'bg-band' }))?.text ?? ''
-    expect(text).toContain('1 実行中')
+    expect(text).toContain('app/df-12')
   })
 
   test('放置しかないときは帯を出さない', async ($, on) => {
@@ -186,7 +170,7 @@ describe('bg-sessions', () => {
     expect(await ui.find({ text: 'engine' })).toBeDefined()
   })
 
-  test('/bg-sessions の一覧は repo・worktree・branch を並べ、放置は s で表示する', async ($, on) => {
+  test('/bg-sessions の一覧は repo・worktree・branch を並べ、放置は z で表示する', async ($, on) => {
     const clock = world(on, AGENTS, TRANSCRIPTS)
     await start($, clock)
     const ui = await list($)
@@ -198,6 +182,7 @@ describe('bg-sessions', () => {
     expect(await ui.find({ key: 'old' })).toBeUndefined()
     // 押せるのは放置の開閉だけ
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['bg-stale'])
+    expect((await ui.find({ key: 'bg-stale' }))?.props.hotkey).toBe('z')
 
     await ui.press({ key: 'bg-stale' })
     expect((await ui.find({ key: 'old' }))?.text).toContain('old')
@@ -214,14 +199,30 @@ describe('bg-sessions', () => {
     const ON = { options: { zellij_switch: true } }
     const IN_ZELLIJ = { ZELLIJ: '0', ZELLIJ_SESSION_NAME: 'mine' }
 
-    test('行を 1〜9 で選ぶと repo と同じ名前の zellij セッションへ移り、無ければ移らずに知らせる', ON, async ($, on) => {
+    test('帯は各セッションに a s d … を割り当て、ctrl+x tab の直後は先頭に乗る。数字の hotkey は付けない', ON, async ($, on) => {
+      const ran: string[][] = []
+      const clock = world(on, AGENTS, TRANSCRIPTS, { env: IN_ZELLIJ, zellij: ['mine', 'app'], ran })
+      await start($, clock)
+      const ui = await band($)
+      const buttons = await ui.findAll({ type: 'Button' })
+      expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual([['band-wt', 'a'], ['band-api', 's']])
+      // 帯の数字 hotkey は空の composer で数字を打つと押されるので使わない
+      expect(buttons.every(b => !/^[0-9]$/.test(String(b.props.hotkey)))).toBe(true)
+      expect(buttons[0]?.props.autoFocus).toBe(true)
+      expect(buttons[1]?.props.autoFocus).toBeUndefined()
+
+      await ui.press({ key: 'band-wt' })
+      expect(ran).toContainEqual(['zellij', 'action', 'switch-session', 'app'])
+    })
+
+    test('一覧の行も帯と同じ英字で選べ、repo と同じ名前の zellij セッションへ移り、無ければ移らずに知らせる', ON, async ($, on) => {
       const ran: string[][] = []
       const toasts: string[] = []
       const clock = world(on, AGENTS, TRANSCRIPTS, { env: IN_ZELLIJ, zellij: ['mine', 'app'], ran, toasts })
       await start($, clock)
       const ui = await list($)
-      expect((await ui.find({ key: 'wt' }))?.props.hotkey).toBe('1')
-      expect((await ui.find({ key: 'api' }))?.props.hotkey).toBe('2')
+      expect((await ui.find({ key: 'wt' }))?.props.hotkey).toBe('a')
+      expect((await ui.find({ key: 'api' }))?.props.hotkey).toBe('s')
       // 開いた直後の Enter で先頭の行を選べる
       expect((await ui.find({ key: 'wt' }))?.props.autoFocus).toBe(true)
       expect((await ui.find({ key: 'api' }))?.props.autoFocus).toBeUndefined()
@@ -244,6 +245,16 @@ describe('bg-sessions', () => {
       await start($, clock)
       await (await list($)).press({ key: 'bo' })
       expect(ran).toContainEqual(['zellij', 'action', 'switch-session', 'back_office'])
+    })
+
+    test('今いる zellij セッションへは移らず、すでにいることを知らせる', ON, async ($, on) => {
+      const ran: string[][] = []
+      const toasts: string[] = []
+      const clock = world(on, AGENTS, TRANSCRIPTS, { env: { ZELLIJ: '0', ZELLIJ_SESSION_NAME: 'app' }, zellij: ['app'], ran, toasts })
+      await start($, clock)
+      await (await band($)).press({ key: 'band-wt' })
+      expect(ran.some(a => a[1] === 'action')).toBe(false)
+      expect(toasts.some(t => t.includes('すでに app'))).toBe(true)
     })
 
     test('zellij の外では zellij を呼ばずに知らせる', ON, async ($, on) => {

@@ -45,17 +45,17 @@ Whisper と pyannote でローカルに文字起こし・話者分離して `/me
 詳細は [`plugins/meeting/README.md`](plugins/meeting/README.md)。
 
 `bg-sessions` は `claude --bg` で動いているセッションが、どの repo のどの worktree・branch にいるかを
-プロンプトの上の 1 行に出します（実行中・入力待ち・放置の件数と、実行中の `repo/worktree`）。`/bg-sessions` で
-状態・repo・worktree・branch・更新・名前の一覧を開きます（Esc で閉じる）。`ctrl+x tab` で帯にフォーカスして
-Enter（か `b`）でも同じ一覧が開きます。数字キーは一覧の中だけで効きます（帯に付けると空のプロンプトで数字を
-打っただけで押されるため）。場所は `claude agents --json` の起動時 cwd ではなく
+プロンプトの上の帯に 1 つずつ並べます（`● repo/worktree` が実行中、`◐` が入力待ち、放置は件数だけ）。`/bg-sessions` で
+状態・repo・worktree・branch・更新・名前の一覧を開きます（Esc で閉じる）。場所は `claude agents --json` の起動時 cwd ではなく
 transcript の最終行の `cwd` / `gitBranch` から取るので、セッションが入った worktree が出ます。作業しておらず
 3 日以上 transcript が更新されていないものは放置として件数だけにします。セッションの停止はしません。
 
-設定 `zellij_switch`（既定 off。`/config` の plugin の行で切り替える）を on にすると、zellij の中で動いているときに
-一覧の行を `1`〜`9` か Enter で選ぶと、その repo と同じ名前（`-` と `_` の違いは同一視）の zellij セッションへ
-`zellij action switch-session` で移ります。存在しない名前で switch-session すると新しいセッションが作られて
-しまうので、`zellij list-sessions` に無ければ移らずに toast で知らせます。
+設定 `zellij_switch`（既定 off。`/config` の plugin の行で切り替える）を on にすると、帯と一覧の各セッションに
+`a` `s` `d` `f` … が割り当てられ、`ctrl+x tab` → その英字（か先頭なら Enter）で、その repo と同じ名前（`-` と `_` の
+違いは同一視）の zellij セッションへ `zellij action switch-session` で移ります。数字にしないのは、帯の数字キーは
+空のプロンプトで数字を打っただけで押されるためです（英字は帯か一覧にフォーカスがあるときだけ効く）。存在しない名前で
+switch-session すると新しいセッションが作られてしまうので、`zellij list-sessions` に無ければ移らず、今いる
+セッションなら移らずに、どちらも toast で知らせます。
 
 Use skills in Claude Code:
 
