@@ -2,7 +2,6 @@
 export type BgStatus = 'running' | 'waiting' | 'stale'
 
 export type BgSession = {
-  /** `claude attach` に渡す id */
   id: string
   name: string
   status: BgStatus
@@ -23,8 +22,6 @@ declare module 'claude-code' {
       sessions: BgSession[] | null
       /** 取得した時刻（ms）。「更新」列の経過時間の基準 */
       checkedAt: number
-      /** 一覧で詳細を開いている id */
-      open: string | null
       showStale: boolean
       /** `claude agents --json` が失敗したときの理由 */
       error: string | null

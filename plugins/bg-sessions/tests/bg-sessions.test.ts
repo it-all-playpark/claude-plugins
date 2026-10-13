@@ -147,7 +147,7 @@ describe('bg-sessions', () => {
     expect(await ui.find({ text: 'engine' })).toBeDefined()
   })
 
-  test('/bg-sessions の一覧は行を押すと attach コマンドを出し、放置は s で表示する', async ($, on) => {
+  test('/bg-sessions の一覧は repo・worktree・branch を並べ、放置は s で表示する', async ($, on) => {
     const clock = world(on, AGENTS, TRANSCRIPTS)
     await start($, clock)
     const ui = await list($)
@@ -155,14 +155,10 @@ describe('bg-sessions', () => {
     const row = await ui.find({ key: 'wt' })
     expect(row?.text).toContain('df-12')
     expect(row?.text).toContain('feature/issue-12')
-    expect(row?.props.hotkey).toBe('1')
-    expect((await ui.find({ key: 'api' }))?.props.hotkey).toBe('2')
+    expect((await ui.find({ key: 'api' }))?.text).toContain('api')
     expect(await ui.find({ key: 'old' })).toBeUndefined()
-    expect(await ui.find({ text: /claude attach/ })).toBeUndefined()
-
-    await ui.press({ key: 'wt' })
-    expect((await ui.find({ text: 'claude attach wt' }))).toBeDefined()
-    expect((await ui.find({ text: /claude attach api/ }))).toBeUndefined()
+    // 押せるのは放置の開閉だけ
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['bg-stale'])
 
     await ui.press({ key: 'bg-stale' })
     expect((await ui.find({ key: 'old' }))?.text).toContain('old')

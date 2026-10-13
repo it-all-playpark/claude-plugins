@@ -15,13 +15,11 @@ import {
   where,
 } from './sessions'
 
-const PLUGIN = 'bg-sessions'
 const PANE = 'bg-sessions'
 const POLL_MS = 15_000
 
 const sessions = atom({ plugin: 'bg-sessions', key: 'sessions' } as const, null)
 const checkedAt = atom({ plugin: 'bg-sessions', key: 'checkedAt' } as const, 0)
-const open = atom({ plugin: 'bg-sessions', key: 'open' } as const, null)
 const showStale = atom({ plugin: 'bg-sessions', key: 'showStale' } as const, false)
 const error = atom({ plugin: 'bg-sessions', key: 'error' } as const, null)
 
@@ -157,7 +155,6 @@ export const register: Register = on => {
     if (!list) return <Text dimColor>{failed ? `取得できません: ${failed}` : '読み込み中…'}</Text>
 
     const now = await read($, checkedAt)
-    const opened = await read($, open)
     const withStale = await read($, showStale)
     const staleCount = list.filter(s => s.status === 'stale').length
     const shown = list.filter(s => withStale || s.status !== 'stale')
@@ -167,28 +164,15 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {failed && <Text color="error">更新に失敗しました: {failed}</Text>}
         {shown.length === 0 && <Text dimColor>bg で動いているセッションはありません。</Text>}
-        {shown.map((s, i) => (
-          <Box key={`row-${s.id}`} flexDirection="column">
-            <Button
-              key={s.id}
-              plain
-              {...(i < 9 ? { hotkey: String(i + 1) } : {})}
-              onPress={() => update($, open, cur => (cur === s.id ? null : s.id))}
-            >
+        {shown.map(s => (
+          <Box key={s.id}>
+            <Text wrap="truncate-end">
               <Text color={COLOR[s.status]}>{MARK[s.status]} {wide ? LABEL[s.status] : ''}</Text>
               {` ${pad(s.repo, 16)} ${pad(s.worktree ?? '—', 12)} `}
               {wide && <Text dimColor>{pad(s.branch ?? '', 22)} </Text>}
               <Text dimColor>{pad(ago(now - s.updatedAt), 5)}</Text>
               {wide ? ` ${s.name}` : ''}
-            </Button>
-            {opened === s.id && (
-              <Box key={`detail-${s.id}`} flexDirection="column" paddingLeft={4}>
-                <Text><Text dimColor>id    </Text>{s.id}</Text>
-                <Text wrap="truncate-start"><Text dimColor>場所  </Text>{s.cwd}</Text>
-                <Text><Text dimColor>開く  </Text><Text color="suggestion">claude attach {s.id}</Text></Text>
-                <Text><Text dimColor>ログ  </Text>claude logs {s.id}</Text>
-              </Box>
-            )}
+            </Text>
           </Box>
         ))}
         {staleCount > 0 && (
