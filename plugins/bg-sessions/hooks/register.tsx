@@ -138,6 +138,17 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // DEBUG（commit しない）: Enter が押下にならない原因の切り分け
+  let debugSeq = 0
+  on('ui.focus', async ($, e, next) => {
+    if (e.requestId === PANE) $.ui.status(`bg-dbg #${++debugSeq} focus ${e.element ?? '(none)'} by ${e.origin.kind}`)
+    return next(e)
+  })
+  on('ui.press', async ($, e, next) => {
+    if (e.requestId === PANE) $.ui.status(`bg-dbg #${++debugSeq} press ${e.element}`)
+    return next(e)
+  })
+
   on('command.run', { command: 'bg-sessions' }, async $ => {
     try {
       await openList($)
