@@ -41,14 +41,14 @@ Step 1: 集計（スクリプト） → Step 2: 塊ごとに正体・解放方�
 ## Step 1: 集計する
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/mem-triage/scripts/mem-triage.sh [--top N]
+mem-triage [--top N]
 ```
 
-- **この形のまま単独で実行する**。プロセス一覧（ps / top / lsof）は sandbox 内では読めないため、plugin cache 配下の
-  スクリプトとして sandbox の外で動かす。パイプ・リダイレクト・`cd … &&`・変数代入の前置を付けると sandbox 内に戻り exit 3 になる
-- 前提条件: sandbox を有効にしている環境では、このスクリプト 1 本だけを `sandbox.excludedCommands` に入れておく
-  （例: `bash ~/.claude/plugins/cache/<marketplace>/playpark-skills/*/mem-triage/scripts/mem-triage.sh*`）。
-  marketplace 配下を丸ごと入れると、書き込みを持つ他の skill のスクリプトまで sandbox の外で動くので案内しない。
+- **bare 名 `mem-triage` のまま単独で実行する**（plugin の `bin/` が PATH に載っている）。プロセス一覧（ps / top / lsof）は
+  sandbox 内では読めないため、sandbox の外で動かす。パイプ・リダイレクト・`cd … &&`・変数代入の前置・`$( )` で包むと
+  `excludedCommands` に一致せず sandbox 内に戻り exit 3 になる
+- 前提条件: sandbox を有効にしている環境では、bare 名 `mem-triage` と `mem-triage *` を `sandbox.excludedCommands` に入れておく。
+  plugin cache のパスを glob で入れると `*` が `..` にも一致し、書ける場所のスクリプトまで sandbox の外で動くので案内しない。
   exit 3 が出たらこれをユーザーに案内する（自分で回避しない）
 - macOS 専用（それ以外は exit 2）
 
