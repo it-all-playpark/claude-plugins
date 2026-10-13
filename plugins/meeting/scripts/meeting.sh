@@ -58,7 +58,13 @@ cmd_setup() {
   command -v ffmpeg >/dev/null || die "ffmpeg がありません"
   command -v uv >/dev/null || die "uv がありません"
 
-  swift build -c release --package-path "$SRC/recorder" --scratch-path "$PREFIX/build"
+  # swift build の成果物にはビルド元ソースの絶対パスが埋め込まれる。plugin root からそのままビルドすると
+  # install 先が変わるたびにソースが同じでもバイナリ (= ad-hoc 署名の cdhash) が変わり、cmp をすり抜けて
+  # 入れ替わって TCC の許可が外れるので、固定の $PREFIX/src/recorder に同期してからビルドする。
+  # --delete は plugin 側で消したファイルを残さないため
+  mkdir -p "$PREFIX/src"
+  rsync -a --delete --exclude .build "$SRC/recorder/" "$PREFIX/src/recorder/"
+  swift build -c release --package-path "$PREFIX/src/recorder" --scratch-path "$PREFIX/build"
   mkdir -p "$PREFIX/bin" "$PREFIX/transcribe" "$BIN_DIR"
   local built="$PREFIX/build/release/meeting-rec"
   if cmp -s "$built" "$REC_BIN"; then

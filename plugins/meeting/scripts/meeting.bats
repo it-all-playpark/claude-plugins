@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # meeting.sh の macOS 非依存部分（引数処理・未インストール時の案内・録音一覧・launchd plist 生成・
-# install の常駐登録の手順・話者の声の切り出し・議事録の話者名の後入れ）のテスト。
-# 録音 / ビルド / 実際の launchd 登録 / 実際の再生は macOS 実機でしか動かないので対象外
-# (launchctl / ffmpeg / afplay は stub)。
+# install の常駐登録の手順・setup のビルド元の固定・話者の声の切り出し・議事録の話者名の後入れ）のテスト。
+# 録音 / 実際のビルド / 実際の launchd 登録 / 実際の再生は macOS 実機でしか動かないので対象外
+# (launchctl / swift / ffmpeg / afplay は stub)。
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/meeting.sh"
@@ -47,6 +47,90 @@ setup() {
     run bash "$MEETING_PREFIX/bin/meeting" setup
     [ "$status" -eq 1 ]
     [[ "$output" == *"plugin 側"* ]]
+}
+
+# plugin root のコピーを $1 に作る (setup が読む scripts / recorder / transcribe だけ)
+plugin_copy() {
+    local root="$1" plugin="$BATS_TEST_DIRNAME/.."
+    mkdir -p "$root/scripts" "$root/recorder" "$root/transcribe"
+    cp "$SCRIPT" "$root/scripts/meeting.sh"
+    cp -R "$plugin/recorder/Sources" "$plugin/recorder/Package.swift" "$plugin/recorder/Info.plist" "$root/recorder/"
+    cp "$plugin/transcribe/align.py" "$plugin/transcribe/transcribe.py" "$root/transcribe/"
+}
+
+# setup が呼ぶ uname / swift / ffmpeg / uv / launchctl を stub に差し替える。swift は --package-path を
+# swift.pkg に 1 行ずつ記録し、実機と同じく「ビルド元のパス + ソースの中身」から決まるバイナリを作る
+stub_build() {
+    mkdir -p "$BATS_TEST_TMPDIR/stub"
+    printf '#!/bin/sh\necho Darwin\n' > "$BATS_TEST_TMPDIR/stub/uname"
+    printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/stub/ffmpeg"
+    printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/stub/uv"
+    printf '#!/bin/sh\nexit 113\n' > "$BATS_TEST_TMPDIR/stub/launchctl"
+    cat > "$BATS_TEST_TMPDIR/stub/swift" <<EOF
+#!/bin/sh
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    --package-path) pkg="\$2"; shift ;;
+    --scratch-path) scratch="\$2"; shift ;;
+  esac
+  shift
+done
+echo "\$pkg" >> "$BATS_TEST_TMPDIR/swift.pkg"
+mkdir -p "\$scratch/release"
+{ echo "\$pkg"; find "\$pkg/Sources" -type f | LC_ALL=C sort | while read -r f; do cat "\$f"; done; } > "\$scratch/release/meeting-rec"
+EOF
+    chmod +x "$BATS_TEST_TMPDIR/stub/"*
+}
+
+@test "setup は plugin root の場所によらず固定の \$MEETING_PREFIX/src/recorder からビルドし、ソースが同じなら meeting-rec を入れ替えない" {
+    stub_build
+    plugin_copy "$BATS_TEST_TMPDIR/a"
+    plugin_copy "$BATS_TEST_TMPDIR/b"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"✓ meeting-rec を更新しました"* ]]
+    before="$(cksum < "$MEETING_PREFIX/bin/meeting-rec")"
+
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/b/scripts/meeting.sh" setup
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"= meeting-rec は変更なし (権限はそのまま)"* ]]
+    [ "$(cksum < "$MEETING_PREFIX/bin/meeting-rec")" = "$before" ]
+    [ "$(paste -sd ' ' "$BATS_TEST_TMPDIR/swift.pkg")" = "$MEETING_PREFIX/src/recorder $MEETING_PREFIX/src/recorder" ]
+}
+
+@test "setup は recorder のソースが変わったら meeting-rec を更新する" {
+    stub_build
+    plugin_copy "$BATS_TEST_TMPDIR/a"
+    plugin_copy "$BATS_TEST_TMPDIR/b"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup
+    [ "$status" -eq 0 ]
+    before="$(cksum < "$MEETING_PREFIX/bin/meeting-rec")"
+
+    echo "// changed" >> "$BATS_TEST_TMPDIR/b/recorder/Sources/meeting-rec/main.swift"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/b/scripts/meeting.sh" setup
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"✓ meeting-rec を更新しました"* ]]
+    [ "$(cksum < "$MEETING_PREFIX/bin/meeting-rec")" != "$before" ]
+}
+
+@test "setup は plugin 側で消した recorder のソースファイルを固定の場所にも残さない" {
+    stub_build
+    plugin_copy "$BATS_TEST_TMPDIR/a"
+    extra="$BATS_TEST_TMPDIR/a/recorder/Sources/meeting-rec/Extra.swift"
+    echo "// extra" > "$extra"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup
+    [ "$status" -eq 0 ]
+    [ -f "$MEETING_PREFIX/src/recorder/Sources/meeting-rec/Extra.swift" ]
+
+    rm "$extra"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ ! -e "$MEETING_PREFIX/src/recorder/Sources/meeting-rec/Extra.swift" ]
+    [ -f "$MEETING_PREFIX/src/recorder/Sources/meeting-rec/main.swift" ]
 }
 
 @test "ls は文字起こし済みの録音に ✓ を付ける" {
