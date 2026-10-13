@@ -46,7 +46,9 @@ Whisper と pyannote でローカルに文字起こし・話者分離して `/me
 
 `bg-sessions` は `claude --bg` で動いているセッションが、どの repo のどの worktree・branch にいるかを
 プロンプトの上の 1 行に出します（実行中・入力待ち・放置の件数と、実行中の `repo/worktree`）。`/bg-sessions` で
-状態・repo・worktree・branch・更新・名前の一覧を開きます（Esc で閉じる）。場所は `claude agents --json` の起動時 cwd ではなく
+状態・repo・worktree・branch・更新・名前の一覧を開きます（Esc で閉じる）。`ctrl+x tab` で帯にフォーカスして
+Enter（か `b`）でも同じ一覧が開きます。数字キーは一覧の中だけで効きます（帯に付けると空のプロンプトで数字を
+打っただけで押されるため）。場所は `claude agents --json` の起動時 cwd ではなく
 transcript の最終行の `cwd` / `gitBranch` から取るので、セッションが入った worktree が出ます。作業しておらず
 3 日以上 transcript が更新されていないものは放置として件数だけにします。セッションの停止はしません。
 

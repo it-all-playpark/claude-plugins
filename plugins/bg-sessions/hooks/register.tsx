@@ -170,7 +170,8 @@ export const register: Register = (on, options) => {
           {'  '}
           <Text dimColor>○ {wide ? `${stale.length} 放置` : stale.length}</Text>
         </Text>
-        <Button key="bg-open" label="一覧" hotkey="b" plain onPress={() => openList($)} />
+        {/* ctrl+x tab で帯にフォーカスしたら Enter で一覧が開くよう、ここに初期フォーカスを置く */}
+        <Button key="bg-open" label="一覧" hotkey="b" plain autoFocus onPress={() => openList($)} />
       </Box>
     )
   })
@@ -201,7 +202,13 @@ export const register: Register = (on, options) => {
           ]
           // 数字の hotkey はフォーカスを取るこのペインだけに付ける（帯に付けると空の composer で数字を打つと押される）
           return zellijSwitch ? (
-            <Button key={s.id} plain {...(i < 9 ? { hotkey: String(i + 1) } : {})} onPress={() => switchTo($, s)}>
+            <Button
+              key={s.id}
+              plain
+              {...(i < 9 ? { hotkey: String(i + 1) } : {})}
+              {...(i === 0 ? { autoFocus: true as const } : {})}
+              onPress={() => switchTo($, s)}
+            >
               {cells}
             </Button>
           ) : (

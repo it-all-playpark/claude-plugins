@@ -18,6 +18,8 @@ type WorldOptions = {
   /** 実行した zellij の argv を記録する */
   ran?: string[][]
   toasts?: string[]
+  /** $.ui.open に渡された引数を記録する */
+  opened?: any[]
 }
 
 /**
@@ -34,7 +36,10 @@ function world(on: any, agents: Agent[], transcripts: Record<string, Transcript>
     opts.toasts?.push(e.text)
     return { value: undefined }
   })
-  on('ui.open', async () => ({ value: { isPlaced: true } }))
+  on('ui.open', async ($: any, e: any) => {
+    opts.opened?.push(e)
+    return { value: { isPlaced: true } }
+  })
   on('ui.close', async () => ({ value: undefined }))
   const files: Record<string, Transcript> = {}
   for (const [id, t] of Object.entries(transcripts)) files[`${PROJECTS}/${t.dir}/${id}-sid.jsonl`] = t
@@ -150,6 +155,20 @@ describe('bg-sessions', () => {
     expect(text).toContain('1 放置')
   })
 
+  test('ctrl+x tab で帯にフォーカスすると「一覧」に乗り、押すと /bg-sessions と同じペインがフォーカス付きで開く', async ($, on) => {
+    const opened: any[] = []
+    const clock = world(on, AGENTS, TRANSCRIPTS, { opened })
+    await start($, clock)
+    const ui = await band($)
+    const open = await ui.find({ key: 'bg-open' })
+    expect(open?.props.autoFocus).toBe(true)
+    // 帯に数字の hotkey を付けない（空の composer で数字を打つと押されるため）
+    expect((await ui.findAll({ type: 'Button' })).every(b => !/^[0-9]$/.test(String(b.props.hotkey ?? '')))).toBe(true)
+
+    await ui.press({ key: 'bg-open' })
+    expect(opened).toContainEqual(expect.objectContaining({ id: 'bg-sessions', focus: true }))
+  })
+
   test('コマンド名の登録を拒否されても帯は出る', async ($, on) => {
     const clock = world(on, AGENTS, TRANSCRIPTS, { registerDeny: '"/bg-sessions" refused: it is a built-in' })
     await start($, clock)
@@ -203,6 +222,9 @@ describe('bg-sessions', () => {
       const ui = await list($)
       expect((await ui.find({ key: 'wt' }))?.props.hotkey).toBe('1')
       expect((await ui.find({ key: 'api' }))?.props.hotkey).toBe('2')
+      // 開いた直後の Enter で先頭の行を選べる
+      expect((await ui.find({ key: 'wt' }))?.props.autoFocus).toBe(true)
+      expect((await ui.find({ key: 'api' }))?.props.autoFocus).toBeUndefined()
 
       await ui.press({ key: 'wt' })
       expect(ran).toContainEqual(['zellij', 'action', 'switch-session', 'app'])
