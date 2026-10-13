@@ -9,18 +9,33 @@ type Agent = { id: string; cwd: string; state: string; kind?: string; name?: str
 /** transcript: project ディレクトリ名・最終更新・末尾行の cwd と gitBranch */
 type Transcript = { dir: string; mtimeMs: number; cwd: string; branch: string }
 
+type WorldOptions = {
+  agentsExit?: number
+  registerDeny?: string
+  env?: Record<string, string>
+  /** `zellij list-sessions --short` が返すセッション名 */
+  zellij?: string[]
+  /** 実行した zellij の argv を記録する */
+  ran?: string[][]
+  toasts?: string[]
+}
+
 /**
- * claude agents --json・projects ディレクトリ・transcript の末尾を返す世界。
+ * claude agents --json・projects ディレクトリ・transcript の末尾・zellij を返す世界。
  * sessionId は `<id>-sid`、transcript は `<dir>/<sessionId>.jsonl` に置く。
  */
-function world(on: any, agents: Agent[], transcripts: Record<string, Transcript>, opts: { agentsExit?: number; registerDeny?: string } = {}) {
-  mock.env(on, { HOME: '/Users/x' })
+function world(on: any, agents: Agent[], transcripts: Record<string, Transcript>, opts: WorldOptions = {}) {
+  mock.env(on, { HOME: '/Users/x', ...opts.env })
   const clock = mock.clock(on, { now: NOW })
   on('session.id', async () => ({ value: 'self-sid' }))
   on('session.start', async ($: any, e: any) => e)
   on('command.register', async () => (opts.registerDeny ? { deny: opts.registerDeny } : { value: undefined }))
-  on('ui.toast', async () => ({ value: undefined }))
+  on('ui.toast', async ($: any, e: any) => {
+    opts.toasts?.push(e.text)
+    return { value: undefined }
+  })
   on('ui.open', async () => ({ value: { isPlaced: true } }))
+  on('ui.close', async () => ({ value: undefined }))
   const files: Record<string, Transcript> = {}
   for (const [id, t] of Object.entries(transcripts)) files[`${PROJECTS}/${t.dir}/${id}-sid.jsonl`] = t
   on('process.run', async ($: any, e: any) => {
@@ -45,6 +60,11 @@ function world(on: any, agents: Agent[], transcripts: Record<string, Transcript>
         '{"type":"summary"}',
       ]
       return { value: { exitCode: 0, stdout: lines.join('\n') + '\n', stderr: '' } }
+    }
+    if (cmd === 'zellij') {
+      opts.ran?.push([...e.argv])
+      const stdout = args[0] === 'list-sessions' ? (opts.zellij ?? []).join('\n') + '\n' : ''
+      return { value: { exitCode: 0, stdout, stderr: '' } }
     }
     return { deny: `unexpected ${cmd}` }
   })
@@ -169,5 +189,49 @@ describe('bg-sessions', () => {
     await start($, clock)
     const ui = await list($)
     expect((await ui.find({ text: /boom/ }))).toBeDefined()
+  })
+
+  describe('zellij_switch', () => {
+    const ON = { options: { zellij_switch: true } }
+    const IN_ZELLIJ = { ZELLIJ: '0', ZELLIJ_SESSION_NAME: 'mine' }
+
+    test('行を 1〜9 で選ぶと repo と同じ名前の zellij セッションへ移り、無ければ移らずに知らせる', ON, async ($, on) => {
+      const ran: string[][] = []
+      const toasts: string[] = []
+      const clock = world(on, AGENTS, TRANSCRIPTS, { env: IN_ZELLIJ, zellij: ['mine', 'app'], ran, toasts })
+      await start($, clock)
+      const ui = await list($)
+      expect((await ui.find({ key: 'wt' }))?.props.hotkey).toBe('1')
+      expect((await ui.find({ key: 'api' }))?.props.hotkey).toBe('2')
+
+      await ui.press({ key: 'wt' })
+      expect(ran).toContainEqual(['zellij', 'action', 'switch-session', 'app'])
+
+      // api のセッションは無い: switch-session すると新しいセッションが作られるので呼ばない
+      ran.length = 0
+      await ui.press({ key: 'api' })
+      expect(ran.some(a => a[1] === 'action')).toBe(false)
+      expect(toasts.some(t => t.includes('api'))).toBe(true)
+    })
+
+    test("repo 名とセッション名の '-' と '_' の違いは同じものとして扱う", ON, async ($, on) => {
+      const ran: string[][] = []
+      const clock = world(on, [{ id: 'bo', cwd: '/Users/x/ghq/acme/back-office', state: 'blocked' }], {
+        bo: { dir: '-Users-x-ghq-acme-back-office', mtimeMs: NOW - HOUR, cwd: '/Users/x/ghq/acme/back-office', branch: 'main' },
+      }, { env: IN_ZELLIJ, zellij: ['back_office'], ran })
+      await start($, clock)
+      await (await list($)).press({ key: 'bo' })
+      expect(ran).toContainEqual(['zellij', 'action', 'switch-session', 'back_office'])
+    })
+
+    test('zellij の外では zellij を呼ばずに知らせる', ON, async ($, on) => {
+      const ran: string[][] = []
+      const toasts: string[] = []
+      const clock = world(on, AGENTS, TRANSCRIPTS, { zellij: ['app'], ran, toasts })
+      await start($, clock)
+      await (await list($)).press({ key: 'wt' })
+      expect(ran).toEqual([])
+      expect(toasts.some(t => t.includes('zellij'))).toBe(true)
+    })
   })
 })

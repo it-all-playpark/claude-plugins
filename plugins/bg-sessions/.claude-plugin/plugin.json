@@ -4,5 +4,13 @@
   "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
   "repository": "https://github.com/it-all-playpark/claude-plugins",
   "license": "MIT",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "zellij_switch": {
+      "type": "boolean",
+      "title": "zellij のセッションへ移動する",
+      "description": "/bg-sessions で行を選ぶと、その repo と同じ名前の zellij セッションへ switch-session する。zellij の中で動いているときだけ効き、同名のセッションが無ければ何もしない",
+      "default": false
+    }
+  }
 }

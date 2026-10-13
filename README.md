@@ -48,8 +48,12 @@ Whisper と pyannote でローカルに文字起こし・話者分離して `/me
 プロンプトの上の 1 行に出します（実行中・入力待ち・放置の件数と、実行中の `repo/worktree`）。`/bg-sessions` で
 状態・repo・worktree・branch・更新・名前の一覧を開きます（Esc で閉じる）。場所は `claude agents --json` の起動時 cwd ではなく
 transcript の最終行の `cwd` / `gitBranch` から取るので、セッションが入った worktree が出ます。作業しておらず
-3 日以上 transcript が更新されていないものは放置として件数だけにします。表示するだけで、セッションの切替や
-停止はしません。
+3 日以上 transcript が更新されていないものは放置として件数だけにします。セッションの停止はしません。
+
+設定 `zellij_switch`（既定 off。`/config` の plugin の行で切り替える）を on にすると、zellij の中で動いているときに
+一覧の行を `1`〜`9` か Enter で選ぶと、その repo と同じ名前（`-` と `_` の違いは同一視）の zellij セッションへ
+`zellij action switch-session` で移ります。存在しない名前で switch-session すると新しいセッションが作られて
+しまうので、`zellij list-sessions` に無ければ移らずに toast で知らせます。
 
 Use skills in Claude Code:
 

@@ -99,6 +99,19 @@ export function ago(ms: number): string {
   return `${Math.floor(s / 86400)}d`
 }
 
+/**
+ * repo に対応する zellij セッション名。同名を優先し、無ければ '-' と '_' を同一視して探す
+ * （zellij はセッション名の '-' を '_' にして作ることがある）。見つからなければ null。
+ * 存在しない名前で switch-session すると、その名前の新しいセッションが作られて移動してしまうので、
+ * 一覧に無い名前は返さない。
+ */
+export function zellijSessionFor(repo: string, listed: string): string | null {
+  const names = listed.split('\n').map(l => l.trim()).filter(Boolean)
+  if (names.includes(repo)) return repo
+  const loose = (s: string) => s.replace(/[-_]/g, '-')
+  return names.find(n => loose(n) === loose(repo)) ?? null
+}
+
 export function where(s: BgSession): string {
   return s.worktree ? `${s.repo}/${s.worktree}` : s.repo
 }

@@ -13,6 +13,7 @@ import {
   sortSessions,
   toSession,
   where,
+  zellijSessionFor,
 } from './sessions'
 
 const PANE = 'bg-sessions'
@@ -89,6 +90,30 @@ async function refresh($: Engine): Promise<void> {
   }
 }
 
+/** repo と同じ名前の zellij セッションへ移る。zellij の外・同名セッションが無いときは toast だけで何もしない */
+async function switchTo($: Engine, s: BgSession): Promise<void> {
+  if (!(await $.env.get('ZELLIJ'))) {
+    $.ui.toast('bg-sessions: zellij の中で動いていないので移動できません')
+    return
+  }
+  try {
+    const listed = await $.process.run(['zellij', 'list-sessions', '--short', '--no-formatting'], { timeoutMs: 5000 })
+    const target = listed.exitCode === 0 ? zellijSessionFor(s.repo, listed.stdout) : null
+    if (!target) {
+      $.ui.toast(`bg-sessions: ${s.repo} の zellij セッションがありません`)
+      return
+    }
+    const moved = await $.process.run(['zellij', 'action', 'switch-session', target], { timeoutMs: 5000 })
+    if (moved.exitCode !== 0) {
+      $.ui.toast(`bg-sessions: ${target} へ移動できませんでした: ${moved.stderr.trim() || `exit ${moved.exitCode}`}`)
+      return
+    }
+    await $.ui.close({ id: PANE })
+  } catch (err) {
+    $.ui.toast(`bg-sessions: zellij を実行できませんでした: ${String(err)}`)
+  }
+}
+
 async function openList($: Engine): Promise<void> {
   void refresh($)
   await $.ui.open({ id: PANE, title: 'bg sessions', focus: true, closeOnEscape: true })
@@ -98,7 +123,9 @@ const LABEL = { running: '実行中  ', waiting: '入力待ち', stale: '放置 
 const MARK = { running: '●', waiting: '◐', stale: '○' } as const
 const COLOR = { running: 'success', waiting: 'warning', stale: 'inactive' } as const
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const zellijSwitch = options.zellij_switch === true
+
   on('session.start', async ($, e, next) => {
     void refresh($)
     $.clock.every(POLL_MS, () => void refresh($))
@@ -164,17 +191,25 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {failed && <Text color="error">更新に失敗しました: {failed}</Text>}
         {shown.length === 0 && <Text dimColor>bg で動いているセッションはありません。</Text>}
-        {shown.map(s => (
-          <Box key={s.id}>
-            <Text wrap="truncate-end">
-              <Text color={COLOR[s.status]}>{MARK[s.status]} {wide ? LABEL[s.status] : ''}</Text>
-              {` ${pad(s.repo, 16)} ${pad(s.worktree ?? '—', 12)} `}
-              {wide && <Text dimColor>{pad(s.branch ?? '', 22)} </Text>}
-              <Text dimColor>{pad(ago(now - s.updatedAt), 5)}</Text>
-              {wide ? ` ${s.name}` : ''}
-            </Text>
-          </Box>
-        ))}
+        {shown.map((s, i) => {
+          const cells = [
+            <Text color={COLOR[s.status]}>{MARK[s.status]} {wide ? LABEL[s.status] : ''}</Text>,
+            ` ${pad(s.repo, 16)} ${pad(s.worktree ?? '—', 12)} `,
+            wide ? <Text dimColor>{pad(s.branch ?? '', 22)} </Text> : '',
+            <Text dimColor>{pad(ago(now - s.updatedAt), 5)}</Text>,
+            wide ? ` ${s.name}` : '',
+          ]
+          // 数字の hotkey はフォーカスを取るこのペインだけに付ける（帯に付けると空の composer で数字を打つと押される）
+          return zellijSwitch ? (
+            <Button key={s.id} plain {...(i < 9 ? { hotkey: String(i + 1) } : {})} onPress={() => switchTo($, s)}>
+              {cells}
+            </Button>
+          ) : (
+            <Box key={s.id}>
+              <Text wrap="truncate-end">{cells}</Text>
+            </Box>
+          )
+        })}
         {staleCount > 0 && (
           <Button
             key="bg-stale"
