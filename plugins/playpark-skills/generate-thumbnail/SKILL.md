@@ -16,21 +16,19 @@ model: haiku
 Generate blog thumbnail from MDX frontmatter via Codex CLI built-in `image_gen` tool (gpt-image-2). API キー不要、Codex サブスクリプションの usage limit を消費する。
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/generate-thumbnail/scripts/generate_thumbnail.sh content/blog/<file>.mdx --optimize
+generate-thumbnail content/blog/<file>.mdx --optimize
 ```
 
 Options: `--optimize` converts to WebP and deletes original PNG.
 
 ## 絶対に守る制約
 
-**スクリプトは必ず literal な絶対パスを先頭トークンにした bare 形（`bash /abs/path/generate_thumbnail.sh …`）で呼ぶ。**
-sandbox 除外は呼び出しコマンドの先頭トークンのテキスト一致で判定され、除外されるのは plugin cache
-（`~/.claude/plugins/cache/playpark/`）配下のパスだけ。skills の clone 配下のパスは sandbox から書けるので除外されない。
-`SKILL_DIR=…; bash "$SKILL_DIR/scripts/generate_thumbnail.sh"`、`cd "$ROOT" && bash …`、
-`bash "$(dirname …)/generate_thumbnail.sh"` のように変数・`cd`・`$( )` で包むと一致せず sandbox 内実行に落ち、
+**必ず bare 名 `generate-thumbnail` を先頭トークンにして単独で呼ぶ**（plugin の `bin/` が PATH に載っている）。
+sandbox 除外は呼び出しコマンドの先頭トークンのテキスト一致で判定され、前提として `generate-thumbnail` /
+`generate-thumbnail *` が `sandbox.excludedCommands` に入っている。`cd "$ROOT" && generate-thumbnail …`、
+`VAR=… generate-thumbnail …`、`$(…)` で包む形は excludedCommands に一致せず sandbox 内実行に落ち、
 内部の `codex exec` が app-server 初期化で `Operation not permitted` になって死ぬ。
 
-- 上の例のパスは読み込み時に plugin cache の絶対パスへ置換されている。その**文字列をそのまま書き下す**。シェル変数に入れて展開しない
 - cwd は対象 project の git root でよい（`<mdx-path>` は git root 相対で渡せる）。`cd` を前置しない
 - 素の `codex exec "echo hi"` が通ることは、この skill が動く証拠にならない（`codex:*` は先頭トークンが `codex` のときだけ除外される）
 
@@ -78,7 +76,7 @@ Requires: `codex` CLI（ログイン済み）, `python3`, `jq`. `--optimize` 使
 
 | 症状 | 意味と対処 |
 | --- | --- |
-| `could not create PATH aliases: Operation not permitted` / `failed to initialize in-process app-server client: Operation not permitted` | sandbox 内から実行している。呼び出し形が bare 形になっていない（変数展開・`cd … &&`・`$( )` の前置が付いている）。**環境ブロッカーと断定せず、literal 絶対パスの bare 形で呼び直す**。素の `codex exec` が通ることは反証にならない |
+| `could not create PATH aliases: Operation not permitted` / `failed to initialize in-process app-server client: Operation not permitted` | sandbox 内から実行している。bare 名 `generate-thumbnail` で呼んでいない（`cd … &&`・変数の前置・`$( )` で包むと excludedCommands に一致せず sandbox 内実行に落ちる）。**環境ブロッカーと断定せず、bare 名 `generate-thumbnail` で呼び直す**。素の `codex exec` が通ることは反証にならない |
 | `codex model '<name>' is not available for this account.` | ChatGPT アカウントの Codex が提供終了モデルを 400 で拒否した。`skill-config.json` の `codex_model` を利用可能なモデルにする。未設定なら script の既定値が古いので既定値を更新する。一覧は `jq -r '.. \| .slug? // empty' ~/.codex/models_cache.json \| sort -u` |
 | `Codex completed but output file not found` | codex は完走したが画像を書かなかった（agent がコピーを省いた等）。ログ末尾 30 行を確認する |
 | `codex exec failed` + usage limit 系のメッセージ | Codex サブスクリプションの quota 切れ。時間を置いて再試行する |
