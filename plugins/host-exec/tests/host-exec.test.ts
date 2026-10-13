@@ -115,7 +115,7 @@ describe('host-exec', () => {
     stubProcess(on, { stdout: 'No changes.' }, ran)
     const r: any = await $.tool.call({ tool: TOOL, argv: ['terraform', 'plan'], reason: 'plan を確認する' } as any)
     expect(asked.length).toBe(1)
-    expect(asked[0].startsWith('plan を確認する\n  $ terraform plan\n')).toBe(true)
+    expect(asked[0].startsWith('Claude: plan を確認する\n  $ terraform plan\n')).toBe(true)
     expect(asked[0]).toContain('実行ファイル  /opt/homebrew/bin/terraform → /opt/homebrew/Cellar/terraform/1.9.0/bin/terraform')
     expect(asked[0]).toContain('場所          ~/repo')
     expect(asked[0]).not.toContain('⚠')
@@ -178,7 +178,7 @@ describe('host-exec', () => {
     expect(asked[0]).not.toContain('line1\nline2')
     expect(asked[0]).not.toContain('\u202e')
     expect(asked[0]).toContain('$ gh pr comment 1 --body "line1')
-    expect(asked[0]).toContain('a\\nb\n  $ gh pr comment')
+    expect(asked[0]).toContain('Claude: a\\nb\n  $ gh pr comment')
     expect(ran[0]?.[5]).toBe(body)
   })
 

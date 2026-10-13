@@ -302,10 +302,11 @@ export const register: Register = on => {
     }
     // 毎回同じ定型文は置かない（読み飛ばす癖がつき、条件付きの警告まで読まれなくなる）。
     // 警告は出たときだけ先頭に。Claude の説明は未検証の文なので、言い分とやることを
-    // ひと目で突き合わせられるようコマンドの直前に置く
+    // ひと目で突き合わせられるようコマンドの直前に置く。接頭辞は外さない（無いと Claude の文が
+    // host-exec 自身の表示に見え、「安全確認済み」などと書かれると見分けられない）
     const shown = [
       ...(warnings.length > 0 ? [`⚠ 注意（${warnings.length} 件）`, ...warnings.map(w => `・${w}`), ''] : []),
-      visible(reason).slice(1, -1),
+      `Claude: ${visible(reason).slice(1, -1)}`,
       `  $ ${shownCommand(argv)}`,
       '',
       `  実行ファイル  ${shownPath(exe)}${exeReal !== exe ? ` → ${shownPath(exeReal)}` : ''}`,
