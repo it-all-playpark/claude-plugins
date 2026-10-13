@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # meeting.sh の macOS 非依存部分（引数処理・未インストール時の案内・録音一覧・launchd plist 生成・
-# install の常駐登録の手順・setup のビルド元の固定・話者の声の切り出し・議事録の話者名の後入れ）のテスト。
-# 録音 / 実際のビルド / 実際の launchd 登録 / 実際の再生は macOS 実機でしか動かないので対象外
-# (launchctl / swift / ffmpeg / afplay は stub)。
+# install の常駐登録の手順・setup のビルド元の固定と署名・話者の声の切り出し・議事録の話者名の後入れ）のテスト。
+# 録音 / 実際のビルド / 実際の署名 / 実際の launchd 登録 / 実際の再生は macOS 実機でしか動かないので対象外
+# (launchctl / swift / security / openssl / codesign / ffmpeg / afplay は stub)。
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/meeting.sh"
@@ -79,7 +79,52 @@ echo "\$pkg" >> "$BATS_TEST_TMPDIR/swift.pkg"
 mkdir -p "\$scratch/release"
 { echo "\$pkg"; find "\$pkg/Sources" -type f | LC_ALL=C sort | while read -r f; do cat "\$f"; done; } > "\$scratch/release/meeting-rec"
 EOF
+    stub_signing
     chmod +x "$BATS_TEST_TMPDIR/stub/"*
+}
+
+# setup の署名で呼ぶ security / openssl / codesign を stub に差し替える。keychain の identity は
+# $BATS_TEST_TMPDIR/keychain/identity で表す (あれば find-identity に信頼設定なしの identity として出る)。
+# security import は引数を security.import に記録し、p12 があれば identity を足す。openssl はサブコマンドを
+# openssl.log に記録して -out / -keyout のファイルを作る。codesign は引数を codesign.args に 1 行で記録し、
+# 対象ファイルの末尾に "signed <identity> <identifier>" を足す (署名でバイナリの中身が変わるのを模す)
+stub_signing() {
+    local s="$BATS_TEST_TMPDIR/stub" k="$BATS_TEST_TMPDIR/keychain"
+    mkdir -p "$s" "$k"
+    cat > "$s/security" <<EOF
+#!/bin/sh
+case "\$1" in
+  find-identity)
+    echo "Policy: Code Signing"
+    echo "  Matching identities"
+    if [ -e "$k/identity" ]; then
+      echo '  1) 0123456789ABCDEF0123456789ABCDEF01234567 "meeting-rec local signing" (CSSMERR_TP_NOT_TRUSTED)'
+      echo "     1 identities found"
+    else
+      echo "     0 identities found"
+    fi ;;
+  import)
+    printf "%s\\n" "\$@" > "$BATS_TEST_TMPDIR/security.import"
+    [ -f "\$2" ] && touch "$k/identity" ;;
+esac
+EOF
+    cat > "$s/openssl" <<EOF
+#!/bin/sh
+echo "\$1" >> "$BATS_TEST_TMPDIR/openssl.log"
+while [ \$# -gt 0 ]; do
+  case "\$1" in -out|-keyout) : > "\$2"; shift ;; esac
+  shift
+done
+EOF
+    cat > "$s/codesign" <<EOF
+#!/bin/sh
+echo "\$*" >> "$BATS_TEST_TMPDIR/codesign.args"
+while [ \$# -gt 1 ]; do
+  case "\$1" in -s) id="\$2"; shift ;; --identifier) ident="\$2"; shift ;; esac
+  shift
+done
+echo "signed \$id \$ident" >> "\$1"
+EOF
 }
 
 @test "setup は plugin root の場所によらず固定の \$MEETING_PREFIX/src/recorder からビルドし、ソースが同じなら meeting-rec を入れ替えない" {
@@ -97,6 +142,7 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"= meeting-rec は変更なし (権限はそのまま)"* ]]
     [ "$(cksum < "$MEETING_PREFIX/bin/meeting-rec")" = "$before" ]
+    [ "$(wc -l < "$BATS_TEST_TMPDIR/codesign.args")" -eq 1 ]
     [ "$(paste -sd ' ' "$BATS_TEST_TMPDIR/swift.pkg")" = "$MEETING_PREFIX/src/recorder $MEETING_PREFIX/src/recorder" ]
 }
 
@@ -114,6 +160,65 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"✓ meeting-rec を更新しました"* ]]
     [ "$(cksum < "$MEETING_PREFIX/bin/meeting-rec")" != "$before" ]
+    [ "$(wc -l < "$BATS_TEST_TMPDIR/codesign.args")" -eq 2 ]
+}
+
+@test "setup は署名用の identity が keychain に無いときだけ作り、鍵と p12 を残さない" {
+    stub_build
+    plugin_copy "$BATS_TEST_TMPDIR/a"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"keychain へコード署名の証明書「meeting-rec local signing」を追加しました"* ]]
+    [[ "$output" == *"一度だけ"*"再許可"* ]]
+    [ "$(paste -sd ' ' "$BATS_TEST_TMPDIR/openssl.log")" = "req pkcs12" ]
+    mapfile -t imp < "$BATS_TEST_TMPDIR/security.import"
+    [ "${imp[0]}" = "import" ]
+    [[ "${imp[1]}" == *.p12 ]]
+    [ ! -e "$(dirname "${imp[1]}")" ]
+    grep -qxF -- '-T' "$BATS_TEST_TMPDIR/security.import"
+    grep -qxF -- '/usr/bin/codesign' "$BATS_TEST_TMPDIR/security.import"
+
+    # identity があれば作らない
+    rm "$BATS_TEST_TMPDIR/security.import"
+    echo "// changed" >> "$BATS_TEST_TMPDIR/a/recorder/Sources/meeting-rec/main.swift"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"keychain へ"* ]]
+    [ "$(paste -sd ' ' "$BATS_TEST_TMPDIR/openssl.log")" = "req pkcs12" ]
+    [ ! -e "$BATS_TEST_TMPDIR/security.import" ]
+    [[ "$output" == *"✓ meeting-rec を更新しました (同じ証明書で署名したので権限はそのまま)"* ]]
+}
+
+@test "setup はインストールする meeting-rec を自己署名の identity と固定の識別子で署名する" {
+    stub_build
+    touch "$BATS_TEST_TMPDIR/keychain/identity"
+    plugin_copy "$BATS_TEST_TMPDIR/a"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ ! -e "$BATS_TEST_TMPDIR/openssl.log" ]
+    [[ "$(cat "$BATS_TEST_TMPDIR/codesign.args")" == "-f -s meeting-rec local signing --identifier jp.co.playpark.meeting-rec "* ]]
+    [ -x "$MEETING_PREFIX/bin/meeting-rec" ]
+    [ "$(tail -1 "$MEETING_PREFIX/bin/meeting-rec")" = "signed meeting-rec local signing jp.co.playpark.meeting-rec" ]
+}
+
+@test "setup は ad-hoc 署名のまま入れた meeting-rec をビルド成果物が同じでも署名して入れ替える" {
+    stub_build
+    touch "$BATS_TEST_TMPDIR/keychain/identity"
+    plugin_copy "$BATS_TEST_TMPDIR/a"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup
+    [ "$status" -eq 0 ]
+    # この修正の前の setup と同じく、ビルド成果物をそのまま入れた状態にする
+    cp "$MEETING_PREFIX/build/release/meeting-rec" "$MEETING_PREFIX/bin/meeting-rec"
+    rm "$MEETING_PREFIX/bin/.meeting-rec.unsigned"
+
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"✓ meeting-rec を更新しました (ad-hoc 署名からの切り替えなので、常駐の次の起動で一度だけ権限の再許可が必要です)"* ]]
+    [ "$(tail -1 "$MEETING_PREFIX/bin/meeting-rec")" = "signed meeting-rec local signing jp.co.playpark.meeting-rec" ]
 }
 
 @test "setup は plugin 側で消した recorder のソースファイルを固定の場所にも残さない" {

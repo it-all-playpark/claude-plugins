@@ -32,6 +32,9 @@ PREFIX="${MEETING_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/meeting-rec}"
 BIN_DIR="${MEETING_BIN_DIR:-$HOME/.local/bin}"
 MEETING_HOME="${MEETING_HOME:-$HOME/Meetings}"
 REC_BIN="$PREFIX/bin/meeting-rec"
+REC_UNSIGNED="$PREFIX/bin/.meeting-rec.unsigned"  # 前回インストールした meeting-rec の署名前の成果物
+REC_ID="jp.co.playpark.meeting-rec"
+SIGN_IDENTITY="meeting-rec local signing"
 INSTALLED="$PREFIX/bin/meeting"
 TRANSCRIBE="$PREFIX/transcribe/transcribe.py"
 LABEL="jp.co.playpark.meeting-watch"
@@ -49,6 +52,30 @@ latest_dir() {
   echo "${d%/}"
 }
 
+# TCC は ad-hoc 署名のバイナリを cdhash で識別するので、ビルドし直すたびに許可が外れる。固定の証明書で
+# 署名すると識別が「識別子 + 証明書」になり、バイナリが変わっても許可が残る。そのためのコード署名 identity が
+# keychain に無ければ自己署名で作る。信頼設定 (add-trusted-cert) は署名に不要で、管理者認証のダイアログが
+# 出るのでしない。pkcs12 は security import が読める形式 (3DES / SHA1 MAC) を明示する
+# (OpenSSL 3 の既定の形式は MAC 検証で失敗する)。鍵と p12 は取り込んだら消す
+has_signing_identity() {
+  # 信頼設定をしないので -v (有効なものだけ) は付けない (CSSMERR_TP_NOT_TRUSTED として一覧に出る)
+  [[ "$(security find-identity -p codesigning 2>/dev/null)" == *"\"$SIGN_IDENTITY\""* ]]
+}
+
+create_signing_identity() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/meeting-sign.XXXXXX")"
+  trap "rm -rf '$tmp'" EXIT
+  printf '[req]\ndistinguished_name = dn\nx509_extensions = ext\nprompt = no\n[dn]\nCN = %s\n[ext]\nbasicConstraints = critical,CA:false\nkeyUsage = critical,digitalSignature\nextendedKeyUsage = critical,codeSigning\n' \
+    "$SIGN_IDENTITY" > "$tmp/req.cnf"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config "$tmp/req.cnf" \
+    -keyout "$tmp/key.pem" -out "$tmp/cert.pem" 2>/dev/null
+  openssl pkcs12 -export -inkey "$tmp/key.pem" -in "$tmp/cert.pem" -name "$SIGN_IDENTITY" \
+    -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1 -passout pass:meeting-rec -out "$tmp/id.p12"
+  security import "$tmp/id.p12" -f pkcs12 -P meeting-rec -T /usr/bin/codesign >/dev/null
+  rm -rf "$tmp"
+}
+
 # launchd / TCC (マイク・画面収録の許可) は実行ファイルのパスと署名に紐づく。plugin の install 先は
 # 更新ごとに変わるので、ビルド成果物は固定の $PREFIX に置き、中身が変わったときだけ差し替える
 cmd_setup() {
@@ -59,19 +86,33 @@ cmd_setup() {
   command -v uv >/dev/null || die "uv がありません"
 
   # swift build の成果物にはビルド元ソースの絶対パスが埋め込まれる。plugin root からそのままビルドすると
-  # install 先が変わるたびにソースが同じでもバイナリ (= ad-hoc 署名の cdhash) が変わり、cmp をすり抜けて
-  # 入れ替わって TCC の許可が外れるので、固定の $PREFIX/src/recorder に同期してからビルドする。
+  # install 先が変わるたびにソースが同じでもバイナリが変わり、cmp をすり抜けて入れ替わるので、
+  # 固定の $PREFIX/src/recorder に同期してからビルドする。
   # --delete は plugin 側で消したファイルを残さないため
   mkdir -p "$PREFIX/src"
   rsync -a --delete --exclude .build "$SRC/recorder/" "$PREFIX/src/recorder/"
   swift build -c release --package-path "$PREFIX/src/recorder" --scratch-path "$PREFIX/build"
   mkdir -p "$PREFIX/bin" "$PREFIX/transcribe" "$BIN_DIR"
-  local built="$PREFIX/build/release/meeting-rec"
-  if cmp -s "$built" "$REC_BIN"; then
+  if ! has_signing_identity; then
+    create_signing_identity
+    echo "✓ meeting-rec の署名用に keychain へコード署名の証明書「${SIGN_IDENTITY}」を追加しました"
+    echo "  常駐の次の起動で一度だけ「画面収録とシステムオーディオ録音」「マイク」の再許可が要ります"
+    echo "  (権限エラーが出たら、システム設定で meeting-rec を「−」で削除して「+」で追加し直す)。以後はバイナリが変わっても許可が残ります"
+  fi
+  # インストール済みの meeting-rec は署名済みで、ビルド成果物とは必ず食い違う。比べるのは前回の署名前の
+  # 成果物。それが無い (= ad-hoc 署名のまま入れた古いインストール) なら成果物が同じでも署名して入れ替える。
+  # 署名は別名のコピーにしてから差し替える (常駐が実行中のファイルをその場で書き換えない)
+  local built="$PREFIX/build/release/meeting-rec" staged="$PREFIX/bin/.meeting-rec.new"
+  if [[ -x "$REC_BIN" ]] && cmp -s "$built" "$REC_UNSIGNED"; then
     echo "= meeting-rec は変更なし (権限はそのまま)"
   else
-    install -m 755 "$built" "$REC_BIN"
-    echo "✓ meeting-rec を更新しました (常駐中なら権限の再許可が必要になることがあります)"
+    local note="同じ証明書で署名したので権限はそのまま"
+    [[ -e "$REC_BIN" && ! -e "$REC_UNSIGNED" ]] && note="ad-hoc 署名からの切り替えなので、常駐の次の起動で一度だけ権限の再許可が必要です"
+    install -m 755 "$built" "$staged"
+    codesign -f -s "$SIGN_IDENTITY" --identifier "$REC_ID" "$staged"
+    mv -f "$staged" "$REC_BIN"
+    install -m 644 "$built" "$REC_UNSIGNED"
+    echo "✓ meeting-rec を更新しました ($note)"
   fi
   install -m 644 "$SRC/transcribe/align.py" "$SRC/transcribe/transcribe.py" "$PREFIX/transcribe/"
   install -m 755 "$SELF" "$INSTALLED"
