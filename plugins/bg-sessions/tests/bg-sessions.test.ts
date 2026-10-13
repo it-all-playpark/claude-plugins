@@ -134,6 +134,17 @@ describe('bg-sessions', () => {
     expect(await ui.findAll({ type: 'Button' })).toEqual([])
   })
 
+  test('Bash で別の repo に cd しただけのセッションは、起動した repo で出す', async ($, on) => {
+    const clock = world(on, [{ id: 'trip', cwd: '/Users/x/ghq/acme/notes', state: 'done' }], {
+      // transcript は起動した repo の下に残り、最後の cwd だけがよその repo に移っている
+      trip: { dir: '-Users-x-ghq-acme-notes', mtimeMs: NOW - HOUR, cwd: '/Users/x/ghq/acme/pipeline', branch: 'main' },
+    })
+    await start($, clock)
+    const text = (await (await band($)).find({ key: 'bg-band' }))?.text ?? ''
+    expect(text).toContain('notes')
+    expect(text).not.toContain('pipeline')
+  })
+
   test('作業していないセッションは最終更新から 3 日経つと放置に入る', async ($, on) => {
     const clock = world(on, [
       { id: 'fresh', cwd: '/Users/x/ghq/acme/fresh', state: 'blocked' },

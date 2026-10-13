@@ -47,7 +47,8 @@ Whisper と pyannote でローカルに文字起こし・話者分離して `/me
 `bg-sessions` は `claude --bg` で動いているセッションが、どの repo のどの worktree・branch にいるかを
 プロンプトの上の帯に 1 つずつ並べます（`● repo/worktree` が実行中、`◐` が入力待ち、放置は件数だけ）。`/bg-sessions` で
 状態・repo・worktree・branch・更新・名前の一覧を開きます（Esc で閉じる）。場所は `claude agents --json` の起動時 cwd ではなく
-transcript の最終行の `cwd` / `gitBranch` から取るので、セッションが入った worktree が出ます。作業しておらず
+transcript の最終行の `cwd` / `gitBranch` から取るので、セッションが入った worktree が出ます（起動した repo の外に
+`cd` しただけのときは起動した repo を出します）。作業しておらず
 3 日以上 transcript が更新されていないものは放置として件数だけにします。セッションの停止はしません。
 
 設定 `zellij_switch`（既定 off。`/config` の plugin の行で切り替える）を on にすると、帯と一覧の各セッションに
