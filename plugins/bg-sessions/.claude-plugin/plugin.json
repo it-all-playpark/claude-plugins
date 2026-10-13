@@ -1,0 +1,8 @@
+{
+  "name": "bg-sessions",
+  "description": "bg で動いている Claude セッションの repo・worktree・branch をプロンプト上の帯と /bg の一覧に出す",
+  "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
+  "repository": "https://github.com/it-all-playpark/claude-plugins",
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

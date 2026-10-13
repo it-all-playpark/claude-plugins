@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "playpark",
-  "description": "playpark LLC marketplace: playpark-core (shared base), dev-flow (issue-to-LGTM workflows + 7 dev-flow agents), playpark-skills (personal skills), host-exec (approved host execution outside the sandbox), meeting (auto meeting recording + local transcription + notes)",
+  "description": "playpark LLC marketplace: playpark-core (shared base), dev-flow (issue-to-LGTM workflows + 7 dev-flow agents), playpark-skills (personal skills), host-exec (approved host execution outside the sandbox), meeting (auto meeting recording + local transcription + notes), bg-sessions (where each background Claude session is working)",
   "owner": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
   "plugins": [
     {
@@ -32,6 +32,12 @@
       "name": "meeting",
       "description": "Auto-records Zoom / Google Meet / Teams meetings on macOS (even ones you don't host), transcribes them locally with Whisper + pyannote speaker diarization, and turns them into meeting notes",
       "source": "./plugins/meeting",
+      "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" }
+    },
+    {
+      "name": "bg-sessions",
+      "description": "Shows which repo, worktree and branch each background Claude session is in, in a band above the prompt and a /bg list",
+      "source": "./plugins/bg-sessions",
       "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" }
     }
   ]
