@@ -265,14 +265,6 @@ skill-config.json                              # プロジェクト設定（リ�
 | `company_name` | string | 会社名（Qiita 版の企業紹介 CTA。未設定ならセクションを出さない） |
 | `contact_url` | string | お問い合わせURL（Qiita 版の企業紹介 CTA。未設定ならリンクを出さない） |
 
-#### cross-post-publish
-
-| キー | 型 | 説明 |
-|------|-----|------|
-| `content_dir` | string | 記事ソースディレクトリ（デフォルト: `"content/blog"`） |
-| `cross_post_dir` | string | 変換結果の出力先（デフォルト: `"post/cross-post"`） |
-| `cross_post_categories` | string[] | クロスポスト対象カテゴリ（デフォルト: `["tech-tips", "lab-reports"]`） |
-
 #### trends-analyzer
 
 | キー | 型 | 説明 |
@@ -323,9 +315,6 @@ skill-config.json                              # プロジェクト設定（リ�
     "content_dir": "content/blog",
     "company_name": "Example Inc.",
     "contact_url": "https://example.com/contact"
-  },
-  "cross-post-publish": {
-    "cross_post_categories": ["tech-tips", "lab-reports"]
   }
 }
 ```
@@ -414,11 +403,9 @@ config = load_skill_config("ga-analyzer")
 | スキル | 説明 |
 |--------|------|
 | `blog-cross-post` | ブログ記事をZenn/Qiita形式に変換 |
-| `cross-post-publish` | Zenn/Qiitaクロスポスト一括投稿オーケストレーション |
 | `zenn-publish` | Zennへの公開 |
 | `qiita-publish` | Qiitaへの公開 |
 | `generate-thumbnail` | Codex CLI built-in image_gen（gpt-image-2）によるブログサムネイル生成 |
-| `get-publish-date` | スケジュール設定に基づく次回公開日算出 |
 | `blog-fact-check` | 記事内の統計データ・バージョン・料金のファクトチェック |
 | `blog-internal-links` | クラスタ内記事間の内部リンク分析・挿入 |
 | `blog-seo-improve` | GSC/GAデータに基づく既存記事のSEO改善 |
@@ -434,7 +421,6 @@ config = load_skill_config("ga-analyzer")
 
 | スキル | 説明 |
 |--------|------|
-| `gws-calendar-agenda` | Google Calendar全カレンダーの予定一覧表示 🔗 |
 | `gmail-cleanup` | 古いプロモーション等を毎日ゴミ箱へ移す GAS を、repo の設定 JSON から各アカウントへデプロイ |
 | `gmail-receipts` | 領収書ラベルのメールを毎日 Drive の YYYY/MM へ保存してアーカイブする GAS を、repo の設定 JSON から各アカウントへデプロイ |
 
@@ -442,15 +428,8 @@ config = load_skill_config("ga-analyzer")
 
 | スキル | 説明 |
 |--------|------|
-| `pricing-strategy` | 価格戦略・パッケージング・マネタイズ 🔗 |
 | `biz-card-to-sheet` | 名刺画像からスプレッドシートへ登録 |
 | `biz-card-search` | 登録済み名刺データ検索 |
-
-### コミュニケーション
-
-| スキル | 説明 |
-|--------|------|
-| `slack-cli` | Slack操作CLI（チャンネル/メッセージ/スレッド/リアクション） |
 
 ### 会議
 
@@ -463,9 +442,7 @@ config = load_skill_config("ga-analyzer")
 | スキル | 説明 |
 |--------|------|
 | `skill-creator` | 新規スキル作成ガイド（当リポジトリ規約版） |
-| `find-skills` | スキル検索・インストール支援 🔗 |
 | `mem-triage` | macOS のメモリをアプリ・端末から起動したもの・launchd の常駐の塊ごとに合算し、解放方法と「聞かずに消してよいか」を示す（kill はユーザーが実行） |
-| `memory-cli` | memvid CLI によるセッション・プロジェクト横断の永続メモリ（BM25 + semantic のハイブリッド検索） |
 | `sandbox-tune` | transcript から sandbox 拒否・permission 拒否・人間への実行依頼を型ごとに集計し、設定 repo の git log と突き合わせて settings 修正の候補を根拠付きで出す（issue 化は `--issue` のときだけ） |
 | `suica-to-csv` | モバイルSuica明細PDFをマネーフォワード経費CSVに変換 |
 | `agent-browser` | ブラウザ自動操作（ページ操作/スクレイピング/テスト） 🔗 |

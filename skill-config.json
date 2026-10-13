@@ -30,24 +30,5 @@
     "timeframe": "today 3-m",
     "top_n": 10,
     "title_strip_patterns": []
-  },
-  "memory-cli": {
-    "global_memory": "~/.claude/memory/global.mv2",
-    "project_memory": ".claude/memory/project.mv2",
-    "default_search_mode": "sem",
-    "default_top_k": 5,
-    "auto_save": {
-      "on_task_complete": true,
-      "on_session_end": true,
-      "on_feedback": true
-    },
-    "save_targets": {
-      "user": "global",
-      "feedback": "global",
-      "session": "global",
-      "retrospective": "global",
-      "project": "project",
-      "reference": "project"
-    }
   }
 }

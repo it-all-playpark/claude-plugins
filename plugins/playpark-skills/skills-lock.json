@@ -7,28 +7,11 @@
       "skillPath": "skills/agent-browser/SKILL.md",
       "computedHash": "ecc7641aea05f85ca3b11e7759d32aaf52fe05946ab4b63739c7bf78a41237a2"
     },
-    "find-skills": {
-      "source": "vercel-labs/skills",
-      "sourceType": "github",
-      "skillPath": "skills/find-skills/SKILL.md",
-      "computedHash": "781bd6d3f9b19f8c9af6b53d8d0e4876d0183841b565db34ca7092ffa412d111"
-    },
     "gsc": {
       "source": "jdrhyne/agent-skills",
       "sourceType": "github",
       "skillPath": "skills/gsc/SKILL.md",
       "computedHash": "42532b6f32e4091823e69941603d2572c1552c2a3baff63ddadbbed95d0b4843"
-    },
-    "gws-calendar-agenda": {
-      "source": "googleworkspace/cli",
-      "sourceType": "github",
-      "skillPath": "skills/gws-calendar-agenda/SKILL.md",
-      "computedHash": "794bca1f324fa3a29dd1b98be990c690bcf9e36807fba8634042a36439d26c3e"
-    },
-    "pricing-strategy": {
-      "source": "coreyhaines31/marketingskills",
-      "sourceType": "github",
-      "computedHash": "9316806c2d2479b0006189432b32cf749cab0879d04237e8b72164431ce648d9"
     }
   }
 }

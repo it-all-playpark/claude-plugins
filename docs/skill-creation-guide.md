@@ -275,7 +275,7 @@ User triggers /command
 6. **破壊的・大量変更系は `disable-model-invocation: true` を検討**:
    ファイル大量移動・worktree 大量生成・外部公開を伴う skill は LLM の自動起動を禁じ、
    ユーザー明示起動（`/skill-name`）のみに限定する。
-   候補例: `cross-post-publish`, `qiita-publish`, `zenn-publish`
+   候補例: `qiita-publish`, `zenn-publish`
 7. **「毎回確定実行」したい挙動は skill ではなく hook で実装**:
    format / test / secret 検査のように LLM の判断を介さず必ず走らせたい処理は、
    skill 化すると呼び出し漏れが起きる。hook での実装を検討すること。

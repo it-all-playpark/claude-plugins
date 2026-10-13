@@ -50,17 +50,14 @@ readme_config_keys() {
     done <<< "$names"
 }
 
-@test "README の ga-analyzer / blog-cross-post / cross-post-publish の設定キーは実装が読むセクションのキーと一致する" {
+@test "README の ga-analyzer / blog-cross-post の設定キーは実装が読むセクションのキーと一致する" {
     skills="$REPO_ROOT/plugins/playpark-skills"
     # ga-analyzer: ga_fetch.py の merge_config(defaults, "ga-analyzer") の defaults
     ga="$(grep -E 'merge_config\(\{.*\}, "ga-analyzer"\)' "$skills/ga-analyzer/scripts/ga_fetch.py" | grep -oE '"[a-z_]+":' | grep -oE '[a-z_]+' | sort -u)"
     # blog-cross-post: resolve-source.sh の merge_config "$DEFAULTS" "blog-cross-post" の DEFAULTS
     grep -qF 'merge_config "$DEFAULTS" "blog-cross-post"' "$skills/blog-cross-post/scripts/resolve-source.sh"
     bcp="$(grep -E "^DEFAULTS='" "$skills/blog-cross-post/scripts/resolve-source.sh" | sed -E "s/^DEFAULTS='(.*)'$/\1/" | jq -r 'keys[]' | sort -u)"
-    # cross-post-publish: list-articles.sh が load_skill_config "cross-post-publish" の結果から読むキー
-    grep -qF 'load_skill_config "cross-post-publish"' "$skills/cross-post-publish/scripts/list-articles.sh"
-    cpp="$(grep -oE "jq -r '\.[a-z_]+" "$skills/cross-post-publish/scripts/list-articles.sh" | grep -oE '[a-z_]+$' | sort -u)"
-    for pair in "ga-analyzer:$ga" "blog-cross-post:$bcp" "cross-post-publish:$cpp"; do
+    for pair in "ga-analyzer:$ga" "blog-cross-post:$bcp"; do
         name="${pair%%:*}"
         impl="${pair#*:}"
         documented="$(readme_config_keys "$name")"

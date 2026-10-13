@@ -66,8 +66,5 @@ claudedocs/
 
 # --- external skills (auto-managed) ---
 plugins/playpark-skills/agent-browser
-plugins/playpark-skills/find-skills
 plugins/playpark-skills/gsc
-plugins/playpark-skills/gws-calendar-agenda
-plugins/playpark-skills/pricing-strategy
 # --- end external skills ---

@@ -66,13 +66,13 @@ setup() {
     [ "$status" -ne 0 ]
 }
 
-@test "機能透過: get-publish-date/scripts/get_next_date.sh --help が locator 経由で成功する" {
-    run bash "$REPO_ROOT/plugins/playpark-skills/get-publish-date/scripts/get_next_date.sh" --help
+@test "機能透過: blog-internal-links/scripts/extract-links.sh --help が locator 経由で成功する" {
+    run bash "$REPO_ROOT/plugins/playpark-skills/blog-internal-links/scripts/extract-links.sh" --help
     [ "$status" -eq 0 ]
 }
 
 @test "負の対照: playpark-core が PATH に無いと locator は 127 で fail-closed する" {
-    run env PATH=/usr/bin:/bin bash "$REPO_ROOT/plugins/playpark-skills/get-publish-date/scripts/get_next_date.sh" --help
+    run env PATH=/usr/bin:/bin bash "$REPO_ROOT/plugins/playpark-skills/blog-internal-links/scripts/extract-links.sh" --help
     [ "$status" -eq 127 ]
     [[ "$output" == *"playpark-core"* ]]
 }
