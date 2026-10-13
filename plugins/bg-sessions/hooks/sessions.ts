@@ -83,13 +83,14 @@ export function toSession(
   const inside = loc.cwd !== undefined && (loc.cwd === row.cwd || loc.cwd.startsWith(`${row.cwd.replace(/\/+$/, '')}/`))
   const cwd = inside ? loc.cwd! : row.cwd
   const { repo, worktree } = placeOf(cwd)
-  const status = row.state === 'working' ? 'running' : now - updatedAt >= STALE_MS ? 'stale' : 'waiting'
+  const status =
+    row.state === 'working' ? 'running' : now - updatedAt >= STALE_MS ? 'stale' : row.state === 'done' ? 'done' : 'waiting'
   return { id: row.id, name: row.name, status, repo, worktree, branch: loc.branch ?? null, cwd, updatedAt }
 }
 
-const ORDER = { running: 0, waiting: 1, stale: 2 } as const
+const ORDER = { running: 0, waiting: 1, done: 2, stale: 3 } as const
 
-/** 実行中 → 入力待ち → 放置、同じ状態の中は新しい順 */
+/** 実行中 → 入力待ち → 完了 → 放置、同じ状態の中は新しい順 */
 export function sortSessions(list: BgSession[]): BgSession[] {
   return [...list].sort((a, b) => ORDER[a.status] - ORDER[b.status] || b.updatedAt - a.updatedAt)
 }

@@ -133,9 +133,9 @@ const KEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'] as const
 const hotkeyOf = (list: BgSession[], s: BgSession): string | undefined =>
   s.status === 'stale' ? undefined : KEYS[list.filter(x => x.status !== 'stale').indexOf(s)]
 
-const LABEL = { running: '実行中  ', waiting: '入力待ち', stale: '放置    ' } as const
-const MARK = { running: '●', waiting: '◐', stale: '○' } as const
-const COLOR = { running: 'success', waiting: 'warning', stale: 'inactive' } as const
+const LABEL = { running: '実行中  ', waiting: '入力待ち', done: '完了    ', stale: '放置    ' } as const
+const MARK = { running: '●', waiting: '◐', done: '✓', stale: '○' } as const
+const COLOR = { running: 'success', waiting: 'warning', done: 'suggestion', stale: 'inactive' } as const
 
 export const register: Register = (on, options) => {
   const zellijSwitch = options.zellij_switch === true

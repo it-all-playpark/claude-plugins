@@ -134,6 +134,22 @@ describe('bg-sessions', () => {
     expect(await ui.findAll({ type: 'Button' })).toEqual([])
   })
 
+  test('作業を終えたセッション（done）は入力待ちと別の印で、入力待ちの後に出す', async ($, on) => {
+    const clock = world(on, [
+      { id: 'fin', cwd: '/Users/x/ghq/acme/fin', state: 'done' },
+      { id: 'ask', cwd: '/Users/x/ghq/acme/ask', state: 'blocked' },
+    ], {
+      fin: { dir: '-Users-x-ghq-acme-fin', mtimeMs: NOW - 60_000, cwd: '/Users/x/ghq/acme/fin', branch: 'main' },
+      ask: { dir: '-Users-x-ghq-acme-ask', mtimeMs: NOW - HOUR, cwd: '/Users/x/ghq/acme/ask', branch: 'main' },
+    })
+    await start($, clock)
+    const text = (await (await band($)).find({ key: 'bg-band' }))?.text ?? ''
+    expect(text).toContain('◐ ask')
+    expect(text).toContain('✓ fin')
+    // 完了の方が新しくても入力待ちが先
+    expect(text.indexOf('ask')).toBeLessThan(text.indexOf('fin'))
+  })
+
   test('Bash で別の repo に cd しただけのセッションは、起動した repo で出す', async ($, on) => {
     const clock = world(on, [{ id: 'trip', cwd: '/Users/x/ghq/acme/notes', state: 'done' }], {
       // transcript は起動した repo の下に残り、最後の cwd だけがよその repo に移っている

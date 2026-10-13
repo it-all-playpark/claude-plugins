@@ -1,5 +1,8 @@
-/** running: 作業中 / waiting: 入力待ちなど作業していない / stale: 作業しておらず 3 日以上 transcript が更新されていない */
-export type BgStatus = 'running' | 'waiting' | 'stale'
+/**
+ * running: 作業中 / waiting: 入力待ちなど作業していない / done: 作業を終えて止まっている（agents の state が done）/
+ * stale: 作業しておらず 3 日以上 transcript が更新されていない
+ */
+export type BgStatus = 'running' | 'waiting' | 'done' | 'stale'
 
 export type BgSession = {
   id: string
