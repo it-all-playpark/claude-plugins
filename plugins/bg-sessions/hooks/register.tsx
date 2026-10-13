@@ -102,13 +102,18 @@ const COLOR = { running: 'success', waiting: 'warning', stale: 'inactive' } as c
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'bg', description: 'bg で動いている Claude セッションの repo・worktree・branch を一覧する' })
     void refresh($)
     $.clock.every(POLL_MS, () => void refresh($))
+    // /bg は組み込みの /background の別名で拒否される。登録に失敗しても帯は動かし続ける
+    try {
+      await $.command.register({ name: 'bg-sessions', description: 'bg で動いている Claude セッションの repo・worktree・branch を一覧する' })
+    } catch (err) {
+      $.ui.toast(`bg-sessions: /bg-sessions を登録できませんでした: ${String(err)}`)
+    }
     return next(e)
   })
 
-  on('command.run', { command: 'bg' }, async $ => {
+  on('command.run', { command: 'bg-sessions' }, async $ => {
     try {
       await openList($)
       return { text: '' }

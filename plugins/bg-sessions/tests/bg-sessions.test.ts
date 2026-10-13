@@ -13,12 +13,13 @@ type Transcript = { dir: string; mtimeMs: number; cwd: string; branch: string }
  * claude agents --json・projects ディレクトリ・transcript の末尾を返す世界。
  * sessionId は `<id>-sid`、transcript は `<dir>/<sessionId>.jsonl` に置く。
  */
-function world(on: any, agents: Agent[], transcripts: Record<string, Transcript>, opts: { agentsExit?: number } = {}) {
+function world(on: any, agents: Agent[], transcripts: Record<string, Transcript>, opts: { agentsExit?: number; registerDeny?: string } = {}) {
   mock.env(on, { HOME: '/Users/x' })
   const clock = mock.clock(on, { now: NOW })
   on('session.id', async () => ({ value: 'self-sid' }))
   on('session.start', async ($: any, e: any) => e)
-  on('command.register', async () => ({ value: undefined }))
+  on('command.register', async () => (opts.registerDeny ? { deny: opts.registerDeny } : { value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
   on('ui.open', async () => ({ value: { isPlaced: true } }))
   const files: Record<string, Transcript> = {}
   for (const [id, t] of Object.entries(transcripts)) files[`${PROJECTS}/${t.dir}/${id}-sid.jsonl`] = t
@@ -74,7 +75,7 @@ function band($: any, bodyColumns = 120) {
 }
 
 async function list($: any) {
-  await $.command.run({ command: 'bg', args: '' } as any)
+  await $.command.run({ command: 'bg-sessions', args: '' } as any)
   return $.ui.mount({
     plugin: 'bg-sessions', surface: 'terminal', component: 'Pane', requestId: 'bg-sessions',
     props: { title: 'bg sessions', isFocused: true, bodyColumns: 120, placement: 'dock' } as any,
@@ -129,6 +130,13 @@ describe('bg-sessions', () => {
     expect(text).toContain('1 放置')
   })
 
+  test('コマンド名の登録を拒否されても帯は出る', async ($, on) => {
+    const clock = world(on, AGENTS, TRANSCRIPTS, { registerDeny: '"/bg-sessions" refused: it is a built-in' })
+    await start($, clock)
+    const text = (await (await band($)).find({ key: 'bg-band' }))?.text ?? ''
+    expect(text).toContain('1 実行中')
+  })
+
   test('放置しかないときは帯を出さない', async ($, on) => {
     const clock = world(on, [AGENTS[4]], { old: TRANSCRIPTS.old })
     // plugin が譲ったときに engine が描く既定の帯
@@ -139,7 +147,7 @@ describe('bg-sessions', () => {
     expect(await ui.find({ text: 'engine' })).toBeDefined()
   })
 
-  test('/bg の一覧は行を押すと attach コマンドを出し、放置は s で表示する', async ($, on) => {
+  test('/bg-sessions の一覧は行を押すと attach コマンドを出し、放置は s で表示する', async ($, on) => {
     const clock = world(on, AGENTS, TRANSCRIPTS)
     await start($, clock)
     const ui = await list($)

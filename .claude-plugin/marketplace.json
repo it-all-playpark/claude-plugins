@@ -36,7 +36,7 @@
     },
     {
       "name": "bg-sessions",
-      "description": "Shows which repo, worktree and branch each background Claude session is in, in a band above the prompt and a /bg list",
+      "description": "Shows which repo, worktree and branch each background Claude session is in, in a band above the prompt and a /bg-sessions list",
       "source": "./plugins/bg-sessions",
       "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" }
     }
