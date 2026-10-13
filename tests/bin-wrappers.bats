@@ -61,7 +61,6 @@ EOF
 
 skills_expected_names() {
     cat <<'EOF'
-blog-cross-post-resolve-source
 dep-guardian-classify-pr
 dep-guardian-discover-prs
 dep-guardian-merge-prs
@@ -113,7 +112,6 @@ target_for() {
 
 skills_target_for() {
     case "$1" in
-        blog-cross-post-resolve-source) echo "bash blog-cross-post/scripts/resolve-source.sh" ;;
         dep-guardian-discover-prs) echo "bash dep-guardian/scripts/discover-prs.sh" ;;
         dep-guardian-classify-pr) echo "bash dep-guardian/scripts/classify-pr.sh" ;;
         dep-guardian-test-pr) echo "bash dep-guardian/scripts/test-pr.sh" ;;

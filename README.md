@@ -255,16 +255,6 @@ skill-config.json                              # プロジェクト設定（リ�
 | `schedule.enabled` | boolean | 自動スケジュール有効/無効 |
 | `schedule.mode` | string | スケジュールモード |
 
-#### blog-cross-post
-
-| キー | 型 | 説明 |
-|------|-----|------|
-| `base_url` | string | ブログのベースURL |
-| `content_dir` | string | 記事ソースディレクトリ（デフォルト: `"content/blog"`） |
-| `blog_path_prefix` | string | URLパスプレフィックス（デフォルト: `"/blog/"`） |
-| `company_name` | string | 会社名（Qiita 版の企業紹介 CTA。未設定ならセクションを出さない） |
-| `contact_url` | string | お問い合わせURL（Qiita 版の企業紹介 CTA。未設定ならリンクを出さない） |
-
 #### trends-analyzer
 
 | キー | 型 | 説明 |
@@ -282,18 +272,6 @@ skill-config.json                              # プロジェクト設定（リ�
 | `transcripts_dir` | string | 全文の文字起こしの保存先（デフォルト: `"<output_dir>/transcripts"`。git 管理外にする） |
 | `save_transcript` | boolean | 全文の文字起こしを保存するか（デフォルト: `true`） |
 
-#### seo-strategy
-
-| キー | 型 | 説明 |
-|------|-----|------|
-| `site` | string | サイトドメイン |
-| `content_path_prefix` | string | URLパスプレフィックス（デフォルト: `"/blog/"`） |
-| `content_dir` | string | 記事ディレクトリ（デフォルト: `"content/blog"`） |
-| `cluster_keywords` | object | クラスタ名→キーワード配列のマッピング |
-| `unclustered_min_impressions` | number | 未分類の最低表示回数（デフォルト: `20`） |
-| `cluster_suggestion_min_impressions` | number | クラスタ提案の最低表示回数（デフォルト: `50`） |
-| `cluster_suggestion_top_n` | number | クラスタ提案の最大件数（デフォルト: `5`） |
-
 ### 設定例
 
 ```jsonc
@@ -309,12 +287,6 @@ skill-config.json                              # プロジェクト設定（リ�
       "x": { "enabled": true },
       "linkedin": { "enabled": true }
     }
-  },
-  "blog-cross-post": {
-    "base_url": "https://example.com",
-    "content_dir": "content/blog",
-    "company_name": "Example Inc.",
-    "contact_url": "https://example.com/contact"
   }
 }
 ```
@@ -337,9 +309,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_lib"))
-from config import load_skill_config
+from config import merge_config
 
-config = load_skill_config("ga-analyzer")
+config = merge_config({"property_id": None}, "ga-analyzer")  # defaults → global + project config
 ```
 
 ## スキル一覧
@@ -392,23 +364,14 @@ config = load_skill_config("ga-analyzer")
 | `ga-analyzer` | GA4データ分析・サイト改善アドバイス |
 | `gsc` | Google Search Consoleクエリ・SEOデータ取得 🔗 |
 | `trends-analyzer` | Google Trendsキーワードトレンド分析 |
-| `seo-strategy` | GA4+GSC+Trends統合の包括的SEO戦略 |
-
-> `seo-strategy` と、下の `blog-seo-improve` は GSC データの取得に外部スキル `gsc` を使います。
-> `gsc` は marketplace 経由の `/plugin install playpark-skills@playpark` では入らないため、
-> 使う場合は [External Skills Integration](#external-skills-integration-skillssh) の復元コマンドで別途入れてください。
 
 ### ブログ運用
 
 | スキル | 説明 |
 |--------|------|
-| `blog-cross-post` | ブログ記事をZenn/Qiita形式に変換 |
 | `zenn-publish` | Zennへの公開 |
 | `qiita-publish` | Qiitaへの公開 |
 | `generate-thumbnail` | Codex CLI built-in image_gen（gpt-image-2）によるブログサムネイル生成 |
-| `blog-fact-check` | 記事内の統計データ・バージョン・料金のファクトチェック |
-| `blog-internal-links` | クラスタ内記事間の内部リンク分析・挿入 |
-| `blog-seo-improve` | GSC/GAデータに基づく既存記事のSEO改善 |
 
 ### SNS・投稿スケジュール
 

@@ -3,7 +3,7 @@
 # 載せない（セッションダンプ・ホームパス・コスト額が混ざる）。現行の不変条件は AGENTS.md /
 # .claude/rules/ / 各 references/ が持つので、tracked ファイルから claudedocs/ の memo を出典として指さない
 # （clone した第三者には存在しないパスになる）。
-# plugins/playpark-skills/ の skill（seo-strategy / sandbox-tune / blog-* 等）が書く claudedocs/ は
+# plugins/playpark-skills/ の skill（sandbox-tune 等）が書く claudedocs/ は
 # 利用者 project 側の出力先なので対象外。
 
 setup() {
