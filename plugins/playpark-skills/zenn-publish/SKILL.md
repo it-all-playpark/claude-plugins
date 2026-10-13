@@ -4,7 +4,7 @@ description: |
   Publish Zenn article as draft via GitHub integration, or copy to clipboard as fallback.
   Use when: (1) user wants to publish cross-post content to Zenn,
   (2) keywords like "Zenn投稿", "Zenn公開", "zenn publish",
-  (3) user has a Zenn-formatted markdown file from blog-cross-post.
+  (3) user has a Zenn-formatted markdown file.
   Accepts args: <file-path> [--slug <slug>]
 user-invocable: true
 context: fork
@@ -13,7 +13,7 @@ model: haiku
 
 # Zenn Publish
 
-blog-cross-post出力をZennに**下書き（published: false）**として投稿。
+Zenn向けMarkdownをZennに**下書き（published: false）**として投稿。
 
 ## Usage
 
