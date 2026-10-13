@@ -23,6 +23,7 @@
 #   MEETING_APPS          検知対象の上書き "us.zoom.=Zoom,com.microsoft.teams=Teams"
 #   MEETING_PREFIX        インストール先 (default: ${XDG_DATA_HOME:-~/.local/share}/meeting-rec)
 #   MEETING_BIN_DIR       meeting コマンドの symlink 先 (default: ~/.local/bin)
+#   MEETING_INSTALL_WAIT  install で旧常駐の登録が外れるのを待つ上限秒 (default: 30)
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
@@ -113,8 +114,19 @@ cmd_install() {
   need_install
   mkdir -p "$MEETING_HOME" "$(dirname "$PLIST")"
   cmd_print_plist > "$PLIST"
-  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-  launchctl bootstrap "gui/$(id -u)" "$PLIST"
+  local domain="gui/$(id -u)"
+  if launchctl bootout "$domain/$LABEL" 2>/dev/null; then
+    # bootout は旧 meeting-rec の終了を待たずに戻る。登録が残ったまま bootstrap すると error 5 で失敗し、
+    # そのあと登録が外れて常駐が無いまま終わるので、外れるまで待つ (録音中は保存処理の分だけ長くかかる)
+    local wait_s="${MEETING_INSTALL_WAIT:-30}" i=0
+    while launchctl print "$domain/$LABEL" >/dev/null 2>&1; do
+      (( i < wait_s * 10 )) || die "常駐が ${wait_s} 秒たっても止まりません (録音の保存中など)。常駐は止まっておらず、新しい設定はまだ反映していません。少し待って meeting install を再実行してください"
+      sleep 0.1
+      i=$((i + 1))
+    done
+  fi
+  launchctl bootstrap "$domain" "$PLIST" \
+    || die "常駐の登録に失敗しました。常駐は止まっています (自動録音しません)。meeting install を再実行してください"
   echo "✓ 常駐登録しました: $PLIST"
   echo "  会議アプリがマイクを使い始めると自動で録音します。ログ: meeting log"
   echo "  これから出るダイアログで「画面収録とシステムオーディオ録音」「マイク」を meeting-rec に許可してください"

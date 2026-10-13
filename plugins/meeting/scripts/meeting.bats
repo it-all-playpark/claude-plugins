@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # meeting.sh の macOS 非依存部分（引数処理・未インストール時の案内・録音一覧・launchd plist 生成・
-# 話者の声の切り出し・議事録の話者名の後入れ）のテスト。
-# 録音 / ビルド / launchctl / 実際の再生は macOS 実機でしか動かないので対象外 (ffmpeg / afplay は stub)。
+# install の常駐登録の手順・話者の声の切り出し・議事録の話者名の後入れ）のテスト。
+# 録音 / ビルド / 実際の launchd 登録 / 実際の再生は macOS 実機でしか動かないので対象外
+# (launchctl / ffmpeg / afplay は stub)。
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/meeting.sh"
@@ -101,6 +102,95 @@ for a in "\$@"; do printf "%s\\n" "\$a"; done > "$BATS_TEST_TMPDIR/claude.args"
 if [ -f "$BATS_TEST_TMPDIR/note.md" ]; then mkdir -p meetings && cp "$BATS_TEST_TMPDIR/note.md" meetings/; fi
 EOF
     chmod +x "$BATS_TEST_TMPDIR/stub/"*
+}
+
+# launchctl を stub に差し替える。サブコマンドを launchctl.log に 1 行ずつ記録する。
+# $BATS_TEST_TMPDIR/launchd/registered があれば登録あり。bootout は実機と同じく登録を残したまま rc=0 で戻り、
+# そのあと print が $1 回成功してから登録が外れる。登録が残っている間の bootstrap は実機と同じく error 5
+stub_launchctl() {
+    local s="$BATS_TEST_TMPDIR/launchd"
+    mkdir -p "$s" "$BATS_TEST_TMPDIR/stub"
+    echo "$1" > "$s/linger"
+    cat > "$BATS_TEST_TMPDIR/stub/launchctl" <<EOF
+#!/bin/sh
+s="$s"
+echo "\$1" >> "$BATS_TEST_TMPDIR/launchctl.log"
+case "\$1" in
+  bootout)
+    [ -e "\$s/registered" ] || { echo "Boot-out failed: 3: No such process" >&2; exit 3; }
+    cp "\$s/linger" "\$s/lingering" ;;
+  print)
+    [ -e "\$s/registered" ] || exit 113
+    if [ -e "\$s/lingering" ]; then
+      n=\$(cat "\$s/lingering")
+      if [ "\$n" -le 0 ]; then rm -f "\$s/registered" "\$s/lingering"; exit 113; fi
+      echo \$((n - 1)) > "\$s/lingering"
+    fi
+    printf '\tstate = running\n\tpid = 4242\n' ;;
+  bootstrap)
+    if [ -e "\$s/registered" ] || [ -e "\$s/bootstrap_fails" ]; then
+      echo "Bootstrap failed: 5: Input/output error" >&2; exit 5
+    fi
+    touch "\$s/registered" ;;
+esac
+EOF
+    chmod +x "$BATS_TEST_TMPDIR/stub/launchctl"
+}
+
+@test "install は常駐中なら bootout 後に登録が外れるのを待ってから bootstrap し、常駐が running になる" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_tools
+    stub_launchctl 3
+    touch "$BATS_TEST_TMPDIR/launchd/registered"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" install
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ -f "$HOME/Library/LaunchAgents/jp.co.playpark.meeting-watch.plist" ]
+    # print が 3 回成功 (登録が残る) → 4 回目で失敗 (外れた) してから bootstrap
+    [ "$(paste -sd ' ' "$BATS_TEST_TMPDIR/launchctl.log")" = "bootout print print print print bootstrap" ]
+
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" status
+    [[ "$output" == *"state = running"* ]]
+}
+
+@test "install は未登録なら待たずに bootstrap し、常駐が running になる" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_tools
+    stub_launchctl 3
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" install
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(paste -sd ' ' "$BATS_TEST_TMPDIR/launchctl.log")" = "bootout bootstrap" ]
+
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" status
+    [[ "$output" == *"state = running"* ]]
+}
+
+@test "install は登録が外れるのを MEETING_INSTALL_WAIT 秒待っても外れなければ bootstrap せずに失敗する" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_tools
+    stub_launchctl 100000
+    touch "$BATS_TEST_TMPDIR/launchd/registered"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" MEETING_INSTALL_WAIT=1 run bash "$SCRIPT" install
+    echo "$output"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"常駐は止まっておらず"* ]]
+    [[ "$output" == *"meeting install を再実行"* ]]
+    run grep -qx bootstrap "$BATS_TEST_TMPDIR/launchctl.log"
+    [ "$status" -eq 1 ]
+}
+
+@test "install は bootstrap が失敗したら常駐が止まっていることと再実行を案内して失敗する" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_tools
+    stub_launchctl 0
+    touch "$BATS_TEST_TMPDIR/launchd/bootstrap_fails"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" install
+    echo "$output"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"常駐は止まっています"* ]]
+    [[ "$output" == *"meeting install を再実行"* ]]
+    [[ "$output" != *"✓ 常駐登録しました"* ]]
 }
 
 @test "post の自動議事録は git の確認だけ許可し Web を閉じた claude -p にプロンプトを渡す" {
