@@ -52,7 +52,15 @@ latest_dir() {
 # launchd / TCC (マイク・画面収録の許可) は実行ファイルのパスと署名に紐づく。plugin の install 先は
 # 更新ごとに変わるので、ビルド成果物は固定の $PREFIX に置き、中身が変わったときだけ差し替える
 cmd_setup() {
-  [[ -f "$SRC/recorder/Package.swift" ]] || die "ソースがありません。plugin 側の meeting (Claude Code の Bash) から setup を実行してください"
+  if [[ ! -f "$SRC/recorder/Package.swift" ]]; then
+    # インストール済みのコピー (~/.local/bin/meeting) にはソースが無い。Claude Code が今インストールしている
+    # plugin に引き継ぎ、ターミナルからでも最新の plugin でインストールし直せるようにする
+    local json="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" plugin
+    plugin="$(installed_plugin "$json")" \
+      || die "インストール済みの meeting plugin が見つかりません ($json)。Claude Code から meeting setup を実行してください"
+    echo "→ インストール済みの plugin から setup します: $plugin"
+    exec bash "$plugin/scripts/meeting.sh" setup "$@"
+  fi
   [[ "$(uname -s)" == Darwin ]] || die "macOS 専用です"
   command -v swift >/dev/null || die "swift がありません (xcode-select --install)"
   command -v ffmpeg >/dev/null || die "ffmpeg がありません"
@@ -92,6 +100,31 @@ cmd_setup() {
     launchctl kickstart -k "gui/$(id -u)/$LABEL"
     echo "✓ 常駐を再起動しました"
   fi
+}
+
+# installed_plugins.json ({"plugins": {"meeting@<marketplace>": [{"scope", "installPath", "lastUpdated", ...}]}}) から
+# ソース (recorder/Package.swift と scripts/meeting.sh) のある meeting plugin の installPath を出す。無ければ失敗
+installed_plugin() {
+  python3 - "$1" <<'PY'
+import json, os, sys
+try:
+    plugins = json.load(open(sys.argv[1], encoding="utf-8"))["plugins"].items()
+except (OSError, ValueError, KeyError, AttributeError):
+    sys.exit(1)
+# scope 違い (user / project / local) で複数あるときは user を選ぶ。setup のインストール先はどのプロジェクトからでも
+# 使う固定の場所なので、特定のプロジェクトにだけ入れた版より全体に入れた版を優先する。同じ scope なら最後に更新したもの
+cands = []
+for key, entries in plugins:
+    if not key.startswith("meeting@"):
+        continue
+    for e in entries:
+        p = e.get("installPath")
+        if p and os.path.isfile(os.path.join(p, "recorder", "Package.swift")) and os.path.isfile(os.path.join(p, "scripts", "meeting.sh")):
+            cands.append((e.get("scope") == "user", e.get("lastUpdated") or "", p))
+if not cands:
+    sys.exit(1)
+print(max(cands)[2])
+PY
 }
 
 # launchd はログインシェルの PATH を持たないので、今の PATH (ffmpeg, uv, claude) を引き継ぐ

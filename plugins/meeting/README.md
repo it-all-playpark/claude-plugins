@@ -32,7 +32,9 @@ Claude Code に「`meeting setup` を実行して」と頼む（plugin の `bin/
 `setup` は Swift の録音バイナリをビルドし、`${XDG_DATA_HOME:-~/.local/share}/meeting-rec`（`MEETING_PREFIX`）に
 インストールして `~/.local/bin/meeting` に symlink を張る。plugin の install 先は更新のたびに変わるが、
 launchd とマイク / 画面収録の許可は実行ファイルのパスに紐づくため、固定の場所に置く。
-plugin を更新したら `meeting setup` を再実行する（バイナリが変わったときだけ差し替わる）。
+plugin を更新したら `meeting setup` を再実行する（バイナリが変わったときだけ差し替わる）。ターミナルの
+`meeting setup`（インストール済みのコピー）は、Claude Code の `installed_plugins.json` が指す今の plugin に
+引き継いでインストールし直すので、更新後の plugin の install 先を探す必要はない。
 
 ## 自動録音（おすすめ）
 

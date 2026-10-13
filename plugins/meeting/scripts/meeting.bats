@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # meeting.sh の macOS 非依存部分（引数処理・未インストール時の案内・録音一覧・launchd plist 生成・
-# install の常駐登録の手順・setup のビルド元の固定・話者の声の切り出し・議事録の話者名の後入れ）のテスト。
+# install の常駐登録の手順・setup のビルド元の固定とインストール済みの plugin への引き継ぎ・話者の声の切り出し・議事録の話者名の後入れ）のテスト。
 # 録音 / 実際のビルド / 実際の launchd 登録 / 実際の再生は macOS 実機でしか動かないので対象外
 # (launchctl / swift / ffmpeg / afplay は stub)。
 
@@ -41,14 +41,6 @@ setup() {
     done
 }
 
-@test "インストール済みのコピー (ソースなし) から setup すると plugin 側での実行を案内する" {
-    mkdir -p "$MEETING_PREFIX/bin"
-    cp "$SCRIPT" "$MEETING_PREFIX/bin/meeting"
-    run bash "$MEETING_PREFIX/bin/meeting" setup
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"plugin 側"* ]]
-}
-
 # plugin root のコピーを $1 に作る (setup が読む scripts / recorder / transcribe だけ)
 plugin_copy() {
     local root="$1" plugin="$BATS_TEST_DIRNAME/.."
@@ -80,6 +72,66 @@ mkdir -p "\$scratch/release"
 { echo "\$pkg"; find "\$pkg/Sources" -type f | LC_ALL=C sort | while read -r f; do cat "\$f"; done; } > "\$scratch/release/meeting-rec"
 EOF
     chmod +x "$BATS_TEST_TMPDIR/stub/"*
+}
+
+# CLAUDE_CONFIG_DIR を $BATS_TEST_TMPDIR/claude に向け、$1 (plugins の JSON) を installed_plugins.json に置く
+installed_plugins() {
+    export CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/claude"
+    mkdir -p "$CLAUDE_CONFIG_DIR/plugins"
+    printf '{"version": 2, "plugins": %s}\n' "$1" > "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+}
+
+# ソースの無いインストール済みのコピー ($MEETING_PREFIX/bin/meeting) を置く
+installed_copy() {
+    mkdir -p "$MEETING_PREFIX/bin"
+    cp "$SCRIPT" "$MEETING_PREFIX/bin/meeting"
+}
+
+@test "インストール済みのコピー (ソースなし) から setup すると installed_plugins.json の plugin の setup に引き継ぐ" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_build
+    installed_copy
+    plugin_copy "$BATS_TEST_TMPDIR/user"
+    plugin_copy "$BATS_TEST_TMPDIR/project"
+    # 引き継ぎ先の meeting.sh で動いたことを、インストールされたコピーの中身で確かめる
+    echo "# user-plugin" >> "$BATS_TEST_TMPDIR/user/scripts/meeting.sh"
+    # scope 違いで複数あれば、後から更新した project より user を選ぶ
+    installed_plugins "{
+      \"meeting@x\": [
+        {\"scope\": \"user\", \"installPath\": \"$BATS_TEST_TMPDIR/user\", \"lastUpdated\": \"2026-01-01T00:00:00.000Z\"},
+        {\"scope\": \"project\", \"installPath\": \"$BATS_TEST_TMPDIR/project\", \"lastUpdated\": \"2026-02-01T00:00:00.000Z\"}
+      ]}"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$MEETING_PREFIX/bin/meeting" setup
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"インストール済みの plugin から setup します: $BATS_TEST_TMPDIR/user"* ]]
+    [[ "$output" == *"✓ インストール先: $MEETING_PREFIX"* ]]
+    [ "$(cat "$BATS_TEST_TMPDIR/swift.pkg")" = "$MEETING_PREFIX/src/recorder" ]
+    cmp "$BATS_TEST_TMPDIR/user/scripts/meeting.sh" "$MEETING_PREFIX/bin/meeting"
+}
+
+@test "インストール済みのコピーから setup して plugin が見つからなければ引き継がずに Claude Code での実行を案内して失敗する" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_build
+    installed_copy
+    plugin_copy "$BATS_TEST_TMPDIR/other"
+    mkdir -p "$BATS_TEST_TMPDIR/nosrc/scripts"
+    cp "$SCRIPT" "$BATS_TEST_TMPDIR/nosrc/scripts/meeting.sh"
+
+    # installed_plugins.json が無い / meeting@ のエントリが無い / installPath にソースが無い
+    export CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/claude"
+    for plugins in "" \
+        "{\"other@x\": [{\"scope\": \"user\", \"installPath\": \"$BATS_TEST_TMPDIR/other\"}]}" \
+        "{\"meeting@x\": [{\"scope\": \"user\", \"installPath\": \"$BATS_TEST_TMPDIR/nosrc\"}]}"; do
+        [ -z "$plugins" ] || installed_plugins "$plugins"
+        PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$MEETING_PREFIX/bin/meeting" setup
+        echo "$output"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"meeting plugin が見つかりません ($CLAUDE_CONFIG_DIR/plugins/installed_plugins.json)"* ]]
+        [[ "$output" == *"Claude Code から meeting setup を実行してください"* ]]
+        [[ "$output" != *"から setup します"* ]]
+        [ ! -e "$BATS_TEST_TMPDIR/swift.pkg" ]
+    done
 }
 
 @test "setup は plugin root の場所によらず固定の \$MEETING_PREFIX/src/recorder からビルドし、ソースが同じなら meeting-rec を入れ替えない" {
