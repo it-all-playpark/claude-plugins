@@ -145,6 +145,15 @@ function shellish(arg: string): string {
   return /^[A-Za-z0-9_./:=@%+,-]+$/.test(arg) ? arg : visible(arg)
 }
 
+const REASON_MAX = 200
+
+/** Claude の説明を 1 行に収める。空白の連続は 1 つに畳み、長すぎれば切り詰める（空白で詰めた偽の「$ …」を折り返しでコマンド行に見せたり、長文で本物の $ 行を表示域外へ押し出したりさせない）。 */
+function shownReason(reason: string): string {
+  const s = visible(reason).slice(1, -1).replace(/\s+/g, ' ').trim()
+  const chars = [...s]
+  return chars.length > REASON_MAX ? `${chars.slice(0, REASON_MAX).join('')}…` : s
+}
+
 function shownCommand(argv: readonly string[]): string {
   return argv.map(shellish).join(' ')
 }
@@ -300,23 +309,22 @@ export const register: Register = on => {
       const s = shellish(p)
       return home && s.startsWith(`${home}/`) ? `~${s.slice(home.length)}` : s
     }
+    // 毎回同じ定型文は置かない（読み飛ばす癖がつき、条件付きの警告まで読まれなくなる）。
+    // 警告は出たときだけ先頭に。Claude の説明は未検証の文なので、言い分とやることを
+    // ひと目で突き合わせられるようコマンドの直前に置く。接頭辞は外さない（無いと Claude の文が
+    // host-exec 自身の表示に見え、「安全確認済み」などと書かれると見分けられない）
     const shown = [
-      'Claude が sandbox の外でコマンドを実行しようとしています。',
-      'あなたと同じ権限で動くので、ファイル・ネットワーク・ログイン中の認証情報（gh / gcloud など）を使えます。',
-      '',
+      ...(warnings.length > 0 ? [`⚠ 注意（${warnings.length} 件）`, ...warnings.map(w => `・${w}`), ''] : []),
+      `Claude: ${shownReason(reason)}`,
       `  $ ${shownCommand(argv)}`,
       '',
-      `  実行ファイル   ${shownPath(exe)}${exeReal !== exe ? ` → ${shownPath(exeReal)}` : ''}`,
-      `  場所           ${shownPath(cwdReal)}`,
-      `  Claude の説明  ${visible(reason).slice(1, -1)}`,
-      ...(warnings.length > 0 ? ['', `⚠ 注意（${warnings.length} 件）`, ...warnings.map(w => `・${w}`)] : []),
-      '',
-      '実行しますか？',
+      `  実行ファイル  ${shownPath(exe)}${exeReal !== exe ? ` → ${shownPath(exeReal)}` : ''}`,
+      `  場所          ${shownPath(cwdReal)}`,
     ].join('\n')
     let approval = ''
     try {
       // 先頭の選択肢にカーソルが乗るので、Enter の押し間違いで実行・開示されない側を先頭に置く
-      approval = await $.ui.ask(shown, { options: ['拒否', RUN], header: 'host-exec' })
+      approval = await $.ui.ask(shown, { options: ['拒否', RUN], header: 'sandbox 外で実行' })
     } catch {
       return { deny: 'host-exec: nobody approved the command (dialog dismissed or unavailable). Wait for the user.' }
     }

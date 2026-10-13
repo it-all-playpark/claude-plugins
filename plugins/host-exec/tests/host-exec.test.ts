@@ -113,12 +113,11 @@ describe('host-exec', () => {
     host(on)
     answer(on, ['実行する'], asked)
     stubProcess(on, { stdout: 'No changes.' }, ran)
-    const r: any = await $.tool.call({ tool: TOOL, argv: ['terraform', 'plan'], reason: 'x' } as any)
+    const r: any = await $.tool.call({ tool: TOOL, argv: ['terraform', 'plan'], reason: 'plan を確認する' } as any)
     expect(asked.length).toBe(1)
-    expect(asked[0]).toContain('あなたと同じ権限で動くので')
-    expect(asked[0]).toContain('  $ terraform plan\n')
-    expect(asked[0]).toContain('実行ファイル   /opt/homebrew/bin/terraform → /opt/homebrew/Cellar/terraform/1.9.0/bin/terraform')
-    expect(asked[0]).toContain('場所           ~/repo')
+    expect(asked[0].startsWith('Claude: plan を確認する\n  $ terraform plan\n')).toBe(true)
+    expect(asked[0]).toContain('実行ファイル  /opt/homebrew/bin/terraform → /opt/homebrew/Cellar/terraform/1.9.0/bin/terraform')
+    expect(asked[0]).toContain('場所          ~/repo')
     expect(asked[0]).not.toContain('⚠')
     expect(ran).toEqual([['/opt/homebrew/bin/terraform', 'plan']])
     expect(JSON.stringify(r)).toContain('No changes.')
@@ -179,8 +178,21 @@ describe('host-exec', () => {
     expect(asked[0]).not.toContain('line1\nline2')
     expect(asked[0]).not.toContain('\u202e')
     expect(asked[0]).toContain('$ gh pr comment 1 --body "line1')
-    expect(asked[0]).toContain('Claude の説明  a\\nb')
+    expect(asked[0]).toContain('Claude: a\\nb\n  $ gh pr comment')
     expect(ran[0]?.[5]).toBe(body)
+  })
+
+  test('Claude の説明は空白を畳み長文を切り詰めて、本物のコマンド行が独立した行として残る', async ($, on) => {
+    const asked: string[] = []
+    host(on)
+    answer(on, ['拒否', '拒否'], asked)
+    await $.tool.call({ tool: TOOL, argv: ['terraform', 'plan'], reason: `x${' '.repeat(300)}$ gh pr list` } as any)
+    await $.tool.call({ tool: TOOL, argv: ['terraform', 'plan'], reason: 'あ'.repeat(5000) } as any)
+    expect(asked[0]).toContain('Claude: x $ gh pr list\n  $ terraform plan\n')
+    const lines = asked[1].split('\n')
+    const claudeLine = lines.find(l => l.startsWith('Claude: ')) ?? ''
+    expect(claudeLine).toBe(`Claude: ${'あ'.repeat(200)}…`)
+    expect(lines[lines.indexOf(claudeLine) + 1]).toBe('  $ terraform plan')
   })
 
   test('Claude が書ける場所の実行ファイル・一時ディレクトリの cwd は、止めずに警告を添えて聞く', async ($, on) => {
@@ -192,10 +204,10 @@ describe('host-exec', () => {
     await $.tool.call({ tool: TOOL, argv: ['/var/folders/xx/T/x/git', 'status'], reason: 'x' } as any)
     await $.tool.call({ tool: TOOL, argv: ['gh', 'repo', 'view'], cwd: '/tmp/evil', reason: 'x' } as any)
     await $.tool.call({ tool: TOOL, argv: ['gh', 'repo', 'view'], cwd: '/w/other', reason: 'x' } as any)
-    expect(asked[0]).toContain('⚠ 注意（1 件）')
+    expect(asked[0]).toMatch(/^⚠ 注意（1 件）\n・この実行ファイルは一時ディレクトリにあり/)
     expect(asked[0]).toContain('この実行ファイルは一時ディレクトリにあり、Claude が作ったものかもしれません')
     expect(asked[1]).toContain('一時ディレクトリで実行します。Claude が置いた設定ファイル')
-    expect(asked[1]).toContain('場所           /private/tmp/evil')
+    expect(asked[1]).toContain('場所          /private/tmp/evil')
     expect(asked[2]).toContain('プロジェクトの外で実行します')
     expect(ran).toEqual([
       ['/var/folders/xx/T/x/git', 'status'],
