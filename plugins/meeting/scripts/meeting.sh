@@ -56,7 +56,10 @@ latest_dir() {
 # 署名すると識別が「識別子 + 証明書」になり、バイナリが変わっても許可が残る。そのためのコード署名 identity が
 # keychain に無ければ自己署名で作る。信頼設定 (add-trusted-cert) は署名に不要で、管理者認証のダイアログが
 # 出るのでしない。pkcs12 は security import が読める形式 (3DES / SHA1 MAC) を明示する
-# (OpenSSL 3 の既定の形式は MAC 検証で失敗する)。鍵と p12 は取り込んだら消す
+# (OpenSSL 3 の既定の形式は MAC 検証で失敗する)。鍵と p12 は取り込んだら消す。
+# 取り込みに -T /usr/bin/codesign を付けない: 付けると同じユーザーで動く任意のプログラムが確認なしでこの鍵で
+# 署名でき、$PREFIX/bin/meeting-rec を差し替えて署名し直すだけで画面収録・マイクの許可を引き継げてしまう。
+# 付けなければ署名のたびに keychain のダイアログでユーザーの承認が要る (正規の setup でも差し替えでも同じ)
 has_signing_identity() {
   # 信頼設定をしないので -v (有効なものだけ) は付けない (CSSMERR_TP_NOT_TRUSTED として一覧に出る)
   [[ "$(security find-identity -p codesigning 2>/dev/null)" == *"\"$SIGN_IDENTITY\""* ]]
@@ -72,7 +75,7 @@ create_signing_identity() {
     -keyout "$tmp/key.pem" -out "$tmp/cert.pem" 2>/dev/null
   openssl pkcs12 -export -inkey "$tmp/key.pem" -in "$tmp/cert.pem" -name "$SIGN_IDENTITY" \
     -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1 -passout pass:meeting-rec -out "$tmp/id.p12"
-  security import "$tmp/id.p12" -f pkcs12 -P meeting-rec -T /usr/bin/codesign >/dev/null
+  security import "$tmp/id.p12" -f pkcs12 -P meeting-rec >/dev/null
   rm -rf "$tmp"
 }
 
@@ -109,6 +112,8 @@ cmd_setup() {
     local note="同じ証明書で署名したので権限はそのまま"
     [[ -e "$REC_BIN" && ! -e "$REC_UNSIGNED" ]] && note="ad-hoc 署名からの切り替えなので、常駐の次の起動で一度だけ権限の再許可が必要です"
     install -m 755 "$built" "$staged"
+    echo "→ meeting-rec を署名します。keychain のダイアログが出たらログインパスワードを入れて「許可」を押してください"
+    echo "  (「常に許可」は押さない: 押すと、ほかのプログラムがこの鍵で meeting-rec になりすませます。応答するまで setup は止まります)"
     codesign -f -s "$SIGN_IDENTITY" --identifier "$REC_ID" "$staged"
     mv -f "$staged" "$REC_BIN"
     install -m 644 "$built" "$REC_UNSIGNED"

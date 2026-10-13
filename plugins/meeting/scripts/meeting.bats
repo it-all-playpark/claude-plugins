@@ -143,6 +143,8 @@ EOF
     [[ "$output" == *"= meeting-rec は変更なし (権限はそのまま)"* ]]
     [ "$(cksum < "$MEETING_PREFIX/bin/meeting-rec")" = "$before" ]
     [ "$(wc -l < "$BATS_TEST_TMPDIR/codesign.args")" -eq 1 ]
+    # 署名しないときは keychain のダイアログの案内も出さない
+    [[ "$output" != *"「許可」を押して"* ]]
     [ "$(paste -sd ' ' "$BATS_TEST_TMPDIR/swift.pkg")" = "$MEETING_PREFIX/src/recorder $MEETING_PREFIX/src/recorder" ]
 }
 
@@ -176,8 +178,9 @@ EOF
     [ "${imp[0]}" = "import" ]
     [[ "${imp[1]}" == *.p12 ]]
     [ ! -e "$(dirname "${imp[1]}")" ]
-    grep -qxF -- '-T' "$BATS_TEST_TMPDIR/security.import"
-    grep -qxF -- '/usr/bin/codesign' "$BATS_TEST_TMPDIR/security.import"
+    # -T を付けると任意のプログラムが確認なしで鍵を使えるので付けない
+    [ -z "$(grep -xF -- '-T' "$BATS_TEST_TMPDIR/security.import")" ]
+    [ -z "$(grep -F -- 'codesign' "$BATS_TEST_TMPDIR/security.import")" ]
 
     # identity があれば作らない
     rm "$BATS_TEST_TMPDIR/security.import"
@@ -200,6 +203,9 @@ EOF
     [ "$status" -eq 0 ]
     [ ! -e "$BATS_TEST_TMPDIR/openssl.log" ]
     [[ "$(cat "$BATS_TEST_TMPDIR/codesign.args")" == "-f -s meeting-rec local signing --identifier jp.co.playpark.meeting-rec "* ]]
+    # 署名の前に keychain のダイアログで「許可」を押し「常に許可」は押さないよう案内する
+    [[ "$output" == *"「許可」を押して"* ]]
+    [[ "$output" == *"「常に許可」は押さない"* ]]
     [ -x "$MEETING_PREFIX/bin/meeting-rec" ]
     [ "$(tail -1 "$MEETING_PREFIX/bin/meeting-rec")" = "signed meeting-rec local signing jp.co.playpark.meeting-rec" ]
 }
