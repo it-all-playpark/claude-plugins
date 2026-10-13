@@ -145,6 +145,15 @@ function shellish(arg: string): string {
   return /^[A-Za-z0-9_./:=@%+,-]+$/.test(arg) ? arg : visible(arg)
 }
 
+const REASON_MAX = 200
+
+/** Claude の説明を 1 行に収める。空白の連続は 1 つに畳み、長すぎれば切り詰める（空白で詰めた偽の「$ …」を折り返しでコマンド行に見せたり、長文で本物の $ 行を表示域外へ押し出したりさせない）。 */
+function shownReason(reason: string): string {
+  const s = visible(reason).slice(1, -1).replace(/\s+/g, ' ').trim()
+  const chars = [...s]
+  return chars.length > REASON_MAX ? `${chars.slice(0, REASON_MAX).join('')}…` : s
+}
+
 function shownCommand(argv: readonly string[]): string {
   return argv.map(shellish).join(' ')
 }
@@ -306,7 +315,7 @@ export const register: Register = on => {
     // host-exec 自身の表示に見え、「安全確認済み」などと書かれると見分けられない）
     const shown = [
       ...(warnings.length > 0 ? [`⚠ 注意（${warnings.length} 件）`, ...warnings.map(w => `・${w}`), ''] : []),
-      `Claude: ${visible(reason).slice(1, -1)}`,
+      `Claude: ${shownReason(reason)}`,
       `  $ ${shownCommand(argv)}`,
       '',
       `  実行ファイル  ${shownPath(exe)}${exeReal !== exe ? ` → ${shownPath(exeReal)}` : ''}`,

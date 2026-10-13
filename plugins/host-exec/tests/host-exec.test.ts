@@ -182,6 +182,19 @@ describe('host-exec', () => {
     expect(ran[0]?.[5]).toBe(body)
   })
 
+  test('Claude の説明は空白を畳み長文を切り詰めて、本物のコマンド行が独立した行として残る', async ($, on) => {
+    const asked: string[] = []
+    host(on)
+    answer(on, ['拒否', '拒否'], asked)
+    await $.tool.call({ tool: TOOL, argv: ['terraform', 'plan'], reason: `x${' '.repeat(300)}$ gh pr list` } as any)
+    await $.tool.call({ tool: TOOL, argv: ['terraform', 'plan'], reason: 'あ'.repeat(5000) } as any)
+    expect(asked[0]).toContain('Claude: x $ gh pr list\n  $ terraform plan\n')
+    const lines = asked[1].split('\n')
+    const claudeLine = lines.find(l => l.startsWith('Claude: ')) ?? ''
+    expect(claudeLine).toBe(`Claude: ${'あ'.repeat(200)}…`)
+    expect(lines[lines.indexOf(claudeLine) + 1]).toBe('  $ terraform plan')
+  })
+
   test('Claude が書ける場所の実行ファイル・一時ディレクトリの cwd は、止めずに警告を添えて聞く', async ($, on) => {
     const asked: string[] = []
     const ran: string[][] = []
