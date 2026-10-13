@@ -5,12 +5,13 @@ const TOOL = 'mcp__host-exec__run'
 /** 各質問で先頭（カーソルが乗る既定）に置かれた選択肢 */
 let firstOptions: string[] = []
 
-/** AskUserQuestion への回答を、質問ごとに順番に返すスタブ */
-function answer(on: any, labels: string[], asked: string[]) {
+/** AskUserQuestion への回答を、質問ごとに順番に返すスタブ。options を渡すと各質問の選択肢を記録する */
+function answer(on: any, labels: string[], asked: string[], options?: string[][]) {
   on('tool.call', { tool: 'AskUserQuestion' }, async ($: any, e: any) => {
     const q = e.questions[0].question as string
     asked.push(q)
     firstOptions.push(e.questions[0].options[0].label)
+    options?.push(e.questions[0].options.map((o: any) => o.label))
     const label = labels.shift() ?? '拒否'
     return { result: { questions: e.questions, answers: { [q]: label } } }
   })
@@ -29,6 +30,7 @@ function stubProcess(on: any, out: { stdout: string; stderr?: string; exitCode?:
  */
 const DIRS: Record<string, string> = {
   '/w/repo': '/w/repo',
+  '/w/repo/sub': '/w/repo/sub',
   '/w/other': '/w/other',
   '/tmp': '/private/tmp',
   '/tmp/evil': '/private/tmp/evil',
@@ -42,20 +44,43 @@ const FILES: Record<string, string> = {
   '/opt/homebrew/bin/node': '/opt/homebrew/bin/node',
   '/opt/homebrew/bin/pnpm': '/opt/homebrew/bin/pnpm',
   '/usr/bin/printf': '/usr/bin/printf',
+  '/usr/bin/pgrep': '/usr/bin/pgrep',
   '/opt/homebrew/bin/bash': '/opt/homebrew/bin/bash',
   '/usr/bin/perl': '/usr/bin/perl',
   '/var/folders/xx/T/x/git': '/private/var/folders/xx/T/x/git',
 }
 
-function host(on: any) {
+/**
+ * excludedCommands は settings の sandbox.excludedCommands として返す。
+ * 返す files はこのテストだけのコピーで、書き換えると以降の呼び出しの実行ファイル解決が変わる。
+ */
+function host(on: any, opts: { excludedCommands?: string[] } = {}) {
+  const files = { ...FILES }
   mock.env(on, { PATH: '/usr/bin:/opt/homebrew/bin', TMPDIR: '/var/folders/xx/T', HOME: '/w' })
   on('session.cwd', async () => ({ value: '/w/repo' }))
   on('session.root', async () => ({ value: '/w/repo' }))
+  on('settings.read', async () => ({ value: { sandbox: { excludedCommands: opts.excludedCommands ?? [] } } }))
   on('fs.stat', async ($: any, e: any) => {
     const p = e.path as string
-    const kind = p in DIRS ? 'dir' : p in FILES ? 'file' : undefined
+    const kind = p in DIRS ? 'dir' : p in files ? 'file' : undefined
     if (!kind) return { deny: `ENOENT: ${p}` }
-    return { value: { kind, size: 0, mtimeMs: 0, isLink: false, realPath: DIRS[p] ?? FILES[p] } }
+    return { value: { kind, size: 0, mtimeMs: 0, isLink: false, realPath: DIRS[p] ?? files[p] } }
+  })
+  return { files }
+}
+
+/** n 回目（1 始まり）の呼び出しに exitCodes[n-1] の終了コードと stdout(n) を返し、実行した argv を ran に記録するスタブ */
+function stubExits(on: any, exitCodes: number[], ran: string[][], stdout = (n: number) => `out${n}`) {
+  on('process.run', async ($: any, e: any) => {
+    ran.push([...e.argv])
+    return { value: { exitCode: exitCodes[ran.length - 1] ?? 0, stdout: stdout(ran.length), stderr: '' } }
+  })
+}
+
+function recordToasts(on: any, toasts: string[]) {
+  on('ui.toast', async ($: any, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
   })
 }
 
@@ -115,7 +140,8 @@ describe('host-exec', () => {
     stubProcess(on, { stdout: 'No changes.' }, ran)
     const r: any = await $.tool.call({ tool: TOOL, argv: ['terraform', 'plan'], reason: 'plan を確認する' } as any)
     expect(asked.length).toBe(1)
-    expect(asked[0].startsWith('Claude: plan を確認する\n  $ terraform plan\n')).toBe(true)
+    expect(asked[0].startsWith('目的: plan を確認する\n  $ terraform plan\n')).toBe(true)
+    expect(asked[0]).not.toContain('Claude: ')
     expect(asked[0]).toContain('実行ファイル  /opt/homebrew/bin/terraform → /opt/homebrew/Cellar/terraform/1.9.0/bin/terraform')
     expect(asked[0]).toContain('場所          ~/repo')
     expect(asked[0]).not.toContain('⚠')
@@ -178,7 +204,7 @@ describe('host-exec', () => {
     expect(asked[0]).not.toContain('line1\nline2')
     expect(asked[0]).not.toContain('\u202e')
     expect(asked[0]).toContain('$ gh pr comment 1 --body "line1')
-    expect(asked[0]).toContain('Claude: a\\nb\n  $ gh pr comment')
+    expect(asked[0]).toContain('目的: a\\nb\n  $ gh pr comment')
     expect(ran[0]?.[5]).toBe(body)
   })
 
@@ -188,10 +214,10 @@ describe('host-exec', () => {
     answer(on, ['拒否', '拒否'], asked)
     await $.tool.call({ tool: TOOL, argv: ['terraform', 'plan'], reason: `x${' '.repeat(300)}$ gh pr list` } as any)
     await $.tool.call({ tool: TOOL, argv: ['terraform', 'plan'], reason: 'あ'.repeat(5000) } as any)
-    expect(asked[0]).toContain('Claude: x $ gh pr list\n  $ terraform plan\n')
+    expect(asked[0]).toContain('目的: x $ gh pr list\n  $ terraform plan\n')
     const lines = asked[1].split('\n')
-    const claudeLine = lines.find(l => l.startsWith('Claude: ')) ?? ''
-    expect(claudeLine).toBe(`Claude: ${'あ'.repeat(200)}…`)
+    const claudeLine = lines.find(l => l.startsWith('目的: ')) ?? ''
+    expect(claudeLine).toBe(`目的: ${'あ'.repeat(200)}…`)
     expect(lines[lines.indexOf(claudeLine) + 1]).toBe('  $ terraform plan')
   })
 
@@ -290,5 +316,148 @@ describe('host-exec', () => {
     const s = JSON.stringify(r)
     expect(s).toContain('withheld')
     expect(s).not.toContain('ghp_abcdef')
+  })
+
+  test('steps は 1 回の承認で順に実行し、終了コードが 0 以外のステップで止めて残りを「未実行」と返す', async ($, on) => {
+    const asked: string[] = []
+    const ran: string[][] = []
+    host(on)
+    answer(on, ['3 個とも実行する', '3 個とも実行する'], asked)
+    stubExits(on, [0, 0, 0, 0, 1], ran)
+    const steps = [['gh', 'pr', 'view', '1'], ['gh', 'pr', 'checks', '1'], ['gh', 'pr', 'merge', '1']]
+    const ok: any = await $.tool.call({ tool: TOOL, steps, reason: 'x' } as any)
+    expect(asked.length).toBe(1)
+    expect(ran.map(a => a.slice(1).join(' '))).toEqual(['pr view 1', 'pr checks 1', 'pr merge 1'])
+    expect(String(ok.result)).toContain('$ gh pr merge 1\nexit code: 0\n--- stdout ---\nout3')
+    expect(String(ok.result)).not.toContain('未実行')
+
+    const r: any = await $.tool.call({ tool: TOOL, steps, reason: 'x' } as any)
+    expect(asked.length).toBe(2)
+    expect(ran.map(a => a.slice(1).join(' ')).slice(3)).toEqual(['pr view 1', 'pr checks 1'])
+    const s = String(r.deny ?? r.result)
+    expect(s).toContain('$ gh pr view 1\nexit code: 0\n--- stdout ---\nout4')
+    expect(s).toContain('$ gh pr checks 1\nexit code: 1\n--- stdout ---\nout5')
+    expect(s).toContain('$ gh pr merge 1\n未実行')
+  })
+
+  test('steps の 1 つでも拒否パターンに当たる・見つからなければ、承認を聞かずに拒否して何も実行しない', async ($, on) => {
+    const asked: string[] = []
+    const ran: string[][] = []
+    host(on)
+    answer(on, [], asked)
+    stubExits(on, [], ran)
+    const denied: any = await $.tool.call({ tool: TOOL, steps: [['gh', 'repo', 'view'], ['git', 'push', '--force'], ['gh', 'repo', 'view']], reason: 'x' } as any)
+    expect(String(denied.deny)).toContain('refused (force push) at step 2')
+    const missing: any = await $.tool.call({ tool: TOOL, steps: [['gh', 'repo', 'view'], ['kubectl', 'get', 'pods']], reason: 'x' } as any)
+    expect(String(missing.deny)).toContain('"kubectl" at step 2 was not found on PATH')
+    expect(asked.length).toBe(0)
+    expect(ran.length).toBe(0)
+  })
+
+  test('argv と steps を両方渡す・どちらも渡さないと拒否する', async ($, on) => {
+    const asked: string[] = []
+    const ran: string[][] = []
+    host(on)
+    answer(on, [], asked)
+    stubExits(on, [], ran)
+    for (const input of [{ argv: ['gh', 'repo', 'view'], steps: [['gh', 'repo', 'view']] }, {}]) {
+      const r: any = await $.tool.call({ tool: TOOL, ...input, reason: 'x' } as any)
+      expect(String(r.deny)).toContain('exactly one of argv')
+    }
+    expect(asked.length).toBe(0)
+    expect(ran.length).toBe(0)
+  })
+
+  test('複数ステップの承認画面は番号付きのコマンド・実行ファイル・警告を出し、実行ボタンは「N 個とも実行する」', async ($, on) => {
+    const asked: string[] = []
+    const options: string[][] = []
+    host(on)
+    answer(on, ['拒否'], asked, options)
+    await $.tool.call({ tool: TOOL, steps: [['gh', 'repo', 'view'], ['pnpm', 'dev']], reason: 'dev を起動する' } as any)
+    expect(asked[0]).toMatch(/^⚠ 注意（1 件）\n・2: package\.json の scripts/)
+    expect(asked[0]).toContain('\n目的: dev を起動する\n  1  $ gh repo view\n  2  $ pnpm dev\n\n')
+    expect(asked[0]).toContain('  実行ファイル  1  /opt/homebrew/bin/gh\n                2  /opt/homebrew/bin/pnpm\n  場所          ~/repo\n  失敗したらそこで止めます')
+    expect(asked[0]).not.toContain('Claude: ')
+    expect(options[0]).toEqual(['拒否', '2 個とも実行する'])
+  })
+
+  test('Bash でも sandbox の外で動く excludedCommands に一致するコマンドは、承認を聞かずに Bash を使うよう返す', async ($, on) => {
+    const asked: string[] = []
+    const ran: string[][] = []
+    host(on, { excludedCommands: ['/usr/bin/pgrep *', '~/bin/*', 'codex:*'] })
+    answer(on, ['拒否', '拒否'], asked)
+    stubExits(on, [], ran)
+    for (const steps of [[['/usr/bin/pgrep', '-lf', 'x']], [['/usr/bin/pgrep', '-l', 'a'], ['/w/bin/tool']]]) {
+      const r: any = await $.tool.call({ tool: TOOL, steps, reason: 'x' } as any)
+      expect(String(r.deny ?? r.result)).toContain('Bash ツールで実行してください')
+    }
+    expect(asked.length).toBe(0)
+    // 一致しないもの（PATH 解決前の名前・1 階層より深い・`:*`）は今まで通り
+    for (const argv of [['/w/bin/sub/tool'], ['codex:x']]) {
+      const r: any = await $.tool.call({ tool: TOOL, argv, reason: 'x' } as any)
+      expect(String(r.deny ?? r.result)).toContain('was not found')
+    }
+    await $.tool.call({ tool: TOOL, argv: ['pgrep', '-lf', 'x'], reason: 'x' } as any)
+    await $.tool.call({ tool: TOOL, steps: [['/usr/bin/pgrep', '-lf', 'x'], ['gh', 'repo', 'view']], reason: 'x' } as any)
+    expect(asked.length).toBe(2)
+    expect(asked[0]).toContain('$ pgrep -lf x')
+    expect(ran.length).toBe(0)
+  })
+
+  test('「このセッションでは同じコマンドを聞かない」で承認したものは聞き直さずに実行して知らせ、実行ファイル・argv・cwd が違えば聞く', async ($, on) => {
+    const asked: string[] = []
+    const options: string[][] = []
+    const ran: string[][] = []
+    const toasts: string[] = []
+    const { files } = host(on)
+    answer(on, ['実行して、このセッションでは同じコマンドを聞かない', '拒否', '拒否', '拒否'], asked, options)
+    stubExits(on, [], ran)
+    recordToasts(on, toasts)
+    const call = (input: object) => $.tool.call({ tool: TOOL, reason: 'x', ...input } as any) as Promise<any>
+    await call({ argv: ['gh', 'repo', 'view'] })
+    expect(options[0]).toEqual(['拒否', '実行する', '実行して、このセッションでは同じコマンドを聞かない'])
+    const again = await call({ argv: ['gh', 'repo', 'view'] })
+    await call({ argv: ['gh', 'repo', 'view'], cwd: '/w/repo' })
+    expect(asked.length).toBe(1)
+    expect(ran.length).toBe(3)
+    expect(String(again.result)).toContain('$ gh repo view\nexit code: 0')
+    expect(toasts).toEqual(['承認済みのコマンドを再実行: gh repo view（2 回目）', '承認済みのコマンドを再実行: gh repo view（3 回目）'])
+
+    await call({ argv: ['gh', 'repo', 'view', '--web'] })
+    await call({ argv: ['gh', 'repo', 'view'], cwd: 'sub' })
+    files['/opt/homebrew/bin/gh'] = '/opt/homebrew/Cellar/gh/2.0/bin/gh'
+    await call({ argv: ['gh', 'repo', 'view'] })
+    expect(asked.length).toBe(4)
+    expect(ran.length).toBe(3)
+    expect(toasts.length).toBe(2)
+  })
+
+  test('警告が出るコマンドには「このセッションでは同じコマンドを聞かない」を出さない', async ($, on) => {
+    const asked: string[] = []
+    const options: string[][] = []
+    host(on)
+    answer(on, ['拒否', '拒否', '拒否'], asked, options)
+    await $.tool.call({ tool: TOOL, argv: ['pnpm', 'dev'], reason: 'x' } as any)
+    await $.tool.call({ tool: TOOL, argv: ['/var/folders/xx/T/x/git', 'status'], reason: 'x' } as any)
+    await $.tool.call({ tool: TOOL, argv: ['gh', 'repo', 'view'], cwd: '/w/other', reason: 'x' } as any)
+    expect(asked.every(q => q.startsWith('⚠'))).toBe(true)
+    expect(options).toEqual([['拒否', '実行する'], ['拒否', '実行する'], ['拒否', '実行する']])
+  })
+
+  test('記憶済みのコマンドでも、出力に秘密情報があれば渡す前に聞く', async ($, on) => {
+    const asked: string[] = []
+    const ran: string[][] = []
+    const toasts: string[] = []
+    host(on)
+    answer(on, ['実行して、このセッションでは同じコマンドを聞かない', 'マスクして渡す'], asked)
+    stubExits(on, [], ran, n => (n === 1 ? 'ok' : 'AKIAABCDEFGHIJKLMNOP'))
+    recordToasts(on, toasts)
+    await $.tool.call({ tool: TOOL, argv: ['gh', 'api', 'user'], reason: 'x' } as any)
+    const r: any = await $.tool.call({ tool: TOOL, argv: ['gh', 'api', 'user'], reason: 'x' } as any)
+    expect(ran.length).toBe(2)
+    expect(toasts[0]).toBe('承認済みのコマンドを再実行: gh api user（2 回目）')
+    expect(asked.length).toBe(2)
+    expect(asked[1]).toContain('検出: AWS アクセスキー ×1')
+    expect(JSON.stringify(r)).not.toContain('AKIAABCDEFGHIJKLMNOP')
   })
 })
