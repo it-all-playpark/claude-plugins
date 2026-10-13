@@ -1,9 +1,0 @@
----
-title: positive fixture - DB lock mechanism (BC4 + version-pinned product signal)
----
-
-# DB lock の挙動主張
-
-MySQL 8.0 では `SELECT FOR UPDATE` により対象行が排他ロックされます。
-
-並列トランザクションが同じ行を要求すると、デッドロックが原因で片方が abort される挙動になります。

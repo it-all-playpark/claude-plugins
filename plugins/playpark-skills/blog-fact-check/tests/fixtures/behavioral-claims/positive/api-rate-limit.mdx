@@ -1,9 +1,0 @@
----
-title: positive fixture - API rate limit (BC3 + HTTP status signal)
----
-
-# Rate limit の挙動主張
-
-API gateway は内部で `Retry-After` ヘッダを返します。クライアントがそれを無視して即座にリトライすると 429 が返ります。
-
-レート制限を超えた場合、API は内部で 429 を返します。

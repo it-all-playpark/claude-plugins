@@ -50,21 +50,14 @@ readme_config_keys() {
     done <<< "$names"
 }
 
-@test "README の ga-analyzer / blog-cross-post の設定キーは実装が読むセクションのキーと一致する" {
+@test "README の ga-analyzer の設定キーは実装が読むセクションのキーと一致する" {
     skills="$REPO_ROOT/plugins/playpark-skills"
     # ga-analyzer: ga_fetch.py の merge_config(defaults, "ga-analyzer") の defaults
-    ga="$(grep -E 'merge_config\(\{.*\}, "ga-analyzer"\)' "$skills/ga-analyzer/scripts/ga_fetch.py" | grep -oE '"[a-z_]+":' | grep -oE '[a-z_]+' | sort -u)"
-    # blog-cross-post: resolve-source.sh の merge_config "$DEFAULTS" "blog-cross-post" の DEFAULTS
-    grep -qF 'merge_config "$DEFAULTS" "blog-cross-post"' "$skills/blog-cross-post/scripts/resolve-source.sh"
-    bcp="$(grep -E "^DEFAULTS='" "$skills/blog-cross-post/scripts/resolve-source.sh" | sed -E "s/^DEFAULTS='(.*)'$/\1/" | jq -r 'keys[]' | sort -u)"
-    for pair in "ga-analyzer:$ga" "blog-cross-post:$bcp"; do
-        name="${pair%%:*}"
-        impl="${pair#*:}"
-        documented="$(readme_config_keys "$name")"
-        echo "$name impl=[$impl] documented=[$documented]"
-        [ -n "$impl" ]
-        [ "$documented" = "$impl" ]
-    done
+    impl="$(grep -E 'merge_config\(\{.*\}, "ga-analyzer"\)' "$skills/ga-analyzer/scripts/ga_fetch.py" | grep -oE '"[a-z_]+":' | grep -oE '[a-z_]+' | sort -u)"
+    documented="$(readme_config_keys ga-analyzer)"
+    echo "ga-analyzer impl=[$impl] documented=[$documented]"
+    [ -n "$impl" ]
+    [ "$documented" = "$impl" ]
 }
 
 # <readme> のスキル一覧が自作 skill + 外部 skill と過不足なく一致すれば 0。ずれた skill 名を出して 1 を返す。
@@ -145,7 +138,7 @@ readme_skill_list_matches() {
             return 1
         }
     done <<< "$lines"
-    [[ "$lines" == *"from config import load_skill_config"* ]]
+    [[ "$lines" == *"from config import merge_config"* ]]
 }
 
 @test "README のほかの agent から使う節は locator が要求する PATH と \${CLAUDE_PLUGIN_ROOT} の前提を書く" {
@@ -160,15 +153,6 @@ readme_skill_list_matches() {
         [[ "$section" == *'export CLAUDE_PLUGIN_ROOT='* ]]
     fi
     [[ "$section" == *"Claude Code 専用"* ]]
-}
-
-@test "README は外部 skill gsc に依存する seo-strategy / blog-seo-improve が marketplace install では揃わないことを書く" {
-    run grep -nE '`seo-strategy`.*`blog-seo-improve`.*`gsc`' "$README"
-    [ "$status" -eq 0 ]
-    line="${output%%:*}"
-    note="$(sed -n "${line},$((line + 3))p" "$README")"
-    [[ "$note" == *"/plugin install playpark-skills@playpark"* ]]
-    jq -e '.skills | has("gsc")' "$LOCK" >/dev/null
 }
 
 @test "README と .gitignore は作者個人の環境（dotfiles repo・home-manager・rip）を前提にしない" {

@@ -7,24 +7,6 @@
       "google": { "enabled": true, "char_limit": 1500 }
     }
   },
-  "blog-cross-post": {
-    "content_dir": "content/blog",
-    "blog_path_prefix": "/blog/"
-  },
-  "seo-strategy": {
-    "content_path_prefix": "/blog/",
-    "content_dir": "content/blog",
-    "cluster_keywords": {},
-    "unclustered_min_impressions": 20,
-    "cluster_suggestion_min_impressions": 50,
-    "cluster_suggestion_top_n": 5,
-    "saturation_thresholds": {
-      "none": 0,
-      "low": 1,
-      "medium": 3
-    },
-    "overlap_match_threshold": 0.4
-  },
   "trends-analyzer": {
     "geo": "JP",
     "timeframe": "today 3-m",

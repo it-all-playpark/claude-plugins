@@ -2,7 +2,7 @@
 
 Qiita向けクロスポスト記事の書き方・テンプレート・変換ルール。
 
-**差別化方針は `../../blog-cross-post/references/cross-post-strategy.md`（blog-cross-post skill の references）に従う。**
+**差別化方針:** 同一内容を Zenn / Qiita に重複投稿すると SEO 効果が分散するため、プラットフォームごとに切り口を変える（Zenn は実装 + 判断理由 + 持論の Deep How、Qiita は技術選定理由・比較検討の Why）。記事はコア版として単体で完結させ、元記事への導線では「元記事で何が読めるか」を具体的に示す。
 
 ## Qiita読者の特性
 
@@ -178,8 +178,8 @@ private: false
 
 ### 企業紹介フッター
 
-`{COMPANY_NAME}` / `{CONTACT_URL}` / `{BLOG_URL}` は blog-cross-post Init（`skill-config.json` の
-`blog-cross-post` セクション）の `company_name` / `contact_url` / `blog_url` で埋める。会社名・URL を
+`{COMPANY_NAME}` / `{CONTACT_URL}` / `{BLOG_URL}` は qiita-publish の設定（`skill-config.json` の
+`qiita-publish` セクション）の `company_name` / `contact_url` / `blog_url` で埋める。会社名・URL を
 テンプレートに直書きしない。
 
 - `company_name` が空 → 企業紹介セクション（直前の `---` から末尾まで）を丸ごと出力しない
