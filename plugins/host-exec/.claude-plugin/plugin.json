@@ -3,5 +3,6 @@
   "description": "sandbox で動かないコマンドを、承認と出力の機密チェック付きでホスト上で実行するツールを Claude に追加する",
   "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
   "repository": "https://github.com/it-all-playpark/claude-plugins",
-  "license": "MIT"
+  "license": "MIT",
+  "types": "./types/index.d.ts"
 }

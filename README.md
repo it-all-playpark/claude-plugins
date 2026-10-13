@@ -31,7 +31,9 @@ Marketplaces で auto-update を有効化。`DISABLE_AUTOUPDATER=1` 環境では
 
 `host-exec` は hooks module（`plugins/host-exec/hooks/register.ts`）で `mcp__host-exec__run` ツールを
 追加します。sandbox で動かないコマンドを、拒否パターン（破壊的操作・資格情報の出力）の静的チェックと
-毎回の実行承認を経てホスト上で実行し、出力に秘密情報らしきものがあれば Claude に渡す前に止めてマスク / 非開示を
+実行承認を経てホスト上で実行し（続くコマンドは `steps` で 1 回の承認にまとめられ、「このセッションでは同じコマンドを
+聞かない」を選んだものは完全に同じ呼び出しなら聞き直さない。Bash でも sandbox の外で動く `sandbox.excludedCommands`
+の一致は Bash へ回す）、出力に秘密情報らしきものがあれば Claude に渡す前に止めてマスク / 非開示を
 選ばせます。実行ファイルは許可リストで絞らず、承認ダイアログに PATH で解決した実体・argv・cwd をエスケープして
 見せ、Claude が書き換えられる場所の実行ファイルや一時ディレクトリの cwd、スクリプトの中身を動かすコマンドには
 警告を添えます。
@@ -522,6 +524,7 @@ skills/
 │   │   └── skills-lock.json              # 外部スキルの lockfile（tracked）
 │   ├── host-exec/                        # sandbox 外の承認付き実行ツール plugin（skill なし）
 │   │   ├── hooks/register.ts             # ツール登録と 3 段のゲート
+│   │   ├── types/index.d.ts              # $.state の型（承認を記憶したコマンド）
 │   │   └── tests/host-exec.test.ts       # claude plugin test で実行
 │   └── meeting/                          # 会議の自動録音・文字起こし・議事録 plugin（macOS）
 │       ├── bin/meeting                   # CLI（setup で固定パスにインストール）

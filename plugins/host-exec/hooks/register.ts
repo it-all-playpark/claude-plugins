@@ -1,13 +1,20 @@
 import type { Register } from 'claude-code'
 
+import type { HostExecApproved } from '../types'
+
 // ─────────────────────────────────────────────────────────────
 // host-exec
 // sandbox で動かないコマンドを、Claude が人間に「これ実行して」と
 // 頼む代わりに呼べるツール `mcp__host-exec__run` を追加する。
+// 続くコマンドは `steps` で 1 回の承認にまとめ、順に実行して失敗したところで止める。
 //
-//   ゲート1: 拒否パターン（静的チェック）
-//   ゲート2: 毎回の実行承認（ダイアログ）
-//   ゲート3: 出力の機密チェック → 引っかかったら Claude に渡す前に停止
+//   ゲート1: 拒否パターン（静的チェック。全ステップ）
+//   ゲート2: 実行承認（ダイアログ）。人間が「このセッションでは同じコマンドを聞かない」を
+//            選んだものだけ、実行ファイル実パス・argv・cwd 実パスが完全に同じ呼び出しを
+//            そのセッションでは聞き直さない。警告が出るコマンドは記憶しない
+//   ゲート3: 出力の機密チェック → 引っかかったら Claude に渡す前に停止（記憶済みでも毎回）
+// sandbox.excludedCommands に一致して Bash でも sandbox の外で動くコマンドは、承認を取らずに
+// Bash へ回す（一致すると確実に言える形だけを拾い、それ以外は今まで通りダイアログを出す）。
 //
 // 比べる相手は sandbox ではなく「人間がコピペして実行する」運用。実行ファイルを
 // 許可リストで絞らないのは、コピペでも動くものを止めると結局コピペに戻るから。
@@ -94,10 +101,15 @@ const SANDBOX_HINT =
   'run it with the mcp__host-exec__run tool (it runs outside the sandbox after the user approves).'
 
 const MAX_TIMEOUT_SEC = 600
+const DECLINE = '拒否'
 const RUN = '実行する'
+const RUN_REMEMBER = '実行して、このセッションでは同じコマンドを聞かない'
 const PASS_MASKED = 'マスクして渡す'
 const WITHHOLD = '渡さない'
 const PASS_RAW = 'そのまま渡す'
+
+/** 承認時に記憶したコマンド（キー → 実行した回数）。session スコープなので次のセッションでは聞き直す。 */
+const APPROVED = { plugin: 'host-exec', key: 'approved' } as const
 
 type Finding = { kind: string; count: number }
 
@@ -192,6 +204,35 @@ function codeRunWarnings(bin: string, args: readonly string[]): string[] {
   return []
 }
 
+/**
+ * sandbox.excludedCommands の 1 エントリを、argv を空白で連結した文字列に当てる正規表現にする。
+ * Claude Code 本体の一致規則と同じかは確かめていないので、確実に一致すると言える形だけを拾う:
+ * 先頭の `~/` `$HOME/` は HOME に展開、末尾 ` *` は前方一致、`*` を含まなければ完全一致、
+ * パスの 1 階層まるごとの `*`（1 階層）と `**`（複数階層）だけを glob として読む。
+ * それ以外（`codex:*` など）は undefined で一致させない。一致しなければダイアログが出るだけなので安全側。
+ */
+function excludedPattern(entry: string, home: string | undefined): RegExp | undefined {
+  let e = entry
+  if (e.startsWith('~/') || e.startsWith('$HOME/')) {
+    if (!home) return undefined
+    e = `${home.replace(/\/+$/, '')}/${e.slice(e.indexOf('/') + 1)}`
+  }
+  const isPrefix = e.endsWith(' *')
+  const parts = (isPrefix ? e.slice(0, -1) : e).split(/(\*+)/)
+  let src = ''
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i] ?? ''
+    if (i % 2 === 0) {
+      src += part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      continue
+    }
+    const after = parts[i + 1] ?? ''
+    if (part.length > 2 || !(parts[i - 1] ?? '').endsWith('/') || !/^(|[/ ].*)$/s.test(after)) return undefined
+    src += part === '**' ? '\\S+' : '[^/\\s]+'
+  }
+  return new RegExp(`^${src}${isPrefix ? '' : '$'}`)
+}
+
 function format(argv: readonly string[], r: { exitCode: number; stdout: string; stderr: string }): string {
   return [
     `$ ${shownCommand(argv)}`,
@@ -211,20 +252,29 @@ export const register: Register = on => {
         'Run a command on the user\'s host machine, OUTSIDE the sandbox, after the user approves it.',
         'Use this instead of asking the user to run a command themselves and paste the output back,',
         'whenever a command fails or cannot run because of the sandbox (network, gcloud/docker auth, sockets, etc.).',
-        'Pass the command as an argument vector (no shell: no pipes, redirects, globs, && or env-var expansion).',
+        'Pass a command as an argument vector `argv` (no shell: no pipes, redirects, globs, && or env-var expansion),',
+        'or several as `steps` (one argv each): they run in order after one approval and stop at the first that fails.',
+        'When commands follow one another (check → act → check), plan them first and pass them together as one `steps` call, so one approval covers them all.',
         'argv[0] is resolved on the user\'s PATH and shown to the user with the full argv and cwd before anything runs.',
         'Destructive commands and commands that print credentials are refused.',
+        'Commands that the Bash tool already runs outside the sandbox (sandbox.excludedCommands) are refused: run them with Bash.',
         'If the output contains secrets, the user may mask or withhold it; do not try to obtain the secret another way.',
       ].join(' '),
       inputSchema: {
         type: 'object',
         properties: {
-          argv: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'e.g. ["gcloud","run","services","list","--region","asia-northeast1"]' },
+          argv: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'One command, e.g. ["gcloud","run","services","list","--region","asia-northeast1"]. Pass either argv or steps' },
+          steps: {
+            type: 'array',
+            items: { type: 'array', items: { type: 'string' }, minItems: 1 },
+            minItems: 1,
+            description: 'Several commands run in order, e.g. [["gh","pr","view","1"],["gh","pr","merge","1"]]. Pass either argv or steps',
+          },
           cwd: { type: 'string', description: 'Working directory; defaults to the session\'s' },
-          reason: { type: 'string', description: 'One sentence, in Japanese, on why this needs to run outside the sandbox' },
-          timeoutSec: { type: 'number', description: `Default 30, max ${MAX_TIMEOUT_SEC}` },
+          reason: { type: 'string', description: 'One sentence, in Japanese, on what this is run for' },
+          timeoutSec: { type: 'number', description: `Per step. Default 30, max ${MAX_TIMEOUT_SEC}` },
         },
-        required: ['argv', 'reason'],
+        required: ['reason'],
       },
       // deferred だと ToolSearch で読み込むまで description（人間に頼む代わりに使え）が見えない
       isDeferred: false,
@@ -233,22 +283,44 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'mcp__host-exec__run' }, async ($, e) => {
-    const input = e as unknown as { argv?: unknown; cwd?: unknown; reason?: unknown; timeoutSec?: unknown }
-    const argv = Array.isArray(input.argv) ? input.argv.map(String) : []
-    if (argv.length === 0) return { deny: 'argv must be a non-empty array of strings.' }
+    const input = e as unknown as { argv?: unknown; steps?: unknown; cwd?: unknown; reason?: unknown; timeoutSec?: unknown }
+    if ((input.argv == null) === (input.steps == null)) {
+      return { deny: 'host-exec: pass exactly one of argv (one command) or steps (several commands).' }
+    }
+    const toArgv = (a: unknown) => (Array.isArray(a) ? a.map(String) : [])
+    const steps = input.argv != null ? [toArgv(input.argv)] : Array.isArray(input.steps) ? input.steps.map(toArgv) : []
+    if (steps.length === 0 || steps.some(s => s.length === 0)) {
+      return { deny: 'host-exec: argv must be a non-empty array of strings, and steps a non-empty array of such argv.' }
+    }
+    const isMulti = steps.length > 1
+    /** 拒否理由でどのステップかを示す（1 つだけなら付けない） */
+    const at = (i: number) => (isMulti ? ` at step ${i + 1}` : '')
     const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : undefined
     const reason = typeof input.reason === 'string' ? input.reason : '(理由なし)'
     const timeoutSec = Math.min(
       Math.max(typeof input.timeoutSec === 'number' ? input.timeoutSec : 30, 1),
       MAX_TIMEOUT_SEC,
     )
-    const line = argv.join(' ')
 
-    // ── ゲート1: 静的チェック ──
-    for (const [re, why] of DENY_PATTERNS) {
-      if (re.test(line)) {
-        return { deny: `host-exec: refused (${why}). Do not retry this command another way; explain to the user what you wanted to do and let them decide.` }
+    // ── ゲート1: 静的チェック（1 つでも当たれば何も実行しない） ──
+    for (const [i, argv] of steps.entries()) {
+      const line = argv.join(' ')
+      for (const [re, why] of DENY_PATTERNS) {
+        if (re.test(line)) {
+          return { deny: `host-exec: refused (${why})${at(i)}. Nothing was run. Do not retry this command another way; explain to the user what you wanted to do and let them decide.` }
+        }
       }
+    }
+
+    // ── Bash でも sandbox の外で動くものは承認を取らずに Bash へ回す ──
+    const home = await $.env.get('HOME')
+    const settings = await $.settings.read().catch(() => ({}) as Record<string, unknown>)
+    const sandbox = settings['sandbox'] as { excludedCommands?: unknown } | undefined
+    const excluded = (Array.isArray(sandbox?.excludedCommands) ? sandbox.excludedCommands : [])
+      .filter((x): x is string => typeof x === 'string')
+      .flatMap(x => excludedPattern(x, home) ?? [])
+    if (excluded.length > 0 && steps.every(argv => excluded.some(re => re.test(argv.join(' '))))) {
+      return { deny: 'host-exec: このコマンドは Bash で実行すれば sandbox の外で動く（sandbox.excludedCommands に一致）ので、Bash ツールで実行してください。' }
     }
 
     // ── 実行されるものを確定する（ダイアログに出すものと実際に動かすものを一致させる） ──
@@ -263,87 +335,129 @@ export const register: Register = on => {
     }
     const cwdReal = cwdStat.realPath
 
-    const argv0 = argv[0] ?? ''
-    let exe: string | undefined
-    let exeStat: Stat | undefined
-    if (argv0.includes('/')) {
-      exe = joinPath(cwdReal, argv0)
-      exeStat = await stat(exe)
-    } else {
-      const dirs = ((await $.env.get('PATH')) ?? '').split(':').filter(d => d.startsWith('/'))
-      for (const d of dirs) {
-        const candidate = joinPath(d, argv0)
-        const s = await stat(candidate)
-        if (s?.kind === 'file') {
-          exe = candidate
-          exeStat = s
-          break
+    const pathDirs = ((await $.env.get('PATH')) ?? '').split(':').filter(d => d.startsWith('/'))
+    const resolved: Array<{ argv: string[]; exe: string; exeReal: string }> = []
+    for (const [i, argv] of steps.entries()) {
+      const argv0 = argv[0] ?? ''
+      let exe: string | undefined
+      let exeStat: Stat | undefined
+      if (argv0.includes('/')) {
+        exe = joinPath(cwdReal, argv0)
+        exeStat = await stat(exe)
+      } else {
+        for (const d of pathDirs) {
+          const candidate = joinPath(d, argv0)
+          const s = await stat(candidate)
+          if (s?.kind === 'file') {
+            exe = candidate
+            exeStat = s
+            break
+          }
         }
       }
+      if (exe === undefined || exeStat?.kind !== 'file') {
+        return { deny: `host-exec: executable ${visible(argv0)}${at(i)} was not found${argv0.includes('/') ? '' : ' on PATH'}. Nothing was run.` }
+      }
+      resolved.push({ argv, exe, exeReal: exeStat.realPath ?? exe })
     }
-    if (exe === undefined || exeStat?.kind !== 'file') {
-      return { deny: `host-exec: executable ${visible(argv0)} was not found${argv0.includes('/') ? '' : ' on PATH'}.` }
-    }
-    const exeReal = exeStat.realPath ?? exe
 
     // ── 危険の兆候（止めずにダイアログで目を引く。何が起きるかと、どうすればいいかを書く） ──
     const tmpDir = await $.env.get('TMPDIR')
     const tempDirs = await Promise.all(['/tmp', '/var/folders', ...(tmpDir ? [tmpDir] : [])].map(realOf))
     const root = await realOf(await $.session.root())
     const warnings: string[] = []
-    if (isUnder(exeReal, tempDirs)) {
-      warnings.push('この実行ファイルは一時ディレクトリにあり、Claude が作ったものかもしれません。普段使っているツールのパスか確認してください')
-    } else if (isUnder(exeReal, [root])) {
-      warnings.push('この実行ファイルはプロジェクト内にあり、Claude が書き換えられます。中身を確認していなければ「拒否」してください')
+    for (const [i, { argv, exeReal }] of resolved.entries()) {
+      const step = isMulti ? `${i + 1}: ` : ''
+      if (isUnder(exeReal, tempDirs)) {
+        warnings.push(`${step}この実行ファイルは一時ディレクトリにあり、Claude が作ったものかもしれません。普段使っているツールのパスか確認してください`)
+      } else if (isUnder(exeReal, [root])) {
+        warnings.push(`${step}この実行ファイルはプロジェクト内にあり、Claude が書き換えられます。中身を確認していなければ「拒否」してください`)
+      }
+      warnings.push(...codeRunWarnings(basename(argv[0] ?? ''), argv.slice(1)).map(w => `${step}${w}`))
     }
     if (isUnder(cwdReal, tempDirs)) {
       warnings.push('一時ディレクトリで実行します。Claude が置いた設定ファイル（.git/config など）が読み込まれる可能性があります')
     } else if (!isUnder(cwdReal, [root])) {
       warnings.push('プロジェクトの外で実行します。この場所で実行してよいか確認してください')
     }
-    warnings.push(...codeRunWarnings(basename(argv0), argv.slice(1)))
 
     // ── ゲート2: 実行承認 ──
-    const home = await $.env.get('HOME')
     const shownPath = (p: string) => {
       const s = shellish(p)
       return home && s.startsWith(`${home}/`) ? `~${s.slice(home.length)}` : s
     }
-    // 毎回同じ定型文は置かない（読み飛ばす癖がつき、条件付きの警告まで読まれなくなる）。
-    // 警告は出たときだけ先頭に。Claude の説明は未検証の文なので、言い分とやることを
-    // ひと目で突き合わせられるようコマンドの直前に置く。接頭辞は外さない（無いと Claude の文が
-    // host-exec 自身の表示に見え、「安全確認済み」などと書かれると見分けられない）
-    const shown = [
-      ...(warnings.length > 0 ? [`⚠ 注意（${warnings.length} 件）`, ...warnings.map(w => `・${w}`), ''] : []),
-      `Claude: ${shownReason(reason)}`,
-      `  $ ${shownCommand(argv)}`,
-      '',
-      `  実行ファイル  ${shownPath(exe)}${exeReal !== exe ? ` → ${shownPath(exeReal)}` : ''}`,
-      `  場所          ${shownPath(cwdReal)}`,
-    ].join('\n')
-    let approval = ''
-    try {
-      // 先頭の選択肢にカーソルが乗るので、Enter の押し間違いで実行・開示されない側を先頭に置く
-      approval = await $.ui.ask(shown, { options: ['拒否', RUN], header: 'sandbox 外で実行' })
-    } catch {
-      return { deny: 'host-exec: nobody approved the command (dialog dismissed or unavailable). Wait for the user.' }
-    }
-    if (approval !== RUN) {
-      // 「その他」に書かれた自由記述は指示として Claude に返す
-      const note = approval && approval !== '拒否' ? ` The user said: ${approval}` : ''
-      return { deny: `host-exec: the user declined to run this command.${note}` }
+    const commandLines = isMulti
+      ? resolved.map(({ argv }, i) => `  ${i + 1}  $ ${shownCommand(argv)}`)
+      : resolved.map(({ argv }) => `  $ ${shownCommand(argv)}`)
+    // 警告が出るものは記憶しない（中身が変わっても同じキーで通ってしまうため）。キーは実行されるものそのもの
+    const key = warnings.length === 0
+      ? JSON.stringify([cwdReal, ...resolved.map(({ argv, exeReal }) => [exeReal, ...argv])])
+      : undefined
+    const approved: HostExecApproved = key === undefined ? {} : ((await $.state.get(APPROVED)).value ?? {})
+    const runs = key === undefined ? undefined : approved[key]
+    if (key !== undefined && runs !== undefined) {
+      // 人間が「このセッションでは同じコマンドを聞かない」を選んだものと完全に同じなので聞き直さない
+      await $.state.set(APPROVED, { ...approved, [key]: runs + 1 })
+      $.ui.toast(`承認済みのコマンドを再実行: ${shownCommand(steps[0] ?? [])}（${runs + 1} 回目）`)
+    } else {
+      const runLabel = isMulti ? `${steps.length} 個とも実行する` : RUN
+      // 毎回同じ定型文は置かない（読み飛ばす癖がつき、条件付きの警告まで読まれなくなる）。
+      // 警告は出たときだけ先頭に。Claude の説明は未検証の文なので、言い分とやることを
+      // ひと目で突き合わせられるようコマンドの直前に置く。接頭辞は外さない（無いと Claude の文が
+      // host-exec 自身の表示に見え、「安全確認済み」などと書かれると見分けられない）
+      const shown = [
+        ...(warnings.length > 0 ? [`⚠ 注意（${warnings.length} 件）`, ...warnings.map(w => `・${w}`), ''] : []),
+        `目的: ${shownReason(reason)}`,
+        ...commandLines,
+        '',
+        ...resolved.map(({ exe, exeReal }, i) => {
+          const label = i === 0 ? '  実行ファイル  ' : ' '.repeat(16)
+          return `${label}${isMulti ? `${i + 1}  ` : ''}${shownPath(exe)}${exeReal !== exe ? ` → ${shownPath(exeReal)}` : ''}`
+        }),
+        `  場所          ${shownPath(cwdReal)}`,
+        ...(isMulti ? ['  失敗したらそこで止めます'] : []),
+      ].join('\n')
+      let approval = ''
+      try {
+        // 先頭の選択肢にカーソルが乗るので、Enter の押し間違いで実行・開示されない側を先頭に置く
+        const options = key === undefined ? [DECLINE, runLabel] : [DECLINE, runLabel, RUN_REMEMBER]
+        approval = await $.ui.ask(shown, { options, header: 'sandbox 外で実行' })
+      } catch {
+        return { deny: 'host-exec: nobody approved the command (dialog dismissed or unavailable). Wait for the user.' }
+      }
+      if (approval === RUN_REMEMBER && key !== undefined) {
+        await $.state.set(APPROVED, { ...approved, [key]: 1 })
+      } else if (approval !== runLabel) {
+        // 「その他」に書かれた自由記述は指示として Claude に返す
+        const note = approval && approval !== DECLINE ? ` The user said: ${approval}` : ''
+        return { deny: `host-exec: the user declined to run this command.${note}` }
+      }
     }
 
-    // ── 実行 ──
-    let r: { exitCode: number; stdout: string; stderr: string }
-    try {
-      r = await $.process.run([exe, ...argv.slice(1)], { cwd: cwdReal, timeoutMs: timeoutSec * 1000 })
-    } catch (err) {
-      return { result: `host-exec: the command could not start or timed out after ${timeoutSec}s: ${String(err)}` }
+    // ── 実行（失敗・起動失敗・タイムアウトで止め、残りは実行しない） ──
+    const sections: string[] = []
+    const outcomes: string[] = []
+    let stoppedAt: number | undefined
+    for (const [i, { argv, exe }] of resolved.entries()) {
+      try {
+        const r = await $.process.run([exe, ...argv.slice(1)], { cwd: cwdReal, timeoutMs: timeoutSec * 1000 })
+        sections.push(format(argv, r))
+        outcomes.push(`exit code ${r.exitCode}`)
+        if (r.exitCode !== 0) stoppedAt = i
+      } catch (err) {
+        sections.push(`$ ${shownCommand(argv)}\nhost-exec: the command could not start or timed out after ${timeoutSec}s: ${String(err)}`)
+        outcomes.push('could not start or timed out')
+        stoppedAt = i
+      }
+      if (stoppedAt !== undefined) break
     }
-    const text = format(argv, r)
+    for (const { argv } of resolved.slice(sections.length)) {
+      sections.push(`$ ${shownCommand(argv)}\n未実行（ステップ ${(stoppedAt ?? 0) + 1} で止まったため、実行していません）`)
+      outcomes.push('未実行')
+    }
+    const text = sections.join('\n\n')
 
-    // ── ゲート3: 出力の機密チェック ──
+    // ── ゲート3: 出力の機密チェック（全ステップの出力をまとめて 1 回） ──
     const findings = scan(text)
     if (findings.length === 0) return { result: text }
 
@@ -355,7 +469,7 @@ export const register: Register = on => {
         [
           '出力に秘密情報らしきものがあったので、Claude に渡す前に止めました。',
           '',
-          `  $ ${shownCommand(argv)}`,
+          ...commandLines,
           `  検出: ${detected}`,
           '',
           'Claude に渡すと会話の記録に残り、その後の作業に使われる可能性があります。',
@@ -379,7 +493,7 @@ export const register: Register = on => {
     // 渡さない（既定）: 実行結果の事実だけ返す
     return {
       result:
-        `host-exec: the command ran (exit code ${r.exitCode}), but its output was withheld because it contained: ` +
+        `host-exec: the command ran (${isMulti ? outcomes.map((o, i) => `step ${i + 1}: ${o}`).join(', ') : outcomes[0]}), but its output was withheld because it contained: ` +
         findings.map(f => f.kind).join(', ') +
         '. Do not try to read these values another way. Ask the user for the specific non-secret information you need.',
     }
