@@ -235,8 +235,7 @@ plugin が持ち、他 plugin からは PATH 上の `bin/journal` を起点に�
 plugins/playpark-core/            # 共有基盤 plugin
 ├── _shared/references/           # 共有ドキュメント
 └── _lib/
-    ├── common.sh                 # 共有 bash ユーティリティ（locator 経由で参照）
-    └── infra/                    # 共有インフラスクリプト
+    └── common.sh                 # 共有 bash ユーティリティ（locator 経由で参照）
 
 plugins/playpark-skills/          # 個人用スキル plugin
 ├── _shared/scripts/              # スキル共通スクリプト
@@ -275,7 +274,7 @@ User triggers /command
 6. **破壊的・大量変更系は `disable-model-invocation: true` を検討**:
    ファイル大量移動・worktree 大量生成・外部公開を伴う skill は LLM の自動起動を禁じ、
    ユーザー明示起動（`/skill-name`）のみに限定する。
-   候補例: `qiita-publish`, `zenn-publish`
+   候補例: `zernio`, `gmail-cleanup`
 7. **「毎回確定実行」したい挙動は skill ではなく hook で実装**:
    format / test / secret 検査のように LLM の判断を介さず必ず走らせたい処理は、
    skill 化すると呼び出し漏れが起きる。hook での実装を検討すること。

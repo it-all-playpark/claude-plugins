@@ -87,11 +87,11 @@ check_file_contains "$TEMPLATE" "code-reviewer" "routing table: code-reviewer"
 echo ""
 echo "[4] 全 SKILL.md 走査 (Task/Agent/subagent_type 使用スキル)"
 
-# 除外: _shared / _lib / node_modules / .agents / .git など
+# 除外: _shared / _lib / node_modules / .git など
 # 対象は各 skill ディレクトリ直下の SKILL.md
 mapfile -t ALL_SKILLS < <(
     find "$REPO_ROOT" \
-        -type d \( -name node_modules -o -name .git -o -name _shared -o -name _lib -o -name .agents -o -name skills-worktrees \) -prune \
+        -type d \( -name node_modules -o -name .git -o -name _shared -o -name _lib -o -name skills-worktrees \) -prune \
         -o -type f -name 'SKILL.md' -print \
     | sort
 )

@@ -12,7 +12,6 @@ export default defineConfig({
       '**/node_modules/**',
       '**/.serena/**',
       '**/.system/**',
-      '**/.agents/**',
       '**/.claude/worktrees/**',
     ],
   },

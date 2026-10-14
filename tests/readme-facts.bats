@@ -3,11 +3,11 @@
 #
 # README は marketplace 利用者が最初に読む文書で、実体とずれると「載っている skill が
 # 無い」「手順どおりに動かない」になる。ここでは実体から導ける事実だけを照合する:
-#   - スキル一覧 = plugin 配下の自作 skill（SKILL.md / skill.md）+ skills-lock.json の外部 skill
+#   - スキル一覧 = plugin 配下の skill（SKILL.md / skill.md）
 #     （行の削除・架空 skill の追加で落ちることを fixture の README で確かめる。issue #925）
 #   - 件数は書かない（skill / agent / wrapper の数は増減で腐る。manifest の件数は
 #     plugin-manifest.bats が実数と照合する）
-#   - License は LICENSE / plugin.json の license と一致させ、外部 skill は上流 license に従うと書く
+#   - License は LICENSE / plugin.json の license と一致させる
 #   - Python 例の import は実際の script が使う形と同じ
 #   - ほかの agent から使う節は locator が要求する PATH と ${CLAUDE_PLUGIN_ROOT} の前提を書く
 #   - README / .gitignore は作者個人の環境（dotfiles repo・home-manager・rip）を前提にしない
@@ -16,7 +16,6 @@
 setup() {
     REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
     README="$REPO_ROOT/README.md"
-    LOCK="$REPO_ROOT/plugins/playpark-skills/skills-lock.json"
 }
 
 # README の `## <title>` 節（次の `## ` 見出しの手前まで）を出力する
@@ -35,7 +34,7 @@ readme_config_keys() {
         | grep -oE '^\| `[a-z_]+`' | grep -oE '[a-z_]+' | sort -u
 }
 
-@test "README の設定節に載る skill は自作 skill か skills-lock.json の外部 skill として実在する" {
+@test "README の設定節に載る skill は plugin 配下に実在する" {
     # readme_h3_section は `####` でも止まるので、ここは次の `#`〜`###` 見出しまでを取る
     section="$(awk '$0 == "### 対応スキルと設定項目" {on=1; next} on && /^#{1,3} / {exit} on {print}' "$README")"
     global_example="$(readme_h3_section 'グローバル設定の例')"
@@ -43,7 +42,7 @@ readme_config_keys() {
                 grep -oE '^  "[a-z0-9-]+": \{' <<< "$global_example" | grep -oE '[a-z0-9-]+'; } | sort -u)"
     [ -n "$names" ]
     while IFS= read -r name; do
-        compgen -G "$REPO_ROOT/plugins/*/$name/SKILL.md" >/dev/null || jq -e --arg n "$name" '.skills | has($n)' "$LOCK" >/dev/null || {
+        compgen -G "$REPO_ROOT/plugins/*/$name/SKILL.md" >/dev/null || {
             echo "README の設定節に実在しない skill: $name"
             return 1
         }
@@ -60,14 +59,12 @@ readme_config_keys() {
     [ "$documented" = "$impl" ]
 }
 
-# <readme> のスキル一覧が自作 skill + 外部 skill と過不足なく一致すれば 0。ずれた skill 名を出して 1 を返す。
+# <readme> のスキル一覧が plugin 配下の skill と過不足なく一致すれば 0。ずれた skill 名を出して 1 を返す。
 # local README で readme_h2_section の読み先を差し替える（fixture の README でも同じ判定を通すため）。
 readme_skill_list_matches() {
-    local README="$1" listed own external actual
+    local README="$1" listed actual
     listed="$(readme_h2_section 'スキル一覧' | grep -oE '^\| `[a-z0-9-]+` \|' | grep -oE '[a-z0-9-]+' | sort -u)"
-    own="$(git -C "$REPO_ROOT" ls-files -- 'plugins/*' | grep -iE '^plugins/[^/]+/[^/]+/skill\.md$' | cut -d/ -f3)"
-    external="$(jq -r '.skills | keys[]' "$LOCK")"
-    actual="$(printf '%s\n%s\n' "$own" "$external" | sort -u)"
+    actual="$(git -C "$REPO_ROOT" ls-files -- 'plugins/*' | grep -iE '^plugins/[^/]+/[^/]+/skill\.md$' | cut -d/ -f3 | sort -u)"
     [ -n "$listed" ] || { echo "スキル一覧の表が空"; return 1; }
     [ "$listed" = "$actual" ] && return 0
     echo "$listed" > "$BATS_TEST_TMPDIR/listed"
@@ -77,7 +74,7 @@ readme_skill_list_matches() {
     return 1
 }
 
-@test "README のスキル一覧は自作 skill と skills-lock.json の外部 skill に過不足なく一致する" {
+@test "README のスキル一覧は plugin 配下の skill に過不足なく一致する" {
     run readme_skill_list_matches "$README"
     echo "$output"
     [ "$status" -eq 0 ]
@@ -101,21 +98,13 @@ readme_skill_list_matches() {
     [ "$output" = "README にだけある: no-such-skill" ]
 }
 
-@test "README のスキル一覧で 🔗（外部 skill）を付けた行は skills-lock.json の skill と一致する" {
-    marked="$(readme_h2_section 'スキル一覧' | grep -E '^\| `[a-z0-9-]+` \|.*🔗' | grep -oE '^\| `[a-z0-9-]+`' | grep -oE '[a-z0-9-]+' | sort)"
-    external="$(jq -r '.skills | keys[]' "$LOCK" | sort)"
-    echo "marked=[$marked]"
-    echo "external=[$external]"
-    [ "$marked" = "$external" ]
-}
-
 @test "README は skill / agent / bin wrapper の件数を書かない" {
     run grep -nE '[0-9]+\+? ?([A-Za-z-]+ )?(skills?|agents?)([^A-Za-z/._-]|$)|wrapper（[0-9]+|[0-9]+ ?本' "$README"
     echo "$output"
     [ "$status" -eq 1 ]
 }
 
-@test "README の License 節は LICENSE と各 plugin.json の license を書き、外部 skill の扱いを書く" {
+@test "README の License 節は LICENSE と各 plugin.json の license を書く" {
     section="$(readme_h2_section 'License')"
     head -1 "$REPO_ROOT/LICENSE" | grep -qx 'MIT License'
     for pj in "$REPO_ROOT"/plugins/*/.claude-plugin/plugin.json; do
@@ -124,7 +113,6 @@ readme_skill_list_matches() {
     done
     [[ "$section" == *"MIT"* ]]
     [[ "$section" == *"LICENSE"* ]]
-    [[ "$section" == *"skills-lock.json"* ]]
 }
 
 @test "README の Python 例の sys.path / import 行は playpark-skills の実 script と同じ形である" {

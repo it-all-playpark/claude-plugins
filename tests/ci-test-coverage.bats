@@ -23,7 +23,7 @@ job_name_running() {
 find_repo() {
     cd "$REPO_ROOT" && find . \
         -type d \( -name ".git" -o -name "node_modules" -o -name ".serena" \
-                -o -name ".system" -o -name ".agents" \
+                -o -name ".system" \
                 -o -path "*/.claude/worktrees" \) -prune -o \
         "$@"
 }
