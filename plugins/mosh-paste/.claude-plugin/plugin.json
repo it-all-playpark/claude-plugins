@@ -5,12 +5,6 @@
   "repository": "https://github.com/it-all-playpark/claude-plugins",
   "license": "MIT",
   "userConfig": {
-    "host": {
-      "type": "string",
-      "title": "手元の Mac の ssh 接続先",
-      "description": "mosh / ssh で入ってくる元の Mac への ssh 接続先（~/.ssh/config の Host エイリアスか user@host）。鍵認証で BatchMode のまま入れること。空なら何もしない",
-      "default": ""
-    },
     "dir": {
       "type": "string",
       "title": "コピーの保存先",

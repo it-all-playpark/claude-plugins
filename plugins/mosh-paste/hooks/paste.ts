@@ -85,12 +85,42 @@ const FETCH = [
   'umask 077; d="$(dirname "$3")";',
   '{ mkdir -p "$d" && [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ]; } || { echo "mosh-paste: $d is not a directory owned by this user" >&2; exit 1; };',
   't="$(mktemp "$d/.part.XXXXXX")" || exit 1;',
-  'if ssh -o BatchMode=yes -o ConnectTimeout=5 "$1" "cat -- $2" > "$t"; then mv -f "$t" "$3"; else rm -f "$t"; exit 1; fi',
+  'if ssh -i "$4" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 "$1" "cat -- $2" > "$t"; then mv -f "$t" "$3"; else rm -f "$t"; exit 1; fi',
 ].join(' ')
 
+// The mod's own key, so nothing in ~/.ssh/config is needed: IdentitiesOnly
+// keeps ssh from offering every other key first and hitting the server's
+// MaxAuthTries ("Too many authentication failures").
+export function keyPath(home: string): string {
+  return `${home}/.ssh/mosh-paste_ed25519`
+}
+
 // BatchMode: a password prompt would hang the paste, so key auth or nothing.
-export function fetchArgv(host: string, remote: string, dest: string): string[] {
-  return ['/bin/sh', '-c', FETCH, 'mosh-paste', host, shellQuote(remote), dest]
+export function fetchArgv(host: string, remote: string, dest: string, key: string): string[] {
+  return ['/bin/sh', '-c', FETCH, 'mosh-paste', host, shellQuote(remote), dest, key]
+}
+
+export function checkArgv(host: string, key: string): string[] {
+  return ['ssh', '-i', key, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', host, 'true']
+}
+
+// ~/.ssh is made private first: ssh-keygen does not create its directory.
+export function keygenArgv(key: string): string[] {
+  const dir = key.slice(0, key.lastIndexOf('/'))
+  return ['/bin/sh', '-c', 'umask 077; mkdir -p "$1" && ssh-keygen -q -t ed25519 -N "" -C mosh-paste -f "$2"', 'mosh-paste', dir, key]
+}
+
+// What /mosh-paste-setup tells the person when the check fails: the one
+// command that needs their password (and the first host key prompt).
+export function setupHint(host: string, key: string, reason: string): string {
+  return [
+    `mosh-paste: ${host} に鍵で入れなかった (${reason})`,
+    '',
+    '手元の Mac の「リモートログイン」をオンにしてから、このマシンの端末で次を 1 回実行し、',
+    `終わったらもう一度 /mosh-paste-setup を実行する（手元の Mac のログインパスワードを聞かれる）:`,
+    '',
+    `  ssh-copy-id -o IdentitiesOnly=yes -i ${key}.pub ${host}`,
+  ].join('\n')
 }
 
 // undefined on success, else the last stderr line (ssh's own reason).

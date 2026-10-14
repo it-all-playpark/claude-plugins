@@ -26,7 +26,7 @@ setup() {
     cat > "$BATS_TEST_TMPDIR/bin/ssh" <<'EOF'
 #!/bin/sh
 while [ $# -gt 0 ]; do
-  case "$1" in -o) shift 2 ;; *) break ;; esac
+  case "$1" in -o|-i) shift 2 ;; *) break ;; esac
 done
 shift
 exec zsh -c "$*"
@@ -38,12 +38,12 @@ EOF
     quoted="'$(printf %s "$src" | sed "s/'/'\\\\''/g")'"
     dest="$BATS_TEST_TMPDIR/out/copy.png"
 
-    PATH="$BATS_TEST_TMPDIR/bin:$PATH" run /bin/sh -c "$fetch" mosh-paste host "$quoted" "$dest"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH" run /bin/sh -c "$fetch" mosh-paste host "$quoted" "$dest" "$BATS_TEST_TMPDIR/key"
     [ "$status" -eq 0 ]
     cmp "$src" "$dest"
     [[ "$(ls -l "$dest")" == -rw-------* ]]
 
-    PATH="$BATS_TEST_TMPDIR/bin:$PATH" run /bin/sh -c "$fetch" mosh-paste host "'/nonexistent/x.png'" "$BATS_TEST_TMPDIR/out/missing.png"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH" run /bin/sh -c "$fetch" mosh-paste host "'/nonexistent/x.png'" "$BATS_TEST_TMPDIR/out/missing.png" "$BATS_TEST_TMPDIR/key"
     [ "$status" -eq 1 ]
     [ ! -e "$BATS_TEST_TMPDIR/out/missing.png" ]
     [ -z "$(find "$BATS_TEST_TMPDIR/out" -name '.part.*')" ]
@@ -59,7 +59,7 @@ EOF
     chmod +x "$BATS_TEST_TMPDIR/bin/ssh"
     ln -s "$BATS_TEST_TMPDIR/elsewhere" "$BATS_TEST_TMPDIR/planted"
 
-    PATH="$BATS_TEST_TMPDIR/bin:$PATH" run /bin/sh -c "$fetch" mosh-paste host "'/x.png'" "$BATS_TEST_TMPDIR/planted/x.png"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH" run /bin/sh -c "$fetch" mosh-paste host "'/x.png'" "$BATS_TEST_TMPDIR/planted/x.png" "$BATS_TEST_TMPDIR/key"
     [ "$status" -eq 1 ]
     [[ "$output" == *"is not a directory owned by this user"* ]]
     [ -z "$(ls -A "$BATS_TEST_TMPDIR/elsewhere")" ]
