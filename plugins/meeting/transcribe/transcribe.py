@@ -157,7 +157,9 @@ def post_groq(ogg: bytes, args) -> dict:
     req = urllib.request.Request(
         GROQ_URL,
         data=body,
-        headers={"Authorization": f"Bearer {groq_key()}", "Content-Type": f"multipart/form-data; boundary={boundary}"},
+        # urllib 既定の User-Agent (Python-urllib/x.y) は Groq の前段 (Cloudflare) に 403 (error 1010) で弾かれる
+        headers={"Authorization": f"Bearer {groq_key()}", "Content-Type": f"multipart/form-data; boundary={boundary}",
+                 "User-Agent": "meeting-transcribe"},
     )
     try:
         with urllib.request.urlopen(req, timeout=600) as r:
