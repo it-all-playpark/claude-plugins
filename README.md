@@ -82,7 +82,7 @@ ssh で手元の Mac から `cat` して `dir`（既定 `~/.cache/mosh-paste`。
    もう一度 `/mosh-paste-setup` を実行して「設定完了」が出れば終わり
 
 接続先は settings.json ではなく、このマシンの plugin のデータ領域にだけ保存します。接続元を指す値なのでマシンごとに
-違い、settings.json は複数のマシンで共有したり公開したりすること（dotfiles）が多いためです。接続先が未設定のあいだは
+違い、settings.json は複数のマシンで共有したり公開したりすることが多いためです。接続先が未設定のあいだは
 何もしません。ssh には毎回この専用の鍵だけを渡す（`IdentitiesOnly=yes`）ので、他の鍵を順に試して手元の Mac の
 試行回数上限（`Too many authentication failures`）に掛かることはありません。
 
