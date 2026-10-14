@@ -70,13 +70,11 @@ generate-thumbnail
 gmail-cleanup
 gmail-receipts
 mem-triage
-qiita-publish
 skill-creator-init
 sns-announce-check-length
 sns-announce-extract-metadata
 sns-announce-get-posting-time
 sns-announce-load-config
-zenn-publish
 EOF
 }
 
@@ -123,8 +121,6 @@ skills_target_for() {
         gmail-cleanup) echo "bash gmail-cleanup/scripts/gmail-cleanup.sh" ;;
         gmail-receipts) echo "bash gmail-receipts/scripts/gmail-receipts.sh" ;;
         mem-triage) echo "bash mem-triage/scripts/mem-triage.sh" ;;
-        qiita-publish) echo "bash qiita-publish/scripts/publish.sh" ;;
-        zenn-publish) echo "bash zenn-publish/scripts/publish.sh" ;;
         skill-creator-init) echo "python3 skill-creator/scripts/init_skill.py" ;;
         sns-announce-check-length) echo "bash sns-announce/scripts/check-length.sh" ;;
         sns-announce-load-config) echo "bash sns-announce/scripts/load-config.sh" ;;
@@ -258,7 +254,7 @@ skills_target_for() {
     done <<< "$(skills_expected_names)"
 }
 
-@test "plugins/playpark-skills/bin の entry は対象16本と完全一致する" {
+@test "plugins/playpark-skills/bin の entry は対象14本と完全一致する" {
     expected="$(skills_expected_names)"
     actual="$(/bin/ls -1 "$REPO_ROOT/plugins/playpark-skills/bin" | sort)"
     [ "$actual" = "$expected" ]

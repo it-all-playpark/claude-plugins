@@ -12,10 +12,6 @@ Subdirectory `AGENTS.md` files take precedence over this root file for their res
 # テスト実行
 bash tests/run-all-bats.sh           # ローカル開発 (bats 未インストール時は graceful skip)
 bash tests/run-all-bats.sh --strict  # CI 用 (bats 未インストールを error 扱い)
-
-# 外部スキル (plugins/playpark-skills/.agents/skills/ — gitignored) の復元 (新規マシンのセットアップ時)
-# lockfile と実体は plugin 配下にあるため、CWD を plugin ディレクトリに移して実行する
-cd plugins/playpark-skills && npx skills experimental_install   # tracked の skills-lock.json から一括復元
 ```
 
 plugin の install 手順（marketplace / link mode）は README.md を参照。

@@ -12,9 +12,6 @@ plugins/*/.claude/settings.local.json
 .serena/
 .system/
 
-# External agent skills（実体は plugin 配下。plugin 外を指す symlink は plugin install に拒否されるため）
-plugins/playpark-skills/.agents/
-
 # Credentials & secrets
 client_secret.json
 **/client_secret*.json
@@ -63,8 +60,3 @@ __pycache__/
 
 # 作業者ローカルの設計メモ・計測・RCA（public repo に載せない。現行の不変条件は AGENTS.md / references が持つ）
 claudedocs/
-
-# --- external skills (auto-managed) ---
-plugins/playpark-skills/agent-browser
-plugins/playpark-skills/gsc
-# --- end external skills ---

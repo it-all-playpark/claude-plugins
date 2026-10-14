@@ -73,7 +73,7 @@ test('[pr-reviewer-delta] 入力節に delta_range が定義されている', ()
 
 test('[pr-reviewer-delta] diff 確認手順に lockfile と inline 生成区間の読み飛ばし規則がある', () => {
   const stepSection = section(src, '## Step 1-2');
-  for (const name of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'skills-lock.json', 'flake.lock']) {
+  for (const name of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'flake.lock']) {
     assert.ok(stepSection.includes(name), `読み飛ばし規則に ${name} が無い`);
   }
   assert.ok(stepSection.includes('// ==== BEGIN inline:') && stepSection.includes('END inline'), '読み飛ばし規則に inline 生成区間が無い');

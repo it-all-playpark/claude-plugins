@@ -6,11 +6,5 @@
       "linkedin": { "enabled": true, "char_limit": 1300 },
       "google": { "enabled": true, "char_limit": 1500 }
     }
-  },
-  "trends-analyzer": {
-    "geo": "JP",
-    "timeframe": "today 3-m",
-    "top_n": 10,
-    "title_strip_patterns": []
   }
 }

@@ -61,7 +61,7 @@ PR の宣言意図（title/body）と実 diff を突き合わせる。stack を�
 
 以下は diff に含まれていても**読まない**。読んでも finding にならず、読む量だけ増える:
 
-- lockfile: `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` / `skills-lock.json` / `flake.lock` 等
+- lockfile: `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` / `flake.lock` 等
 - `// ==== BEGIN inline:` 〜 `// ==== END inline:` の生成区間（`_lib` canonical から
   `tools/sync-inlines.mjs` が生成し、`workflow-inlines.sync.test.mjs` が CI で byte 一致を保証する。
   レビュー対象は canonical 側の `_lib/*.mjs` の hunk）

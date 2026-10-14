@@ -3,8 +3,7 @@
 # 絶対パス記述を残さない（plugin install 形態に依存しない表現にするため）。
 # #571 で skills symlink 自体を撤去したため dev-flow の除外は外した — plugin 配下は
 # ${CLAUDE_PLUGIN_ROOT} 相対か bin/ の bare 名で表現する。
-# git grep で tracked ファイルのみを検査し、repo root の gitignored な外部 skill
-# symlink（gsc 等）を構造的に対象外にする。
+# git grep で tracked ファイルのみを検査する。
 
 setup() {
     REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"

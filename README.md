@@ -144,30 +144,6 @@ export CLAUDE_PLUGIN_ROOT="<repo>/plugins/playpark-skills"
 
 hook（secret mask・context guard 等）はほかの agent では動きません。
 
-### External Skills Integration (skills.sh)
-
-[skills.sh](https://skills.sh) で取得した外部スキルは `plugins/playpark-skills/.agents/skills/` に
-配置し、`plugins/playpark-skills/` 直下へのシンボリックリンクで統合します。
-
-```bash
-# 復元（新規マシン）: lockfile と実体は plugin 配下にあるので CWD を移して実行する
-cd plugins/playpark-skills && npx skills experimental_install
-
-# Automated symlink management
-plugins/playpark-core/_lib/infra/link-agent-skills.sh    # Create symlinks + update .gitignore
-plugins/playpark-core/_lib/infra/unlink-agent-skills.sh  # Remove symlinks
-```
-
-実体を repo root の `.agents/` ではなく plugin 配下に置くのは、`claude plugin install`
-（mode: link）が **plugin ディレクトリの外を指す top-level entry を見つけると install 自体を
-拒否する**ためです。root に実体を置くと symlink が plugin の外へ脱出してこのガードに引っかかり、
-`playpark-skills` が install できなくなります。実体を plugin 配下に移せば symlink が plugin 内で
-完結し、実体は 1 箇所のまま（コピーによる二重管理なし）install が通ります。
-
-なお `.agents/` は `.gitignore` されているため、外部スキルは plugin に同梱されません。GitHub
-marketplace 経由の `/plugin install playpark-skills@playpark` では入らないので、必要なら上の
-復元コマンドを別途実行してください。
-
 ## 設定（skill-config.json）
 
 スキルの設定は **グローバル**（ユーザー共通）と **プロジェクト** の2階層で管理できます。プロジェクト設定がグローバル設定を deep merge で上書きします。
@@ -205,9 +181,6 @@ skill-config.json                              # プロジェクト設定（リ�
       "x": { "enabled": true },
       "linkedin": { "enabled": true }
     }
-  },
-  "trends-analyzer": {
-    "geo": "JP"
   }
 }
 ```
@@ -252,15 +225,6 @@ skill-config.json                              # プロジェクト設定（リ�
 |------|-----|------|
 | `property_id` | string | GA4 プロパティID（必須） |
 
-#### gsc
-
-| キー | 型 | 説明 |
-|------|-----|------|
-| `site` | string | GSCサイトURL（例: `"sc-domain:example.com"`） |
-| `default_days` | number | デフォルト分析日数 |
-| `default_limit` | number | 取得件数上限 |
-| `output_dir` | string | 出力先ディレクトリ |
-
 #### sns-announce
 
 | キー | 型 | 説明 |
@@ -276,15 +240,6 @@ skill-config.json                              # プロジェクト設定（リ�
 | `output.pattern` | string | ファイル名パターン |
 | `schedule.enabled` | boolean | 自動スケジュール有効/無効 |
 | `schedule.mode` | string | スケジュールモード |
-
-#### trends-analyzer
-
-| キー | 型 | 説明 |
-|------|-----|------|
-| `geo` | string | 地域コード（デフォルト: `"JP"`） |
-| `timeframe` | string | 分析期間（デフォルト: `"today 3-m"`） |
-| `top_n` | number | 上位N件取得 |
-| `title_strip_patterns` | string[] | タイトルから除去する正規表現 |
 
 #### meeting-notes
 
@@ -384,15 +339,11 @@ config = merge_config({"property_id": None}, "ga-analyzer")  # defaults → glob
 | スキル | 説明 |
 |--------|------|
 | `ga-analyzer` | GA4データ分析・サイト改善アドバイス |
-| `gsc` | Google Search Consoleクエリ・SEOデータ取得 🔗 |
-| `trends-analyzer` | Google Trendsキーワードトレンド分析 |
 
 ### ブログ運用
 
 | スキル | 説明 |
 |--------|------|
-| `zenn-publish` | Zennへの公開 |
-| `qiita-publish` | Qiitaへの公開 |
 | `generate-thumbnail` | Codex CLI built-in image_gen（gpt-image-2）によるブログサムネイル生成 |
 
 ### SNS・投稿スケジュール
@@ -430,9 +381,6 @@ config = merge_config({"property_id": None}, "ga-analyzer")  # defaults → glob
 | `mem-triage` | macOS のメモリをアプリ・端末から起動したもの・launchd の常駐の塊ごとに合算し、解放方法と「聞かずに消してよいか」を示す（kill はユーザーが実行） |
 | `sandbox-tune` | transcript から sandbox 拒否・permission 拒否・人間への実行依頼を型ごとに集計し、設定 repo の git log と突き合わせて settings 修正の候補を根拠付きで出す（issue 化は `--issue` のときだけ） |
 | `suica-to-csv` | モバイルSuica明細PDFをマネーフォワード経費CSVに変換 |
-| `agent-browser` | ブラウザ自動操作（ページ操作/スクレイピング/テスト） 🔗 |
-
-> 🔗 = skills.sh 由来の外部スキル（`plugins/playpark-skills/.agents/skills/` からシンボリックリンク。gitignored のため plugin には同梱されない）
 
 ## 使い方
 
@@ -453,10 +401,7 @@ skills/
 ├── plugins/
 │   ├── playpark-core/                    # 共有基盤 plugin（skill なし。hooks と journal 基盤）
 │   │   ├── _lib/
-│   │   │   ├── common.sh                 # Bash共通関数（設定読み込み等）
-│   │   │   └── infra/                    # リポジトリ基盤管理スクリプト
-│   │   │       ├── link-agent-skills.sh    # 外部スキルのsymlink管理
-│   │   │       └── unlink-agent-skills.sh  # symlink解除
+│   │   │   └── common.sh                 # Bash共通関数（設定読み込み等）
 │   │   ├── _shared/
 │   │   │   └── references/subagent-dispatch.md  # Subagent dispatch 必須5要素
 │   │   ├── bin/journal                   # core bare 名 wrapper
@@ -476,14 +421,11 @@ skills/
 │   │   ├── bin/                          # playpark-skills bare 名 wrapper（<skill>-<action> 命名）
 │   │   ├── _lib/config.py                # Python共通設定ローダー
 │   │   ├── _shared/                      # スキル共通ユーティリティ・schemas・templates
-│   │   ├── <skill-name>/                 # 各スキル（自作）
-│   │   │   ├── SKILL.md                  # スキル定義（必須）
-│   │   │   ├── scripts/                  # 実行スクリプト
-│   │   │   ├── references/               # 参照ドキュメント
-│   │   │   └── assets/                   # アセット
-│   │   ├── <skill-name> -> .agents/skills/<name>  # 外部スキル（symlink・gitignored）
-│   │   ├── .agents/skills/               # 外部スキル実体（gitignored）
-│   │   └── skills-lock.json              # 外部スキルの lockfile（tracked）
+│   │   └── <skill-name>/                 # 各スキル
+│   │       ├── SKILL.md                  # スキル定義（必須）
+│   │       ├── scripts/                  # 実行スクリプト
+│   │       ├── references/               # 参照ドキュメント
+│   │       └── assets/                   # アセット
 │   ├── host-exec/                        # sandbox 外の承認付き実行ツール plugin（skill なし）
 │   │   ├── hooks/register.ts             # ツール登録と 3 段のゲート
 │   │   ├── types/index.d.ts              # $.state の型（承認を記憶したコマンド）
@@ -502,7 +444,6 @@ skills/
 ├── docs/                                  # dev-flow-atlas.md 等ドキュメント
 ├── .claude/rules/                         # dev-flow.md（正典）
 ├── .claude-plugin/marketplace.json        # 5 plugin の登録
-├── .gitignore                             # 外部スキルsymlink・実体を自動管理
 └── README.md
 ```
 
@@ -558,6 +499,3 @@ AI開発を専門とするソフトウェア開発スタジオです。AIエー�
 
 MIT License（[LICENSE](LICENSE)）。各 plugin（`playpark-core` / `dev-flow` / `playpark-skills`）の
 `plugin.json` の `license` も MIT です。
-
-外部スキル（`plugins/playpark-skills/skills-lock.json` に載る skills.sh 由来の skill）は本 repo に
-同梱しておらず、MIT の対象外です。それぞれ取得元（lockfile の `source`）の上流 repo の license に従います。

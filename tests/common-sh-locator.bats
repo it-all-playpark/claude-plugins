@@ -81,9 +81,8 @@ setup() {
 # （`../../../playpark-core/*/`）。hook の実行環境では plugin の bin/ が PATH に載らず
 # locator（command -v journal）が使えないため、Stop hook はこの形でしか journal.sh に届かない。
 # version を固定した ../ と違い、cache の hash が変わっても壊れない。
-@test "plugins/*/bin/* と plugins/**/*.sh(_lib/infra/ 除く) に3段以上の ../../../ が無い" {
+@test "plugins/*/bin/* と plugins/**/*.sh に3段以上の ../../../ が無い" {
     mapfile -t offenders < <(cd "$REPO_ROOT" && git ls-files 'plugins/*/bin/*' 'plugins/**/*.sh' \
-        | grep -v '/_lib/infra/' \
         | while IFS= read -r f; do
             grep -E '(\.\./){3,}' "$f" 2>/dev/null | grep -qvE '\.\./\.\./\.\./playpark-core/\*/' && echo "$f"
         done)
