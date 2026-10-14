@@ -255,7 +255,7 @@ EOF
     [ "$(config_value calendar_tools)" = '["mcp__cal__list_events", "mcp__cal__get_event"]' ]
 }
 
-@test "端末なしの setup で groq なのに Keychain にキーが無ければ、登録のコマンドを出して常駐を登録せずに終える" {
+@test "端末なしの setup で groq なのに Keychain にキーが無ければ、登録のコマンドを出して常駐を登録せずに終え、登録済みの常駐は再起動する" {
     command -v python3 >/dev/null 2>&1 || skip "python3 not available"
     stub_build
     stub_security
@@ -266,8 +266,39 @@ EOF
     [ "$status" -eq 1 ]
     [[ "$output" == *'security add-generic-password -a "$USER" -s meeting-groq -w'* ]]
     [ "$(config_value asr_backend)" = '"groq"' ]
-    [ ! -e "$BATS_TEST_TMPDIR/launchctl.log" ]
+    [ "$(paste -sd ' ' "$BATS_TEST_TMPDIR/launchctl.log")" = "print" ]
     [ ! -e "$BATS_TEST_TMPDIR/keychain" ]
+
+    # 登録済みなら、差し替えた meeting-rec で動くよう再起動してから終える
+    touch "$BATS_TEST_TMPDIR/launchd/registered"
+    rm "$BATS_TEST_TMPDIR/launchctl.log"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup --asr-backend groq < /dev/null
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [ "$(paste -sd ' ' "$BATS_TEST_TMPDIR/launchctl.log")" = "print kickstart" ]
+    [ "$(cat "$BATS_TEST_TMPDIR/kickstart.args")" = "kickstart -k gui/$(id -u)/jp.co.playpark.meeting-watch" ]
+}
+
+@test "setup --no-daemon は常駐を登録せず、登録済みの常駐だけを kickstart -k で再起動する" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_build
+    stub_launchctl 0
+    plugin_copy "$BATS_TEST_TMPDIR/a"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup --no-daemon < /dev/null
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(paste -sd ' ' "$BATS_TEST_TMPDIR/launchctl.log")" = "print" ]
+    [[ "$output" != *"常駐を再起動しました"* ]]
+
+    touch "$BATS_TEST_TMPDIR/launchd/registered"
+    rm "$BATS_TEST_TMPDIR/launchctl.log"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup --no-daemon < /dev/null
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(paste -sd ' ' "$BATS_TEST_TMPDIR/launchctl.log")" = "print kickstart" ]
+    [ "$(cat "$BATS_TEST_TMPDIR/kickstart.args")" = "kickstart -k gui/$(id -u)/jp.co.playpark.meeting-watch" ]
+    [[ "$output" == *"✓ 常駐を再起動しました"* ]]
+    [[ "$output" == *"常駐は登録しません"* ]]
 }
 
 @test "setup は --no-daemon が無ければ最後に常駐を登録する" {
@@ -320,6 +351,15 @@ EOF
     [[ "$output" == *"不明なオプション: --bogus"* ]]
     PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup --notes-dir < /dev/null
     [ "$status" -eq 1 ]
+    # 空文字列は cwd に、相対パスは実行した場所の下に化けるので、どちらも書かずに止める
+    for key in home notes_dir; do
+        for bad in "" rel/dir; do
+            PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup "--${key//_/-}" "$bad" --no-daemon < /dev/null
+            echo "$key=$bad -> $output"
+            [ "$status" -eq 1 ]
+            [[ "$output" == *"meeting setup の引数: $key は"* ]]
+        done
+    done
     [ ! -e "$BATS_TEST_TMPDIR/swift.pkg" ]
     cmp "$CONFIG_FILE" "$BATS_TEST_TMPDIR/before.json"
 }
@@ -389,6 +429,18 @@ PY
         [ "$status" -eq 1 ]
         [[ "$output" == *"$CONFIG_FILE"* ]]
     done
+    # home / notes_dir の空・相対パス (~ 以外で始まるもの) は、読む場所の cwd 基準になるので受け付けない
+    for key in home notes_dir; do
+        for bad in "" rel/dir . "~x"; do
+            printf '{"%s": "%s"}\n' "$key" "$bad" > "$CONFIG_FILE"
+            for sub in ls notes; do
+                run bash "$SCRIPT" "$sub"
+                echo "$key=$bad $sub -> $output"
+                [ "$status" -eq 1 ]
+                [[ "$output" == *"$CONFIG_FILE: $key は"* ]]
+            done
+        done
+    done
 }
 
 # uv / osascript / claude を stub に差し替える。claude は cwd と引数を記録し、$BATS_TEST_TMPDIR/note.md が
@@ -417,7 +469,7 @@ notes_config() {
     write_config "$extra${2:+, $2}"
 }
 
-# launchctl を stub に差し替える。サブコマンドを launchctl.log に 1 行ずつ記録する。
+# launchctl を stub に差し替える。サブコマンドを launchctl.log に 1 行ずつ、kickstart は引数ごと kickstart.args に記録する。
 # $BATS_TEST_TMPDIR/launchd/registered があれば登録あり。bootout は実機と同じく登録を残したまま rc=0 で戻り、
 # そのあと print が $1 回成功してから登録が外れる。登録が残っている間の bootstrap は実機と同じく error 5
 stub_launchctl() {
@@ -445,6 +497,9 @@ case "\$1" in
       echo "Bootstrap failed: 5: Input/output error" >&2; exit 5
     fi
     touch "\$s/registered" ;;
+  kickstart)
+    [ -e "\$s/registered" ] || exit 113
+    echo "\$*" >> "$BATS_TEST_TMPDIR/kickstart.args" ;;
 esac
 EOF
     chmod +x "$BATS_TEST_TMPDIR/stub/launchctl"

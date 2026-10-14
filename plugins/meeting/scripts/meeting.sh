@@ -8,7 +8,7 @@
 #       --auto-notes | --no-auto-notes  文字起こし後に議事録作成まで自動で行うか
 #       --calendar-tools A,B            自動議事録の claude -p に許可するカレンダー連携のツール名
 #       --asr-backend mlx|groq          Whisper をどこで動かすか (groq は Keychain の meeting-groq を使う)
-#       --no-daemon                     常駐を登録しない
+#       --no-daemon                     常駐を登録しない (登録済みなら再起動だけする)
 #   meeting doctor                      依存・インストールの版・HF ログイン・設定・常駐・Keychain を 1 行ずつ確かめる
 #   meeting install                     設定ファイルを変えずに常駐だけを登録し直す (ログイン時に起動, launchd)
 #   meeting uninstall                   常駐を解除
@@ -25,7 +25,7 @@
 #
 # 設定ファイル ${XDG_CONFIG_HOME:-~/.config}/meeting/config.json (meeting setup が書く。手で編集してもよい)。
 # meeting / transcribe.py / meeting-rec (常駐) が起動のたびに読むので、変えても meeting install は要らない:
-#   home            録音の保存先 (default: ~/Meetings)
+#   home            録音の保存先 (default: ~/Meetings)。home / notes_dir は絶対パスか ~ で始まるパスで書く
 #   notes_dir       議事録を置くリポジトリ / vault。notes / name と自動議事録はここで claude を起動する (無ければ cwd)
 #   auto_notes      true なら文字起こし後に議事録作成まで自動実行 (notes_dir が必要)
 #   calendar_tools  自動議事録の claude -p に許可するカレンダー連携のツール名の配列 (既定なし)
@@ -143,7 +143,7 @@ cmd_setup() {
   if [[ -t 0 && ! -f "$CONFIG" ]]; then
     local ans
     if ! has_key notes_dir "${sets[@]+"${sets[@]}"}"; then
-      read -r -p "議事録を置くディレクトリ (空なら meeting notes を実行した場所): " ans
+      read -r -p "議事録を置くディレクトリ (絶対パスか ~/...。空なら meeting notes を実行した場所): " ans
       [[ -z "$ans" ]] || sets+=(notes_dir "$ans")
     fi
     if ! has_key auto_notes "${sets[@]+"${sets[@]}"}" && has_key notes_dir "${sets[@]+"${sets[@]}"}"; then
@@ -168,6 +168,7 @@ cmd_setup() {
     else
       echo "! Groq の API キーが Keychain にありません。ターミナルで次を実行してから meeting setup をやり直してください:" >&2
       echo "  $GROQ_ADD_CMD" >&2
+      restart_daemon
       exit 1
     fi
   fi
@@ -175,9 +176,19 @@ cmd_setup() {
   if [[ "$daemon" == 1 ]]; then
     cmd_install
   else
+    restart_daemon
     echo "= 常駐は登録しません (--no-daemon)"
   fi
   echo "状態の確認: meeting doctor"
+}
+
+# 常駐が登録済みなら再起動する。常駐を登録し直さずに setup を終える経路で、差し替える前の meeting-rec が
+# 動き続けないようにする
+restart_daemon() {
+  if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+    launchctl kickstart -k "gui/$(id -u)/$LABEL"
+    echo "✓ 常駐を再起動しました"
+  fi
 }
 
 # キー 値 の並び ($2...) にキー $1 があるか
@@ -206,6 +217,7 @@ import json, os, re, sys
 KEYS = {"home": str, "notes_dir": str, "auto_notes": bool, "calendar_tools": list, "apps": list,
         "asr_backend": str, "asr_model": str, "diar_model": str}
 BACKENDS = ("mlx", "groq")
+PATHS = ("home", "notes_dir")
 
 def fail(msg):
     print(msg)
@@ -227,6 +239,10 @@ def check(path, cfg):
         if not ok:
             want = {str: "空でない文字列", list: "文字列の配列", bool: "true / false"}[t]
             fail(f"{path}: {k} は{want}で指定してください")
+    # 相対パスは読んだ場所の cwd 基準になり、meeting と常駐 (meeting-rec の Config.swift) で別の場所を指すので受け付けない
+    for k in PATHS:
+        if k in cfg and not re.match(r"/|~(/|$)", cfg[k]):
+            fail(f"{path}: {k} は絶対パスか ~ で始まるパスで指定してください: {cfg[k]}")
     if cfg.get("asr_backend", "mlx") not in BACKENDS:
         fail(f"{path}: asr_backend は {' / '.join(BACKENDS)} のどれかです: {cfg['asr_backend']}")
     # calendar_tools は相手の発言を含む文字起こしを読む claude -p の --allowedTools に入る。Bash や Write を
@@ -263,16 +279,17 @@ elif cmd == "set":
     dry = args[:1] == ["--check"]
     args = args[1:] if dry else args
     for k, v in zip(args[::2], args[1::2]):
-        # 常駐は cwd も ~ も違うので、パスは絶対パスにして書く
-        if k in ("home", "notes_dir"):
-            cfg[k] = expand(v)
-        elif k == "auto_notes":
+        if k == "auto_notes":
             cfg[k] = v == "1"
         elif k == "calendar_tools":
             cfg[k] = [t.strip() for t in v.split(",") if t.strip()]
         else:
             cfg[k] = v
+    # 空文字列は expand すると cwd になって check をすり抜けるので、変換する前の値で確かめる
     check("meeting setup の引数" if dry else path, cfg)
+    # 引数で渡したパスは、どこから読んでも同じ場所になるよう絶対パスにして書く
+    for k in set(args[::2]) & set(PATHS):
+        cfg[k] = expand(cfg[k])
     if not dry:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = path + ".tmp"

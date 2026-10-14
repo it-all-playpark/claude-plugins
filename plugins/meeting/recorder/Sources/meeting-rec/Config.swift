@@ -72,7 +72,16 @@ struct MeetingConfig: Equatable {
         var c = defaults(env)
         if let v = dict["home"] {
             guard let s = v as? String, !s.isEmpty else { throw ConfigError(description: "home は文字列で指定してください") }
-            c.home = URL(fileURLWithPath: s.hasPrefix("~/") ? homeDir(env) + s.dropFirst() : s)
+            // meeting.sh と同じ規則。相対パスは常駐 (launchd) の cwd 基準になり meeting ls / notes と別の場所を指すので弾く
+            if s == "~" {
+                c.home = URL(fileURLWithPath: homeDir(env))
+            } else if s.hasPrefix("~/") {
+                c.home = URL(fileURLWithPath: homeDir(env) + s.dropFirst())
+            } else if s.hasPrefix("/") {
+                c.home = URL(fileURLWithPath: s)
+            } else {
+                throw ConfigError(description: "home は絶対パスか ~ で始まるパスで指定してください: \(s)")
+            }
         }
         if let v = dict["apps"] {
             let usage = "apps は [\"us.zoom.=Zoom\", ...] (bundle id の前方一致=表示名) の文字列の配列で指定してください"
