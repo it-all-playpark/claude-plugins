@@ -133,7 +133,7 @@ cmd_print_plist() {
 import os, plistlib, sys
 label, rec, home, selfp, logp = sys.argv[1:]
 env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "MEETING_HOME": home, "HOME": os.environ["HOME"], "LANG": "ja_JP.UTF-8"}
-for k in ("MEETING_AUTO_NOTES", "MEETING_NOTES_DIR", "MEETING_CALENDAR_TOOLS", "MEETING_APPS", "MEETING_PREFIX", "MEETING_ASR_MODEL", "MEETING_DIAR_MODEL"):
+for k in ("MEETING_AUTO_NOTES", "MEETING_NOTES_DIR", "MEETING_CALENDAR_TOOLS", "MEETING_APPS", "MEETING_PREFIX", "MEETING_ASR_BACKEND", "MEETING_ASR_MODEL", "MEETING_DIAR_MODEL"):
     if os.environ.get(k):
         env[k] = os.environ[k]
 sys.stdout.buffer.write(plistlib.dumps({

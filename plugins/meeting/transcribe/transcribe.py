@@ -18,6 +18,8 @@
 - mic.wav は話者分離せず全て「自分」として扱う (別トラックなので確実)。
 - system.wav だけを pyannote で話者分離し、Whisper の単語タイムスタンプに割り当てる。
 - Apple Silicon 前提: Whisper は MLX、pyannote は MPS で動かす。
+- --asr-backend groq (MEETING_ASR_BACKEND=groq) のときだけ Whisper を Groq に送る。送るのは話している区間の
+  音声だけで、initial_prompt (固有名詞が入る) は送らない。失敗したら MLX で処理し直す。
 """
 
 from __future__ import annotations
@@ -34,14 +36,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from align import (  # noqa: E402
     Turn,
     build_utterances,
+    groq_segments,
     merge_tracks,
     relabel,
     render_markdown,
+    speech_spans,
 )
 
 SR = 16_000
 DEFAULT_ASR = "mlx-community/whisper-large-v3-turbo"
 DEFAULT_DIAR = "pyannote/speaker-diarization-community-1"
+# 送り先は固定し、環境変数で差し替えさせない (音声を任意の URL に送れる口を作らない)
+GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+GROQ_MODEL = "whisper-large-v3-turbo"
+GROQ_KEYCHAIN_SERVICE = "meeting-groq"
+GROQ_MAX_BYTES = 25 * 1024 * 1024  # 無料枠の 1 ファイルの上限
+
+
+class GroqError(Exception):
+    pass
 
 
 def log(msg: str) -> None:
@@ -71,7 +84,97 @@ def is_silent(audio, threshold_db: float = -55.0) -> bool:
     return 20 * np.log10(peak_rms + 1e-12) < threshold_db
 
 
-def transcribe(audio, args) -> list[dict]:
+def transcribe(audio, args) -> tuple[list[dict], str]:
+    """(セグメント, 実際に使った backend)。Groq が失敗したら MLX で処理し直す。"""
+    if args.asr_backend == "groq":
+        try:
+            return transcribe_groq(audio, args), "groq"
+        except GroqError as e:
+            log(f"Groq で文字起こしできなかったためローカルで処理します: {e}")
+    return transcribe_mlx(audio, args), "mlx"
+
+
+def frame_levels_db(audio, frame: float = 0.1) -> list[float]:
+    import numpy as np
+
+    n = int(SR * frame)
+    usable = audio[: len(audio) // n * n].reshape(-1, n)
+    return (20 * np.log10(np.sqrt(np.mean(usable**2, axis=1)) + 1e-12)).tolist()
+
+
+def transcribe_groq(audio, args) -> list[dict]:
+    import numpy as np
+
+    frame = 0.1
+    spans = speech_spans(frame_levels_db(audio, frame), frame)
+    if not spans:
+        return []
+    voiced = np.concatenate([audio[int(s * SR) : int(e * SR)] for s, e in spans])
+    log(f"Groq に送信: 話している区間 {len(voiced) / SR / 60:.1f} 分 / 全体 {len(audio) / SR / 60:.1f} 分")
+    # Opus 32kbps はディスクに書かずにパイプで受け取る。FLAC と比べて文字起こしは変わらず 1/8 の大きさになる
+    enc = subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "error", "-f", "f32le", "-ar", str(SR), "-ac", "1", "-i", "-",
+         "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", "-"],
+        input=voiced.astype(np.float32).tobytes(),
+        capture_output=True,
+    )
+    if enc.returncode != 0:
+        raise GroqError(f"Opus に変換できません (ffmpeg に libopus が無い?): {enc.stderr.decode(errors='replace')[:200]}")
+    ogg = enc.stdout
+    if len(ogg) > GROQ_MAX_BYTES:
+        raise GroqError(f"音声が {len(ogg) / 1e6:.0f}MB あり上限 25MB を超えています")
+    return groq_segments(post_groq(ogg, args), spans)
+
+
+def groq_key() -> str:
+    r = subprocess.run(
+        ["security", "find-generic-password", "-s", GROQ_KEYCHAIN_SERVICE, "-w"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        raise GroqError(f"Keychain から API キーを読めません (service={GROQ_KEYCHAIN_SERVICE}, exit {r.returncode})")
+    return r.stdout.strip()
+
+
+def post_groq(ogg: bytes, args) -> dict:
+    import http.client
+    import urllib.error
+    import urllib.request
+    import uuid
+
+    fields = [("model", GROQ_MODEL), ("response_format", "verbose_json"), ("temperature", "0"),
+              ("timestamp_granularities[]", "word"), ("timestamp_granularities[]", "segment")]
+    if args.language != "auto":
+        fields.append(("language", args.language))
+    boundary = uuid.uuid4().hex
+    body = b"".join(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in fields
+    )
+    body += (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.ogg"\r\n'
+        "Content-Type: audio/ogg\r\n\r\n"
+    ).encode() + ogg + f"\r\n--{boundary}--\r\n".encode()
+    req = urllib.request.Request(
+        GROQ_URL,
+        data=body,
+        # urllib 既定の User-Agent (Python-urllib/x.y) は Groq の前段 (Cloudflare) に 403 (error 1010) で弾かれる
+        headers={"Authorization": f"Bearer {groq_key()}", "Content-Type": f"multipart/form-data; boundary={boundary}",
+                 "User-Agent": "meeting-transcribe"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        retry = e.headers.get("retry-after")
+        raise GroqError(f"HTTP {e.code}{f' (retry-after {retry}s)' if retry else ''}: {e.read()[:200]!r}") from None
+    # urlopen は getresponse() / read() 中の例外 (RemoteDisconnected, ConnectionResetError, IncompleteRead,
+    # ssl.SSLError) を URLError に包まない。GroqError にしないと mlx に戻らず文字起こし全体が落ちる
+    except (OSError, http.client.HTTPException, json.JSONDecodeError) as e:
+        raise GroqError(str(e)) from None
+
+
+def transcribe_mlx(audio, args) -> list[dict]:
     import mlx_whisper
 
     kw = dict(
@@ -153,6 +256,8 @@ def main() -> None:
     ap.add_argument("--num-speakers", type=int, help="相手側の人数が分かっていれば指定 (精度が上がる)")
     ap.add_argument("--min-speakers", type=int)
     ap.add_argument("--max-speakers", type=int)
+    ap.add_argument("--asr-backend", choices=("mlx", "groq"), default=os.environ.get("MEETING_ASR_BACKEND", "mlx"),
+                    help="groq は Whisper を Groq に送る (失敗したら mlx)。default: mlx")
     ap.add_argument("--asr-model", default=os.environ.get("MEETING_ASR_MODEL", DEFAULT_ASR))
     ap.add_argument("--diar-model", default=os.environ.get("MEETING_DIAR_MODEL", DEFAULT_DIAR))
     ap.add_argument("--device", help="pyannote の実行デバイス (default: mps があれば mps)")
@@ -171,6 +276,7 @@ def main() -> None:
         args.prompt = meta.get("prompt", "")
 
     tracks = []
+    backends: dict[str, str] = {}  # どのトラックを外部に送ったかを残す
     speaker_map: dict[str, str] = {}
     t0 = time.time()
 
@@ -182,7 +288,7 @@ def main() -> None:
             log("system.wav はほぼ無音のためスキップ")
         else:
             log(f"system.wav 文字起こし ({len(audio) / SR / 60:.1f} 分)")
-            segs = transcribe(audio, args)
+            segs, backends["system"] = transcribe(audio, args)
             turns: list[Turn] = []
             if not args.no_diarize:
                 log("system.wav 話者分離")
@@ -200,7 +306,8 @@ def main() -> None:
             log("mic.wav はほぼ無音のためスキップ")
         else:
             log(f"mic.wav 文字起こし ({len(audio) / SR / 60:.1f} 分)")
-            tracks.append(build_utterances(transcribe(audio, args), "mic", fixed_speaker=args.me))
+            segs, backends["mic"] = transcribe(audio, args)
+            tracks.append(build_utterances(segs, "mic", fixed_speaker=args.me))
 
     if not tracks:
         raise SystemExit(f"{d} に文字起こしできる音声がありません (system.wav / mic.wav)")
@@ -208,6 +315,7 @@ def main() -> None:
     utts = merge_tracks(*tracks)
     result = {
         "meta": meta,
+        "asr_backend": backends,
         "asr_model": args.asr_model,
         "diar_model": None if args.no_diarize else args.diar_model,
         "speakers": sorted({u.speaker for u in utts}),

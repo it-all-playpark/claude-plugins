@@ -11,7 +11,7 @@ setup() {
     export MEETING_HOME="$BATS_TEST_TMPDIR/meetings"
     export MEETING_PREFIX="$BATS_TEST_TMPDIR/prefix"
     mkdir -p "$HOME" "$MEETING_HOME"
-    unset MEETING_AUTO_NOTES MEETING_NOTES_DIR MEETING_APPS MEETING_CALENDAR_TOOLS
+    unset MEETING_AUTO_NOTES MEETING_NOTES_DIR MEETING_APPS MEETING_CALENDAR_TOOLS MEETING_ASR_BACKEND
 }
 
 @test "引数なしは usage を出して exit 2" {
@@ -204,7 +204,7 @@ installed_copy() {
 
 @test "print-plist は固定パスのバイナリを --watch で起動し、設定を環境変数で引き継ぐ" {
     command -v python3 >/dev/null 2>&1 || skip "python3 not available"
-    MEETING_AUTO_NOTES=1 MEETING_NOTES_DIR=/tmp/vault MEETING_CALENDAR_TOOLS=mcp__cal__list_events \
+    MEETING_AUTO_NOTES=1 MEETING_NOTES_DIR=/tmp/vault MEETING_CALENDAR_TOOLS=mcp__cal__list_events MEETING_ASR_BACKEND=groq \
         run bash "$SCRIPT" print-plist
     [ "$status" -eq 0 ]
     echo "$output" > "$BATS_TEST_TMPDIR/p.plist"
@@ -217,6 +217,7 @@ assert p["ProgramArguments"] == [f"{prefix}/bin/meeting-rec", "--watch", "--home
 env = p["EnvironmentVariables"]
 assert env["MEETING_AUTO_NOTES"] == "1" and env["MEETING_NOTES_DIR"] == "/tmp/vault" and env["MEETING_HOME"] == home, env
 assert env["MEETING_CALENDAR_TOOLS"] == "mcp__cal__list_events", env
+assert env["MEETING_ASR_BACKEND"] == "groq", env
 assert "PATH" in env and p["KeepAlive"] and p["RunAtLoad"]
 PY
     echo "$output"

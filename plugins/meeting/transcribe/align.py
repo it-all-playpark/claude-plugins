@@ -139,6 +139,100 @@ def _join(a: str, b: str) -> str:
     return a + b
 
 
+def speech_spans(
+    levels_db: list[float],
+    frame: float,
+    threshold_db: float = -50.0,
+    pad: float = 0.3,
+    merge_gap: float = 1.0,
+) -> list[tuple[float, float]]:
+    """フレームごとの音量 (dBFS) から話している区間 (秒) を出す。
+
+    Groq には無音を送らない: 無音区間で「ご視聴ありがとうございました」の幻聴が出るうえ、
+    Groq の no_speech_prob は常に 0 で is_hallucination では落とせない。送る秒数も無料枠の上限に効く。
+    前後を pad 秒広げ、merge_gap 秒以内の隙間はつなぐ (語頭・語尾と息継ぎを切らない)。
+    """
+    total = len(levels_db) * frame
+    spans: list[tuple[float, float]] = []
+    for i, db in enumerate(levels_db):
+        if db < threshold_db:
+            continue
+        s, e = max(0.0, i * frame - pad), min(total, (i + 1) * frame + pad)
+        if spans and s - spans[-1][1] <= merge_gap:
+            spans[-1] = (spans[-1][0], e)
+        else:
+            spans.append((s, e))
+    return spans
+
+
+def to_source_time(t: float, spans: list[tuple[float, float]]) -> float:
+    """spans をつないだ音声の時刻 t を、元の音声の時刻に戻す。"""
+    offset = 0.0
+    for s, e in spans:
+        if t <= offset + (e - s):
+            return s + max(0.0, t - offset)
+        offset += e - s
+    return spans[-1][1] if spans else t
+
+
+def _span_end(t: float, spans: list[tuple[float, float]]) -> float:
+    return next((e for s, e in spans if s <= t <= e), t)
+
+
+def _chars(s: str) -> str:
+    return "".join(c for c in s if c.isalnum())
+
+
+def _segment_of_words(seg_texts: list[str], words: list[str]) -> list[int]:
+    """各単語が属するセグメントの番号を、文字の突き合わせで決める (前のセグメントには戻らない)。"""
+    from difflib import SequenceMatcher
+
+    seg_of_char = [i for i, t in enumerate(seg_texts) for _ in _chars(t)]
+    word_of_char = [i for i, w in enumerate(words) for _ in _chars(w)]
+    hit: dict[int, int] = {}
+    m = SequenceMatcher(None, "".join(map(_chars, words)), "".join(map(_chars, seg_texts)), autojunk=False)
+    for a, b, n in m.get_matching_blocks():
+        for k in range(n):
+            hit.setdefault(word_of_char[a + k], seg_of_char[b + k])
+    out, cur = [], 0
+    for i in range(len(words)):
+        cur = max(cur, hit.get(i, cur))
+        out.append(cur)
+    return out
+
+
+def groq_segments(
+    resp: dict, spans: list[tuple[float, float]], max_word: float = 2.0, min_word_chars: float = 0.8
+) -> list[dict]:
+    """Groq の verbose_json を mlx-whisper と同じ形 (セグメントの中に words) にし、時刻を元の音声に戻す。
+
+    Groq は単語をセグメントの外 (最上位の words) に返す。単語の時刻はセグメントの区切りと食い違い、
+    開始時刻もときどき前に戻るので、時刻ではなく文字の突き合わせでセグメントに振り分け、返ってきた順を保つ。
+    直前の無音を抱えて何秒にも伸びる単語は max_word 秒に詰め、終わりは切り落とした無音をまたがせない
+    (伸びたままだと発話が長くなり、話者の割り当ても隣の話者に引っ張られる)。
+    """
+    segs = [
+        {k: v for k, v in s.items() if k in ("start", "end", "text", "avg_logprob", "compression_ratio", "no_speech_prob")}
+        | {"words": []}
+        for s in resp.get("segments") or []
+    ]
+    if not segs:
+        return []
+    words = resp.get("words") or []
+    for w, j in zip(words, _segment_of_words([s["text"] for s in segs], [w["word"] for w in words])):
+        segs[j]["words"].append({"word": w["word"], "start": max(w["start"], w["end"] - max_word), "end": w["end"]})
+    for s in segs:
+        # words から語が抜けることがある。単語を連結すると抜けた語が transcript から消えるので、
+        # 文字数が大きく足りないセグメントは words を捨て、セグメント全文を 1 単語として使わせる
+        if len("".join(_chars(w["word"]) for w in s["words"])) < min_word_chars * len(_chars(s.get("text", ""))):
+            s["words"] = []
+        s["start"], s["end"] = to_source_time(s["start"], spans), to_source_time(s["end"], spans)
+        for w in s["words"]:
+            w["start"] = to_source_time(w["start"], spans)
+            w["end"] = min(to_source_time(w["end"], spans), _span_end(w["start"], spans))
+    return segs
+
+
 def relabel(turns: list[Turn]) -> dict[str, str]:
     """pyannote の SPEAKER_00 などを登場順に 話者A, 話者B… へ。"""
     mapping: dict[str, str] = {}
