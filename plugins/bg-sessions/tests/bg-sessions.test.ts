@@ -362,6 +362,54 @@ describe('bg-sessions', () => {
         expect(switched(ran)).toEqual([['zellij', '--session', 'other', 'action', 'switch-session', 'app']])
       })
 
+      test('親ディレクトリの agent view や --cwd の完全一致より claude attach で見ている zellij を選ぶ', ON, async ($, on) => {
+        const ran: string[][] = []
+        const clock = world(on, asBg, TRANSCRIPTS, {
+          env: BG_ENV,
+          // 名前順で先の 'aaa' は ~ で開いた agent view（親ディレクトリ）で、自分を見ていない
+          zellij: ['aaa', 'bbb', 'zzz', 'app'],
+          clients: {
+            aaa: [AGENT_VIEW('/Users/x')],
+            bbb: [AGENT_VIEW('/Users/x/ghq/acme/mine')],
+            zzz: ['/Users/x/.local/bin/claude attach self'],
+            app: [],
+          },
+          ran,
+        })
+        await start($, clock)
+        await (await band($)).press({ key: 'band-wt' })
+        expect(switched(ran)).toEqual([['zellij', '--session', 'zzz', 'action', 'switch-session', 'app']])
+      })
+
+      test('attach が無ければ、親ディレクトリの agent view より --cwd の完全一致の zellij を選ぶ', ON, async ($, on) => {
+        const ran: string[][] = []
+        const clock = world(on, asBg, TRANSCRIPTS, {
+          env: BG_ENV,
+          zellij: ['aaa', 'bbb', 'app'],
+          clients: { aaa: [AGENT_VIEW('/Users/x')], bbb: [AGENT_VIEW('/Users/x/ghq/acme/mine')], app: [] },
+          ran,
+        })
+        await start($, clock)
+        await (await band($)).press({ key: 'band-wt' })
+        expect(switched(ran)).toEqual([['zellij', '--session', 'bbb', 'action', 'switch-session', 'app']])
+      })
+
+      test('最も強い一致の zellij が複数あれば、どこにも送らずに知らせる', ON, async ($, on) => {
+        const ran: string[][] = []
+        const toasts: string[] = []
+        const clock = world(on, asBg, TRANSCRIPTS, {
+          env: BG_ENV,
+          zellij: ['aaa', 'bbb', 'app'],
+          clients: { aaa: [AGENT_VIEW('/Users/x')], bbb: [AGENT_VIEW('/Users/x/ghq')], app: [] },
+          ran,
+          toasts,
+        })
+        await start($, clock)
+        await (await band($)).press({ key: 'band-wt' })
+        expect(switched(ran)).toEqual([])
+        expect(toasts.some(t => t.includes('aaa, bbb'))).toBe(true)
+      })
+
       test('見ている zellij が見つからなければ移らずに知らせる', ON, async ($, on) => {
         const ran: string[][] = []
         const toasts: string[] = []

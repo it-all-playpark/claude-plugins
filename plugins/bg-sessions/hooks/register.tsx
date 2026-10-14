@@ -97,22 +97,24 @@ async function refresh($: Engine): Promise<void> {
 
 /**
  * bg セッションを表示している client がいる zellij セッション。bg セッションは daemon が起動していて zellij の外で動き、
- * 環境の ZELLIJ_SESSION_NAME も daemon 起動時の古い値なので、全セッションの client 一覧から見ている側を探す
+ * 環境の ZELLIJ_SESSION_NAME も daemon 起動時の古い値なので、全セッションの client 一覧から見ている側を探す。
+ * 一致の最も強いセッションを返す（候補が無ければ空、最上位が複数なら全部。どちらも呼び出し側で宛先を決めない）
  */
-async function viewerSession($: Engine, self: { id: string; cwd: string }): Promise<string | null> {
+async function viewerSessions($: Engine, self: { id: string; cwd: string }): Promise<string[]> {
   const listed = await $.process.run(['zellij', 'list-sessions', '--short', '--no-formatting'], { timeoutMs: 5000 })
-  if (listed.exitCode !== 0) return null
+  if (listed.exitCode !== 0) return []
   const names = listed.stdout.split('\n').map(l => l.trim()).filter(Boolean)
-  const shows = await Promise.all(names.map(async name => {
+  const strength = await Promise.all(names.map(async name => {
     try {
       const clients = await $.process.run(['zellij', '--session', name, 'action', 'list-clients'], { timeoutMs: 3000 })
       // 終了済み（EXITED）のセッションは失敗する
-      return clients.exitCode === 0 && showsSession(clients.stdout, self)
+      return clients.exitCode === 0 ? showsSession(clients.stdout, self) : 0
     } catch {
-      return false
+      return 0
     }
   }))
-  return names.find((_, i) => shows[i]) ?? null
+  const best = Math.max(0, ...strength)
+  return best === 0 ? [] : names.filter((_, i) => strength[i] === best)
 }
 
 /**
@@ -126,9 +128,13 @@ async function zellijHome($: Engine): Promise<{ session: string | undefined; arg
     $.ui.toast('bg-sessions: zellij の中で動いていません')
     return null
   }
-  const session = await viewerSession($, bg)
-  if (session) return { session, argv: ['--session', session] }
-  $.ui.toast('bg-sessions: このセッションを表示している zellij が見つかりません')
+  const found = await viewerSessions($, bg)
+  if (found.length === 1) return { session: found[0], argv: ['--session', found[0]] }
+  $.ui.toast(
+    found.length === 0
+      ? 'bg-sessions: このセッションを表示している zellij が見つかりません'
+      : `bg-sessions: このセッションを表示している zellij を 1 つに決められません: ${found.join(', ')}`,
+  )
   return null
 }
 
