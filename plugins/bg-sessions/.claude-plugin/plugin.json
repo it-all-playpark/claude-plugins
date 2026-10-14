@@ -1,0 +1,17 @@
+{
+  "name": "bg-sessions",
+  "description": "bg で動いている Claude セッションの repo・worktree・branch をプロンプト上の帯と /bg-sessions の一覧に出す",
+  "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
+  "repository": "https://github.com/it-all-playpark/claude-plugins",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "select_action": {
+      "type": "string",
+      "title": "セッションを選んだときの動き",
+      "description": "off: 何もしない / attach: 今の zellij pane と一時的に入れ替えて claude attach で開く（抜けると元に戻る）/ zellij-session: その repo と同じ名前の zellij セッションへ switch-session する。attach と zellij-session は zellij の中で動いているときだけ効く",
+      "options": ["off", "attach", "zellij-session"],
+      "default": "off"
+    }
+  }
+}

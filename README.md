@@ -9,7 +9,7 @@ Built and maintained by [playpark LLC](https://www.playpark.co.jp/) — an AI de
 
 ## Quick Start
 
-本 repo は 5 つの Claude Code plugin（`playpark-core` / `dev-flow` / `playpark-skills` / `host-exec` / `meeting`）に
+本 repo は 6 つの Claude Code plugin（`playpark-core` / `dev-flow` / `playpark-skills` / `host-exec` / `meeting` / `bg-sessions`）に
 分かれています。導入方法は用途によって 2 通りあります。
 
 ### 配布側インストール（copy mode）
@@ -27,6 +27,7 @@ Marketplaces で auto-update を有効化。`DISABLE_AUTOUPDATER=1` 環境では
 /plugin install playpark-skills@playpark  # 個人用スキル一式（任意）
 /plugin install host-exec@playpark        # sandbox 外での承認付き実行ツール（任意）
 /plugin install meeting@playpark          # 会議の自動録音・ローカル文字起こし・議事録（macOS、任意）
+/plugin install bg-sessions@playpark      # bg セッションの repo・worktree をプロンプト上に表示（任意）
 ```
 
 `host-exec` は hooks module（`plugins/host-exec/hooks/register.ts`）で `mcp__host-exec__run` ツールを
@@ -42,6 +43,27 @@ Marketplaces で auto-update を有効化。`DISABLE_AUTOUPDATER=1` 環境では
 Whisper と pyannote でローカルに文字起こし・話者分離して `/meeting-notes` で議事録にします。常駐（launchd）は
 `meeting install` を実行したときだけ登録され、録音バイナリは plugin の外の固定パスにビルドされます。
 詳細は [`plugins/meeting/README.md`](plugins/meeting/README.md)。
+
+`bg-sessions` は `claude --bg` で動いているセッションが、どの repo のどの worktree・branch にいるかを
+プロンプトの上の帯に 1 つずつ並べます（`● repo/worktree` が実行中、`◐` が入力待ち、`✓` が作業を終えて止まっているもの、放置は件数だけ）。`/bg-sessions` で
+状態・repo・worktree・branch・更新・名前の一覧を開きます（Esc で閉じる）。場所は `claude agents --json` の起動時 cwd ではなく
+transcript の最終行の `cwd` / `gitBranch` から取るので、セッションが入った worktree が出ます（起動した repo の外に
+`cd` しただけのときは起動した repo を出します）。作業しておらず
+3 日以上 transcript が更新されていないものは放置として件数だけにします。セッションの停止はしません。
+
+設定 `select_action`（既定 `off`。`/config` の plugin の行で選ぶ）を `attach` か `zellij-session` にすると、帯と一覧の
+各セッションに `a` `s` `d` `f` … が割り当てられ、`ctrl+x tab` → その英字（か先頭なら Enter）で選べます。どちらも zellij の
+中で動いているときだけ効きます。
+
+- `attach`: 選んだセッションそのものを、今の pane と一時的に入れ替えて `claude attach <id>` で開きます
+  （`zellij run --in-place --close-on-exit`）。attach から抜けると pane が閉じて元の Claude に戻り、bg セッションは
+  動き続けます。同じ repo のセッションが複数あっても、選んだものが開きます
+- `zellij-session`: その repo と同じ名前（`-` と `_` の違いは同一視）の zellij セッションへ
+  `zellij action switch-session` で移ります。存在しない名前で switch-session すると新しいセッションが作られて
+  しまうので、`zellij list-sessions` に無ければ移らず、今いるセッションなら移らずに、どちらも toast で知らせます
+
+数字にしないのは、帯の数字キーは空のプロンプトで数字を打っただけで押されるためです（英字は帯か一覧にフォーカスが
+あるときだけ効く）。
 
 Use skills in Claude Code:
 
@@ -466,11 +488,15 @@ skills/
 │   │   ├── hooks/register.ts             # ツール登録と 3 段のゲート
 │   │   ├── types/index.d.ts              # $.state の型（承認を記憶したコマンド）
 │   │   └── tests/host-exec.test.ts       # claude plugin test で実行
-│   └── meeting/                          # 会議の自動録音・文字起こし・議事録 plugin（macOS）
-│       ├── bin/meeting                   # CLI（setup で固定パスにインストール）
-│       ├── recorder/                     # Swift: ScreenCaptureKit 録音 + CoreAudio で会議検知
-│       ├── transcribe/                   # Python: mlx-whisper + pyannote
-│       └── meeting-notes/SKILL.md
+│   ├── meeting/                          # 会議の自動録音・文字起こし・議事録 plugin（macOS）
+│   │   ├── bin/meeting                   # CLI（setup で固定パスにインストール）
+│   │   ├── recorder/                     # Swift: ScreenCaptureKit 録音 + CoreAudio で会議検知
+│   │   ├── transcribe/                   # Python: mlx-whisper + pyannote
+│   │   └── meeting-notes/SKILL.md
+│   └── bg-sessions/                      # bg セッションの repo・worktree 表示 plugin（skill なし）
+│       ├── hooks/register.tsx            # 帯・/bg-sessions 一覧・15 秒ごとの取得
+│       ├── hooks/sessions.ts             # agents --json と transcript 末尾の解釈
+│       └── tests/bg-sessions.test.ts     # claude plugin test で実行
 ├── tools/                                 # sync-inlines.mjs 等 repo 全体ツール
 ├── tests/                                 # bats / vitest ランナーと横断テスト
 ├── docs/                                  # dev-flow-atlas.md 等ドキュメント
