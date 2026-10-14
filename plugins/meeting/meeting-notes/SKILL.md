@@ -22,7 +22,7 @@ description: >
 
 | Arg | Default | Description |
 |-----|---------|-------------|
-| `DIR` | `$MEETING_HOME`（既定 `~/Meetings`）配下の最新ディレクトリ | 録音ディレクトリ |
+| `DIR` | `meeting` の設定ファイルの `home`（既定 `~/Meetings`）配下の最新ディレクトリ | 録音ディレクトリ |
 | `--names` | なし | 話者ラベル → 実名の対応。無ければ Step 2 で推定・確認 |
 | `--no-transcript` | off | 全文の文字起こしを保存しない |
 | `--non-interactive` | off | 質問しない（自動録音後に `claude -p` から呼ばれる場合）。不確かな話者はラベルのまま残し、frontmatter の `unresolved_speakers` に記録し、推定候補を「メモ」に書く |

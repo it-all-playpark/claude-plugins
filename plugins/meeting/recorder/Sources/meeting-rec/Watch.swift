@@ -87,40 +87,7 @@ func meetingMicDevice(_ app: MeetingApp, _ procs: [AudioProcess]) -> (uid: Strin
     return (uid, stringProp(d, kAudioObjectPropertyName) ?? uid)
 }
 
-// MARK: - Meeting apps
-
-struct MeetingApp {
-    let prefix: String  // bundle id の前方一致 (ヘルパープロセスも拾うため)
-    let name: String
-    var isBrowser = false  // ブラウザは会議以外でも音を出すので「出力中」を会議継続とみなさない
-}
-
-/// 既定の会議アプリ。MEETING_APPS="us.zoom.=Zoom,com.microsoft.teams=Teams" で上書きできる
-let defaultMeetingApps: [MeetingApp] = [
-    .init(prefix: "us.zoom.", name: "Zoom"),
-    .init(prefix: "com.microsoft.teams", name: "Teams"),
-    .init(prefix: "Cisco-Systems.Spark", name: "Webex"),
-    .init(prefix: "com.tinyspeck.slackmacgap", name: "Slack"),
-    .init(prefix: "com.hnc.Discord", name: "Discord"),
-    .init(prefix: "com.apple.FaceTime", name: "FaceTime"),
-    // ブラウザ (Google Meet 等)。ブラウザでマイクを使う = Web 会議とみなす
-    .init(prefix: "com.google.Chrome", name: "Chrome", isBrowser: true),
-    .init(prefix: "company.thebrowser.", name: "Arc", isBrowser: true),
-    .init(prefix: "com.brave.Browser", name: "Brave", isBrowser: true),
-    .init(prefix: "com.microsoft.edgemac", name: "Edge", isBrowser: true),
-    .init(prefix: "org.mozilla.firefox", name: "Firefox", isBrowser: true),
-    .init(prefix: "com.apple.WebKit.GPU", name: "Safari", isBrowser: true),
-]
-
-func meetingAppsFromEnv() -> [MeetingApp] {
-    guard let raw = ProcessInfo.processInfo.environment["MEETING_APPS"], !raw.isEmpty else {
-        return defaultMeetingApps
-    }
-    return raw.split(separator: ",").map { item in
-        let kv = item.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-        return MeetingApp(prefix: kv[0], name: kv.count > 1 ? kv[1] : kv[0])
-    }
-}
+// MARK: - Meeting apps (MeetingApp と既定の一覧は Config.swift)
 
 /// マイクを使っている会議アプリ
 func meetingAppUsingMic(_ apps: [MeetingApp], _ procs: [AudioProcess]) -> MeetingApp? {
@@ -164,10 +131,10 @@ func requestPermissions() async {
 // MARK: - Watch loop
 
 struct WatchOptions {
-    var home: URL
+    var home: URL?  // --home。無ければ設定ファイルの home
     var onStop: String?  // 録音終了後に `<onStop> post <dir>` を起動
     var capture = CaptureOptions()
-    var apps = meetingAppsFromEnv()
+    var config: MeetingConfig  // 起動時に読んだ設定。録音していない間は毎回読み直す
     var startDelay: TimeInterval = 8  // マイク使用がこの秒数続いたら開始 (音声入力などの誤検知よけ)
     var stopGrace: TimeInterval = 45  // マイクを離してからこの秒数で終了 (デバイス切替などの瞬断よけ)
     var minSeconds: Double = 30  // これより短い録音は破棄 (マイクテスト等)
@@ -205,6 +172,8 @@ func runWatch(_ o: WatchOptions) async -> Never {
     var lastSeen = Date()
     var skipping = false  // この会議は録らない (skip / 開始失敗)。会議アプリがマイクを離したら解除
     var permissionNotified = false  // 権限待ちの通知をこの会議で出したか
+    var config = o.config
+    var configError: String?  // 同じ読み込みエラーをループのたびにログに出さない
 
     func postProcess(_ dir: URL) {
         guard let cmd = o.onStop else { return }
@@ -235,11 +204,27 @@ func runWatch(_ o: WatchOptions) async -> Never {
     }
 
     await requestPermissions()
-    log("会議の検知を開始 (対象: \(o.apps.map(\.name).joined(separator: ", ")))")
+    log("会議の検知を開始 (対象: \(config.apps.map(\.name).joined(separator: ", ")))")
     while true {
         let f = flags.take()
         let procs = audioProcesses()
         let now = Date()
+
+        // 設定ファイルを書き換えたら常駐を登録し直さずに効かせる。録音中は保存先と対象を変えない。
+        // 読めなくなったら直るまで前の設定で続ける
+        if session == nil {
+            do {
+                let c = try MeetingConfig.load()
+                if c != config {
+                    config = c
+                    log("設定を読み直しました (保存先: \(c.home.path), 対象: \(c.apps.map(\.name).joined(separator: ", ")))")
+                }
+                configError = nil
+            } catch {
+                if "\(error)" != configError { log("設定ファイルを読めないため前の設定で続けます: \(error)") }
+                configError = "\(error)"
+            }
+        }
 
         if f.quit {
             if let s = session { await finish(s) }
@@ -264,7 +249,7 @@ func runWatch(_ o: WatchOptions) async -> Never {
                 session = nil
                 firstSeen = nil
             }
-        } else if let a = meetingAppUsingMic(o.apps, procs) {
+        } else if let a = meetingAppUsingMic(config.apps, procs) {
             if f.skip { skipping = true; notify("この会議は録音しません") }
             if !skipping {
                 firstSeen = firstSeen ?? now
@@ -272,10 +257,11 @@ func runWatch(_ o: WatchOptions) async -> Never {
                     let df = DateFormatter()
                     df.dateFormat = "yyyy-MM-dd_HHmm"
                     let base = "\(df.string(from: now))-\(a.name)"
-                    var dir = o.home.appendingPathComponent(base)
+                    let home = o.home ?? config.home
+                    var dir = home.appendingPathComponent(base)
                     var n = 2
                     while FileManager.default.fileExists(atPath: dir.path) {  // 同じ分に録り直した場合
-                        dir = o.home.appendingPathComponent("\(base)-\(n)")
+                        dir = home.appendingPathComponent("\(base)-\(n)")
                         n += 1
                     }
                     var capture = o.capture

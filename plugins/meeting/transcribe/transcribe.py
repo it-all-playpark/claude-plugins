@@ -18,8 +18,10 @@
 - mic.wav は話者分離せず全て「自分」として扱う (別トラックなので確実)。
 - system.wav だけを pyannote で話者分離し、Whisper の単語タイムスタンプに割り当てる。
 - Apple Silicon 前提: Whisper は MLX、pyannote は MPS で動かす。
-- --asr-backend groq (MEETING_ASR_BACKEND=groq) のときだけ Whisper を Groq に送る。送るのは話している区間の
-  音声だけで、initial_prompt (固有名詞が入る) は送らない。失敗したら MLX で処理し直す。
+- --asr-backend groq (設定ファイルの asr_backend: "groq") のときだけ Whisper を Groq に送る。送るのは話している
+  区間の音声だけで、initial_prompt (固有名詞が入る) は送らない。失敗したら MLX で処理し直す。
+- asr_backend / asr_model / diar_model の既定値は meeting setup が書く設定ファイル ($MEETING_CONFIG、無ければ
+  ${XDG_CONFIG_HOME:-~/.config}/meeting/config.json) から起動のたびに読む。引数を渡せばそちらが優先。
 """
 
 from __future__ import annotations
@@ -246,7 +248,37 @@ def prefetch(args) -> None:
     log("モデルの取得が完了しました")
 
 
-def main() -> None:
+ASR_BACKENDS = ("mlx", "groq")
+
+
+def config_path() -> Path:
+    if os.environ.get("MEETING_CONFIG"):
+        return Path(os.environ["MEETING_CONFIG"])
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return Path(base) / "meeting" / "config.json"
+
+
+def load_config() -> dict:
+    """設定ファイルの asr_backend / asr_model / diar_model。ファイルが無ければ空。形が違えば終了する。"""
+    path = config_path()
+    if not path.exists():
+        return {}
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"設定ファイル {path} を読めません: {e}")
+    if not isinstance(cfg, dict):
+        raise SystemExit(f"設定ファイル {path} が JSON オブジェクトではありません")
+    for key in ("asr_backend", "asr_model", "diar_model"):
+        if key in cfg and not (isinstance(cfg[key], str) and cfg[key]):
+            raise SystemExit(f"設定ファイル {path} の {key} は文字列で指定してください")
+    if cfg.get("asr_backend", "mlx") not in ASR_BACKENDS:
+        raise SystemExit(f"設定ファイル {path} の asr_backend は {' / '.join(ASR_BACKENDS)} のどれかです: {cfg['asr_backend']}")
+    return cfg
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    cfg = load_config()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir", type=Path, nargs="?", help="meeting-rec の出力ディレクトリ")
     ap.add_argument("--prefetch", action="store_true", help="モデルを取得するだけで終わる (meeting setup が使う)")
@@ -256,18 +288,23 @@ def main() -> None:
     ap.add_argument("--num-speakers", type=int, help="相手側の人数が分かっていれば指定 (精度が上がる)")
     ap.add_argument("--min-speakers", type=int)
     ap.add_argument("--max-speakers", type=int)
-    ap.add_argument("--asr-backend", choices=("mlx", "groq"), default=os.environ.get("MEETING_ASR_BACKEND", "mlx"),
-                    help="groq は Whisper を Groq に送る (失敗したら mlx)。default: mlx")
-    ap.add_argument("--asr-model", default=os.environ.get("MEETING_ASR_MODEL", DEFAULT_ASR))
-    ap.add_argument("--diar-model", default=os.environ.get("MEETING_DIAR_MODEL", DEFAULT_DIAR))
+    ap.add_argument("--asr-backend", choices=ASR_BACKENDS, default=cfg.get("asr_backend", "mlx"),
+                    help="groq は Whisper を Groq に送る (失敗したら mlx)。default: 設定ファイルの asr_backend、無ければ mlx")
+    ap.add_argument("--asr-model", default=cfg.get("asr_model", DEFAULT_ASR))
+    ap.add_argument("--diar-model", default=cfg.get("diar_model", DEFAULT_DIAR))
     ap.add_argument("--device", help="pyannote の実行デバイス (default: mps があれば mps)")
     ap.add_argument("--no-diarize", action="store_true", help="相手側を話者分離しない")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    if args.dir is None and not args.prefetch:
+        ap.error("dir が必要です")
+    return args
+
+
+def main() -> None:
+    args = parse_args()
     if args.prefetch:
         prefetch(args)
         return
-    if args.dir is None:
-        ap.error("dir が必要です")
 
     d: Path = args.dir.expanduser().resolve()
     meta_path = d / "meta.json"

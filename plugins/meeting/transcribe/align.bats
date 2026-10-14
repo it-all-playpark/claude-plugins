@@ -9,7 +9,7 @@
     [ "$status" -eq 0 ]
 }
 
-@test "test_transcribe.py (Groq 呼び出し) が通る" {
+@test "test_transcribe.py (Groq 呼び出し・設定ファイル) が通る" {
     command -v python3 >/dev/null 2>&1 || skip "python3 not available"
     run python3 -B "$BATS_TEST_DIRNAME/test_transcribe.py" -v
     echo "$output"
