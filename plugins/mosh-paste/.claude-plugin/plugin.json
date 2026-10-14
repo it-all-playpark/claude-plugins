@@ -1,0 +1,15 @@
+{
+  "name": "mosh-paste",
+  "description": "mosh / ssh で入っている先の Claude Code に、手元の Mac にしか無いファイルのパス（スクショのドロップ等）を貼ると、ssh で手元の Mac から取ってきてローカルのコピーのパスに置き換える",
+  "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
+  "repository": "https://github.com/it-all-playpark/claude-plugins",
+  "license": "MIT",
+  "userConfig": {
+    "dir": {
+      "type": "string",
+      "title": "コピーの保存先",
+      "description": "取ってきたファイルを置くこのマシン上のディレクトリ。自分が所有する、symlink でないディレクトリであること。空なら ~/.cache/mosh-paste",
+      "default": ""
+    }
+  }
+}
