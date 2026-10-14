@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 # meeting.sh の macOS 非依存部分（引数処理・未インストール時の案内・録音一覧・launchd plist 生成・
 # install の常駐登録の手順・setup のビルド元の固定とインストール済みの plugin への引き継ぎ・話者の声の切り出し・議事録の話者名の後入れ）のテスト。
 # 録音 / 実際のビルド / 実際の launchd 登録 / 実際の再生は macOS 実機でしか動かないので対象外
@@ -629,4 +630,67 @@ write_note() {
     echo "$output"
     [ "$status" -eq 0 ]
     grep -qxF '**[00:00:01] 田中**: はい' "$HOME/tx/2026-01-01-a.md"
+}
+
+# 議事録の transcript: の次の行に transcript_path: <$2> を足す
+add_transcript_path() {
+    awk -v p="$2" '{ print } /^transcript: /{ print "transcript_path: " p }' "$1" > "$1.tmp"
+    mv "$1.tmp" "$1"
+}
+
+@test "/meeting-notes の議事録テンプレートは meeting name が読む transcript_path: を transcript: の隣に書く" {
+    skill="$BATS_TEST_DIRNAME/../meeting-notes/SKILL.md"
+    grep -A1 '^transcript: "\[\[<transcripts_dir>/' "$skill" | grep -qx 'transcript_path: <保存した全文の絶対パス>'
+}
+
+@test "name --set は MEETING_NOTES_DIR 未設定で作成時と違う cwd からでも transcript_path: の全文を書き換える" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    global_output_dir "~/Google Drive/議事録"
+    out="$HOME/Google Drive/議事録"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    tx="$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
+    write_note 2026-01-01-a "$rec" "話者A"
+    mkdir -p "$out" "$BATS_TEST_TMPDIR/elsewhere"
+    mv "$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md" "$out/"
+    add_transcript_path "$out/2026-01-01-a.md" "$tx"
+
+    cd "$BATS_TEST_TMPDIR/elsewhere"
+    run bash "$SCRIPT" name "$rec" --set "話者A=田中"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"全文が見つかりません"* ]]
+    run grep -q '^unresolved_speakers:' "$out/2026-01-01-a.md"
+    [ "$status" -eq 1 ]
+    grep -qxF -- '- 田中 が提案し、話者B と 話者AB が合意' "$out/2026-01-01-a.md"
+    grep -qxF "transcript_path: $tx" "$out/2026-01-01-a.md"
+    grep -qxF '**[00:00:01] 田中**: はい' "$tx"
+}
+
+@test "name --set は全文が見つからなければ議事録を書き換えたうえで stderr に知らせて非 0 で終わる" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    note="$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md"
+
+    # transcript_path: の全文が無い
+    write_note 2026-01-01-a "$rec" "話者A, 話者B"
+    add_transcript_path "$note" "$BATS_TEST_TMPDIR/gone/2026-01-01-a.md"
+    MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run --separate-stderr bash "$SCRIPT" name "$rec" --set "話者A=田中"
+    echo "$output"
+    echo "$stderr"
+    [ "$status" -ne 0 ]
+    [ "$stderr" = "! 全文が見つかりません: $BATS_TEST_TMPDIR/gone/2026-01-01-a.md" ]
+    grep -qxF 'unresolved_speakers: [話者B]' "$note"
+    grep -qxF -- '- 田中 が提案し、話者B と 話者AB が合意' "$note"
+
+    # transcript_path: が無く、root 相対の transcript: の全文が無い
+    rm "$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
+    sed -i.bak '/^transcript_path:/d' "$note"
+    MEETING_NOTES_DIR="$BATS_TEST_TMPDIR/notes" run --separate-stderr bash "$SCRIPT" name "$rec" --set "話者B=佐藤"
+    echo "$output"
+    echo "$stderr"
+    [ "$status" -ne 0 ]
+    [ "$stderr" = "! 全文が見つかりません: $BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md" ]
+    run grep -q '^unresolved_speakers:' "$note"
+    [ "$status" -eq 1 ]
+    grep -qxF -- '- 田中 が提案し、佐藤 と 話者AB が合意' "$note"
 }

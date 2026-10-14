@@ -331,7 +331,8 @@ PY
 #   find <DIR|""> <root>... DIR の議事録 (DIR が空なら unresolved_speakers が残る最新の録音の議事録) を
 #                           「議事録<TAB>録音 DIR<TAB>未確定のラベル (, 区切り)」で出す。無ければ何も出さない
 #   set <root> <議事録> <話者A=田中,...>
-#                           議事録と全文 (frontmatter の transcript:) のラベルを置き換え、unresolved_speakers から外す
+#                           議事録と全文 (frontmatter の transcript_path:、無ければ root 相対の transcript:) の
+#                           ラベルを置き換え、unresolved_speakers から外す。全文が見つからなければ非 0
 note_tool() {
   python3 - "$@" <<'PY'
 import json, os, re, sys
@@ -425,7 +426,7 @@ def set_names(root, note, spec):
     sub = lambda s: pat.sub(lambda m: names[m.group(0)], s)
 
     fm_lines, body = split_note(open(note, encoding="utf-8").read())
-    out, transcript, left = [], None, []
+    out, transcript, transcript_path, left = [], None, None, []
     for line in fm_lines:
         k, _, v = line.partition(":")
         if k.strip() == "unresolved_speakers":
@@ -435,14 +436,26 @@ def set_names(root, note, spec):
             continue
         if k.strip() == "transcript":
             transcript = unq(v).removeprefix("[[").removesuffix("]]").split("|")[0]
+        if k.strip() == "transcript_path":
+            # ファイルの場所なので置き換えない
+            transcript_path = unq(v)
+            out.append(line)
+            continue
         out.append(sub(line))
     with open(note, "w", encoding="utf-8") as f:
         f.write("\n".join(["---", *out, "---"]) + "\n" + sub(body))
     print(f"✓ {note}")
 
-    if transcript:
+    # transcript: は作成時の cwd 相対なので、作成時の絶対パス (transcript_path:) があればそちらを使う。
+    # 無い議事録は root 相対で探す
+    path = None
+    if transcript_path:
+        path = os.path.expanduser(transcript_path)
+    elif transcript:
         path = transcript if transcript.endswith(".md") else transcript + ".md"
         path = os.path.join(root, os.path.expanduser(path))
+    missing = False
+    if path:
         if os.path.isfile(path):
             text = open(path, encoding="utf-8").read()
             with open(path, "w", encoding="utf-8") as f:
@@ -450,7 +463,10 @@ def set_names(root, note, spec):
             print(f"✓ {path}")
         else:
             print(f"! 全文が見つかりません: {path}", file=sys.stderr)
+            missing = True
     print("未確定の話者: " + (", ".join(left) if left else "なし"))
+    if missing:
+        sys.exit(1)
 
 cmd = sys.argv[1]
 if cmd == "find":
