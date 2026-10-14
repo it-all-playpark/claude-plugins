@@ -26,6 +26,8 @@ declare module 'claude-code' {
       /** 取得した時刻（ms）。「更新」列の経過時間の基準 */
       checkedAt: number
       showStale: boolean
+      /** このセッション自身が bg セッション（attach して見ている）か */
+      selfBackground: boolean
       /** `claude agents --json` が失敗したときの理由 */
       error: string | null
     }

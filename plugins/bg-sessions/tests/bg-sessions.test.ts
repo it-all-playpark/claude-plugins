@@ -110,7 +110,7 @@ async function list($: any) {
 
 const APP = '/Users/x/ghq/acme/app'
 const AGENTS: Agent[] = [
-  { id: 'self', cwd: '/Users/x/ghq/acme/mine', state: 'working' },
+  { id: 'self', cwd: '/Users/x/ghq/acme/mine', state: 'working', kind: 'interactive' },
   { id: 'front', cwd: '/Users/x/ghq/acme/front', state: 'working', kind: 'interactive' },
   { id: 'wt', cwd: APP, state: 'working', name: 'dev-flow issue 12' },
   { id: 'api', cwd: '/Users/x/ghq/acme/api', state: 'blocked' },
@@ -358,6 +358,21 @@ describe('bg-sessions', () => {
       await (await band($)).press({ key: 'band-wt' })
       expect(ran).toEqual([])
       expect(toasts.some(t => t.includes('zellij'))).toBe(true)
+    })
+
+    test('attach して見ている bg セッション自身では帯を出さず、一覧の行も押せない', ATTACH, async ($, on) => {
+      // bg セッションは daemon が起動するので、見ている側が zellij の中でも ZELLIJ を持たない
+      const asBg = AGENTS.map(a => (a.id === 'self' ? { ...a, kind: 'background' } : a))
+      const clock = world(on, asBg, TRANSCRIPTS, { env: { ZELLIJ_SESSION_NAME: 'stale' } })
+      on('ui.render', { component: 'AbovePrompt' }, async ($: any, e: any) => h($.ui.resolve(e).Text, { key: 'engine-band' }, 'engine'))
+      await start($, clock)
+      const ui = await band($)
+      expect(await ui.find({ key: 'bg-band' })).toBeUndefined()
+      expect(await ui.find({ text: 'engine' })).toBeDefined()
+
+      const pane = await list($)
+      expect((await pane.find({ key: 'wt' }))?.text).toContain('df-12')
+      expect((await pane.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['bg-stale'])
     })
   })
 })

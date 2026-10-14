@@ -23,6 +23,7 @@ const sessions = atom({ plugin: 'bg-sessions', key: 'sessions' } as const, null)
 const checkedAt = atom({ plugin: 'bg-sessions', key: 'checkedAt' } as const, 0)
 const showStale = atom({ plugin: 'bg-sessions', key: 'showStale' } as const, false)
 const error = atom({ plugin: 'bg-sessions', key: 'error' } as const, null)
+const selfBackground = atom({ plugin: 'bg-sessions', key: 'selfBackground' } as const, false)
 
 let refreshing = false
 
@@ -70,7 +71,9 @@ async function refresh($: Engine): Promise<void> {
       return
     }
     const self = await $.session.id()
-    const rows = parseAgents(listed.stdout).filter(r => r.kind === 'background' && r.sessionId !== self)
+    const all = parseAgents(listed.stdout)
+    const rows = all.filter(r => r.kind === 'background' && r.sessionId !== self)
+    await update($, selfBackground, () => all.some(r => r.kind === 'background' && r.sessionId === self))
     const projects = await projectsDir($)
     let dirs: string[] = []
     try {
@@ -208,6 +211,9 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
+    // bg セッション自身は daemon が起動していて zellij の pane の中に居ない（ZELLIJ が無い）。attach して見ていても
+    // 選んだものを開けないうえ、bg セッション同士の行き来は agent view でできるので帯は出さない
+    if (await read($, selfBackground)) return next(e)
     const list = await read($, sessions)
     if (!list) return next(e)
     const active = list.filter(s => s.status !== 'stale')
@@ -254,6 +260,8 @@ export const register: Register = (on, options) => {
     const staleCount = list.filter(s => s.status === 'stale').length
     const shown = list.filter(s => withStale || s.status !== 'stale')
     const wide = e.props.bodyColumns >= 90
+    // 帯と同じ理由で、bg セッションの中では選んでも開けないので押せる行にしない
+    const pressable = selectable && !(await read($, selfBackground))
 
     return (
       <Box flexDirection="column">
@@ -268,7 +276,7 @@ export const register: Register = (on, options) => {
             <Text dimColor>{pad(ago(now - s.updatedAt), 5)}</Text>,
             wide ? ` ${s.name}` : '',
           ]
-          return selectable ? (
+          return pressable ? (
             <Button
               key={s.id}
               plain
