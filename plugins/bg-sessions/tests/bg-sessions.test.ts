@@ -159,12 +159,16 @@ describe('bg-sessions', () => {
   test('Bash で別の repo に cd しただけのセッションは、起動した repo で出す', async ($, on) => {
     const clock = world(on, [{ id: 'trip', cwd: '/Users/x/ghq/acme/notes', state: 'done' }], {
       // transcript は起動した repo の下に残り、最後の cwd だけがよその repo に移っている
-      trip: { dir: '-Users-x-ghq-acme-notes', mtimeMs: NOW - HOUR, cwd: '/Users/x/ghq/acme/pipeline', branch: 'main' },
+      trip: { dir: '-Users-x-ghq-acme-notes', mtimeMs: NOW - HOUR, cwd: '/Users/x/ghq/acme/pipeline', branch: 'feature/elsewhere-7' },
     })
     await start($, clock)
     const text = (await (await band($)).find({ key: 'bg-band' }))?.text ?? ''
     expect(text).toContain('notes')
     expect(text).not.toContain('pipeline')
+    // 一覧の branch 列にも cd 先の repo の branch を出さない
+    const row = (await (await list($)).find({ key: 'trip' }))?.text ?? ''
+    expect(row).toContain('notes')
+    expect(row).not.toContain('feature/elsewhere-7')
   })
 
   test('作業していないセッションは最終更新から 3 日経つと放置に入る', async ($, on) => {

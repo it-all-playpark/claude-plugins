@@ -79,13 +79,13 @@ export function toSession(
   now: number,
 ): BgSession {
   // 起動した場所の中（その repo の worktree・サブディレクトリ）にいるときだけ最後の cwd を使う。
-  // Bash で別の repo に cd しただけでも transcript の cwd は移るので、外なら起動した場所を出す
+  // Bash で別の repo に cd しただけでも transcript の cwd は移るので、外なら起動した場所を出し、cd 先の branch も出さない
   const inside = loc.cwd !== undefined && (loc.cwd === row.cwd || loc.cwd.startsWith(`${row.cwd.replace(/\/+$/, '')}/`))
   const cwd = inside ? loc.cwd! : row.cwd
   const { repo, worktree } = placeOf(cwd)
   const status =
     row.state === 'working' ? 'running' : now - updatedAt >= STALE_MS ? 'stale' : row.state === 'done' ? 'done' : 'waiting'
-  return { id: row.id, name: row.name, status, repo, worktree, branch: loc.branch ?? null, cwd, updatedAt }
+  return { id: row.id, name: row.name, status, repo, worktree, branch: inside ? (loc.branch ?? null) : null, cwd, updatedAt }
 }
 
 const ORDER = { running: 0, waiting: 1, done: 2, stale: 3 } as const
