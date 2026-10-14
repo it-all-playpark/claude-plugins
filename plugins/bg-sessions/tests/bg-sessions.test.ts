@@ -19,6 +19,8 @@ type WorldOptions = {
   env?: Record<string, string>
   /** `zellij list-sessions --short` が返すセッション名 */
   zellij?: string[]
+  /** `zellij --session <name> action list-clients` の RUNNING_COMMAND。無いセッションは終了済みとして失敗する */
+  clients?: Record<string, string[]>
   /** 実行した zellij の argv を記録する */
   ran?: string[][]
   toasts?: string[]
@@ -69,6 +71,12 @@ function world(on: any, agents: Agent[], transcripts: Record<string, Transcript>
     }
     if (cmd === 'zellij') {
       opts.ran?.push([...e.argv])
+      if (args[0] === '--session' && args[3] === 'list-clients') {
+        const running = opts.clients?.[args[1]]
+        if (!running) return { value: { exitCode: 1, stdout: '', stderr: 'There is no active session!' } }
+        const rows = running.map((cmd, i) => `${i + 1}         terminal_${i + 1}     ${cmd}`)
+        return { value: { exitCode: 0, stdout: ['CLIENT_ID ZELLIJ_PANE_ID RUNNING_COMMAND', ...rows].join('\n') + '\n', stderr: '' } }
+      }
       const stdout = args[0] === 'list-sessions' ? (opts.zellij ?? []).join('\n') + '\n' : ''
       return { value: { exitCode: 0, stdout, stderr: '' } }
     }
@@ -110,7 +118,7 @@ async function list($: any) {
 
 const APP = '/Users/x/ghq/acme/app'
 const AGENTS: Agent[] = [
-  { id: 'self', cwd: '/Users/x/ghq/acme/mine', state: 'working' },
+  { id: 'self', cwd: '/Users/x/ghq/acme/mine', state: 'working', kind: 'interactive' },
   { id: 'front', cwd: '/Users/x/ghq/acme/front', state: 'working', kind: 'interactive' },
   { id: 'wt', cwd: APP, state: 'working', name: 'dev-flow issue 12' },
   { id: 'api', cwd: '/Users/x/ghq/acme/api', state: 'blocked' },
@@ -320,6 +328,104 @@ describe('bg-sessions', () => {
       expect(ran).toEqual([])
       expect(toasts.some(t => t.includes('zellij'))).toBe(true)
     })
+
+    describe('attach して見ている bg セッションの中', () => {
+      // bg セッションは daemon が起動するので ZELLIJ が無く、ZELLIJ_SESSION_NAME は daemon 起動時の古い値
+      const BG_ENV = { ZELLIJ_SESSION_NAME: 'stale' }
+      const asBg = AGENTS.map(a => (a.id === 'self' ? { ...a, kind: 'background' } : a))
+      const AGENT_VIEW = (cwd: string) => `/Users/x/.local/bin/claude agents --cwd ${cwd}`
+      const switched = (ran: string[][]) => ran.filter(a => a.includes('switch-session'))
+
+      test('自分を表示している zellij セッション（自分の repo を --cwd にした agent view）を探し、そこにいる client を移す', ON, async ($, on) => {
+        const ran: string[][] = []
+        const clock = world(on, asBg, TRANSCRIPTS, {
+          env: BG_ENV,
+          zellij: ['stale', 'other', 'mine', 'app'],
+          clients: { other: [AGENT_VIEW('/Users/x/ghq/acme/other')], mine: [AGENT_VIEW('/Users/x/ghq/acme/mine')], app: [] },
+          ran,
+        })
+        await start($, clock)
+        await (await band($)).press({ key: 'band-wt' })
+        expect(switched(ran)).toEqual([['zellij', '--session', 'mine', 'action', 'switch-session', 'app']])
+      })
+
+      test('claude attach で開いている client も見ている側として扱う', ON, async ($, on) => {
+        const ran: string[][] = []
+        const clock = world(on, asBg, TRANSCRIPTS, {
+          env: BG_ENV,
+          zellij: ['other', 'app'],
+          clients: { other: ['/Users/x/.local/bin/claude attach self'], app: [] },
+          ran,
+        })
+        await start($, clock)
+        await (await list($)).press({ key: 'wt' })
+        expect(switched(ran)).toEqual([['zellij', '--session', 'other', 'action', 'switch-session', 'app']])
+      })
+
+      test('親ディレクトリの agent view や --cwd の完全一致より claude attach で見ている zellij を選ぶ', ON, async ($, on) => {
+        const ran: string[][] = []
+        const clock = world(on, asBg, TRANSCRIPTS, {
+          env: BG_ENV,
+          // 名前順で先の 'aaa' は ~ で開いた agent view（親ディレクトリ）で、自分を見ていない
+          zellij: ['aaa', 'bbb', 'zzz', 'app'],
+          clients: {
+            aaa: [AGENT_VIEW('/Users/x')],
+            bbb: [AGENT_VIEW('/Users/x/ghq/acme/mine')],
+            zzz: ['/Users/x/.local/bin/claude attach self'],
+            app: [],
+          },
+          ran,
+        })
+        await start($, clock)
+        await (await band($)).press({ key: 'band-wt' })
+        expect(switched(ran)).toEqual([['zellij', '--session', 'zzz', 'action', 'switch-session', 'app']])
+      })
+
+      test('attach が無ければ、親ディレクトリの agent view より --cwd の完全一致の zellij を選ぶ', ON, async ($, on) => {
+        const ran: string[][] = []
+        const clock = world(on, asBg, TRANSCRIPTS, {
+          env: BG_ENV,
+          zellij: ['aaa', 'bbb', 'app'],
+          clients: { aaa: [AGENT_VIEW('/Users/x')], bbb: [AGENT_VIEW('/Users/x/ghq/acme/mine')], app: [] },
+          ran,
+        })
+        await start($, clock)
+        await (await band($)).press({ key: 'band-wt' })
+        expect(switched(ran)).toEqual([['zellij', '--session', 'bbb', 'action', 'switch-session', 'app']])
+      })
+
+      test('最も強い一致の zellij が複数あれば、どこにも送らずに知らせる', ON, async ($, on) => {
+        const ran: string[][] = []
+        const toasts: string[] = []
+        const clock = world(on, asBg, TRANSCRIPTS, {
+          env: BG_ENV,
+          zellij: ['aaa', 'bbb', 'app'],
+          clients: { aaa: [AGENT_VIEW('/Users/x')], bbb: [AGENT_VIEW('/Users/x/ghq')], app: [] },
+          ran,
+          toasts,
+        })
+        await start($, clock)
+        await (await band($)).press({ key: 'band-wt' })
+        expect(switched(ran)).toEqual([])
+        expect(toasts.some(t => t.includes('aaa, bbb'))).toBe(true)
+      })
+
+      test('見ている zellij が見つからなければ移らずに知らせる', ON, async ($, on) => {
+        const ran: string[][] = []
+        const toasts: string[] = []
+        const clock = world(on, asBg, TRANSCRIPTS, {
+          env: BG_ENV,
+          zellij: ['other', 'app'],
+          clients: { other: [AGENT_VIEW('/Users/x/ghq/acme/other')] },
+          ran,
+          toasts,
+        })
+        await start($, clock)
+        await (await band($)).press({ key: 'band-wt' })
+        expect(switched(ran)).toEqual([])
+        expect(toasts.some(t => t.includes('見つかりません'))).toBe(true)
+      })
+    })
   })
 
   describe('select_action: attach', () => {
@@ -358,6 +464,22 @@ describe('bg-sessions', () => {
       await (await band($)).press({ key: 'band-wt' })
       expect(ran).toEqual([])
       expect(toasts.some(t => t.includes('zellij'))).toBe(true)
+    })
+
+    test('attach して見ている bg セッションの中では、自分を表示している zellij の pane を入れ替える', ATTACH, async ($, on) => {
+      // bg セッションは daemon が起動するので ZELLIJ が無く、ZELLIJ_SESSION_NAME は daemon 起動時の古い値
+      const ran: string[][] = []
+      const asBg = AGENTS.map(a => (a.id === 'self' ? { ...a, kind: 'background' } : a))
+      const clock = world(on, asBg, TRANSCRIPTS, {
+        env: { ZELLIJ_SESSION_NAME: 'stale', PATH: SESSION_PATH },
+        zellij: ['stale', 'mine'],
+        clients: { mine: ['/Users/x/.local/bin/claude agents --cwd /Users/x/ghq/acme/mine'] },
+        ran,
+      })
+      await start($, clock)
+      await (await band($)).press({ key: 'band-wt' })
+      const [, ...rest] = runOf('wt', 'app/df-12')
+      expect(ran.filter(a => a.includes('run'))).toEqual([['zellij', '--session', 'mine', ...rest]])
     })
   })
 })

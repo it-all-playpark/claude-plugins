@@ -116,6 +116,31 @@ export function zellijSessionFor(repo: string, listed: string): string | null {
   return names.find(n => loose(n) === loose(repo)) ?? null
 }
 
+/**
+ * `zellij action list-clients` の出力から、このセッションを表示している client の一致の強さ（client 中の最大）。
+ * bg セッションを見ている client は `claude attach <id>` か、起動した repo（かその親）を --cwd にした `claude agents` を動かしている。
+ * 親ディレクトリの agent view（~ で開いたものなど）は無関係な zellij にもいるので、attach の id 一致 > --cwd の完全一致 >
+ * 親ディレクトリの順に強くし、呼び出し側で最も強い一致を選ぶ。
+ * 3: attach の id 一致、2: --cwd が完全一致、1: --cwd が親ディレクトリ、0: 表示していない
+ */
+export function showsSession(clients: string, self: { id: string; cwd: string }): number {
+  const cwd = self.cwd.replace(/\/+$/, '')
+  return clients.split('\n').slice(1).reduce((best, line) => {
+    const argv = line.trim().split(/\s+/).slice(2)
+    const at = argv.findIndex(a => a === 'claude' || a.endsWith('/claude'))
+    if (at < 0) return best
+    const [sub, ...rest] = argv.slice(at + 1)
+    if (sub === 'attach') return rest[0] === self.id ? Math.max(best, 3) : best
+    if (sub !== 'agents') return best
+    const i = rest.indexOf('--cwd')
+    const dir = i >= 0 ? rest[i + 1]?.replace(/\/+$/, '') : undefined
+    if (!dir) return best
+    if (cwd === dir) return Math.max(best, 2)
+    if (cwd.startsWith(`${dir}/`)) return Math.max(best, 1)
+    return best
+  }, 0)
+}
+
 export function where(s: BgSession): string {
   return s.worktree ? `${s.repo}/${s.worktree}` : s.repo
 }

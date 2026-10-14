@@ -9,7 +9,7 @@
     "select_action": {
       "type": "string",
       "title": "セッションを選んだときの動き",
-      "description": "off: 何もしない / attach: 今の zellij pane と一時的に入れ替えて claude attach で開く（抜けると元に戻る）/ zellij-session: その repo と同じ名前の zellij セッションへ switch-session する。attach と zellij-session は zellij の中で動いているときだけ効く",
+      "description": "off: 何もしない / attach: 今の zellij pane と一時的に入れ替えて claude attach で開く（抜けると元に戻る）/ zellij-session: その repo と同じ名前の zellij セッションへ switch-session する。attach と zellij-session は zellij の中で動いているときだけ効く。attach して見ている bg セッションの中では、そのセッションを表示している zellij（agent view か claude attach の pane）を探して、そこで動く",
       "options": ["off", "attach", "zellij-session"],
       "default": "off"
     }
