@@ -153,13 +153,23 @@ async function select($: Engine, s: BgSession, action: string): Promise<void> {
   if (action === 'zellij-session') return switchTo($, s)
 }
 
+/**
+ * 描く画面（surface）が無いセッションでは取りに行かない。plugin を入れると bg セッション自身も読み込むので、
+ * 絞らないと N 本の bg セッションがそれぞれ 15 秒ごとに claude agents --json と tail を起動する。
+ * attach されれば画面が付くので、そこから取り始める
+ */
+async function refreshIfDrawn($: Engine): Promise<void> {
+  if ((await $.session.surfaces()).length === 0) return
+  await refresh($)
+}
+
 async function openList($: Engine): Promise<void> {
   void refresh($)
   await $.ui.open({ id: PANE, title: 'bg sessions', focus: true, closeOnEscape: true })
 }
 
 /**
- * 実行中・入力待ちのセッションに先頭から割り当てる hotkey（vim のホームポジション）。帯と一覧で同じ割り当て。
+ * 放置以外（実行中・入力待ち・完了）のセッションに先頭から割り当てる hotkey（vim のホームポジション）。帯と一覧で同じ割り当て。
  * 数字にしないのは、帯の Button の数字 hotkey は空の composer で数字を打っただけで押されるため（英字は帯か
  * ペインがフォーカスを持つときだけ効く）。
  */
@@ -176,8 +186,8 @@ export const register: Register = (on, options) => {
   const selectable = action === 'attach' || action === 'zellij-session'
 
   on('session.start', async ($, e, next) => {
-    void refresh($)
-    $.clock.every(POLL_MS, () => void refresh($))
+    void refreshIfDrawn($)
+    $.clock.every(POLL_MS, () => void refreshIfDrawn($))
     // /bg は組み込みの /background の別名で拒否される。登録に失敗しても帯は動かし続ける
     try {
       await $.command.register({ name: 'bg-sessions', description: 'bg で動いている Claude セッションの repo・worktree・branch を一覧する' })
@@ -208,7 +218,7 @@ export const register: Register = (on, options) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const shown = active.slice(0, KEYS.length)
     const label = (s: BgSession) => [<Text color={COLOR[s.status]}>{MARK[s.status]}</Text>, ` ${where(s)}`]
-    // ctrl+x tab で帯にフォーカスすると先頭に乗り、英字 hotkey か Enter でその repo の zellij セッションへ移る
+    // ctrl+x tab で帯にフォーカスすると先頭に乗り、英字 hotkey か Enter で select_action（attach / zellij-session）を実行する
     return (
       <Box key="bg-band" flexDirection="row" flexWrap="wrap" columnGap={2}>
         <Text dimColor>bg</Text>

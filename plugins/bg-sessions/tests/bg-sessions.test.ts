@@ -12,6 +12,10 @@ type Transcript = { dir: string; mtimeMs: number; cwd: string; branch: string }
 type WorldOptions = {
   agentsExit?: number
   registerDeny?: string
+  /** $.session.surfaces() の答え。既定は対話セッションの ['terminal']、bg セッション（誰も attach していない）は [] */
+  surfaces?: string[]
+  /** claude agents --json を呼んだ回数を数える */
+  agentsCalls?: { n: number }
   env?: Record<string, string>
   /** `zellij list-sessions --short` が返すセッション名 */
   zellij?: string[]
@@ -29,6 +33,7 @@ function world(on: any, agents: Agent[], transcripts: Record<string, Transcript>
   const clock = mock.clock(on, { now: NOW })
   on('session.id', async () => ({ value: 'self-sid' }))
   on('session.start', async ($: any, e: any) => e)
+  on('session.surfaces', async () => ({ value: opts.surfaces ?? ['terminal'] }))
   on('command.register', async () => (opts.registerDeny ? { deny: opts.registerDeny } : { value: undefined }))
   on('ui.toast', async ($: any, e: any) => {
     opts.toasts?.push(e.text)
@@ -41,6 +46,7 @@ function world(on: any, agents: Agent[], transcripts: Record<string, Transcript>
   on('process.run', async ($: any, e: any) => {
     const [cmd, ...args] = e.argv as string[]
     if (cmd === 'claude') {
+      if (opts.agentsCalls) opts.agentsCalls.n++
       const json = agents.map(a => ({
         id: a.id,
         sessionId: a.id === 'self' ? 'self-sid' : `${a.id}-sid`,
@@ -178,6 +184,23 @@ describe('bg-sessions', () => {
     expect(text).toContain('busy')
     expect(text).not.toContain('edge')
     expect(text).toContain('1 放置')
+  })
+
+  test('描く画面が無いセッション（attach されていない bg セッション）は一覧を取りに行かない', async ($, on) => {
+    const bg = { n: 0 }
+    const clock = world(on, AGENTS, TRANSCRIPTS, { surfaces: [], agentsCalls: bg })
+    await start($, clock)
+    await clock.advance(60_000)
+    expect(bg.n).toBe(0)
+  })
+
+  test('画面のあるセッションは 15 秒ごとに一覧を取り直す', async ($, on) => {
+    const calls = { n: 0 }
+    const clock = world(on, AGENTS, TRANSCRIPTS, { agentsCalls: calls })
+    await start($, clock)
+    expect(calls.n).toBe(1)
+    await clock.advance(30_000)
+    expect(calls.n).toBe(3)
   })
 
   test('コマンド名の登録を拒否されても帯は出る', async ($, on) => {
