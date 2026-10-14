@@ -312,6 +312,9 @@ EOF
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"asr_backend は mlx / groq"* ]]
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup --calendar-tools "mcp__cal__list_events,Bash" --no-daemon < /dev/null
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"calendar_tools には MCP ツール名"*"Bash"* ]]
     PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$BATS_TEST_TMPDIR/a/scripts/meeting.sh" setup --bogus < /dev/null
     [ "$status" -eq 1 ]
     [[ "$output" == *"不明なオプション: --bogus"* ]]
@@ -378,7 +381,8 @@ PY
 
 @test "設定ファイルが壊れている・知らないキーや値があれば、どのファイルの何が悪いかを出して失敗する" {
     command -v python3 >/dev/null 2>&1 || skip "python3 not available"
-    for bad in '{' '{"notes_dir": 1}' '{"asr_backend": "openai"}' '{"notes_dri": "/x"}' '{"auto_notes": "yes"}' '[]'; do
+    for bad in '{' '{"notes_dir": 1}' '{"asr_backend": "openai"}' '{"notes_dri": "/x"}' '{"auto_notes": "yes"}' '[]' \
+        '{"calendar_tools": ["Bash"]}' '{"calendar_tools": ["mcp__cal__list_events", "Bash(*)"]}'; do
         echo "$bad" > "$CONFIG_FILE"
         run bash "$SCRIPT" ls
         echo "$bad -> $output"

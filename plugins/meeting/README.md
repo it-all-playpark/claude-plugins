@@ -83,7 +83,7 @@ plugin の install 先は更新のたびに変わるが、launchd とマイク /
 | `home` | `~/Meetings` | 録音の保存先 |
 | `notes_dir` | なし（`meeting notes` を実行した場所） | 議事録を置く repo / vault。`meeting notes` / `meeting name` と全自動の議事録はここで claude を起動する |
 | `auto_notes` | `false` | `true` で文字起こしのあと議事録作成まで全自動にする（`notes_dir` が要る） |
-| `calendar_tools` | なし | 全自動の議事録で claude に許可するカレンダー連携の MCP ツール名の配列 |
+| `calendar_tools` | なし | 全自動の議事録で claude に許可するカレンダー連携の MCP ツール名の配列（`mcp__` で始まる名前だけ。文字起こしを読む claude に Bash 等を渡さないため） |
 | `apps` | 下記の会議アプリ | 検知対象の上書き。`["us.zoom.=Zoom", "com.microsoft.teams=Teams"]`（bundle id の前方一致=表示名） |
 | `asr_backend` | `mlx` | `groq` で Whisper を Groq に送る（[下記](#whisper-を-groq-で処理する)） |
 | `asr_model` | `mlx-community/whisper-large-v3-turbo` | Whisper のモデル |

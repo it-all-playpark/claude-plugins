@@ -201,7 +201,7 @@ hf_logged_in() {
 #   show                中身を 1 キー 1 行で出す (meeting doctor)
 config_tool() {
   python3 - "$CONFIG" "$@" <<'PY'
-import json, os, sys
+import json, os, re, sys
 
 KEYS = {"home": str, "notes_dir": str, "auto_notes": bool, "calendar_tools": list, "apps": list,
         "asr_backend": str, "asr_model": str, "diar_model": str}
@@ -229,6 +229,11 @@ def check(path, cfg):
             fail(f"{path}: {k} は{want}で指定してください")
     if cfg.get("asr_backend", "mlx") not in BACKENDS:
         fail(f"{path}: asr_backend は {' / '.join(BACKENDS)} のどれかです: {cfg['asr_backend']}")
+    # calendar_tools は相手の発言を含む文字起こしを読む claude -p の --allowedTools に入る。Bash や Write を
+    # 通すと発言に仕込んだ指示でコマンドを実行できる状態が設定ファイルに残るので、MCP ツール名だけを受け付ける
+    for t in cfg.get("calendar_tools", []):
+        if not re.fullmatch(r"mcp__[A-Za-z0-9_-]+", t):
+            fail(f"{path}: calendar_tools には MCP ツール名 (mcp__<server>__<tool>) だけを指定できます: {t}")
 
 def load(path):
     if not os.path.exists(path):
