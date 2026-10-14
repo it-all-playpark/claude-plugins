@@ -91,8 +91,8 @@ test('setup stores the host, makes the key and hands over the one ssh-copy-id li
 
 test('setup with user@host hands that user to ssh-copy-id and says nothing about the user name', async ($, on) => {
   world(on, { keyExists: true, check: { exitCode: 255, stderr: 'Host key verification failed.\n' } })
-  const r = await $.command.run({ command: 'mosh-paste-setup', args: 'me@my-mac.example.ts.net' })
-  expect(r.text).toContain(`ssh-copy-id -o IdentitiesOnly=yes -i ${KEY}.pub me@my-mac.example.ts.net`)
+  const r = await $.command.run({ command: 'mosh-paste-setup', args: 'me@my-mac.example.com' })
+  expect(r.text).toContain(`ssh-copy-id -o IdentitiesOnly=yes -i ${KEY}.pub me@my-mac.example.com`)
   expect(r.text).not.toContain('このマシンのユーザー名')
 })
 

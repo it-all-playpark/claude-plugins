@@ -47,7 +47,7 @@ async function setup($: EngineInterface, args: string, configuredDir: string): P
   const s = await loadSetup($, configuredDir)
   const host = args.trim() || s.host
   if (host === '') {
-    return '使い方: /mosh-paste-setup <手元の Mac の ssh 接続先>（例: /mosh-paste-setup my-mac.example.ts.net、ユーザー名が違えば me@my-mac.example.ts.net）'
+    return '使い方: /mosh-paste-setup <手元の Mac の ssh 接続先>（例: /mosh-paste-setup my-mac.example.ts.net、ユーザー名が違えば me@my-mac.example.com）'
   }
   await $.store.set('host', host)
 
