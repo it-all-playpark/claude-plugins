@@ -22,8 +22,7 @@ job_name_running() {
 # run-all-bats.sh / vitest.config.mjs と同じ除外で repo を走査する。
 find_repo() {
     cd "$REPO_ROOT" && find . \
-        -type d \( -name ".git" -o -name "node_modules" -o -name ".serena" \
-                -o -name ".system" \
+        -type d \( -name ".git" -o -name "node_modules" \
                 -o -path "*/.claude/worktrees" \) -prune -o \
         "$@"
 }

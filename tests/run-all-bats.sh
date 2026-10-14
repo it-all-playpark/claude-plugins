@@ -5,7 +5,7 @@
 #
 # Behavior:
 #   - Discovers `**/*.bats` files under the repository root, excluding
-#     `.git`, `node_modules`, `.serena`, `.system`, and worktree dirs.
+#     `.git`, `node_modules`, and worktree dirs.
 #   - If `bats` is not installed:
 #       - Default mode: prints a warning and exits 0 (graceful skip in
 #         environments that don't have bats yet).
@@ -81,8 +81,7 @@ fi
 # Discover .bats files
 mapfile -t BATS_FILES < <(
     find "$REPO_ROOT" \
-        -type d \( -name ".git" -o -name "node_modules" -o -name ".serena" \
-                -o -name ".system" \
+        -type d \( -name ".git" -o -name "node_modules" \
                 -o -path "*/.claude/worktrees" \) -prune -o \
         -type f -name "*.bats" -print | sort
 )
@@ -119,8 +118,7 @@ select_by_changed_files() {
         shell_files+=("$REPO_ROOT/${p#./}")
     done < <(
         cd "$REPO_ROOT" && find . \
-            -type d \( -name ".git" -o -name "node_modules" -o -name ".serena" \
-                    -o -name ".system" \
+            -type d \( -name ".git" -o -name "node_modules" \
                     -o -path "*/.claude/worktrees" \) -prune -o \
             -type f ! -name "*.bats" \
             \( -name "*.sh" -o -path "*/bin/*" -o -path "*/hooks/*" \) -print | sort

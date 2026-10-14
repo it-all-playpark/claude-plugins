@@ -10,8 +10,6 @@ export default defineConfig({
     exclude: [
       '**/.git/**',
       '**/node_modules/**',
-      '**/.serena/**',
-      '**/.system/**',
       '**/.claude/worktrees/**',
     ],
   },
