@@ -47,7 +47,7 @@ async function setup($: EngineInterface, args: string, configuredDir: string): P
   const s = await loadSetup($, configuredDir)
   const host = args.trim() || s.host
   if (host === '') {
-    return '使い方: /mosh-paste-setup <手元の Mac の ssh 接続先>（例: /mosh-paste-setup my-mac.example.ts.net）'
+    return '使い方: /mosh-paste-setup <手元の Mac の ssh 接続先>（例: /mosh-paste-setup my-mac.example.ts.net、ユーザー名が違えば me@my-mac.example.ts.net）'
   }
   await $.store.set('host', host)
 
@@ -61,7 +61,7 @@ async function setup($: EngineInterface, args: string, configuredDir: string): P
     .run(checkArgv(host, s.key), { timeoutMs: 20_000 })
     .catch((err: unknown) => ({ exitCode: -1, stderr: String(err) }))
   const error = failure(r)
-  if (error !== undefined) return setupHint(host, s.key, error)
+  if (error !== undefined) return setupHint(host, s.key, error, (await $.env.get('USER')) ?? '')
   return `${host} に鍵で入れた。設定完了（このマシンにだけ保存）`
 }
 

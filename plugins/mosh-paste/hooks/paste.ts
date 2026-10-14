@@ -129,8 +129,11 @@ export function keygenArgv(key: string): string[] {
 // reason. Not reaching sshd at all is the one case the key cannot fix; any
 // answer from sshd (a refused key, an unknown host key) is fixed by the one
 // ssh-copy-id run, which asks for the password and the first host key.
+// A host without `user@` logs in as this machine's user (`user`), which need
+// not be the Mac's account name; the password then never matches, so the hint
+// names the user and the `user@host` spelling.
 // The engine leads a command's text with the plugin's name, so none here.
-export function setupHint(host: string, key: string, reason: string): string {
+export function setupHint(host: string, key: string, reason: string, user: string): string {
   if (/Connection refused|timed out|No route to host|Could not resolve hostname/i.test(reason)) {
     return [
       `${host} の ssh に届かなかった (${reason})`,
@@ -145,6 +148,14 @@ export function setupHint(host: string, key: string, reason: string): string {
     'このマシンの端末で次を 1 回実行し（手元の Mac のログインパスワードを聞かれる）、終わったらもう一度 /mosh-paste-setup を実行する:',
     '',
     `  ssh-copy-id -o IdentitiesOnly=yes -i ${key}.pub ${host}`,
+    ...(host.includes('@')
+      ? []
+      : [
+          '',
+          `ユーザー名を付けていないので、ssh はこのマシンのユーザー名 (${user}) で入ろうとする。`,
+          '手元の Mac のユーザー名（手元で whoami）が違うと、正しいパスワードでも Permission denied になる。',
+          `その場合は上の行と /mosh-paste-setup の両方で接続先を <ユーザー名>@${host} にする（例: /mosh-paste-setup <ユーザー名>@${host}）`,
+        ]),
   ].join('\n')
 }
 

@@ -41,7 +41,7 @@ function world(on: On, w: World) {
   const runs: (readonly string[])[] = []
   const store = new Map<string, unknown>(w.stored === undefined ? [] : [['host', w.stored]])
   // Beneath the plugin, a `$` call's answer is `{ value }`.
-  on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/Users/x' : undefined }))
+  on('env.get', ($, e) => ({ value: ({ HOME: '/Users/x', USER: 'x' } as Record<string, string>)[e.name] }))
   on('store.get', ($, e) => ({ value: store.get(e.key) }))
   on('store.set', ($, e) => {
     store.set(e.key, e.value)
@@ -57,11 +57,11 @@ function world(on: On, w: World) {
 }
 
 test('the setup hint sends a refused key to ssh-copy-id and an unreachable sshd to Remote Login', () => {
-  const refused = setupHint('m', KEY, 'naramoto@m: Permission denied (publickey,password,keyboard-interactive).')
+  const refused = setupHint('m', KEY, 'naramoto@m: Permission denied (publickey,password,keyboard-interactive).', 'x')
   expect(refused).toContain(`ssh-copy-id -o IdentitiesOnly=yes -i ${KEY}.pub m`)
   expect(refused).not.toContain('リモートログイン')
 
-  const unreachable = setupHint('m', KEY, 'ssh: connect to host m port 22: Connection refused')
+  const unreachable = setupHint('m', KEY, 'ssh: connect to host m port 22: Connection refused', 'x')
   expect(unreachable).toContain('リモートログイン')
   expect(unreachable).not.toContain('ssh-copy-id')
 })
@@ -84,6 +84,16 @@ test('setup stores the host, makes the key and hands over the one ssh-copy-id li
   expect(runs[1]).toEqual(checkArgv('my-mac.example.ts.net', KEY))
   expect(r.text).toContain(`ssh-copy-id -o IdentitiesOnly=yes -i ${KEY}.pub my-mac.example.ts.net`)
   expect(r.text).toContain('Too many authentication failures')
+  // No user in the host: ssh logs in as this machine's user, which the hint names.
+  expect(r.text).toContain('このマシンのユーザー名 (x)')
+  expect(r.text).toContain('/mosh-paste-setup <ユーザー名>@my-mac.example.ts.net')
+})
+
+test('setup with user@host hands that user to ssh-copy-id and says nothing about the user name', async ($, on) => {
+  world(on, { keyExists: true, check: { exitCode: 255, stderr: 'Host key verification failed.\n' } })
+  const r = await $.command.run({ command: 'mosh-paste-setup', args: 'me@my-mac.example.ts.net' })
+  expect(r.text).toContain(`ssh-copy-id -o IdentitiesOnly=yes -i ${KEY}.pub me@my-mac.example.ts.net`)
+  expect(r.text).not.toContain('このマシンのユーザー名')
 })
 
 test('setup again with the stored host and a working key reports done without making a key', async ($, on) => {
