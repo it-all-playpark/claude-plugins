@@ -42,7 +42,7 @@ Marketplaces で auto-update を有効化。`DISABLE_AUTOUPDATER=1` 環境では
 
 `meeting` は macOS 専用です。会議アプリ（Zoom / Google Meet / Teams 等）がマイクを使い始めたら自動で録音し、
 Whisper と pyannote でローカルに文字起こし・話者分離して `/meeting-notes` で議事録にします。常駐（launchd）は
-`meeting install` を実行したときだけ登録され、録音バイナリは plugin の外の固定パスにビルドされます。
+`meeting setup`（`--no-daemon` を除く）か `meeting install` を実行したときだけ登録され、録音バイナリは plugin の外の固定パスにビルドされます。
 詳細は [`plugins/meeting/README.md`](plugins/meeting/README.md)。
 
 `bg-sessions` は `claude --bg` で動いているセッションが、どの repo のどの worktree・branch にいるかを

@@ -19,7 +19,7 @@ import ScreenCaptureKit
 func usage() -> Never {
     print("""
     usage: meeting-rec --out DIR [capture opts] [--max-minutes N]
-           meeting-rec --watch --home DIR [--on-stop CMD] [capture opts]
+           meeting-rec --watch [--home DIR] [--on-stop CMD] [capture opts]
            meeting-rec --list-apps
 
     capture opts:
@@ -33,7 +33,7 @@ func usage() -> Never {
 
     常駐 (自動録音):
       --watch           会議アプリ (Zoom/Teams/Meet 等) のマイク使用を検知して自動で録音
-      --home DIR        録音の保存先 (DIR/<日時>-<アプリ>/)
+      --home DIR        録音の保存先 (DIR/<日時>-<アプリ>/)。省略時は設定ファイルの home
       --on-stop CMD     録音終了後に `CMD post <録音DIR>` を起動 (文字起こし等)
       SIGUSR1 で録音中/検知中の会議をスキップ (録音は破棄)
 
@@ -72,7 +72,7 @@ func parseOptions() -> Options {
         }
     }
     if o.listApps { return o }
-    if o.watch ? o.home == nil : o.outDir == nil { usage() }
+    if !o.watch && o.outDir == nil { usage() }
     return o
 }
 
@@ -92,8 +92,8 @@ func listApps() async {
     ).devices
     for d in mics { print("\(d.localizedName)\t\(d.uniqueID)") }
 
-    print("\n# いま音声を使っているプロセス (MEETING_APPS の設定に使う)")
-    let apps = meetingAppsFromEnv()
+    print("\n# いま音声を使っているプロセス (設定ファイルの apps に使う)")
+    let apps = (try? MeetingConfig.load())?.apps ?? defaultMeetingApps
     for p in audioProcesses() {
         let io = [p.input ? "mic" : nil, p.output ? "out" : nil].compactMap { $0 }.joined(separator: "+")
         let match = apps.first { p.bundleID.hasPrefix($0.prefix) }.map { " ← \($0.name)" } ?? ""
@@ -140,8 +140,13 @@ if opts.listApps {
     await listApps()
     exit(0)
 }
-if opts.watch, let home = opts.home {
-    await runWatch(WatchOptions(home: home, onStop: opts.onStop, capture: opts.capture))
+if opts.watch {
+    let config: MeetingConfig
+    do { config = try MeetingConfig.load() } catch {
+        log("設定ファイルを読めません (meeting doctor で確認できます): \(error)")
+        exit(1)
+    }
+    await runWatch(WatchOptions(home: opts.home, onStop: opts.onStop, capture: opts.capture, config: config))
 }
 if let out = opts.outDir {
     await runManual(opts, outDir: out)

@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # meeting — 会議の録音 → 文字起こし/話者分離 → 議事録 をまとめて回す CLI (macOS / Apple Silicon)
 #
-#   meeting setup                       plugin のソースからビルドし $MEETING_PREFIX にインストール
-#   meeting install                     自動録音を常駐登録 (ログイン時に起動, launchd)
+#   meeting setup [opts]                依存の確認 → ビルドして $MEETING_PREFIX にインストール → モデルの取得 →
+#                                       設定ファイルの作成 → 常駐の登録。何度実行してもよい (済んだ手順は飛ばす)
+#       --home DIR                      録音の保存先
+#       --notes-dir DIR                 議事録を置くリポジトリ / vault
+#       --auto-notes | --no-auto-notes  文字起こし後に議事録作成まで自動で行うか
+#       --calendar-tools A,B            自動議事録の claude -p に許可するカレンダー連携のツール名
+#       --asr-backend mlx|groq          Whisper をどこで動かすか (groq は Keychain の meeting-groq を使う)
+#       --no-daemon                     常駐を登録しない
+#   meeting doctor                      依存・インストールの版・HF ログイン・設定・常駐・Keychain を 1 行ずつ確かめる
+#   meeting install                     設定ファイルを変えずに常駐だけを登録し直す (ログイン時に起動, launchd)
 #   meeting uninstall                   常駐を解除
 #   meeting status | log                常駐の状態 / ログ
 #   meeting skip                        今の会議を録音しない (録音中なら破棄)
@@ -15,12 +23,17 @@
 #                                       DIR 省略時は未確定の話者が残る最新の録音
 #   meeting ls                          録音一覧
 #
-# 環境変数:
-#   MEETING_HOME          録音の保存先 (default: ~/Meetings)
-#   MEETING_NOTES_DIR     議事録を置くリポジトリ / vault。notes / name と自動議事録はここで claude を起動する
-#   MEETING_AUTO_NOTES=1  文字起こし後に議事録作成まで自動実行 (MEETING_NOTES_DIR が必要)
-#   MEETING_CALENDAR_TOOLS 自動議事録の claude -p に許可するカレンダー連携のツール名 (, 区切り。既定なし)
-#   MEETING_APPS          検知対象の上書き "us.zoom.=Zoom,com.microsoft.teams=Teams"
+# 設定ファイル ${XDG_CONFIG_HOME:-~/.config}/meeting/config.json (meeting setup が書く。手で編集してもよい)。
+# meeting / transcribe.py / meeting-rec (常駐) が起動のたびに読むので、変えても meeting install は要らない:
+#   home            録音の保存先 (default: ~/Meetings)
+#   notes_dir       議事録を置くリポジトリ / vault。notes / name と自動議事録はここで claude を起動する (無ければ cwd)
+#   auto_notes      true なら文字起こし後に議事録作成まで自動実行 (notes_dir が必要)
+#   calendar_tools  自動議事録の claude -p に許可するカレンダー連携のツール名の配列 (既定なし)
+#   apps            検知対象の上書き ["us.zoom.=Zoom", "com.microsoft.teams=Teams"]
+#   asr_backend     mlx (default) | groq。asr_model / diar_model で Whisper / 話者分離のモデルを変えられる
+#
+# 環境変数 (ユーザー設定ではないもの):
+#   MEETING_CONFIG        設定ファイルの場所 (常駐の plist が渡す)
 #   MEETING_PREFIX        インストール先 (default: ${XDG_DATA_HOME:-~/.local/share}/meeting-rec)
 #   MEETING_BIN_DIR       meeting コマンドの symlink 先 (default: ~/.local/bin)
 #   MEETING_INSTALL_WAIT  install で旧常駐の登録が外れるのを待つ上限秒 (default: 30)
@@ -30,13 +43,18 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")
 SRC="$(cd "$(dirname "$SELF")/.." && pwd)"  # plugin から実行したときは plugin root
 PREFIX="${MEETING_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/meeting-rec}"
 BIN_DIR="${MEETING_BIN_DIR:-$HOME/.local/bin}"
-MEETING_HOME="${MEETING_HOME:-$HOME/Meetings}"
+CONFIG="${MEETING_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/meeting/config.json}"
 REC_BIN="$PREFIX/bin/meeting-rec"
 INSTALLED="$PREFIX/bin/meeting"
 TRANSCRIBE="$PREFIX/transcribe/transcribe.py"
 LABEL="jp.co.playpark.meeting-watch"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-WATCH_LOG="$MEETING_HOME/.watch.log"
+# 録音の保存先 (home) は設定で変わるので、plist に書くログの場所はそれに依存させない
+WATCH_LOG="$HOME/Library/Logs/meeting/watch.log"
+GROQ_SERVICE="meeting-groq"
+GROQ_ADD_CMD="security add-generic-password -a \"\$USER\" -s $GROQ_SERVICE -w"
+HF_TERMS_URL="https://huggingface.co/pyannote/speaker-diarization-community-1"
+HF_LOGIN_CMD="uvx --from huggingface_hub hf auth login"
 
 die() { echo "meeting: $*" >&2; exit 1; }
 notify() { osascript -e "display notification \"${1//\"/\\\"}\" with title \"meeting\"" >/dev/null 2>&1 || true; }
@@ -61,6 +79,23 @@ cmd_setup() {
     echo "→ インストール済みの plugin から setup します: $plugin"
     exec bash "$plugin/scripts/meeting.sh" setup "$@"
   fi
+  # 設定は「config_tool set に渡す キー 値 の並び」に集める。値の誤りはビルド (数分) の前に止める
+  local daemon=1 sets=() key
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --home|--notes-dir|--calendar-tools|--asr-backend)
+        [[ $# -ge 2 ]] || die "$1 には値を指定してください"
+        key="${1#--}"
+        sets+=("${key//-/_}" "$2"); shift 2 ;;
+      --auto-notes) sets+=(auto_notes 1); shift ;;
+      --no-auto-notes) sets+=(auto_notes 0); shift ;;
+      --no-daemon) daemon=0; shift ;;
+      *) die "不明なオプション: $1" ;;
+    esac
+  done
+  local msg
+  msg="$(config_tool set --check ${sets[@]+"${sets[@]}"})" || die "$msg"
+
   [[ "$(uname -s)" == Darwin ]] || die "macOS 専用です"
   command -v swift >/dev/null || die "swift がありません (xcode-select --install)"
   command -v ffmpeg >/dev/null || die "ffmpeg がありません"
@@ -88,18 +123,180 @@ cmd_setup() {
   echo "✓ $BIN_DIR/meeting (PATH に $BIN_DIR を入れてください)"
 
   # 依存とモデル (数 GB) をここで取得しておく。自動録音の後処理で初めて取得すると、ダウンロード失敗が
-  # 「文字起こしに失敗」の通知になってその会議の文字起こしが残らない
-  if uv run --script "$TRANSCRIBE" --prefetch; then
-    echo "✓ 文字起こし・話者分離のモデルを取得しました"
+  # 「文字起こしに失敗」の通知になってその会議の文字起こしが残らない。取得済みならダウンロードはしない
+  local prefetch=(--prefetch)
+  if ! hf_logged_in; then
+    echo "! Hugging Face にログインしていないため、話者分離のモデルは取得しません。$HF_TERMS_URL で"
+    echo "  利用規約に同意し、\`$HF_LOGIN_CMD\` を実行してから meeting setup をやり直してください"
+    prefetch+=(--no-diarize)
+  fi
+  if uv run --script "$TRANSCRIBE" "${prefetch[@]}"; then
+    echo "✓ モデルを取得しました"
   else
-    echo "! モデルを取得できませんでした。話者分離は https://huggingface.co/pyannote/speaker-diarization-community-1 で"
-    echo "  規約同意後に \`uvx --from huggingface_hub hf auth login\` が必要です。ダウンロード自体が失敗する場合は"
+    echo "! モデルを取得できませんでした。話者分離は $HF_TERMS_URL で規約同意後に"
+    echo "  \`$HF_LOGIN_CMD\` が必要です。ダウンロード自体が失敗する場合は"
     echo "  HF_HUB_DISABLE_XET=1 を付けて meeting setup をやり直してください"
   fi
-  if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-    launchctl kickstart -k "gui/$(id -u)/$LABEL"
-    echo "✓ 常駐を再起動しました"
+
+  # 質問は最初の 1 回 (設定ファイルが無いとき) だけ、答えられる端末があるときだけ出す。
+  # 端末が無い (Claude Code の Bash など) ときは引数と既存の設定ファイルだけで進める
+  if [[ -t 0 && ! -f "$CONFIG" ]]; then
+    local ans
+    if ! has_key notes_dir "${sets[@]+"${sets[@]}"}"; then
+      read -r -p "議事録を置くディレクトリ (空なら meeting notes を実行した場所): " ans
+      [[ -z "$ans" ]] || sets+=(notes_dir "$ans")
+    fi
+    if ! has_key auto_notes "${sets[@]+"${sets[@]}"}" && has_key notes_dir "${sets[@]+"${sets[@]}"}"; then
+      read -r -p "文字起こしのあと議事録まで自動で作りますか [y/N]: " ans
+      if [[ "$ans" == [yY]* ]]; then sets+=(auto_notes 1); fi
+    fi
+    if ! has_key asr_backend "${sets[@]+"${sets[@]}"}"; then
+      read -r -p "Whisper を Groq で処理しますか (音声が Groq に送られます) [y/N]: " ans
+      if [[ "$ans" == [yY]* ]]; then sets+=(asr_backend groq); fi
+    fi
   fi
+  msg="$(config_tool set ${sets[@]+"${sets[@]}"})" || die "$msg"
+  load_config || die "$CONFIG_ERR"
+  echo "✓ 設定: $CONFIG"
+
+  if [[ "$ASR_BACKEND" == groq ]] && ! security find-generic-password -s "$GROQ_SERVICE" >/dev/null 2>&1; then
+    if [[ -t 0 ]]; then
+      echo "Groq の API キーをログイン Keychain に登録します (入力は表示されません)"
+      security add-generic-password -a "${USER:-$(id -un)}" -s "$GROQ_SERVICE" -w \
+        || die "Keychain に登録できませんでした。$GROQ_ADD_CMD を実行してから meeting setup をやり直してください"
+      echo "✓ Keychain に $GROQ_SERVICE を登録しました"
+    else
+      echo "! Groq の API キーが Keychain にありません。ターミナルで次を実行してから meeting setup をやり直してください:" >&2
+      echo "  $GROQ_ADD_CMD" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ "$daemon" == 1 ]]; then
+    cmd_install
+  else
+    echo "= 常駐は登録しません (--no-daemon)"
+  fi
+  echo "状態の確認: meeting doctor"
+}
+
+# キー 値 の並び ($2...) にキー $1 があるか
+has_key() {
+  local want="$1"; shift
+  while [[ $# -ge 2 ]]; do
+    [[ "$1" == "$want" ]] && return 0
+    shift 2
+  done
+  return 1
+}
+
+hf_logged_in() {
+  [[ -n "${HF_TOKEN:-}" || -s "${HF_TOKEN_PATH:-${HF_HOME:-$HOME/.cache/huggingface}/token}" ]]
+}
+
+# 設定ファイル ($CONFIG) を読み書きする。誤りは stdout にメッセージを出して非 0
+#   get                 home, asr_backend, auto_notes (1/0), notes_dir, calendar_tools (, 区切り) を 1 行ずつ出す
+#   set [--check] [キー 値]...
+#                       値を足して書き戻す (無ければ作る)。--check は確かめるだけで書かない
+#   show                中身を 1 キー 1 行で出す (meeting doctor)
+config_tool() {
+  python3 - "$CONFIG" "$@" <<'PY'
+import json, os, re, sys
+
+KEYS = {"home": str, "notes_dir": str, "auto_notes": bool, "calendar_tools": list, "apps": list,
+        "asr_backend": str, "asr_model": str, "diar_model": str}
+BACKENDS = ("mlx", "groq")
+
+def fail(msg):
+    print(msg)
+    sys.exit(1)
+
+def check(path, cfg):
+    if not isinstance(cfg, dict):
+        fail(f"{path} が JSON オブジェクトではありません")
+    for k, v in cfg.items():
+        if k not in KEYS:
+            fail(f"{path}: 不明なキー {k} (使えるキー: {', '.join(KEYS)})")
+        t = KEYS[k]
+        if t is str:
+            ok = isinstance(v, str) and v != "" and "\n" not in v
+        elif t is list:
+            ok = isinstance(v, list) and all(isinstance(x, str) and x and "," not in x and "\n" not in x for x in v)
+        else:
+            ok = isinstance(v, bool)
+        if not ok:
+            want = {str: "空でない文字列", list: "文字列の配列", bool: "true / false"}[t]
+            fail(f"{path}: {k} は{want}で指定してください")
+    if cfg.get("asr_backend", "mlx") not in BACKENDS:
+        fail(f"{path}: asr_backend は {' / '.join(BACKENDS)} のどれかです: {cfg['asr_backend']}")
+    # calendar_tools は相手の発言を含む文字起こしを読む claude -p の --allowedTools に入る。Bash や Write を
+    # 通すと発言に仕込んだ指示でコマンドを実行できる状態が設定ファイルに残るので、MCP ツール名だけを受け付ける
+    for t in cfg.get("calendar_tools", []):
+        if not re.fullmatch(r"mcp__[A-Za-z0-9_-]+", t):
+            fail(f"{path}: calendar_tools には MCP ツール名 (mcp__<server>__<tool>) だけを指定できます: {t}")
+
+def load(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        cfg = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        fail(f"{path} を読めません: {e}")
+    check(path, cfg)
+    return cfg
+
+def expand(p):
+    return os.path.abspath(os.path.expanduser(p))
+
+path, cmd, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+cfg = load(path)
+if cmd == "get":
+    print(expand(cfg.get("home", "~/Meetings")))
+    print(cfg.get("asr_backend", "mlx"))
+    print(1 if cfg.get("auto_notes") else 0)
+    print(expand(cfg["notes_dir"]) if "notes_dir" in cfg else "")
+    print(",".join(cfg.get("calendar_tools", [])))
+elif cmd == "show":
+    for k, v in cfg.items():
+        print(f"{k} = {json.dumps(v, ensure_ascii=False)}")
+elif cmd == "set":
+    dry = args[:1] == ["--check"]
+    args = args[1:] if dry else args
+    for k, v in zip(args[::2], args[1::2]):
+        # 常駐は cwd も ~ も違うので、パスは絶対パスにして書く
+        if k in ("home", "notes_dir"):
+            cfg[k] = expand(v)
+        elif k == "auto_notes":
+            cfg[k] = v == "1"
+        elif k == "calendar_tools":
+            cfg[k] = [t.strip() for t in v.split(",") if t.strip()]
+        else:
+            cfg[k] = v
+    check("meeting setup の引数" if dry else path, cfg)
+    if not dry:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+PY
+}
+
+# 設定ファイルの値を MEETING_HOME / ASR_BACKEND / AUTO_NOTES / NOTES_DIR / CALENDAR_TOOLS に読む。
+# 読めなければ CONFIG_ERR に理由を入れて非 0 (値は既定のまま)
+CONFIG_ERR=""
+MEETING_HOME="$HOME/Meetings" ASR_BACKEND=mlx AUTO_NOTES=0 NOTES_DIR="" CALENDAR_TOOLS=""
+load_config() {
+  local out
+  if ! out="$(config_tool get)"; then
+    CONFIG_ERR="${out:-python3 で設定ファイル $CONFIG を読めません}"
+    return 1
+  fi
+  CONFIG_ERR=""
+  # macOS 標準の bash 3.2 には mapfile が無い。末尾の空の値は $(...) で落ちるので read の失敗は無視する
+  { IFS= read -r MEETING_HOME; IFS= read -r ASR_BACKEND; IFS= read -r AUTO_NOTES
+    IFS= read -r NOTES_DIR || NOTES_DIR=""; IFS= read -r CALENDAR_TOOLS || CALENDAR_TOOLS=""; } <<< "$out"
 }
 
 # installed_plugins.json ({"plugins": {"meeting@<marketplace>": [{"scope", "installPath", "lastUpdated", ...}]}}) から
@@ -127,32 +324,50 @@ print(max(cands)[2])
 PY
 }
 
-# launchd はログインシェルの PATH を持たないので、今の PATH (ffmpeg, uv, claude) を引き継ぐ
-cmd_print_plist() {
-  python3 - "$LABEL" "$REC_BIN" "$MEETING_HOME" "$INSTALLED" "$WATCH_LOG" <<'PY'
+# 常駐の plist。ユーザー設定は焼き込まず、設定ファイルの場所だけを渡す (常駐側が起動のたびにそのファイルを読む)。
+# launchd はログインシェルの PATH を持たないので、今の PATH (ffmpeg, uv, claude) を引き継ぐ。
+#   print          plist を出す
+#   check <plist>  <plist> が今の print と PATH 以外で同じなら 0 (PATH は実行したシェルで変わるので比べない)
+plist_tool() {
+  python3 - "$LABEL" "$REC_BIN" "$INSTALLED" "$WATCH_LOG" "$CONFIG" "$@" <<'PY'
 import os, plistlib, sys
-label, rec, home, selfp, logp = sys.argv[1:]
-env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "MEETING_HOME": home, "HOME": os.environ["HOME"], "LANG": "ja_JP.UTF-8"}
-for k in ("MEETING_AUTO_NOTES", "MEETING_NOTES_DIR", "MEETING_CALENDAR_TOOLS", "MEETING_APPS", "MEETING_PREFIX", "MEETING_ASR_BACKEND", "MEETING_ASR_MODEL", "MEETING_DIAR_MODEL"):
-    if os.environ.get(k):
-        env[k] = os.environ[k]
-sys.stdout.buffer.write(plistlib.dumps({
+label, rec, selfp, logp, config, cmd = sys.argv[1:7]
+env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ["HOME"], "LANG": "ja_JP.UTF-8",
+       "MEETING_CONFIG": config}
+# インストール先はユーザー設定ではないが、既定以外に入れたときは常駐の post (= $PREFIX/bin/meeting) が
+# 同じ場所の meeting-rec / transcribe.py を見るよう引き継ぐ
+if os.environ.get("MEETING_PREFIX"):
+    env["MEETING_PREFIX"] = os.environ["MEETING_PREFIX"]
+plist = {
     "Label": label,
-    "ProgramArguments": [rec, "--watch", "--home", home, "--on-stop", selfp],
+    "ProgramArguments": [rec, "--watch", "--on-stop", selfp],
     "EnvironmentVariables": env,
     "RunAtLoad": True,
     "KeepAlive": True,
     "ProcessType": "Interactive",
     "StandardOutPath": logp,
     "StandardErrorPath": logp,
-}))
+}
+if cmd == "print":
+    sys.stdout.buffer.write(plistlib.dumps(plist))
+else:
+    try:
+        cur = plistlib.load(open(sys.argv[7], "rb"))
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        sys.exit(1)
+    for p in (plist, cur):
+        if isinstance(p, dict) and isinstance(p.get("EnvironmentVariables"), dict):
+            p["EnvironmentVariables"].pop("PATH", None)
+    sys.exit(0 if cur == plist else 1)
 PY
 }
 
+cmd_print_plist() { plist_tool print; }
+
 cmd_install() {
   need_install
-  mkdir -p "$MEETING_HOME" "$(dirname "$PLIST")"
-  cmd_print_plist > "$PLIST"
+  mkdir -p "$MEETING_HOME" "$(dirname "$PLIST")" "$(dirname "$WATCH_LOG")"
+  plist_tool print > "$PLIST"
   local domain="gui/$(id -u)"
   if launchctl bootout "$domain/$LABEL" 2>/dev/null; then
     # bootout は旧 meeting-rec の終了を待たずに戻る。登録が残ったまま bootstrap すると error 5 で失敗し、
@@ -183,13 +398,129 @@ cmd_status() {
   if [[ -f "$WATCH_LOG" ]]; then echo "--- 最近のログ"; tail -5 "$WATCH_LOG"; fi
 }
 
+# meeting doctor: 1 項目 1 行で ✅ / ❌ と直し方を出す。❌ が 1 つでもあれば非 0
+DOCTOR_BAD=0
+doctor_ok() { echo "✅ $1"; }
+doctor_ng() { echo "❌ $1 → $2"; DOCTOR_BAD=1; }
+
+cmd_doctor() {
+  local dep hint
+  for dep in swift ffmpeg uv; do
+    case "$dep" in
+      swift) hint="xcode-select --install" ;;
+      *) hint="brew install $dep" ;;
+    esac
+    if command -v "$dep" >/dev/null; then doctor_ok "$dep"; else doctor_ng "$dep がありません" "$hint"; fi
+  done
+
+  local json="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" plugin=""
+  if [[ -f "$SRC/recorder/Package.swift" ]]; then plugin="$SRC"; else plugin="$(installed_plugin "$json")" || plugin=""; fi
+  if [[ ! -x "$REC_BIN" || ! -f "$TRANSCRIBE" || ! -f "$INSTALLED" ]]; then
+    doctor_ng "インストールされていません ($PREFIX)" "meeting setup"
+  elif [[ -z "$plugin" ]]; then
+    doctor_ng "比べる meeting plugin が見つかりません ($json)" "Claude Code から meeting setup"
+  elif installed_matches "$plugin"; then
+    doctor_ok "インストール済みの版は plugin と同じです ($plugin)"
+  else
+    doctor_ng "インストール済みの版が plugin と違います ($plugin)" "meeting setup"
+  fi
+
+  if hf_logged_in; then doctor_ok "Hugging Face にログイン済み"; else
+    doctor_ng "Hugging Face にログインしていません (話者分離のモデルの取得に要る)" "$HF_TERMS_URL で規約に同意し $HF_LOGIN_CMD"
+  fi
+
+  if [[ -n "$CONFIG_ERR" ]]; then
+    doctor_ng "設定ファイルを読めません: $CONFIG_ERR" "直すか消してから meeting setup"
+  elif [[ ! -f "$CONFIG" ]]; then
+    doctor_ng "設定ファイルがありません ($CONFIG)" "meeting setup"
+  else
+    doctor_ok "設定ファイル $CONFIG"
+    config_tool show | sed 's/^/     /'
+    if [[ -n "$NOTES_DIR" && ! -d "$NOTES_DIR" ]]; then
+      doctor_ng "notes_dir のディレクトリがありません ($NOTES_DIR)" "作るか meeting setup --notes-dir DIR"
+    fi
+    if [[ "$AUTO_NOTES" == 1 && -z "$NOTES_DIR" ]]; then
+      doctor_ng "auto_notes が true なのに notes_dir がありません (議事録は自動で作られません)" "meeting setup --notes-dir DIR"
+    fi
+  fi
+
+  local st pid
+  if ! st="$(launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null)"; then
+    doctor_ng "常駐していません" "meeting setup (常駐だけなら meeting install)"
+  elif ! grep -qE '^\s*state = running' <<< "$st"; then
+    doctor_ng "常駐が動いていません ($(grep -E '^\s*state =' <<< "$st" | head -1 | sed 's/^[[:space:]]*//'))" "meeting log を確認して meeting install"
+  elif ! plist_tool check "$PLIST"; then
+    doctor_ng "常駐の登録が今の meeting と違います (設定を焼き込んだ古い登録など)" "meeting install"
+  else
+    pid="$(grep -E '^\s*pid =' <<< "$st" | head -1 | sed 's/.*= *//')"
+    doctor_ok "常駐: running${pid:+ (pid $pid)}"
+  fi
+
+  if [[ "$ASR_BACKEND" == groq ]]; then
+    if ! security find-generic-password -s "$GROQ_SERVICE" >/dev/null 2>&1; then
+      doctor_ng "Keychain に $GROQ_SERVICE がありません (asr_backend = groq)" "$GROQ_ADD_CMD"
+    else
+      doctor_ok "Keychain に $GROQ_SERVICE があります"
+      local rc=0
+      keychain_from_launchd || rc=$?
+      case "$rc" in
+        0) doctor_ok "常駐 (launchd) のプロセスから Keychain を読めます" ;;
+        2) doctor_ng "常駐 (launchd) から Keychain を読めるか確かめられません (確認用のジョブを登録できない)" "Mac にログインしたターミナルで meeting doctor" ;;
+        *) doctor_ng "常駐 (launchd) のプロセスから Keychain を読めません (Groq を使わず手元で処理されます)" \
+             "ロックされていれば security unlock-keychain。直らなければ security delete-generic-password -s $GROQ_SERVICE のあと $GROQ_ADD_CMD" ;;
+      esac
+    fi
+  fi
+  return "$DOCTOR_BAD"
+}
+
+# インストール済みのコピー ($PREFIX) が plugin $1 のソースと同じなら 0
+installed_matches() {
+  local plugin="$1" f
+  cmp -s "$plugin/scripts/meeting.sh" "$INSTALLED" || return 1
+  for f in align.py transcribe.py; do cmp -s "$plugin/transcribe/$f" "$PREFIX/transcribe/$f" || return 1; done
+  diff -rq -x .build "$plugin/recorder" "$PREFIX/src/recorder" >/dev/null 2>&1
+}
+
+# 常駐と同じ gui ドメインの launchd ジョブから Keychain の $GROQ_SERVICE を読めるか (秘密は捨てる)。
+# 0 = 読める / 1 = 読めない・応答なし / 2 = 確認用のジョブを登録できない
+keychain_from_launchd() {
+  local label="$LABEL.doctor" domain="gui/$(id -u)" tmp rc="" i
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/meeting-doctor.XXXXXX")"
+  python3 - "$label" "$tmp" "$GROQ_SERVICE" > "$tmp/probe.plist" <<'PY'
+import os, plistlib, sys
+label, tmp, service = sys.argv[1:]
+sys.stdout.buffer.write(plistlib.dumps({
+    "Label": label,
+    "ProgramArguments": ["/bin/sh", "-c", 'security find-generic-password -s "$1" -w >/dev/null 2>&1; echo $? > "$2/rc"',
+                         "sh", service, tmp],
+    "EnvironmentVariables": {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ["HOME"]},
+    "RunAtLoad": True,
+}))
+PY
+  launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
+  if ! launchctl bootstrap "$domain" "$tmp/probe.plist" >/dev/null 2>&1; then
+    rm -rf "$tmp"
+    return 2
+  fi
+  # 許可ダイアログが出ていれば答えるまで返らないので、10 秒で諦める
+  for ((i = 0; i < 100; i++)); do
+    [[ -s "$tmp/rc" ]] && break
+    sleep 0.1
+  done
+  launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
+  [[ -s "$tmp/rc" ]] && rc="$(cat "$tmp/rc")"
+  rm -rf "$tmp"
+  [[ "$rc" == 0 ]]
+}
+
 cmd_skip() {
   launchctl kill SIGUSR1 "gui/$(id -u)/$LABEL" && echo "✓ 今の会議はスキップします (録音中なら破棄)"
 }
 
 cmd_watch() {
   need_install
-  exec "$REC_BIN" --watch --home "$MEETING_HOME" --on-stop "$INSTALLED" "$@"
+  exec "$REC_BIN" --watch --on-stop "$INSTALLED" "$@"
 }
 
 write_meta() {
@@ -219,7 +550,7 @@ cmd_rec() {
   trap - INT
   write_meta "$dir/meta.json" end
   cmd_transcribe "$dir"
-  if [[ "${MEETING_AUTO_NOTES:-0}" == 1 ]]; then cmd_notes "$dir"; else
+  if [[ "$AUTO_NOTES" == 1 ]]; then cmd_notes "$dir"; else
     echo "議事録を作るには: meeting notes \"$dir\""
   fi
 }
@@ -232,25 +563,25 @@ cmd_post() {
     notify "文字起こしに失敗しました: $(basename "$dir") (postprocess.log を確認)"
     exit 1
   fi
-  if [[ "${MEETING_AUTO_NOTES:-0}" == 1 && -n "${MEETING_NOTES_DIR:-}" ]] && command -v claude >/dev/null; then
+  if [[ "$AUTO_NOTES" == 1 && -n "$NOTES_DIR" ]] && command -v claude >/dev/null; then
     # 文字起こしは第三者の発言をそのまま含むのに、-p では許可の確認ができない。ここで足すのは skill の
     # .gitignore 確認に要る git の許可と Web アクセスの禁止だけで、それ以外は絞れていない:
-    # acceptEdits なので MEETING_NOTES_DIR 配下・録音 DIR・(外にあれば) output_dir のファイルはどれでも編集でき、
+    # acceptEdits なので notes_dir 配下・録音 DIR・(外にあれば) output_dir のファイルはどれでも編集でき、
     # ユーザー設定の permissions.allow もそのまま効く。書き込みを議事録と全文の 2 ファイルに限っているのは
     # SKILL.md の規則だけ。output_dir が外にあるときに --add-dir しないと、-p では Write が許可待ちのまま失敗する。
     # プロンプトは可変長の --allowedTools に飲まれないよう -p の直後に置く。
     # -p では許可されていない MCP ツールは拒否されるので、カレンダーの参加者を使うにはツール名を
-    # MEETING_CALENDAR_TOOLS で渡す (ツール名は環境ごとに違うので既定値は持たない)
+    # 設定の calendar_tools で渡す (ツール名は環境ごとに違うので既定値は持たない)
     local allowed="Bash(git check-ignore:*),Bash(git rev-parse:*)" ext add=()
-    [[ -n "${MEETING_CALENDAR_TOOLS:-}" ]] && allowed+=",$MEETING_CALENDAR_TOOLS"
-    ext="$(outside_notes_dir --create "$MEETING_NOTES_DIR")" || { notify "議事録の保存先を作れません: $(basename "$dir")"; exit 1; }
+    [[ -n "$CALENDAR_TOOLS" ]] && allowed+=",$CALENDAR_TOOLS"
+    ext="$(outside_notes_dir --create "$NOTES_DIR")" || { notify "議事録の保存先を作れません: $(basename "$dir")"; exit 1; }
     [[ -n "$ext" ]] && add=(--add-dir "$ext")
-    (cd "$MEETING_NOTES_DIR" && claude -p "/meeting-notes $dir --non-interactive" \
+    (cd "$NOTES_DIR" && claude -p "/meeting-notes $dir --non-interactive" \
       --permission-mode acceptEdits --add-dir "$dir" ${add[@]+"${add[@]}"} \
       --allowedTools "$allowed" \
       --disallowedTools "WebFetch,WebSearch") || { notify "議事録の作成に失敗しました: $(basename "$dir")"; exit 1; }
     local unresolved labels
-    unresolved="$(note_tool find "$dir" "$MEETING_NOTES_DIR" ${ext:+"$ext"} | cut -f3)" || true
+    unresolved="$(note_tool find "$dir" "$NOTES_DIR" ${ext:+"$ext"} | cut -f3)" || true
     if [[ -n "$unresolved" ]]; then
       IFS=, read -ra labels <<< "$unresolved"
       notify "議事録を作成しました: $(basename "$dir") — 名前が未確定の話者 ${#labels[@]} 人 (meeting name で名前を入れられます)"
@@ -273,7 +604,7 @@ cmd_notes() {
   local dir="${1:-$(latest_dir)}"
   [[ -f "$dir/transcript.json" ]] || die "$dir/transcript.json がありません。先に meeting transcribe"
   command -v claude >/dev/null || die "claude (Claude Code) がありません"
-  local root="${MEETING_NOTES_DIR:-$PWD}" ext add=()
+  local root="${NOTES_DIR:-$PWD}" ext add=()
   ext="$(outside_notes_dir --create "$root")" || die "議事録の保存先を作れません"
   [[ -n "$ext" ]] && add=(--add-dir "$ext")
   cd "$root" && claude --add-dir "$dir" ${add[@]+"${add[@]}"} "/meeting-notes $dir"
@@ -489,7 +820,7 @@ cmd_name() {
       *) [[ -z "$dir" ]] || die "DIR は 1 つだけ指定できます"; dir="${1%/}"; shift ;;
     esac
   done
-  local root="${MEETING_NOTES_DIR:-$PWD}" ext found note labels
+  local root="${NOTES_DIR:-$PWD}" ext found note labels
   ext="$(outside_notes_dir "$root")" || die "議事録の保存先を解決できません"
   found="$(note_tool find "$dir" "$root" ${ext:+"$ext"})"
   if [[ -z "$found" ]]; then
@@ -523,8 +854,18 @@ cmd_ls() {
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$SELF"; }
 
 sub="${1:-}"; shift || true
+# 設定ファイルは起動のたびに読む (常駐から呼ばれる post も、install し直さずに今の値を使う)。
+# 読めなくても doctor は ❌ として報告し、help は出す
+if ! load_config; then
+  case "$sub" in
+    doctor|help|-h|--help|'') ;;
+    post) notify "設定ファイルを読めません (meeting doctor で確認できます)"; die "$CONFIG_ERR" ;;
+    *) die "$CONFIG_ERR" ;;
+  esac
+fi
 case "$sub" in
   setup) cmd_setup "$@" ;;
+  doctor) cmd_doctor ;;
   install) cmd_install ;;
   uninstall) cmd_uninstall ;;
   status) cmd_status ;;
