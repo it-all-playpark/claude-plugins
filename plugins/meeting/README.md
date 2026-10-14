@@ -50,10 +50,11 @@ meeting setup --notes-dir ~/notes --auto-notes --asr-backend groq
 | `--auto-notes` / `--no-auto-notes` | `auto_notes` |
 | `--calendar-tools A,B` | `calendar_tools` |
 | `--asr-backend mlx\|groq` | `asr_backend` |
-| `--no-daemon` | （常駐を登録しない） |
+| `--no-daemon` | （常駐を登録しない。登録済みなら再起動だけする） |
 
 端末が無いときに Groq を選んで Keychain にキーが無ければ、登録のコマンドを出して止まる（ターミナルで実行してから
-`meeting setup` をやり直す）。
+`meeting setup` をやり直す）。常駐を登録し直さずに終わるとき（`--no-daemon` とこの場合）も、常駐が登録済みなら
+差し替えた録音バイナリで動くよう再起動する。
 
 plugin の install 先は更新のたびに変わるが、launchd とマイク / 画面収録の許可は実行ファイルのパスに紐づくため、
 録音バイナリは固定の場所に置く。plugin を更新したら `meeting setup` を再実行する。ターミナルの `meeting setup`
@@ -88,6 +89,9 @@ plugin の install 先は更新のたびに変わるが、launchd とマイク /
 | `asr_backend` | `mlx` | `groq` で Whisper を Groq に送る（[下記](#whisper-を-groq-で処理する)） |
 | `asr_model` | `mlx-community/whisper-large-v3-turbo` | Whisper のモデル |
 | `diar_model` | `pyannote/speaker-diarization-community-1` | 話者分離のモデル（pyannote.audio 3 系なら `pyannote/speaker-diarization-3.1`） |
+
+`home` / `notes_dir` は絶対パスか `~` で始まるパス（`~` 単体か `~/...`）で書く。空や相対パスは、`meeting` と常駐で
+別の場所を指すので、`meeting setup` の引数でも設定ファイルでもエラーにする。
 
 一回だけ別の値で動かすときは引数で渡す（例: `meeting transcribe <DIR> --asr-backend groq`）。
 `meeting install` は設定ファイルを変えずに常駐だけを登録し直す。

@@ -57,6 +57,23 @@ setup() {
     [ "${#lines[@]}" -eq 4 ]
 }
 
+@test "home の ~ は HOME、~/x は HOME の下の x にし、相対パスはファイルの場所とキー付きのエラーにする (meeting.sh と同じ規則)" {
+    printf '{"home": "~"}\n' > "$HOME/.config/meeting/config.json"
+    run "$BATS_FILE_TMPDIR/harness"
+    echo "$output"
+    [ "${lines[1]}" = "home=$HOME" ]
+    printf '{"home": "~/x"}\n' > "$HOME/.config/meeting/config.json"
+    run "$BATS_FILE_TMPDIR/harness"
+    echo "$output"
+    [ "${lines[1]}" = "home=$HOME/x" ]
+    for rel in 'rel/dir' '.' '~x'; do
+        printf '{"home": "%s"}\n' "$rel" > "$HOME/.config/meeting/config.json"
+        run "$BATS_FILE_TMPDIR/harness"
+        echo "$rel -> $output"
+        [ "${lines[1]}" = "error=$HOME/.config/meeting/config.json: home は絶対パスか ~ で始まるパスで指定してください: $rel" ]
+    done
+}
+
 @test "MEETING_CONFIG があればそのファイル、無ければ XDG_CONFIG_HOME の下を読む" {
     mkdir -p "$BATS_TEST_TMPDIR/xdg/meeting"
     printf '{"home": "/from-xdg"}\n' > "$BATS_TEST_TMPDIR/xdg/meeting/config.json"
