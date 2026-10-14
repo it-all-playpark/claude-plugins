@@ -47,14 +47,14 @@ async function setup($: EngineInterface, args: string, configuredDir: string): P
   const s = await loadSetup($, configuredDir)
   const host = args.trim() || s.host
   if (host === '') {
-    return 'mosh-paste: 使い方: /mosh-paste-setup <手元の Mac の ssh 接続先>（例: /mosh-paste-setup my-mac.example.ts.net）'
+    return '使い方: /mosh-paste-setup <手元の Mac の ssh 接続先>（例: /mosh-paste-setup my-mac.example.ts.net）'
   }
   await $.store.set('host', host)
 
   if (!(await $.fs.exists(s.key))) {
     const r = await $.process.run(keygenArgv(s.key))
     const error = failure(r)
-    if (error !== undefined) return `mosh-paste: 鍵 ${s.key} を作れなかった (${error})`
+    if (error !== undefined) return `鍵 ${s.key} を作れなかった (${error})`
   }
 
   const r = await $.process
@@ -62,7 +62,7 @@ async function setup($: EngineInterface, args: string, configuredDir: string): P
     .catch((err: unknown) => ({ exitCode: -1, stderr: String(err) }))
   const error = failure(r)
   if (error !== undefined) return setupHint(host, s.key, error)
-  return `mosh-paste: ${host} に鍵で入れた。設定完了（このマシンにだけ保存）`
+  return `${host} に鍵で入れた。設定完了（このマシンにだけ保存）`
 }
 
 export const register: Register = (on, options) => {

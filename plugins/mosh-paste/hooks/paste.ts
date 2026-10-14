@@ -110,14 +110,24 @@ export function keygenArgv(key: string): string[] {
   return ['/bin/sh', '-c', 'umask 077; mkdir -p "$1" && ssh-keygen -q -t ed25519 -N "" -C mosh-paste -f "$2"', 'mosh-paste', dir, key]
 }
 
-// What /mosh-paste-setup tells the person when the check fails: the one
-// command that needs their password (and the first host key prompt).
+// What /mosh-paste-setup tells the person when the check fails, by ssh's
+// reason. Not reaching sshd at all is the one case the key cannot fix; any
+// answer from sshd (a refused key, an unknown host key) is fixed by the one
+// ssh-copy-id run, which asks for the password and the first host key.
+// The engine leads a command's text with the plugin's name, so none here.
 export function setupHint(host: string, key: string, reason: string): string {
+  if (/Connection refused|timed out|No route to host|Could not resolve hostname/i.test(reason)) {
+    return [
+      `${host} の ssh に届かなかった (${reason})`,
+      '',
+      '接続先の名前が合っているか、手元の Mac の「システム設定 → 一般 → 共有 → リモートログイン」がオンか、',
+      '同じネットワーク（Tailscale 等）に居るかを確かめて、もう一度 /mosh-paste-setup を実行する',
+    ].join('\n')
+  }
   return [
-    `mosh-paste: ${host} に鍵で入れなかった (${reason})`,
+    `${host} にはまだ mosh-paste の鍵が登録されていない (${reason})`,
     '',
-    '手元の Mac の「リモートログイン」をオンにしてから、このマシンの端末で次を 1 回実行し、',
-    `終わったらもう一度 /mosh-paste-setup を実行する（手元の Mac のログインパスワードを聞かれる）:`,
+    'このマシンの端末で次を 1 回実行し（手元の Mac のログインパスワードを聞かれる）、終わったらもう一度 /mosh-paste-setup を実行する:',
     '',
     `  ssh-copy-id -o IdentitiesOnly=yes -i ${key}.pub ${host}`,
   ].join('\n')

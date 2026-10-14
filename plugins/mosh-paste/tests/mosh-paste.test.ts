@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { candidates, checkArgv, failure, fetchArgv, keygenArgv, keyPath, localPath, splice, words } from '../hooks/paste'
+import { candidates, checkArgv, failure, fetchArgv, keygenArgv, keyPath, localPath, setupHint, splice, words } from '../hooks/paste'
 
 const KEY = keyPath('/Users/x')
 
@@ -48,6 +48,16 @@ function world(on: On, w: World) {
   })
   return { runs, store }
 }
+
+test('the setup hint sends a refused key to ssh-copy-id and an unreachable sshd to Remote Login', () => {
+  const refused = setupHint('m', KEY, 'naramoto@m: Permission denied (publickey,password,keyboard-interactive).')
+  expect(refused).toContain(`ssh-copy-id -o IdentitiesOnly=yes -i ${KEY}.pub m`)
+  expect(refused).not.toContain('リモートログイン')
+
+  const unreachable = setupHint('m', KEY, 'ssh: connect to host m port 22: Connection refused')
+  expect(unreachable).toContain('リモートログイン')
+  expect(unreachable).not.toContain('ssh-copy-id')
+})
 
 test('setup without a host asks for one and runs nothing', async ($, on) => {
   const { runs } = world(on, { keyExists: false, check: { exitCode: 0, stderr: '' } })
