@@ -9,7 +9,7 @@ Built and maintained by [playpark LLC](https://www.playpark.co.jp/) — an AI de
 
 ## Quick Start
 
-本 repo は 6 つの Claude Code plugin（`playpark-core` / `dev-flow` / `playpark-skills` / `host-exec` / `meeting` / `bg-sessions`）に
+本 repo は 7 つの Claude Code plugin（`playpark-core` / `dev-flow` / `playpark-skills` / `host-exec` / `meeting` / `bg-sessions` / `mosh-paste`）に
 分かれています。導入方法は用途によって 2 通りあります。
 
 ### 配布側インストール（copy mode）
@@ -28,6 +28,7 @@ Marketplaces で auto-update を有効化。`DISABLE_AUTOUPDATER=1` 環境では
 /plugin install host-exec@playpark        # sandbox 外での承認付き実行ツール（任意）
 /plugin install meeting@playpark          # 会議の自動録音・ローカル文字起こし・議事録（macOS、任意）
 /plugin install bg-sessions@playpark      # bg セッションの repo・worktree をプロンプト上に表示（任意）
+/plugin install mosh-paste@playpark       # mosh 先に貼った手元 Mac のパスを ssh で取ってきて置き換え（任意）
 ```
 
 `host-exec` は hooks module（`plugins/host-exec/hooks/register.ts`）で `mcp__host-exec__run` ツールを
@@ -64,6 +65,13 @@ transcript の最終行の `cwd` / `gitBranch` から取るので、セッショ
 
 数字にしないのは、帯の数字キーは空のプロンプトで数字を打っただけで押されるためです（英字は帯か一覧にフォーカスが
 あるときだけ効く）。
+
+`mosh-paste` は、手元の Mac から mosh / ssh で入った先の Claude Code に、手元にしか無いファイルのパス（ターミナルに
+ドロップしたスクショ等）を貼ったときに働きます。貼った文字列の中にこのマシンに無い画像・PDF の絶対パスがあれば、
+ssh で手元の Mac から `cat` して `dir`（既定 `/tmp/mosh-paste`）に写し、入力欄のパスをそのコピーに置き換えます。
+取れなかったときは元のパスのまま残して toast で理由を出します。前提として、入った先から手元の Mac へ
+`ssh -o BatchMode=yes <host> true` が通ること（手元の Mac のリモートログインを有効にし、鍵を登録し、初回のホスト鍵を
+受け入れておく）。`host`（`/config` の plugin の行）が空のあいだは何もしません。
 
 Use skills in Claude Code:
 
@@ -435,10 +443,14 @@ skills/
 │   │   ├── recorder/                     # Swift: ScreenCaptureKit 録音 + CoreAudio で会議検知
 │   │   ├── transcribe/                   # Python: mlx-whisper + pyannote
 │   │   └── meeting-notes/SKILL.md
-│   └── bg-sessions/                      # bg セッションの repo・worktree 表示 plugin（skill なし）
-│       ├── hooks/register.tsx            # 帯・/bg-sessions 一覧・15 秒ごとの取得
-│       ├── hooks/sessions.ts             # agents --json と transcript 末尾の解釈
-│       └── tests/bg-sessions.test.ts     # claude plugin test で実行
+│   ├── bg-sessions/                      # bg セッションの repo・worktree 表示 plugin（skill なし）
+│   │   ├── hooks/register.tsx            # 帯・/bg-sessions 一覧・15 秒ごとの取得
+│   │   ├── hooks/sessions.ts             # agents --json と transcript 末尾の解釈
+│   │   └── tests/bg-sessions.test.ts     # claude plugin test で実行
+│   └── mosh-paste/                       # 手元 Mac のパスを ssh で取ってきて置き換える plugin（skill なし）
+│       ├── hooks/register.ts             # prompt.edit で貼り付けを受け、存在確認・ssh 取得
+│       ├── hooks/paste.ts                # パスの切り出し・取得コマンド・置換（$ を使わない部分）
+│       └── tests/mosh-paste.test.ts      # claude plugin test で実行
 ├── tools/                                 # sync-inlines.mjs 等 repo 全体ツール
 ├── tests/                                 # bats / vitest ランナーと横断テスト
 ├── docs/                                  # dev-flow-atlas.md 等ドキュメント
