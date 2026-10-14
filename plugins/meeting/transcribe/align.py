@@ -139,6 +139,68 @@ def _join(a: str, b: str) -> str:
     return a + b
 
 
+def speech_spans(
+    levels_db: list[float],
+    frame: float,
+    threshold_db: float = -50.0,
+    pad: float = 0.3,
+    merge_gap: float = 1.0,
+) -> list[tuple[float, float]]:
+    """フレームごとの音量 (dBFS) から話している区間 (秒) を出す。
+
+    Groq には無音を送らない: 無音区間で「ご視聴ありがとうございました」の幻聴が出るうえ、
+    Groq の no_speech_prob は常に 0 で is_hallucination では落とせない。送る秒数も無料枠の上限に効く。
+    前後を pad 秒広げ、merge_gap 秒以内の隙間はつなぐ (語頭・語尾と息継ぎを切らない)。
+    """
+    total = len(levels_db) * frame
+    spans: list[tuple[float, float]] = []
+    for i, db in enumerate(levels_db):
+        if db < threshold_db:
+            continue
+        s, e = max(0.0, i * frame - pad), min(total, (i + 1) * frame + pad)
+        if spans and s - spans[-1][1] <= merge_gap:
+            spans[-1] = (spans[-1][0], e)
+        else:
+            spans.append((s, e))
+    return spans
+
+
+def to_source_time(t: float, spans: list[tuple[float, float]]) -> float:
+    """spans をつないだ音声の時刻 t を、元の音声の時刻に戻す。"""
+    offset = 0.0
+    for s, e in spans:
+        if t <= offset + (e - s):
+            return s + max(0.0, t - offset)
+        offset += e - s
+    return spans[-1][1] if spans else t
+
+
+def groq_segments(resp: dict, spans: list[tuple[float, float]]) -> list[dict]:
+    """Groq の verbose_json を mlx-whisper と同じ形 (セグメントの中に words) にし、時刻を元の音声に戻す。
+
+    Groq は単語をセグメントの外 (最上位の words) に返し、順序が前後したりどのセグメントにも
+    入らなかったりするので、開始時刻で含むセグメント、無ければ最寄りのセグメントに入れる。
+    """
+    segs = [
+        {k: v for k, v in s.items() if k in ("start", "end", "text", "avg_logprob", "compression_ratio", "no_speech_prob")}
+        | {"words": []}
+        for s in resp.get("segments") or []
+    ]
+    if not segs:
+        return []
+    for w in resp.get("words") or []:
+        t = w["start"]
+        home = next((s for s in segs if s["start"] <= t < s["end"]), None)
+        if home is None:
+            home = min(segs, key=lambda s: s["start"] - t if t < s["start"] else t - s["end"])
+        home["words"].append({"word": w["word"], "start": w["start"], "end": w["end"]})
+    for s in segs:
+        s["words"].sort(key=lambda w: w["start"])
+        for x in (s, *s["words"]):
+            x["start"], x["end"] = to_source_time(x["start"], spans), to_source_time(x["end"], spans)
+    return segs
+
+
 def relabel(turns: list[Turn]) -> dict[str, str]:
     """pyannote の SPEAKER_00 などを登場順に 話者A, 話者B… へ。"""
     mapping: dict[str, str] = {}

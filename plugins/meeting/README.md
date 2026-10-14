@@ -2,7 +2,8 @@
 
 主催者が自分でなくても（録画ボタンが押せなくても）、**自分の Mac で鳴っている会議音声**を録音し、
 Whisper で文字起こし・pyannote で話者分離して、`/meeting-notes` で議事録にする plugin。
-Zoom / Google Meet / Teams などアプリを問わず使え、処理はすべてローカル（Apple Silicon）で完結する。
+Zoom / Google Meet / Teams などアプリを問わず使え、既定では処理はすべてローカル（Apple Silicon）で完結する
+（Whisper だけ Groq に出して作業マシンを軽くすることもできる: [Whisper を Groq で処理する](#whisper-を-groq-で処理する)）。
 
 ```
 meeting-rec (Swift)                        transcribe.py                      /meeting-notes
@@ -141,8 +142,33 @@ sandbox の書き込み許可（`sandbox.filesystem.allowWrite`）に入れて�
 
 | 環境変数 | 既定 |
 |---|---|
+| `MEETING_ASR_BACKEND` | `mlx`（`groq` で Whisper を Groq に送る。下記） |
 | `MEETING_ASR_MODEL` | `mlx-community/whisper-large-v3-turbo` |
 | `MEETING_DIAR_MODEL` | `pyannote/speaker-diarization-community-1`（pyannote.audio 3 系なら `pyannote/speaker-diarization-3.1`） |
+
+## Whisper を Groq で処理する
+
+文字起こしで重いのは Whisper（手元の計測で、同じ音声に対し pyannote の約 2 倍。しかも 2 トラック分走る）。
+`MEETING_ASR_BACKEND=groq` にすると Whisper だけを [Groq](https://console.groq.com/) の
+`whisper-large-v3-turbo` に送り、作業マシンの GPU を空ける（5.5 分の音声で約 2 秒）。話者分離は手元のまま。
+既定は `mlx` で、設定しない限り音声は外に出ない。
+
+1. Groq のアカウントを作り API キーを発行する。コンソールの Data Controls で **Zero Data Retention** を有効にする
+   （無効のままだと不正利用の監視用に入出力が最大 30 日残る）。Groq は規約で入出力を学習に使わない
+2. API キーをログイン Keychain に入れる（ssh / mosh 越しなら先に `security unlock-keychain`）:
+   `security add-generic-password -a "$USER" -s meeting-groq -w`
+3. `MEETING_ASR_BACKEND=groq meeting install`（自動録音に反映）。手動なら `meeting transcribe <dir> --asr-backend groq`
+
+送るもの・送らないもの:
+
+- 送るのは**話している区間だけ**をつないだ音声（16kHz モノラル Opus 32kbps）。無音を送ると Groq は無音区間に
+  「ご視聴ありがとうございました」を書き起こし、しかも `no_speech_prob` が常に 0 なので後から落とせないため
+- `meta.json` の `prompt`（固有名詞のヒント）は送らない。送り先は `api.groq.com` に固定
+- Keychain が読めない・上限超過（429）・通信失敗のときは手元の mlx-whisper で処理し直す。どのトラックを
+  Groq に送ったかは `transcript.json` の `asr_backend` に残る
+
+無料枠の上限は 1 時間 7,200 秒・1 日 28,800 秒（音声の秒数）。話している区間だけを送るので、60 分の会議でも
+多くは数十分ぶんに収まる。音声は Groq（米国）に渡るので、客先の会議などで外部に出せない場合は使わない。
 
 ## 録音のマナー
 
