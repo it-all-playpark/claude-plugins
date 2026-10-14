@@ -27,6 +27,17 @@ class PostGroqTest(unittest.TestCase):
             transcribe.post_groq(b"OGG", args)
         return sent["req"]
 
+    def test_connection_reset_becomes_groq_error(self):
+        # URLError に包まれない接続断も GroqError にして mlx に戻す
+        def fake_urlopen(req, timeout):
+            raise ConnectionResetError("reset by peer")
+
+        args = argparse.Namespace(language="ja")
+        with mock.patch.object(transcribe, "groq_key", return_value="k"), \
+                mock.patch("urllib.request.urlopen", fake_urlopen):
+            with self.assertRaises(transcribe.GroqError):
+                transcribe.post_groq(b"OGG", args)
+
     def test_sets_own_user_agent(self):
         # urllib 既定の Python-urllib/x.y だと Cloudflare に 403 (error 1010) で弾かれ、毎回ローカルに戻る
         req = self.post()

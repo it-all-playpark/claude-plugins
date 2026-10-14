@@ -138,6 +138,7 @@ def groq_key() -> str:
 
 
 def post_groq(ogg: bytes, args) -> dict:
+    import http.client
     import urllib.error
     import urllib.request
     import uuid
@@ -167,7 +168,9 @@ def post_groq(ogg: bytes, args) -> dict:
     except urllib.error.HTTPError as e:
         retry = e.headers.get("retry-after")
         raise GroqError(f"HTTP {e.code}{f' (retry-after {retry}s)' if retry else ''}: {e.read()[:200]!r}") from None
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+    # urlopen は getresponse() / read() 中の例外 (RemoteDisconnected, ConnectionResetError, IncompleteRead,
+    # ssl.SSLError) を URLError に包まない。GroqError にしないと mlx に戻らず文字起こし全体が落ちる
+    except (OSError, http.client.HTTPException, json.JSONDecodeError) as e:
         raise GroqError(str(e)) from None
 
 

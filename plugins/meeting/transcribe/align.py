@@ -201,7 +201,9 @@ def _segment_of_words(seg_texts: list[str], words: list[str]) -> list[int]:
     return out
 
 
-def groq_segments(resp: dict, spans: list[tuple[float, float]], max_word: float = 2.0) -> list[dict]:
+def groq_segments(
+    resp: dict, spans: list[tuple[float, float]], max_word: float = 2.0, min_word_chars: float = 0.8
+) -> list[dict]:
     """Groq の verbose_json を mlx-whisper と同じ形 (セグメントの中に words) にし、時刻を元の音声に戻す。
 
     Groq は単語をセグメントの外 (最上位の words) に返す。単語の時刻はセグメントの区切りと食い違い、
@@ -220,6 +222,10 @@ def groq_segments(resp: dict, spans: list[tuple[float, float]], max_word: float 
     for w, j in zip(words, _segment_of_words([s["text"] for s in segs], [w["word"] for w in words])):
         segs[j]["words"].append({"word": w["word"], "start": max(w["start"], w["end"] - max_word), "end": w["end"]})
     for s in segs:
+        # words から語が抜けることがある。単語を連結すると抜けた語が transcript から消えるので、
+        # 文字数が大きく足りないセグメントは words を捨て、セグメント全文を 1 単語として使わせる
+        if len("".join(_chars(w["word"]) for w in s["words"])) < min_word_chars * len(_chars(s.get("text", ""))):
+            s["words"] = []
         s["start"], s["end"] = to_source_time(s["start"], spans), to_source_time(s["end"], spans)
         for w in s["words"]:
             w["start"] = to_source_time(w["start"], spans)

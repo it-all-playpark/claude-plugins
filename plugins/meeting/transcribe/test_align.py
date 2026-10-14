@@ -196,7 +196,11 @@ class GroqSegmentsTest(unittest.TestCase):
     def test_missing_words_do_not_shift_later_segments(self):
         resp = self.resp()
         del resp["words"][1:3]  # 「こえるよね」が単語の配列から抜ける (実際の応答で起きる)
-        self.assertEqual(self.text_of(groq_segments(resp, [(0.0, 5.0)])), [("聞こえるよね", "聞"), ("はいね", "はいね")])
+        segs = groq_segments(resp, [(0.0, 5.0)])
+        # 単語が大きく足りないセグメントは words を捨て、セグメント全文を残す
+        self.assertEqual(self.text_of(segs), [("聞こえるよね", ""), ("はいね", "はいね")])
+        utts = build_utterances(segs, "mic", fixed_speaker="自分")
+        self.assertEqual([u.text for u in utts], ["聞こえるよねはいね"])
 
     def test_maps_time_back_and_drops_extra_fields(self):
         segs = groq_segments(self.resp(), [(100.0, 105.0)])
