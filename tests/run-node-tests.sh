@@ -5,8 +5,8 @@
 #
 # Behavior (post issue #356 vitest migration):
 #   - Test discovery (include/exclude) is owned by `vitest.config.mjs`
-#     (include `**/*.test.mjs`, excluding `.git`, `node_modules`, `.serena`,
-#     `.system`, and `.claude/worktrees` to avoid double-running
+#     (include `**/*.test.mjs`, excluding `.git`, `node_modules`, and
+#     `.claude/worktrees` to avoid double-running
 #     tests in shared worktrees). This script no longer discovers files
 #     itself.
 #   - If `node` is not installed:

@@ -146,7 +146,7 @@ test('[removed-phase] (b) plan.parallel: synthesizeImplPlan は serial のみを
 // phase_durations / phase_latency の analyze・plan 列、PHASE_NAMES の analyze・plan、Plan の iteration / verdict キーが無い ----
 
 const SCAN_EXT = new Set(['.sh', '.mjs', '.json', '.bats']);
-const SKIP_DIRS = new Set(['node_modules', '.git', '.agents', '.serena', '.system']);
+const SKIP_DIRS = new Set(['node_modules', '.git']);
 
 function walk(dir, out) {
   for (const name of readdirSync(dir)) {

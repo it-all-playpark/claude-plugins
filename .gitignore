@@ -1,4 +1,4 @@
-# Claude Code / Serena / Codex
+# Claude Code
 .claude/*
 # plugin 配下の local 設定（.claude/* は root 固定パターンなので届かない）
 plugins/*/.claude/settings.local.json
@@ -8,8 +8,6 @@ plugins/*/.claude/settings.local.json
 # Track path-scoped rules (dev-flow 内部仕様の遅延読み込み — AGENTS.md から分離)
 !.claude/rules/
 !.claude/rules/**
-# Legacy: skill-config.json は現在リポジトリルートに配置
-.serena/
 
 # Credentials & secrets
 client_secret.json
@@ -19,22 +17,11 @@ client_secret.json
 # Environment variables (user-specific config)
 .env
 
-# Workspace config with token references (use *.example.json as template)
-**/workspaces.json
-
 # Generated reports
 ga_report.json
-trends_report.json
-content_plan.json
 
 # OAuth tokens (if stored locally)
 **/ga_tokens*.json
-
-# Trends cache
-.trends_cache/
-
-# Late API upload cache
-.late-upload-cache.json
 
 # Node (末尾 / を付けない — worktree 側の node_modules は main checkout への symlink で、
 # `node_modules/` は directory にしかマッチせず symlink が untracked のまま残る)
@@ -44,9 +31,6 @@ node_modules
 __pycache__/
 *.pyc
 *.pyo
-
-# Packaged skills
-*.skill
 
 # veridelta run records (redgreen-verify.sh の vdelta run 経路の出力)
 .veridelta/
