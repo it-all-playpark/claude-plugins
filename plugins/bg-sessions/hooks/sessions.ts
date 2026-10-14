@@ -116,6 +116,24 @@ export function zellijSessionFor(repo: string, listed: string): string | null {
   return names.find(n => loose(n) === loose(repo)) ?? null
 }
 
+/**
+ * `zellij action list-clients` の出力に、このセッションを表示している client がいるか。
+ * bg セッションを見ている client は `claude attach <id>` か、起動した repo（かその親）を --cwd にした `claude agents` を動かしている
+ */
+export function showsSession(clients: string, self: { id: string; cwd: string }): boolean {
+  return clients.split('\n').slice(1).some(line => {
+    const argv = line.trim().split(/\s+/).slice(2)
+    const at = argv.findIndex(a => a === 'claude' || a.endsWith('/claude'))
+    if (at < 0) return false
+    const [sub, ...rest] = argv.slice(at + 1)
+    if (sub === 'attach') return rest[0] === self.id
+    if (sub !== 'agents') return false
+    const i = rest.indexOf('--cwd')
+    const dir = i >= 0 ? rest[i + 1]?.replace(/\/+$/, '') : undefined
+    return !!dir && (self.cwd === dir || self.cwd.startsWith(`${dir}/`))
+  })
+}
+
 export function where(s: BgSession): string {
   return s.worktree ? `${s.repo}/${s.worktree}` : s.repo
 }

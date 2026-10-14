@@ -10,6 +10,7 @@ import {
   lastLocation,
   pad,
   parseAgents,
+  showsSession,
   sortSessions,
   toSession,
   where,
@@ -23,7 +24,7 @@ const sessions = atom({ plugin: 'bg-sessions', key: 'sessions' } as const, null)
 const checkedAt = atom({ plugin: 'bg-sessions', key: 'checkedAt' } as const, 0)
 const showStale = atom({ plugin: 'bg-sessions', key: 'showStale' } as const, false)
 const error = atom({ plugin: 'bg-sessions', key: 'error' } as const, null)
-const selfBackground = atom({ plugin: 'bg-sessions', key: 'selfBackground' } as const, false)
+const selfBackground = atom({ plugin: 'bg-sessions', key: 'selfBackground' } as const, null)
 
 let refreshing = false
 
@@ -73,7 +74,8 @@ async function refresh($: Engine): Promise<void> {
     const self = await $.session.id()
     const all = parseAgents(listed.stdout)
     const rows = all.filter(r => r.kind === 'background' && r.sessionId !== self)
-    await update($, selfBackground, () => all.some(r => r.kind === 'background' && r.sessionId === self))
+    const me = all.find(r => r.kind === 'background' && r.sessionId === self)
+    await update($, selfBackground, () => (me ? { id: me.id, cwd: me.cwd } : null))
     const projects = await projectsDir($)
     let dirs: string[] = []
     try {
@@ -93,13 +95,48 @@ async function refresh($: Engine): Promise<void> {
   }
 }
 
+/**
+ * bg セッションを表示している client がいる zellij セッション。bg セッションは daemon が起動していて zellij の外で動き、
+ * 環境の ZELLIJ_SESSION_NAME も daemon 起動時の古い値なので、全セッションの client 一覧から見ている側を探す
+ */
+async function viewerSession($: Engine, self: { id: string; cwd: string }): Promise<string | null> {
+  const listed = await $.process.run(['zellij', 'list-sessions', '--short', '--no-formatting'], { timeoutMs: 5000 })
+  if (listed.exitCode !== 0) return null
+  const names = listed.stdout.split('\n').map(l => l.trim()).filter(Boolean)
+  const shows = await Promise.all(names.map(async name => {
+    try {
+      const clients = await $.process.run(['zellij', '--session', name, 'action', 'list-clients'], { timeoutMs: 3000 })
+      // 終了済み（EXITED）のセッションは失敗する
+      return clients.exitCode === 0 && showsSession(clients.stdout, self)
+    } catch {
+      return false
+    }
+  }))
+  return names.find((_, i) => shows[i]) ?? null
+}
+
+/**
+ * zellij の action を送る宛先。対話セッションは自分のいる zellij。bg セッションは自分を表示している zellij で、
+ * 外から送るので --session で宛先を決める（宛先でフォーカスしている client・pane に効く）。見つからなければ知らせて null
+ */
+async function zellijHome($: Engine): Promise<{ session: string | undefined; argv: string[] } | null> {
+  const bg = await read($, selfBackground)
+  if (!bg) {
+    if (await $.env.get('ZELLIJ')) return { session: await $.env.get('ZELLIJ_SESSION_NAME'), argv: [] }
+    $.ui.toast('bg-sessions: zellij の中で動いていません')
+    return null
+  }
+  const session = await viewerSession($, bg)
+  if (session) return { session, argv: ['--session', session] }
+  $.ui.toast('bg-sessions: このセッションを表示している zellij が見つかりません')
+  return null
+}
+
 /** repo と同じ名前の zellij セッションへ移る。zellij の外・同名セッションが無いときは toast だけで何もしない */
 async function switchTo($: Engine, s: BgSession): Promise<void> {
-  if (!(await $.env.get('ZELLIJ'))) {
-    $.ui.toast('bg-sessions: zellij の中で動いていないので移動できません')
-    return
-  }
   try {
+    const home = await zellijHome($)
+    if (!home) return
     const listed = await $.process.run(['zellij', 'list-sessions', '--short', '--no-formatting'], { timeoutMs: 5000 })
     const target = listed.exitCode === 0 ? zellijSessionFor(s.repo, listed.stdout) : null
     if (!target) {
@@ -107,11 +144,11 @@ async function switchTo($: Engine, s: BgSession): Promise<void> {
       return
     }
     // 今いるセッションへの switch-session は何も変わらず、押しても反応しないように見える
-    if (target === (await $.env.get('ZELLIJ_SESSION_NAME'))) {
+    if (target === home.session) {
       $.ui.toast(`bg-sessions: すでに ${target} にいます`)
       return
     }
-    const moved = await $.process.run(['zellij', 'action', 'switch-session', target], { timeoutMs: 5000 })
+    const moved = await $.process.run(['zellij', ...home.argv, 'action', 'switch-session', target], { timeoutMs: 5000 })
     if (moved.exitCode !== 0) {
       $.ui.toast(`bg-sessions: ${target} へ移動できませんでした: ${moved.stderr.trim() || `exit ${moved.exitCode}`}`)
       return
@@ -127,17 +164,15 @@ async function switchTo($: Engine, s: BgSession): Promise<void> {
  * など）コマンドが終わり、--close-on-exit で pane が閉じて元の Claude に戻る。bg セッション自体は動き続ける
  */
 async function attachHere($: Engine, s: BgSession): Promise<void> {
-  if (!(await $.env.get('ZELLIJ'))) {
-    $.ui.toast('bg-sessions: zellij の中で動いていないので開けません')
-    return
-  }
   // zellij run の pane は zellij サーバーの環境で起動し、その PATH では claude に届かないことがある（届かないと
   // --close-on-exit で pane が即閉じて何も起きないように見える）。claude を実行できているこのセッションの PATH を渡す
   const path = await $.env.get('PATH')
   const attach = [...(path ? ['env', `PATH=${path}`] : []), 'claude', 'attach', s.id]
   try {
+    const home = await zellijHome($)
+    if (!home) return
     const opened = await $.process.run(
-      ['zellij', 'run', '--in-place', '--close-on-exit', '--name', `bg ${where(s)}`, '--', ...attach],
+      ['zellij', ...home.argv, 'run', '--in-place', '--close-on-exit', '--name', `bg ${where(s)}`, '--', ...attach],
       { timeoutMs: 5000 },
     )
     if (opened.exitCode !== 0) {
@@ -211,9 +246,6 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    // bg セッション自身は daemon が起動していて zellij の pane の中に居ない（ZELLIJ が無い）。attach して見ていても
-    // 選んだものを開けないうえ、bg セッション同士の行き来は agent view でできるので帯は出さない
-    if (await read($, selfBackground)) return next(e)
     const list = await read($, sessions)
     if (!list) return next(e)
     const active = list.filter(s => s.status !== 'stale')
@@ -260,8 +292,6 @@ export const register: Register = (on, options) => {
     const staleCount = list.filter(s => s.status === 'stale').length
     const shown = list.filter(s => withStale || s.status !== 'stale')
     const wide = e.props.bodyColumns >= 90
-    // 帯と同じ理由で、bg セッションの中では選んでも開けないので押せる行にしない
-    const pressable = selectable && !(await read($, selfBackground))
 
     return (
       <Box flexDirection="column">
@@ -276,7 +306,7 @@ export const register: Register = (on, options) => {
             <Text dimColor>{pad(ago(now - s.updatedAt), 5)}</Text>,
             wide ? ` ${s.name}` : '',
           ]
-          return pressable ? (
+          return selectable ? (
             <Button
               key={s.id}
               plain
