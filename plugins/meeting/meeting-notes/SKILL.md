@@ -98,6 +98,7 @@ attendees: [自分, 田中, 佐藤]
 recording: <DIR の絶対パス>
 unresolved_speakers: [話者C]
 transcript: "[[<transcripts_dir>/YYYY-MM-DD-<slug>]]"
+transcript_path: <保存した全文の絶対パス>
 ---
 
 # <タイトル>
@@ -122,7 +123,9 @@ transcript: "[[<transcripts_dir>/YYYY-MM-DD-<slug>]]"
 ```
 
 - `duration_min` は `ended_at` が無ければ（録音プロセスが異常終了した場合）最後の発話の `end` から分に切り上げ、メモに「終了時刻は推定」と書く。
-- `transcript:` は Step 4 で全文を実際に保存したときだけ書く（保存しないなら行ごと消す）。
+- `transcript:` と `transcript_path:` は Step 4 で全文を実際に保存したときだけ書く（保存しないなら両方とも行ごと消す）。
+  `transcript_path:` には保存した全文の絶対パスを書く。`transcript:` は作成時の cwd 相対なので、
+  `meeting name` が別の cwd から全文を見つけるのに使う。
 - `recording:` と `unresolved_speakers:` は `meeting name` が議事録を探す手がかりなので、上の形のまま 1 行で書く。
   `unresolved_speakers:` は名前を確定できなかった話者がいるときだけ書く。
 - 書かれていないことを補完しない。推測は「(推測)」と明記する。
