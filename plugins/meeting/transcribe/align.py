@@ -175,11 +175,39 @@ def to_source_time(t: float, spans: list[tuple[float, float]]) -> float:
     return spans[-1][1] if spans else t
 
 
-def groq_segments(resp: dict, spans: list[tuple[float, float]]) -> list[dict]:
+def _span_end(t: float, spans: list[tuple[float, float]]) -> float:
+    return next((e for s, e in spans if s <= t <= e), t)
+
+
+def _chars(s: str) -> str:
+    return "".join(c for c in s if c.isalnum())
+
+
+def _segment_of_words(seg_texts: list[str], words: list[str]) -> list[int]:
+    """各単語が属するセグメントの番号を、文字の突き合わせで決める (前のセグメントには戻らない)。"""
+    from difflib import SequenceMatcher
+
+    seg_of_char = [i for i, t in enumerate(seg_texts) for _ in _chars(t)]
+    word_of_char = [i for i, w in enumerate(words) for _ in _chars(w)]
+    hit: dict[int, int] = {}
+    m = SequenceMatcher(None, "".join(map(_chars, words)), "".join(map(_chars, seg_texts)), autojunk=False)
+    for a, b, n in m.get_matching_blocks():
+        for k in range(n):
+            hit.setdefault(word_of_char[a + k], seg_of_char[b + k])
+    out, cur = [], 0
+    for i in range(len(words)):
+        cur = max(cur, hit.get(i, cur))
+        out.append(cur)
+    return out
+
+
+def groq_segments(resp: dict, spans: list[tuple[float, float]], max_word: float = 2.0) -> list[dict]:
     """Groq の verbose_json を mlx-whisper と同じ形 (セグメントの中に words) にし、時刻を元の音声に戻す。
 
-    Groq は単語をセグメントの外 (最上位の words) に返し、順序が前後したりどのセグメントにも
-    入らなかったりするので、開始時刻で含むセグメント、無ければ最寄りのセグメントに入れる。
+    Groq は単語をセグメントの外 (最上位の words) に返す。単語の時刻はセグメントの区切りと食い違い、
+    開始時刻もときどき前に戻るので、時刻ではなく文字の突き合わせでセグメントに振り分け、返ってきた順を保つ。
+    直前の無音を抱えて何秒にも伸びる単語は max_word 秒に詰め、終わりは切り落とした無音をまたがせない
+    (伸びたままだと発話が長くなり、話者の割り当ても隣の話者に引っ張られる)。
     """
     segs = [
         {k: v for k, v in s.items() if k in ("start", "end", "text", "avg_logprob", "compression_ratio", "no_speech_prob")}
@@ -188,16 +216,14 @@ def groq_segments(resp: dict, spans: list[tuple[float, float]]) -> list[dict]:
     ]
     if not segs:
         return []
-    for w in resp.get("words") or []:
-        t = w["start"]
-        home = next((s for s in segs if s["start"] <= t < s["end"]), None)
-        if home is None:
-            home = min(segs, key=lambda s: s["start"] - t if t < s["start"] else t - s["end"])
-        home["words"].append({"word": w["word"], "start": w["start"], "end": w["end"]})
+    words = resp.get("words") or []
+    for w, j in zip(words, _segment_of_words([s["text"] for s in segs], [w["word"] for w in words])):
+        segs[j]["words"].append({"word": w["word"], "start": max(w["start"], w["end"] - max_word), "end": w["end"]})
     for s in segs:
-        s["words"].sort(key=lambda w: w["start"])
-        for x in (s, *s["words"]):
-            x["start"], x["end"] = to_source_time(x["start"], spans), to_source_time(x["end"], spans)
+        s["start"], s["end"] = to_source_time(s["start"], spans), to_source_time(s["end"], spans)
+        for w in s["words"]:
+            w["start"] = to_source_time(w["start"], spans)
+            w["end"] = min(to_source_time(w["end"], spans), _span_end(w["start"], spans))
     return segs
 
 
