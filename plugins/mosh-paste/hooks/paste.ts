@@ -78,10 +78,14 @@ function shellQuote(s: string): string {
   return `'${s.replaceAll("'", `'\\''`)}'`
 }
 
+// The copy directory must be this user's own real directory: in a shared or
+// pre-created one another user could plant a symlink that the write follows.
+// Writing to a mktemp file and renaming it never follows a name in the way.
 const FETCH = [
-  'mkdir -p "$(dirname "$3")" &&',
-  'ssh -o BatchMode=yes -o ConnectTimeout=5 "$1" "cat -- $2" > "$3"',
-  '|| { rm -f "$3"; exit 1; }',
+  'umask 077; d="$(dirname "$3")";',
+  '{ mkdir -p "$d" && [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ]; } || { echo "mosh-paste: $d is not a directory owned by this user" >&2; exit 1; };',
+  't="$(mktemp "$d/.part.XXXXXX")" || exit 1;',
+  'if ssh -o BatchMode=yes -o ConnectTimeout=5 "$1" "cat -- $2" > "$t"; then mv -f "$t" "$3"; else rm -f "$t"; exit 1; fi',
 ].join(' ')
 
 // BatchMode: a password prompt would hang the paste, so key auth or nothing.

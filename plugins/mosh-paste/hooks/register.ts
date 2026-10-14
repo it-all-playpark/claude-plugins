@@ -5,13 +5,15 @@ import type { Fetched, Word } from './paste'
 
 export const register: Register = (on, options) => {
   const host = String(options.host ?? '').trim()
-  const dir = String(options.dir ?? '/tmp/mosh-paste').replace(/\/+$/, '')
+  const configuredDir = String(options.dir ?? '').trim().replace(/\/+$/, '')
 
   // A paste (or a burst folded into one edit) has no single key; a typed key
   // never holds a whole path, so it is passed through untouched.
   on('prompt.edit', async ($, e, next) => {
     if (host === '' || e.key !== undefined || !e.inputText.includes('/')) return next(e)
 
+    // A per-user directory by default, never a shared one like /tmp.
+    const dir = configuredDir || `${await $.env.get('HOME')}/.cache/mosh-paste`
     const missing: Word[] = []
     for (const word of candidates(e.inputText)) {
       if (!(await $.fs.exists(word.value))) missing.push(word)

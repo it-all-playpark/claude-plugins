@@ -41,8 +41,26 @@ EOF
     PATH="$BATS_TEST_TMPDIR/bin:$PATH" run /bin/sh -c "$fetch" mosh-paste host "$quoted" "$dest"
     [ "$status" -eq 0 ]
     cmp "$src" "$dest"
+    [[ "$(ls -l "$dest")" == -rw-------* ]]
 
     PATH="$BATS_TEST_TMPDIR/bin:$PATH" run /bin/sh -c "$fetch" mosh-paste host "'/nonexistent/x.png'" "$BATS_TEST_TMPDIR/out/missing.png"
     [ "$status" -eq 1 ]
     [ ! -e "$BATS_TEST_TMPDIR/out/missing.png" ]
+    [ -z "$(find "$BATS_TEST_TMPDIR/out" -name '.part.*')" ]
+}
+
+# 共有の場所に他ユーザーが置いた symlink を辿って書かないよう、保存先が symlink の
+# ディレクトリなら取得せずに失敗する。
+@test "取得コマンドは保存先ディレクトリが symlink なら書かずに失敗する" {
+    fetch="$(sed -n "/^const FETCH = \[/,/^\]/p" "$PLUGIN_DIR/hooks/paste.ts" | sed -n "s/^  '\(.*\)',$/\1/p" | paste -sd ' ' -)"
+    [ -n "$fetch" ]
+    mkdir -p "$BATS_TEST_TMPDIR/bin" "$BATS_TEST_TMPDIR/elsewhere"
+    printf '#!/bin/sh\necho fetched\n' > "$BATS_TEST_TMPDIR/bin/ssh"
+    chmod +x "$BATS_TEST_TMPDIR/bin/ssh"
+    ln -s "$BATS_TEST_TMPDIR/elsewhere" "$BATS_TEST_TMPDIR/planted"
+
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH" run /bin/sh -c "$fetch" mosh-paste host "'/x.png'" "$BATS_TEST_TMPDIR/planted/x.png"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"is not a directory owned by this user"* ]]
+    [ -z "$(ls -A "$BATS_TEST_TMPDIR/elsewhere")" ]
 }

@@ -14,8 +14,8 @@
     "dir": {
       "type": "string",
       "title": "コピーの保存先",
-      "description": "取ってきたファイルを置くこのマシン上のディレクトリ",
-      "default": "/tmp/mosh-paste"
+      "description": "取ってきたファイルを置くこのマシン上のディレクトリ。自分が所有する、symlink でないディレクトリであること。空なら ~/.cache/mosh-paste",
+      "default": ""
     }
   }
 }
