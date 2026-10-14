@@ -7,13 +7,20 @@ const KEY = keyPath('/Users/x')
 
 const SHOT = '/Users/x/Desktop/スクリーンショット 2026-10-14 10.23.45.png'
 const SHOT_PASTED = '/Users/x/Desktop/スクリーンショット\\ 2026-10-14\\ 10.23.45.png'
-const DEST = '/tmp/mosh-paste/スクリーンショット_2026-10-14_10.23.45.png'
+const DEST = localPath('/tmp/mosh-paste', SHOT)
 
 test('a dropped screenshot path is one candidate with its unescaped value', () => {
   const [w, ...rest] = candidates(`${SHOT_PASTED} `)
   expect(rest).toEqual([])
   expect(w).toEqual({ start: 0, end: SHOT_PASTED.length, value: SHOT })
-  expect(localPath('/tmp/mosh-paste', w.value)).toBe(DEST)
+  expect(DEST).toMatch(/^\/tmp\/mosh-paste\/[0-9a-f]{8}-スクリーンショット_2026-10-14_10\.23\.45\.png$/)
+})
+
+test('two remote files sharing a basename get separate copies', () => {
+  const a = localPath('/tmp/m', '/Users/x/Desktop/image.png')
+  const b = localPath('/tmp/m', '/Users/x/Downloads/image.png')
+  expect(a).not.toBe(b)
+  expect(localPath('/tmp/m', '/Users/x/Desktop/image.png')).toBe(a)
 })
 
 test('relative paths and non-file paths are not candidates', () => {
@@ -22,7 +29,7 @@ test('relative paths and non-file paths are not candidates', () => {
 
 test('the fetch command hands host, quoted remote path, dest and the mod key to ssh', () => {
   const argv = fetchArgv('macbook', "/Users/x/it's.png", '/tmp/mosh-paste/it\'s.png', KEY)
-  expect(argv.slice(3)).toEqual(['mosh-paste', 'macbook', `'/Users/x/it'\\''s.png'`, "/tmp/mosh-paste/it's.png", KEY])
+  expect(argv.slice(3)).toEqual(['mosh-paste', 'macbook', `'/Users/x/it'\\''s.png'`, "/tmp/mosh-paste/it's.png", KEY, "/Users/x/it's.png"])
   expect(argv[2]).toContain('ssh -i "$4" -o IdentitiesOnly=yes -o BatchMode=yes')
 })
 
@@ -106,12 +113,14 @@ test('a failed fetch keeps the original spelling and reports ssh\'s reason', () 
 test('several paths among prose are each replaced in place, in any result order', () => {
   const text = "look '/Users/x/it'\\''s a.png' /Users/x/c.JPG ok"
   const [a, c] = candidates(text)
+  const [da, dc] = [localPath('/tmp/m', a.value), localPath('/tmp/m', c.value)]
   const r = splice(text, [
-    { word: c, dest: localPath('/tmp/m', c.value) },
-    { word: a, dest: localPath('/tmp/m', a.value) },
+    { word: c, dest: dc },
+    { word: a, dest: da },
   ])
-  expect(r.text).toBe("look /tmp/m/it\\'s_a.png /tmp/m/c.JPG ok")
-  expect(r.fetched).toEqual(["/tmp/m/it's_a.png", '/tmp/m/c.JPG'])
+  expect(da).toMatch(/^\/tmp\/m\/[0-9a-f]{8}-it's_a\.png$/)
+  expect(r.text).toBe(`look ${da.replace("'", "\\'")} ${dc} ok`)
+  expect(r.fetched).toEqual([da, dc])
 })
 
 test('words honours backslash escapes and both quotes', () => {

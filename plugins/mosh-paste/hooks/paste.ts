@@ -63,9 +63,21 @@ export function candidates(text: string): Word[] {
   return words(text).filter(w => w.value.startsWith('/') && EXT.test(w.value))
 }
 
+// FNV-1a over the UTF-16 code units, as 8 hex digits.
+function hash8(s: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return h.toString(16).padStart(8, '0')
+}
+
+// The whole remote path is in the name: a copy is reused when it exists, so two
+// remote files sharing a basename must not share a copy.
 export function localPath(dir: string, remote: string): string {
   const base = remote.slice(remote.lastIndexOf('/') + 1)
-  return `${dir}/${base.replace(/[\s\u202f\u00a0]+/g, '_')}`
+  return `${dir}/${hash8(remote)}-${base.replace(/[\s\u202f\u00a0]+/g, '_')}`
 }
 
 // The terminal's own spelling of a path, so the rewritten paste reads like a drop.
@@ -74,6 +86,8 @@ export function escapePath(path: string): string {
 }
 
 // Quoted for the client Mac's login shell, which runs ssh's remote command.
+// '\'' reads the same in sh and fish; a backslash inside the value does not
+// (fish unescapes \' and \\ within '...'), so FETCH refuses such paths.
 function shellQuote(s: string): string {
   return `'${s.replaceAll("'", `'\\''`)}'`
 }
@@ -82,6 +96,7 @@ function shellQuote(s: string): string {
 // pre-created one another user could plant a symlink that the write follows.
 // Writing to a mktemp file and renaming it never follows a name in the way.
 const FETCH = [
+  'case "$5" in *\\\\*) echo "mosh-paste: a path with a backslash is not fetched" >&2; exit 1;; esac;',
   'umask 077; d="$(dirname "$3")";',
   '{ mkdir -p "$d" && [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ]; } || { echo "mosh-paste: $d is not a directory owned by this user" >&2; exit 1; };',
   't="$(mktemp "$d/.part.XXXXXX")" || exit 1;',
@@ -97,7 +112,7 @@ export function keyPath(home: string): string {
 
 // BatchMode: a password prompt would hang the paste, so key auth or nothing.
 export function fetchArgv(host: string, remote: string, dest: string, key: string): string[] {
-  return ['/bin/sh', '-c', FETCH, 'mosh-paste', host, shellQuote(remote), dest, key]
+  return ['/bin/sh', '-c', FETCH, 'mosh-paste', host, shellQuote(remote), dest, key, remote]
 }
 
 export function checkArgv(host: string, key: string): string[] {

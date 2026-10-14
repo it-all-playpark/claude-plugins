@@ -6,6 +6,11 @@ setup() {
     PLUGIN_DIR="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 }
 
+# paste.ts の FETCH を TS の文字列リテラルとして読み、\\ を \ に戻してシェルに渡す形にする。
+fetch_cmd() {
+    sed -n "/^const FETCH = \[/,/^\]/p" "$PLUGIN_DIR/hooks/paste.ts" | sed -n "s/^  '\(.*\)',$/\1/p" | sed 's/\\\\/\\/g' | paste -sd ' ' -
+}
+
 @test "claude plugin test で mosh-paste.test.ts が全件 pass する" {
     command -v claude >/dev/null 2>&1 || skip "claude CLI not available"
     run claude plugin test "$PLUGIN_DIR"
@@ -19,7 +24,7 @@ setup() {
 # 失敗時に書きかけのファイルが残らないことを確かめる。
 @test "取得コマンドは空白・クォートを含むパスのバイナリをそのまま写し、失敗時は残骸を消す" {
     command -v zsh >/dev/null 2>&1 || skip "zsh not available"
-    fetch="$(sed -n "/^const FETCH = \[/,/^\]/p" "$PLUGIN_DIR/hooks/paste.ts" | sed -n "s/^  '\(.*\)',$/\1/p" | paste -sd ' ' -)"
+    fetch="$(fetch_cmd)"
     [ -n "$fetch" ]
 
     mkdir -p "$BATS_TEST_TMPDIR/bin" "$BATS_TEST_TMPDIR/src"
@@ -52,7 +57,7 @@ EOF
 # 共有の場所に他ユーザーが置いた symlink を辿って書かないよう、保存先が symlink の
 # ディレクトリなら取得せずに失敗する。
 @test "取得コマンドは保存先ディレクトリが symlink なら書かずに失敗する" {
-    fetch="$(sed -n "/^const FETCH = \[/,/^\]/p" "$PLUGIN_DIR/hooks/paste.ts" | sed -n "s/^  '\(.*\)',$/\1/p" | paste -sd ' ' -)"
+    fetch="$(fetch_cmd)"
     [ -n "$fetch" ]
     mkdir -p "$BATS_TEST_TMPDIR/bin" "$BATS_TEST_TMPDIR/elsewhere"
     printf '#!/bin/sh\necho fetched\n' > "$BATS_TEST_TMPDIR/bin/ssh"
@@ -63,4 +68,30 @@ EOF
     [ "$status" -eq 1 ]
     [[ "$output" == *"is not a directory owned by this user"* ]]
     [ -z "$(ls -A "$BATS_TEST_TMPDIR/elsewhere")" ]
+}
+
+# 接続元のログインシェルが fish だと '...' の中の \' が解釈され、sh 式のクォートが破れる。
+# バックスラッシュを含むパスは取得せずに失敗し、リモートコマンドが走らない。
+@test "取得コマンドはバックスラッシュを含むパスを fish のログインシェルに渡さない" {
+    command -v fish >/dev/null 2>&1 || skip "fish not available"
+    fetch="$(fetch_cmd)"
+    [ -n "$fetch" ]
+    mkdir -p "$BATS_TEST_TMPDIR/bin" "$BATS_TEST_TMPDIR/work"
+    cat > "$BATS_TEST_TMPDIR/bin/ssh" <<'EOF'
+#!/bin/sh
+while [ $# -gt 0 ]; do
+  case "$1" in -o|-i) shift 2 ;; *) break ;; esac
+done
+shift
+exec fish -c "$*"
+EOF
+    chmod +x "$BATS_TEST_TMPDIR/bin/ssh"
+
+    value="/a\\';touch PWNED;\\'.png"
+    quoted="'$(printf %s "$value" | sed "s/'/'\\\\''/g")'"
+    cd "$BATS_TEST_TMPDIR/work"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH" run /bin/sh -c "$fetch" mosh-paste host "$quoted" "$BATS_TEST_TMPDIR/out/x.png" "$BATS_TEST_TMPDIR/key" "$value"
+    [ "$status" -eq 1 ]
+    [ ! -e "$BATS_TEST_TMPDIR/work/PWNED" ]
+    [ ! -e "$BATS_TEST_TMPDIR/out/x.png" ]
 }
