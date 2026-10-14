@@ -51,12 +51,19 @@ transcript の最終行の `cwd` / `gitBranch` から取るので、セッショ
 `cd` しただけのときは起動した repo を出します）。作業しておらず
 3 日以上 transcript が更新されていないものは放置として件数だけにします。セッションの停止はしません。
 
-設定 `zellij_switch`（既定 off。`/config` の plugin の行で切り替える）を on にすると、帯と一覧の各セッションに
-`a` `s` `d` `f` … が割り当てられ、`ctrl+x tab` → その英字（か先頭なら Enter）で、その repo と同じ名前（`-` と `_` の
-違いは同一視）の zellij セッションへ `zellij action switch-session` で移ります。数字にしないのは、帯の数字キーは
-空のプロンプトで数字を打っただけで押されるためです（英字は帯か一覧にフォーカスがあるときだけ効く）。存在しない名前で
-switch-session すると新しいセッションが作られてしまうので、`zellij list-sessions` に無ければ移らず、今いる
-セッションなら移らずに、どちらも toast で知らせます。
+設定 `select_action`（既定 `off`。`/config` の plugin の行で選ぶ）を `attach` か `zellij-session` にすると、帯と一覧の
+各セッションに `a` `s` `d` `f` … が割り当てられ、`ctrl+x tab` → その英字（か先頭なら Enter）で選べます。どちらも zellij の
+中で動いているときだけ効きます。
+
+- `attach`: 選んだセッションそのものを、今の pane と一時的に入れ替えて `claude attach <id>` で開きます
+  （`zellij run --in-place --close-on-exit`）。attach から抜けると pane が閉じて元の Claude に戻り、bg セッションは
+  動き続けます。同じ repo のセッションが複数あっても、選んだものが開きます
+- `zellij-session`: その repo と同じ名前（`-` と `_` の違いは同一視）の zellij セッションへ
+  `zellij action switch-session` で移ります。存在しない名前で switch-session すると新しいセッションが作られて
+  しまうので、`zellij list-sessions` に無ければ移らず、今いるセッションなら移らずに、どちらも toast で知らせます
+
+数字にしないのは、帯の数字キーは空のプロンプトで数字を打っただけで押されるためです（英字は帯か一覧にフォーカスが
+あるときだけ効く）。
 
 Use skills in Claude Code:
 

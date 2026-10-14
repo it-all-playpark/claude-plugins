@@ -130,7 +130,7 @@ describe('bg-sessions', () => {
     // 自分自身と対話セッションは出さない
     expect(text).not.toContain('mine')
     expect(text).not.toContain('front')
-    // zellij_switch が off なら押せるものは無い
+    // select_action が off（既定）なら押せるものは無い
     expect(await ui.findAll({ type: 'Button' })).toEqual([])
   })
 
@@ -222,8 +222,8 @@ describe('bg-sessions', () => {
     expect((await ui.find({ text: /boom/ }))).toBeDefined()
   })
 
-  describe('zellij_switch', () => {
-    const ON = { options: { zellij_switch: true } }
+  describe('select_action: zellij-session', () => {
+    const ON = { options: { select_action: 'zellij-session' } }
     const IN_ZELLIJ = { ZELLIJ: '0', ZELLIJ_SESSION_NAME: 'mine' }
 
     test('帯は各セッションに a s d … を割り当て、ctrl+x tab の直後は先頭に乗る。数字の hotkey は付けない', ON, async ($, on) => {
@@ -290,6 +290,43 @@ describe('bg-sessions', () => {
       const clock = world(on, AGENTS, TRANSCRIPTS, { zellij: ['app'], ran, toasts })
       await start($, clock)
       await (await list($)).press({ key: 'wt' })
+      expect(ran).toEqual([])
+      expect(toasts.some(t => t.includes('zellij'))).toBe(true)
+    })
+  })
+
+  describe('select_action: attach', () => {
+    const ATTACH = { options: { select_action: 'attach' } }
+    const IN_ZELLIJ = { ZELLIJ: '0', ZELLIJ_SESSION_NAME: 'mine' }
+    const runOf = (id: string, where: string) =>
+      ['zellij', 'run', '--in-place', '--close-on-exit', '--name', `bg ${where}`, '--', 'claude', 'attach', id]
+
+    test('帯でも一覧でも、選んだセッションそのものを今の pane と入れ替えて claude attach で開く', ATTACH, async ($, on) => {
+      const ran: string[][] = []
+      // 同じ repo のセッションが 2 つあっても、選んだ方の id で開く
+      const twins: Agent[] = [...AGENTS, { id: 'wt2', cwd: APP, state: 'blocked' }]
+      const clock = world(on, twins, {
+        ...TRANSCRIPTS,
+        wt2: { dir: '-Users-x-ghq-acme-app', mtimeMs: NOW - HOUR, cwd: APP, branch: 'main' },
+      }, { env: IN_ZELLIJ, ran })
+      await start($, clock)
+
+      const ui = await band($)
+      expect((await ui.findAll({ type: 'Button' })).map(b => b.props.hotkey)).toEqual(['a', 's', 'd'])
+      await ui.press({ key: 'band-wt2' })
+      expect(ran).toEqual([runOf('wt2', 'app')])
+
+      ran.length = 0
+      await (await list($)).press({ key: 'wt' })
+      expect(ran).toEqual([runOf('wt', 'app/df-12')])
+    })
+
+    test('zellij の外では zellij を呼ばずに知らせる', ATTACH, async ($, on) => {
+      const ran: string[][] = []
+      const toasts: string[] = []
+      const clock = world(on, AGENTS, TRANSCRIPTS, { ran, toasts })
+      await start($, clock)
+      await (await band($)).press({ key: 'band-wt' })
       expect(ran).toEqual([])
       expect(toasts.some(t => t.includes('zellij'))).toBe(true)
     })

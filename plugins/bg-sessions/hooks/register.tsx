@@ -119,6 +119,36 @@ async function switchTo($: Engine, s: BgSession): Promise<void> {
   }
 }
 
+/**
+ * 今の zellij pane と一時的に入れ替えて claude attach で開く。attach から抜けると（← で agent view に戻ってから閉じる
+ * など）コマンドが終わり、--close-on-exit で pane が閉じて元の Claude に戻る。bg セッション自体は動き続ける
+ */
+async function attachHere($: Engine, s: BgSession): Promise<void> {
+  if (!(await $.env.get('ZELLIJ'))) {
+    $.ui.toast('bg-sessions: zellij の中で動いていないので開けません')
+    return
+  }
+  try {
+    const opened = await $.process.run(
+      ['zellij', 'run', '--in-place', '--close-on-exit', '--name', `bg ${where(s)}`, '--', 'claude', 'attach', s.id],
+      { timeoutMs: 5000 },
+    )
+    if (opened.exitCode !== 0) {
+      $.ui.toast(`bg-sessions: ${s.id} を開けませんでした: ${opened.stderr.trim() || `exit ${opened.exitCode}`}`)
+      return
+    }
+    await $.ui.close({ id: PANE })
+  } catch (err) {
+    $.ui.toast(`bg-sessions: zellij を実行できませんでした: ${String(err)}`)
+  }
+}
+
+/** 設定 select_action に応じて、選んだセッションを開くか repo の zellij セッションへ移る */
+async function select($: Engine, s: BgSession, action: string): Promise<void> {
+  if (action === 'attach') return attachHere($, s)
+  if (action === 'zellij-session') return switchTo($, s)
+}
+
 async function openList($: Engine): Promise<void> {
   void refresh($)
   await $.ui.open({ id: PANE, title: 'bg sessions', focus: true, closeOnEscape: true })
@@ -138,7 +168,8 @@ const MARK = { running: '●', waiting: '◐', done: '✓', stale: '○' } as co
 const COLOR = { running: 'success', waiting: 'warning', done: 'suggestion', stale: 'inactive' } as const
 
 export const register: Register = (on, options) => {
-  const zellijSwitch = options.zellij_switch === true
+  const action = String(options.select_action ?? 'off')
+  const selectable = action === 'attach' || action === 'zellij-session'
 
   on('session.start', async ($, e, next) => {
     void refresh($)
@@ -178,13 +209,13 @@ export const register: Register = (on, options) => {
       <Box key="bg-band" flexDirection="row" flexWrap="wrap" columnGap={2}>
         <Text dimColor>bg</Text>
         {shown.map((s, i) =>
-          zellijSwitch ? (
+          selectable ? (
             <Button
               key={`band-${s.id}`}
               plain
               hotkey={KEYS[i]}
               {...(i === 0 ? { autoFocus: true as const } : {})}
-              onPress={() => switchTo($, s)}
+              onPress={() => select($, s, action)}
             >
               {label(s)}
             </Button>
@@ -223,13 +254,13 @@ export const register: Register = (on, options) => {
             <Text dimColor>{pad(ago(now - s.updatedAt), 5)}</Text>,
             wide ? ` ${s.name}` : '',
           ]
-          return zellijSwitch ? (
+          return selectable ? (
             <Button
               key={s.id}
               plain
               {...(hotkey ? { hotkey } : {})}
               {...(hotkey === KEYS[0] ? { autoFocus: true as const } : {})}
-              onPress={() => switchTo($, s)}
+              onPress={() => select($, s, action)}
             >
               {cells}
             </Button>
