@@ -10,7 +10,6 @@ plugins/*/.claude/settings.local.json
 !.claude/rules/**
 # Legacy: skill-config.json は現在リポジトリルートに配置
 .serena/
-.system/
 
 # Credentials & secrets
 client_secret.json
