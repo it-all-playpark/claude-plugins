@@ -128,9 +128,13 @@ async function attachHere($: Engine, s: BgSession): Promise<void> {
     $.ui.toast('bg-sessions: zellij の中で動いていないので開けません')
     return
   }
+  // zellij run の pane は zellij サーバーの環境で起動し、その PATH では claude に届かないことがある（届かないと
+  // --close-on-exit で pane が即閉じて何も起きないように見える）。claude を実行できているこのセッションの PATH を渡す
+  const path = await $.env.get('PATH')
+  const attach = [...(path ? ['env', `PATH=${path}`] : []), 'claude', 'attach', s.id]
   try {
     const opened = await $.process.run(
-      ['zellij', 'run', '--in-place', '--close-on-exit', '--name', `bg ${where(s)}`, '--', 'claude', 'attach', s.id],
+      ['zellij', 'run', '--in-place', '--close-on-exit', '--name', `bg ${where(s)}`, '--', ...attach],
       { timeoutMs: 5000 },
     )
     if (opened.exitCode !== 0) {

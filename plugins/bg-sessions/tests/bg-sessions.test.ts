@@ -297,9 +297,11 @@ describe('bg-sessions', () => {
 
   describe('select_action: attach', () => {
     const ATTACH = { options: { select_action: 'attach' } }
-    const IN_ZELLIJ = { ZELLIJ: '0', ZELLIJ_SESSION_NAME: 'mine' }
+    // このセッションの PATH（claude に届く）を pane に渡す。zellij run の pane は zellij サーバーの環境で起動するため
+    const SESSION_PATH = '/Users/x/.local/bin:/usr/bin'
+    const IN_ZELLIJ = { ZELLIJ: '0', ZELLIJ_SESSION_NAME: 'mine', PATH: SESSION_PATH }
     const runOf = (id: string, where: string) =>
-      ['zellij', 'run', '--in-place', '--close-on-exit', '--name', `bg ${where}`, '--', 'claude', 'attach', id]
+      ['zellij', 'run', '--in-place', '--close-on-exit', '--name', `bg ${where}`, '--', 'env', `PATH=${SESSION_PATH}`, 'claude', 'attach', id]
 
     test('帯でも一覧でも、選んだセッションそのものを今の pane と入れ替えて claude attach で開く', ATTACH, async ($, on) => {
       const ran: string[][] = []
