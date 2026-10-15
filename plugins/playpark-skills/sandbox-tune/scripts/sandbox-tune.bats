@@ -447,6 +447,23 @@ deny_at() {
   run bash "$SCRIPT" config --config "$WORK/bad2.json"
   [ "$status" -eq 2 ]
   [[ "$output" == *"git repo ではありません"* ]]
+
+  # issue.template は {{ac}} と {{paths}} の両方を持つ
+  printf '## 概要\n\n{{title}}\n\n{{ac}}\n' >"$WORK/tpl-ac-only.md"
+  echo '{"issue":{"repo":"o/r","template":"tpl-ac-only.md"}}' >"$WORK/bad3.json"
+  run bash "$SCRIPT" config --config "$WORK/bad3.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"issue.template に {{paths}} がありません"* ]]
+  printf '## 概要\n\n{{title}}\n' >"$WORK/tpl-none.md"
+  echo '{"issue":{"repo":"o/r","template":"tpl-none.md"}}' >"$WORK/bad4.json"
+  run bash "$SCRIPT" config --config "$WORK/bad4.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"issue.template に {{ac}} {{paths}} がありません"* ]]
+  printf '{{title}}\n\n{{ac}}\n\n{{paths}}\n' >"$WORK/tpl-ok.md"
+  echo '{"issue":{"repo":"o/r","template":"tpl-ok.md"}}' >"$WORK/ok.json"
+  run bash "$SCRIPT" config --config "$WORK/ok.json"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r .issue.template)" = "$WORK/tpl-ok.md" ]
 }
 
 # run の結果と候補 JSON から下書きを作る。セキュリティ系の候補（S）と、そうでない候補（N）
@@ -457,8 +474,10 @@ make_drafts() {
   bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" >/dev/null
   cat >"$WORK/candidates.json" <<'EOF'
 {"candidates":[
-  {"id":"sandbox:network:example.org","title":"example.org を allowedDomains に足す","cause":"許可リストに無い","fix":"sandbox.network.allowedDomains に example.org を足す","safety":"取得先が 1 ホスト増えるだけ","security":false},
-  {"id":"sandbox:unix_socket:/run/db/x.sock","title":"db socket の経路","cause":"ghp_LEAKEDVALUE を持つプロセスに sandbox の外から届く","fix":"socket を個別に許可する","safety":"他プロセスの情報が読める","security":true}
+  {"id":"sandbox:network:example.org","title":"example.org を allowedDomains に足す","cause":"許可リストに無い","fix":"sandbox.network.allowedDomains に example.org を足す","safety":"取得先が 1 ホスト増えるだけ","security":false,
+   "ac":["sandbox 内の curl -sS https://example.org が exit 0 で終わる","settings.json の allowedDomains に example.org が 1 件だけある"],"paths":["claude/settings.json","claude/bin/**"]},
+  {"id":"sandbox:unix_socket:/run/db/x.sock","title":"db socket の経路","cause":"ghp_LEAKEDVALUE を持つプロセスに sandbox の外から届く","fix":"socket を個別に許可する","safety":"他プロセスの情報が読める","security":true,
+   "ac":["DB_TOKEN=acleak9 を読めない"],"paths":["claude/ghp_PATHLEAK.json"]}
 ]}
 EOF
   run bash "$SCRIPT" draft --issue --analysis "$WORK/claudedocs/sandbox-tune-2026-10-01.json" --candidates "$WORK/candidates.json" \
@@ -475,7 +494,7 @@ EOF
   cd "$WORK"
   echo '{"issue":{"repo":"o/r"}}' >"$WORK/sandbox-tune.json"
   bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" >/dev/null
-  echo '{"candidates":[{"id":"sandbox:network:example.org","title":"t","cause":"c","fix":"f","safety":"s"}]}' >"$WORK/candidates.json"
+  echo '{"candidates":[{"id":"sandbox:network:example.org","title":"t","cause":"c","fix":"f","safety":"s","ac":["a"],"paths":["p"]}]}' >"$WORK/candidates.json"
   run bash "$SCRIPT" draft --analysis "$WORK/claudedocs/sandbox-tune-2026-10-01.json" --candidates "$WORK/candidates.json" \
     --ids sandbox:network:example.org
   [ "$status" -eq 2 ]
@@ -489,9 +508,64 @@ EOF
   [[ "$output" == *"example.org を allowedDomains に足す"* ]]
   grep -q 'ghp_\*\*\*' "$S"
   ! grep -q 'LEAKEDVALUE' "$S"
+  # ac と paths も伏せ字を通る
+  grep -q '^- \[ \] DB_TOKEN=\*\*\* を読めない$' "$S"
+  grep -q '^- claude/ghp_\*\*\*.json$' "$S"
+  ! grep -q 'acleak9' "$S"
+  ! grep -q 'PATHLEAK' "$S"
   [ "$(jq -r .security "${N%.md}.meta.json")" = false ]
   [ "$(jq -r .security "${S%.md}.meta.json")" = true ]
   ! grep -q 'issue create' "$GH_LOG"
+}
+
+@test "issue: 既定テンプレートの下書きは受け入れ基準と変更対象パスを持ち、dev-flow の起票ゲート（create_issue.py --kind agent）を通る" {
+  command -v python3 >/dev/null || skip "python3 not available"
+  make_drafts
+  [ "$(sed -n '/^## 受け入れ基準（Acceptance Criteria）$/,/^## /p' "$N" | grep '^- ')" \
+    = $'- [ ] sandbox 内の curl -sS https://example.org が exit 0 で終わる\n- [ ] settings.json の allowedDomains に example.org が 1 件だけある' ]
+  [ "$(sed -n '/^## 変更対象パス$/,/^---$/p' "$N" | grep '^- ')" = $'- claude/settings.json\n- claude/bin/**' ]
+  run python3 "$BATS_TEST_DIRNAME/../../../dev-flow/github-issue-orchestrator/scripts/create_issue.py" \
+    --kind agent --dry-run --repo o/r --title "$(jq -r .title "${N%.md}.meta.json")" --body-file "$N"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Dry run: issue will not be created."* ]]
+}
+
+@test "issue: 候補に ac と paths が無い・形が違うときは draft が理由を出して exit 2" {
+  fixture_basic
+  cd "$WORK"
+  echo '{"issue":{"repo":"o/r"}}' >"$WORK/sandbox-tune.json"
+  bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" >/dev/null
+  draft() {
+    printf '%s' "$1" >"$WORK/candidates.json"
+    run --separate-stderr bash "$SCRIPT" draft --issue --analysis "$WORK/claudedocs/sandbox-tune-2026-10-01.json" \
+      --candidates "$WORK/candidates.json" --ids sandbox:network:example.org
+  }
+  local base='"id":"sandbox:network:example.org","title":"t","cause":"c","fix":"f","safety":"s"'
+  # ac・paths の無い旧形式
+  draft "{\"candidates\":[{$base}]}"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"(sandbox:network:example.org): ac は空でない文字列の配列にしてください"* ]]
+  [[ "$stderr" == *"(sandbox:network:example.org): paths は空でない配列にしてください"* ]]
+  # 空の配列・空文字列の要素
+  draft "{\"candidates\":[{$base,\"ac\":[],\"paths\":[]}]}"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"ac は空でない文字列の配列"* ]]
+  [[ "$stderr" == *"paths は空でない配列"* ]]
+  draft "{\"candidates\":[{$base,\"ac\":[\"a\",\"\"],\"paths\":[\"p\"]}]}"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"ac は空でない文字列の配列"* ]]
+  # repo の外を指す・複数行の paths
+  draft "{\"candidates\":[{$base,\"ac\":[\"a\"],\"paths\":[\"/etc/x\",\"a/../../b\",\"ok\\n- /etc/y\",1]}]}"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"/ 始まりは不可）: /etc/x"* ]]
+  [[ "$stderr" == *".. セグメントは使えません（repo の外を指せない）: a/../../b"* ]]
+  [[ "$stderr" == *'paths の要素は 1 行の空でない文字列にしてください: "ok\n- /etc/y"'* ]]
+  [[ "$stderr" == *"paths の要素は 1 行の空でない文字列にしてください: 1"* ]]
+  [ ! -e "$WORK/claudedocs/sandbox-tune-issue-1.md" ]
+  # 揃っていれば通る（glob も受け付ける）
+  draft "{\"candidates\":[{$base,\"ac\":[\"a\"],\"paths\":[\"claude/**/*.json\"]}]}"
+  [ "$status" -eq 0 ]
+  [ -f "$WORK/claudedocs/sandbox-tune-issue-1.md" ]
 }
 
 @test "issue: 公開 repo へは --allow-public なしで渡さない。通ったら orchestrator に渡す引数を 1 行の JSON で出し、issue は作らない" {

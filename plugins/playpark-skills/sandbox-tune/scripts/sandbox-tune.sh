@@ -89,7 +89,7 @@ JQ
 
 # 検証して、パスを絶対パスに直した設定を出す（~ は $HOME、相対パスは設定ファイルのディレクトリ基準）
 load_config() {
-  local file="$1" dir errs cfg repo f
+  local file="$1" dir errs cfg repo f tpl missing ph
   [ -f "$file" ] || die 2 "設定ファイルがありません: $file"
   jq empty "$file" 2>/dev/null || die 2 "設定ファイルが JSON として読めません: $file"
   errs="$(jq -r "$(validate_jq)" "$file")"
@@ -108,6 +108,15 @@ $errs"
   while IFS= read -r f; do
     [ -z "$f" ] || [ -f "$f" ] || die 2 "ファイルがありません: $f"
   done <<<"$(jq -r '(.criteriaFiles // [])[], (.issue.template // empty)' <<<"$cfg")"
+  # 受け入れ基準と変更対象パスの無い下書きは dev-flow の起票ゲートで止まるので、置き場所の無いテンプレートは受け付けない
+  tpl="$(jq -r '.issue.template // empty' <<<"$cfg")"
+  if [ -n "$tpl" ]; then
+    missing=""
+    for ph in '{{ac}}' '{{paths}}'; do
+      grep -qF -- "$ph" "$tpl" || missing="$missing $ph"
+    done
+    [ -z "$missing" ] || die 2 "issue.template に${missing} がありません（受け入れ基準 {{ac}} と変更対象パス {{paths}} の両方を置いてください）: $tpl"
+  fi
   printf '%s\n' "$cfg"
 }
 
@@ -325,7 +334,7 @@ cmd_config() {
 }
 
 cmd_draft() {
-  local analysis="" candidates="" ids="" config="" out="$PWD/claudedocs" issue=0 cfg repo template id i=0 base body
+  local analysis="" candidates="" ids="" config="" out="$PWD/claudedocs" issue=0 cfg repo template errs id i=0 base body
   while [ $# -gt 0 ]; do
     case "$1" in
       --issue) issue=1; shift ;;
@@ -345,8 +354,10 @@ cmd_draft() {
   repo="$(jq -r '.issue.repo // empty' <<<"$cfg")"
   [ -n "$repo" ] || die 2 "draft には設定の issue.repo が要ります"
   template="$(jq -r '.issue.template // empty' <<<"$cfg")"
-  jq -e '(.candidates | type) == "array" and all(.candidates[]; (.id | type) == "string" and ([.title, .cause, .fix, .safety] | all(type == "string" and . != "")))' \
-    "$candidates" >/dev/null 2>&1 || die 2 "draft: candidates は {\"candidates\":[{id,title,cause,fix,safety,security}]} の形にしてください"
+  errs="$(jqs -r 'include "issue"; candidates_errors' "$candidates" 2>/dev/null)" \
+    || die 2 "draft: candidates が JSON として読めません: $candidates"
+  [ -z "$errs" ] || die 2 "draft: candidates が不正です ($candidates):
+$errs"
   mkdir -p "$out"
 
   while IFS= read -r id; do
@@ -361,7 +372,8 @@ cmd_draft() {
       ($a[0].types[] | select(.id == $id)) as $t
       | ($c[0].candidates[] | select(.id == $id)) as $cand
       | (if $has_tpl == "1" then $tpl else default_template end)
-      | fill({title: $cand.title, id: $id, cause: $cand.cause, fix: $cand.fix, safety: $cand.safety, evidence: ($t | evidence_md)})
+      | fill({title: $cand.title, id: $id, cause: $cand.cause, fix: $cand.fix, safety: $cand.safety, evidence: ($t | evidence_md),
+              ac: ($cand.ac | ac_md), paths: ($cand.paths | paths_md)})
       | redact')"
     printf '%s\n' "$body" >"$base.md"
     jqs -n --arg id "$id" --arg repo "$repo" --arg sha "$(sha256_of "$base.md")" --rawfile body "$base.md" \

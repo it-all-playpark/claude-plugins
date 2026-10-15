@@ -41,7 +41,7 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 | `configRepo.paths` | 空でない文字列の配列 | verify で git log を見るパス（設定ファイル・wrapper・hook）。repo root 相対 |
 | `criteriaFiles` | 文字列の配列 | 安全性の判定に加える基準のファイル（個人の運用ルール等）。必ず読む |
 | `issue.repo` | `owner/name` | issue の提出先。`--issue` のときに必須 |
-| `issue.template` | 文字列 | issue 化の材料（下書き）のテンプレート。`{{title}}` `{{id}}` `{{evidence}}` `{{cause}}` `{{fix}}` `{{safety}}` を置換する。省略時は既定のテンプレート |
+| `issue.template` | 文字列 | issue 化の材料（下書き）のテンプレート。`{{title}}` `{{id}}` `{{evidence}}` `{{cause}}` `{{fix}}` `{{safety}}` `{{ac}}`（`ac` を `- [ ] ` で並べたもの）`{{paths}}`（`paths` を `- ` で並べたもの）を置換する。`{{ac}}` と `{{paths}}` の両方が無いテンプレートはエラー（exit 2）。dev-flow で走らせるには `{{ac}}` を受け入れ基準の見出し（`## 受け入れ基準（Acceptance Criteria）` 等）、`{{paths}}` を `## 変更対象パス` の下に置く。省略時は既定のテンプレート（両方の節を持つ） |
 | `issue.labels` | 文字列の配列 | github-issue-orchestrator に渡すラベル |
 
 - `~` は `$HOME`、相対パスは設定ファイルのディレクトリ基準
@@ -127,15 +127,20 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
 ユーザーが `--issue` を付けなかったら、ここは行わない（レポートと提案で終える）。
 
 sandbox-tune は伏せ字・人の確認・公開範囲の判定までを受け持ち、issue は作らない。起票は dev-flow plugin の
-`github-issue-orchestrator` に下書きを材料として渡し、orchestrator が受け入れ基準・制約・変更対象パスを付けて行う
-（AC の無い issue は dev-flow の analyze ゲートで止まるため）。
+`github-issue-orchestrator` に下書きを材料として渡して行う。下書きは候補の `ac` と `paths` から受け入れ基準と
+`## 変更対象パス` の節を持ち、dev-flow の起票ゲート（AC の無い issue は analyze ゲートで止まる）をそのまま通る形になる。
 
 **前提条件**: dev-flow plugin の `github-issue-orchestrator` が入っていること。使える skill に無ければ issue 化は行わず、
 その旨をユーザーに伝えてレポートと提案で終える（sandbox-tune から直接 issue を作る経路は無い）。
 
 1. ユーザーに issue にする型を選んでもらい、判断手順の結果を候補ファイルに書く（`$TMPDIR` に置く）:
-   `{"candidates":[{"id":"<型の id>","title":"...","cause":"...","fix":"...","safety":"...","security":true|false}]}`。
+   `{"candidates":[{"id":"<型の id>","title":"...","cause":"...","fix":"...","safety":"...","ac":["..."],"paths":["..."],"security":true|false}]}`。
    秘密・資格情報・他プロセスの情報が sandbox の外から読める経路などに関わる候補は `security: true` にする
+   - `ac`（必須・空でない文字列の配列）: 受け入れ基準。1 要素 1 項目で、**検証できる形**に書く
+     （どのコマンドがどう終わるか・設定のどのキーに何があるか等。「改善する」「確認する」のような判定できない書き方はしない）
+   - `paths`（必須・空でない配列）: 修正で触る、設定 repo の root 相対パスか glob（例 `claude/settings.json`・`claude/bin/**`）。
+     `/` 始まりと `..` セグメントは不可
+   - 欠けている・形が違うときは draft が理由を出して exit 2 で止まる。直して再実行する
 2. 下書き（材料）を作る。本文は伏せ字を通して `claudedocs/sandbox-tune-issue-<n>.md` に書かれ、本文と digest が表示される
    ```bash
    ST draft --issue --analysis claudedocs/sandbox-tune-<日付>.json --candidates "$TMPDIR/candidates.json" --ids <id>[,<id>]
@@ -157,7 +162,7 @@ sandbox-tune は伏せ字・人の確認・公開範囲の判定までを受け�
    ```
    github-issue-orchestrator <material> --repo <repo> --title "<title>" [--labels <labels>]
    ```
-   orchestrator が材料から受け入れ基準・制約・変更対象パスを組み立て、ac-lint を通して起票する。材料の内容は書き足さずに渡す
+   材料はすでに受け入れ基準と変更対象パスを持つ。orchestrator は ac-lint を通して起票する。材料の内容は書き足さずに渡す
 
 ## Exit
 
