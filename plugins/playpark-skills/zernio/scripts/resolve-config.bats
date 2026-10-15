@@ -68,3 +68,15 @@ setup() {
     [ "$status" -eq 0 ]
     [ "$(jq -c '.sync_dirs' <<< "$output")" = "[\"$ROOT/post/blog\",\"$ROOT/post/bip\",\"/abs/other\"]" ]
 }
+
+@test "outside a git repo: global config is used and relative sync_dirs resolve against CWD" {
+    export SKILL_CONFIG_PATH="$BATS_TEST_TMPDIR/global.json"
+    echo '{"zernio":{"profile_id":"global-1","sync_dirs":["./post/blog","/abs/other"]}}' > "$SKILL_CONFIG_PATH"
+    OUTSIDE="$BATS_TEST_TMPDIR/outside"
+    mkdir -p "$OUTSIDE"
+    cd "$OUTSIDE"
+    export GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR"
+    run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ "$output" = "{\"profile_id\":\"global-1\",\"sync_dirs\":[\"$PWD/post/blog\",\"/abs/other\"]}" ]
+}

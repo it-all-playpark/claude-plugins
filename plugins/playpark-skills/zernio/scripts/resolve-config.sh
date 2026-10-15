@@ -20,7 +20,7 @@ require_cmd jq
 
 CONFIG=$(load_skill_config "zernio")
 
-BASE_DIR="$(git_root)"
+BASE_DIR="$(git_root || true)"
 [[ -n "$BASE_DIR" ]] || BASE_DIR="$PWD"
 
 echo "$CONFIG" | jq -c --arg base "$BASE_DIR" '{
