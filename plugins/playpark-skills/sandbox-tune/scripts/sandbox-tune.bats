@@ -345,8 +345,8 @@ deny_at() {
   json="$WORK/claudedocs/sandbox-tune-2026-10-01.json"
   [ "$(jq -c '.types[] | select(.id == "sandbox:network:c.example.test") | .occurrences[1]' "$json")" \
     = '{"ts":"2026-09-20T00:01:00Z","cwd":"~/src/app/.claude/worktrees/w1","git_branch":"feat"}' ]
-  [ "$(jq -c '.types[] | select(.id == "sandbox:network:a.example.test") | [.status, .evidence.commit, .evidence.repo, .evidence.related_commits[0].repo]' "$json")" \
-    = "[\"resolved\",\"$APP_FIX\",\"~/src/app\",\"~/src/app\"]" ]
+  [ "$(jq -c '.types[] | select(.id == "sandbox:network:a.example.test") | [.status, .evidence.commit, .evidence.repo, .evidence.related_commits[0].repo, .evidence.related_commits[0].source]' "$json")" \
+    = "[\"resolved\",\"$APP_FIX\",\"~/src/app\",\"~/src/app\",\"repo\"]" ]
   [ "$(jq -c '.types[] | select(.id == "sandbox:network:b.example.test") | [.status, .evidence.after_branches]' "$json")" \
     = '["stale_branch",{"contains":0,"not_contains":1,"unknown":0}]' ]
   [ "$(jq -c '.types[] | select(.id == "sandbox:network:c.example.test") | [.status, .evidence.after_branches]' "$json")" \
@@ -364,6 +364,20 @@ deny_at() {
   sed -n '/^## remaining/,/^## stale_branch/p' "$md" | grep -q '修正を含む branch 1 / 含まない 1 / 判定不能 0'
   # 発生した repo は読むだけ
   [ "$(git -C "$APP" for-each-ref; git -C "$APP" status --porcelain; cat "$APP/.claude/settings.json")" = "$before" ]
+}
+
+@test "verify: configRepo の修正は branch に関係なく効くので、configRepo 内の修正を含まない branch での後の発生も remaining" {
+  export GIT_CEILING_DIRECTORIES="$WORK"
+  make_config_repo
+  git -C "$WORK/conf" branch old HEAD~1
+  deny_at o1 2026-09-10T00:00:00Z example.org "$WORK/conf" main
+  deny_at o2 2026-09-20T00:00:00Z example.org "$WORK/conf" old
+  cd "$WORK"
+  run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
+  [ "$status" -eq 0 ]
+  json="$WORK/claudedocs/sandbox-tune-2026-10-01.json"
+  [ "$(jq -c '.types[] | select(.id == "sandbox:network:example.org") | [.status, .evidence.commit, .evidence.after_branches, .evidence.related_commits[0].source]' "$json")" \
+    = "[\"remaining\",\"$FIX_COMMIT\",{\"contains\":0,\"not_contains\":0,\"unknown\":1},\"config\"]" ]
 }
 
 @test "verify: occurrences が時刻だけの古い collect の JSON は受け付けない" {

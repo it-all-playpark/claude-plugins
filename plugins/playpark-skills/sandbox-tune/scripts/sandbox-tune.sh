@@ -160,16 +160,18 @@ cmd_collect() {
 }
 
 # 型の対象（ホスト・パス・コマンド名）が差分に増減した commit と、message に書かれた commit を「関係する commit」とする。
-# configRepo と発生した repo で同じ規則を使う。読むだけ（fetch・checkout・書き込みをしない）
-# Usage: related_commits <dir> <git_dir> <repo の表示名> <型の id> <対象> <pathspec...>
+# configRepo と発生した repo で同じ規則を使う。読むだけ（fetch・checkout・書き込みをしない）。
+# 由来（config: configRepo の paths / repo: 発生した repo の .claude/settings.json）を付ける。
+# configRepo の設定は branch に関係なく効くので、branch 判定の基準（fix）は repo 由来だけから選ぶ
+# Usage: related_commits <dir> <git_dir> <repo の表示名> <由来> <型の id> <対象> <pathspec...>
 related_commits() {
-  local dir="$1" gd="$2" label="$3" id="$4" needle="$5"
-  shift 5
+  local dir="$1" gd="$2" label="$3" source="$4" id="$5" needle="$6"
+  shift 6
   {
     git -C "$dir" log -S"$needle" --format='%H%x09%ct%x09%s' -- "$@"
     git -C "$dir" log -F --grep="$needle" --format='%H%x09%ct%x09%s' -- "$@"
-  } | jq -R -c --arg id "$id" --arg gd "$gd" --arg repo "$label" \
-    'split("\t") | {id: $id, git_dir: $gd, repo: $repo, hash: .[0], epoch: (.[1] | tonumber), subject: (.[2:] | join("\t"))}'
+  } | jq -R -c --arg id "$id" --arg gd "$gd" --arg repo "$label" --arg source "$source" \
+    'split("\t") | {id: $id, git_dir: $gd, repo: $repo, source: $source, hash: .[0], epoch: (.[1] | tonumber), subject: (.[2:] | join("\t"))}'
 }
 
 # worktree も本体の repo にまとめるため、共通の git dir で repo を識別する
@@ -211,7 +213,7 @@ cmd_verify() {
   label="$(home_rel "$repo")"
   while IFS=$'\t' read -r id needle; do
     [ -n "$needle" ] || continue
-    related_commits "$repo" "$gd" "$label" "$id" "$needle" "${paths[@]}"
+    related_commits "$repo" "$gd" "$label" config "$id" "$needle" "${paths[@]}"
   done <<<"$(jq -r "$types_jq"' | [.id, .needle] | @tsv' "$analysis")" >"$commits"
 
   # 発生の cwd が属する repo。cwd が存在しない・git repo でない発生は repo 側の突き合わせを飛ばす
@@ -228,7 +230,7 @@ cmd_verify() {
   # 読めない repo（commit の無い repo・読み取りの拒否）は関係 commit なしとして続ける
   while IFS=$'\t' read -r id needle gd top label; do
     [ -n "$gd" ] || continue
-    related_commits "$top" "$gd" "$label" "$id" "$needle" .claude/settings.json || true
+    related_commits "$top" "$gd" "$label" repo "$id" "$needle" .claude/settings.json || true
   done <<<"$(jq -r --slurpfile r "$repos" "$types_jq"' | .id as $id | .needle as $n
       | [.occurrences[] | $r[0][.cwd // ""] // empty] | unique_by(.git_dir)[] | [$id, $n, .git_dir, .top, .repo] | @tsv' "$analysis")" >>"$commits"
 
