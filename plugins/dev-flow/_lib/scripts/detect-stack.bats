@@ -68,6 +68,19 @@ JSON
     echo "$output" | jq -e '.frameworks | index("remotion") != null' >/dev/null
 }
 
+@test "(e2) SIGPIPE を無視する環境（CI runner）で grep が先に一致して抜けても、出力は JSON のみで remotion を検出する" {
+    PROJ="$BATS_TEST_TMPDIR/proj-remotion-many"
+    mkdir -p "$PROJ"
+    # @remotion/cli がソート先頭に来て、残りの依存がパイプバッファを超える量
+    jq -n '{dependencies: ({"@remotion/cli": "4.0.0"} + ([range(0; 50000) | {key: "zz-pkg-\(.)", value: "1.0.0"}] | from_entries))}' \
+        > "$PROJ/package.json"
+
+    run bash -c 'trap "" PIPE; exec "$0" "$1"' "$SCRIPT" "$PROJ"
+
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.frameworks | index("remotion") != null' >/dev/null
+}
+
 @test "(f) .env に neon.tech を含む -> frameworks に neon が含まれる" {
     PROJ="$BATS_TEST_TMPDIR/proj-neon"
     mkdir -p "$PROJ"
