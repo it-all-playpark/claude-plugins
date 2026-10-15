@@ -109,6 +109,24 @@ build_fixture() {
   fi
 }
 
+@test "issue-create-guard: PreToolUse の Bash matcher に登録され、素の起票を deny し閲覧は通す" {
+  cmd=$(jq -r '.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[].command | select(contains("pretool-bash-issue-create-guard.sh"))' "$HOOKS_JSON")
+  [ -n "$cmd" ]
+
+  export CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT"
+  input=$(jq -n '{tool_name:"Bash",tool_input:{command:"gh -R o/r issue create -t x"}}')
+  run bash -c "$cmd" <<<"$input"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+
+  input=$(jq -n '{tool_name:"Bash",tool_input:{command:"gh issue view 12"}}')
+  run bash -c "$cmd" <<<"$input"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "journal 解決 (bare 名): PATH 上の playpark-core bin/journal で解決される" {
   local_journal_dir="$BATS_TEST_TMPDIR/j"
   mkdir -p "$local_journal_dir/pending"

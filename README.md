@@ -109,7 +109,7 @@ Use skills in Claude Code:
    マシン固有なので、本 repo の git 管理ファイル（`.claude/settings.json` 等）には書きません。
 
    dev-flow 専用 hook（`stop-devflow-telemetry.sh` / `pretool-inline-edit-guard.sh` /
-   `pretool-bash-inline-commit-gate.sh`）は `plugins/dev-flow/hooks/hooks.json`、全 skill 共通
+   `pretool-bash-inline-commit-gate.sh` / `pretool-bash-issue-create-guard.sh`）は `plugins/dev-flow/hooks/hooks.json`、全 skill 共通
    hook（journal hook-capture・track-skill・clear-skill-ctx / `validate-skill-frontmatter.sh` /
    `posttool-secret-mask.sh` / `pretool-context-guard.sh`）は `plugins/playpark-core/hooks/hooks.json` から、それぞれ
    `${CLAUDE_PLUGIN_ROOT}` 経由で発火します。同じ hook を settings.json に直接登録していた場合は

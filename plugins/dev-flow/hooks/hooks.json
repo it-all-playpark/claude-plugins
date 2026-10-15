@@ -20,6 +20,11 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pretool-bash-inline-commit-gate.sh\"",
             "timeout": 30,
             "statusMessage": "inline 同期チェック中..."
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pretool-bash-issue-create-guard.sh\"",
+            "timeout": 5
           }
         ]
       }

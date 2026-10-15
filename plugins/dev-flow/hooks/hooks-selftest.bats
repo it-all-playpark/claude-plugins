@@ -15,6 +15,12 @@
   [ "$status" -eq 0 ]
 }
 
+@test "pretool-bash-issue-create-guard.test.sh は exit 0 で完走する" {
+  run bash "$BATS_TEST_DIRNAME/pretool-bash-issue-create-guard.test.sh"
+  echo "$output"
+  [ "$status" -eq 0 ]
+}
+
 @test "stop-devflow-telemetry.test.sh は exit 0 で完走する" {
   run bash "$BATS_TEST_DIRNAME/stop-devflow-telemetry.test.sh"
   echo "$output"

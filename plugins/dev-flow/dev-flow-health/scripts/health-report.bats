@@ -345,11 +345,13 @@ write_run() {
 
 @test "SKILL.md の gh issue 手順は起票先をレポートの issue_repo から取り、null なら起票せずに止まる" {
     local skill_md="$SKILL_DIR/SKILL.md"
-    # 手順中の gh issue list / create はすべて --repo <issue_repo>（固定の OWNER/NAME を書かない）
-    run grep -c 'gh issue \(list\|create\)' "$skill_md"
-    [ "$output" -ge 2 ]
-    run grep -c 'gh issue \(list\|create\) --repo <issue_repo> ' "$skill_md"
-    [ "$output" = "$(grep -c 'gh issue \(list\|create\)' "$skill_md")" ]
+    # 重複確認の gh issue list と、起票の create_issue.py はどちらも --repo <issue_repo>（固定の OWNER/NAME を書かない）
+    run grep -c 'gh issue list' "$skill_md"
+    [ "$output" -ge 1 ]
+    run grep -c 'gh issue list --repo <issue_repo> ' "$skill_md"
+    [ "$output" = "$(grep -c 'gh issue list' "$skill_md")" ]
+    run grep -c '^ *--repo <issue_repo> --title ' "$skill_md"
+    [ "$output" -ge 1 ]
     # 参照するキーを script が実際に出す
     make_repo
     run report --repo "$REPO"
