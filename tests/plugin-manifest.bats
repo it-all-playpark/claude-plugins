@@ -221,7 +221,7 @@ plugin_json_path() {
 
 @test "tracked な SKILL.md は全て plugins/ 配下にある（どの plugin にも属さない skill を作らない）" {
     # plugins/ 外に取り残された skill は plugin install 環境で解決できず、
-    # それを呼ぶ workflow phase（例: PR phase の Skill: git-commit / git-pr）が壊れる。
+    # それを Skill で呼ぶ workflow phase が壊れる。
     run git -C "$REPO_ROOT" ls-files -- '*SKILL.md' ':(exclude)plugins/'
     [ "$status" -eq 0 ]
     [ -z "$output" ]
