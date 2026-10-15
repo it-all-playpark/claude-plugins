@@ -21,6 +21,12 @@
 # 実装 issue の本文はゴールと境界条件だけ（issue #855）:
 # - 実装 issue テンプレートの節が ゴール / なぜ / 受け入れ基準 / 制約・取らないこと / 変更対象パス / 未解決事項 の 6 つ
 # - SKILL.md Phase 5 の本文に含めるものがその 6 節で、Phase 2・Phase 4 の結果は AC と制約に反映させるだけ
+#
+# 起票の依頼を規模を問わず受ける軽い経路（issue #991）:
+# - frontmatter が model: opus / effort: xhigh で、guide の effort 表と食い違わない
+# - description の Use when: に普通の頼み方のトリガー語がある
+# - 経路の選択基準、軽い経路が Phase 2・4 を省いて Phase 5〜7 を通ること、重い経路への切り替え、複数 finding の
+#   まとめ起票、Plan Quality Gate の経路欄
 
 setup() {
     command -v python3 >/dev/null || skip "python3 not available"
@@ -30,6 +36,7 @@ setup() {
     TEMPLATE="$SKILL_DIR/references/issue-template.md"
     CHECKLIST="$SKILL_DIR/references/devils-advocate-checklist.md"
     SCRIPT="$SKILL_DIR/scripts/create_issue.py"
+    REPO_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
 }
 
 # human 判定基準の番号付きリスト（見出し行の直後のリスト）を抜き出す
@@ -236,4 +243,98 @@ AGENT_BODY_SECTIONS="## ゴール
     # 調査と devil's advocate の工程は残し、出力先だけを AC と制約に向ける
     [[ "$(extract_section "$SKILL_MD" "### Phase 2")" == *"issue 本文には書き写さない"* ]]
     [[ "$(extract_section "$SKILL_MD" "### Phase 4")" == *"Loop rules:"*"レビュー履歴として書き写さない"* ]]
+}
+
+# frontmatter の top-level key の値（inline か block scalar の本文）を抜き出す
+frontmatter_value() {
+    awk -v key="$2" 'NR == 1 && /^---$/ { fm = 1; next }
+         fm && /^---$/ { exit }
+         fm && index($0, key ":") == 1 { v = substr($0, length(key) + 2); sub(/^[ \t]+/, "", v)
+             if (v != "|" && v != ">") { print v; exit }
+             in_key = 1; next }
+         in_key && /^[a-z]/ { exit }
+         in_key { sub(/^  /, ""); print }' "$1"
+}
+
+# validate-skill-frontmatter.sh（description + when_to_use の 1536 字上限を含む）を通ることは
+# playpark-core/hooks/validate-skill-frontmatter.bats の "every tracked SKILL.md passes the validator" が検査する
+@test "(17) frontmatter は model: opus / effort: xhigh" {
+    [ "$(frontmatter_value "$SKILL_MD" model)" = "opus" ]
+    [ "$(frontmatter_value "$SKILL_MD" effort)" = "xhigh" ]
+}
+
+@test "(18) docs/skill-creation-guide.md の effort 表で例に挙げるなら、その行は SKILL.md の effort と一致する" {
+    effort="$(frontmatter_value "$SKILL_MD" effort)"
+    rows="$(grep -E '^\| `(low|medium|high|xhigh|max)` \|' "$REPO_ROOT/docs/skill-creation-guide.md" \
+        | grep -F '`github-issue-orchestrator`' || true)"
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        [[ "$row" == "| \`$effort\` |"* ]]
+    done <<<"$rows"
+}
+
+@test "(19) description の Use when: に普通の頼み方のトリガー語があり、規模を問わずこの skill で起票すると書く" {
+    use_when="$(frontmatter_value "$SKILL_MD" description | awk '/Use when:/ { f = 1 } /^Accepts args:/ { exit } f')"
+    [ -n "$use_when" ]
+    for phrase in "issue にして" "issue 化" "起票" "issue 立てて" "create an issue" "file an issue"; do
+        [[ "$use_when" == *"\"$phrase\""* ]]
+    done
+    [[ "$use_when" == *"issue を作る依頼は規模を問わずこの skill で行う"* ]]
+}
+
+@test "(20) 経路の選択: 軽い経路は具体的な finding・1 finding = 1 agent issue・human タスクも依存も無いもの、それ以外は重い経路" {
+    sel="$(extract_section "$SKILL_MD" "## 経路の選択")"
+    [ -n "$sel" ]
+    light="$(awk '/^\*\*軽い経路\*\*/ { f = 1 } /^\*\*重い経路\*\*/ { exit } f' <<<"$sel")"
+    heavy="$(awk '/^\*\*重い経路\*\*/ { f = 1 } f' <<<"$sel")"
+    [[ "$light" == *"すべて満たすとき"* ]]
+    [[ "$light" == *"症状・原因・直し方の分かった具体的な finding"* ]]
+    [[ "$light" == *"1 finding = 1 agent issue"* ]]
+    [[ "$light" == *"human タスクを含まない"* ]]
+    [[ "$light" == *"issue 間の依存が無い"* ]]
+    [[ "$heavy" == *"（Phase 1〜7）は、それ以外のすべて"* ]]
+    for item in "議論から起こす新機能" "設計判断が要る計画" "分割や依存が要るもの" "human タスクを含むもの"; do
+        [[ "$heavy" == *"$item"* ]]
+    done
+    # 経路は Workflow に入る前に決める
+    sel_line="$(grep -n '^## 経路の選択' "$SKILL_MD" | cut -d: -f1)"
+    wf_line="$(grep -n '^## Workflow' "$SKILL_MD" | cut -d: -f1)"
+    [ "$sel_line" -lt "$wf_line" ]
+}
+
+@test "(21) 軽い経路は Phase 2・Phase 4 を行わず、Blocking Categories に 1 回照らして Phase 5〜7 を通る（gh issue create を直接書かない）" {
+    light="$(extract_section "$SKILL_MD" "### 軽い経路（Light Path）")"
+    [ -n "$light" ]
+    [[ "$light" == *"Phase 2 の 3 観点調査"*"Phase 4 の devil's-advocate ループを行わない"* ]]
+    [[ "$light" == *"対象コード"*"を読み"*"AC・"*'`## 制約・取らないこと`・`## 変更対象パス` を埋める'* ]]
+    [[ "$light" == *'`references/devils-advocate-checklist.md` の Blocking Categories に 1 回だけ照らし'* ]]
+    grep -q '^## Blocking Categories' "$CHECKLIST"
+    [[ "$light" == *"Phase 5"*'AC Lint Self-Check（`ac-lint`）を通す'* ]]
+    [[ "$light" == *'Phase 6 の `create_issue.py`（`--kind agent`'* ]]
+    [[ "$light" == *"Phase 7"*'`dev-flow-ready-set`'* ]]
+    [[ "$light" != *"gh issue create"* ]]
+    # 参照先の Phase 5〜7 が ac-lint / create_issue.py / dev-flow-ready-set を実行する
+    [[ "$(extract_section "$SKILL_MD" "### Phase 5")" == *"ac-lint /tmp/github-issue-orchestrator-body.md"* ]]
+    [[ "$(extract_section "$SKILL_MD" "### Phase 6")" == *"scripts/create_issue.py"* ]]
+    [[ "$(extract_section "$SKILL_MD" "### Phase 7")" == *"dev-flow-ready-set [--repo owner/repo]"* ]]
+}
+
+@test "(22) 軽い経路の途中で分割・依存・human タスクが要ると分かったら重い経路に切り替える" {
+    light="$(extract_section "$SKILL_MD" "### 軽い経路（Light Path）")"
+    [[ "$light" == *"途中で分割・issue 間の依存・human タスクが必要と分かったら"*"重い経路"*"に切り替える"* ]]
+}
+
+@test "(23) 軽い経路は複数 finding を 1 回で起票し、本文ファイルごとに ac-lint と create_issue.py、Phase 7 は全 issue で 1 回" {
+    light="$(extract_section "$SKILL_MD" "### 軽い経路（Light Path）")"
+    [[ "$light" == *"複数の finding を 1 回の呼び出しでまとめて起票できる"* ]]
+    [[ "$light" == *"finding ごとに本文ファイルを作り"* ]]
+    [[ "$light" == *'本文ファイルごとに AC Lint Self-Check（`ac-lint`）を通す'* ]]
+    [[ "$light" == *'本文ファイルごとに Phase 6 の `create_issue.py`'* ]]
+    [[ "$light" == *'Phase 7 は起票した全 issue の番号をまとめて `dev-flow-ready-set` に 1 回だけ渡す'* ]]
+}
+
+@test "(24) Output Contract の ## Plan Quality Gate に通った経路（軽い / 重い）が出る" {
+    contract="$(extract_section "$SKILL_MD" "## Output Contract")"
+    gate="$(awk '/^## Plan Quality Gate/ { f = 1; next } f && /^## / { exit } f { print }' <<<"$contract")"
+    [[ "$gate" == *"- 経路: 軽い / 重い"* ]]
 }
