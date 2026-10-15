@@ -10,7 +10,7 @@
 #                     （実際に走っているので占有から漏らさない）。closed の issue は残骸として出力しない
 #
 # 出力（stdout に 1 行 JSON）:
-#   { ok: true, launch: [{number, title, paths, command: "/dev-flow <N>"}],
+#   { ok: true, launch: [{number, title, paths, command: "/dev-flow <N>", bg_command: "claude --bg \"/dev-flow <N>\""}],
 #     in_flight: [{number, reason: "open_pr"|"local_branch"|"worktree"}],
 #     waiting: [{number, reason: "human_task"|"blocked_by"|"path_conflict"|"no_declared_paths", detail}] }
 #   { ok: false, error: "..." }（exit 1。引数不正は exit 2）
@@ -216,7 +216,8 @@ jq -cn --argjson ready "$READY" --argjson in_flight "$IN_FLIGHT" --argjson waiti
         {launch: [], occupied: [$in_flight[] | {number, paths}], waiting: []};
         ([.occupied[] | select(conflicts(.paths; $c.paths))]) as $hit
         | if ($hit | length) == 0 then
-            .launch += [{number: $c.number, title: $c.title, paths: $c.paths, command: "/dev-flow \($c.number)"}]
+            .launch += [{number: $c.number, title: $c.title, paths: $c.paths, command: "/dev-flow \($c.number)",
+                         bg_command: "claude --bg \"/dev-flow \($c.number)\""}]
             | .occupied += [{number: $c.number, paths: $c.paths}]
           elif ($c.paths | length) == 0 then
             .waiting += [{number: $c.number, reason: "no_declared_paths", detail: ($hit | refs)}]

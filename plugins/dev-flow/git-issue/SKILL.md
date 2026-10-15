@@ -337,8 +337,9 @@ dev-flow-ready-set [--repo owner/repo] --with-in-flight <M1> <M2> ...
 
 stdout の 1 行 JSON を次のように `## Launch Order` へ写す:
 
-- `launch[]` → 「今すぐ別セッションで起動」。各要素の `command`（`/dev-flow <N>`）を **issue ごとに別セッション**で
-  流す旨を添える。同時に何本起動するかは人間が決める
+- `launch[]` → 「今すぐ別セッションで起動」。各要素の `command`（`/dev-flow <N>`）と `bg_command`
+  （`claude --bg "/dev-flow <N>"`。repo ルートで実行すると別セッションが立つ）を並べ、**issue ごとに別セッション**で
+  流す旨を添える。起動するのは人間が指示した issue・本数だけ（起動手段と範囲は dev-flow SKILL.md「並列実行」節）
 - `waiting[]` → 「後の波」。`reason`（`blocked_by` / `path_conflict` / `no_declared_paths` / `human_task`）と
   `detail`（相手の issue 番号）を併記する。`detail` の番号に `(変更対象パスなし)` が付いていれば、その実行中
   issue は申告が無いので全パスと重なる扱いになっている。相手の issue に `## 変更対象パス` を足せば再判定で解ける旨を添える
@@ -392,8 +393,8 @@ Always return this summary after execution:
 
 ## Launch Order
 - 判定: `dev-flow-ready-set [--repo owner/repo] --with-in-flight <M1> <M2> ...`（ok / 失敗 → error と手動実行コマンド / Dry-run: 起票後に判定）
-- 今すぐ別セッションで起動（issue ごとに 1 セッション。同時起動数は人間が決める）:
-  - `/dev-flow <M1>` — #M1 タイトル
+- 今すぐ別セッションで起動（issue ごとに 1 セッション。起動するのは人間が指示した issue・本数だけ）:
+  - `/dev-flow <M1>` — #M1 タイトル — bg_command: `claude --bg "/dev-flow <M1>"`
 - 後の波:
   - #M2 — blocked_by #M1 / path_conflict #M1 / path_conflict #N(変更対象パスなし) / no_declared_paths / human_task
 - 実行中（他 issue の run。パスを占有）: #N — open_pr / local_branch / worktree（無い場合は `- なし`）

@@ -120,7 +120,7 @@ ready_set() {
 
 # ---- AC-1: 入出力 ----
 
-@test "ready-set: 重ならない 2 件 -> launch に {number,title,paths,command} を 1 行 JSON で出す" {
+@test "ready-set: 重ならない 2 件 -> launch に {number,title,paths,command,bg_command} を 1 行 JSON で出す" {
     issue 3 "plugins/a/x.sh plugins/a/x.bats"
     issue 4 "plugins/b"
     ready_set 4 3
@@ -128,8 +128,10 @@ ready_set() {
     [ "${#lines[@]}" -eq 1 ]
     echo "$output" | jq -e '. == {ok: true,
         launch: [
-            {number: 3, title: "issue 3", paths: ["plugins/a/x.sh", "plugins/a/x.bats"], command: "/dev-flow 3"},
-            {number: 4, title: "issue 4", paths: ["plugins/b"], command: "/dev-flow 4"}],
+            {number: 3, title: "issue 3", paths: ["plugins/a/x.sh", "plugins/a/x.bats"], command: "/dev-flow 3",
+             bg_command: "claude --bg \"/dev-flow 3\""},
+            {number: 4, title: "issue 4", paths: ["plugins/b"], command: "/dev-flow 4",
+             bg_command: "claude --bg \"/dev-flow 4\""}],
         in_flight: [], waiting: []}'
     grep -qx 'issue view 3 --repo acme/skills --json number,title,state,labels,body,url,closedByPullRequestsReferences' "$GH_LOG"
 }
@@ -282,7 +284,8 @@ ready_set() {
     issue 61 "a"
     ready_set 60 61
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.launch == [{number: 60, title: "issue 60", paths: [], command: "/dev-flow 60"}]
+    echo "$output" | jq -e '.launch == [{number: 60, title: "issue 60", paths: [], command: "/dev-flow 60",
+            bg_command: "claude --bg \"/dev-flow 60\""}]
         and .waiting == [{number: 61, reason: "path_conflict", detail: "#60(変更対象パスなし)"}]'
 }
 
@@ -454,4 +457,41 @@ pr_heads() {
     [ "$status" -eq 0 ]
     [ -z "$(grep -vE '^(issue view|pr list|api repos/acme/skills/issues/[0-9]+/dependencies/blocked_by\?per_page=100$)' "$GH_LOG")" ]
     [ -z "$(grep -E '(^| )(-X|--method|-f|--field|-F|--raw-field|--input)( |$)' "$GH_LOG")" ]
+}
+
+# ---- 出力仕様と dev-flow SKILL.md「並列実行」節（issue #1000） ----
+
+# dev-flow SKILL.md の「## 並列実行」節を次の `## ` 見出しまで抜き出す
+parallel_section() {
+    awk '/^## 並列実行/ { f = 1; print; next } f && /^## / { exit } f { print }' \
+        "$(dirname "$SCRIPT")/../SKILL.md"
+}
+
+@test "ready-set: 冒頭の出力仕様コメントが launch[] の command と bg_command を書いている" {
+    grep -qF '#   { ok: true, launch: [{number, title, paths, command: "/dev-flow <N>", bg_command: "claude --bg \"/dev-flow <N>\""}],' "$SCRIPT"
+}
+
+@test "ready-set: SKILL.md 並列実行節は agent が repo ルートで bg_command を実行して自分で起動し、claude logs / attach で追うと書く" {
+    sec="$(parallel_section)"
+    [ -n "$sec" ]
+    [[ "$sec" == *"人間が流すよう指示した issue を、agent が **issue ごとに別セッション**で自分で起動する（人間に起動を頼まない）"* ]]
+    [[ "$sec" == *'自分のセッションで Workflow を回す 1 本は `launch[].command`（`/dev-flow <N>`）'* ]]
+    [[ "$sec" == *'残りは repo ルートで各要素の `bg_command`（`claude --bg "/dev-flow <N>"`）を実行して別セッションを起動する'* ]]
+    [[ "$sec" == *'`claude logs <id>` で進行を、`claude attach <id>` で'* ]]
+}
+
+@test "ready-set: SKILL.md 並列実行節は sandbox 内では ~/.claude/jobs を作れず EPERM になり、外の経路→人間に示す順で倒すと書く" {
+    sec="$(parallel_section)"
+    [[ "$sec" == *'sandbox 内の Bash からはそこを作れず `EPERM: operation not permitted, mkdir '"'"'<home>/.claude/jobs/<id>'"'"'` で'* ]]
+    [[ "$sec" == *'`~/.claude/jobs`'* ]]
+    [[ "$sec" == *'sandbox の外でコマンドを実行できる経路で `bg_command` を'*'実行し、それも無ければ `bg_command` を人間に示して起動を頼む'* ]]
+}
+
+@test "ready-set: SKILL.md 並列実行節は人間が指示した issue・本数だけを起動し、waiting は指名された path_conflict だけ起動してよいと書く" {
+    sec="$(parallel_section)"
+    [[ "$sec" == *"**起動するのは人間が指示した issue・本数だけ**"* ]]
+    [[ "$sec" == *'人間が指示した範囲を超えて `launch[]` の残りを起動しない'* ]]
+    [[ "$sec" == *'**`waiting[]` の issue は起動しない**'* ]]
+    [[ "$sec" == *'人間が明示的に指名した `path_conflict` の issue は'*'merge 時に conflict が出る見込みを伝えたうえで起動してよい'* ]]
+    [[ "$sec" == *'`blocked_by` / `human_task` は指名されても'*'起動しない'* ]]
 }
