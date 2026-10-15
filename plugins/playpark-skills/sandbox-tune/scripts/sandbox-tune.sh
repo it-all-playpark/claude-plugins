@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # sandbox-tune: transcript から sandbox 拒否・人間への実行依頼・permission 拒否・host-exec の実行を型ごとに集計し、
-# 設定 repo の git log と突き合わせてレポートにする。issue 化は draft → handoff を明示したときだけで、
-# 起票そのものは handoff の出力を受けた github-issue-orchestrator が行う（このスクリプトは issue を作らない）。
+# 設定 repo と、拒否が起きた repo の .claude/settings.json の git log と突き合わせてレポートにする。
+# issue 化は draft → handoff を明示したときだけで、起票そのものは handoff の出力を受けた
+# github-issue-orchestrator が行う（このスクリプトは issue を作らない）。
 #
 # Usage:
 #   sandbox-tune.sh run     [--days N] [--config F] [--no-verify] [--out DIR] [--projects-dir D] [--now ISO]
@@ -44,9 +45,13 @@ sha256_of() {
   fi
 }
 
+# git は実パスを返すので、$HOME が symlink を含むとき（/tmp → /private/tmp 等）は実パスでも比べる
 home_rel() {
+  local phys
+  phys="$(cd "$HOME" 2>/dev/null && pwd -P)" || phys="$HOME"
   case "$1" in
     "$HOME"/*) printf '~/%s\n' "${1#"$HOME"/}" ;;
+    "$phys"/*) printf '~/%s\n' "${1#"$phys"/}" ;;
     *) printf '%s\n' "$1" ;;
   esac
 }
@@ -156,8 +161,34 @@ cmd_collect() {
   rm -f "$list" "$events"
 }
 
+# 型の対象（ホスト・パス・コマンド名）が差分に増減した commit と、message に書かれた commit を「関係する commit」とする。
+# configRepo と発生した repo で同じ規則を使う。読むだけ（fetch・checkout・書き込みをしない）。
+# 由来（config: configRepo の paths / repo: 発生した repo の .claude/settings.json）を付ける。
+# configRepo の設定は branch に関係なく効くので、branch 判定の基準（fix）は repo 由来だけから選ぶ
+# Usage: related_commits <dir> <git_dir> <repo の表示名> <由来> <型の id> <対象> <pathspec...>
+related_commits() {
+  local dir="$1" gd="$2" label="$3" source="$4" id="$5" needle="$6"
+  shift 6
+  {
+    git -C "$dir" log -S"$needle" --format='%H%x09%ct%x09%s' -- "$@"
+    git -C "$dir" log -F --grep="$needle" --format='%H%x09%ct%x09%s' -- "$@"
+  } | jq -R -c --arg id "$id" --arg gd "$gd" --arg repo "$label" --arg source "$source" \
+    'split("\t") | {id: $id, git_dir: $gd, repo: $repo, source: $source, hash: .[0], epoch: (.[1] | tonumber), subject: (.[2:] | join("\t"))}'
+}
+
+# worktree も本体の repo にまとめるため、共通の git dir で repo を識別する
+git_common_dir() { git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null; }
+
+# 共通の git dir から、git を走らせる場所（<repo>/.git なら <repo>）
+git_top() {
+  case "$1" in
+    */.git) printf '%s\n' "${1%/.git}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 cmd_verify() {
-  local analysis="" config="" cfg repo commits id needle p
+  local analysis="" config="" cfg repo commits repos checks id needle p cwd dir gd top label fix branch rc result
   local paths=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -167,42 +198,66 @@ cmd_verify() {
     esac
   done
   [ -f "$analysis" ] || die 2 "verify: collect の JSON を渡してください"
+  jq -e 'all(.types[].occurrences[]; type == "object")' "$analysis" >/dev/null \
+    || die 2 "verify: occurrences が発生ごとの {ts, cwd, git_branch} ではありません。collect からやり直してください"
   cfg="$(resolve_config "$config")"
   repo="$(jq -r '.configRepo.path // empty' <<<"$cfg")"
   [ -n "$repo" ] || die 2 "verify には設定の configRepo が要ります"
   while IFS= read -r p; do paths+=("$p"); done <<<"$(jq -r '.configRepo.paths[]' <<<"$cfg")"
 
   commits="$(mktemp "${TMPDIR:-/tmp}/sandbox-tune-commits.XXXXXX")"
-  # 型の対象（ホスト・パス・コマンド名）が差分に増減した commit と、message に書かれた commit を「関係する commit」とする。
+  repos="$(mktemp "${TMPDIR:-/tmp}/sandbox-tune-repos.XXXXXX")"
+  checks="$(mktemp "${TMPDIR:-/tmp}/sandbox-tune-checks.XXXXXX")"
   # 1 語だけの対象（node / git 等）は無関係な commit にも当たり、誤って resolved にして型を隠すので突き合わせない
+  local types_jq='.types[] | select(.needle | test("[./:_ -]"))'
+
+  gd="$(git_common_dir "$repo")"
+  label="$(home_rel "$repo")"
   while IFS=$'\t' read -r id needle; do
     [ -n "$needle" ] || continue
-    {
-      git -C "$repo" log -S"$needle" --format='%H%x09%ct%x09%s' -- "${paths[@]}"
-      git -C "$repo" log -F --grep="$needle" --format='%H%x09%ct%x09%s' -- "${paths[@]}"
-    } | jq -R -c --arg id "$id" 'split("\t") | {id: $id, hash: .[0], epoch: (.[1] | tonumber), subject: (.[2:] | join("\t"))}'
-  done <<<"$(jq -r '.types[] | select(.needle | test("[./:_ -]")) | [.id, .needle] | @tsv' "$analysis")" >"$commits"
+    related_commits "$repo" "$gd" "$label" config "$id" "$needle" "${paths[@]}"
+  done <<<"$(jq -r "$types_jq"' | [.id, .needle] | @tsv' "$analysis")" >"$commits"
 
-  jq --slurpfile c "$commits" --arg repo "$(home_rel "$repo")" --argjson paths "$(jq -c '.configRepo.paths' <<<"$cfg")" '
-    def epoch: sub("\\.[0-9]+"; "") | fromdateiso8601;
-    ($c | group_by(.id) | map({key: .[0].id, value: (unique_by(.hash) | sort_by(-.epoch))}) | from_entries) as $by
+  # 発生の cwd が属する repo。cwd が存在しない・git repo でない発生は repo 側の突き合わせを飛ばす
+  while IFS= read -r cwd; do
+    [ -n "$cwd" ] || continue
+    case "$cwd" in "~/"*) dir="$HOME/${cwd#"~/"}" ;; *) dir="$cwd" ;; esac
+    gd="$(git_common_dir "$dir")" || continue
+    top="$(git_top "$gd")"
+    jq -nc --arg cwd "$cwd" --arg gd "$gd" --arg top "$top" --arg repo "$(home_rel "$top")" \
+      '{key: $cwd, value: {git_dir: $gd, top: $top, repo: $repo}}'
+  done <<<"$(jq -r '['"$types_jq"' | .occurrences[].cwd | select(. != null)] | unique[]' "$analysis")" | jq -s 'from_entries' >"$repos"
+
+  # 発生した repo では .claude/settings.json だけを pathspec 付きで引く。
+  # 読めない repo（commit の無い repo・読み取りの拒否）は関係 commit なしとして続ける
+  while IFS=$'\t' read -r id needle gd top label; do
+    [ -n "$gd" ] || continue
+    related_commits "$top" "$gd" "$label" repo "$id" "$needle" .claude/settings.json || true
+  done <<<"$(jq -r --slurpfile r "$repos" "$types_jq"' | .id as $id | .needle as $n
+      | [.occurrences[] | $r[0][.cwd // ""] // empty] | unique_by(.git_dir)[] | [$id, $n, .git_dir, .top, .repo] | @tsv' "$analysis")" >>"$commits"
+
+  # 後の発生の branch が、その repo の最新の関係 commit を含むか（ref が無いものは判定不能）
+  while IFS=$'\t' read -r gd top fix branch; do
+    [ -n "$fix" ] || continue
+    rc=0
+    git -C "$top" merge-base --is-ancestor "$fix" "refs/heads/$branch" >/dev/null 2>&1 || rc=$?
+    case "$rc" in 0) result=contains ;; 1) result=not_contains ;; *) result=unknown ;; esac
+    printf '%s\t%s\t%s\t%s\n' "$gd" "$fix" "$branch" "$result"
+  done <<<"$(jqs -r --slurpfile c "$commits" --slurpfile r "$repos" '
+      include "verify";
+      ($c | commits_by_type) as $by
+      | [ .types[] | ($by[.id] // []) as $cs | select($cs | length > 0)
+          | after_occurrences($cs; $r[0])[] | select(needs_check) | [.git.git_dir, .git.top, .fix, .git_branch] | @tsv ]
+      | unique[]' "$analysis")" >"$checks"
+
+  jqs --slurpfile c "$commits" --slurpfile r "$repos" --rawfile k "$checks" \
+    --arg repo "$(home_rel "$repo")" --argjson paths "$(jq -c '.configRepo.paths' <<<"$cfg")" '
+    include "verify";
+    ($c | commits_by_type) as $by
+    | ($k | split("\n") | map(select(. != "") | split("\t") | {key: (.[0:3] | join("\t")), value: .[3]}) | from_entries) as $checks
     | .verify = {repo: $repo, paths: $paths}
-    | .types |= map(
-        . as $t
-        | ($by[$t.id] // []) as $cs
-        | if ($cs | length) == 0 then
-            .status = "remaining"
-            | .evidence = {commit: null, committed_at: null, subject: null, after_count: $t.count, last_after: $t.last_seen, related_commits: [],
-                           note: (if ($t.needle | test("[./:_ -]")) then null else "対象が 1 語で関係する commit を特定できない" end)}
-          else
-            $cs[0] as $fix
-            | [ $t.occurrences[] | select(epoch > $fix.epoch) ] as $after
-            | .status = (if ($after | length) == 0 then "resolved" else "remaining" end)
-            | .evidence = {commit: $fix.hash, committed_at: ($fix.epoch | todate), subject: $fix.subject,
-                           after_count: ($after | length), last_after: ($after | last),
-                           related_commits: [ $cs[0:3][] | {hash: .hash[0:12], committed_at: (.epoch | todate), subject} ]}
-          end)' "$analysis"
-  rm -f "$commits"
+    | .types |= verify_types($by; $r[0]; $checks)' "$analysis"
+  rm -f "$commits" "$repos" "$checks"
 }
 
 cmd_report() {
@@ -254,6 +309,7 @@ cmd_run() {
   md="$(cmd_report "$json" --out "$out")"
   jq -c --arg report "$md" --arg analysis "$json" '{report: $report, analysis: $analysis, verified: (.verify != null),
     types: (.types | length), remaining: ([.types[] | select(.status == "remaining")] | length),
+    stale_branch: ([.types[] | select(.status == "stale_branch")] | length),
     resolved: ([.types[] | select(.status == "resolved")] | length)}' "$json"
 }
 

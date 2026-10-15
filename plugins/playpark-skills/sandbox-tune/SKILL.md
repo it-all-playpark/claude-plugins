@@ -73,12 +73,19 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
   refused は host-exec 自身の拒否パターン。`git -C <dir>` の値は飛ばし、インタプリタに渡したスクリプトはファイル名でまとめる）
 - `host_exec` の型には `after_block`（同じ transcript で直前の Bash が sandbox / permission に拒否されていた件数）が付く。
   残りは Bash を試さずに host-exec へ行ったもの。代表例は `理由: <Claude が書いた reason> / $ <argv>`
-- 各型に `count`・`sessions`（`sessionId` で数える）・`first_seen`・`last_seen`・`projects`・伏せ字済みの代表例（2 件まで）が付く
+- 各型に `count`・`sessions`（`sessionId` で数える）・`first_seen`・`last_seen`・`projects`・伏せ字済みの代表例（2 件まで）と、
+  発生ごとの `occurrences`（`ts`・`cwd`（home 相対）・`git_branch`（transcript の `gitBranch`。無ければ null））が付く
 - subagent の transcript と `isSidechain` の行、grep / cat 等の出力やファイル本文に拒否の文言が含まれていただけの行、
   依頼の文に書かれたコマンドやエラー文は数えない
-- verify の「関係する commit」は、型の対象（ホスト・パスの一部・コマンド名）が `configRepo.paths` の差分に現れた commit か、
-  commit message に書かれた commit の最新のもの。その後に発生が無ければ `resolved`、あれば・commit が無ければ `remaining`。
-  対象が 1 語のコマンド名（`node` 等）の型は無関係な commit に当たるので突き合わせず `remaining` にする
+- verify の「関係する commit」は、型の対象（ホスト・パスの一部・コマンド名）が差分に現れた commit か、commit message に書かれた commit。
+  見るのは `configRepo.paths` と、発生の `cwd` が属する git repo（worktree は本体の repo にまとめる）の `.claude/settings.json`。
+  発生した repo は履歴を読むだけで、cwd が存在しない・git repo でない発生はその突き合わせを飛ばす。
+  evidence の commit には、どの repo の commit か（`repo`）が付く
+- 全 repo の関係 commit の最新のものより後に発生が無ければ `resolved`、commit が無ければ `remaining`。
+  後の発生があれば、発生ごとに `git_branch` がその repo の最新の関係 commit を含むか（含む / 含まない / 判定不能: branch が無い・detached・
+  repo や関係 commit が無い）を判定し、`evidence.after_branches` に件数を載せる。すべて「含まない」なら `stale_branch`、
+  1 件でも「含む」か「判定不能」があれば `remaining`。branch は今の先端で見る（発生後に修正を取り込んだ branch は「含む」になる）
+- 対象が 1 語のコマンド名（`node` 等）の型は無関係な commit に当たるので突き合わせず `remaining` にする
 - 型は数百件になることがある。レポートは件数順なので、Read の offset / limit で `remaining` 節を上から読む
 
 ## 判断手順（remaining の型ごと）
@@ -88,7 +95,9 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
 
 1. `ST config` の `criteriaFiles` を全部読む（追加の判定基準）
 2. レポートの `remaining` 節を上から読む。verify の根拠の commit が型と無関係（文字列が偶然一致しただけ）なら、関係する commit なしとして扱う。
+   後の発生に「修正を含む branch」が 1 件でもある型は再発として扱う。
    commit の後の発生が、commit より前に起動していた session だけなら（`first_seen` と commit 日時で判断）再発ではない可能性を書く
+   - `stale_branch` 節の型には原因・修正案を出さない。「修正前の branch での発生」として型と件数を一覧に留める
 3. 型ごとに次の 3 つを出す
    - **原因**: 何が何を拒否したか（sandbox の書き込み・socket・ネットワーク、permission rule、hook、classifier）。代表例の文から言い切れることだけ書く
    - **修正案**: settings のキー（`sandbox.filesystem.allowWrite` / `sandbox.network.allowUnixSockets` / `sandbox.excludedCommands` / `permissions.allow` 等）、
@@ -101,7 +110,7 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
      作業するセッション・場所を変えれば要らないもの。手順・ルールの変更を出す
    - **一回限り**: repo の移動など再発しないもの。修正案なし
    同じ型が複数 session で繰り返すなら、組み込み保護以外は直す対象として扱う
-5. 結果をユーザーに表で示す（型 / 件数・最終発生 / 原因 / 修正案 / 安全性）
+5. 結果をユーザーに表で示す（型 / 件数・最終発生 / 原因 / 修正案 / 安全性）。`stale_branch` の型は別の一覧（型 / 件数・最終発生）にする
 
 ### 安全性の基準
 

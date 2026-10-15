@@ -128,12 +128,15 @@ def needle_of:
     | map(select(test("\\*") | not)) | join("/")
   else .target end;
 
-# 対象・代表例は伏せ字を通してから切り詰める（先に切ると PEM 等の終端が落ちて伏せ字から漏れる）
+# 対象・代表例は伏せ字を通してから切り詰める（先に切ると PEM 等の終端が落ちて伏せ字から漏れる）。
+# cwd と git_branch は verify が発生した repo の修正と branch を突き合わせるのに使う（worktree 名を潰さずに残す）
 def event($l; $cat; $kind; $target; $id; $example):
   ($target | redact) as $t
   | {id: $id, cat: $cat, kind: $kind, target: $t,
      key: "\($cat):\($kind):\($t)",
      epoch: ($l.timestamp | epoch_of), session: $l.sessionId, project: project_of($l),
+     cwd: (($l.cwd // "") | if . == "" then null else home_rel end),
+     git_branch: (($l.gitBranch // "") | if . == "" then null else . end),
      example: ($example | redact | .[0:300])}
   | .ts = (.epoch | todate)
   | .needle = needle_of;
