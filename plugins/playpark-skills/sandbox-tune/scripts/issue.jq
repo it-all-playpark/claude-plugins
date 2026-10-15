@@ -1,6 +1,6 @@
-# issue 下書きの組み立て。
+# issue 化の材料（下書き）の組み立て。起票は github-issue-orchestrator が材料から AC・制約・変更対象パスを付けて行う。
 # セキュリティ系かどうかは候補の security フラグと本文の語の両方で判定する（どちらかで真）。
-# 判定漏れは公開 repo への投稿に直結するので、語の一致は広めに取り、誤って真になる側に倒す。
+# 判定漏れは公開 repo への起票に直結するので、語の一致は広めに取り、誤って真になる側に倒す。
 def security_re:
   "secret|credential|password|passwd|private key|keychain|token|api[_ -]?key|\\.ssh|\\.aws|\\.gnupg|gh auth|environ|環境変数|資格情報|認証情報|秘密|鍵|他プロセス";
 
@@ -9,7 +9,7 @@ def is_security($text): (.security == true) or ($text | test(security_re; "i"));
 def fill($v): reduce ($v | to_entries[]) as $e (.; gsub("\\{\\{\($e.key)\\}\\}"; $e.value | tostring));
 
 def default_template:
-  "## 概要\n\n{{title}}\n\n## 型\n\n`{{id}}`\n\n## 根拠\n\n{{evidence}}\n\n## 原因\n\n{{cause}}\n\n## 修正案\n\n{{fix}}\n\n## 安全性の評価\n\n{{safety}}\n\n---\nsandbox-tune が transcript の集計から下書きした issue。\n";
+  "## 概要\n\n{{title}}\n\n## 型\n\n`{{id}}`\n\n## 根拠\n\n{{evidence}}\n\n## 原因\n\n{{cause}}\n\n## 修正案\n\n{{fix}}\n\n## 安全性の評価\n\n{{safety}}\n\n---\nsandbox-tune が transcript の集計から書いた issue 化の材料。\n";
 
 def evidence_md:
   "- 件数: \(.count) 件 / \(.sessions) session（\(.first_seen) 〜 \(.last_seen)）\n"

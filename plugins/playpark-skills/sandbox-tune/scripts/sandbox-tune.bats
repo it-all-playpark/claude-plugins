@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # sandbox-tune.sh のテスト。合成した transcript（<projects>/<project>/<session>.jsonl）を集計させる。
 # gh は PATH 先頭の偽物で置き換え、呼び出しを記録する。
+bats_require_minimum_version 1.5.0
 
 NOW="2026-10-01T00:00:00Z"
 
@@ -15,8 +16,10 @@ setup() {
   cat >"$WORK/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$GH_LOG"
-if [ "$1 $2" = "repo view" ]; then echo "${GH_VISIBILITY:-PUBLIC}"; exit 0; fi
-if [ "$1 $2" = "issue create" ]; then echo "https://github.com/o/r/issues/1"; fi
+if [ "$1 $2" = "repo view" ]; then
+  [ -z "${GH_VIEW_FAIL:-}" ] || exit 1
+  echo "${GH_VISIBILITY:-PUBLIC}"
+fi
 EOF
   chmod +x "$WORK/bin/gh"
   export PATH="$WORK/bin:$PATH"
@@ -362,37 +365,66 @@ EOF
   ! grep -q 'issue create' "$GH_LOG"
 }
 
-@test "issue: 公開 repo へは --allow-public なしで投稿しない" {
+@test "issue: 公開 repo へは --allow-public なしで渡さない。通ったら orchestrator に渡す引数を 1 行の JSON で出し、issue は作らない" {
   make_drafts
-  run bash "$SCRIPT" post "$N" --digest "$N_SHA"
+  run bash "$SCRIPT" handoff "$N" --digest "$N_SHA"
   [ "$status" -eq 5 ]
   [[ "$output" == *"公開 repo"* ]]
+
+  run --separate-stderr bash "$SCRIPT" handoff "$N" --digest "$N_SHA" --allow-public
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"公開 repo です"* ]]
+  [[ "$output" != *$'\n'* ]]
+  [ "$(printf '%s' "$output" | jq -c 'keys')" = '["labels","material","repo","title"]' ]
+  [ "$(printf '%s' "$output" | jq -r .material)" = "$N" ]
+  [ "$(printf '%s' "$output" | jq -r .repo)" = o/r ]
+  [ "$(printf '%s' "$output" | jq -r .title)" = 'example.org を allowedDomains に足す' ]
+  [ "$(printf '%s' "$output" | jq -c .labels)" = '["sandbox"]' ]
+  grep -q 'repo view o/r' "$GH_LOG"
   ! grep -q 'issue create' "$GH_LOG"
 
+  # 直接起票する post は無い
   run bash "$SCRIPT" post "$N" --digest "$N_SHA" --allow-public
-  [ "$status" -eq 0 ]
-  grep -q "issue create --repo o/r --title example.org を allowedDomains に足す --body-file $N --label sandbox" "$GH_LOG"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"|handoff}"* ]]
+  ! grep -q 'issue create' "$GH_LOG"
 }
 
-@test "issue: セキュリティ系の候補は --allow-public があっても公開 repo に投稿しない" {
+@test "issue: セキュリティ系の候補は --allow-public があっても公開 repo に渡さない" {
   make_drafts
-  run bash "$SCRIPT" post "$S" --digest "$S_SHA" --allow-public
+  run bash "$SCRIPT" handoff "$S" --digest "$S_SHA" --allow-public
   [ "$status" -eq 5 ]
   [[ "$output" == *"security advisory"* ]]
-  ! grep -q 'issue create' "$GH_LOG"
 
-  # 非公開 repo には投稿できる
-  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" post "$S" --digest "$S_SHA"
+  # 非公開 repo には渡せる
+  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" handoff "$S" --digest "$S_SHA"
   [ "$status" -eq 0 ]
-  grep -q 'issue create --repo o/r' "$GH_LOG"
+  [ "$(printf '%s' "$output" | jq -r '[.material, .repo] | @tsv')" = "$S	o/r" ]
+  ! grep -q 'issue create' "$GH_LOG"
 }
 
-@test "issue: 表示した下書きと違う内容（digest 不一致・書き換え）は投稿しない" {
+@test "issue: 提出先の公開範囲を確認できなければ渡さない" {
   make_drafts
-  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" post "$N" --digest deadbeef
+  GH_VIEW_FAIL=1 run bash "$SCRIPT" handoff "$N" --digest "$N_SHA" --allow-public
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"公開範囲を確認できません"* ]]
+  ! grep -q 'issue create' "$GH_LOG"
+}
+
+@test "issue: 表示した下書きと違う内容（digest 不一致・書き換え）は渡さない" {
+  make_drafts
+  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" handoff "$N" --digest deadbeef
   [ "$status" -eq 3 ]
   echo 'SECRET_KEY=plain' >>"$N"
-  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" post "$N" --digest "$(shasum -a 256 "$N" | cut -d' ' -f1)"
+  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" handoff "$N" --digest "$(shasum -a 256 "$N" | cut -d' ' -f1)"
   [ "$status" -eq 3 ]
+  # meta の digest まで合わせても、伏せ字を通っていない文字列があれば渡さない
+  local sha
+  sha="$(shasum -a 256 "$N" | cut -d' ' -f1)"
+  jq --arg s "$sha" '.sha256 = $s' "${N%.md}.meta.json" >"$WORK/meta.json"
+  mv "$WORK/meta.json" "${N%.md}.meta.json"
+  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" handoff "$N" --digest "$sha"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"伏せ字を通っていない"* ]]
   ! grep -q 'issue create' "$GH_LOG"
 }
