@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for dev-issue-analyze/scripts/analyze-issue.sh
+# Tests for dev-flow/scripts/analyze-issue.sh
 #
 # Strategy: shim out `gh` with a PATH-first stub. analyze-issue.sh fetches the issue itself
 # via `gh issue view <n> [--repo R] --json ...`; the stub records its argv to
@@ -16,7 +16,7 @@
 
 setup() {
     SKILLS_REPO="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
-    SCRIPT="$SKILLS_REPO/dev-issue-analyze/scripts/analyze-issue.sh"
+    SCRIPT="$SKILLS_REPO/dev-flow/scripts/analyze-issue.sh"
 
     # $BATS_TMPDIR は同時に走る別の bats run（他 worktree・並列 Validate）と共有され、
     # 固定名の fixture が互いに上書きされる。テストごとに閉じた dir に置く。
@@ -410,7 +410,7 @@ Update src/foo.ts and src/bar.ts."
 - [ ] done
 
 ## Scope
-Update dev-issue-analyze/scripts/analyze-issue.sh and dev-issue-analyze/scripts/analyze-issue.bats."
+Update dev-flow/scripts/analyze-issue.sh and dev-flow/scripts/analyze-issue.bats."
     run analyze "$FIXTURE" 26 --contract
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.eligible == true and (has("estimated_change_file_count") | not)'

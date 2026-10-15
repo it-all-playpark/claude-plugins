@@ -13,7 +13,8 @@
 //   (d) clarify agent の null / throw は fail-open（ゲート理由をそのまま missing_context にする）
 //   (e) 通常経路の isolation-probe は Analyze ゲート後・Implement 前に 1 回（needs_clarification 経路では 0 回）
 //   (f) args.setup.analyze が ok:true だが whitelist 不合格 → fail-closed throw（推測で REQ を組まない）
-//   (g) clarify prompt はゲート理由を verbatim で含み、issue 転写（gh の直接実行 / sandbox 語）を指示しない
+//   (g) clarify prompt はゲート理由を verbatim で含み、issue は analyze-issue の直接実行（切断時は dump を Read）で読ませ、
+//       issue 転写（gh の直接実行 / sandbox 語）を指示しない
 //   (h) REQ が prerun の analyze から組まれる: breaking_change / issue_body / AC が dev-implementer prompt と shape に届く
 //   (i) open な blocker（issue #744）: needs_clarification（source=blocked_by）で journal handoff 以外の spawn 0、
 //       missing_context に未完了 issue を列挙。analyze ゲートより先に判定する。closed のみなら通常経路
@@ -176,7 +177,10 @@ test('[analyze-routing] (g) analyze-clarify#1 prompt はゲート理由を verba
   assert.ok(call);
   assert.ok(call.prompt.includes(conflict), 'ゲート理由が verbatim で prompt に無い');
   assert.ok(call.prompt.includes('missing_context'), 'missing_context の返却指示が無い');
-  assert.ok(call.prompt.includes('dev-issue-analyze 1 --depth comprehensive'), 'Skill 経由の issue 読み取り指示が無い');
+  // issue は Skill を経由せず、exec-proxy analyze-issue を bare 名で直接実行して読む。切断時は dump を Read する
+  assert.ok(call.prompt.includes('`analyze-issue 1 --depth comprehensive --dump-body "${TMPDIR:-/tmp}/issue-1-body.md"`'), 'analyze-issue を bare 名で直接実行する指示が無い');
+  assert.ok(call.prompt.includes('body_dump_path が null でなければ、そのファイルを Read して'), 'body_dump_path の Read 指示が無い');
+  assert.ok(!call.prompt.includes('Skill:'), 'issue の読み取りを Skill 経由で指示してはならない');
   assert.ok(call.prompt.includes('推測して埋めるな'), '要件推測の禁止が無い');
   assert.ok(call.prompt.includes('date +%s'), 'EPOCH_INSTRUCTION が無い');
   assert.ok(!/sandbox|excludedCommands/.test(call.prompt), 'prompt に sandbox / excludedCommands が含まれてはならない');

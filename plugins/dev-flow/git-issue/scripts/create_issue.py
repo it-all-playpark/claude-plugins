@@ -28,7 +28,7 @@ PATHS_HEADING_RE = re.compile(r"^##[ \t]+変更対象パス[ \t]*$", re.MULTILIN
 NEXT_SECTION_RE = re.compile(r"^#{1,2}[ \t]", re.MULTILINE)
 PATH_ENTRY_RE = re.compile(r"^-[ \t]+(\S.*?)[ \t]*$", re.MULTILINE)
 ISSUE_URL_RE = re.compile(r"/issues/(\d+)$")
-# dev-flow の analyze（dev-issue-analyze/scripts/analyze-issue.sh の SCOPE_MAX_CHARS）は AC 節を除いた本文を
+# dev-flow の analyze（dev-flow/scripts/analyze-issue.sh の SCOPE_MAX_CHARS）は AC 節を除いた本文を
 # この字数で切り、切られた部分は implementer に届かない。agent issue はこの上限内でしか起票しない。
 # 字数は analyze-issue.sh の scope_total_chars と同じ規則で数える（下の 3 正規表現と scope_total_chars()）。
 SCOPE_MAX_CHARS = 4000

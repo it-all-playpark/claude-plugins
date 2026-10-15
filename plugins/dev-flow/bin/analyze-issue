@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export GIT_OPTIONAL_LOCKS=0
-exec bash "$(dirname "$0")/../dev-issue-analyze/scripts/analyze-issue.sh" "$@"
+exec bash "$(dirname "$0")/../dev-flow/scripts/analyze-issue.sh" "$@"
