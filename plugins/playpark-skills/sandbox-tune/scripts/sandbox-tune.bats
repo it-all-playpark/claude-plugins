@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 # sandbox-tune.sh のテスト。合成した transcript（<projects>/<project>/<session>.jsonl）を集計させる。
 # gh は PATH 先頭の偽物で置き換え、呼び出しを記録する。
 
@@ -217,7 +218,7 @@ sandbox:path:/w/repo/.git/FETCH_HEAD 1 1" ]
     = '[1,"理由: 分離中は dotfiles の git を書けない / $ git -C /w/dotfiles fetch origin"]' ]
   [ "$(printf '%s' "$output" | jq -c '[.types[] | select(.category != "host_exec") | has("after_block")] | any')" = false ]
   cd "$WORK"
-  run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
+  run bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW"
   [ "$status" -eq 0 ]
   grep -q '^- 種別: host-exec / ran$' "$WORK/claudedocs/sandbox-tune-2026-10-01.md"
   grep -q '^- 直前の Bash が拒否されていた: 1 / 2 件' "$WORK/claudedocs/sandbox-tune-2026-10-01.md"
@@ -287,12 +288,30 @@ make_config_repo() {
   grep -q '^## remaining' "$WORK/claudedocs/sandbox-tune-2026-10-01.md"
 }
 
-@test "report: 設定が無ければ verify せず、cwd の claudedocs/ に伏せ字済みのレポートを書く。gh は呼ばない" {
+@test "run: 設定が無い・configRepo が無いときは何も書かずに exit 2。--no-verify なら verify せず伏せ字済みのレポートを書く。gh は呼ばない" {
   fixture_basic
   use proj-a/s1.jsonl S1 2026-09-10T00:09:00Z r2 'deploy-tool push'
   result proj-a/s1.jsonl S1 2026-09-10T00:09:01Z r2 'Error: EPERM: operation not permitted, open DEPLOY_TOKEN=tok_zzz9'
   cd "$WORK"
-  run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
+  # --config も cwd の sandbox-tune.json も無い
+  run --separate-stderr bash "$SCRIPT" run --projects-dir "$P" --now "$NOW" --out "$WORK/out"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"sandbox-tune.json"* ]]
+  [[ "$stderr" == *"--no-verify"* ]]
+  [ ! -e "$WORK/out" ]
+  # 設定はあるが configRepo が無い（cwd・--config とも）
+  echo '{"issue":{"repo":"o/r"}}' >"$WORK/sandbox-tune.json"
+  run --separate-stderr bash "$SCRIPT" run --projects-dir "$P" --now "$NOW" --out "$WORK/out"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"--no-verify"* ]]
+  [ ! -e "$WORK/out" ]
+  mv "$WORK/sandbox-tune.json" "$WORK/other.json"
+  run --separate-stderr bash "$SCRIPT" run --config "$WORK/other.json" --projects-dir "$P" --now "$NOW" --out "$WORK/out"
+  [ "$status" -eq 2 ]
+  [ ! -e "$WORK/out" ]
+
+  # --no-verify は設定が無くても collect と report を書く
+  run bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW"
   [ "$status" -eq 0 ]
   md="$WORK/claudedocs/sandbox-tune-2026-10-01.md"
   [ "$(printf '%s' "$output" | jq -r '[.report, .verified] | @tsv')" = "$md	false" ]
@@ -301,6 +320,14 @@ make_config_repo() {
   grep -q 'DEPLOY_TOKEN=\*\*\*' "$md"
   ! grep -q 'tok_zzz9' "$md"
   [ ! -s "$GH_LOG" ]
+
+  # configRepo のある設定でも --no-verify なら verify しない
+  make_config_repo
+  run bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" --out "$WORK/nv"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c '[.verified, .resolved, .remaining]')" = '[false,0,0]' ]
+  [ "$(jq -c '[.verify, ([.types[] | has("status")] | any)]' "$WORK/nv/sandbox-tune-2026-10-01.json")" = '[null,false]' ]
+  head -n 5 "$WORK/nv/sandbox-tune-2026-10-01.md" | grep -q 'verify は未実施'
 }
 
 @test "config: 不正な設定はエラーにする" {
@@ -322,7 +349,7 @@ make_drafts() {
   fixture_basic
   cd "$WORK"
   echo '{"issue":{"repo":"o/r","labels":["sandbox"]}}' >"$WORK/sandbox-tune.json"
-  bash "$SCRIPT" run --projects-dir "$P" --now "$NOW" >/dev/null
+  bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" >/dev/null
   cat >"$WORK/candidates.json" <<'EOF'
 {"candidates":[
   {"id":"sandbox:network:example.org","title":"example.org を allowedDomains に足す","cause":"許可リストに無い","fix":"sandbox.network.allowedDomains に example.org を足す","safety":"取得先が 1 ホスト増えるだけ","security":false},
@@ -342,7 +369,7 @@ EOF
   fixture_basic
   cd "$WORK"
   echo '{"issue":{"repo":"o/r"}}' >"$WORK/sandbox-tune.json"
-  bash "$SCRIPT" run --projects-dir "$P" --now "$NOW" >/dev/null
+  bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" >/dev/null
   echo '{"candidates":[{"id":"sandbox:network:example.org","title":"t","cause":"c","fix":"f","safety":"s"}]}' >"$WORK/candidates.json"
   run bash "$SCRIPT" draft --analysis "$WORK/claudedocs/sandbox-tune-2026-10-01.json" --candidates "$WORK/candidates.json" \
     --ids sandbox:network:example.org
