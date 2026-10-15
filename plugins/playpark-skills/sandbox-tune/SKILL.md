@@ -3,12 +3,13 @@ name: sandbox-tune
 description: >-
   Aggregates sandbox denials, permission denials, "please run this in your terminal" requests, and host-exec
   (out-of-sandbox) runs from Claude Code transcripts by type, checks them against the settings repo's git log (resolved / remaining),
-  and proposes settings / wrapper / hook fixes with a safety review. Writes a local Markdown report; drafts issues only with --issue.
+  and proposes settings / wrapper / hook fixes with a safety review. Writes a local Markdown report; with --issue, hands
+  human-confirmed drafts to github-issue-orchestrator (dev-flow plugin) for filing.
   Use when: (1) user asks why the agent keeps asking them to run commands, or which sandbox denials still recur,
   (2) user wants settings.json / excludedCommands / allowUnixSockets fix candidates backed by evidence,
   (3) user asks whether host-exec is being used for things settings should fix,
   (4) keywords: sandbox-tune, sandbox 拒否, Operation not permitted, EPERM, 人間に実行依頼, 通常のターミナルで, settings 修正, permission 拒否, host-exec.
-  Accepts args: [--days N] [--issue] [--allow-public]
+  Accepts args: [--days N] [--no-verify] [--issue] [--allow-public]
 ---
 
 # Sandbox Tune
@@ -21,7 +22,10 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 
 ## 設定 (`<repo>/sandbox-tune.json`)
 
-呼び出した repo（cwd）の `sandbox-tune.json` を読む。無ければ設定 repo なしで collect と report だけを行う。
+呼び出した repo（cwd）の `sandbox-tune.json`（`--config F` を渡したらそのファイル）を読む。
+`run` は `configRepo` のある設定が要る。設定が無い・`configRepo` が無いときは何も書かずに exit 2 で止まる
+（verify の無いレポートは、設定 repo で対応済みの型まで修正候補に見えるため）。
+ユーザーが集計だけでよいと言ったときだけ `--no-verify` を付ける。設定ファイルを自分で作らない。
 
 ```json
 {
@@ -33,12 +37,12 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 
 | キー | 型 | 意味 |
 |------|----|------|
-| `configRepo.path` | 文字列（必須: configRepo を書くとき） | settings を管理している git repo。verify はこれがあるときだけ行う |
+| `configRepo.path` | 文字列（必須: configRepo を書くとき） | settings を管理している git repo。`run` の verify に使い、無ければ `run` は exit 2（`--no-verify` を除く） |
 | `configRepo.paths` | 空でない文字列の配列 | verify で git log を見るパス（設定ファイル・wrapper・hook）。repo root 相対 |
 | `criteriaFiles` | 文字列の配列 | 安全性の判定に加える基準のファイル（個人の運用ルール等）。必ず読む |
 | `issue.repo` | `owner/name` | issue の提出先。`--issue` のときに必須 |
-| `issue.template` | 文字列 | issue 本文のテンプレート。`{{title}}` `{{id}}` `{{evidence}}` `{{cause}}` `{{fix}}` `{{safety}}` を置換する。省略時は既定のテンプレート |
-| `issue.labels` | 文字列の配列 | 付けるラベル |
+| `issue.template` | 文字列 | issue 化の材料（下書き）のテンプレート。`{{title}}` `{{id}}` `{{evidence}}` `{{cause}}` `{{fix}}` `{{safety}}` を置換する。省略時は既定のテンプレート |
+| `issue.labels` | 文字列の配列 | github-issue-orchestrator に渡すラベル |
 
 - `~` は `$HOME`、相対パスは設定ファイルのディレクトリ基準
 - 未知のキー・型違い・存在しないファイル・git repo でない `configRepo.path` はエラー（exit 2）。直してから再実行する
@@ -48,10 +52,14 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 スクリプトは `bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/sandbox-tune.sh <subcommand>` で呼ぶ（以下 `ST`）。
 
 ```bash
-ST run [--days N]       # collect →（設定 repo があれば）verify → report。書いたパスを JSON で返す
-ST config               # 検証済みの設定（criteriaFiles の絶対パスを含む）
+ST run [--days N]              # collect → verify → report。書いたパスを JSON で返す
+ST run --no-verify [--days N]  # verify せず collect → report だけ（出力の verified は false）
+ST config                      # 検証済みの設定（criteriaFiles の絶対パスを含む）
 ```
 
+- `run` は設定（`configRepo`）が無ければ exit 2 で止まり、stderr で `sandbox-tune.json` と `--no-verify` を案内する。
+  ユーザーに `configRepo` を書いた設定を用意してもらうか、集計だけでよいか確かめて `--no-verify` で再実行する
+- `--no-verify` は設定の有無にかかわらず verify しない。レポート冒頭に verify 未実施と書かれ、resolved / remaining の判定は付かない
 - `run` は `claudedocs/sandbox-tune-<日付>.md`（レポート）と同名の `.json`（集計結果）を cwd に書く。`--out DIR` で変えられる
 - 期間は既定 30 日。ユーザーが `--days N` を渡したらそのまま渡す
 
@@ -81,6 +89,9 @@ ST config               # 検証済みの設定（criteriaFiles の絶対パス�
 - 型は数百件になることがある。レポートは件数順なので、Read の offset / limit で `remaining` 節を上から読む
 
 ## 判断手順（remaining の型ごと）
+
+`--no-verify` のレポートの型は修正候補（remaining）として扱わない。対応済みかどうかが分からないので、
+型の一覧と件数を示すだけにし、原因・修正案・issue 化は `configRepo` のある設定で `run` し直してから行う。
 
 1. `ST config` の `criteriaFiles` を全部読む（追加の判定基準）
 2. レポートの `remaining` 節を上から読む。verify の根拠の commit が型と無関係（文字列が偶然一致しただけ）なら、関係する commit なしとして扱う。
@@ -115,24 +126,39 @@ ST config               # 検証済みの設定（criteriaFiles の絶対パス�
 
 ユーザーが `--issue` を付けなかったら、ここは行わない（レポートと提案で終える）。
 
+sandbox-tune は伏せ字・人の確認・公開範囲の判定までを受け持ち、issue は作らない。起票は dev-flow plugin の
+`github-issue-orchestrator` に下書きを材料として渡し、orchestrator が受け入れ基準・制約・変更対象パスを付けて行う
+（AC の無い issue は dev-flow の analyze ゲートで止まるため）。
+
+**前提条件**: dev-flow plugin の `github-issue-orchestrator` が入っていること。使える skill に無ければ issue 化は行わず、
+その旨をユーザーに伝えてレポートと提案で終える（sandbox-tune から直接 issue を作る経路は無い）。
+
 1. ユーザーに issue にする型を選んでもらい、判断手順の結果を候補ファイルに書く（`$TMPDIR` に置く）:
    `{"candidates":[{"id":"<型の id>","title":"...","cause":"...","fix":"...","safety":"...","security":true|false}]}`。
    秘密・資格情報・他プロセスの情報が sandbox の外から読める経路などに関わる候補は `security: true` にする
-2. 下書きを作る。本文は伏せ字を通して `claudedocs/sandbox-tune-issue-<n>.md` に書かれ、本文と digest が表示される
+2. 下書き（材料）を作る。本文は伏せ字を通して `claudedocs/sandbox-tune-issue-<n>.md` に書かれ、本文と digest が表示される
    ```bash
    ST draft --issue --analysis claudedocs/sandbox-tune-<日付>.json --candidates "$TMPDIR/candidates.json" --ids <id>[,<id>]
    ```
-3. 表示された本文をそのままユーザーに見せ、投稿してよいか確認を取る（AskUserQuestion）。確認なしに次へ進まない。
+3. 表示された下書きをそのままユーザーに見せ、これを材料に issue 化してよいか確認を取る（AskUserQuestion）。確認なしに次へ進まない。
    伏せ字は形での判定なので、秘密が残っていないかもユーザーに見てもらう。直すなら候補ファイルを直して 2 からやり直す
-4. 確認が取れた下書きだけを、表示された digest を付けて投稿する
+4. 確認が取れた下書きだけを、表示された digest を付けて handoff に通す。issue は作らず、通ったら orchestrator に渡す引数を
+   1 行の JSON `{"material":"<下書きの絶対パス>","repo":"owner/name","title":"...","labels":["..."]}` で出す
    ```bash
-   ST post claudedocs/sandbox-tune-issue-<n>.md --digest <表示された digest> [--allow-public]
+   ST handoff claudedocs/sandbox-tune-issue-<n>.md --digest <表示された digest> [--allow-public]
    ```
-   - 下書きが表示後に変わっていたら投稿しない（exit 3）
-   - 提出先が公開 repo なら警告し、ユーザーが `--allow-public` を付けたときだけ投稿する（無ければ exit 5）
-   - **セキュリティ系の候補は公開 repo に投稿しない**（`--allow-public` でも exit 5）。レポートに留めるか、
+   - 下書きが表示後に変わっていた・伏せ字を通っていない文字列がある → exit 3
+   - 提出先の公開範囲を確認できない → exit 4
+   - 提出先が公開 repo なら警告し、ユーザーが `--allow-public` を付けたときだけ通す（無ければ exit 5）
+   - **セキュリティ系の候補は公開 repo に渡さない**（`--allow-public` でも exit 5）。レポートに留めるか、
      非公開の報告先（GitHub の private security advisory 等）を案内する。経路を説明する本文を公開の場に書くこと自体が漏えいになる
+   - **handoff が 0 以外で終わったら 5 には進まない**（orchestrator を呼ばない）
+5. handoff が出した JSON の値をそのまま使って `github-issue-orchestrator` を呼ぶ（Skill ツール。labels は `,` で結合し、空なら `--labels` を省く）
+   ```
+   github-issue-orchestrator <material> --repo <repo> --title "<title>" [--labels <labels>]
+   ```
+   orchestrator が材料から受け入れ基準・制約・変更対象パスを組み立て、ac-lint を通して起票する。材料の内容は書き足さずに渡す
 
 ## Exit
 
-0 成功 / 2 引数・設定の誤り / 3 下書きが表示したものと違う / 4 gh の失敗 / 5 投稿を拒否（公開 repo）
+0 成功 / 2 引数・設定の誤り / 3 下書きが表示したものと違う / 4 提出先の公開範囲を確認できない / 5 引き渡しを拒否（公開 repo）

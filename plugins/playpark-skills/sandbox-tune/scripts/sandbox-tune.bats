@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 # sandbox-tune.sh のテスト。合成した transcript（<projects>/<project>/<session>.jsonl）を集計させる。
 # gh は PATH 先頭の偽物で置き換え、呼び出しを記録する。
+bats_require_minimum_version 1.5.0
 
 NOW="2026-10-01T00:00:00Z"
 
@@ -15,8 +17,10 @@ setup() {
   cat >"$WORK/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$GH_LOG"
-if [ "$1 $2" = "repo view" ]; then echo "${GH_VISIBILITY:-PUBLIC}"; exit 0; fi
-if [ "$1 $2" = "issue create" ]; then echo "https://github.com/o/r/issues/1"; fi
+if [ "$1 $2" = "repo view" ]; then
+  [ -z "${GH_VIEW_FAIL:-}" ] || exit 1
+  echo "${GH_VISIBILITY:-PUBLIC}"
+fi
 EOF
   chmod +x "$WORK/bin/gh"
   export PATH="$WORK/bin:$PATH"
@@ -220,7 +224,7 @@ sandbox:path:/w/repo/.git/FETCH_HEAD 1 1" ]
     = '[1,"理由: 分離中は dotfiles の git を書けない / $ git -C /w/dotfiles fetch origin"]' ]
   [ "$(printf '%s' "$output" | jq -c '[.types[] | select(.category != "host_exec") | has("after_block")] | any')" = false ]
   cd "$WORK"
-  run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
+  run bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW"
   [ "$status" -eq 0 ]
   grep -q '^- 種別: host-exec / ran$' "$WORK/claudedocs/sandbox-tune-2026-10-01.md"
   grep -q '^- 直前の Bash が拒否されていた: 1 / 2 件' "$WORK/claudedocs/sandbox-tune-2026-10-01.md"
@@ -389,12 +393,30 @@ deny_at() {
   [[ "$output" == *"collect からやり直してください"* ]]
 }
 
-@test "report: 設定が無ければ verify せず、cwd の claudedocs/ に伏せ字済みのレポートを書く。gh は呼ばない" {
+@test "run: 設定が無い・configRepo が無いときは何も書かずに exit 2。--no-verify なら verify せず伏せ字済みのレポートを書く。gh は呼ばない" {
   fixture_basic
   use proj-a/s1.jsonl S1 2026-09-10T00:09:00Z r2 'deploy-tool push'
   result proj-a/s1.jsonl S1 2026-09-10T00:09:01Z r2 'Error: EPERM: operation not permitted, open DEPLOY_TOKEN=tok_zzz9'
   cd "$WORK"
-  run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
+  # --config も cwd の sandbox-tune.json も無い
+  run --separate-stderr bash "$SCRIPT" run --projects-dir "$P" --now "$NOW" --out "$WORK/out"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"sandbox-tune.json"* ]]
+  [[ "$stderr" == *"--no-verify"* ]]
+  [ ! -e "$WORK/out" ]
+  # 設定はあるが configRepo が無い（cwd・--config とも）
+  echo '{"issue":{"repo":"o/r"}}' >"$WORK/sandbox-tune.json"
+  run --separate-stderr bash "$SCRIPT" run --projects-dir "$P" --now "$NOW" --out "$WORK/out"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"--no-verify"* ]]
+  [ ! -e "$WORK/out" ]
+  mv "$WORK/sandbox-tune.json" "$WORK/other.json"
+  run --separate-stderr bash "$SCRIPT" run --config "$WORK/other.json" --projects-dir "$P" --now "$NOW" --out "$WORK/out"
+  [ "$status" -eq 2 ]
+  [ ! -e "$WORK/out" ]
+
+  # --no-verify は設定が無くても collect と report を書く
+  run bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW"
   [ "$status" -eq 0 ]
   md="$WORK/claudedocs/sandbox-tune-2026-10-01.md"
   [ "$(printf '%s' "$output" | jq -r '[.report, .verified] | @tsv')" = "$md	false" ]
@@ -403,6 +425,14 @@ deny_at() {
   grep -q 'DEPLOY_TOKEN=\*\*\*' "$md"
   ! grep -q 'tok_zzz9' "$md"
   [ ! -s "$GH_LOG" ]
+
+  # configRepo のある設定でも --no-verify なら verify しない
+  make_config_repo
+  run bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" --out "$WORK/nv"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c '[.verified, .resolved, .remaining]')" = '[false,0,0]' ]
+  [ "$(jq -c '[.verify, ([.types[] | has("status")] | any)]' "$WORK/nv/sandbox-tune-2026-10-01.json")" = '[null,false]' ]
+  head -n 5 "$WORK/nv/sandbox-tune-2026-10-01.md" | grep -q 'verify は未実施'
 }
 
 @test "config: 不正な設定はエラーにする" {
@@ -424,7 +454,7 @@ make_drafts() {
   fixture_basic
   cd "$WORK"
   echo '{"issue":{"repo":"o/r","labels":["sandbox"]}}' >"$WORK/sandbox-tune.json"
-  bash "$SCRIPT" run --projects-dir "$P" --now "$NOW" >/dev/null
+  bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" >/dev/null
   cat >"$WORK/candidates.json" <<'EOF'
 {"candidates":[
   {"id":"sandbox:network:example.org","title":"example.org を allowedDomains に足す","cause":"許可リストに無い","fix":"sandbox.network.allowedDomains に example.org を足す","safety":"取得先が 1 ホスト増えるだけ","security":false},
@@ -444,7 +474,7 @@ EOF
   fixture_basic
   cd "$WORK"
   echo '{"issue":{"repo":"o/r"}}' >"$WORK/sandbox-tune.json"
-  bash "$SCRIPT" run --projects-dir "$P" --now "$NOW" >/dev/null
+  bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" >/dev/null
   echo '{"candidates":[{"id":"sandbox:network:example.org","title":"t","cause":"c","fix":"f","safety":"s"}]}' >"$WORK/candidates.json"
   run bash "$SCRIPT" draft --analysis "$WORK/claudedocs/sandbox-tune-2026-10-01.json" --candidates "$WORK/candidates.json" \
     --ids sandbox:network:example.org
@@ -464,37 +494,66 @@ EOF
   ! grep -q 'issue create' "$GH_LOG"
 }
 
-@test "issue: 公開 repo へは --allow-public なしで投稿しない" {
+@test "issue: 公開 repo へは --allow-public なしで渡さない。通ったら orchestrator に渡す引数を 1 行の JSON で出し、issue は作らない" {
   make_drafts
-  run bash "$SCRIPT" post "$N" --digest "$N_SHA"
+  run bash "$SCRIPT" handoff "$N" --digest "$N_SHA"
   [ "$status" -eq 5 ]
   [[ "$output" == *"公開 repo"* ]]
+
+  run --separate-stderr bash "$SCRIPT" handoff "$N" --digest "$N_SHA" --allow-public
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"公開 repo です"* ]]
+  [[ "$output" != *$'\n'* ]]
+  [ "$(printf '%s' "$output" | jq -c 'keys')" = '["labels","material","repo","title"]' ]
+  [ "$(printf '%s' "$output" | jq -r .material)" = "$N" ]
+  [ "$(printf '%s' "$output" | jq -r .repo)" = o/r ]
+  [ "$(printf '%s' "$output" | jq -r .title)" = 'example.org を allowedDomains に足す' ]
+  [ "$(printf '%s' "$output" | jq -c .labels)" = '["sandbox"]' ]
+  grep -q 'repo view o/r' "$GH_LOG"
   ! grep -q 'issue create' "$GH_LOG"
 
+  # 直接起票する post は無い
   run bash "$SCRIPT" post "$N" --digest "$N_SHA" --allow-public
-  [ "$status" -eq 0 ]
-  grep -q "issue create --repo o/r --title example.org を allowedDomains に足す --body-file $N --label sandbox" "$GH_LOG"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"|handoff}"* ]]
+  ! grep -q 'issue create' "$GH_LOG"
 }
 
-@test "issue: セキュリティ系の候補は --allow-public があっても公開 repo に投稿しない" {
+@test "issue: セキュリティ系の候補は --allow-public があっても公開 repo に渡さない" {
   make_drafts
-  run bash "$SCRIPT" post "$S" --digest "$S_SHA" --allow-public
+  run bash "$SCRIPT" handoff "$S" --digest "$S_SHA" --allow-public
   [ "$status" -eq 5 ]
   [[ "$output" == *"security advisory"* ]]
-  ! grep -q 'issue create' "$GH_LOG"
 
-  # 非公開 repo には投稿できる
-  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" post "$S" --digest "$S_SHA"
+  # 非公開 repo には渡せる
+  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" handoff "$S" --digest "$S_SHA"
   [ "$status" -eq 0 ]
-  grep -q 'issue create --repo o/r' "$GH_LOG"
+  [ "$(printf '%s' "$output" | jq -r '[.material, .repo] | @tsv')" = "$S	o/r" ]
+  ! grep -q 'issue create' "$GH_LOG"
 }
 
-@test "issue: 表示した下書きと違う内容（digest 不一致・書き換え）は投稿しない" {
+@test "issue: 提出先の公開範囲を確認できなければ渡さない" {
   make_drafts
-  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" post "$N" --digest deadbeef
+  GH_VIEW_FAIL=1 run bash "$SCRIPT" handoff "$N" --digest "$N_SHA" --allow-public
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"公開範囲を確認できません"* ]]
+  ! grep -q 'issue create' "$GH_LOG"
+}
+
+@test "issue: 表示した下書きと違う内容（digest 不一致・書き換え）は渡さない" {
+  make_drafts
+  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" handoff "$N" --digest deadbeef
   [ "$status" -eq 3 ]
   echo 'SECRET_KEY=plain' >>"$N"
-  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" post "$N" --digest "$(shasum -a 256 "$N" | cut -d' ' -f1)"
+  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" handoff "$N" --digest "$(shasum -a 256 "$N" | cut -d' ' -f1)"
   [ "$status" -eq 3 ]
+  # meta の digest まで合わせても、伏せ字を通っていない文字列があれば渡さない
+  local sha
+  sha="$(shasum -a 256 "$N" | cut -d' ' -f1)"
+  jq --arg s "$sha" '.sha256 = $s' "${N%.md}.meta.json" >"$WORK/meta.json"
+  mv "$WORK/meta.json" "${N%.md}.meta.json"
+  GH_VISIBILITY=PRIVATE run bash "$SCRIPT" handoff "$N" --digest "$sha"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"伏せ字を通っていない"* ]]
   ! grep -q 'issue create' "$GH_LOG"
 }

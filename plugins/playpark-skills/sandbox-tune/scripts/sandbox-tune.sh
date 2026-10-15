@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 # sandbox-tune: transcript から sandbox 拒否・人間への実行依頼・permission 拒否・host-exec の実行を型ごとに集計し、
 # 設定 repo と、拒否が起きた repo の .claude/settings.json の git log と突き合わせてレポートにする。
-# 外部へは draft → post を明示したときだけ出す。
+# issue 化は draft → handoff を明示したときだけで、起票そのものは handoff の出力を受けた
+# github-issue-orchestrator が行う（このスクリプトは issue を作らない）。
 #
 # Usage:
-#   sandbox-tune.sh run     [--days N] [--config F] [--out DIR] [--projects-dir D] [--now ISO]
+#   sandbox-tune.sh run     [--days N] [--config F] [--no-verify] [--out DIR] [--projects-dir D] [--now ISO]
 #   sandbox-tune.sh collect [--days N] [--projects-dir D] [--now ISO]          # JSON を stdout へ
 #   sandbox-tune.sh verify  <analysis.json> [--config F]                       # JSON を stdout へ
 #   sandbox-tune.sh report  <analysis.json> [--out DIR]                        # 書いたパスを stdout へ
 #   sandbox-tune.sh config  [--config F]                                       # 検証済みの設定を stdout へ
 #   sandbox-tune.sh redact                                                     # stdin を伏せ字にして stdout へ
 #   sandbox-tune.sh draft   --issue --analysis A --candidates C --ids id[,id] [--config F] [--out DIR]
-#   sandbox-tune.sh post    <draft.md> --digest SHA256 [--allow-public]
+#   sandbox-tune.sh handoff <draft.md> --digest SHA256 [--allow-public]          # {material,repo,title,labels} を stdout へ
 #
-# 設定は既定で cwd の sandbox-tune.json（無ければ設定 repo なしで collect と report だけ）。
+# 設定は既定で cwd の sandbox-tune.json。run は設定（configRepo）が無ければ exit 2 で止まり、
+# verify せず collect と report だけにするには --no-verify を明示する。
 # --now は集計の基準時刻（UTC の ISO 8601、例 2026-10-01T00:00:00Z）。再現用で、既定は現在時刻。
 #
-# Exit: 0 成功 / 2 引数・設定の誤り / 3 下書きが表示したものと違う / 4 gh の失敗 / 5 投稿を拒否（公開 repo）
+# Exit: 0 成功 / 2 引数・設定の誤り / 3 下書きが表示したものと違う / 4 提出先の公開範囲を確認できない / 5 引き渡しを拒否（公開 repo）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -275,20 +277,28 @@ cmd_report() {
 }
 
 cmd_run() {
-  local config="" out="$PWD/claudedocs" cfg tmp json md
+  local config="" out="$PWD/claudedocs" no_verify=0 cfg tmp json md
   local collect_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --config) config="${2:-}"; shift 2 ;;
       --out) out="${2:-}"; shift 2 ;;
+      --no-verify) no_verify=1; shift ;;
       --days | --projects-dir | --now) collect_args+=("$1" "${2:-}"); shift 2 ;;
       *) die 2 "run: 不明な引数: $1" ;;
     esac
   done
+  # verify の無いレポートは対応済みの型まで修正候補に見えるので、設定が無ければ止め、集計だけなら --no-verify で明示させる
+  if [ "$no_verify" = 0 ] && [ -z "$config" ] && [ ! -f "./$CONFIG_NAME" ]; then
+    die 2 "run: 設定がありません（--config も ./$CONFIG_NAME も無い）。configRepo を書いた $CONFIG_NAME を置くか、verify せず集計だけなら --no-verify を付けてください"
+  fi
   cfg="$(resolve_config "$config")"
+  if [ "$no_verify" = 0 ] && [ -z "$(jq -r '.configRepo.path // empty' <<<"$cfg")" ]; then
+    die 2 "run: 設定 (${config:-./$CONFIG_NAME}) に configRepo がありません。$CONFIG_NAME に configRepo を書くか、verify せず集計だけなら --no-verify を付けてください"
+  fi
   tmp="$(mktemp "${TMPDIR:-/tmp}/sandbox-tune-run.XXXXXX")"
   cmd_collect ${collect_args[@]+"${collect_args[@]}"} >"$tmp"
-  if [ -n "$(jq -r '.configRepo.path // empty' <<<"$cfg")" ]; then
+  if [ "$no_verify" = 0 ]; then
     cmd_verify "$tmp" --config "${config:-./$CONFIG_NAME}" >"$tmp.v"
     mv "$tmp.v" "$tmp"
   fi
@@ -368,21 +378,21 @@ cmd_draft() {
   done <<<"$(tr ',' '\n' <<<"$ids")"
 }
 
-cmd_post() {
+# 確認済みの下書きを github-issue-orchestrator に渡せるか判定し、渡す引数を JSON で出す。issue は作らない
+cmd_handoff() {
   local draft="" digest="" allow_public=0 meta actual repo title security vis
-  local label_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --digest) digest="${2:-}"; shift 2 ;;
       --allow-public) allow_public=1; shift ;;
-      -*) die 2 "post: 不明な引数: $1" ;;
+      -*) die 2 "handoff: 不明な引数: $1" ;;
       *) draft="$1"; shift ;;
     esac
   done
   meta="${draft%.md}.meta.json"
-  [ -f "$draft" ] && [ -f "$meta" ] || die 2 "post: draft が書いた下書き (.md と .meta.json) を渡してください"
-  [ -n "$digest" ] || die 2 "post: 人間に見せた下書きの digest を --digest で渡してください"
-  # 人間に見せた内容から変わっていたら出さない（確認を経ずに投稿する経路を作らない）
+  [ -f "$draft" ] && [ -f "$meta" ] || die 2 "handoff: draft が書いた下書き (.md と .meta.json) を渡してください"
+  [ -n "$digest" ] || die 2 "handoff: 人間に見せた下書きの digest を --digest で渡してください"
+  # 人間に見せた内容から変わっていたら渡さない（確認を経ずに起票へ進む経路を作らない）
   actual="$(sha256_of "$draft")"
   [ "$digest" = "$actual" ] && [ "$actual" = "$(jq -r .sha256 "$meta")" ] \
     || die 3 "下書きが人間に見せたものと違います。draft からやり直して確認を取ってください"
@@ -397,15 +407,13 @@ cmd_post() {
   if [ "$vis" != "PRIVATE" ] && [ "$vis" != "INTERNAL" ]; then
     printf 'sandbox-tune: 警告: 提出先 %s は公開 repo です (%s)\n' "$repo" "$vis" >&2
     if [ "$security" = "true" ]; then
-      die 5 "セキュリティ系の候補は公開 repo に投稿しません（--allow-public でも不可）。レポートに留めるか、非公開の報告先（https://github.com/$repo/security/advisories/new の private security advisory 等）を使ってください"
+      die 5 "セキュリティ系の候補は公開 repo に起票しません（--allow-public でも不可）。レポートに留めるか、非公開の報告先（https://github.com/$repo/security/advisories/new の private security advisory 等）を使ってください"
     fi
-    [ "$allow_public" = 1 ] || die 5 "公開 repo へ投稿するには --allow-public を付けてください"
+    [ "$allow_public" = 1 ] || die 5 "公開 repo へ起票するには --allow-public を付けてください"
   fi
-  while IFS= read -r l; do
-    [ -z "$l" ] || label_args+=(--label "$l")
-  done <<<"$(jq -r '.labels[]?' "$meta")"
-  gh issue create --repo "$repo" --title "$title" --body-file "$draft" ${label_args[@]+"${label_args[@]}"} \
-    || die 4 "gh issue create が失敗しました"
+  # orchestrator は cwd が変わっても読めるよう、材料は絶対パスで渡す
+  jq -nc --arg material "$(cd "$(dirname "$draft")" && pwd)/$(basename "$draft")" --arg repo "$repo" --arg title "$title" \
+    --argjson labels "$(jq -c '.labels // []' "$meta")" '{material: $material, repo: $repo, title: $title, labels: $labels}'
 }
 
 sub="${1:-}"
@@ -418,6 +426,6 @@ case "$sub" in
   config) cmd_config "$@" ;;
   redact) jqs -R -s -j 'include "redact"; redact' ;;
   draft) cmd_draft "$@" ;;
-  post) cmd_post "$@" ;;
-  *) die 2 "使い方: sandbox-tune.sh {run|collect|verify|report|config|redact|draft|post} ...（先頭のコメントを参照）" ;;
+  handoff) cmd_handoff "$@" ;;
+  *) die 2 "使い方: sandbox-tune.sh {run|collect|verify|report|config|redact|draft|handoff} ...（先頭のコメントを参照）" ;;
 esac
