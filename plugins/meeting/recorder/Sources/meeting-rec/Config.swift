@@ -20,6 +20,7 @@ let defaultMeetingApps: [MeetingApp] = [
     .init(prefix: "com.tinyspeck.slackmacgap", name: "Slack"),
     .init(prefix: "com.hnc.Discord", name: "Discord"),
     .init(prefix: "com.apple.FaceTime", name: "FaceTime"),
+    .init(prefix: "jp.naver.line.mac", name: "LINE"),
     // ブラウザ (Google Meet 等)。ブラウザでマイクを使う = Web 会議とみなす
     .init(prefix: "com.google.Chrome", name: "Chrome", isBrowser: true),
     .init(prefix: "company.thebrowser.", name: "Arc", isBrowser: true),
