@@ -17,7 +17,8 @@
 # 起票後の起動順:
 # - SKILL.md Phase 7 が起票した agent issue に dev-flow-ready-set を bare 名先頭で実行し、--dry-run と
 #   ok:false では launch を出さない。Output Contract に launch / 後の波 / 実行中を並べる ## Launch Order がある
-# - Phase 7 と ## Launch Order が launch[] ごとに bg_command（claude --bg "/dev-flow <N>"）を載せる（issue #1000）
+# - ## Launch Order の写し方と雛形が launch[] ごとに bg_command（claude --bg "/dev-flow <N>"）を載せる（issue #1000）
+# - Output Contract の雛形と Launch Order への写し方は references/output-contract.md に置く
 #
 # 実装 issue の本文はゴールと境界条件だけ（issue #855）:
 # - 実装 issue テンプレートの節が ゴール / なぜ / 受け入れ基準 / 制約・取らないこと / 変更対象パス / 未解決事項 の 6 つ
@@ -36,6 +37,8 @@ setup() {
     SKILL_MD="$SKILL_DIR/SKILL.md"
     TEMPLATE="$SKILL_DIR/references/issue-template.md"
     CHECKLIST="$SKILL_DIR/references/devils-advocate-checklist.md"
+    CONTRACT="$SKILL_DIR/references/output-contract.md"
+    RECOVERY="$SKILL_DIR/references/ac-lint-recovery.md"
     SCRIPT="$SKILL_DIR/scripts/create_issue.py"
     REPO_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
 }
@@ -53,6 +56,11 @@ extract_fence() {
          f && !in_fence && /^```markdown$/ { in_fence = 1; next }
          in_fence && /^```$/ { exit }
          in_fence { print }' "$1"
+}
+
+# references/output-contract.md のサマリー雛形（最初の ```markdown フェンス）
+extract_contract() {
+    extract_fence "$CONTRACT" "^# Output Contract"
 }
 
 # SKILL.md の `### <name>` / `## <name>` 節を次の `##` / `###` 見出しまで抜き出す（コードフェンス内の見出しは無視）
@@ -100,7 +108,7 @@ extract_section() {
 }
 
 @test "(5) Output Contract に human issue と Blocked by 関係が含まれる" {
-    contract="$(extract_section "$SKILL_MD" "## Output Contract")"
+    contract="$(extract_contract)"
     [[ "$contract" == *"## Human Tasks"* ]]
     [[ "$contract" == *"human issue:"* ]]
     [[ "$contract" == *"Blocked by"* ]]
@@ -165,7 +173,7 @@ extract_paths_block() {
 }
 
 @test "(11) Output Contract に agent issue 一覧と依存関係の欄がある" {
-    contract="$(extract_section "$SKILL_MD" "## Output Contract")"
+    contract="$(extract_contract)"
     agent="$(awk '/^## Agent Issues/ { f = 1; next } f && /^## / { exit } f { print }' <<<"$contract")"
     [ -n "$agent" ]
     [[ "$agent" == *"agent issue（起票順 = トポロジカル順）:"* ]]
@@ -189,13 +197,16 @@ extract_paths_block() {
     [[ "$phase7" == *"human issue は渡さない"* ]]
     [[ "$phase7" == *'`--dry-run` では issue 番号が無いので実行しない'* ]]
     [[ "$phase7" == *'{"ok":false,...}'*"失敗した判定を launch として見せない"* ]]
-    [[ "$phase7" == *"issue ごとに別セッション"* ]]
-    # launch[] ごとに command と別セッション起動の bg_command を写す
-    [[ "$phase7" == *'`launch[]`'*'各要素の `command`（`/dev-flow <N>`）と `bg_command`'*'（`claude --bg "/dev-flow <N>"`'* ]]
     # 他 issue の実行中 run は --with-in-flight で拾い、そのパスとの衝突も判定する
     [[ "$phase7" == *'`--with-in-flight` で他 issue の実行中 run'*"その変更対象パスとの衝突も判定する"* ]]
-    [[ "$phase7" == *"(変更対象パスなし)"* ]]
-    contract="$(extract_section "$SKILL_MD" "## Output Contract")"
+    # JSON を ## Launch Order へ写す規則は output-contract.md に置く
+    [[ "$phase7" == *'`references/output-contract.md`'* ]]
+    mapping="$(awk '/^## Launch Order への写し方/ { f = 1; next } f && /^## / { exit } f { print }' "$CONTRACT")"
+    [[ "$mapping" == *"issue ごとに別セッション"* ]]
+    # launch[] ごとに command と別セッション起動の bg_command を写す
+    [[ "$mapping" == *'`launch[]`'*'各要素の `command`（`/dev-flow <N>`）と `bg_command`'*'（`claude --bg "/dev-flow <N>"`'* ]]
+    [[ "$mapping" == *"(変更対象パスなし)"* ]]
+    contract="$(extract_contract)"
     order="$(awk '/^## Launch Order/ { f = 1; next } f && /^## / { exit } f { print }' <<<"$contract")"
     [[ "$order" == *"--with-in-flight"* ]]
     [[ "$order" == *"実行中（他 issue の run。パスを占有）"* ]]
@@ -206,7 +217,7 @@ extract_paths_block() {
 }
 
 @test "(14) Output Contract に launch / 後の波 / 実行中を並べる ## Launch Order がある" {
-    contract="$(extract_section "$SKILL_MD" "## Output Contract")"
+    contract="$(extract_contract)"
     order="$(awk '/^## Launch Order/ { f = 1; next } f && /^## / { exit } f { print }' <<<"$contract")"
     [ -n "$order" ]
     [[ "$order" == *"dev-flow-ready-set"* ]]
@@ -218,9 +229,9 @@ extract_paths_block() {
         [[ "$order" == *"$reason"* ]]
     done
     # Agent Issues の後、Plan Quality Gate の前
-    agent_line="$(grep -n '^## Agent Issues' "$SKILL_MD" | cut -d: -f1)"
-    order_line="$(grep -n '^## Launch Order' "$SKILL_MD" | cut -d: -f1)"
-    gate_line="$(grep -n '^## Plan Quality Gate' "$SKILL_MD" | cut -d: -f1)"
+    agent_line="$(grep -n '^## Agent Issues' <<<"$contract" | cut -d: -f1)"
+    order_line="$(grep -n '^## Launch Order' <<<"$contract" | cut -d: -f1)"
+    gate_line="$(grep -n '^## Plan Quality Gate' <<<"$contract" | cut -d: -f1)"
     [ "$agent_line" -lt "$order_line" ] && [ "$order_line" -lt "$gate_line" ]
 }
 
@@ -245,9 +256,9 @@ AGENT_BODY_SECTIONS="## ゴール
     [[ "$phase5" != *"specialist summaries"* ]]
     [[ "$phase5" != *"devil's-advocate history"* ]]
     [[ "$phase5" == *"Phase 2（調査）・Phase 4（devil's advocate）の結果は AC と制約に反映させるだけで本文に書き写さない。"* ]]
-    # 調査と devil's advocate の工程は残し、出力先だけを AC と制約に向ける
-    [[ "$(extract_section "$SKILL_MD" "### Phase 2")" == *"issue 本文には書き写さない"* ]]
-    [[ "$(extract_section "$SKILL_MD" "### Phase 4")" == *"Loop rules:"*"レビュー履歴として書き写さない"* ]]
+    # 調査と devil's advocate の工程は残す（出力先は Phase 5 の 1 文で AC と制約に向ける）
+    [[ "$(extract_section "$SKILL_MD" "### Phase 2")" == *'`frontend`'*'`backend`'*'`infra`'* ]]
+    [[ "$(extract_section "$SKILL_MD" "### Phase 4")" == *"Loop rules:"* ]]
 }
 
 # frontmatter の top-level key の値（inline か block scalar の本文）を抜き出す
@@ -339,7 +350,16 @@ frontmatter_value() {
 }
 
 @test "(24) Output Contract の ## Plan Quality Gate に通った経路（軽い / 重い）が出る" {
-    contract="$(extract_section "$SKILL_MD" "## Output Contract")"
+    contract="$(extract_contract)"
     gate="$(awk '/^## Plan Quality Gate/ { f = 1; next } f && /^## / { exit } f { print }' <<<"$contract")"
     [[ "$gate" == *"- 経路: 軽い / 重い"* ]]
+}
+
+@test "(25) ac-lint の non_compliant は ac-lint-recovery.md の手順で直し、直せなければ起票せず abort する" {
+    row="$(extract_section "$SKILL_MD" "### Phase 5" | grep '^| `non_compliant` |')"
+    [[ "$row" == *'`references/ac-lint-recovery.md`'* ]]
+    [[ "$row" == *"issue を作らず abort"* ]]
+    grep -q '## 受け入れ基準（Acceptance Criteria）' "$RECOVERY"
+    grep -q 'Phase 3 に戻って' "$RECOVERY"
+    grep -q 'issue を作らず abort' "$RECOVERY"
 }
