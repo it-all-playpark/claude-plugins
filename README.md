@@ -319,7 +319,6 @@ config = merge_config({"property_id": None}, "ga-analyzer")  # defaults → glob
 |--------|------|
 | `dev-flow` | Issue → LGTM までのE2E開発フロー (dynamic workflow: `plugins/dev-flow/.claude/workflows/dev-flow.js`) |
 | `dev-flow-health` | dev-flow の失敗を日次で型ごとに集計し、new / regressed の日だけ原因を推定して issue 化 |
-| `dep-guardian` | 依存関係更新PRのトリアージ・テスト・バッチマージ |
 
 > `dev-flow` の判断系 leaf (計画/レビュー/実装/評価) は subagent (`plugins/dev-flow/agents/`) として実装。
 > 最終 PR レビューは `dev-flow:pr-iterate-run` workflow (`/pr-iterate <pr>` の wrapper skill で単体起動も可)。

@@ -61,10 +61,6 @@ EOF
 
 skills_expected_names() {
     cat <<'EOF'
-dep-guardian-classify-pr
-dep-guardian-discover-prs
-dep-guardian-merge-prs
-dep-guardian-test-pr
 ga-analyzer-fetch
 generate-thumbnail
 gmail-cleanup
@@ -112,10 +108,6 @@ target_for() {
 
 skills_target_for() {
     case "$1" in
-        dep-guardian-discover-prs) echo "bash dep-guardian/scripts/discover-prs.sh" ;;
-        dep-guardian-classify-pr) echo "bash dep-guardian/scripts/classify-pr.sh" ;;
-        dep-guardian-test-pr) echo "bash dep-guardian/scripts/test-pr.sh" ;;
-        dep-guardian-merge-prs) echo "bash dep-guardian/scripts/merge-prs.sh" ;;
         ga-analyzer-fetch) echo "python3 ga-analyzer/scripts/ga_fetch.py" ;;
         generate-thumbnail) echo "bash generate-thumbnail/scripts/generate_thumbnail.sh" ;;
         gmail-cleanup) echo "bash gmail-cleanup/scripts/gmail-cleanup.sh" ;;
@@ -254,7 +246,7 @@ skills_target_for() {
     done <<< "$(skills_expected_names)"
 }
 
-@test "plugins/playpark-skills/bin の entry は対象14本と完全一致する" {
+@test "plugins/playpark-skills/bin の entry は対象10本と完全一致する" {
     expected="$(skills_expected_names)"
     actual="$(/bin/ls -1 "$REPO_ROOT/plugins/playpark-skills/bin" | sort)"
     [ "$actual" = "$expected" ]
