@@ -93,7 +93,7 @@ run_case "graphql createIssue 複数行" $'gh api graphql -f query=\'\nmutation 
 echo "[AC-5 deny の理由文]"
 reason=$(jq -n --arg cmd 'gh issue create -t x' '{tool_name:"Bash", tool_input:{command:$cmd}}' | bash "$HOOK" | jq -r '.hookSpecificOutput.permissionDecisionReason')
 ok=0
-[[ $reason == *github-issue-orchestrator* && $reason == *軽い経路* && $reason == *'dev-flow に流さない issue'* && $reason == *'! gh issue create ...'* ]] && ok=1
+[[ $reason == *git-issue* && $reason == *軽い経路* && $reason == *'dev-flow に流さない issue'* && $reason == *'! gh issue create ...'* ]] && ok=1
 record "理由文が orchestrator（軽い経路）と人間の ! gh issue create を案内する" "$ok" "reason=$reason"
 
 echo "[AC-6 起票でない gh は通す]"
@@ -108,7 +108,7 @@ run_case "api issues GET --jq" 'gh api repos/o/r/issues --jq ".[].number"' "allo
 run_case "graphql query" "gh api graphql -f query='query { repository(owner: \"o\", name: \"r\") { issues(first: 1) { nodes { number } } } }'" "allow"
 
 echo "[AC-7 create_issue.py と、gh が先頭でない segment の引数]"
-run_case "python3 create_issue.py" 'python3 /x/github-issue-orchestrator/scripts/create_issue.py --kind agent --labels self-improve --title t --body-file b.md' "allow"
+run_case "python3 create_issue.py" 'python3 /x/git-issue/scripts/create_issue.py --kind agent --labels self-improve --title t --body-file b.md' "allow"
 run_case "rg \"gh issue create\"" 'rg "gh issue create" plugins' "allow"
 run_case "echo gh issue create" 'echo gh issue create' "allow"
 run_case "引用符内の区切りの後" 'rg "foo|gh issue create -R o/r" plugins' "allow"

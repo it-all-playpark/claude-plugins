@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse(Bash) hook: 素の issue 起票を拒否し、github-issue-orchestrator（create_issue.py）に誘導する
+# PreToolUse(Bash) hook: 素の issue 起票を拒否し、git-issue（create_issue.py）に誘導する
 #
 # 目的:
 #   agent が Bash で issue を作る経路を create_issue.py だけにする。create_issue.py は AC の checkbox
@@ -58,7 +58,7 @@ deny() {
 }
 
 REASON='素の gh issue create / gh api による issue の起票は止めている（AC の checkbox 形式・4000 字・変更対象パス・人の作業の切り出しのゲートを通らないため）。
-起票は github-issue-orchestrator（/github-issue-orchestrator、本体は create_issue.py）を使う。症状・原因・直し方の分かった小さな起票は軽い経路で受ける。
+起票は git-issue（/dev-flow:git-issue、本体は create_issue.py）を使う。症状・原因・直し方の分かった小さな起票は軽い経路で受ける。
 dev-flow に流さない issue は、人間がプロンプトで `! gh issue create ...` を実行して起票する。'
 
 # check_segment <token...>

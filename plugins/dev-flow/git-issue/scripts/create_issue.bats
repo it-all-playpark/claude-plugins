@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 bats_require_minimum_version 1.5.0
-# Tests for github-issue-orchestrator/scripts/create_issue.py
+# Tests for git-issue/scripts/create_issue.py
 #
 # Focus: the pre-flight AC lint gate (lint_ac()) invoked at the top of run(),
 # exercised only through the --dry-run path so `gh` is never required, plus the
@@ -19,7 +19,7 @@ setup() {
     command -v python3 >/dev/null || skip "python3 not available"
 
     SKILLS_REPO="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
-    SCRIPT="$SKILLS_REPO/github-issue-orchestrator/scripts/create_issue.py"
+    SCRIPT="$SKILLS_REPO/git-issue/scripts/create_issue.py"
 
     write_body() {
         local out="$1"
@@ -488,8 +488,8 @@ write_paths_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_paths_body "$BODY" \
         "## 変更対象パス" \
-        "- plugins/dev-flow/github-issue-orchestrator/scripts/create_issue.py" \
-        "- plugins/dev-flow/github-issue-orchestrator/references/*" \
+        "- plugins/dev-flow/git-issue/scripts/create_issue.py" \
+        "- plugins/dev-flow/git-issue/references/*" \
         "- docs/a..b.md" \
         "" \
         "## テスト戦略" \

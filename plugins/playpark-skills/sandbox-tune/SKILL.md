@@ -4,7 +4,7 @@ description: >-
   Aggregates sandbox denials, permission denials, "please run this in your terminal" requests, and host-exec
   (out-of-sandbox) runs from Claude Code transcripts by type, checks them against the settings repo's git log (resolved / remaining),
   and proposes settings / wrapper / hook fixes with a safety review. Writes a local Markdown report; with --issue, hands
-  human-confirmed drafts to github-issue-orchestrator (dev-flow plugin) for filing.
+  human-confirmed drafts to dev-flow:git-issue for filing.
   Use when: (1) user asks why the agent keeps asking them to run commands, or which sandbox denials still recur,
   (2) user wants settings.json / excludedCommands / allowUnixSockets fix candidates backed by evidence,
   (3) user asks whether host-exec is being used for things settings should fix,
@@ -42,7 +42,7 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 | `criteriaFiles` | 文字列の配列 | 安全性の判定に加える基準のファイル（個人の運用ルール等）。必ず読む |
 | `issue.repo` | `owner/name` | issue の提出先。`--issue` のときに必須 |
 | `issue.template` | 文字列 | issue 化の材料（下書き）のテンプレート。`{{title}}` `{{id}}` `{{evidence}}` `{{cause}}` `{{fix}}` `{{safety}}` `{{ac}}`（`ac` を `- [ ] ` で並べたもの）`{{paths}}`（`paths` を `- ` で並べたもの）を置換する。`{{ac}}` と `{{paths}}` の両方が無いテンプレートはエラー（exit 2）。dev-flow で走らせるには `{{ac}}` を受け入れ基準の見出し（`## 受け入れ基準（Acceptance Criteria）` 等）、`{{paths}}` を `## 変更対象パス` の下に置く。省略時は既定のテンプレート（両方の節を持つ） |
-| `issue.labels` | 文字列の配列 | github-issue-orchestrator に渡すラベル |
+| `issue.labels` | 文字列の配列 | git-issue に渡すラベル |
 
 - `~` は `$HOME`、相対パスは設定ファイルのディレクトリ基準
 - 未知のキー・型違い・存在しないファイル・git repo でない `configRepo.path` はエラー（exit 2）。直してから再実行する
@@ -127,10 +127,10 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
 ユーザーが `--issue` を付けなかったら、ここは行わない（レポートと提案で終える）。
 
 sandbox-tune は伏せ字・人の確認・公開範囲の判定までを受け持ち、issue は作らない。起票は dev-flow plugin の
-`github-issue-orchestrator` に下書きを材料として渡して行う。下書きは候補の `ac` と `paths` から受け入れ基準と
+`git-issue` に下書きを材料として渡して行う。下書きは候補の `ac` と `paths` から受け入れ基準と
 `## 変更対象パス` の節を持ち、dev-flow の起票ゲート（AC の無い issue は analyze ゲートで止まる）をそのまま通る形になる。
 
-**前提条件**: dev-flow plugin の `github-issue-orchestrator` が入っていること。使える skill に無ければ issue 化は行わず、
+**前提条件**: dev-flow plugin の `dev-flow:git-issue` が入っていること。使える skill に無ければ issue 化は行わず、
 その旨をユーザーに伝えてレポートと提案で終える（sandbox-tune から直接 issue を作る経路は無い）。
 
 1. ユーザーに issue にする型を選んでもらい、判断手順の結果を候補ファイルに書く（`$TMPDIR` に置く）:
@@ -158,9 +158,9 @@ sandbox-tune は伏せ字・人の確認・公開範囲の判定までを受け�
    - **セキュリティ系の候補は公開 repo に渡さない**（`--allow-public` でも exit 5）。レポートに留めるか、
      非公開の報告先（GitHub の private security advisory 等）を案内する。経路を説明する本文を公開の場に書くこと自体が漏えいになる
    - **handoff が 0 以外で終わったら 5 には進まない**（orchestrator を呼ばない）
-5. handoff が出した JSON の値をそのまま使って `github-issue-orchestrator` を呼ぶ（Skill ツール。labels は `,` で結合し、空なら `--labels` を省く）
+5. handoff が出した JSON の値をそのまま使って `dev-flow:git-issue` を呼ぶ（Skill ツール。labels は `,` で結合し、空なら `--labels` を省く）
    ```
-   github-issue-orchestrator <material> --repo <repo> --title "<title>" [--labels <labels>]
+   dev-flow:git-issue <material> --repo <repo> --title "<title>" [--labels <labels>]
    ```
    材料はすでに受け入れ基準と変更対象パスを持つ。orchestrator は ac-lint を通して起票する。材料の内容は書き足さずに渡す
 

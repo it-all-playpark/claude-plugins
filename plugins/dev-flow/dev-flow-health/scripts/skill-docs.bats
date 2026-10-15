@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # Static pins for dev-flow-health SKILL.md の起票手順（issue #993）
 #
-# - 起票は github-issue-orchestrator の create_issue.py（--kind agent --labels self-improve）を通し、
+# - 起票は git-issue の create_issue.py（--kind agent --labels self-improve）を通し、
 #   素の gh issue create を手順に書かない（dev-flow の PreToolUse hook が拒否する）
 # - 本文の雛形は `## 変更対象パス`・`- [ ]` の受け入れ条件・重複確認用の `<!-- dev-flow-health:<id> -->` を持ち、
 #   create_issue.py --kind agent のゲートをそのまま通る
@@ -11,7 +11,7 @@ setup() {
 
     SKILL_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
     SKILL_MD="$SKILL_DIR/SKILL.md"
-    CREATE_ISSUE="$SKILL_DIR/../github-issue-orchestrator/scripts/create_issue.py"
+    CREATE_ISSUE="$SKILL_DIR/../git-issue/scripts/create_issue.py"
 }
 
 # 「起票」手順（`**起票**` の行から次の番号付き手順の行まで）を抜き出す
@@ -31,7 +31,7 @@ extract_body_template() {
 @test "起票は create_issue.py --kind agent --labels self-improve で行い、素の gh issue create を実行しない" {
     step="$(extract_filing_step)"
     [ -n "$step" ]
-    [[ "$step" == *'github-issue-orchestrator/scripts/create_issue.py --kind agent --labels self-improve'* ]]
+    [[ "$step" == *'git-issue/scripts/create_issue.py --kind agent --labels self-improve'* ]]
     [[ "$step" == *'--repo <issue_repo>'* ]]
     [[ "$step" == *'--body-file <file>'* ]]
     run grep -nE '^[[:space:]]*`?gh issue create |gh issue create --' "$SKILL_MD"
