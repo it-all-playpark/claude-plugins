@@ -24,6 +24,15 @@ OPERATOR_MAP = {
     "ﾘﾝｶｲ": "りんかい線",
     "TX": "つくばエクスプレス",
     "ＴＸ": "つくばエクスプレス",
+    # Only the full-width-space form: a bare "小" would also match JR stations like 小岩 / 小山
+    "小　": "小田急電鉄",
+    "東武": "東武鉄道",
+    "FC": "福岡市地下鉄",
+    "ＦＣ": "福岡市地下鉄",
+    "JK": "JR九州",
+    "ＪＫ": "JR九州",
+    "KS": "京成電鉄",
+    "ＫＳ": "京成電鉄",
 }
 
 BUS_COMPANY_MAP = {
@@ -39,6 +48,8 @@ BUS_COMPANY_MAP = {
     "京急バス": "京急バス",
     "京成バス": "京成バス",
     "関東バス": "関東バス",
+    "八戸市交": "八戸市交通部",
+    "岩手県北": "岩手県北バス",
 }
 
 # CSV header for マネーフォワードクラウド経費
@@ -83,10 +94,10 @@ def classify_operator(station: str) -> tuple[str, str]:
     if clean.startswith("地") and len(clean) > 1 and not clean.startswith("地下"):
         return "東京メトロ", clean[1:]
 
-    # Other prefixes
+    # Other prefixes (e.g., "京王新宿", "東武　柏" — the separator space is dropped from the name)
     for prefix, operator in OPERATOR_MAP.items():
         if clean.startswith(prefix):
-            return operator, clean[len(prefix):]
+            return operator, clean[len(prefix):].lstrip(" 　")
 
     return "JR東日本", clean
 

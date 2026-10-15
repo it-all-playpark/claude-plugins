@@ -80,7 +80,14 @@ PDF filename pattern: `JE..._YYYYMMDD_YYYYMMDDHHMMSS.pdf`
 | 京急 | 京急電鉄 | 京急品川, 京急横浜 |
 | JW / ＪＷ | JR西日本 | JW徳山, JW柳井 |
 | ＭＲ / MR | モノレール | ＭＲＣＤ |
+| 小　 | 小田急電鉄 | 小　新宿, 小　町田 |
+| 東武 / 東武　 | 東武鉄道 | 東武宇都, 東武　柏 |
+| FC / ＦＣ | 福岡市地下鉄 | FC福岡空, FC博多 |
+| JK / ＪＫ | JR九州 | JK博多, JK鳥栖 |
+| KS / ＫＳ | 京成電鉄 | KS空港２ |
 | (none) | JR東日本 | 宇都宮, 大崎, 新橋 |
+
+The payee is the entry station's operator. Stations without a prefix (including private-railway stations such as おもちゃ or 西調布) fall back to JR東日本.
 
 ### Bus classification
 
@@ -88,6 +95,8 @@ PDF filename pattern: `JE..._YYYYMMDD_YYYYMMDDHHMMSS.pdf`
 |----------|-------|
 | 関東自動 | 関東自動車 |
 | 神奈中 | 神奈中バス |
+| 八戸市交 | 八戸市交通部 |
+| 岩手県北 | 岩手県北バス |
 | (others) | Use raw name |
 
 ### 経費科目
