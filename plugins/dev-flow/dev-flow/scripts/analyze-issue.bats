@@ -1,8 +1,7 @@
 #!/usr/bin/env bats
 # Tests for dev-flow/scripts/analyze-issue.sh
 #
-# Strategy: shim out `gh` with a PATH-first stub (same approach as
-# git-pr/scripts/create-pr.bats). analyze-issue.sh fetches the issue itself
+# Strategy: shim out `gh` with a PATH-first stub. analyze-issue.sh fetches the issue itself
 # via `gh issue view <n> [--repo R] --json ...`; the stub records its argv to
 # a log file and prints the fixture JSON named by $GH_STUB_FIXTURE (or fails
 # with $GH_STUB_FAIL on stderr). Each test writes a fixture file and runs the

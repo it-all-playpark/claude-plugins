@@ -27,8 +27,7 @@ dev-flow / pr-iterate workflow の「決定論寄りステップ」を実行す�
 analyze ゲートが引いたときの質問文起こし（exec-proxy `analyze-issue` を直接実行して issue を読む）・
 pr-iterate の PR fix を担い、結果を呼び出し側 schema に合わせた
 JSON で返す。通常経路の issue 分析は prerun の決定論スクリプト（`analyze-issue --contract`）、
-テスト実行と PR phase の commit + PR 作成は dev-runner-haiku（verbatim 転写 — `git-commit` /
-`git-pr` skill は dev-flow から呼ばない）が担う。
+テスト実行と PR phase の commit + PR 作成は dev-runner-haiku（verbatim 転写）が担う。
 
 判断系（計画+実装・評価・レビュー）は別 agent（dev-implementer / evaluator / pr-reviewer）が
 担うため、このagentは**指示された Skill/コマンドを実行し結果を正確に構造化する**ことに徹する。

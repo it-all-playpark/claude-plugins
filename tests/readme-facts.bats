@@ -82,16 +82,16 @@ readme_skill_list_matches() {
 
 @test "fixture: README のスキル一覧から実在 skill を 1 行消すと一致しない" {
     fixture="$BATS_TEST_TMPDIR/README.md"
-    grep -v '^| `git-commit` |' "$README" > "$fixture"
+    grep -v '^| `pr-iterate` |' "$README" > "$fixture"
     run readme_skill_list_matches "$fixture"
     echo "$output"
     [ "$status" -eq 1 ]
-    [ "$output" = "README に無い: git-commit" ]
+    [ "$output" = "README に無い: pr-iterate" ]
 }
 
 @test "fixture: README のスキル一覧に実在しない skill を 1 行足すと一致しない" {
     fixture="$BATS_TEST_TMPDIR/README.md"
-    awk '{print} $0 ~ /^\| `git-commit` \|/ {print "| `no-such-skill` | 実在しない |"}' "$README" > "$fixture"
+    awk '{print} $0 ~ /^\| `pr-iterate` \|/ {print "| `no-such-skill` | 実在しない |"}' "$README" > "$fixture"
     run readme_skill_list_matches "$fixture"
     echo "$output"
     [ "$status" -eq 1 ]
