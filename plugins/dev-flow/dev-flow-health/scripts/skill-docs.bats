@@ -1,17 +1,15 @@
 #!/usr/bin/env bats
-# Static pins for dev-flow-health SKILL.md の起票手順（issue #993）
+# Static pins for dev-flow-health SKILL.md の起票手順（issue #993 / #1009）
 #
-# - 起票は git-issue の create_issue.py（--kind agent --labels self-improve）を通し、
-#   素の gh issue create を手順に書かない（dev-flow の PreToolUse hook が拒否する）
-# - 本文の雛形は `## 変更対象パス`・`- [ ]` の受け入れ条件・重複確認用の `<!-- dev-flow-health:<id> -->` を持ち、
-#   create_issue.py --kind agent のゲートをそのまま通る
+# - 起票は signature ごとの finding を Skill ツールで dev-flow:git-issue（--repo <issue_repo> --labels self-improve）に
+#   1 回でまとめて渡し、git-issue の軽い経路と Phase 7（dev-flow-ready-set）を通す
+# - create_issue.py の直接実行と素の gh issue create を手順に書かない（起票手順を git-issue の 1 箇所にまとめる。
+#   素の gh issue create は dev-flow の PreToolUse hook が拒否する）
+# - 重複確認用の `<!-- dev-flow-health:<id> -->` を本文末尾に残させ、報告に git-issue の ## Launch Order を含める
 
 setup() {
-    command -v python3 >/dev/null || skip "python3 not available"
-
     SKILL_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
     SKILL_MD="$SKILL_DIR/SKILL.md"
-    CREATE_ISSUE="$SKILL_DIR/../git-issue/scripts/create_issue.py"
 }
 
 # 「起票」手順（`**起票**` の行から次の番号付き手順の行まで）を抜き出す
@@ -21,37 +19,61 @@ extract_filing_step() {
          f { print }' "$SKILL_MD"
 }
 
-# 起票手順の中の ```markdown フェンス（本文の雛形）を抜き出し、行頭のインデントを外す
-extract_body_template() {
-    extract_filing_step | awk '/^[[:space:]]*```markdown$/ { f = 1; next }
-         f && /^[[:space:]]*```$/ { exit }
-         f { sub(/^      /, ""); print }'
+# 「finding をまとめる」手順（`**finding をまとめる**` の行から `**起票**` の行の手前まで）を抜き出す
+extract_finding_step() {
+    awk '/\*\*finding をまとめる\*\*/ { f = 1 }
+         f && /\*\*起票\*\*/ { exit }
+         f { print }' "$SKILL_MD"
 }
 
-@test "起票は create_issue.py --kind agent --labels self-improve で行い、素の gh issue create を実行しない" {
+# 手順 3（報告）を抜き出す
+extract_report_step() {
+    awk '/^3\. / { f = 1 }
+         f && (/^## / || /^$/) { exit }
+         f { print }' "$SKILL_MD"
+}
+
+@test "起票は Skill ツールで dev-flow:git-issue を --repo <issue_repo> --labels self-improve で 1 回だけ起動する" {
     step="$(extract_filing_step)"
     [ -n "$step" ]
-    [[ "$step" == *'git-issue/scripts/create_issue.py --kind agent --labels self-improve'* ]]
-    [[ "$step" == *'--repo <issue_repo>'* ]]
-    [[ "$step" == *'--body-file <file>'* ]]
+    [[ "$step" == *'Skill ツールで `dev-flow:git-issue` を 1 回だけ起動し'* ]]
+    [[ "$step" == *'dev-flow:git-issue <finding の file> --repo <issue_repo> --labels self-improve'* ]]
+    [[ "$step" == *'軽い経路'* ]]
+    [[ "$step" == *'`dev-flow-ready-set` が起票した全 issue に 1 回だけ走る'* ]]
+}
+
+@test "SKILL.md は create_issue.py を直接実行せず、素の gh issue create も実行しない" {
+    run grep -nE 'python3? [^ ]*create_issue\.py|create_issue\.py --' "$SKILL_MD"
+    [ "$status" -ne 0 ]
     run grep -nE '^[[:space:]]*`?gh issue create |gh issue create --' "$SKILL_MD"
     [ "$status" -ne 0 ]
 }
 
-@test "本文の雛形は 変更対象パス・- [ ] の受け入れ条件・dev-flow-health:<id> マーカーを持つ" {
-    body="$(extract_body_template)"
-    [ -n "$body" ]
-    [[ "$body" == *$'## 変更対象パス\n- <原因の推定で直す対象としたファイルの repo 相対パス>'* ]]
-    [[ "$body" == *$'## 受け入れ条件\n- [ ] '* ]]
-    [[ "$body" == *'<!-- dev-flow-health:<id> -->' ]]
+@test "finding は症状・原因・直し方・変更対象パスを持ち、本文末尾に dev-flow-health:<id> マーカーを残させる" {
+    step="$(extract_finding_step)"
+    [ -n "$step" ]
+    [[ "$step" == *'- 症状: signature・status・first_seen / last_seen（commit 付き）・発生回数・該当 run'* ]]
+    [[ "$step" == *'- 原因: '* ]]
+    [[ "$step" == *'- 直し方: 修正案'* ]]
+    [[ "$step" == *'- 変更対象パス: '* ]]
+    [[ "$step" == *'本文末尾に残すマーカー: `<!-- dev-flow-health:<id> -->`'* ]]
 }
 
-@test "本文の雛形は create_issue.py --kind agent --labels self-improve を通る" {
-    BODY="$BATS_TEST_TMPDIR/body.md"
-    extract_body_template >"$BODY"
-
-    run python3 "$CREATE_ISSUE" --kind agent --labels self-improve --title "fix(dev-flow): x" --body-file "$BODY" --dry-run
-    echo "$output"
+@test "重複確認は起票前に dev-flow-health 側で dev-flow-health:<id> を検索する" {
+    dup_line="$(grep -n '\*\*重複確認\*\*' "$SKILL_MD" | cut -d: -f1)"
+    filing_line="$(grep -n '\*\*起票\*\*' "$SKILL_MD" | cut -d: -f1)"
+    [ -n "$dup_line" ]
+    [ -n "$filing_line" ]
+    [ "$dup_line" -lt "$filing_line" ]
+    run grep -F 'gh issue list --repo <issue_repo> --label self-improve --state open --search "dev-flow-health:<id>"' "$SKILL_MD"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"--label self-improve"* ]]
+}
+
+@test "報告（手順 3）は起票番号・重複・candidates.error に加え git-issue の ## Launch Order を含む" {
+    step="$(extract_report_step)"
+    [ -n "$step" ]
+    [[ "$step" == *'起票した issue 番号'* ]]
+    [[ "$step" == *'重複で見送った signature'* ]]
+    [[ "$step" == *'`candidates.error` で原因を絞れなかった signature'* ]]
+    [[ "$step" == *'`## Launch Order`'* ]]
 }

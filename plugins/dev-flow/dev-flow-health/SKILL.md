@@ -54,46 +54,34 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
    `needs_llm` が false なら「new / regressed なし」と報告して終える。
    `issue_repo` が `null` なら、重複確認・起票をせずに「起票先を解決できない（`--repo` に GitHub の origin を持つ
    checkout を渡す）」と報告して終える。起票先を推測したり別の repo を代わりに使ったりしない。
-2. `status` が `new` / `regressed` の signature ごとに、以下を行う（`<issue_repo>` はレポートの `issue_repo` の値）:
+2. `status` が `new` / `regressed` の signature について finding をまとめ、git-issue で起票する（`<issue_repo>` は
+   レポートの `issue_repo` の値）。1〜4 は signature ごとに行い、5 は全 signature の分を 1 回で行う:
    1. **重複確認**: `gh issue list --repo <issue_repo> --label self-improve --state open --search "dev-flow-health:<id>" --json number,title`。
-      既にあれば起票せず、その issue 番号を報告に載せる。
+      既にあればその signature は finding に含めず（起票しない）、その issue 番号を報告に載せる。
    2. **該当 run を読む**: `recent_runs[].file` を `~/.claude/journal/` から Read し、error と telemetry を確認する。
    3. **候補 commit の diff を読む**: skills repo の checkout で `git show <sha> -- plugins/dev-flow/` を
       `candidates.commits` の各 sha について実行する。`candidates.error` があるときは推定の根拠が run だけになる
-      ことを本文に書く。
-   4. **起票**: 本文を `$TMPDIR` の file に書き、git-issue の `create_issue.py` で起票する
-      （素の `gh issue create` は dev-flow の hook が拒否する）:
+      ことを finding に書く。
+   4. **finding をまとめる**: `$TMPDIR` の 1 つの file に、signature ごとに 1 節で次を書く:
+      - 症状: signature・status・first_seen / last_seen（commit 付き）・発生回数・該当 run
+      - 原因: どの候補 commit のどの変更が原因と考えるかの推定と、根拠（diff の該当箇所と error の対応）
+      - 直し方: 修正案
+      - 変更対象パス: 原因の推定で直す対象としたファイルの repo 相対パス
+      - 本文末尾に残すマーカー: `<!-- dev-flow-health:<id> -->`（次回の重複確認に使う。git-issue が作る本文の末尾に
+        この 1 行をそのまま残すよう finding に書く）
+   5. **起票**: 重複を除いた finding が 1 件以上あれば、Skill ツールで `dev-flow:git-issue` を 1 回だけ起動し、
+      全 finding を渡す（signature ごとに起動しない）:
 
-      ```bash
-      python3 ${CLAUDE_PLUGIN_ROOT}/git-issue/scripts/create_issue.py --kind agent --labels self-improve \
-        --repo <issue_repo> --title "<fix(dev-flow): 症状を一文で>" --body-file <file>
+      ```
+      dev-flow:git-issue <finding の file> --repo <issue_repo> --labels self-improve
       ```
 
-      本文は analyze が先頭から読むので、次の雛形の順で短く書く。`## 変更対象パス` には原因の推定で直す対象とした
-      ファイルを repo 相対パスで 1 行 1 つ並べる。`create_issue.py` が exit 1 で拒否したら（受け入れ条件が
-      `- [ ]` でない・`## 変更対象パス` が無い / 空・AC 節を除いて 4000 字超など）、stderr の理由に沿って本文を直して再実行する:
-
-      ```markdown
-      ## 背景
-      <signature・status・first_seen / last_seen（commit 付き）・発生回数・該当 run>
-
-      ## 原因の推定
-      <どの候補 commit のどの変更が原因と考えるか、根拠（diff の該当箇所と error の対応）>
-
-      ## 修正案
-      <直し方>
-
-      ## 変更対象パス
-      - <原因の推定で直す対象としたファイルの repo 相対パス>
-
-      ## 受け入れ条件
-      - [ ] <検証可能な条件>
-
-      <!-- dev-flow-health:<id> -->
-      ```
-
-      末尾の `<!-- dev-flow-health:<id> -->` は次回の重複確認に使う。
-3. 起票した issue 番号、重複で見送った signature、`candidates.error` で原因を絞れなかった signature を報告する。
+      各 finding は 1 signature = 1 agent issue・issue 間の依存なし・human タスクなしなので、git-issue は軽い経路で
+      起票する。本文の構成・ゲート（ac-lint・`## 変更対象パス`・4000 字）で落ちたときの直し方は git-issue に任せ、
+      本 skill は本文の雛形を持たない（素の `gh issue create` は dev-flow の hook が拒否する）。1 回の起動で渡すので、
+      git-issue 軽い経路の手順 5 により `dev-flow-ready-set` が起票した全 issue に 1 回だけ走る。
+3. 起票した issue 番号、重複で見送った signature、`candidates.error` で原因を絞れなかった signature と、git-issue が
+   返した `## Launch Order` を報告する。
 
 ## 守ること
 
