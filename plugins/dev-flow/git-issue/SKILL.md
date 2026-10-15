@@ -21,19 +21,12 @@ effort: xhigh
 
 ## Overview
 
-Turn brainstorming output into an implementation-ready GitHub issue through:
-1) domain specialist investigation, 2) plan synthesis, 3) devil's-advocate review loop, and 4) final issue creation.
-Agent work is filed as one or more issues, each sized for one dev-flow run (= 1 PR), with target paths and
-`Blocked by` dependencies between them.
-
 issue を作る依頼は規模を問わずこの skill で受ける。症状・原因・直し方の分かった小さな起票は軽い経路で、
 議論から起こす計画は重い経路（Phase 1〜7）で起票する（経路の選択）。どちらも Phase 5〜7 を通る。
+agent の作業は dev-flow 1 run（= 1 PR）に収まる単位の issue に分け、変更対象パスと issue 間の
+`Blocked by` 依存を持たせる。
 
-## Usage
-
-```bash
-/git-issue [discussion-source] [--repo owner/repo] [--title "TITLE"] [--labels a,b] [--assignees a,b] [--milestone name] [--max-review-rounds N] [--lang ja|en] [--dry-run]
-```
+## Arguments
 
 | Arg | Description |
 |-----|-------------|
@@ -44,15 +37,8 @@ issue を作る依頼は規模を問わずこの skill で受ける。症状・�
 | `--assignees` | Comma-separated GitHub usernames |
 | `--milestone` | Milestone name |
 | `--max-review-rounds` | Max devil's-advocate loops (default: `3`) |
-| `--lang` | Issue language (default: `ja`) |
+| `--lang` | タイトル・本文・サマリーの言語（default: `ja`）。英語ラベル名・技術用語はそのまま |
 | `--dry-run` | Build issue body only, do not create issue |
-
-## Language Policy
-
-- デフォルトは日本語で issue を作成する（タイトル・本文・サマリーすべて）。
-- `--lang en` が指定された場合のみ英語で作成する。
-- リポジトリ固有の英語ラベル名・技術用語（API, CI, SQL など）はそのまま維持してよい。
-- 言語指定がない場合は必ず `ja` として扱う。
 
 ## Preconditions
 
@@ -111,9 +97,6 @@ If a lens is not relevant, record `Not applicable` with reason.
 
 If subagents are available, run analyses in parallel; otherwise run the same lenses sequentially.
 
-調査結果は issue の質を上げるための作業材料で、issue 本文には書き写さない。分かったことは Phase 3 の
-AC と `## 制約・取らないこと` に反映する。
-
 ### Phase 3: Draft Implementation Plan
 
 Generate an actionable plan containing:
@@ -126,10 +109,7 @@ Generate an actionable plan containing:
 - rollout and rollback strategy
 - open questions requiring user decision
 
-この計画は issue を分割し AC と制約を決めるための作業メモで、issue 本文に実装計画・テスト戦略・
-リリース/ロールバックの節として書き写さない（implementer はコードを読んで自分で計画を立てる）。
-リスクやロールバックの要件は AC か `## 制約・取らないこと` の 1 行にする。本文の構成は
-`references/issue-template.md`（Phase 5）。
+この計画は issue の分割・AC・制約を決めるための作業メモ（本文に書くものは Phase 5）。
 
 #### Executor Classification
 
@@ -176,9 +156,8 @@ agent issue の本文には `## 変更対象パス` が必須。書式は 1 行 
 - <repo 相対パスまたは glob>
 ```
 
-`/` 始まりのエントリと `..` セグメントを含むエントリは書かない（`create_issue.py --kind agent` は、欄が無い・
-エントリ 0 件・`/` 始まり・`..` セグメントのいずれかで起票を拒否する）。計画時点の見積もりであり、後続の
-並列起動判定はこの欄を「触る範囲の申告」として保守的に扱う。
+計画時点の見積もりでよい。後続の並列起動判定はこの欄を「触る範囲の申告」として保守的に扱う
+（起票時に拒否される書き方は Phase 6）。
 
 ### Phase 4: Devil's-Advocate Review Loop
 
@@ -192,22 +171,13 @@ Loop rules:
 
 Do not create a GitHub issue while blocking findings remain.
 
-指摘と修正は AC と `## 制約・取らないこと` に反映させるだけで、issue 本文にレビュー履歴として書き写さない
-（経緯は implementer の判断材料にならない）。ラウンド数と残った non-blocking の懸念は Output Contract の
-`## Plan Quality Gate` でユーザーに返す。
+ラウンド数と残った non-blocking の懸念は Output Contract の `## Plan Quality Gate` でユーザーに返す。
 
 ### Phase 5: Compose Final Issue Body
 
-Write full issue markdown to a temp file, for example:
-
-```bash
-cat > /tmp/git-issue-body.md <<'MD'
-... issue body ...
-MD
-```
-
-agent issue を分けた場合は 1 本ごとに本文ファイルを分ける（例: `/tmp/git-issue-body-1.md`,
-`-body-2.md`）。以降の AC Lint Self-Check と Phase 6 の起票は本文ファイルごとに行う。
+issue 本文を一時ファイルに書く（例: `/tmp/git-issue-body.md`）。agent issue を分けた場合は 1 本ごとに
+本文ファイルを分け（`/tmp/git-issue-body-1.md`, `-body-2.md` …）、以降の AC Lint Self-Check と Phase 6 の
+起票は本文ファイルごとに行う。
 
 本文に含めるもの（agent issue。構成は `references/issue-template.md`）:
 - `## ゴール` — 何を満たせば完了か
@@ -218,11 +188,9 @@ agent issue を分けた場合は 1 本ごとに本文ファイルを分ける�
 - `## 未解決事項（Open Questions）`
 
 Phase 2（調査）・Phase 4（devil's advocate）の結果は AC と制約に反映させるだけで本文に書き写さない。
-実装計画・テスト戦略・リリース/ロールバックの節も書かない。AC 節を除いた本文は 4000 字以内に収める
-（dev-flow の analyze は超えた部分を切り、implementer に届かない。Phase 6 の `create_issue.py --kind agent` が
-超過を拒否する）。
-
-When `--lang` is omitted, write this body in Japanese.
+実装計画・テスト戦略・リリース/ロールバックの節も書かない（implementer はコードを読んで自分で計画を立て、
+経緯は判断材料にならない）。リスクやロールバックの要件は AC か `## 制約・取らないこと` の 1 行にする。
+AC 節を除いた本文は 4000 字以内に収める（dev-flow の analyze は超えた部分を切り、implementer に届かない）。
 
 #### AC Lint Self-Check
 
@@ -232,24 +200,19 @@ After the body file is written, run the shared AC contract lint against it:
 ac-lint /tmp/git-issue-body.md
 ```
 
-The script returns a single-line JSON `{"ok":true,"verdict":"t1|t2|non_compliant",...}` on
-stdout and signals the result via exit code (`0` = t1/t2, `3` = non_compliant, `1` = usage/IO
-error). Apply this policy based on `verdict`:
+stdout は 1 行 JSON `{"ok":true,"verdict":"t1|t2|non_compliant",...}`、exit code は `0` = t1/t2、
+`3` = non_compliant、`1` = usage/IO error。`verdict` ごとに:
 
 | Verdict | Policy |
 |---------|--------|
-| `t1` | AC セクションが `- [ ]` checkbox 形式に準拠。そのまま Phase 6 へ進む。 |
-| `t2` | **自動整形**。AC セクション内の箇条書き（`- `/`* `/番号リスト）を `- [ ]` checkbox 形式に書き換え、`ac-lint.sh` を再実行して `t1` になったことを確認してから Phase 6 へ進む。 |
-| `non_compliant` | **自動整形を試み、不能なら abort**。以下いずれか該当する救済手順を適用してから `ac-lint.sh` を再実行する: (a) checkbox または箇条書きは存在するが AC 見出しが無い場合、当該リストブロックの直上に `## 受け入れ基準（Acceptance Criteria）` を挿入する（既存項目の文言は一切変えない）。(b) AC 項目自体が存在しない場合、Phase 3 に戻り検証可能な受け入れ基準を作成してから本文を再構成する。(c) (a)(b) のいずれも適用できない場合、issue を作成せず abort し、`ac-lint.sh` が返した JSON verdict をそのままユーザーへ報告する。 |
+| `t1` | そのまま Phase 6 へ進む。 |
+| `t2` | AC 節内の箇条書き（`- `/`* `/番号リスト）を `- [ ]` checkbox に書き換え、`ac-lint` を再実行して `t1` を確認してから Phase 6 へ進む。 |
+| `non_compliant` | `references/ac-lint-recovery.md` の手順で直して `ac-lint` を再実行する。直せなければ issue を作らず abort し、返った JSON verdict をそのままユーザーへ報告する。 |
 
 ### Phase 6: Create Issue
 
-`create_issue.py` は同じ `ac-lint.sh` を決定論ゲートとして内蔵しており、body が
-`non_compliant` の場合は（`--dry-run` を含め）exit 1 で abort する。`t2` は警告付きで
-通過する（advisory）。Phase 5 の AC Lint Self-Check を通していれば、この Phase 6 で
-abort することはない。
-
-加えて `--kind` で本文を検査する（`--dry-run` を含む）:
+`create_issue.py` は同じ `ac-lint` を決定論ゲートとして内蔵し、`non_compliant` なら（`--dry-run` を含め）
+exit 1 で abort する（`t2` は警告付きで通過）。加えて `--kind` で本文を検査する（`--dry-run` を含む）:
 
 - `--kind agent`（既定）: 本文に `executor: human` が 1 つでもあれば exit 1 で起票を拒否する。
   `## 変更対象パス` が無い・エントリ 0 件・エントリが `/` 始まり・`..` セグメントを含む場合も exit 1。
@@ -306,13 +269,6 @@ python3 ${CLAUDE_PLUGIN_ROOT}/git-issue/scripts/create_issue.py \
 `H1`…、agent issue はトポロジカル順に `A1`…）を振り、全 issue（human issue → agent issue）と依存グラフ
 （`A2 は Blocked by A1, H1` の形）を Output Contract に並べて表示する。
 
-Capture and return:
-- final issue title(s)
-- issue URL (or dry-run notice)
-- human issue の番号 / URL と Blocked by 関係（human タスクがある場合）
-- agent issue の番号 / URL・変更対象パス・依存関係（起票順）
-- unresolved non-blocking concerns (if any)
-
 ### Phase 7: Launch Order
 
 起票した agent issue のうち、今 `/dev-flow` を流してよく互いに変更対象パスが重ならないものを
@@ -335,18 +291,7 @@ dev-flow-ready-set [--repo owner/repo] --with-in-flight <M1> <M2> ...
 - 出力が `{"ok":false,...}` なら起票は成功のまま扱い、`error` と上のコマンドを `## Launch Order` に載せる
   （失敗した判定を launch として見せない）
 
-stdout の 1 行 JSON を次のように `## Launch Order` へ写す:
-
-- `launch[]` → 「今すぐ別セッションで起動」。各要素の `command`（`/dev-flow <N>`）と `bg_command`
-  （`claude --bg "/dev-flow <N>"`。repo ルートで実行すると別セッションが立つ）を並べ、**issue ごとに別セッション**で
-  流す旨を添える。起動するのは人間が指示した issue・本数だけ（起動手段と範囲は dev-flow SKILL.md「並列実行」節）
-- `waiting[]` → 「後の波」。`reason`（`blocked_by` / `path_conflict` / `no_declared_paths` / `human_task`）と
-  `detail`（相手の issue 番号）を併記する。`detail` の番号に `(変更対象パスなし)` が付いていれば、その実行中
-  issue は申告が無いので全パスと重なる扱いになっている。相手の issue に `## 変更対象パス` を足せば再判定で解ける旨を添える
-- `in_flight[]` → 「実行中」。他 issue で走っている run の番号と `reason` を並べる（これらのパスが占有されている）
-
-`launch[]` は「今の波」だけを表す。後の波の中身は、先行 issue の merge（human issue は close）の後に
-同じコマンドを再実行して決まる。その旨を `## Launch Order` の末尾に書く。
+stdout の 1 行 JSON を `## Launch Order` へ写す規則は `references/output-contract.md`。
 
 ### 軽い経路（Light Path）
 
@@ -369,51 +314,7 @@ Phase 4 の devil's-advocate ループを行わない。複数の finding を 1 
 
 ## Output Contract
 
-Always return this summary after execution:
-
-```markdown
-## Issue Creation Result
-- 言語: ja/en
-- タイトル: ...
-- リポジトリ: ...
-- URL: ... (or Dry-run)
-
-## Human Tasks
-- human issue: #N タイトル — URL (or Dry-run: 起票予定)
-- 依存関係: 実装 issue #M は Blocked by #N（dependencies API 登録: ok / 失敗 → 手動登録コマンド）
-- (human タスクが無い場合は `- なし`)
-
-## Agent Issues
-- agent issue（起票順 = トポロジカル順）:
-  - #M1 タイトル — URL (or Dry-run: A1 起票予定) — 変更対象パス: path/a, path/b/*
-  - #M2 タイトル — URL (or Dry-run: A2 起票予定) — 変更対象パス: ...
-- 依存関係:
-  - #M2 は Blocked by #M1, #N（dependencies API 登録: ok / 失敗 → 手動登録コマンド）
-  - (依存が無い場合は `- なし`)
-
-## Launch Order
-- 判定: `dev-flow-ready-set [--repo owner/repo] --with-in-flight <M1> <M2> ...`（ok / 失敗 → error と手動実行コマンド / Dry-run: 起票後に判定）
-- 今すぐ別セッションで起動（issue ごとに 1 セッション。起動するのは人間が指示した issue・本数だけ）:
-  - `/dev-flow <M1>` — #M1 タイトル — bg_command: `claude --bg "/dev-flow <M1>"`
-- 後の波:
-  - #M2 — blocked_by #M1 / path_conflict #M1 / path_conflict #N(変更対象パスなし) / no_declared_paths / human_task
-- 実行中（他 issue の run。パスを占有）: #N — open_pr / local_branch / worktree（無い場合は `- なし`）
-- 後の波は先行 issue / 実行中 run の merge（human issue は close）後に上の判定コマンドを再実行して決まる
-
-## Plan Quality Gate
-- 経路: 軽い / 重い（軽い経路から重い経路に切り替えた finding があれば、その finding と理由）
-- Devil's-advocate review rounds: N（軽い経路は `0（Blocking Categories を 1 回照合）`）
-- Blocking findings resolved: yes/no
-- Remaining non-blocking concerns:
-  - ...
-```
-
-## References
-
-- `references/issue-template.md`
-- `references/devils-advocate-checklist.md`
-- `scripts/create_issue.py`
-- `_lib/scripts/ac-lint.sh` (shared)
+実行後は必ず `references/output-contract.md` のサマリーを返す（`--lang` の言語で）。
 
 ## Journal Logging
 
