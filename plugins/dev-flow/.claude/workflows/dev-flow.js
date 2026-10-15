@@ -5369,11 +5369,12 @@ const TEST_RUN_PROMPT = runTestsPrompt(WT, `origin/${BASE}`)
 // ここで LLM に issue を読み直させて要件を再構成すると、転写事故（title / AC / comment の読み落とし・捏造）に
 // 対する provenance 突合が再び要る）。失敗（null / throw）は fail-open でゲート理由をそのまま missing_context にする。
 const clarifyPrompt = (gateReasons) => `cd ${WT} で作業。issue #${ISSUE} は決定論の analyze（analyze-issue --contract + Jev 有界判定）で次の理由により実装に進めないと判定された。\n`
-  + `\`Skill: dev-issue-analyze ${ISSUE}${REPO ? ' --repo ' + REPO : ''} --depth comprehensive\` を実行して issue の本文・comments を読み、`
+  + `\`analyze-issue ${ISSUE}${REPO ? ' --repo ' + REPO : ''} --depth comprehensive --dump-body "\${TMPDIR:-/tmp}/issue-${ISSUE}-body.md"\` を実行して issue の本文・comments を読め。`
+  + `出力 JSON の body_dump_path が null でなければ、そのファイルを Read して body 全文を読んでから質問文を起こせ。`
   + `各理由について**人間（issue 作成者）が issue body を直せば解消する具体的な質問文**を missing_context:string[] として返せ（理由 1 件につき 1〜2 文、日本語）。`
   + `質問には「body のどの記述と comment のどの記述が食い違うか」「後方互換を保たない API / 形式の変更の有無と既存データの変換の要否をどこに明記すべきか」「受け入れ基準をどの見出し形式で書くか」「repo 内外が混ざった AC をどう repo 内の AC と repo 外の AC に分けるか」を含めよ。`
   + `質問文にも記入例にも breaking / incompatible / migration / 破壊的 / 非互換 の語を使うな（人間が body にその語を書くと analyze-issue のキーワード判定が再び Jev 判定を要求する）。`
-  + `要件・受け入れ基準を自分で推測して埋めるな。issue の再取得は Skill 経由の 1 回のみ。\n`
+  + `要件・受け入れ基準を自分で推測して埋めるな。issue の取得は analyze-issue の 1 回のみ。\n`
   + `ゲート理由（決定論。verbatim で参照し、削除・要約するな）:\n${JSON.stringify(gateReasons)}\n`
   + EPOCH_INSTRUCTION
 

@@ -73,7 +73,7 @@ source "$(dirname "$_CORE_BIN")/../_lib/common.sh"
 has_jq || { echo "jq is required" >&2; exit 127; }
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ANALYZE_ISSUE="$PLUGIN_ROOT/dev-issue-analyze/scripts/analyze-issue.sh"
+ANALYZE_ISSUE="$PLUGIN_ROOT/dev-flow/scripts/analyze-issue.sh"
 JEV_CLASSIFY_CMD="${DEVFLOW_JEV_CLASSIFY:-jev-classify}"
 JEV_CLASSIFY="$(command -v "$JEV_CLASSIFY_CMD" || true)"
 ISSUE_BLOCKERS="$PLUGIN_ROOT/_lib/scripts/issue-blockers.sh"

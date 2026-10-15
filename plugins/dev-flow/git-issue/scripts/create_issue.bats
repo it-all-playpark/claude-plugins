@@ -583,7 +583,7 @@ write_scope_body() {
 @test "(31) 字数は同じ本文で analyze-issue.sh の scope_total_chars と一致する（フェンス・AC 節の境界・マルチバイト）" {
     command -v jq >/dev/null || skip "jq not available"
     use_gh_stub
-    ANALYZE="$SKILLS_REPO/dev-issue-analyze/scripts/analyze-issue.sh"
+    ANALYZE="$SKILLS_REPO/dev-flow/scripts/analyze-issue.sh"
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_body "$BODY" \
         "## ゴール" \

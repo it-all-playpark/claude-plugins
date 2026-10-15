@@ -319,7 +319,6 @@ config = merge_config({"property_id": None}, "ga-analyzer")  # defaults → glob
 | スキル | 説明 |
 |--------|------|
 | `dev-flow` | Issue → LGTM までのE2E開発フロー (dynamic workflow: `plugins/dev-flow/.claude/workflows/dev-flow.js`) |
-| `dev-issue-analyze` | GitHub Issue分析・実装計画 |
 | `dev-flow-health` | dev-flow の失敗を日次で型ごとに集計し、new / regressed の日だけ原因を推定して issue 化 |
 | `dep-guardian` | 依存関係更新PRのトリアージ・テスト・バッチマージ |
 
@@ -435,7 +434,7 @@ skills/
 │   │   ├── _lib/                         # workflow のロジック本体・test
 │   │   ├── _shared/scripts/              # dev-flow 共通スクリプト
 │   │   ├── bin/                          # dev-flow bare 名 wrapper
-│   │   └── dev-flow/, dev-flow-health/, dev-issue-analyze/,
+│   │   └── dev-flow/, dev-flow-health/,
 │   │       git-commit/, git-pr/, git-issue/,
 │   │       pr-iterate/（各 SKILL.md）
 │   ├── playpark-skills/                  # 個人用スキル plugin（dependencies: playpark-core）

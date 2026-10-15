@@ -41,7 +41,7 @@ const implCount = (calls) => calls.filter((c) => c.agentType === 'dev-flow:dev-i
 // ============================================================
 
 test('[analyze-comments-routing] analyze-issue.sh の gh --json フィールド列に comments / author が含まれる', () => {
-  const scriptSrc = readFileSync(join(repoRoot, 'dev-issue-analyze', 'scripts', 'analyze-issue.sh'), 'utf8');
+  const scriptSrc = readFileSync(join(repoRoot, 'dev-flow', 'scripts', 'analyze-issue.sh'), 'utf8');
   const fieldsLine = scriptSrc.split('\n').find((l) => l.startsWith('GH_JSON_FIELDS='));
   assert.ok(fieldsLine, 'analyze-issue.sh に GH_JSON_FIELDS= 定義が無い');
   assert.ok(/state,comments/.test(fieldsLine), `gh --json フィールド列に comments が含まれていない: ${fieldsLine}`);

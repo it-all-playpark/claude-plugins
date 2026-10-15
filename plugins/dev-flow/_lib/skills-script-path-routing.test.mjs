@@ -9,7 +9,7 @@
 // 検証は (a) の一部を dev-flow.js / pr-iterate.js 全文に対する静的否定 assert で、
 // 残りを dev-flow.js を VM で実行し agent() に実際に渡った prompt を観測することで行う
 // （WT は既定 responder の '/tmp/wt'）:
-//   (a-static) devFlowSrc / prIterateSrc 全文のどこにも `${WT}/dev-issue-analyze/`
+//   (a-static) devFlowSrc / prIterateSrc 全文のどこにも `${WT}/dev-flow/scripts/`
 //       `${WT}/journal/` という禁止パターン（テンプレートリテラル埋め込み）が無い
 //       — success run 1 本の prompt 観測だけでは未到達分岐（abort / empty-diff 等）への
 //       再混入を検出できないため、VM 観測とは独立に全文走査で pin する
@@ -20,7 +20,7 @@
 //   (c) 負の対照: 対象 repo 自身のテストランナー `/tmp/wt/tests/run-tests.sh` は WT 相対のまま
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
@@ -53,17 +53,17 @@ async function run(name) {
 // (a-static): success run 1 本の prompt 観測だけでは未到達分岐（abort / empty-diff 等）への
 // 再混入を検出できないため、devFlowSrc / prIterateSrc 全文に対する静的否定 assert を
 // VM 観測とは独立に並置する。
-test('[skills-script-path-routing] (a-static) devFlowSrc / prIterateSrc 全文に `${WT}/dev-issue-analyze/` `${WT}/journal/` という禁止パターンが無い', () => {
+test('[skills-script-path-routing] (a-static) devFlowSrc / prIterateSrc 全文に `${WT}/dev-flow/scripts/` `${WT}/journal/` という禁止パターンが無い', () => {
   for (const [name, src] of [['dev-flow.js', devFlowSrc], ['pr-iterate.js', prIterateSrc]]) {
-    for (const forbidden of ['${WT}/dev-issue-analyze/', '${WT}/journal/']) {
+    for (const forbidden of ['${WT}/dev-flow/scripts/', '${WT}/journal/']) {
       assert.ok(!src.includes(forbidden), `${name} に禁止パターン ${forbidden} が静的に含まれる（対象 repo が skills 以外だと Exit 127）`);
     }
   }
 });
 
-test('[skills-script-path-routing] (a-vm) どの agent() prompt にも `${WT}/dev-issue-analyze/` `${WT}/journal/` が現れない', async () => {
+test('[skills-script-path-routing] (a-vm) どの agent() prompt にも `${WT}/dev-flow/scripts/` `${WT}/journal/` が現れない', async () => {
   const calls = await run('success');
-  for (const forbidden of ['/tmp/wt/dev-issue-analyze/', '/tmp/wt/journal/']) {
+  for (const forbidden of ['/tmp/wt/dev-flow/scripts/', '/tmp/wt/journal/']) {
     const hit = calls.find((c) => c.prompt.includes(forbidden));
     assert.ok(!hit, `${hit?.label} の prompt に禁止パターン ${forbidden} が含まれる（対象 repo が skills 以外だと Exit 127）`);
   }
@@ -76,7 +76,8 @@ test('[skills-script-path-routing] (b) analyze-issue --contract は prerun（pre
   assert.equal(calls.filter((c) => c.label.startsWith('contract-probe')).length, 0, 'contract-probe が spawn されている（Analyze は prerun の script 段へ移動済み）');
   assert.ok(!calls.some((c) => c.prompt.includes('analyze-issue 1 --contract')), 'Workflow の prompt に analyze-issue --contract の実行指示が残っている');
   const prerunAnalyzeSrc = readFileSync(join(here, '..', 'dev-flow', 'scripts', 'prerun-analyze.sh'), 'utf8');
-  assert.ok(prerunAnalyzeSrc.includes('dev-issue-analyze/scripts/analyze-issue.sh'), 'prerun-analyze.sh が analyze-issue.sh を plugin 内パスで呼んでいない');
+  assert.ok(prerunAnalyzeSrc.includes('ANALYZE_ISSUE="$PLUGIN_ROOT/dev-flow/scripts/analyze-issue.sh"'), 'prerun-analyze.sh が analyze-issue.sh を plugin 内パスで呼んでいない');
+  assert.ok(existsSync(join(here, '..', 'dev-flow', 'scripts', 'analyze-issue.sh')), 'prerun-analyze.sh の ANALYZE_ISSUE が指す dev-flow/scripts/analyze-issue.sh が無い');
 });
 
 for (const name of Object.keys(RUNS)) {

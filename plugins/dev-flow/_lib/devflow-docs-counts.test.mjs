@@ -75,14 +75,14 @@ test('README / plugin.json / marketplace.json: dev-flow の skill 数が実体�
   }
 });
 
-test('journal.sh: prune の既定 keep 一覧に撤去した doctor / improve を含まない', () => {
+test('journal.sh: prune の既定 keep 一覧は dev-flow plugin に実在する skill だけで、dev-flow / pr-iterate を含む', () => {
   const journalSh = readFileSync(join(repoRoot, 'plugins/playpark-core/journal/scripts/journal.sh'), 'utf8');
   const m = journalSh.match(/^PRUNE_KEEP_DEFAULT="([^"]*)"/m);
   assert.ok(m, 'journal.sh に PRUNE_KEEP_DEFAULT が無い');
   const keep = m[1].split(',');
   assert.ok(keep.includes('dev-flow') && keep.includes('pr-iterate'), `dev-flow-health が読む dev-flow / pr-iterate が keep に無い: ${m[1]}`);
-  for (const removed of ['dev-flow-doctor', 'dev-flow-improve', 'dev-improve']) {
-    assert.ok(!keep.includes(removed), `PRUNE_KEEP_DEFAULT に撤去した ${removed} が残っている: ${m[1]}`);
+  for (const skill of keep) {
+    assert.ok(existsSync(join(pluginRoot, skill, 'SKILL.md')), `PRUNE_KEEP_DEFAULT の ${skill} は dev-flow plugin の skill として実在しない: ${m[1]}`);
   }
 });
 
@@ -92,6 +92,11 @@ test("dev-runner.md: 役割記述が agentType: 'dev-runner' の実呼び出し�
   assert.ok(!/test-green|issue analysis/.test(description), `description にテスト実行 / issue 分析が残っている:\n${description}`);
   assert.match(description, /analyze-clarify/);
   assert.match(description, /PR fix/);
+  // analyze-clarify は clarifyPrompt（dev-flow.js）と同じく exec-proxy analyze-issue を直接実行する
+  assert.match(description, /analyze-issue/, `description が analyze-issue の直接実行を指していない:\n${description}`);
+  const clarifyRow = md.split('\n').find((l) => l.startsWith('| analyze-clarify'));
+  assert.ok(clarifyRow, 'dev-runner.md に analyze-clarify の行が無い');
+  assert.ok(clarifyRow.includes('`analyze-issue <n> [--repo R] --depth comprehensive --dump-body <path>`'), `analyze-clarify の行が analyze-issue の直接実行を指していない: ${clarifyRow}`);
   assert.ok(!/dev-improve/.test(md), 'dev-runner.md に撤去した dev-improve の役割が残っている');
   assert.ok(!md.includes('| test green 確認 |'), 'テスト実行は dev-runner-haiku が担う');
   assert.ok(!md.includes('| issue 分析 |'), '通常経路の issue 分析は prerun の script が担う');
@@ -106,6 +111,25 @@ test("dev-runner.md: 役割記述が agentType: 'dev-runner' の実呼び出し�
       `${rel} の dev-runner 呼び出し（${label}）が見つからない — dev-runner.md の役割記述を見直す`,
     );
   }
+});
+
+test('references/analyze-issue.md: analyze-issue.sh が出す全キー・切断上限とマーカー・override 判定の fail-closed を載せる', () => {
+  const sh = readFileSync(join(pluginRoot, 'dev-flow/scripts/analyze-issue.sh'), 'utf8');
+  const md = readFileSync(join(pluginRoot, 'dev-flow/references/analyze-issue.md'), 'utf8');
+  // depth 出力（minimal の 1 行 echo と standard / comprehensive の heredoc）と contract 出力（jq の object）のキー
+  const depthKeys = [...sh.matchAll(/^ {2}"(\w+)": /gm), ...sh.matchAll(/\\"(\w+)\\":/g)].map((m) => m[1]);
+  const contractKeys = [...sh.matchAll(/^ {10}(\w+): \$\w+,?$/gm)].map((m) => m[1]);
+  assert.ok(depthKeys.includes('body_dump_path') && depthKeys.includes('state'), `depth 出力のキーが読めない: ${depthKeys.join(', ')}`);
+  assert.ok(contractKeys.includes('contract') && contractKeys.includes('issue_updated_at'), `contract 出力のキーが読めない: ${contractKeys.join(', ')}`);
+  for (const key of new Set([...depthKeys, ...contractKeys, 'ineligible_reason'])) {
+    assert.ok(md.includes(`\`${key}\``), `analyze-issue.md に出力キー ${key} が無い`);
+  }
+  const maxChars = sh.match(/^SCOPE_MAX_CHARS=(\d+)$/m)?.[1];
+  assert.ok(maxChars, 'analyze-issue.sh に SCOPE_MAX_CHARS が無い');
+  assert.ok(md.includes(`${maxChars} 字`), `analyze-issue.md に切断上限 ${maxChars} 字が無い`);
+  assert.ok(sh.includes('[TRUNCATED: %s shows the first') && md.includes('[TRUNCATED: <field> shows the first'), '切断マーカーの形が script と一致しない');
+  const override = sectionOf(md, '## comment の override 判定に使う');
+  assert.ok(override.includes('`author_association`') && override.includes('`issue_author`') && override.includes('fail-closed'), 'override 判定の fail-closed の理由が無い');
 });
 
 // issue #897: atlas / pipeline / rules / SKILL.md / AGENTS.md の記述を実装に合わせて pin する。

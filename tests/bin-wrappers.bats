@@ -99,7 +99,7 @@ target_for() {
         pr-iterate-prerun) echo "_shared/scripts/pr-iterate-prerun.sh" ;;
         check-ci) echo "pr-iterate/scripts/check-ci.sh" ;;
         ci-wait) echo "pr-iterate/scripts/ci-wait.sh" ;;
-        analyze-issue) echo "dev-issue-analyze/scripts/analyze-issue.sh" ;;
+        analyze-issue) echo "dev-flow/scripts/analyze-issue.sh" ;;
         detect-stack) echo "_lib/scripts/detect-stack.sh" ;;
         dev-flow-prerun) echo "dev-flow/scripts/prerun.sh" ;;
         dev-flow-ready-set) echo "dev-flow/scripts/ready-set.sh" ;;
