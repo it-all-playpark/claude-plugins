@@ -14,7 +14,7 @@ argument-hint: post|sync [OPTIONS]
 # Zernio
 
 > **CRITICAL**: zernio CLI を直接呼び出さないでください。必ず `/zernio` スキル経由で実行してください。
-> スキルが `skill-config.json` から `sync_dirs`, `profile_id` を自動解決します。
+> スキルが `scripts/resolve-config.sh`（共有ローダー `load_skill_config`）で `sync_dirs`, `profile_id` を自動解決します。
 > 直接CLIを叩くと `sync_dirs` が欠落し、**投稿が削除される危険**があります。
 
 Zernio CLI wrapper for SNS scheduling and sync.
@@ -55,21 +55,21 @@ Zernio CLI wrapper for SNS scheduling and sync.
 
 Resolution order:
 1. User explicitly passes `--profile-id` → use as-is
-2. Read `skill-config.json` → `zernio.profile_id` → pass as `--profile-id`
+2. `skill-config` の `zernio.profile_id`（グローバル設定 → git root のプロジェクト設定を merge した結果。プロジェクトが勝つ）→ pass as `--profile-id`
 3. `ZERNIO_PROFILE_ID` env var → used automatically by CLI
 4. None found → **WARN the user** that commands will affect ALL profiles
 
+`resolve-config.sh` は cwd がサブディレクトリでも git root の設定を読み、1 行 JSON
+`{"profile_id": <string|null>, "sync_dirs": [<絶対パス>...]}` を出す（相対の `sync_dirs` は git root 基準で絶対パス化済み）。
+
 ```bash
-PROFILE_ID=$(python3 -c "
-import json, os
-for p in ['skill-config.json', '.claude/skill-config.json']:
-    if os.path.exists(p):
-        v = json.load(open(p)).get('zernio',{}).get('profile_id','')
-        if v: print(v); break
-" 2>/dev/null)
+ZCFG=$(bash ${CLAUDE_PLUGIN_ROOT}/zernio/scripts/resolve-config.sh)
+PROFILE_ID=$(jq -r '.profile_id // empty' <<< "$ZCFG")
+PROFILE_ARGS=()
+[[ -n "$PROFILE_ID" ]] && PROFILE_ARGS=(--profile-id "$PROFILE_ID")
 ```
 
-Then append `--profile-id $PROFILE_ID` to every `zernio` command if non-empty.
+Then append `"${PROFILE_ARGS[@]}"` to every `zernio` command (skip when the user passed `--profile-id` explicitly).
 
 ## Step 2: Execute Command
 
@@ -90,25 +90,20 @@ Full options: [CLI Reference](references/cli-reference.md)
 
 ### sync — Sync local JSON with Zernio API
 
-**IMPORTANT**: Before running sync, resolve `sync_dirs` from config:
+**IMPORTANT**: Before running sync, build one `--dir` per `sync_dirs` entry from the Step 1 output (`$ZCFG`):
 
 ```bash
-SYNC_DIRS=$(python3 -c "
-import json, os
-for p in ['skill-config.json', '.claude/skill-config.json']:
-    if os.path.exists(p):
-        dirs = json.load(open(p)).get('zernio',{}).get('sync_dirs',[])
-        if dirs:
-            print(' '.join(f'--dir {d}' for d in dirs))
-            break
-" 2>/dev/null)
+SYNC_ARGS=()
+while IFS= read -r d; do
+  [[ -n "$d" ]] && SYNC_ARGS+=(--dir "$d")
+done <<< "$(jq -r '.sync_dirs[]' <<< "$ZCFG")"
 ```
 
 If `sync_dirs` is configured, ALWAYS use ALL directories. Never pass fewer `--dir` values than `sync_dirs` specifies — missing directories cause their posts to be **DELETED** from the API.
 
 ```bash
 # When sync_dirs is configured (e.g. ["./post/blog", "./post/bip"]):
-zernio sync $SYNC_DIRS --from 2026-04-01 --execute
+zernio sync "${SYNC_ARGS[@]}" "${PROFILE_ARGS[@]}" --from 2026-04-01 --execute
 
 # Single dir example (only when sync_dirs is not configured):
 zernio sync --dir ./post/blog --from 2026-04-01 --execute
@@ -128,7 +123,7 @@ This skill calls `zernio` CLI directly. Do NOT use the old TypeScript scripts.
 zernio post --json post/2026-03-20-article.json
 
 # Sync after date changes (uses sync_dirs from config)
-zernio sync $SYNC_DIRS --from 2026-03-20 --execute
+zernio sync "${SYNC_ARGS[@]}" "${PROFILE_ARGS[@]}" --from 2026-03-20 --execute
 ```
 
 ## References

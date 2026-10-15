@@ -52,13 +52,28 @@ $ZERNIO_BIN --version
 
 Resolution order:
 1. User explicitly passes `--profile-id` → use as-is
-2. Read `skill-config.json` → `zernio.profile_id` → pass as `--profile-id`
+2. `skill-config` の `zernio.profile_id`（グローバル設定 → プロジェクト設定を merge した結果。プロジェクトが勝つ）→ pass as `--profile-id`
 3. `ZERNIO_PROFILE_ID` env var → used automatically by CLI
 4. None found → **WARN the user** that commands will affect ALL profiles
 
-To read from skill-config.json:
+`skill-config` は共有ローダー `load_skill_config` で読む（他 skill と同じ解決）:
+- グローバル: `$SKILL_CONFIG_PATH` > `~/.config/skills/config.json` > `~/.claude/skill-config.json`
+- プロジェクト: cwd の git root の `skill-config.json` > `.claude/skill-config.json`（サブディレクトリから呼んでも git root を読む）
+
+`zernio/scripts/resolve-config.sh`（SKILL.md Step 1 で plugin root 起点に実行する）が 1 行 JSON
+`{"profile_id": <string|null>, "sync_dirs": [<絶対パス>...]}` を出す。相対の `sync_dirs` は git root 基準の絶対パスに解決済み。
+その出力 `$ZCFG` から引数を組み立てる:
+
 ```bash
-PROFILE_ID=$(python3 -c "import json,os; [print(json.load(open(p)).get('zernio',{}).get('profile_id','')) for p in ['skill-config.json','.claude/skill-config.json'] if os.path.exists(p)][:1]" 2>/dev/null)
+PROFILE_ID=$(jq -r '.profile_id // empty' <<< "$ZCFG")
+PROFILE_ARGS=()
+[[ -n "$PROFILE_ID" ]] && PROFILE_ARGS=(--profile-id "$PROFILE_ID")
+
+# sync: sync_dirs の全件を --dir で渡す（欠けたディレクトリの投稿は API から削除される）
+SYNC_ARGS=()
+while IFS= read -r d; do
+  [[ -n "$d" ]] && SYNC_ARGS+=(--dir "$d")
+done <<< "$(jq -r '.sync_dirs[]' <<< "$ZCFG")"
 ```
 
-Then append `--profile-id $PROFILE_ID` to every `zernio` command if non-empty.
+Then append `"${PROFILE_ARGS[@]}"` to every `zernio` command (skip when the user passed `--profile-id` explicitly).
