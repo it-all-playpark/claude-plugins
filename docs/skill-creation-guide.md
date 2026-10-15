@@ -70,7 +70,7 @@ user-invocable: true                # false でメニュー非表示（backgroun
 | `medium` | 軽度の判断を伴う処理 | `sns-announce` |
 | `high` | 標準的なコード生成・通常ワークフロー / 計画・レビュー・批判的分析（A/B 実測で max と精度同等） | デフォルト推奨。dev-flow の pr-reviewer と dev-implementer はこれ（evaluator は medium） |
 | `xhigh` | 長時間 agentic / 大規模コーディング（Opus 4.7 限定） | 複雑な実装タスク |
-| `max` | 熟考・長大推論が必要な処理（quality-gate agent の effort 固定には通常 high を推奨） | `github-issue-orchestrator` |
+| `max` | 熟考・長大推論が必要な処理（quality-gate agent の effort 固定には通常 high を推奨） | `skill-creator` |
 
 **判断基準**: 推論の質が出力品質を決定する skill（planning, review, critique, strategy）は `high` が品質標準ライン（A/B 実測で max と精度同等・より高速）。
 決定論的 tool wrapper は `low`。迷ったら省略して session 設定に委ねる。

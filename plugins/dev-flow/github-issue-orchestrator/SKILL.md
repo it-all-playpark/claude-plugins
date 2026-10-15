@@ -1,15 +1,20 @@
 ---
 name: github-issue-orchestrator
 description: |
-  Create GitHub issues from prior discussions with multi-role technical investigation and adversarial planning review.
-  Use when: (1) user finished ideation in skills like plan-brainstorm/plan-workflow and now wants a concrete implementation issue,
-  (2) user asks to turn discussion notes into an issue with frontend/backend/infra viewpoints,
-  (3) user wants a devil's-advocate pass before posting issue.
+  Creates GitHub issues of any size: concrete findings (bug, audit result, review comment with known symptom, cause and fix)
+  go through a light path; plans from discussion go through multi-role investigation and adversarial review.
+  Both paths pass ac-lint, create_issue.py and dev-flow-ready-set.
+  Use when: (1) user asks to create an issue in any wording — "issue にして", "issue 化", "起票", "issue 立てて",
+  "create an issue", "file an issue". issue を作る依頼は規模を問わずこの skill で行う（素の gh issue create を使わない）,
+  (2) bugs / audit results / review findings should be filed as one or several issues,
+  (3) user finished ideation in skills like plan-brainstorm/plan-workflow and now wants a concrete implementation issue,
+  (4) user asks to turn discussion notes into an issue with frontend/backend/infra viewpoints,
+  (5) user wants a devil's-advocate pass before posting issue.
   Accepts args: [discussion-source] [--repo owner/repo] [--title "TITLE"] [--labels a,b] [--assignees a,b] [--milestone name] [--max-review-rounds N] [--lang ja|en] [--dry-run]
 allowed-tools:
   - Bash
-model: fable
-effort: max
+model: opus
+effort: xhigh
 ---
 
 # GitHub Issue Orchestrator
@@ -20,6 +25,9 @@ Turn brainstorming output into an implementation-ready GitHub issue through:
 1) domain specialist investigation, 2) plan synthesis, 3) devil's-advocate review loop, and 4) final issue creation.
 Agent work is filed as one or more issues, each sized for one dev-flow run (= 1 PR), with target paths and
 `Blocked by` dependencies between them.
+
+issue を作る依頼は規模を問わずこの skill で受ける。症状・原因・直し方の分かった小さな起票は軽い経路で、
+議論から起こす計画は重い経路（Phase 1〜7）で起票する（経路の選択）。どちらも Phase 5〜7 を通る。
 
 ## Usage
 
@@ -52,7 +60,24 @@ Agent work is filed as one or more issues, each sized for one dev-flow run (= 1 
 2. Ensure `gh` CLI is installed and authenticated for non-dry-run execution.
 3. If key constraints are missing (deadline, non-goals, ownership), ask focused follow-up questions before planning.
 
+## 経路の選択
+
+起票の依頼を受けたら、入力を見て軽い経路か重い経路かを先に決める。
+
+**軽い経路**（下の「軽い経路（Light Path）」）は、次をすべて満たすときに選ぶ:
+
+1. 入力が症状・原因・直し方の分かった具体的な finding（bug・監査結果・レビュー指摘など）である
+2. 1 finding = 1 agent issue で収まる（分割が要らない）
+3. human タスクを含まない（Executor Classification で `executor: human` になる作業が無い）
+4. issue 間の依存が無い（`Blocked by` が要らない）
+
+**重い経路**（Phase 1〜7）は、それ以外のすべてで選ぶ: 議論から起こす新機能・設計判断が要る計画・
+分割や依存が要るもの・human タスクを含むもの。
+
 ## Workflow
+
+重い経路は次の Phase 1〜7 を順に行う。軽い経路は Phase 2〜4 を「軽い経路（Light Path）」の手順に置き換え、
+Phase 5〜7 は同じように通る。
 
 | Phase | Action | Complete When |
 |-------|--------|---------------|
@@ -322,6 +347,25 @@ stdout の 1 行 JSON を次のように `## Launch Order` へ写す:
 `launch[]` は「今の波」だけを表す。後の波の中身は、先行 issue の merge（human issue は close）の後に
 同じコマンドを再実行して決まる。その旨を `## Launch Order` の末尾に書く。
 
+### 軽い経路（Light Path）
+
+「経路の選択」で軽い経路を選んだ finding は、Phase 2 の 3 観点調査（frontend / backend / infra）と
+Phase 4 の devil's-advocate ループを行わない。複数の finding を 1 回の呼び出しでまとめて起票できる。
+
+1. finding ごとに対象コード（と既存テスト）を読み、症状・原因・直し方を確かめたうえで、AC・
+   `## 制約・取らないこと`・`## 変更対象パス` を埋める。本文の構成は重い経路と同じ実装 issue テンプレート
+   （`references/issue-template.md`）
+2. 各本文を `references/devils-advocate-checklist.md` の Blocking Categories に 1 回だけ照らし、当たった項目を直す
+   （ループはしない）
+3. Phase 5 と同じく finding ごとに本文ファイルを作り（`/tmp/github-issue-orchestrator-body-1.md`, `-body-2.md` …）、
+   本文ファイルごとに AC Lint Self-Check（`ac-lint`）を通す
+4. 本文ファイルごとに Phase 6 の `create_issue.py`（`--kind agent`、`--blocked-by` なし）で起票する。
+   ゲート（ac-lint・4000 字・変更対象パス・`executor: human` の検出）は重い経路と同じ
+5. Phase 7 は起票した全 issue の番号をまとめて `dev-flow-ready-set` に 1 回だけ渡す（finding ごとに実行しない）
+
+途中で分割・issue 間の依存・human タスクが必要と分かったら、その finding は軽い経路をやめて重い経路
+（Phase 1 から）に切り替える。切り替えた finding と理由は Output Contract の `## Plan Quality Gate` に書く。
+
 ## Output Contract
 
 Always return this summary after execution:
@@ -356,7 +400,8 @@ Always return this summary after execution:
 - 後の波は先行 issue / 実行中 run の merge（human issue は close）後に上の判定コマンドを再実行して決まる
 
 ## Plan Quality Gate
-- Devil's-advocate review rounds: N
+- 経路: 軽い / 重い（軽い経路から重い経路に切り替えた finding があれば、その finding と理由）
+- Devil's-advocate review rounds: N（軽い経路は `0（Blocking Categories を 1 回照合）`）
 - Blocking findings resolved: yes/no
 - Remaining non-blocking concerns:
   - ...
