@@ -114,6 +114,9 @@ sandbox:path:/etc/blocked 3 2
 sandbox:unix_socket:/run/db/x.sock 1 1" ]
   [ "$(printf '%s' "$output" | jq -c '.types[] | select(.id == "sandbox:path:/etc/blocked") | [.first_seen, .last_seen, .projects, .examples]')" \
     = '["2026-09-10T00:00:01Z","2026-09-20T00:00:01Z",["/w/repo"],["touch: /etc/blocked: Operation not permitted"]]' ]
+  # 発生ごとに時刻・cwd・gitBranch（行に無ければ null）を持つ
+  [ "$(printf '%s' "$output" | jq -c '.types[] | select(.id == "sandbox:path:/etc/blocked") | .occurrences[0]')" \
+    = '{"ts":"2026-09-10T00:00:01Z","cwd":"/w/repo","git_branch":null}' ]
   [ "$(printf '%s' "$output" | jq -c '[.period.since, .period.until, .files_scanned]')" = '["2026-09-01T00:00:00Z","2026-10-01T00:00:00Z",2]' ]
 }
 
@@ -285,6 +288,91 @@ make_config_repo() {
   [ "$(jq -c '.types[] | select(.id == "sandbox:path:/etc/blocked") | [.status, .evidence.commit, .evidence.after_count]' "$json")" = '["remaining",null,3]' ]
   [ "$(jq -c '.types[] | select(.id == "permission:permission-rule:Bash node") | [.status, .evidence.commit]' "$json")" = '["remaining",null]' ]
   grep -q '^## remaining' "$WORK/claudedocs/sandbox-tune-2026-10-01.md"
+}
+
+# 拒否が起きた repo（$HOME/src/app）: 2026-09-15 に .claude/settings.json へ a〜d.example.test を足す commit がある。
+# old は修正前に切った branch、feat は修正後に切った worktree（.claude/worktrees/w1）の branch
+make_app_repo() {
+  APP="$HOME/src/app"
+  mkdir -p "$APP/.claude"
+  git -C "$APP" init -q -b main
+  echo '{}' >"$APP/.claude/settings.json"
+  git -C "$APP" add .claude/settings.json
+  GIT_AUTHOR_DATE=2026-09-01T00:00:00Z GIT_COMMITTER_DATE=2026-09-01T00:00:00Z \
+    git -C "$APP" -c user.name=t -c user.email=t@example.com commit -q -m init
+  git -C "$APP" branch old
+  echo '{"sandbox":{"network":{"allowedDomains":["a.example.test","b.example.test","c.example.test","d.example.test"]}}}' >"$APP/.claude/settings.json"
+  git -C "$APP" add .claude/settings.json
+  GIT_AUTHOR_DATE=2026-09-15T00:00:00Z GIT_COMMITTER_DATE=2026-09-15T00:00:00Z \
+    git -C "$APP" -c user.name=t -c user.email=t@example.com commit -q -m 'sandbox: allow test hosts'
+  APP_FIX="$(git -C "$APP" rev-parse HEAD)"
+  git -C "$APP" worktree add -q -b feat "$APP/.claude/worktrees/w1"
+}
+
+# ネットワーク拒否 1 件: <tool_use_id> <timestamp> <host> <cwd> [gitBranch]
+deny_at() {
+  local x
+  x="$(jq -nc --arg c "$4" --arg b "${5:-}" '{cwd: $c} + (if $b == "" then {} else {gitBranch: $b} end)')"
+  use proj-a/s1.jsonl S1 "$2" "$1" "curl -sS https://$3" "$x"
+  result proj-a/s1.jsonl S1 "$2" "$1" "$(violation "$3")" "$x"
+}
+
+@test "verify: 発生した repo の .claude/settings.json の修正と、後の発生の branch がそれを含むかを突き合わせる" {
+  export GIT_CEILING_DIRECTORIES="$WORK"
+  make_config_repo
+  make_app_repo
+  mkdir -p "$HOME/plain"
+  # (1) 修正後の発生なし → resolved
+  deny_at a1 2026-09-10T00:00:00Z a.example.test "$APP" main
+  # (2) 修正後の発生がすべて修正を含まない branch → stale_branch
+  deny_at b1 2026-09-10T00:00:00Z b.example.test "$APP" main
+  deny_at b2 2026-09-20T00:00:00Z b.example.test "$APP" old
+  # (3) 修正を含む branch（worktree は本体の repo にまとめる）での発生がある → remaining
+  deny_at c1 2026-09-20T00:00:00Z c.example.test "$APP" old
+  deny_at c2 2026-09-20T00:01:00Z c.example.test "$APP/.claude/worktrees/w1" feat
+  # (4) cwd が存在しない発生は判定不能 → エラーにならず remaining
+  deny_at d1 2026-09-10T00:00:00Z d.example.test "$APP" main
+  deny_at d2 2026-09-20T00:00:00Z d.example.test "$HOME/src/gone" old
+  # git repo でない cwd だけの型は、関係する commit なしで remaining
+  deny_at e1 2026-09-20T00:00:00Z e.example.test "$HOME/plain" old
+  # configRepo だけに修正がある型
+  deny_at o1 2026-09-10T00:00:00Z example.org "$APP" main
+  before="$(git -C "$APP" for-each-ref; git -C "$APP" status --porcelain; cat "$APP/.claude/settings.json")"
+  cd "$WORK"
+  run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c '[.remaining, .stale_branch, .resolved]')" = '[3,1,2]' ]
+  json="$WORK/claudedocs/sandbox-tune-2026-10-01.json"
+  [ "$(jq -c '.types[] | select(.id == "sandbox:network:c.example.test") | .occurrences[1]' "$json")" \
+    = '{"ts":"2026-09-20T00:01:00Z","cwd":"~/src/app/.claude/worktrees/w1","git_branch":"feat"}' ]
+  [ "$(jq -c '.types[] | select(.id == "sandbox:network:a.example.test") | [.status, .evidence.commit, .evidence.repo, .evidence.related_commits[0].repo]' "$json")" \
+    = "[\"resolved\",\"$APP_FIX\",\"~/src/app\",\"~/src/app\"]" ]
+  [ "$(jq -c '.types[] | select(.id == "sandbox:network:b.example.test") | [.status, .evidence.after_branches]' "$json")" \
+    = '["stale_branch",{"contains":0,"not_contains":1,"unknown":0}]' ]
+  [ "$(jq -c '.types[] | select(.id == "sandbox:network:c.example.test") | [.status, .evidence.after_branches]' "$json")" \
+    = '["remaining",{"contains":1,"not_contains":1,"unknown":0}]' ]
+  [ "$(jq -c '.types[] | select(.id == "sandbox:network:d.example.test") | [.status, .evidence.after_branches]' "$json")" \
+    = '["remaining",{"contains":0,"not_contains":0,"unknown":1}]' ]
+  [ "$(jq -c '.types[] | select(.id == "sandbox:network:e.example.test") | [.status, .evidence.commit]' "$json")" = '["remaining",null]' ]
+  # configRepo 側の突き合わせは今と同じ
+  [ "$(jq -c '.types[] | select(.id == "sandbox:network:example.org") | [.status, .evidence.commit, .evidence.repo]' "$json")" \
+    = "[\"resolved\",\"$FIX_COMMIT\",\"$(jq -r .verify.repo "$json")\"]" ]
+  # report は stale_branch を remaining と別の節に出す
+  md="$WORK/claudedocs/sandbox-tune-2026-10-01.md"
+  sed -n '/^## stale_branch/,/^## resolved/p' "$md" | grep -q 'sandbox:network:b.example.test'
+  ! sed -n '/^## remaining/,/^## stale_branch/p' "$md" | grep -q 'sandbox:network:b.example.test'
+  sed -n '/^## remaining/,/^## stale_branch/p' "$md" | grep -q '修正を含む branch 1 / 含まない 1 / 判定不能 0'
+  # 発生した repo は読むだけ
+  [ "$(git -C "$APP" for-each-ref; git -C "$APP" status --porcelain; cat "$APP/.claude/settings.json")" = "$before" ]
+}
+
+@test "verify: occurrences が時刻だけの古い collect の JSON は受け付けない" {
+  make_config_repo
+  echo '{"types":[{"id":"sandbox:network:x.example","needle":"x.example","count":1,"last_seen":"2026-09-10T00:00:00Z","occurrences":["2026-09-10T00:00:00Z"]}]}' >"$WORK/old.json"
+  cd "$WORK"
+  run bash "$SCRIPT" verify "$WORK/old.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"collect からやり直してください"* ]]
 }
 
 @test "report: 設定が無ければ verify せず、cwd の claudedocs/ に伏せ字済みのレポートを書く。gh は呼ばない" {
