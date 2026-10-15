@@ -8,7 +8,7 @@ description: >-
   (2) user wants settings.json / excludedCommands / allowUnixSockets fix candidates backed by evidence,
   (3) user asks whether host-exec is being used for things settings should fix,
   (4) keywords: sandbox-tune, sandbox 拒否, Operation not permitted, EPERM, 人間に実行依頼, 通常のターミナルで, settings 修正, permission 拒否, host-exec.
-  Accepts args: [--days N] [--issue] [--allow-public]
+  Accepts args: [--days N] [--no-verify] [--issue] [--allow-public]
 ---
 
 # Sandbox Tune
@@ -21,7 +21,10 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 
 ## 設定 (`<repo>/sandbox-tune.json`)
 
-呼び出した repo（cwd）の `sandbox-tune.json` を読む。無ければ設定 repo なしで collect と report だけを行う。
+呼び出した repo（cwd）の `sandbox-tune.json`（`--config F` を渡したらそのファイル）を読む。
+`run` は `configRepo` のある設定が要る。設定が無い・`configRepo` が無いときは何も書かずに exit 2 で止まる
+（verify の無いレポートは、設定 repo で対応済みの型まで修正候補に見えるため）。
+ユーザーが集計だけでよいと言ったときだけ `--no-verify` を付ける。設定ファイルを自分で作らない。
 
 ```json
 {
@@ -33,7 +36,7 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 
 | キー | 型 | 意味 |
 |------|----|------|
-| `configRepo.path` | 文字列（必須: configRepo を書くとき） | settings を管理している git repo。verify はこれがあるときだけ行う |
+| `configRepo.path` | 文字列（必須: configRepo を書くとき） | settings を管理している git repo。`run` の verify に使い、無ければ `run` は exit 2（`--no-verify` を除く） |
 | `configRepo.paths` | 空でない文字列の配列 | verify で git log を見るパス（設定ファイル・wrapper・hook）。repo root 相対 |
 | `criteriaFiles` | 文字列の配列 | 安全性の判定に加える基準のファイル（個人の運用ルール等）。必ず読む |
 | `issue.repo` | `owner/name` | issue の提出先。`--issue` のときに必須 |
@@ -48,10 +51,14 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 スクリプトは `bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/sandbox-tune.sh <subcommand>` で呼ぶ（以下 `ST`）。
 
 ```bash
-ST run [--days N]       # collect →（設定 repo があれば）verify → report。書いたパスを JSON で返す
-ST config               # 検証済みの設定（criteriaFiles の絶対パスを含む）
+ST run [--days N]              # collect → verify → report。書いたパスを JSON で返す
+ST run --no-verify [--days N]  # verify せず collect → report だけ（出力の verified は false）
+ST config                      # 検証済みの設定（criteriaFiles の絶対パスを含む）
 ```
 
+- `run` は設定（`configRepo`）が無ければ exit 2 で止まり、stderr で `sandbox-tune.json` と `--no-verify` を案内する。
+  ユーザーに `configRepo` を書いた設定を用意してもらうか、集計だけでよいか確かめて `--no-verify` で再実行する
+- `--no-verify` は設定の有無にかかわらず verify しない。レポート冒頭に verify 未実施と書かれ、resolved / remaining の判定は付かない
 - `run` は `claudedocs/sandbox-tune-<日付>.md`（レポート）と同名の `.json`（集計結果）を cwd に書く。`--out DIR` で変えられる
 - 期間は既定 30 日。ユーザーが `--days N` を渡したらそのまま渡す
 
@@ -74,6 +81,9 @@ ST config               # 検証済みの設定（criteriaFiles の絶対パス�
 - 型は数百件になることがある。レポートは件数順なので、Read の offset / limit で `remaining` 節を上から読む
 
 ## 判断手順（remaining の型ごと）
+
+`--no-verify` のレポートの型は修正候補（remaining）として扱わない。対応済みかどうかが分からないので、
+型の一覧と件数を示すだけにし、原因・修正案・issue 化は `configRepo` のある設定で `run` し直してから行う。
 
 1. `ST config` の `criteriaFiles` を全部読む（追加の判定基準）
 2. レポートの `remaining` 節を上から読む。verify の根拠の commit が型と無関係（文字列が偶然一致しただけ）なら、関係する commit なしとして扱う。

@@ -3,7 +3,7 @@
 # 設定 repo の git log と突き合わせてレポートにする。外部へは draft → post を明示したときだけ出す。
 #
 # Usage:
-#   sandbox-tune.sh run     [--days N] [--config F] [--out DIR] [--projects-dir D] [--now ISO]
+#   sandbox-tune.sh run     [--days N] [--config F] [--no-verify] [--out DIR] [--projects-dir D] [--now ISO]
 #   sandbox-tune.sh collect [--days N] [--projects-dir D] [--now ISO]          # JSON を stdout へ
 #   sandbox-tune.sh verify  <analysis.json> [--config F]                       # JSON を stdout へ
 #   sandbox-tune.sh report  <analysis.json> [--out DIR]                        # 書いたパスを stdout へ
@@ -12,7 +12,8 @@
 #   sandbox-tune.sh draft   --issue --analysis A --candidates C --ids id[,id] [--config F] [--out DIR]
 #   sandbox-tune.sh post    <draft.md> --digest SHA256 [--allow-public]
 #
-# 設定は既定で cwd の sandbox-tune.json（無ければ設定 repo なしで collect と report だけ）。
+# 設定は既定で cwd の sandbox-tune.json。run は設定（configRepo）が無ければ exit 2 で止まり、
+# verify せず collect と report だけにするには --no-verify を明示する。
 # --now は集計の基準時刻（UTC の ISO 8601、例 2026-10-01T00:00:00Z）。再現用で、既定は現在時刻。
 #
 # Exit: 0 成功 / 2 引数・設定の誤り / 3 下書きが表示したものと違う / 4 gh の失敗 / 5 投稿を拒否（公開 repo）
@@ -220,20 +221,28 @@ cmd_report() {
 }
 
 cmd_run() {
-  local config="" out="$PWD/claudedocs" cfg tmp json md
+  local config="" out="$PWD/claudedocs" no_verify=0 cfg tmp json md
   local collect_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --config) config="${2:-}"; shift 2 ;;
       --out) out="${2:-}"; shift 2 ;;
+      --no-verify) no_verify=1; shift ;;
       --days | --projects-dir | --now) collect_args+=("$1" "${2:-}"); shift 2 ;;
       *) die 2 "run: 不明な引数: $1" ;;
     esac
   done
+  # verify の無いレポートは対応済みの型まで修正候補に見えるので、設定が無ければ止め、集計だけなら --no-verify で明示させる
+  if [ "$no_verify" = 0 ] && [ -z "$config" ] && [ ! -f "./$CONFIG_NAME" ]; then
+    die 2 "run: 設定がありません（--config も ./$CONFIG_NAME も無い）。configRepo を書いた $CONFIG_NAME を置くか、verify せず集計だけなら --no-verify を付けてください"
+  fi
   cfg="$(resolve_config "$config")"
+  if [ "$no_verify" = 0 ] && [ -z "$(jq -r '.configRepo.path // empty' <<<"$cfg")" ]; then
+    die 2 "run: 設定 (${config:-./$CONFIG_NAME}) に configRepo がありません。$CONFIG_NAME に configRepo を書くか、verify せず集計だけなら --no-verify を付けてください"
+  fi
   tmp="$(mktemp "${TMPDIR:-/tmp}/sandbox-tune-run.XXXXXX")"
   cmd_collect ${collect_args[@]+"${collect_args[@]}"} >"$tmp"
-  if [ -n "$(jq -r '.configRepo.path // empty' <<<"$cfg")" ]; then
+  if [ "$no_verify" = 0 ]; then
     cmd_verify "$tmp" --config "${config:-./$CONFIG_NAME}" >"$tmp.v"
     mv "$tmp.v" "$tmp"
   fi
