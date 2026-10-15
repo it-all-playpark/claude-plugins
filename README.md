@@ -90,7 +90,6 @@ Use skills in Claude Code:
 
 ```
 /dev-flow 123             # Issue → implementation → PR → LGTM (dynamic workflow)
-/git-commit --all         # Smart commit with Conventional Commits
 /sns-announce article.mdx # Generate social media posts
 ```
 
@@ -330,13 +329,6 @@ config = merge_config({"property_id": None}, "ga-analyzer")  # defaults → glob
 `pr-iterate` ループ・merge tier 判定を mermaid 図で示した実装ベースの索引。
 規約の正典は [`.claude/rules/dev-flow.md`](.claude/rules/dev-flow.md)。
 
-### Git操作
-
-| スキル | 説明 |
-|--------|------|
-| `git-commit` | 変更分析・Conventional Commits生成 |
-| `git-pr` | GitHub PR作成 |
-
 ### PR/レビュー
 
 | スキル | 説明 |
@@ -408,7 +400,6 @@ config = merge_config({"property_id": None}, "ga-analyzer")  # defaults → glob
 Claude Code内で `/スキル名` を実行:
 
 ```
-/git-commit --all
 /dev-flow 123
 /sns-announce
 ```
@@ -436,8 +427,7 @@ skills/
 │   │   ├── _shared/scripts/              # dev-flow 共通スクリプト
 │   │   ├── bin/                          # dev-flow bare 名 wrapper
 │   │   └── dev-flow/, dev-flow-health/, dev-issue-analyze/,
-│   │       git-commit/, git-pr/, git-issue/,
-│   │       pr-iterate/（各 SKILL.md）
+│   │       git-issue/, pr-iterate/（各 SKILL.md）
 │   ├── playpark-skills/                  # 個人用スキル plugin（dependencies: playpark-core）
 │   │   ├── bin/                          # playpark-skills bare 名 wrapper（<skill>-<action> 命名）
 │   │   ├── _lib/config.py                # Python共通設定ローダー

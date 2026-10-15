@@ -817,7 +817,6 @@ test('[pr-artifacts] dev-flow.js: pr#<issue> は dev-runner-haiku へ routing �
   assert.ok(pr.prompt.includes('Closes #1\n<<<PR_BODY_END>>>'), 'PR body が Closes #1 で終わらない');
   assert.ok(pr.prompt.includes('`git commit -F /tmp/wt/.devflow-tmp/commit-msg.txt`'), 'commit -F 指示が無い');
   assert.ok(pr.prompt.includes('gh pr create') && pr.prompt.includes('--draft --base main --head feature/issue-1'), 'gh pr create の draft/base/head 指示が無い');
-  assert.ok(!pr.prompt.includes('Skill: git-commit') && !pr.prompt.includes('Skill: git-pr'), 'git-commit / git-pr skill を呼んではならない');
 });
 
 test('[pr-artifacts] dev-flow.js: IMPL schema の pr_sections は heading / markdown 必須で maxLength が PR_SECTION_HEADING_MAX / PR_SECTIONS_MAX_CHARS と同値', () => {

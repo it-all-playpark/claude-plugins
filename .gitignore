@@ -38,7 +38,7 @@ __pycache__/
 # veridelta archived records (worktree-teardown.sh が worktree 削除前に退避)
 .veridelta-archive/
 
-# dev-flow ephemeral handoff files (must not be committed via git-commit --all)
+# dev-flow ephemeral handoff files (must not be committed)
 .devflow-tmp/
 
 # 作業者ローカルの設計メモ・計測・RCA（public repo に載せない。現行の不変条件は AGENTS.md / references が持つ）
