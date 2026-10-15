@@ -61,14 +61,38 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
    3. **候補 commit の diff を読む**: skills repo の checkout で `git show <sha> -- plugins/dev-flow/` を
       `candidates.commits` の各 sha について実行する。`candidates.error` があるときは推定の根拠が run だけになる
       ことを本文に書く。
-   4. **起票**: 本文を `$TMPDIR` の file に書き、
-      `gh issue create --repo <issue_repo> --label self-improve --title "<fix(dev-flow): 症状を一文で>" --body-file <file>`。
-      本文は analyze が先頭から読むので、次の順で短く書く:
-      - `## 背景` — signature・status・first_seen / last_seen（commit 付き）・発生回数・該当 run
-      - `## 原因の推定` — どの候補 commit のどの変更が原因と考えるか、根拠（diff の該当箇所と error の対応）
-      - `## 修正案`
-      - `## 受け入れ条件` — `- [ ]` で検証可能に書く
-      - 末尾に `<!-- dev-flow-health:<id> -->`（次回の重複確認に使う）
+   4. **起票**: 本文を `$TMPDIR` の file に書き、github-issue-orchestrator の `create_issue.py` で起票する
+      （素の `gh issue create` は dev-flow の hook が拒否する）:
+
+      ```bash
+      python3 ${CLAUDE_PLUGIN_ROOT}/github-issue-orchestrator/scripts/create_issue.py --kind agent --labels self-improve \
+        --repo <issue_repo> --title "<fix(dev-flow): 症状を一文で>" --body-file <file>
+      ```
+
+      本文は analyze が先頭から読むので、次の雛形の順で短く書く。`## 変更対象パス` には原因の推定で直す対象とした
+      ファイルを repo 相対パスで 1 行 1 つ並べる。`create_issue.py` が exit 1 で拒否したら（受け入れ条件が
+      `- [ ]` でない・`## 変更対象パス` が無い / 空・AC 節を除いて 4000 字超など）、stderr の理由に沿って本文を直して再実行する:
+
+      ```markdown
+      ## 背景
+      <signature・status・first_seen / last_seen（commit 付き）・発生回数・該当 run>
+
+      ## 原因の推定
+      <どの候補 commit のどの変更が原因と考えるか、根拠（diff の該当箇所と error の対応）>
+
+      ## 修正案
+      <直し方>
+
+      ## 変更対象パス
+      - <原因の推定で直す対象としたファイルの repo 相対パス>
+
+      ## 受け入れ条件
+      - [ ] <検証可能な条件>
+
+      <!-- dev-flow-health:<id> -->
+      ```
+
+      末尾の `<!-- dev-flow-health:<id> -->` は次回の重複確認に使う。
 3. 起票した issue 番号、重複で見送った signature、`candidates.error` で原因を絞れなかった signature を報告する。
 
 ## 守ること
