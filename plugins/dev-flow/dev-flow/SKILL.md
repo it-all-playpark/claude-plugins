@@ -210,8 +210,20 @@ dev-flow-ready-set [--repo owner/repo] [--label <label>] [--with-in-flight] [<is
 リポジトリルートで bare 名を先頭トークンにして実行する（read-only。issue / PR / label・push・ファイルに
 書き込まない）。stdout の 1 行 JSON `{ok, launch, in_flight, waiting}` を次の波で回す:
 
-1. `launch[]` の各 issue を **issue ごとに別セッション**で `launch[].command`（`/dev-flow <N>`）として起動する。
-   同時に何本起動するかは人間が決める（launch は「同時に流しても衝突しにくい集合」であって起動本数の指示ではない）
+1. 人間が流すよう指示した issue を、agent が **issue ごとに別セッション**で自分で起動する（人間に起動を頼まない）。
+   自分のセッションで Workflow を回す 1 本は `launch[].command`（`/dev-flow <N>`）として上の Preflight 手順で回し、
+   残りは repo ルートで各要素の `bg_command`（`claude --bg "/dev-flow <N>"`）を実行して別セッションを起動する。
+   起動すると `backgrounded · <id>` が返るので、以後は `claude logs <id>` で進行を、`claude attach <id>` で
+   そのセッション自体を追える
+   - **起動するのは人間が指示した issue・本数だけ**: `launch[]` は「同時に流しても衝突しにくい集合」であって
+     起動の指示ではない。人間が指示した範囲を超えて `launch[]` の残りを起動しない
+   - **`waiting[]` の issue は起動しない**。ただし人間が明示的に指名した `path_conflict` の issue は、`detail` の
+     相手と merge 時に conflict が出る見込みを伝えたうえで起動してよい（`blocked_by` / `human_task` は指名されても
+     起動しない）
+   - **sandbox 内の Bash からは起動できない**: `claude --bg` はセッションの状態を `~/.claude/jobs` に作るが、
+     sandbox 内の Bash からはそこを作れず `EPERM: operation not permitted, mkdir '<home>/.claude/jobs/<id>'` で
+     失敗する（API への通信も拒否される）。その場合は sandbox の外でコマンドを実行できる経路で `bg_command` を
+     実行し、それも無ければ `bg_command` を人間に示して起動を頼む
 2. 各 run が LGTM に達したら人間が merge する（merge は常に人間）
 3. merge 後にもう一度 `dev-flow-ready-set` を実行し、新しい `launch[]` で次の波を起こす。blocker の close や
    in_flight の解消で `waiting[]` / `in_flight[]` にいた issue が launch に上がってくる

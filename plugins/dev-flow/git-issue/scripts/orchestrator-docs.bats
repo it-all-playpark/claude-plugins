@@ -17,6 +17,7 @@
 # 起票後の起動順:
 # - SKILL.md Phase 7 が起票した agent issue に dev-flow-ready-set を bare 名先頭で実行し、--dry-run と
 #   ok:false では launch を出さない。Output Contract に launch / 後の波 / 実行中を並べる ## Launch Order がある
+# - Phase 7 と ## Launch Order が launch[] ごとに bg_command（claude --bg "/dev-flow <N>"）を載せる（issue #1000）
 #
 # 実装 issue の本文はゴールと境界条件だけ（issue #855）:
 # - 実装 issue テンプレートの節が ゴール / なぜ / 受け入れ基準 / 制約・取らないこと / 変更対象パス / 未解決事項 の 6 つ
@@ -189,6 +190,8 @@ extract_paths_block() {
     [[ "$phase7" == *'`--dry-run` では issue 番号が無いので実行しない'* ]]
     [[ "$phase7" == *'{"ok":false,...}'*"失敗した判定を launch として見せない"* ]]
     [[ "$phase7" == *"issue ごとに別セッション"* ]]
+    # launch[] ごとに command と別セッション起動の bg_command を写す
+    [[ "$phase7" == *'`launch[]`'*'各要素の `command`（`/dev-flow <N>`）と `bg_command`'*'（`claude --bg "/dev-flow <N>"`'* ]]
     # 他 issue の実行中 run は --with-in-flight で拾い、そのパスとの衝突も判定する
     [[ "$phase7" == *'`--with-in-flight` で他 issue の実行中 run'*"その変更対象パスとの衝突も判定する"* ]]
     [[ "$phase7" == *"(変更対象パスなし)"* ]]
@@ -208,6 +211,8 @@ extract_paths_block() {
     [ -n "$order" ]
     [[ "$order" == *"dev-flow-ready-set"* ]]
     [[ "$order" == *'`/dev-flow <M1>`'* ]]
+    # launch[] の各行に bg_command
+    printf '%s\n' "$order" | grep -qF -- '  - `/dev-flow <M1>` — #M1 タイトル — bg_command: `claude --bg "/dev-flow <M1>"`'
     [[ "$order" == *"後の波:"* ]]
     for reason in blocked_by path_conflict no_declared_paths human_task open_pr local_branch worktree; do
         [[ "$order" == *"$reason"* ]]
