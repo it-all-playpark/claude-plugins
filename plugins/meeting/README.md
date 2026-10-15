@@ -108,7 +108,7 @@ plugin の install 先は更新のたびに変わるが、launchd とマイク /
 | 継続 | マイク使用中、または Zoom / Teams 等の専用アプリが音声出力中（長時間ミュートでも切れない） |
 | 終了 | 上記が **45 秒**途切れた。30 秒未満の録音（マイクテスト等）は破棄 |
 
-対象: Zoom / Teams / Webex / Slack ハドル / Discord / FaceTime / ブラウザ（Chrome, Arc, Brave, Edge, Firefox, Safari → Google Meet など）。
+対象: Zoom / Teams / Webex / Slack ハドル / Discord / FaceTime / LINE / ブラウザ（Chrome, Arc, Brave, Edge, Firefox, Safari → Google Meet など）。
 設定の `apps` で上書きできる（bundle id は `meeting-rec --list-apps` で確認）。
 
 ```
