@@ -353,7 +353,7 @@ config = merge_config({"property_id": None}, "ga-analyzer")  # defaults → glob
 
 | スキル | 説明 |
 |--------|------|
-| `github-issue-orchestrator` | 議論からGitHub Issue作成（技術調査・レビュー付き） |
+| `git-issue` | 議論からGitHub Issue作成（技術調査・レビュー付き） |
 
 ### SEO/マーケティング分析
 
@@ -436,7 +436,7 @@ skills/
 │   │   ├── _shared/scripts/              # dev-flow 共通スクリプト
 │   │   ├── bin/                          # dev-flow bare 名 wrapper
 │   │   └── dev-flow/, dev-flow-health/, dev-issue-analyze/,
-│   │       git-commit/, git-pr/, github-issue-orchestrator/,
+│   │       git-commit/, git-pr/, git-issue/,
 │   │       pr-iterate/（各 SKILL.md）
 │   ├── playpark-skills/                  # 個人用スキル plugin（dependencies: playpark-core）
 │   │   ├── bin/                          # playpark-skills bare 名 wrapper（<skill>-<action> 命名）

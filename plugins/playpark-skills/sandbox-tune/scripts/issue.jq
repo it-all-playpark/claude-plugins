@@ -1,5 +1,5 @@
 # issue 化の材料（下書き）の組み立て。既定テンプレートは受け入れ基準と変更対象パスを持ち、
-# dev-flow の起票ゲート（github-issue-orchestrator の create_issue.py --kind agent）をそのまま通る形にする。
+# dev-flow の起票ゲート（git-issue の create_issue.py --kind agent）をそのまま通る形にする。
 # セキュリティ系かどうかは候補の security フラグと本文の語の両方で判定する（どちらかで真）。
 # 判定漏れは公開 repo への起票に直結するので、語の一致は広めに取り、誤って真になる側に倒す。
 def security_re:

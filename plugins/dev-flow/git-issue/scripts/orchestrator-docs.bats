@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Static pins for github-issue-orchestrator docs ↔ create_issue.py (issue #744)
+# Static pins for git-issue docs ↔ create_issue.py (issue #744)
 #
 # - human 判定基準と `executor: human` マーカーが SKILL.md と references/issue-template.md で一致する
 # - devils-advocate-checklist.md の Blocking Categories に人手作業混入の 2 項目がある
@@ -266,7 +266,7 @@ frontmatter_value() {
 @test "(18) docs/skill-creation-guide.md の effort 表で例に挙げるなら、その行は SKILL.md の effort と一致する" {
     effort="$(frontmatter_value "$SKILL_MD" effort)"
     rows="$(grep -E '^\| `(low|medium|high|xhigh|max)` \|' "$REPO_ROOT/docs/skill-creation-guide.md" \
-        | grep -F '`github-issue-orchestrator`' || true)"
+        | grep -F '`git-issue`' || true)"
     while IFS= read -r row; do
         [ -z "$row" ] && continue
         [[ "$row" == "| \`$effort\` |"* ]]
@@ -314,7 +314,7 @@ frontmatter_value() {
     [[ "$light" == *"Phase 7"*'`dev-flow-ready-set`'* ]]
     [[ "$light" != *"gh issue create"* ]]
     # 参照先の Phase 5〜7 が ac-lint / create_issue.py / dev-flow-ready-set を実行する
-    [[ "$(extract_section "$SKILL_MD" "### Phase 5")" == *"ac-lint /tmp/github-issue-orchestrator-body.md"* ]]
+    [[ "$(extract_section "$SKILL_MD" "### Phase 5")" == *"ac-lint /tmp/git-issue-body.md"* ]]
     [[ "$(extract_section "$SKILL_MD" "### Phase 6")" == *"scripts/create_issue.py"* ]]
     [[ "$(extract_section "$SKILL_MD" "### Phase 7")" == *"dev-flow-ready-set [--repo owner/repo]"* ]]
 }

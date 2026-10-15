@@ -1,5 +1,5 @@
 ---
-name: github-issue-orchestrator
+name: git-issue
 description: |
   Creates GitHub issues of any size: concrete findings (bug, audit result, review comment with known symptom, cause and fix)
   go through a light path; plans from discussion go through multi-role investigation and adversarial review.
@@ -32,7 +32,7 @@ issue を作る依頼は規模を問わずこの skill で受ける。症状・�
 ## Usage
 
 ```bash
-/github-issue-orchestrator [discussion-source] [--repo owner/repo] [--title "TITLE"] [--labels a,b] [--assignees a,b] [--milestone name] [--max-review-rounds N] [--lang ja|en] [--dry-run]
+/git-issue [discussion-source] [--repo owner/repo] [--title "TITLE"] [--labels a,b] [--assignees a,b] [--milestone name] [--max-review-rounds N] [--lang ja|en] [--dry-run]
 ```
 
 | Arg | Description |
@@ -201,12 +201,12 @@ Do not create a GitHub issue while blocking findings remain.
 Write full issue markdown to a temp file, for example:
 
 ```bash
-cat > /tmp/github-issue-orchestrator-body.md <<'MD'
+cat > /tmp/git-issue-body.md <<'MD'
 ... issue body ...
 MD
 ```
 
-agent issue を分けた場合は 1 本ごとに本文ファイルを分ける（例: `/tmp/github-issue-orchestrator-body-1.md`,
+agent issue を分けた場合は 1 本ごとに本文ファイルを分ける（例: `/tmp/git-issue-body-1.md`,
 `-body-2.md`）。以降の AC Lint Self-Check と Phase 6 の起票は本文ファイルごとに行う。
 
 本文に含めるもの（agent issue。構成は `references/issue-template.md`）:
@@ -229,7 +229,7 @@ When `--lang` is omitted, write this body in Japanese.
 After the body file is written, run the shared AC contract lint against it:
 
 ```bash
-ac-lint /tmp/github-issue-orchestrator-body.md
+ac-lint /tmp/git-issue-body.md
 ```
 
 The script returns a single-line JSON `{"ok":true,"verdict":"t1|t2|non_compliant",...}` on
@@ -278,10 +278,10 @@ dev-flow は open な blocker を持つ issue を実装前に停止する（need
 Run（human issue。human タスクの数だけ繰り返す）:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/github-issue-orchestrator/scripts/create_issue.py \
+python3 ${CLAUDE_PLUGIN_ROOT}/git-issue/scripts/create_issue.py \
   --kind human \
   --title "$HUMAN_TITLE" \
-  --body-file /tmp/github-issue-orchestrator-human-1.md \
+  --body-file /tmp/git-issue-human-1.md \
   [--repo owner/repo] \
   [--assignees a,b] \
   [--dry-run]
@@ -290,9 +290,9 @@ python3 ${CLAUDE_PLUGIN_ROOT}/github-issue-orchestrator/scripts/create_issue.py 
 Run（agent issue。トポロジカル順に agent issue の数だけ繰り返す）:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/github-issue-orchestrator/scripts/create_issue.py \
+python3 ${CLAUDE_PLUGIN_ROOT}/git-issue/scripts/create_issue.py \
   --title "$TITLE" \
-  --body-file /tmp/github-issue-orchestrator-body-1.md \
+  --body-file /tmp/git-issue-body-1.md \
   [--blocked-by N[,M]] \
   [--repo owner/repo] \
   [--labels a,b] \
@@ -357,7 +357,7 @@ Phase 4 の devil's-advocate ループを行わない。複数の finding を 1 
    （`references/issue-template.md`）
 2. 各本文を `references/devils-advocate-checklist.md` の Blocking Categories に 1 回だけ照らし、当たった項目を直す
    （ループはしない）
-3. Phase 5 と同じく finding ごとに本文ファイルを作り（`/tmp/github-issue-orchestrator-body-1.md`, `-body-2.md` …）、
+3. Phase 5 と同じく finding ごとに本文ファイルを作り（`/tmp/git-issue-body-1.md`, `-body-2.md` …）、
    本文ファイルごとに AC Lint Self-Check（`ac-lint`）を通す
 4. 本文ファイルごとに Phase 6 の `create_issue.py`（`--kind agent`、`--blocked-by` なし）で起票する。
    ゲート（ac-lint・4000 字・変更対象パス・`executor: human` の検出）は重い経路と同じ
@@ -420,10 +420,10 @@ On completion, log execution to journal:
 
 ```bash
 # On success
-journal log github-issue-orchestrator success \
+journal log git-issue success \
   --duration-turns $TURNS
 
 # On failure
-journal log github-issue-orchestrator failure \
+journal log git-issue failure \
   --error-category <category> --error-msg "<message>"
 ```

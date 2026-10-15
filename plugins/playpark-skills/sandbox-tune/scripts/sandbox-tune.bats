@@ -524,7 +524,7 @@ EOF
   [ "$(sed -n '/^## 受け入れ基準（Acceptance Criteria）$/,/^## /p' "$N" | grep '^- ')" \
     = $'- [ ] sandbox 内の curl -sS https://example.org が exit 0 で終わる\n- [ ] settings.json の allowedDomains に example.org が 1 件だけある' ]
   [ "$(sed -n '/^## 変更対象パス$/,/^---$/p' "$N" | grep '^- ')" = $'- claude/settings.json\n- claude/bin/**' ]
-  run python3 "$BATS_TEST_DIRNAME/../../../dev-flow/github-issue-orchestrator/scripts/create_issue.py" \
+  run python3 "$BATS_TEST_DIRNAME/../../../dev-flow/git-issue/scripts/create_issue.py" \
     --kind agent --dry-run --repo o/r --title "$(jq -r .title "${N%.md}.meta.json")" --body-file "$N"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Dry run: issue will not be created."* ]]

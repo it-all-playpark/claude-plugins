@@ -61,11 +61,11 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
    3. **候補 commit の diff を読む**: skills repo の checkout で `git show <sha> -- plugins/dev-flow/` を
       `candidates.commits` の各 sha について実行する。`candidates.error` があるときは推定の根拠が run だけになる
       ことを本文に書く。
-   4. **起票**: 本文を `$TMPDIR` の file に書き、github-issue-orchestrator の `create_issue.py` で起票する
+   4. **起票**: 本文を `$TMPDIR` の file に書き、git-issue の `create_issue.py` で起票する
       （素の `gh issue create` は dev-flow の hook が拒否する）:
 
       ```bash
-      python3 ${CLAUDE_PLUGIN_ROOT}/github-issue-orchestrator/scripts/create_issue.py --kind agent --labels self-improve \
+      python3 ${CLAUDE_PLUGIN_ROOT}/git-issue/scripts/create_issue.py --kind agent --labels self-improve \
         --repo <issue_repo> --title "<fix(dev-flow): 症状を一文で>" --body-file <file>
       ```
 

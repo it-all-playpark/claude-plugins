@@ -2,7 +2,7 @@
 # sandbox-tune: transcript から sandbox 拒否・人間への実行依頼・permission 拒否・host-exec の実行を型ごとに集計し、
 # 設定 repo と、拒否が起きた repo の .claude/settings.json の git log と突き合わせてレポートにする。
 # issue 化は draft → handoff を明示したときだけで、起票そのものは handoff の出力を受けた
-# github-issue-orchestrator が行う（このスクリプトは issue を作らない）。
+# git-issue が行う（このスクリプトは issue を作らない）。
 #
 # Usage:
 #   sandbox-tune.sh run     [--days N] [--config F] [--no-verify] [--out DIR] [--projects-dir D] [--now ISO]
@@ -390,7 +390,7 @@ $errs"
   done <<<"$(tr ',' '\n' <<<"$ids")"
 }
 
-# 確認済みの下書きを github-issue-orchestrator に渡せるか判定し、渡す引数を JSON で出す。issue は作らない
+# 確認済みの下書きを git-issue に渡せるか判定し、渡す引数を JSON で出す。issue は作らない
 cmd_handoff() {
   local draft="" digest="" allow_public=0 meta actual repo title security vis
   while [ $# -gt 0 ]; do
