@@ -2,9 +2,10 @@
 name: dev-flow-health
 description: |
   Reads the daily dev-flow health report (deterministic JSON of dev-flow / pr-iterate failure
-  signatures with new / ongoing / resolved / regressed status and candidate commits), explains
-  the cause of each new or regressed signature from its runs and the candidate commit diffs,
-  and files one self-improve issue per signature.
+  signatures with new / ongoing / resolved / regressed status and candidate commits), classifies
+  each new or regressed signature as dev_flow / target_repo / environment / transient, explains the
+  cause of each dev_flow signature from its runs and the candidate commit diffs, files one
+  self-improve issue per dev_flow signature, and records every classification via a script.
   Use when: (1) the daily job or the journal trigger hands over a report with new / regressed signatures,
   (2) user asks why dev-flow started failing or which commit broke it,
   (3) keywords: dev-flow health, ヘルスレポート, 失敗の型, 再発, regressed, 回帰, どの commit から, self-improve.
@@ -14,8 +15,10 @@ description: |
 # dev-flow-health
 
 dev-flow の失敗を決定論スクリプトで集計し、**新しく出た型（new）と、直ったはずが再び出た型
-（regressed）があった実行だけ** LLM が原因と修正案を書いて issue にする。集計・判定・候補 commit の
-列挙はすべて `scripts/health-report.sh` が行い、本 skill はその JSON を読んで考える部分だけを担う。
+（regressed）があった実行だけ** LLM が原因の所在を振り分け、dev-flow 本体の欠陥と判断したものだけ原因と
+修正案を書いて issue にする。集計・判定・候補 commit の列挙はすべて `scripts/health-report.sh` が行い、
+振り分け結果の記録は `scripts/record-classification.sh` が行う。本 skill はその JSON を読んで考える部分（分類と
+理由・原因の推定）だけを担う。
 
 ## 日次の流れ
 
@@ -53,7 +56,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
 | `signatures[].id` | signature の sha1 先頭 12 桁。issue の重複検出に使う |
 | `status` | `new`（窓内に初出）/ `regressed`（resolved の条件を満たした後に窓内で再発）/ `ongoing` / `resolved`（last_seen と別の `plugin_commit` で同じ skill が `resolve_after_runs` 回成功して再発なし。失敗 run は数えない） |
 | `first_seen` / `last_seen` / `regressed_at` | `{timestamp, plugin_commit, file}`。`file` は `~/.claude/journal/` 下の entry |
-| `recent_runs` | 直近 5 件の発生（issue / pr_number / 元の message 付き） |
+| `recent_runs` | 直近 5 件の発生（issue / pr_number / `repo`（journal entry の `context.repo` = dev-flow を流した対象 repo、無ければ `null`）/ 元の message 付き） |
 | `candidates` | new / regressed のみ。`last_good_commit..first_bad_commit` で `plugins/dev-flow/` を触った commit。列挙できなかったときは `error` に理由 |
 | `issue_repo` | 起票先の `OWNER/NAME`。`--repo` の checkout の origin（GitHub URL）から script が解決する。checkout が無い・origin が GitHub でないときは `null` |
 
@@ -63,22 +66,32 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
    `needs_llm` が false なら「new / regressed なし」と報告して終える。
    `issue_repo` が `null` なら、重複確認・起票をせずに「起票先を解決できない（`--repo` に GitHub の origin を持つ
    checkout を渡す）」と報告して終える。起票先を推測したり別の repo を代わりに使ったりしない。
-2. `status` が `new` / `regressed` の signature について finding をまとめ、git-issue で起票する（`<issue_repo>` は
-   レポートの `issue_repo` の値）。1〜4 は signature ごとに行い、5 は全 signature の分を 1 回で行う:
-   1. **重複確認**: `gh issue list --repo <issue_repo> --label self-improve --state open --search "dev-flow-health:<id>" --json number,title`。
-      既にあればその signature は finding に含めず（起票しない）、その issue 番号を報告に載せる。
-   2. **該当 run を読む**: `recent_runs[].file` を `~/.claude/journal/` から Read し、error と telemetry を確認する。
-   3. **候補 commit の diff を読む**: skills repo の checkout で `git show <sha> -- plugins/dev-flow/` を
+2. `status` が `new` / `regressed` の signature を原因の所在で振り分け、`dev_flow` に分類したものだけ finding に
+   まとめて git-issue で起票し、全 signature の振り分けを記録する（`<issue_repo>` はレポートの `issue_repo` の値）。
+   1〜5 は signature ごとに行い、6・7 は全 signature の分を 1 回で行う:
+   1. **該当 run を読む**: `recent_runs[].file` を `~/.claude/journal/` から Read し、error と telemetry を確認する。
+      `recent_runs[].repo` が `issue_repo` と違えば、その run は PR 先の別 repo で走っている。
+   2. **振り分け**: 次の 4 つのどれか 1 つに分類し、根拠を 1 文の理由にする（判定基準は 1 行ずつ）:
+      - `dev_flow`: skills repo の plugin を直せば消える（dev-flow / pr-iterate の workflow・agent・script の欠陥）
+      - `target_repo`: PR 先 repo のテスト・hook・lint が原因（pre-push の husky・tsc・vitest の失敗など）
+      - `environment`: sandbox・認証・権限・hook 拒否など実行環境が原因（`Operation not permitted`・push の認証失敗など）
+      - `transient`: 再実行で消える一過性（API の上限・ネットワークの一時的な断など）
+
+      `dev_flow` 以外に分類した signature は 3〜5 と起票を行わず、7 の記録だけ行う。PR 先 repo や設定 repo にも
+      起票しない。分類は起票の要否だけに使い、`status`・`candidates` を付け直さない。
+   3. **重複確認**（`dev_flow` のみ）: `gh issue list --repo <issue_repo> --label self-improve --state open --search "dev-flow-health:<id>" --json number,title`。
+      既にあればその signature は finding に含めず（起票しない）、その issue 番号を報告と記録に載せる。
+   4. **候補 commit の diff を読む**（`dev_flow` のみ）: skills repo の checkout で `git show <sha> -- plugins/dev-flow/` を
       `candidates.commits` の各 sha について実行する。`candidates.error` があるときは推定の根拠が run だけになる
       ことを finding に書く。
-   4. **finding をまとめる**: `$TMPDIR` の 1 つの file に、signature ごとに 1 節で次を書く:
+   5. **finding をまとめる**（`dev_flow` のみ）: `$TMPDIR` の 1 つの file に、signature ごとに 1 節で次を書く:
       - 症状: signature・status・first_seen / last_seen（commit 付き）・発生回数・該当 run
       - 原因: どの候補 commit のどの変更が原因と考えるかの推定と、根拠（diff の該当箇所と error の対応）
       - 直し方: 修正案
       - 変更対象パス: 原因の推定で直す対象としたファイルの repo 相対パス
       - 本文末尾に残すマーカー: `<!-- dev-flow-health:<id> -->`（次回の重複確認に使う。git-issue が作る本文の末尾に
         この 1 行をそのまま残すよう finding に書く）
-   5. **起票**: 重複を除いた finding が 1 件以上あれば、Skill ツールで `dev-flow:git-issue` を 1 回だけ起動し、
+   6. **起票**: 重複を除いた `dev_flow` の finding が 1 件以上あれば、Skill ツールで `dev-flow:git-issue` を 1 回だけ起動し、
       全 finding を渡す（signature ごとに起動しない）:
 
       ```
@@ -89,12 +102,24 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
       起票する。本文の構成・ゲート（ac-lint・`## 変更対象パス`・4000 字）で落ちたときの直し方は git-issue に任せ、
       本 skill は本文の雛形を持たない（素の `gh issue create` は dev-flow の hook が拒否する）。1 回の起動で渡すので、
       git-issue 軽い経路の手順 5 により `dev-flow-ready-set` が起票した全 issue に 1 回だけ走る。
-3. 起票した issue 番号、重複で見送った signature、`candidates.error` で原因を絞れなかった signature と、git-issue が
-   返した `## Launch Order` を報告する。
+   7. **記録**: 2 で振り分けた全 signature（`dev_flow` 以外も含む）の `{id, signature, classification, reason, issue}` を
+      配列にして `$TMPDIR` の JSON file に書き、記録スクリプトを 1 回だけ実行する:
+
+      ```bash
+      bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/record-classification.sh --report <レポートのパス> --input <JSON file>
+      ```
+
+      `id` / `signature` はレポートの値をそのまま写す。`issue` は 6 で起票した issue 番号か 3 で見つかった既存の
+      issue 番号で、`dev_flow` 以外の分類と番号の無いものは `null`。スクリプトがレポートと同じディレクトリの
+      `classifications.jsonl` に 1 signature 1 行で追記する。JSONL を Write / Edit / echo で直接書かない。
+      enum 外の `classification` があると何も追記せず非 0 で終わるので、stderr の `error` を見て入力を直して再実行する。
+3. 分類ごとの signature 数、起票した issue 番号、重複で見送った signature、
+   `candidates.error` で原因を絞れなかった signature、記録した `classifications.jsonl` のパスと、git-issue が返した
+   `## Launch Order` を報告する。
 
 ## 守ること
 
-- 判定（status・候補 commit）は script の出力をそのまま使う。LLM 側で状態を付け直さない
+- 判定（status・候補 commit）は script の出力をそのまま使う。LLM 側で状態を付け直さない。LLM が決めるのは分類と理由だけ
 - 起票した issue の実装は人間が `/dev-flow` で起動する。本 skill は実装・merge をしない
-- 1 signature = 1 issue
+- `dev_flow` に分類した signature だけ 1 signature = 1 issue で起票する。`target_repo` / `environment` / `transient` は記録だけ
 - 起票先はレポートの `issue_repo` だけを使う。`null` のときは起票しない（fail-closed）

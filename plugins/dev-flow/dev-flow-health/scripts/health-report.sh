@@ -112,6 +112,7 @@ ENTRY_FILTER='select(type == "object")
      commit: (.telemetry.plugin_commit // null),
      issue: (.context.issue // null),
      pr_number: (.context.pr_number // null),
+     repo: (.context.repo // null),
      file: (input_filename | split("/") | last)}'
 
 read_batch() {
@@ -216,7 +217,7 @@ def clean_runs($runs; $after; $until; $c):
            last_seen: ($last | point),
            regressed_at: (if ($regressions | length) > 0 then ($regressions | last | point) else null end),
            clean_runs_since_last_seen: $clean_after,
-           recent_runs: [ $occ[-5:][] | {timestamp, plugin_commit: .commit, file, issue, pr_number, message: .error.message} ],
+           recent_runs: [ $occ[-5:][] | {timestamp, plugin_commit: .commit, file, issue, pr_number, repo, message: .error.message} ],
            candidates: (if $bad == null then null
                         else {first_bad_commit: $bad.commit,
                               last_good_commit: (if $good == null then null else $good.commit end),

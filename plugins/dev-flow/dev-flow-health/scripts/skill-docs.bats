@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
-# Static pins for dev-flow-health SKILL.md の起票手順（issue #993 / #1009）
+# Static pins for dev-flow-health SKILL.md の起票手順（issue #993 / #1009 / #1018）
 #
+# - 各 signature を dev_flow / target_repo / environment / transient に振り分け、dev_flow だけを
+#   重複確認 → git-issue で起票し、全 signature の振り分けを record-classification.sh に渡す
 # - 起票は signature ごとの finding を Skill ツールで dev-flow:git-issue（--repo <issue_repo> --labels self-improve）に
 #   1 回でまとめて渡し、git-issue の軽い経路と Phase 7（dev-flow-ready-set）を通す
 # - create_issue.py の直接実行と素の gh issue create を手順に書かない（起票手順を git-issue の 1 箇所にまとめる。
@@ -80,6 +82,47 @@ extract_report_step() {
     [ "$dup_line" -lt "$filing_line" ]
     run grep -F 'gh issue list --repo <issue_repo> --label self-improve --state open --search "dev-flow-health:<id>"' "$SKILL_MD"
     [ "$status" -eq 0 ]
+}
+
+@test "振り分けは 4 分類の判定基準を 1 行ずつ持ち、重複確認より前に行う" {
+    step="$(awk '/\*\*振り分け\*\*/ { f = 1 } f && /\*\*重複確認\*\*/ { exit } f { print }' "$SKILL_MD")"
+    [ -n "$step" ]
+    [[ "$step" == *'- `dev_flow`: skills repo の plugin を直せば消える'* ]]
+    [[ "$step" == *'- `target_repo`: PR 先 repo のテスト・hook・lint が原因'* ]]
+    [[ "$step" == *'- `environment`: sandbox・認証・権限・hook 拒否など実行環境が原因'* ]]
+    [[ "$step" == *'- `transient`: 再実行で消える一過性'* ]]
+    # 判定基準の行は 4 つだけ（enum を SKILL.md 側で増やさない）
+    [ "$(printf '%s\n' "$step" | grep -cE '^ *- `[a-z_]+`: ')" = "4" ]
+    [[ "$step" == *'`dev_flow` 以外に分類した signature は 3〜5 と起票を行わず、7 の記録だけ行う'* ]]
+}
+
+@test "重複確認・diff・finding・起票は dev_flow に分類した signature だけに行う" {
+    grep -qF '**重複確認**（`dev_flow` のみ）' "$SKILL_MD"
+    grep -qF '**候補 commit の diff を読む**（`dev_flow` のみ）' "$SKILL_MD"
+    grep -qF '**finding をまとめる**（`dev_flow` のみ）' "$SKILL_MD"
+    step="$(extract_filing_step)"
+    [[ "$step" == *'重複を除いた `dev_flow` の finding が 1 件以上あれば'* ]]
+    grep -qF '`dev_flow` に分類した signature だけ 1 signature = 1 issue で起票する' "$SKILL_MD"
+}
+
+@test "記録は全 signature の振り分けを record-classification.sh に --report / --input で 1 回渡す" {
+    step="$(awk '/\*\*記録\*\*/ { f = 1 } f && /^[0-9]+\. / { exit } f { print }' "$SKILL_MD")"
+    [ -n "$step" ]
+    [[ "$step" == *'全 signature（`dev_flow` 以外も含む）の `{id, signature, classification, reason, issue}`'* ]]
+    [[ "$step" == *'bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/record-classification.sh --report <レポートのパス> --input <JSON file>'* ]]
+    [[ "$step" == *'JSONL を Write / Edit / echo で直接書かない'* ]]
+    [ -f "$SKILL_DIR/scripts/record-classification.sh" ]
+    # 記録は起票の後（issue 番号を載せる）
+    filing_line="$(grep -n '\*\*起票\*\*' "$SKILL_MD" | cut -d: -f1)"
+    record_line="$(grep -n '\*\*記録\*\*' "$SKILL_MD" | cut -d: -f1)"
+    [ "$filing_line" -lt "$record_line" ]
+}
+
+@test "rules の dev-flow-health 節は dev_flow に分類した signature だけを 1 signature = 1 issue で起票する" {
+    rules="$SKILL_DIR/../../../.claude/rules/dev-flow.md"
+    section="$(awk '/^## dev-flow-health/ { f = 1; next } f && /^## / { exit } f { print }' "$rules")"
+    [[ "$section" == *'`dev_flow` に分類した signature だけ 1 signature = 1 issue で起票する'* ]]
+    [[ "$section" == *'LLM は分類と理由だけ付ける'* ]]
 }
 
 @test "報告（手順 3）は起票番号・重複・candidates.error に加え git-issue の ## Launch Order を含む" {

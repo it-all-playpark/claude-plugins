@@ -96,6 +96,15 @@ sig_field() {
     [ "$(printf '%s' "$output" | jq '.needs_llm')" = "true" ]
 }
 
+@test "recent_runs[].repo は journal entry の context.repo（entry に無ければ null）" {
+    load_fixture pr-phase-failed.jsonl
+    run report --repo "$BATS_TEST_TMPDIR/no-repo"
+    [ "$status" -eq 0 ]
+    # issue 21 の entry は context.repo を持ち、issue 22 の entry は持たない
+    [ "$(sig_field 'step: push' '[.recent_runs[] | "\(.issue)=\(.repo)"] | join(",")')" = "21=acme/target-app,22=null" ]
+    [ "$(sig_field 'step: commit' '.recent_runs[0].repo')" = "null" ]
+}
+
 # --- 解消済みの判定 -------------------------------------------------------------
 
 @test "last_seen と別の commit で N 回（既定 5）成功し再発しなければ resolved" {

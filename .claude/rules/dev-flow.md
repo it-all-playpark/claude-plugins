@@ -89,5 +89,5 @@ dev-flow 本体・dev-flow-health（frontmatter の paths）を触るときだ�
 ## dev-flow-health
 
 - 起動は日次 07:00 と journal の WatchPaths 即時トリガ（opt-in）。`daily.sh` は lock で直列、窓は直前の実行の `generated_at` から（new の重複防止）
-- status・候補 commit は `health-report.sh`（決定論）だけが決め、LLM は `needs_llm` の実行だけ起動し付け直さない
-- 起票は label self-improve、1 signature = 1 issue。実装・merge はしない
+- status・候補 commit は `health-report.sh` だけが決め、LLM は分類と理由だけ付ける
+- `dev_flow` に分類した signature だけ 1 signature = 1 issue で起票する（self-improve）。実装・merge しない
