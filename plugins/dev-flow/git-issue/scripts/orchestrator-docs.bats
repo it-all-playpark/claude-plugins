@@ -29,6 +29,9 @@
 # - description の Use when: に普通の頼み方のトリガー語がある
 # - 経路の選択基準、軽い経路が Phase 2・4 を省いて Phase 5〜7 を通ること、重い経路への切り替え、複数 finding の
 #   まとめ起票、Plan Quality Gate の経路欄
+#
+# 起票時の AC の人手判定（issue #1026）:
+# - Phase 6 の --kind agent と軽い経路のゲートに、dev-flow と同じ ac-actor.mjs の判定が載る
 
 setup() {
     command -v python3 >/dev/null || skip "python3 not available"
@@ -362,4 +365,16 @@ frontmatter_value() {
     grep -q '## 受け入れ基準（Acceptance Criteria）' "$RECOVERY"
     grep -q 'Phase 3 に戻って' "$RECOVERY"
     grep -q 'issue を作らず abort' "$RECOVERY"
+}
+
+@test "(26) Phase 6 の --kind agent と軽い経路のゲートに AC の人手判定（dev-flow と同じ ac-actor.mjs の判定）が載り、create_issue.py はその CLI を呼ぶ" {
+    agent="$(extract_section "$SKILL_MD" "### Phase 6" | awk '/^- `--kind agent`/ { f = 1 } /^- `--kind human`/ { exit } f { print }')"
+    [[ "$agent" == *'AC の人手判定も dev-flow と同じ `_lib/ac-actor.mjs` の判定で行う'* ]]
+    [[ "$agent" == *"repo 内外の作業が混ざった AC も理由を出して exit 1"* ]]
+    [[ "$agent" == *'人の作業は `--kind human` で別 issue に切り出して先に起票し'*'この issue は `--blocked-by` で紐付ける'* ]]
+    light="$(extract_section "$SKILL_MD" "### 軽い経路（Light Path）")"
+    [[ "$light" == *'ゲート（ac-lint・4000 字・変更対象パス・`executor: human` の検出・AC の人手判定（dev-flow と同じ `ac-actor.mjs` の判定））は重い経路と同じ'* ]]
+    # 載せた判定は create_issue.py が ac-actor.mjs を import する CLI を呼んで行う
+    grep -q '"ac-actor-classify.mjs"' "$SCRIPT"
+    grep -q "from '../ac-actor.mjs'" "$REPO_ROOT/plugins/dev-flow/_lib/scripts/ac-actor-classify.mjs"
 }

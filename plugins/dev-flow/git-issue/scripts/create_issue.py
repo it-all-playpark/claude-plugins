@@ -38,6 +38,10 @@ AC_HEADING_LINE_RE = re.compile(
 )
 HEADING_LINE_RE = re.compile(r"^#{1,6}[ \t\n\v\f\r]+")
 FENCE_LINE_RE = re.compile(r"^[ \t\n\v\f\r]{0,3}(`{3,}|~{3,})")
+# AC 節の checkbox 行。analyze-issue.sh の extract_contract_ac_items（checkbox）と同じ規則で marker を除いた本文を取る
+AC_CHECKBOX_RE = re.compile(r"^[ \t\n\v\f\r]*[-*][ \t\n\v\f\r]*\[[ xX]\][ \t\n\v\f\r]*")
+# 対象 repo の owner/name を origin の URL から取る（dev-flow/scripts/prerun.sh の repo 解決と同じ形）
+GITHUB_ORIGIN_PREFIXES = ("https://github.com/", "git@github.com:", "ssh://git@github.com/")
 
 
 def split_csv(raw: str | None) -> list[str]:
@@ -165,19 +169,19 @@ def check_target_paths(body: str) -> None:
             raise ValueError(f"`## 変更対象パス` のエントリが `..` セグメントを含む（repo の外を指せない）: {entry}")
 
 
-def scope_total_chars(body: str) -> int:
-    """AC 節（最初の AC 見出しから次の見出しまで。フェンス内の見出しは数えない）を除いた本文の字数。
+def split_ac_section(body: str) -> tuple[list[str], list[str]]:
+    """本文を AC 節（最初の AC 見出しから次の見出しまで。フェンス内の見出しは数えない）以外の行と AC 節の行に分ける。
 
-    analyze-issue.sh の extract_non_ac_body と ${#SCOPE_FULL} の移植。bash の $(...) が末尾改行を落とすので、
-    入力と出力の末尾改行は数えない。
+    analyze-issue.sh の extract_non_ac_body / extract_ac_section の移植。bash の $(...) が末尾改行を落とすので、
+    入力の末尾改行は数えない。
     """
     kept: list[str] = []
+    section: list[str] = []
     skip = found = in_fence = False
     for line in body.rstrip("\n").split("\n"):
         if FENCE_LINE_RE.match(line):
             in_fence = not in_fence
-            if not skip:
-                kept.append(line)
+            (section if skip else kept).append(line)
             continue
         if not in_fence and HEADING_LINE_RE.match(line):
             if found:
@@ -185,8 +189,13 @@ def scope_total_chars(body: str) -> int:
             elif AC_HEADING_LINE_RE.match(line):
                 found = skip = True
                 continue
-        if not skip:
-            kept.append(line)
+        (section if skip else kept).append(line)
+    return kept, section
+
+
+def scope_total_chars(body: str) -> int:
+    """AC 節を除いた本文の字数。analyze-issue.sh の ${#SCOPE_FULL} の移植（出力の末尾改行は数えない）。"""
+    kept, _ = split_ac_section(body)
     return len("\n".join(kept).rstrip("\n"))
 
 
@@ -198,6 +207,95 @@ def check_scope_chars(body: str) -> None:
             "dev-flow の analyze は超えた部分を切り、implementer に届かない。"
             "調査結果・実装計画・レビュー履歴を書き写さず、ゴールと制約・取らないことに要点を絞って書き直す"
         )
+
+
+def ac_checkbox_items(body: str) -> list[str]:
+    """AC 節の checkbox 行の本文（marker を除き、空のものは落とす）。dev-flow の analyze が AC として読むものと同じ。"""
+    _, section = split_ac_section(body)
+    items: list[str] = []
+    for line in section:
+        marker = AC_CHECKBOX_RE.match(line)
+        if marker and line[marker.end():].strip(" \t\n\v\f\r"):
+            items.append(line[marker.end():])
+    return items
+
+
+def origin_repo() -> str | None:
+    """カレントの git repo の origin（GitHub）の owner/name。決まらなければ None。"""
+    try:
+        result = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    url = result.stdout.strip()
+    for prefix in GITHUB_ORIGIN_PREFIXES:
+        if url.startswith(prefix):
+            slug = url[len(prefix):].rstrip("/").removesuffix(".git")
+            if re.fullmatch(r"[^/]+/[^/]+", slug):
+                return slug
+    return None
+
+
+def classify_ac_actors(items: list[str], repo: str | None) -> dict:
+    """_lib/scripts/ac-actor-classify.mjs（判定規則は _lib/ac-actor.mjs の 1 か所）で AC を分類する。
+
+    起動できない・非 0 終了・出力が読めないときは RuntimeError（判定できない AC を通過扱いにしない）。
+    """
+    script = Path(__file__).resolve().parents[2] / "_lib" / "scripts" / "ac-actor-classify.mjs"
+    cmd = ["node", str(script)]
+    if repo:
+        cmd.extend(["--repo", repo])
+    try:
+        result = subprocess.run(
+            cmd,
+            input=json.dumps(items, ensure_ascii=False),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except OSError as e:
+        raise RuntimeError(f"AC の人手判定（ac-actor-classify.mjs）を起動できないので起票しない: {e}") from e
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "unknown error").strip()
+        raise RuntimeError(
+            f"AC の人手判定（ac-actor-classify.mjs）が exit {result.returncode} で失敗したので起票しない: {message}"
+        )
+    try:
+        report = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise RuntimeError(f"AC の人手判定（ac-actor-classify.mjs）の出力が JSON として読めないので起票しない: {e}") from e
+    actors = report.get("actors") if isinstance(report, dict) else None
+    reasons = report.get("mixed_reasons") if isinstance(report, dict) else None
+    if not (
+        isinstance(actors, list)
+        and len(actors) == len(items)
+        and all(isinstance(a, str) for a in actors)
+        and isinstance(reasons, list)
+        and all(isinstance(r, str) for r in reasons)
+    ):
+        raise RuntimeError(f"AC の人手判定（ac-actor-classify.mjs）の出力の形が不正なので起票しない: {result.stdout.strip()}")
+    return report
+
+
+def check_ac_actors(body: str, repo: str | None) -> None:
+    """dev-flow が人手扱いにする AC（actor human / repo 内外の混在）を含む agent issue を拒否する。"""
+    items = ac_checkbox_items(body)
+    if not items:
+        return
+    report = classify_ac_actors(items, repo)
+    problems: list[str] = []
+    human = [i for i, actor in enumerate(report["actors"]) if actor == "human"]
+    if human:
+        listed = "\n".join(f"  AC-{i + 1}「{items[i]}」" for i in human)
+        problems.append(
+            "agent issue の AC に dev-flow が人手扱いにするもの（_lib/ac-actor.mjs の classifyAcActor が human）がある:\n"
+            f"{listed}\n"
+            "人の作業は `--kind human` で別 issue に切り出して先に起票し、この issue は `--blocked-by` で紐付けよ"
+        )
+    problems.extend(report["mixed_reasons"])
+    if problems:
+        raise ValueError("\n".join(problems))
 
 
 def has_blocked_by_line(body: str, number: int) -> bool:
@@ -322,6 +420,8 @@ def run(args: argparse.Namespace) -> int:
     report = lint_ac(args.body_file)
     if args.kind == "human" and report.get("verdict") != "t1":
         raise ValueError("human issue の `## 完了条件` は `- [ ]` checkbox で書く（ac-lint verdict t1 が必要）")
+    if args.kind == "agent":
+        check_ac_actors(body, args.repo or origin_repo())
 
     blocked_by = parse_blocked_by(args.blocked_by)
     final_body = ensure_blocked_by_lines(body, blocked_by)
@@ -405,8 +505,8 @@ def parse_args() -> argparse.Namespace:
         "--kind",
         choices=["agent", "human"],
         default="agent",
-        help="agent: implementation issue (rejects `executor: human`, requires `## 変更対象パス`, "
-        "caps the non-AC body at 4000 chars) / human: human-task issue",
+        help="agent: implementation issue (rejects `executor: human` and ACs dev-flow treats as human/mixed, "
+        "requires `## 変更対象パス`, caps the non-AC body at 4000 chars) / human: human-task issue",
     )
     parser.add_argument("--blocked-by", help="Comma-separated issue numbers this issue is blocked by")
     parser.add_argument("--dry-run", action="store_true", help="Preview only")
