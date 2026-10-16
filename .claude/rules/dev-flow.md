@@ -13,7 +13,7 @@ paths:
 
 # dev-flow 不変条件
 
-dev-flow 本体（workflow / agent 定義 / `_lib` canonical / generator）を触るときだけ読み込まれる。
+dev-flow 本体・dev-flow-health（frontmatter の paths）を触るときだけ読み込まれる。
 詳細は `plugins/dev-flow/dev-flow/references/`:
 
 - `pipeline.md` — phase 経路 / shape tier / model・fallback / isolation probe / gate_policy・block_class
@@ -24,10 +24,9 @@ dev-flow 本体（workflow / agent 定義 / `_lib` canonical / generator）を�
 
 ## 構造
 
-- Claude 専用（workflow 依存）。cross-vendor 放棄は dev-flow / pr-iterate のみ（本ファイルを AGENTS.md から分離する理由）
+- Claude 専用（workflow 依存）。cross-vendor 放棄は dev-flow / pr-iterate のみ
 - skill wrapper が isolation preflight → `Workflow({ name: 'dev-flow:dev-flow-run' })`。orchestration と中間 state は workflow script の JS 変数のみ
 - `meta.name` は `dev-flow-run` でも telemetry handoff の `skill` は `'dev-flow'` 固定（集計連続性）
-- `/pr-iterate` は wrapper → `pr-iterate-prerun` → `dev-flow:pr-iterate-run`
 - `agent()` の agentType は `nsAgentOpts()` でのみ namespace 付与（bare 名は起動直後 abort）。routing test は論理名（bare）を保持。dev-flow-canary.js のみ namespaced id 直書き
 - 1 issue = 1 PR。Implement は全 shape で `dev-implementer`（plan+impl 統合）を単一 worktree に 1 spawn（Plan phase・planner ⇄ reviewer ループ・parallel fan-out は持たない）。BLOCKED 再実装・green-fix（`model: 'sonnet'`）・Evaluate 差し戻しも同じ agent。複数 issue 分割は使わない
 - model 既定は frontmatter。override は green-fix（`'sonnet'`）と pr-iterate の fix（`dev-runner` に `'opus'`）のみ。品質ゲート agent には渡さない — gate の判定モデルを credit で黙って変えない
@@ -89,5 +88,6 @@ dev-flow 本体（workflow / agent 定義 / `_lib` canonical / generator）を�
 
 ## dev-flow-health
 
-- status・候補 commit は `health-report.sh`（決定論）だけが決める。LLM は new / regressed が 1 件以上の日だけ起動し、status を付け直さない
+- 起動は日次 07:00 と journal の WatchPaths 即時トリガ（opt-in）。`daily.sh` は lock で直列、窓は直前の実行の `generated_at` から（new の重複防止）
+- status・候補 commit は `health-report.sh`（決定論）だけが決め、LLM は `needs_llm` の実行だけ起動し付け直さない
 - 起票は label self-improve、1 signature = 1 issue。実装・merge はしない

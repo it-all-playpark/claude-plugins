@@ -172,7 +172,7 @@ sig_field() {
     [ "$(sig_field 'pr create' .candidates.last_good_commit)" = "bbbbbbbbbbb2" ]
 }
 
-@test "窓（--since 以後）に初めて出た signature は new、窓の外なら ongoing" {
+@test "窓（--since より後）に初めて出た signature は new、窓の外なら ongoing" {
     load_fixture lifecycle.jsonl
     run report
     [ "$status" -eq 0 ]
@@ -184,6 +184,25 @@ sig_field() {
     [ "$status" -eq 0 ]
     [ "$(sig_field 'evaluator returned no verdict' .status)" = "ongoing" ]
     [ "$(sig_field 'pr create' .status)" = "regressed" ]
+}
+
+@test "窓は --since ちょうどを含まず --now ちょうどを含み、--now より後の entry は読まない" {
+    write_run 2026-10-04T12:00:00Z failure "aaaaaaaaaaa1" "abort@Evaluate/eval#1: at since"
+    write_run 2026-10-05T00:00:00Z failure "aaaaaaaaaaa1" "abort@Evaluate/eval#1: at now"
+    write_run 2026-10-05T00:00:01Z failure "aaaaaaaaaaa1" "abort@Evaluate/eval#1: after now"
+
+    run report --since 2026-10-04T12:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(sig_field 'at since' .status)" = "ongoing" ]
+    [ "$(sig_field 'at now' .status)" = "new" ]
+    [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.template | contains("after now"))] | length')" = "0" ]
+    [ "$(printf '%s' "$output" | jq '.runs["dev-flow"]')" = "2" ]
+
+    # 次の実行は前回の --now を --since にする: at now は 2 回目には new にならず、after now が new になる
+    run bash "$SCRIPT" --journal-dir "$JOURNAL" --since 2026-10-05T00:00:00Z --now 2026-10-05T00:00:01Z
+    [ "$status" -eq 0 ]
+    [ "$(sig_field 'at now' .status)" = "ongoing" ]
+    [ "$(sig_field 'after now' .status)" = "new" ]
 }
 
 @test "skill ごとに run を数える — pr-iterate に成功 run が無ければ候補は no_prior_good_run" {

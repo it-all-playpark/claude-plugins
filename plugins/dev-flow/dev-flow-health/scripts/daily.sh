@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# daily.sh - dev-flow ヘルスレポートの日次実行（launchd から起動）
+# daily.sh - dev-flow ヘルスレポートの実行（launchd の日次ジョブと journal 監視の即時トリガから起動）
 #
-# 1. health-report.sh で当日のレポートを <out-dir>/YYYY-MM-DD.json に書く。
-#    窓の始点は前回レポートの generated_at（無ければ health-report.sh の既定 = 24 時間前）。
-#    実行できなかった日があっても、その間に出た new / regressed を取りこぼさない。
-# 2. new / regressed が 1 件以上の日だけ、`claude -p "/dev-flow:dev-flow-health <report>"` で
-#    原因の推定と issue 起票を LLM に任せる。0 件の日は LLM を呼ばない。出力は <out-dir>/YYYY-MM-DD.llm.log。
+# 1. health-report.sh でレポートを書く。レポートは実行ごとに別ファイル
+#    <out-dir>/<generated_at の YYYY-MM-DDTHHMMSSZ>.json（同じ秒の 2 本目以降は .2.json, .3.json ...）。
+#    窓の始点は直前の実行のレポート（同じ日の分も含む最新）の generated_at（無ければ health-report.sh の既定 =
+#    24 時間前）。窓は直前の実行の終点から始まるので、実行が空いても取りこぼさず、日次と即時トリガが
+#    交互に走っても同じ失敗を 2 回 new / regressed にしない。
+# 2. new / regressed が 1 件以上の実行だけ、`claude -p "/dev-flow:dev-flow-health <report>"` で
+#    原因の推定と issue 起票を LLM に任せる。0 件なら LLM を呼ばない。出力はレポートと同じ名前の .llm.log。
+#
+# 1〜2 は <out-dir>/.lock（mkdir の lock）を持って 1 本ずつ走らせる。重なった実行は前の実行が終わるまで
+# 待ち、前の実行のレポートを窓の始点にして走る。
 #
 # Usage:
-#   daily.sh [--out-dir DIR] [--date YYYY-MM-DD] [--journal-dir DIR] [--repo DIR] [--now ISO8601]
+#   daily.sh [--out-dir DIR] [--journal-dir DIR] [--repo DIR] [--now ISO8601]
 #
 #   --out-dir      既定 ~/.claude/logs/dev-flow-health
-#   --date         レポートのファイル名に使う日付。既定は今日（ローカル時刻）
 #   --journal-dir / --repo / --now は health-report.sh へそのまま渡す
 #
 # 出力: stdout に {report, needs_llm, llm_invoked, llm_exit} の JSON 1 行。
@@ -19,33 +23,38 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="$HOME/.claude/logs/dev-flow-health"
-DATE=""
 PASS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --out-dir) OUT_DIR="${2:?}"; shift 2 ;;
-        --date) DATE="${2:?}"; shift 2 ;;
         --journal-dir|--repo|--now) PASS+=("$1" "${2:?}"); shift 2 ;;
         -h|--help) sed -n '/^# Usage:/,/^# 出力:/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) jq -n --arg e "unknown option: $1" '{error: $e}' >&2; exit 2 ;;
     esac
 done
 
-[[ -n "$DATE" ]] || DATE="$(date +%Y-%m-%d)"
-if [[ ! "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-    jq -n --arg e "invalid --date: $DATE" '{error: $e}' >&2
-    exit 2
-fi
-
 mkdir -p "$OUT_DIR"
-REPORT="$OUT_DIR/$DATE.json"
 
-# 前回レポート（当日分を除く最新）の generated_at を窓の始点にする
+# 窓の始点を読む前に lock を取る — 重なった 2 本が同じ前回レポートを始点にすると、同じ失敗で LLM が 2 回起動する。
+# 保持していたプロセスが居ない lock（実行中の kill・再起動）は取り直す。残したままだと以後の実行がすべて待ち続ける
+LOCK="$OUT_DIR/.lock"
+while ! mkdir "$LOCK" 2>/dev/null; do
+    holder="$(cat "$LOCK/pid" 2>/dev/null || true)"
+    if [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; then
+        rm -rf "$LOCK"
+        continue
+    fi
+    sleep 1
+done
+trap 'rm -rf "$LOCK"' EXIT
+echo "$$" > "$LOCK/pid"
+
+# 直前の実行のレポート（ファイル名は generated_at 順に並ぶ）の generated_at を窓の始点にする
 SINCE=""
 prev=""
-for f in "$OUT_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json; do
-    [[ -f "$f" && "$f" != "$REPORT" ]] || continue
+for f in "$OUT_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z*.json; do
+    [[ -f "$f" ]] || continue
     prev="$f"
 done
 if [[ -n "$prev" ]]; then
@@ -64,6 +73,15 @@ if [[ ${#ARGS[@]} -gt 0 ]]; then
 else
     bash "$SCRIPT_DIR/health-report.sh" > "$TMP"
 fi
+
+STAMP="$(jq -r '.generated_at | gsub(":"; "")' "$TMP")"
+BASE="$OUT_DIR/$STAMP"
+n=1
+while [[ -e "$BASE.json" ]]; do
+    n=$((n + 1))
+    BASE="$OUT_DIR/$STAMP.$n"
+done
+REPORT="$BASE.json"
 mv "$TMP" "$REPORT"
 
 NEEDS_LLM="$(jq -r '.needs_llm' "$REPORT")"
@@ -71,7 +89,7 @@ LLM_INVOKED=false
 LLM_EXIT=null
 if [[ "$NEEDS_LLM" == "true" ]]; then
     LLM_INVOKED=true
-    if claude -p "/dev-flow:dev-flow-health $REPORT" > "$OUT_DIR/$DATE.llm.log" 2>&1; then
+    if claude -p "/dev-flow:dev-flow-health $REPORT" > "$BASE.llm.log" 2>&1; then
         LLM_EXIT=0
     else
         LLM_EXIT=$?

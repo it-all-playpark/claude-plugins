@@ -5,7 +5,7 @@ description: |
   signatures with new / ongoing / resolved / regressed status and candidate commits), explains
   the cause of each new or regressed signature from its runs and the candidate commit diffs,
   and files one self-improve issue per signature.
-  Use when: (1) the daily job hands over a report with new / regressed signatures,
+  Use when: (1) the daily job or the journal trigger hands over a report with new / regressed signatures,
   (2) user asks why dev-flow started failing or which commit broke it,
   (3) keywords: dev-flow health, ヘルスレポート, 失敗の型, 再発, regressed, 回帰, どの commit から, self-improve.
   Accepts args: [<report.json>]（省略時は ~/.claude/logs/dev-flow-health/ の最新）
@@ -13,24 +13,33 @@ description: |
 
 # dev-flow-health
 
-dev-flow の失敗を毎日決定論スクリプトで集計し、**新しく出た型（new）と、直ったはずが再び出た型
-（regressed）があった日だけ** LLM が原因と修正案を書いて issue にする。集計・判定・候補 commit の
+dev-flow の失敗を決定論スクリプトで集計し、**新しく出た型（new）と、直ったはずが再び出た型
+（regressed）があった実行だけ** LLM が原因と修正案を書いて issue にする。集計・判定・候補 commit の
 列挙はすべて `scripts/health-report.sh` が行い、本 skill はその JSON を読んで考える部分だけを担う。
 
 ## 日次の流れ
 
 ```
-launchd 07:00 → scripts/daily.sh
-  → scripts/health-report.sh（LLM 不使用）→ ~/.claude/logs/dev-flow-health/YYYY-MM-DD.json
-  → summary.new + summary.regressed > 0 の日だけ claude -p "/dev-flow:dev-flow-health <report>"
+launchd 07:00（日次ジョブ）／ journal に entry が書かれた時（即時トリガ）→ scripts/daily.sh
+  → lock（~/.claude/logs/dev-flow-health/.lock）を取って 1 本ずつ実行。重なった実行は待つ
+  → scripts/health-report.sh（LLM 不使用。窓は直前の実行の generated_at から今まで）
+    → ~/.claude/logs/dev-flow-health/YYYY-MM-DDTHHMMSSZ.json（実行ごとに別ファイル）
+  → summary.new + summary.regressed > 0 の実行だけ claude -p "/dev-flow:dev-flow-health <report>"
 ```
 
-登録は 1 回だけ手動で行う（`--print` で plist を確認、`--uninstall` で解除）。`--repo` は skills repo の
-git checkout を必須で渡す — plugin cache の install は git ではなく候補 commit を列挙できないため、plist は
-checkout 内の `daily.sh` を `--repo <checkout>` 付きで起動する（版付きの cache パスには固定しない）:
+即時トリガは journal ディレクトリ（`$CLAUDE_JOURNAL_DIR`、未設定なら `~/.claude/journal`）を launchd の
+`WatchPaths` で監視し、失敗を日次を待たずに起票まで進める。日次ジョブは即時トリガの取りこぼし（スリープ中など）
+を拾う網で、両方を登録しても窓が直前の実行から繋がるので、同じ失敗は 1 回だけ new / regressed になる。
+成功 run の entry でも起動するが、new / regressed が無ければ決定論スクリプトだけで終わる。
+
+登録はそれぞれ 1 回だけ手動で行う（`--print` で plist を確認、`--uninstall` で解除。即時トリガは
+`--watch-journal` を付ける）。`--repo` は skills repo の git checkout を必須で渡す — plugin cache の install は
+git ではなく候補 commit を列挙できないため、plist は checkout 内の `daily.sh` を `--repo <checkout>` 付きで起動する
+（版付きの cache パスには固定しない）:
 
 ```bash
 bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install --repo <skills checkout>
+bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install --repo <skills checkout> --watch-journal
 ```
 
 手元で今日のレポートだけ見たいときは `bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/health-report.sh`
@@ -50,7 +59,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
 
 ## 手順（LLM 部分）
 
-1. 引数のレポート（無ければ `~/.claude/logs/dev-flow-health/` の最新 `YYYY-MM-DD.json`）を Read する。
+1. 引数のレポート（無ければ `~/.claude/logs/dev-flow-health/` の最新 `YYYY-MM-DDTHHMMSSZ*.json`）を Read する。
    `needs_llm` が false なら「new / regressed なし」と報告して終える。
    `issue_repo` が `null` なら、重複確認・起票をせずに「起票先を解決できない（`--repo` に GitHub の origin を持つ
    checkout を渡す）」と報告して終える。起票先を推測したり別の repo を代わりに使ったりしない。

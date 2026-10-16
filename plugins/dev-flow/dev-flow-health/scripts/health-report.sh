@@ -13,11 +13,13 @@
 #   2. signature ごとに first_seen / last_seen（timestamp と telemetry.plugin_commit）を出し、状態を決める:
 #        resolved  : last_seen 以後に、last_seen と別の plugin_commit で同じ skill が N 回以上成功し、再発していない
 #                    （別の失敗で止まった run はその phase まで到達した証拠にならないので数えない）
-#        new       : resolved でなく、first_seen が窓（--since 以後）に入っている
+#        new       : resolved でなく、first_seen が窓（--since より後、--now 以前）に入っている
 #        regressed : resolved でなく、一度 resolved の条件を満たした後の再発が窓に入っている
 #        ongoing   : それ以外
 #      「より新しい commit」は timestamp の後で plugin_commit が異なる run と読む（commit の祖先関係は見ない。
 #      plugin は main に追随するので、後に走った別 commit は新しい commit とみなせる）。
+#      窓は始点を含まず終点を含む。--now より後の entry は読まない — 前回の --now を次の --since に渡す
+#      連続実行（daily.sh）で、境界の秒や実行中に書かれた entry を 2 回 new / regressed にしないため。
 #   3. new / regressed は、失敗し始めた run（new は first_seen、regressed は再発）の commit と、それより前で
 #      最後に成功した同じ skill の run の commit の間で、plugins/dev-flow/ を触った commit を git log で列挙する。
 #      別の失敗で止まった run は、その signature の手前まで進んだ証拠にならないので「正常」に数えない。
@@ -37,7 +39,7 @@
 #                    install-schedule.sh --repo で登録した checkout を daily.sh 経由で渡す）。
 #                    issue_repo もこの checkout の origin から解決する
 #   --now           基準時刻（UTC, YYYY-MM-DDTHH:MM:SSZ）。既定は現在時刻
-#   --since          new / regressed とみなす窓の始点。既定は --now から --window-hours 前
+#   --since          new / regressed とみなす窓の始点（この時刻ちょうどは含まない）。既定は --now から --window-hours 前
 #   --window-hours   既定 24
 #   --resolve-after  resolved とみなす再発なし run 数 N。既定 5
 #
@@ -170,7 +172,7 @@ def clean_runs($runs; $after; $until; $c):
 [ .[]
   | select((.source // "skill") == "skill")
   | select(.skill == "dev-flow" or .skill == "pr-iterate")
-  | select((.timestamp | type) == "string")
+  | select((.timestamp | type) == "string" and .timestamp <= $now)
   | .commit = (if (.commit | type) == "string" and (.commit | test("^[0-9a-f]{7,40}$")) then .commit else null end)
 ] | sort_by(.timestamp, .file)
 | to_entries | map(.value + {idx: .key}) as $all
@@ -193,8 +195,8 @@ def clean_runs($runs; $after; $until; $c):
            | $occ[$i] ] as $regressions
        | clean_runs($runs; $last; null; $last.commit) as $clean_after
        | (if $clean_after >= $resolve_after then "resolved"
-          elif $occ[0].timestamp >= $since then "new"
-          elif ($regressions | length) > 0 and ($regressions | last).timestamp >= $since then "regressed"
+          elif $occ[0].timestamp > $since then "new"
+          elif ($regressions | length) > 0 and ($regressions | last).timestamp > $since then "regressed"
           else "ongoing" end) as $status
        | (if $status == "new" then $occ[0]
           elif $status == "regressed" then ($regressions | last)

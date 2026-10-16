@@ -2,15 +2,19 @@
 # Tests for dev-flow-health/scripts/daily.sh と install-schedule.sh
 #
 # claude CLI は PATH stub に置き換え、呼ばれたら引数を記録する。
-# new / regressed が 0 件の日は stub が呼ばれないこと（LLM を起動しないこと）を確かめる。
-# install-schedule.sh は --print のみ検証する（--install は launchctl の副作用があるため対象外）。
+# new / regressed が 0 件の実行は stub が呼ばれないこと（LLM を起動しないこと）を確かめる。
+# HOME / CLAUDE_JOURNAL_DIR は一時ディレクトリ、launchctl は PATH stub にして、実ディレクトリと実 launchd には触れない。
+# 日次ジョブと即時トリガの起動は、install-schedule.sh --print の plist の ProgramArguments をそのまま実行して再現する。
 
 setup() {
     SKILL_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
     DAILY="$SKILL_DIR/scripts/daily.sh"
     INSTALL="$SKILL_DIR/scripts/install-schedule.sh"
 
+    export HOME="$BATS_TEST_TMPDIR/home"
+    mkdir -p "$HOME"
     JOURNAL="$BATS_TEST_TMPDIR/journal"
+    export CLAUDE_JOURNAL_DIR="$JOURNAL"
     OUT="$BATS_TEST_TMPDIR/out"
     mkdir -p "$JOURNAL"
     while IFS= read -r line; do
@@ -21,9 +25,11 @@ setup() {
 
     STUB="$BATS_TEST_TMPDIR/stub"
     CALLS="$BATS_TEST_TMPDIR/claude-calls"
+    LAUNCHCTL_CALLS="$BATS_TEST_TMPDIR/launchctl-calls"
     mkdir -p "$STUB"
     printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$CALLS" > "$STUB/claude"
-    chmod +x "$STUB/claude"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$LAUNCHCTL_CALLS" > "$STUB/launchctl"
+    chmod +x "$STUB/claude" "$STUB/launchctl"
     export PATH="$STUB:$PATH"
 }
 
@@ -31,42 +37,158 @@ daily() {
     bash "$DAILY" --out-dir "$OUT" --journal-dir "$JOURNAL" --repo "$BATS_TEST_TMPDIR/no-repo" "$@"
 }
 
-@test "new / regressed が 0 件の日は LLM（claude）を呼ばずにレポートだけ書く" {
+claude_calls() {
+    if [[ -f "$CALLS" ]]; then wc -l < "$CALLS" | tr -d ' '; else echo 0; fi
+}
+
+# $1 = timestamp, $2 = error.message — fixture の「evaluator returned no verdict」と同じ skill / category / phase の失敗 entry
+write_failure() {
+    local name
+    name="$(printf '%s' "$1" | tr 'T:' '--' | tr -d 'Z')-dev-flow-$RANDOM.json"
+    jq -n --arg ts "$1" --arg m "$2" \
+        '{skill:"dev-flow", outcome:"failure", source:"skill", timestamp:$ts, telemetry:{plugin_commit:"eeeeeeeeeee5"},
+          error:{category:"runtime", phase:"Evaluate", message:$m}}' > "$JOURNAL/$name"
+}
+
+# install-schedule.sh --print の plist（stdin）から ProgramArguments の /bin/bash 以降を 1 行ずつ出す
+plist_args() {
+    awk '/<key>ProgramArguments<\/key>/ { f = 1; next }
+         f && /<\/array>/ { exit }
+         f && /<string>/ { sub(/^ *<string>/, ""); sub(/<\/string>$/, ""); print }' | tail -n +2
+}
+
+# $1 = --print に足す引数（"" または --watch-journal）。結果を JOB_ARGS 配列に入れる
+load_job_args() {
+    bash "$INSTALL" --print --repo "$SKILL_DIR" $1 | plist_args > "$BATS_TEST_TMPDIR/job-args"
+    JOB_ARGS=()
+    while IFS= read -r a; do JOB_ARGS+=("$a"); done < "$BATS_TEST_TMPDIR/job-args"
+}
+
+# 日次ジョブ / 即時トリガの plist の ProgramArguments を --now 付きで実行する（出力先は既定の $HOME/.claude/logs/dev-flow-health）
+run_daily_job() {
+    load_job_args ""
+    bash "${JOB_ARGS[@]}" --now "$1"
+}
+run_watch_trigger() {
+    load_job_args --watch-journal
+    bash "${JOB_ARGS[@]}" --now "$1"
+}
+
+@test "new / regressed が 0 件の実行は LLM（claude）を呼ばずにレポートだけ書く" {
     # 窓 10-05..10-06 には fixture の失敗が無い
-    run daily --date 2026-10-06 --now 2026-10-06T00:00:00Z
+    run daily --now 2026-10-06T00:00:00Z
     [ "$status" -eq 0 ]
     [ "$(printf '%s' "$output" | jq '.needs_llm')" = "false" ]
     [ "$(printf '%s' "$output" | jq '.llm_invoked')" = "false" ]
     [ ! -f "$CALLS" ]
-    [ -f "$OUT/2026-10-06.json" ]
-    [ "$(jq -c '.summary' "$OUT/2026-10-06.json")" = '{"new":0,"regressed":0,"ongoing":4,"resolved":1}' ]
+    [ "$(printf '%s' "$output" | jq -r '.report')" = "$OUT/2026-10-06T000000Z.json" ]
+    [ "$(jq -c '.summary' "$OUT/2026-10-06T000000Z.json")" = '{"new":0,"regressed":0,"ongoing":4,"resolved":1}' ]
 }
 
-@test "new / regressed がある日だけ claude -p で dev-flow-health skill にレポートを渡す" {
-    run daily --date 2026-10-05 --now 2026-10-05T00:00:00Z
+@test "new / regressed がある実行だけ claude -p で dev-flow-health skill にレポートを渡す" {
+    run daily --now 2026-10-05T00:00:00Z
     [ "$status" -eq 0 ]
     [ "$(printf '%s' "$output" | jq '.needs_llm')" = "true" ]
     [ "$(printf '%s' "$output" | jq '.llm_invoked')" = "true" ]
     [ "$(printf '%s' "$output" | jq '.llm_exit')" = "0" ]
-    [ "$(wc -l < "$CALLS" | tr -d ' ')" = "1" ]
-    [ "$(cat "$CALLS")" = "-p /dev-flow:dev-flow-health $OUT/2026-10-05.json" ]
-    [ "$(jq '.summary.new + .summary.regressed' "$OUT/2026-10-05.json")" = "3" ]
+    [ "$(claude_calls)" = "1" ]
+    [ "$(cat "$CALLS")" = "-p /dev-flow:dev-flow-health $OUT/2026-10-05T000000Z.json" ]
+    [ "$(jq '.summary.new + .summary.regressed' "$OUT/2026-10-05T000000Z.json")" = "3" ]
 }
 
-@test "窓の始点は前回レポートの generated_at — 実行が空いた日の新規も取りこぼさない" {
+@test "窓の始点は同じ日の分も含む直前の実行の generated_at — 実行が空いても取りこぼさず、日付名のレポートは読まない" {
     mkdir -p "$OUT"
-    echo '{"generated_at":"2026-10-04T15:00:00Z"}' > "$OUT/2026-10-04.json"
-    run daily --date 2026-10-06 --now 2026-10-06T00:00:00Z
+    echo '{"generated_at":"2026-10-04T15:00:00Z"}' > "$OUT/2026-10-04T150000Z.json"
+    echo '{"generated_at":"2026-10-04T20:00:00Z"}' > "$OUT/2026-10-04.json"
+    run daily --now 2026-10-04T23:00:00Z
     [ "$status" -eq 0 ]
-    [ "$(jq -r '.window.since' "$OUT/2026-10-06.json")" = "2026-10-04T15:00:00Z" ]
+    [ "$(jq -r '.window.since' "$OUT/2026-10-04T230000Z.json")" = "2026-10-04T15:00:00Z" ]
     # 10-04T18:00 の再発が窓に入る
-    [ "$(jq '.summary.regressed' "$OUT/2026-10-06.json")" = "1" ]
+    [ "$(jq '.summary.regressed' "$OUT/2026-10-04T230000Z.json")" = "1" ]
     [ "$(printf '%s' "$output" | jq '.llm_invoked')" = "true" ]
 }
 
-@test "claude が失敗しても日次実行は止まらず終了コードを記録する" {
+@test "同じ signature の失敗が続いても、2 回続けた実行で LLM を起動するのは 1 回だけ — レポートは実行ごとに別ファイル" {
+    run daily --now 2026-10-05T00:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(claude_calls)" = "1" ]
+
+    write_failure 2026-10-05T03:00:00Z "evaluator returned no verdict"
+    run daily --now 2026-10-05T06:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.llm_invoked')" = "false" ]
+    [ "$(claude_calls)" = "1" ]
+    [ "$(jq -r '.window.since' "$OUT/2026-10-05T060000Z.json")" = "2026-10-05T00:00:00Z" ]
+    [ "$(jq '[.signatures[] | select(.template == "evaluator returned no verdict")] | .[0].count' "$OUT/2026-10-05T060000Z.json")" = "2" ]
+    [ -f "$OUT/2026-10-05T000000Z.json" ]
+}
+
+@test "即時トリガの plist の起動でも daily.sh と同じ処理が走り、new / regressed があるときだけ claude -p にレポートを渡す" {
+    run run_watch_trigger 2026-10-05T00:00:00Z
+    [ "$status" -eq 0 ]
+    report="$HOME/.claude/logs/dev-flow-health/2026-10-05T000000Z.json"
+    [ "$(printf '%s' "$output" | jq -r '.report')" = "$report" ]
+    [ "$(jq '.needs_llm' "$report")" = "true" ]
+    [ "$(cat "$CALLS")" = "-p /dev-flow:dev-flow-health $report" ]
+
+    run run_watch_trigger 2026-10-05T01:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.needs_llm')" = "false" ]
+    [ "$(claude_calls)" = "1" ]
+}
+
+@test "日次ジョブと即時トリガが交互に走っても、間に入った失敗は 1 回だけ new になる" {
+    run_daily_job 2026-10-05T07:00:00Z
+    # 失敗の書き込みと同じ秒にトリガが走る
+    write_failure 2026-10-05T09:00:00Z "trigger caught failure"
+    run_watch_trigger 2026-10-05T09:00:00Z
+    run_watch_trigger 2026-10-05T12:00:00Z
+    # トリガが走らなかった失敗（スリープ中など）は次の日次ジョブが拾う
+    write_failure 2026-10-06T06:59:59Z "daily caught failure"
+    run_daily_job 2026-10-06T07:00:00Z
+    run_watch_trigger 2026-10-06T08:00:00Z
+
+    reports=("$HOME/.claude/logs/dev-flow-health"/*.json)
+    [ "${#reports[@]}" -eq 5 ]
+    [ "$(jq -s '[.[].signatures[] | select(.template == "trigger caught failure" and .status == "new")] | length' "${reports[@]}")" = "1" ]
+    [ "$(jq -s '[.[].signatures[] | select(.template == "daily caught failure" and .status == "new")] | length' "${reports[@]}")" = "1" ]
+    [ "$(jq -r '.signatures[] | select(.template == "trigger caught failure") | .status' "$HOME/.claude/logs/dev-flow-health/2026-10-05T090000Z.json")" = "new" ]
+    [ "$(jq -r '.signatures[] | select(.template == "daily caught failure") | .status' "$HOME/.claude/logs/dev-flow-health/2026-10-06T070000Z.json")" = "new" ]
+}
+
+@test "重なった 2 本は lock で 1 本ずつ走り、LLM は 1 回だけ起動する" {
+    # LLM の実行中にもう 1 本が来る状況を作る
+    printf '#!/bin/sh\nsleep 1\nprintf "%%s\\n" "$*" >> "%s"\n' "$CALLS" > "$STUB/claude"
+    daily --now 2026-10-05T00:00:00Z > "$BATS_TEST_TMPDIR/a.out" &
+    pid_a=$!
+    daily --now 2026-10-05T00:00:00Z > "$BATS_TEST_TMPDIR/b.out" &
+    pid_b=$!
+    wait "$pid_a"
+    wait "$pid_b"
+
+    [ "$(claude_calls)" = "1" ]
+    [ "$(cat "$BATS_TEST_TMPDIR/a.out" "$BATS_TEST_TMPDIR/b.out" | jq -s '[.[] | select(.llm_invoked)] | length')" = "1" ]
+    # 同じ秒の 2 本目は別ファイルに書き、lock は残さない
+    [ -f "$OUT/2026-10-05T000000Z.json" ]
+    [ -f "$OUT/2026-10-05T000000Z.2.json" ]
+    [ ! -e "$OUT/.lock" ]
+}
+
+@test "保持していたプロセスが居ない lock は取り直して走る" {
+    mkdir -p "$OUT/.lock"
+    sh -c 'exit 0' &
+    dead=$!
+    wait "$dead"
+    echo "$dead" > "$OUT/.lock/pid"
+    run daily --now 2026-10-06T00:00:00Z
+    [ "$status" -eq 0 ]
+    [ -f "$OUT/2026-10-06T000000Z.json" ]
+    [ ! -e "$OUT/.lock" ]
+}
+
+@test "claude が失敗しても実行は止まらず終了コードを記録する" {
     printf '#!/bin/sh\nexit 3\n' > "$STUB/claude"
-    run daily --date 2026-10-05 --now 2026-10-05T00:00:00Z
+    run daily --now 2026-10-05T00:00:00Z
     [ "$status" -eq 0 ]
     [ "$(printf '%s' "$output" | jq '.llm_exit')" = "3" ]
 }
@@ -75,15 +197,85 @@ daily() {
     REPO_ROOT="$(git -C "$SKILL_DIR" rev-parse --show-toplevel)"
     run bash "$INSTALL" --print --repo "$SKILL_DIR"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"<string>com.playpark.dev-flow-health</string>"* ]]
-    # daily.sh は --repo の checkout 内を指し、その後に --repo <checkout top-level> が続く
+    expected="$(cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.playpark.dev-flow-health</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$REPO_ROOT/plugins/dev-flow/dev-flow-health/scripts/daily.sh</string>
+    <string>--repo</string>
+    <string>$REPO_ROOT</string>
+  </array>
+  <key>WorkingDirectory</key><string>$REPO_ROOT</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$PATH</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>7</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key><string>$HOME/.claude/logs/dev-flow-health.log</string>
+  <key>StandardErrorPath</key><string>$HOME/.claude/logs/dev-flow-health.err.log</string>
+</dict>
+</plist>
+PLIST
+)"
+    [ "$output" = "$expected" ]
+}
+
+@test "install-schedule --print --watch-journal: 別 Label で journal ディレクトリを WatchPaths に持ち、同じ daily.sh にそのディレクトリを渡す" {
+    REPO_ROOT="$(git -C "$SKILL_DIR" rev-parse --show-toplevel)"
+    run bash "$INSTALL" --print --repo "$SKILL_DIR" --watch-journal
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"<key>Label</key><string>com.playpark.dev-flow-health.watch-journal</string>"* ]]
+    [[ "$output" == *"<key>WatchPaths</key>
+  <array>
+    <string>$JOURNAL</string>
+  </array>"* ]]
+    [[ "$output" != *"StartCalendarInterval"* ]]
     [[ "$output" == *"<string>$REPO_ROOT/plugins/dev-flow/dev-flow-health/scripts/daily.sh</string>
     <string>--repo</string>
-    <string>$REPO_ROOT</string>"* ]]
-    [[ "$output" == *"<key>WorkingDirectory</key><string>$REPO_ROOT</string>"* ]]
-    [[ "$output" == *"<key>Hour</key><integer>7</integer>"* ]]
-    [[ "$output" != *"<key>Weekday</key>"* ]]
+    <string>$REPO_ROOT</string>
+    <string>--journal-dir</string>
+    <string>$JOURNAL</string>
+  </array>"* ]]
     [[ "$output" == *"<key>PATH</key><string>$STUB:"* ]]
+
+    # CLAUDE_JOURNAL_DIR が無ければ $HOME/.claude/journal
+    unset CLAUDE_JOURNAL_DIR
+    run bash "$INSTALL" --print --repo "$SKILL_DIR" --watch-journal
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"<key>WatchPaths</key>
+  <array>
+    <string>$HOME/.claude/journal</string>
+  </array>"* ]]
+}
+
+@test "install-schedule --install / --uninstall --watch-journal: 即時トリガの plist だけを登録・解除し、日次ジョブには触れない" {
+    agents="$HOME/Library/LaunchAgents"
+    mkdir -p "$agents"
+    echo daily > "$agents/com.playpark.dev-flow-health.plist"
+    watch_plist="$agents/com.playpark.dev-flow-health.watch-journal.plist"
+
+    run bash "$INSTALL" --install --repo "$SKILL_DIR" --watch-journal
+    [ "$status" -eq 0 ]
+    [ -f "$watch_plist" ]
+    grep -q "<string>$JOURNAL</string>" "$watch_plist"
+    grep -qx "bootstrap gui/$(id -u) $watch_plist" "$LAUNCHCTL_CALLS"
+
+    run bash "$INSTALL" --uninstall --watch-journal
+    [ "$status" -eq 0 ]
+    [ ! -e "$watch_plist" ]
+    [ "$(tail -n 1 "$LAUNCHCTL_CALLS")" = "bootout gui/$(id -u) $watch_plist" ]
+    [ "$(cat "$agents/com.playpark.dev-flow-health.plist")" = "daily" ]
+    run grep -c 'com.playpark.dev-flow-health.plist' "$LAUNCHCTL_CALLS"
+    [ "$output" = "0" ]
 }
 
 @test "install-schedule: --repo が無い / git checkout でない / skills checkout でないなら error" {
