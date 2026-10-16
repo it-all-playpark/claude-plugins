@@ -280,7 +280,7 @@ describe('host-exec', () => {
     host(on)
     answer(on, [], asked)
     stubProcess(on, { stdout: '' }, ran)
-    for (const argv of [['bash', '-c', 'ls | head'], ['/opt/homebrew/bin/bash', '-c', 'echo 1'], ['bash', '-lc', 'x'], ['bash', '-e', '-c', 'x']]) {
+    for (const argv of [['bash', '-c', 'ls | head'], ['/opt/homebrew/bin/bash', '-c', 'echo 1'], ['bash', '-lc', 'x'], ['bash', '-e', '-c', 'x'], ['bash', '-o', 'pipefail', '-c', 'x'], ['bash', '-euo', 'pipefail', '-c', 'x'], ['bash', '+O', 'extglob', '-c', 'x'], ['bash', '--rcfile', 'f', '-c', 'x']]) {
       const r: any = await $.tool.call({ tool: TOOL, argv, reason: 'x' } as any)
       expect(String(r.deny)).toContain('refused (shell')
       expect(String(r.deny)).toContain('Read / Grep')

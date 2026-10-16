@@ -118,9 +118,13 @@ const SHELLS = new Set(['bash', 'sh', 'zsh', 'fish', 'dash', 'ksh'])
 /** argv がシェルの -c（-lc / -ec のように束ねたものを含む）でコマンド文字列を渡しているか。スクリプト名より後ろの -c はスクリプトへの引数なので数えない。 */
 function isShellInline(argv: readonly string[]): boolean {
   if (!SHELLS.has(basename(argv[0] ?? ''))) return false
-  for (const a of argv.slice(1)) {
-    if (a === '--' || !a.startsWith('-')) return false
+  const rest = argv.slice(1)
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]!
+    if (a === '--' || !/^[-+]/.test(a)) return false
     if (/^-[A-Za-z]*c[A-Za-z]*$/.test(a)) return true
+    // 値を取るオプション（-o pipefail / -euo pipefail / +O extglob / --rcfile f）は次の引数を値として読み飛ばす
+    if (/^[-+][A-Za-z]*[oO][A-Za-z]*$/.test(a) || a === '--rcfile' || a === '--init-file') i++
   }
   return false
 }
