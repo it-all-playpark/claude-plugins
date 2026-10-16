@@ -156,6 +156,23 @@ run_watch_trigger() {
     [ "$(jq -r '.signatures[] | select(.template == "daily caught failure") | .status' "$HOME/.claude/logs/dev-flow-health/2026-10-06T070000Z.json")" = "new" ]
 }
 
+@test "--now を省いた実行の終点は現在より前 — 実行と同じ秒の timestamp で後から書かれた失敗は次の実行で new になる" {
+    started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    run daily
+    [ "$status" -eq 0 ]
+    first="$(printf '%s' "$output" | jq -r '.report')"
+    [[ "$(jq -r '.generated_at' "$first")" < "$started" ]]
+
+    # journal.sh は timestamp を確定してから mv するので、走査と同じ秒の entry が走査の後に現れる
+    write_failure "$started" "same second late failure"
+    # 次の実行は数秒後に走る（終点が entry の timestamp を越えた時点）
+    run daily --now "$(jq -rn --arg t "$started" '$t | fromdateiso8601 + 60 | todateiso8601')"
+    [ "$status" -eq 0 ]
+    second="$(printf '%s' "$output" | jq -r '.report')"
+    [ "$(jq -r '.signatures[] | select(.template == "same second late failure") | .status' "$second")" = "new" ]
+    [ "$(printf '%s' "$output" | jq '.llm_invoked')" = "true" ]
+}
+
 @test "重なった 2 本は lock で 1 本ずつ走り、LLM は 1 回だけ起動する" {
     # LLM の実行中にもう 1 本が来る状況を作る
     printf '#!/bin/sh\nsleep 1\nprintf "%%s\\n" "$*" >> "%s"\n' "$CALLS" > "$STUB/claude"

@@ -16,7 +16,8 @@
 #   daily.sh [--out-dir DIR] [--journal-dir DIR] [--repo DIR] [--now ISO8601]
 #
 #   --out-dir      既定 ~/.claude/logs/dev-flow-health
-#   --journal-dir / --repo / --now は health-report.sh へそのまま渡す
+#   --now          窓の終点。既定は現在時刻の NOW_LAG_SECONDS 秒前（直近の秒に後から書かれる entry を次の窓に残す）
+#   --journal-dir / --repo は health-report.sh へそのまま渡す
 #
 # 出力: stdout に {report, needs_llm, llm_invoked, llm_exit} の JSON 1 行。
 set -euo pipefail
@@ -24,11 +25,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="$HOME/.claude/logs/dev-flow-health"
 PASS=()
+NOW=""
+# --now を省いたときの終点は現在時刻のこの秒数前。journal の entry は timestamp を確定してから書き込まれる
+# （journal.sh は jq を挟んでから mv）ので、終点を現在の秒にすると、同じ秒に走査の後から書かれた失敗は
+# 今回の窓に入らず、次の窓 (終点, ...] からも外れて二度と new にならない。直近の数秒は次の実行の窓に残す
+NOW_LAG_SECONDS=5
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --out-dir) OUT_DIR="${2:?}"; shift 2 ;;
-        --journal-dir|--repo|--now) PASS+=("$1" "${2:?}"); shift 2 ;;
+        --journal-dir|--repo) PASS+=("$1" "${2:?}"); shift 2 ;;
+        --now) NOW="${2:?}"; shift 2 ;;
         -h|--help) sed -n '/^# Usage:/,/^# 出力:/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) jq -n --arg e "unknown option: $1" '{error: $e}' >&2; exit 2 ;;
     esac
@@ -61,18 +68,16 @@ if [[ -n "$prev" ]]; then
     SINCE="$(jq -r '.generated_at // empty' "$prev" 2>/dev/null || true)"
 fi
 
-ARGS=()
+[[ -n "$NOW" ]] || NOW="$(jq -rn --argjson lag "$NOW_LAG_SECONDS" 'now | floor - $lag | todateiso8601')"
+
+ARGS=(--now "$NOW")
 [[ -z "$SINCE" ]] || ARGS+=(--since "$SINCE")
 if [[ ${#PASS[@]} -gt 0 ]]; then
     ARGS+=("${PASS[@]}")
 fi
 
 TMP="$(mktemp "$OUT_DIR/.report.XXXXXX")"
-if [[ ${#ARGS[@]} -gt 0 ]]; then
-    bash "$SCRIPT_DIR/health-report.sh" "${ARGS[@]}" > "$TMP"
-else
-    bash "$SCRIPT_DIR/health-report.sh" > "$TMP"
-fi
+bash "$SCRIPT_DIR/health-report.sh" "${ARGS[@]}" > "$TMP"
 
 STAMP="$(jq -r '.generated_at | gsub(":"; "")' "$TMP")"
 BASE="$OUT_DIR/$STAMP"
