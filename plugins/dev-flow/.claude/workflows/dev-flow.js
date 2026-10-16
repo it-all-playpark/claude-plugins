@@ -1210,7 +1210,7 @@ function mixedScopeAcReasons(acceptanceCriteria, opts = {}) {
   acs.forEach((ac, i) => {
     if (classifyAcScope(ac, opts) !== 'mixed') return
     const { markers } = splitExternalMarkers(ac, opts?.repo)
-    reasons.push(`AC-${i + 1}「${String(ac)}」は repo 内の作業と repo 外の作業（${[...new Set(markers)].join(' / ')}）が混ざっている — dev-flow は 1 issue = 1 PR・単一 worktree で repo 外の作業を満たせない。この AC を repo 内の AC と repo 外の AC に分割し、repo 外の AC には（人手）と明記してから再起動せよ`)
+    reasons.push(`AC-${i + 1}「${String(ac)}」は repo 内の作業と repo 外の作業（${[...new Set(markers)].join(' / ')}）が混ざっている — dev-flow は 1 issue = 1 PR・単一 worktree で repo 外の作業を満たせない。repo 外の作業は \`human-task\` ラベルの別 issue に切り出し、この issue の AC は repo 内で検証できるものだけにしてから再起動せよ。依存の向き: merge 前に人がやる作業ならこの issue に \`Blocked by #<human issue>\`、merge 後に確認する作業なら human issue に \`Blocked by #<実装 issue>\` を書く`)
   })
   return reasons
 }
@@ -5372,7 +5372,7 @@ const clarifyPrompt = (gateReasons) => `cd ${WT} で作業。issue #${ISSUE} は
   + `\`analyze-issue ${ISSUE}${REPO ? ' --repo ' + REPO : ''} --depth comprehensive --dump-body "\${TMPDIR:-/tmp}/issue-${ISSUE}-body.md"\` を実行して issue の本文・comments を読め。`
   + `出力 JSON の body_dump_path が null でなければ、そのファイルを Read して body 全文を読んでから質問文を起こせ。`
   + `各理由について**人間（issue 作成者）が issue body を直せば解消する具体的な質問文**を missing_context:string[] として返せ（理由 1 件につき 1〜2 文、日本語）。`
-  + `質問には「body のどの記述と comment のどの記述が食い違うか」「後方互換を保たない API / 形式の変更の有無と既存データの変換の要否をどこに明記すべきか」「受け入れ基準をどの見出し形式で書くか」「repo 内外が混ざった AC をどう repo 内の AC と repo 外の AC に分けるか」を含めよ。`
+  + `質問には「body のどの記述と comment のどの記述が食い違うか」「後方互換を保たない API / 形式の変更の有無と既存データの変換の要否をどこに明記すべきか」「受け入れ基準をどの見出し形式で書くか」「repo 内外が混ざった AC の repo 外の作業をどの \`human-task\` ラベルの issue に切り出し、どちら向きの \`Blocked by\` で繋ぐか（merge 前に人がやる作業なら実装 issue に \`Blocked by #<human issue>\`、merge 後に確認する作業なら human issue に \`Blocked by #<実装 issue>\`）」を含めよ。`
   + `質問文にも記入例にも breaking / incompatible / migration / 破壊的 / 非互換 の語を使うな（人間が body にその語を書くと analyze-issue のキーワード判定が再び Jev 判定を要求する）。`
   + `要件・受け入れ基準を自分で推測して埋めるな。issue の取得は analyze-issue の 1 回のみ。\n`
   + `ゲート理由（決定論。verbatim で参照し、削除・要約するな）:\n${JSON.stringify(gateReasons)}\n`
