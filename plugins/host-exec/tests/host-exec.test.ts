@@ -120,6 +120,20 @@ describe('host-exec', () => {
     })
   }
 
+  test('worktree の隔離ガードに実行前に拒否された Bash には、sandbox ではないので書き方を直すよう context を 1 件だけ添える', async ($, on) => {
+    const text =
+      'This session is isolated in the worktree /w/repo/.claude/worktrees/x, but this command names git in a form too complex to verify ' +
+      'that it stays inside the worktree. Refusing to run it — a worktree-isolated session\'s git operations must target its own worktree.'
+    const out = { result: { stdout: '', stderr: text, interrupted: false }, text, isError: true }
+    stubBash(on, out)
+    const r: any = await $.tool.call({ tool: 'Bash', command: 'x' } as any)
+    expect(r.result).toEqual(out.result)
+    expect(r.text).toBe(text)
+    expect(r.context.length).toBe(1)
+    expect(r.context[0]).toContain('not by the sandbox')
+    expect(r.context[0]).toContain(`do not use ${TOOL}`)
+  })
+
   for (const [kind, out] of [
     ['成功', { result: { stdout: 'a.txt', stderr: '', interrupted: false }, text: 'a.txt' }],
     ['sandbox と無関係な失敗', { result: { stdout: '', stderr: 'zsh: command not found: kubectl', interrupted: false }, text: 'zsh: command not found: kubectl', isError: true }],
@@ -245,21 +259,45 @@ describe('host-exec', () => {
   test('ファイルやスクリプトの中身を実行するコマンドには警告、中身が argv に見えるインライン実行には出さない', async ($, on) => {
     const asked: string[] = []
     host(on)
-    answer(on, ['拒否', '拒否', '拒否', '拒否', '拒否', '拒否', '拒否'], asked)
+    answer(on, ['拒否', '拒否', '拒否', '拒否', '拒否', '拒否'], asked)
     await $.tool.call({ tool: TOOL, argv: ['node', '--no-warnings', 'scripts/deploy.js'], reason: 'x' } as any)
     await $.tool.call({ tool: TOOL, argv: ['pnpm', 'dev'], reason: 'x' } as any)
     await $.tool.call({ tool: TOOL, argv: ['pnpm', 'outdated'], reason: 'x' } as any)
     await $.tool.call({ tool: TOOL, argv: ['node', '-e', 'console.log(1)'], reason: 'x' } as any)
     await $.tool.call({ tool: TOOL, argv: ['bash', '-e', './deploy.sh'], reason: 'x' } as any)
     await $.tool.call({ tool: TOOL, argv: ['perl', '-p', 'x.pl'], reason: 'x' } as any)
-    await $.tool.call({ tool: TOOL, argv: ['bash', '-c', 'echo 1'], reason: 'x' } as any)
     expect(asked[0]).toContain('scripts/deploy.js の中身が実行されます。この画面には中身が出ない')
     expect(asked[1]).toContain('package.json の scripts や、依存パッケージの install スクリプトが実行されます')
     expect(asked[2]).not.toContain('⚠')
     expect(asked[3]).not.toContain('⚠')
     expect(asked[4]).toContain('./deploy.sh の中身が実行されます。この画面には中身が出ない')
     expect(asked[5]).toContain('x.pl の中身が実行されます。この画面には中身が出ない')
-    expect(asked[6]).not.toContain('⚠')
+  })
+
+  test('shell の -c でコマンド文字列を渡すものは承認を聞かずに拒否し、sandbox 内の Bash か Read / Grep を使うよう返す', async ($, on) => {
+    const asked: string[] = []
+    const ran: string[][] = []
+    host(on)
+    answer(on, [], asked)
+    stubProcess(on, { stdout: '' }, ran)
+    for (const argv of [['bash', '-c', 'ls | head'], ['/opt/homebrew/bin/bash', '-c', 'echo 1'], ['bash', '-lc', 'x'], ['bash', '-e', '-c', 'x'], ['bash', '-o', 'pipefail', '-c', 'x'], ['bash', '-euo', 'pipefail', '-c', 'x'], ['bash', '+O', 'extglob', '-c', 'x'], ['bash', '--rcfile', 'f', '-c', 'x']]) {
+      const r: any = await $.tool.call({ tool: TOOL, argv, reason: 'x' } as any)
+      expect(String(r.deny)).toContain('refused (shell')
+      expect(String(r.deny)).toContain('Read / Grep')
+    }
+    const multi: any = await $.tool.call({ tool: TOOL, steps: [['gh', 'repo', 'view'], ['bash', '-c', 'x']], reason: 'x' } as any)
+    expect(String(multi.deny)).toContain('at step 2')
+    expect(asked.length).toBe(0)
+    expect(ran.length).toBe(0)
+  })
+
+  test('shell の -c がスクリプト名より後ろにあるもの（スクリプトへの引数）は拒否せず承認を聞く', async ($, on) => {
+    const asked: string[] = []
+    host(on)
+    answer(on, ['拒否'], asked)
+    const r: any = await $.tool.call({ tool: TOOL, argv: ['bash', './deploy.sh', '-c', 'prod'], reason: 'x' } as any)
+    expect(asked.length).toBe(1)
+    expect(String(r.deny)).toContain('declined')
   })
 
   test('機密を含む出力は止めて、マスクを選べばマスク済みで返す', async ($, on) => {
