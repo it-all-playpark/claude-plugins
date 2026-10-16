@@ -5,7 +5,8 @@ bats_require_minimum_version 1.5.0
 # Focus: the pre-flight AC lint gate (lint_ac()) invoked at the top of run(),
 # exercised only through the --dry-run path so `gh` is never required, plus the
 # --kind agent|human gate (incl. the agent `## 変更対象パス` gate, tests 20+, and the
-# 4000-char non-AC body cap pinned to analyze-issue.sh's scope_total_chars, tests 27+) and
+# 4000-char non-AC body cap pinned to analyze-issue.sh's scope_total_chars, tests 27+, and the
+# AC actor gate delegated to _lib/scripts/ac-actor-classify.mjs, tests 32+) and
 # --blocked-by dependency wiring (tests 5+; the non-dry-run ones put a recording
 # gh stub first on PATH).
 #
@@ -617,4 +618,183 @@ write_scope_body() {
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"（AC 節を除く）が ${expected} 字"* ]]
+}
+
+# ---- --kind agent: dev-flow が人手扱いにする AC（_lib/ac-actor.mjs の classifyAcActor / mixedScopeAcReasons）----
+# fixture の AC 文言は _lib/ac-actor.test.mjs の該当例から取る
+
+# write_ac_body <file> <AC 本文...>: AC 節の checkbox を差し替えた agent 本文
+write_ac_body() {
+    local out="$1"
+    shift
+    local items=() ac
+    for ac in "$@"; do
+        items+=("- [ ] $ac")
+    done
+    write_body "$out" \
+        "## ゴール" \
+        "- foo" \
+        "" \
+        "## 受け入れ基準" \
+        "${items[@]}" \
+        "" \
+        "## 変更対象パス" \
+        "- src/foo.py"
+}
+
+HUMAN_SPLIT_HINT='人の作業は `--kind human` で別 issue に切り出して先に起票し、この issue は `--blocked-by` で紐付けよ'
+
+@test "(32) --kind agent + （人手）の明示マーカーで human になる AC + --dry-run -> exit 1、AC 番号・本文と切り出しの指示を stderr に出す" {
+    command -v node >/dev/null || skip "node not available"
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_ac_body "$BODY" "AC-1 foo" "Cloud Run の設定値を確認する(人手)"
+
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"AC-2「Cloud Run の設定値を確認する(人手)」"* ]]
+    [[ "$stderr" != *"AC-1「"* ]]
+    [[ "$stderr" == *"$HUMAN_SPLIT_HINT"* ]]
+    [[ "$output" != *"Dry run: issue will not be created."* ]]
+}
+
+@test "(33) --kind agent + 環境（本番環境）の指定で human になる AC + --dry-run -> exit 1" {
+    command -v node >/dev/null || skip "node not available"
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_ac_body "$BODY" "本番環境の worker 数を 4 に変更する"
+
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"AC-1「本番環境の worker 数を 4 に変更する」"* ]]
+    [[ "$stderr" == *"$HUMAN_SPLIT_HINT"* ]]
+    [[ "$output" != *"Dry run: issue will not be created."* ]]
+}
+
+@test "(34) --kind agent + repo 内外が混ざった（classifyAcScope が mixed の）AC + --dry-run -> exit 1、mixedScopeAcReasons の理由をそのまま出す" {
+    command -v node >/dev/null || skip "node not available"
+    command -v jq >/dev/null || skip "jq not available"
+    MIXED_AC='古い skill を参照するテスト・README・rules を削除し、dotfiles の excludedCommands から dev-flow-doctor を外す'
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_ac_body "$BODY" "$MIXED_AC"
+    expected="$(jq -cn --arg ac "$MIXED_AC" '[$ac]' | node "$SKILLS_REPO/_lib/scripts/ac-actor-classify.mjs" --repo acme/app | jq -r '.mixed_reasons[0]')"
+    [[ "$expected" == "AC-1「${MIXED_AC}」は repo 内の作業と repo 外の作業（dotfiles / excludedCommands）が混ざっている"* ]]
+
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"$expected"* ]]
+    [[ "$output" != *"Dry run: issue will not be created."* ]]
+}
+
+@test "(35) --kind agent + repo 内のファイルとテストだけを書いた AC + --dry-run -> exit 0" {
+    command -v node >/dev/null || skip "node not available"
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_ac_body "$BODY" "plugins/dev-flow/git-issue/scripts/create_issue.py の検査を直し、create_issue.bats にテストを足す"
+
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Dry run: issue will not be created."* ]]
+}
+
+@test "(36) --kind agent + inline code の中で（人手）を識別子として引用しているだけの AC + --dry-run -> exit 0" {
+    command -v node >/dev/null || skip "node not available"
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_ac_body "$BODY" '`（人手）` と書かれた AC だけが未達の場合は、差し戻さずに HOLD（人手待ち）になる'
+
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Dry run: issue will not be created."* ]]
+}
+
+@test "(37) --kind human は ## 完了条件 に人手の項目があっても拒否しない" {
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_body "$BODY" \
+        "## 手順" \
+        "1. 本番環境の管理画面で API キーを発行する" \
+        "" \
+        "## 完了条件" \
+        "- [ ] 本番環境の worker 数を 4 に変更する" \
+        "- [ ] Cloud Run の設定値を確認する(人手)"
+
+    run --separate-stderr python3 "$SCRIPT" --kind human --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Dry run: issue will not be created."* ]]
+}
+
+@test "(38) --repo 省略時は origin の owner/name を判定に渡す（対象 repo 自身が持つ dotfiles の目印は repo 外に数えない）" {
+    command -v node >/dev/null || skip "node not available"
+    command -v git >/dev/null || skip "git not available"
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_ac_body "$BODY" "claude-code/settings.json の excludedCommands に bare 名を足し、bats テストを足す"
+    REPO_DIR="$BATS_TEST_TMPDIR/dotfiles"
+    git init -q "$REPO_DIR"
+    git -C "$REPO_DIR" remote add origin git@github.com:acme/dotfiles.git
+
+    cd "$REPO_DIR"
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --dry-run
+    [ "$status" -eq 0 ]
+
+    # 他 repo を対象にすると、同じ AC は repo 内外の混在で拒否される
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"repo 内の作業と repo 外の作業"* ]]
+}
+
+# node stub: ac-actor-classify.mjs の代わりに NODE_STUB_MODE の応答を返す
+#   fail -> exit 1 / garbage -> JSON でない出力 / human -> 全 AC を human と返す
+use_node_stub() {
+    local bin="$BATS_TEST_TMPDIR/nodebin"
+    mkdir -p "$bin"
+    cat >"$bin/node" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+case "$NODE_STUB_MODE" in
+    fail) echo "boom" >&2; exit 1 ;;
+    garbage) echo "not json"; exit 0 ;;
+    human) echo '{"actors":["human"],"mixed_reasons":[]}'; exit 0 ;;
+esac
+exit 2
+STUB
+    chmod +x "$bin/node"
+    export PATH="$bin:$PATH"
+}
+
+@test "(39) 判定は ac-actor-classify.mjs の結果で決まる（CLI が human と返せば正規表現に当たらない AC でも拒否する）" {
+    use_node_stub
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_ac_body "$BODY" "AC-1 foo"
+
+    NODE_STUB_MODE=human run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"AC-1「AC-1 foo」"* ]]
+}
+
+@test "(40) ac-actor-classify.mjs が非 0 終了 -> exit 1、gh issue create を呼ばない" {
+    use_gh_stub
+    use_node_stub
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_ac_body "$BODY" "AC-1 foo"
+
+    NODE_STUB_MODE=fail run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app
+
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"ac-actor-classify.mjs"*"exit 1"*"起票しない"*"boom"* ]]
+    ! grep -q '^issue create' "$GH_LOG"
+}
+
+@test "(41) ac-actor-classify.mjs の出力が JSON として読めない -> --dry-run でも exit 1" {
+    use_node_stub
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_ac_body "$BODY" "AC-1 foo"
+
+    NODE_STUB_MODE=garbage run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"JSON として読めない"* ]]
+    [[ "$output" != *"Dry run: issue will not be created."* ]]
 }

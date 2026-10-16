@@ -217,7 +217,12 @@ exit 1 で abort する（`t2` は警告付きで通過）。加えて `--kind` 
 - `--kind agent`（既定）: 本文に `executor: human` が 1 つでもあれば exit 1 で起票を拒否する。
   `## 変更対象パス` が無い・エントリ 0 件・エントリが `/` 始まり・`..` セグメントを含む場合も exit 1。
   AC 節を除いた本文（先頭に足す `Blocked by` 行を含む）が 4000 字を超える場合も、超過字数を出して exit 1
-  （字数は dev-flow の `analyze-issue.sh` の `scope_total_chars` と同じ数え方）。Phase 5 に戻って要点を絞って書き直す
+  （字数は dev-flow の `analyze-issue.sh` の `scope_total_chars` と同じ数え方）。Phase 5 に戻って要点を絞って書き直す。
+  AC の人手判定も dev-flow と同じ `_lib/ac-actor.mjs` の判定で行う: AC 節の checkbox 行に、dev-flow が人手扱いにする
+  AC（`（人手）`・staging / 本番環境・外部サービス・repo 外だけの作業）があれば、AC 番号と本文を出して exit 1。
+  repo 内外の作業が混ざった AC も理由を出して exit 1（起票時に通った AC が dev-flow の実行時に人手扱いで止まらないため）。
+  人の作業は `--kind human` で別 issue に切り出して先に起票し（下の起票順序 1）、
+  この issue は `--blocked-by` で紐付ける。判定できない（判定 CLI の起動失敗・非 0 終了・出力不正）ときも起票せず exit 1
 - `--kind human`: `## 手順` 見出しと checkbox（`- [ ]`）付きの `## 完了条件` が無ければ exit 1。
   `human-task` ラベルを付けて起票し、ラベルが無ければ作成する
 
@@ -306,7 +311,7 @@ Phase 4 の devil's-advocate ループを行わない。複数の finding を 1 
 3. Phase 5 と同じく finding ごとに本文ファイルを作り（`/tmp/git-issue-body-1.md`, `-body-2.md` …）、
    本文ファイルごとに AC Lint Self-Check（`ac-lint`）を通す
 4. 本文ファイルごとに Phase 6 の `create_issue.py`（`--kind agent`、`--blocked-by` なし）で起票する。
-   ゲート（ac-lint・4000 字・変更対象パス・`executor: human` の検出）は重い経路と同じ
+   ゲート（ac-lint・4000 字・変更対象パス・`executor: human` の検出・AC の人手判定（dev-flow と同じ `ac-actor.mjs` の判定））は重い経路と同じ
 5. Phase 7 は起票した全 issue の番号をまとめて `dev-flow-ready-set` に 1 回だけ渡す（finding ごとに実行しない）
 
 途中で分割・issue 間の依存・human タスクが必要と分かったら、その finding は軽い経路をやめて重い経路

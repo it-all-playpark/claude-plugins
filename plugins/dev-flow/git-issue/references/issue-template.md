@@ -36,6 +36,9 @@
   （例: ロールバック手段が要る → 「旧経路を残す」を制約に、テストで守るべき挙動 → AC に）。
 - AC 節を除いた本文は 4000 字以内（dev-flow の analyze はそれを超えた部分を切り、implementer に届かない）。
   `create_issue.py --kind agent` は超えた本文の起票を拒否する。
+- AC は repo 内で検証できるものだけを書く。`（人手）`・staging / 本番環境・repo 外の作業を含む AC、repo 内外の作業が
+  混ざった AC は dev-flow が人手扱いにして止まるので、`create_issue.py --kind agent` は dev-flow と同じ
+  `_lib/ac-actor.mjs` の判定で起票を拒否する。人の作業は下の human issue テンプレートで切り出す。
 
 ## 変更対象パス
 
