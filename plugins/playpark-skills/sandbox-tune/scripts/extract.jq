@@ -76,6 +76,11 @@ def reader_name:
 def ls_re: "kLSServerCommunicationErr|error -10822|\\(-10822\\)|LSOpenURLsWithRole\\(\\) failed";
 def is_denial_line: test("operation not permitted"; "i") or test("\\bEPERM\\b|" + ls_re);
 
+# sandbox_events が事象を出しうる文言（is_denial_line・diagnostic_line・line_target・trailing_violations の上位集合）。
+# どれも含まない Bash の結果は事象 0 件なので、行に割って正規表現を当てる前に本文全体への 1 回の test で飛ばす
+# （collect の時間の大半がここ）。大小無視は operation not permitted だけ（全体に掛けると requirePermission 等に当たる）
+def denial_hint_re: "(?i:operation not permitted)|EPERM|kLSServerCommunicationErr|-10822|LSOpenURLsWithRole|<sandbox_violations>";
+
 def strip_ansi: gsub("\u001b\\[[0-9;]*[A-Za-z]"; "");
 
 # 出力の 1 行。JSON の行（ツールが stderr を JSON に包んで返す形）は中の文字列を行に割って見る
@@ -289,7 +294,7 @@ foreach (inputs | fromjson? | select(type == "object")) as $l (
                  or ($txt | test("\\A(?:Error: )?(?:Permission to use [\\s\\S]* has been denied|Permission for this action [\\s\\S]*denied|The user doesn't want to proceed with this tool use|PreToolUse:\\S+ hook error)"))
                  or ($txt | test(worktree_guard_re))
                then permission_events($l; $r; $tu; $txt)
-               elif $tu.name == "Bash" then sandbox_events($l; $r; $tu; $txt)
+               elif $tu.name == "Bash" and ($txt | test(denial_hint_re)) then sandbox_events($l; $r; $tu; $txt)
                else empty end ]} ] as $rs
       | .out = (if in_window($l) then [ $rs[].events[] ] else [] end)
       | .blocked = (if any($rs[]; .bash) then any($rs[] | select(.bash); .events | length > 0) else $blocked end)
