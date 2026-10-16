@@ -32,13 +32,14 @@ Marketplaces で auto-update を有効化。`DISABLE_AUTOUPDATER=1` 環境では
 ```
 
 `host-exec` は hooks module（`plugins/host-exec/hooks/register.ts`）で `mcp__host-exec__run` ツールを
-追加します。sandbox で動かないコマンドを、拒否パターン（破壊的操作・資格情報の出力）の静的チェックと
+追加します。sandbox で動かないコマンドを、拒否パターン（破壊的操作・資格情報の出力・シェルにコマンド文字列を渡す `bash -c`）の静的チェックと
 実行承認を経てホスト上で実行し（続くコマンドは `steps` で 1 回の承認にまとめられ、「このセッションでは同じコマンドを
 聞かない」を選んだものは完全に同じ呼び出しなら聞き直さない。Bash でも sandbox の外で動く `sandbox.excludedCommands`
 の一致は Bash へ回す）、出力に秘密情報らしきものがあれば Claude に渡す前に止めてマスク / 非開示を
 選ばせます。実行ファイルは許可リストで絞らず、承認ダイアログに PATH で解決した実体・argv・cwd をエスケープして
 見せ、Claude が書き換えられる場所の実行ファイルや一時ディレクトリの cwd、スクリプトの中身を動かすコマンドには
-警告を添えます。
+警告を添えます。Bash が sandbox に拒否されたときは host-exec を使うよう、worktree の隔離ガードに拒否されたときは
+（sandbox ではないので）host-exec ではなく書き方を直すよう、Bash の結果に案内を添えます。
 
 `meeting` は macOS 専用です。会議アプリ（Zoom / Google Meet / Teams 等）がマイクを使い始めたら自動で録音し、
 Whisper と pyannote でローカルに文字起こし・話者分離して `/meeting-notes` で議事録にします。常駐（launchd）は

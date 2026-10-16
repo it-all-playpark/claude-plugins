@@ -100,6 +100,31 @@ const SANDBOX_HINT =
   'This Bash failure comes from the sandbox. Before asking the user to run the command themselves with `!`, ' +
   'run it with the mcp__host-exec__run tool (it runs outside the sandbox after the user approves).'
 
+/**
+ * worktree に隔離された session で、Claude Code の組み込みガードが Bash を実行前に拒否したときの文面の印。
+ * sandbox の拒否ではないので、sandbox の外で動かしても意味がない。拒否されるのは書き方なので、書き直しを促す。
+ */
+const WORKTREE_GUARD_MARKER = 'This session is isolated in the worktree'
+const WORKTREE_GUARD_HINT =
+  'This Bash command was refused by the worktree-isolation guard before it ran, not by the sandbox, ' +
+  'so running it outside the sandbox does not help: do not use mcp__host-exec__run for it. ' +
+  'Rewrite it in a form the guard can verify: one plain command per call, absolute paths instead of cd, ' +
+  'variables in double quotes, no $(…). To read files, use the Read / Grep tools; for longer logic, ' +
+  'write a script under $TMPDIR and run that.'
+
+/** コマンド文字列を引数で受け取って実行するシェル。host-exec はシェルを通さないので、-c は渡させない。 */
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'fish', 'dash', 'ksh'])
+
+/** argv がシェルの -c（-lc / -ec のように束ねたものを含む）でコマンド文字列を渡しているか。スクリプト名より後ろの -c はスクリプトへの引数なので数えない。 */
+function isShellInline(argv: readonly string[]): boolean {
+  if (!SHELLS.has(basename(argv[0] ?? ''))) return false
+  for (const a of argv.slice(1)) {
+    if (a === '--' || !a.startsWith('-')) return false
+    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(a)) return true
+  }
+  return false
+}
+
 const MAX_TIMEOUT_SEC = 600
 const DECLINE = '拒否'
 const RUN = '実行する'
@@ -256,7 +281,8 @@ export const register: Register = on => {
         'or several as `steps` (one argv each): they run in order after one approval and stop at the first that fails.',
         'When commands follow one another (check → act → check), plan them first and pass them together as one `steps` call, so one approval covers them all.',
         'argv[0] is resolved on the user\'s PATH and shown to the user with the full argv and cwd before anything runs.',
-        'Destructive commands and commands that print credentials are refused.',
+        'Destructive commands, commands that print credentials, and shell -c (bash -c "…") are refused.',
+        'Do not use it to read files or transcripts: those are readable inside the sandbox with the Read / Grep tools.',
         'Commands that the Bash tool already runs outside the sandbox (sandbox.excludedCommands) are refused: run them with Bash.',
         'If the output contains secrets, the user may mask or withhold it; do not try to obtain the secret another way.',
       ].join(' '),
@@ -308,6 +334,14 @@ export const register: Register = on => {
       for (const [re, why] of DENY_PATTERNS) {
         if (re.test(line)) {
           return { deny: `host-exec: refused (${why})${at(i)}. Nothing was run. Do not retry this command another way; explain to the user what you wanted to do and let them decide.` }
+        }
+      }
+      if (isShellInline(argv)) {
+        return {
+          deny:
+            `host-exec: refused (shell -c: host-exec does not run a shell)${at(i)}. Nothing was run. ` +
+            'Do pipes, redirects and variables with the Bash tool inside the sandbox; to read files, use the Read / Grep tools. ' +
+            'Pass only a command that cannot run inside the sandbox, as argv (or steps for several), one command each.',
         }
       }
     }
@@ -501,12 +535,17 @@ export const register: Register = on => {
     next.called ? next(e) : { deny: 'host-exec: its guard failed, so the command was not run.' },
   )
 
-  // 結果は変えず、sandbox に拒否された失敗のときだけ host-exec を使うよう context を添える
+  // 結果は変えず、sandbox に拒否された失敗のときだけ host-exec を使うよう context を添える。
+  // worktree の隔離ガードの拒否は sandbox ではないので、host-exec ではなく書き直しを促す
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const r = await next(e)
     const out = r as unknown as { isError?: boolean; text?: unknown; context?: string[] }
     const text = typeof out.text === 'string' ? out.text : ''
-    if (out.isError !== true || !SANDBOX_DENIAL_MARKERS.some(m => text.includes(m))) return r
-    return { ...r, context: [...(out.context ?? []), SANDBOX_HINT] }
+    if (out.isError !== true) return r
+    const hint = text.includes(WORKTREE_GUARD_MARKER)
+      ? WORKTREE_GUARD_HINT
+      : SANDBOX_DENIAL_MARKERS.some(m => text.includes(m)) ? SANDBOX_HINT : undefined
+    if (hint === undefined) return r
+    return { ...r, context: [...(out.context ?? []), hint] }
   })
 }
