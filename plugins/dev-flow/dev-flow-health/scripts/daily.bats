@@ -156,21 +156,27 @@ run_watch_trigger() {
     [ "$(jq -r '.signatures[] | select(.template == "daily caught failure") | .status' "$HOME/.claude/logs/dev-flow-health/2026-10-06T070000Z.json")" = "new" ]
 }
 
-@test "--now を省いた実行の終点は現在より前 — 実行と同じ秒の timestamp で後から書かれた失敗は次の実行で new になる" {
-    started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+@test "--now を省いた即時トリガの実行は、自分を起こした直前の失敗を new にして LLM を起動する" {
+    export DEV_FLOW_HEALTH_NOW_LAG_SECONDS=1
+    write_failure "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "trigger woke on this failure"
     run daily
     [ "$status" -eq 0 ]
-    first="$(printf '%s' "$output" | jq -r '.report')"
-    [[ "$(jq -r '.generated_at' "$first")" < "$started" ]]
-
-    # journal.sh は timestamp を確定してから mv するので、走査と同じ秒の entry が走査の後に現れる
-    write_failure "$started" "same second late failure"
-    # 次の実行は数秒後に走る（終点が entry の timestamp を越えた時点）
-    run daily --now "$(jq -rn --arg t "$started" '$t | fromdateiso8601 + 60 | todateiso8601')"
-    [ "$status" -eq 0 ]
-    second="$(printf '%s' "$output" | jq -r '.report')"
-    [ "$(jq -r '.signatures[] | select(.template == "same second late failure") | .status' "$second")" = "new" ]
+    report="$(printf '%s' "$output" | jq -r '.report')"
+    [ "$(jq -r '.signatures[] | select(.template == "trigger woke on this failure") | .status' "$report")" = "new" ]
     [ "$(printf '%s' "$output" | jq '.llm_invoked')" = "true" ]
+}
+
+@test "--now を省いた実行は待ってから走査する — 終点以前の timestamp で走査の前に書き終わった失敗を今回の窓で拾う" {
+    export DEV_FLOW_HEALTH_NOW_LAG_SECONDS=3
+    started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    daily > "$BATS_TEST_TMPDIR/run.out" &
+    pid=$!
+    # journal.sh は timestamp を確定してから mv するので、終点以前の timestamp の entry が実行の開始後に現れる
+    sleep 1
+    write_failure "$started" "late written failure"
+    wait "$pid"
+    report="$(jq -r '.report' "$BATS_TEST_TMPDIR/run.out")"
+    [ "$(jq -r '.signatures[] | select(.template == "late written failure") | .status' "$report")" = "new" ]
 }
 
 @test "重なった 2 本は lock で 1 本ずつ走り、LLM は 1 回だけ起動する" {
