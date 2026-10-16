@@ -33,6 +33,19 @@ extract_report_step() {
          f { print }' "$SKILL_MD"
 }
 
+@test "起動条件: SKILL.md の「日次の流れ」と rules の dev-flow-health 節は日次ジョブと journal の即時トリガの両方を書く" {
+    flow="$(awk '/^## 日次の流れ/ { f = 1; next } f && /^## / { exit } f { print }' "$SKILL_MD")"
+    [[ "$flow" == *'launchd 07:00（日次ジョブ）／ journal に entry が書かれた時（即時トリガ）→ scripts/daily.sh'* ]]
+    [[ "$flow" == *'`WatchPaths`'* ]]
+    [[ "$flow" == *'install-schedule.sh --install --repo <skills checkout> --watch-journal'* ]]
+    [[ "$flow" == *'YYYY-MM-DDTHHMMSSZ.json（実行ごとに別ファイル）'* ]]
+
+    rules="$SKILL_DIR/../../../.claude/rules/dev-flow.md"
+    section="$(awk '/^## dev-flow-health/ { f = 1; next } f && /^## / { exit } f { print }' "$rules")"
+    [[ "$section" == *'起動は日次 07:00 と journal の WatchPaths 即時トリガ'* ]]
+    [[ "$section" == *'lock で直列'* ]]
+}
+
 @test "起票は Skill ツールで dev-flow:git-issue を --repo <issue_repo> --labels self-improve で 1 回だけ起動する" {
     step="$(extract_filing_step)"
     [ -n "$step" ]
