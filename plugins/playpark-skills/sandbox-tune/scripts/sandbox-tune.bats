@@ -147,6 +147,31 @@ sandbox:unix_socket:/run/db/x.sock 1 1" ]
   [ "$(printf '%s' "$output" | ids)" = "sandbox:path:/secret/dir 1 1" ]
 }
 
+@test "collect: operation not permitted を含まず EPERM だけの診断行も sandbox の拒否として数える" {
+  local f=proj-a/s1.jsonl
+  use $f S1 2026-09-10T00:00:00Z e1 'npm install'
+  result $f S1 2026-09-10T00:00:01Z e1 $'npm error code EPERM\nnpm error syscall mkdir'
+  run collect
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | ids)" = "sandbox:command:npm install 1 1" ]
+}
+
+@test "collect: LaunchServices の拒否は 3 つの文言のどれか 1 つだけでも launch_services として数える" {
+  local f=proj-a/s1.jsonl
+  # 各出力は 1 文言だけを含む（他の 2 文言・operation not permitted・EPERM を含めない）
+  use $f S1 2026-09-10T00:00:00Z l1 'open https://example.com'
+  result $f S1 2026-09-10T00:00:01Z l1 'LSOpenURLsWithRole() failed with error -54 for the URL https://example.com.'
+  use $f S1 2026-09-10T00:01:00Z l2 'code .'
+  result $f S1 2026-09-10T00:01:01Z l2 'code: launching the app failed with error -10822'
+  use $f S1 2026-09-10T00:02:00Z l3 'osascript -e beep'
+  result $f S1 2026-09-10T00:02:01Z l3 'osascript: kLSServerCommunicationErr'
+  run collect
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | ids)" = "sandbox:launch_services:code 1 1
+sandbox:launch_services:open 1 1
+sandbox:launch_services:osascript 1 1" ]
+}
+
 @test "collect: session 名が途中で変わった session も sessionId で 1 つと数える" {
   local f=proj-a/s1.jsonl
   echo '{"type":"summary","summary":"最初の名前","leafUuid":"x"}' >"$P/$f"
