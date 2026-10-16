@@ -232,6 +232,13 @@ test('pipeline.md: 判断系 leaf の subagent 一覧が agents/ の実体と一
   assert.deepEqual(documented, actual);
 });
 
+test('pipeline.md: 混在 AC の説明は mixedScopeAcReasons と同じく repo 外の作業を human-task issue に切り出させ、依存の向きを書く', () => {
+  // 日本語の折り返しは空白なしで繋がるので改行を除いて照合する
+  const flat = pipelineMd.replace(/\n/g, '');
+  assert.ok(flat.includes('`mixed` で、repo 外の作業を `human-task` ラベルの別 issue に切り出し、実装 issue の AC を repo 内で検証できるものだけにするよう求める'), 'pipeline.md の混在 AC の説明が human-task issue への切り出しを求めていない');
+  assert.ok(flat.includes('merge 前に人がやる作業なら実装 issue に`Blocked by #<human issue>`、merge 後に確認する作業なら human issue に `Blocked by #<実装 issue>`'), 'pipeline.md に依存の向きが無い');
+});
+
 test('AGENTS.md: 日次 launchd は install-schedule.sh --install の手動登録が前提であると書く', () => {
   const installer = readFileSync(join(pluginRoot, 'dev-flow-health/scripts/install-schedule.sh'), 'utf8');
   assert.match(installer, /--install\)/, 'install-schedule.sh に --install が無い — AGENTS.md を見直す');

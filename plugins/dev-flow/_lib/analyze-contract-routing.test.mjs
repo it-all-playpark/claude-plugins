@@ -254,7 +254,7 @@ test('[analyze-routing] (i3) closed の blocker のみ → 従来どおり isola
 const MIXED_AC = '古い skill を参照するテスト・README・rules を削除し、dotfiles の excludedCommands から dev-flow-doctor を外す';
 const EXTERNAL_AC = 'dotfiles の excludedCommands に dev-flow-health の起動形を足す';
 
-test('[analyze-routing] (j1) repo 内外が混ざった AC を持つ issue → needs_clarification（source=analyze）で isolation-probe / dev-implementer より前に止まり、AC の分割を求める', async () => {
+test('[analyze-routing] (j1) repo 内外が混ざった AC を持つ issue → needs_clarification（source=analyze）で isolation-probe / dev-implementer より前に止まり、repo 外の作業を human-task issue に切り出させる', async () => {
   const { calls, result, error, logs } = await run({ analyze: { acceptance_criteria: ['worker 数の上限を設定で変えられる', MIXED_AC] } });
   assert.equal(error, null, `run が throw してはならないが: ${error?.message}`);
   assertClarificationBeforeSpawn(calls, result, 'mixed-ac');
@@ -262,11 +262,13 @@ test('[analyze-routing] (j1) repo 内外が混ざった AC を持つ issue → n
   const reason = result.missing_context.find((m) => m.startsWith('AC-2「'));
   assert.ok(reason, `missing_context に混在 AC の理由が無い: ${JSON.stringify(result.missing_context)}`);
   assert.ok(reason.includes(MIXED_AC));
-  assert.match(reason, /repo 内の AC と repo 外の AC に分割/);
+  assert.match(reason, /`human-task` ラベルの別 issue に切り出し/);
   const clarify = calls.filter((c) => c.label === 'analyze-clarify#1');
   assert.equal(clarify.length, 1);
   assert.ok(clarify[0].prompt.includes('AC-2「'), 'clarify prompt にゲート理由（混在 AC）が verbatim で無い');
-  assert.ok(logs.some((l) => l.includes('repo 内外混在 AC=1')), 'ゲート log に混在 AC の件数が無い');
+  // 質問の観点: repo 外の作業をどの human-task issue に切り出し、どちら向きの Blocked by で繋ぐか
+  assert.match(clarify[0].prompt, /repo 内外が混ざった AC の repo 外の作業をどの `human-task` ラベルの issue に切り出し、どちら向きの `Blocked by` で繋ぐか/);
+  assert.match(clarify[0].prompt, /merge 前に人がやる作業なら実装 issue に `Blocked by #<human issue>`、merge 後に確認する作業なら human issue に `Blocked by #<実装 issue>`/);  assert.ok(logs.some((l) => l.includes('repo 内外混在 AC=1')), 'ゲート log に混在 AC の件数が無い');
 });
 
 test('[analyze-routing] (j2) repo 外の作業だけを書いた AC はゲートを通り、人手 AC として Implement に進む', async () => {

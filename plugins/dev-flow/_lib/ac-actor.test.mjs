@@ -233,13 +233,18 @@ test('[ac-actor] repo 外の作業だけを書いた AC は human（エージェ
   assert.deepEqual(acActorsOf(['acme/infra#206 の設定を入れる'], { repo: 'it-all-playpark/skills' }), ['human']);
 });
 
-test('[ac-scope] mixedScopeAcReasons: 混ざった AC だけを AC 番号・本文・repo 外の目印つきで 1 行ずつ返し、分割を求める', () => {
+test('[ac-scope] mixedScopeAcReasons: 混ざった AC だけを AC 番号・本文・repo 外の目印つきで 1 行ずつ返し、repo 外の作業を human-task issue に切り出させる', () => {
   const reasons = mixedScopeAcReasons(['worker 数の上限を設定で変えられる', MIXED_AC, EXTERNAL_AC]);
   assert.equal(reasons.length, 1);
   assert.match(reasons[0], /^AC-2「/);
   assert.ok(reasons[0].includes(MIXED_AC));
   assert.match(reasons[0], /dotfiles \/ excludedCommands/);
-  assert.match(reasons[0], /repo 内の AC と repo 外の AC に分割/);
+  assert.match(reasons[0], /repo 外の作業は `human-task` ラベルの別 issue に切り出し/);
+  assert.match(reasons[0], /この issue の AC は repo 内で検証できるものだけにして/);
+  assert.match(reasons[0], /merge 前に人がやる作業ならこの issue に `Blocked by #<human issue>`/);
+  assert.match(reasons[0], /merge 後に確認する作業なら human issue に `Blocked by #<実装 issue>`/);
+  // （人手）と明記して同じ issue に残すと actor human の AC になり、Final reconcile で必ず HOLD になる
+  assert.doesNotMatch(reasons[0], /人手/);
   assert.deepEqual(mixedScopeAcReasons(['worker 数の上限を設定で変えられる', EXTERNAL_AC]), []);
   assert.deepEqual(mixedScopeAcReasons(undefined), []);
 });

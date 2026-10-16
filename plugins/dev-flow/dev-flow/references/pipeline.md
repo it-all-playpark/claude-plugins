@@ -26,8 +26,12 @@ missing_context を生成し needs_clarification で終端する。失敗 teleme
 repo 内外の混在は `_lib/ac-actor.mjs` の `classifyAcScope` が決定論で判定する: repo 外の目印（`dotfiles` /
 `excludedCommands` / `settings.json` / `~/.claude` / 別 repo・他 repo / 対象 repo 以外の `owner/repo#N`・
 `github.com/owner/repo`）と repo 内の目印（テスト / README / rules / repo 内パス等）が 1 つの AC に両方あれば
-`mixed` で、AC を repo 内 / repo 外に分割するよう求める（1 issue = 1 PR・単一 worktree では repo 外を満たせず、
-Evaluate 後に agent AC の取りこぼしと誤分類されるため）。repo 外の目印は作業の対象として指すものだけを数える:
+`mixed` で、repo 外の作業を `human-task` ラベルの別 issue に切り出し、実装 issue の AC を repo 内で検証できる
+ものだけにするよう求める（1 issue = 1 PR・単一 worktree では repo 外を満たせず、Evaluate 後に agent AC の
+取りこぼしと誤分類されるため。`（人手）` と明記して同じ issue に残すと actor human の AC として Final reconcile で
+必ず `ac_human_pending` の HOLD になる）。依存の向きは、merge 前に人がやる作業なら実装 issue に
+`Blocked by #<human issue>`、merge 後に確認する作業なら human issue に `Blocked by #<実装 issue>`。
+repo 外の目印は作業の対象として指すものだけを数える:
 否定・不在・件数 0・不要・条件・理由の言及・grep 対象の節にある目印と、対象 repo 自身が持つ目印（対象 repo が
 dotfiles のときの `dotfiles` / `excludedCommands` / `settings.json`）は数えない。`（人手）` と明記した AC は
 混在していても `external`（human）にする。

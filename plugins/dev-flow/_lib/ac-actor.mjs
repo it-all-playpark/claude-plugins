@@ -30,7 +30,8 @@
 //     worktree では満たせないので actor は 'human'。
 //   - 'mixed': repo 外の作業と repo 内の作業（テスト・README・rules・repo 内パス等）が 1 つの AC に混ざっている。
 //     agent 部分を満たしても AC 全体は未達のまま残り、human 部分は差し戻しても満たせない。analyze ゲートで
-//     needs_clarification にして AC を repo 内 / repo 外に分割させる（mixedScopeAcReasons）。
+//     needs_clarification にして repo 外の作業を human-task issue に切り出させる（mixedScopeAcReasons）。
+//     （人手）と明記して同じ issue に残させない — human の AC は run 内で満たせず、Final reconcile で必ず HOLD になる。
 //   - 'repo': それ以外。
 // repo 外の目印は inline code の中も見る（設定名・パスは inline code で書かれるのが普通のため）。
 // ただし repo 外を「作業の対象」として指していない目印は数えない:
@@ -370,7 +371,7 @@ export function mixedScopeAcReasons(acceptanceCriteria, opts = {}) {
   acs.forEach((ac, i) => {
     if (classifyAcScope(ac, opts) !== 'mixed') return
     const { markers } = splitExternalMarkers(ac, opts?.repo)
-    reasons.push(`AC-${i + 1}「${String(ac)}」は repo 内の作業と repo 外の作業（${[...new Set(markers)].join(' / ')}）が混ざっている — dev-flow は 1 issue = 1 PR・単一 worktree で repo 外の作業を満たせない。この AC を repo 内の AC と repo 外の AC に分割し、repo 外の AC には（人手）と明記してから再起動せよ`)
+    reasons.push(`AC-${i + 1}「${String(ac)}」は repo 内の作業と repo 外の作業（${[...new Set(markers)].join(' / ')}）が混ざっている — dev-flow は 1 issue = 1 PR・単一 worktree で repo 外の作業を満たせない。repo 外の作業は \`human-task\` ラベルの別 issue に切り出し、この issue の AC は repo 内で検証できるものだけにしてから再起動せよ。依存の向き: merge 前に人がやる作業ならこの issue に \`Blocked by #<human issue>\`、merge 後に確認する作業なら human issue に \`Blocked by #<実装 issue>\` を書く`)
   })
   return reasons
 }
