@@ -40,6 +40,11 @@ for i in $(seq 1 4000); do printf 'line %d: the quick brown fox jumps over the l
 for i in $(seq 1 600); do printf 'line %d: the quick brown fox jumps over the lazy dog\n' "$i"; done >"${FIXTURE_DIR}/medium.md"
 # バイナリ文書（中身は問わない、拡張子で判定する）
 printf '%%PDF-1.4 dummy\n' >"${FIXTURE_DIR}/doc.pdf"
+# 巨大な画像 (> 100KB)（中身は問わない、拡張子で判定する）。大文字拡張子は別名にする
+# （case-insensitive な FS で huge.png と huge.PNG が同じファイルになるため）
+for name in huge.png huge.jpg huge.jpeg huge.gif huge.webp upper.PNG upper.JPEG; do
+  head -c 110000 /dev/zero >"${FIXTURE_DIR}/${name}"
+done
 
 PASS=0
 FAIL=0
@@ -101,6 +106,7 @@ run_bash "cat PDF" "cat ${FIXTURE_DIR}/doc.pdf" "deny"
 run_bash "rg を PDF に向ける" "rg pattern ${FIXTURE_DIR}/doc.pdf" "deny"
 run_bash "grep を PDF に向ける" "grep pattern ${FIXTURE_DIR}/doc.pdf" "deny"
 run_bash "パイプ後段の cat も対象" "echo start && cat ${FIXTURE_DIR}/big.json" "deny"
+run_bash "cat 巨大な画像" "cat ${FIXTURE_DIR}/huge.png" "deny"
 run_read "Read 大きい JSON (limit なし)" "${FIXTURE_DIR}/big.json" "-" "deny"
 run_read "Read 巨大 Markdown (limit なし)" "${FIXTURE_DIR}/huge.md" "-" "deny"
 
@@ -120,6 +126,9 @@ run_bash "git 操作" "git status --short" "pass"
 run_read "Read 大きい JSON (limit あり)" "${FIXTURE_DIR}/big.json" "50" "pass"
 run_read "Read 小さい JSON" "${FIXTURE_DIR}/small.json" "-" "pass"
 run_read "Read 中サイズ Markdown" "${FIXTURE_DIR}/medium.md" "-" "pass"
+for name in huge.png huge.jpg huge.jpeg huge.gif huge.webp upper.PNG upper.JPEG; do
+  run_read "Read 巨大な画像 ${name} (limit なし)" "${FIXTURE_DIR}/${name}" "-" "pass"
+done
 
 echo
 echo "=== Results: ${PASS} passed, ${FAIL} failed ==="
