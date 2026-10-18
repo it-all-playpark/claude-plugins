@@ -35,6 +35,7 @@ gcloud services enable analyticsdata.googleapis.com
    - Developer contact: 自分のメール
 4. Scopes: 「ADD OR REMOVE SCOPES」
    - `https://www.googleapis.com/auth/analytics.readonly` を追加
+   - `https://www.googleapis.com/auth/webmasters.readonly` を追加（Search Console と token を共有する）
 5. 「SAVE AND CONTINUE」
 
 **External の場合**: Test users に自分のメールを追加
@@ -76,7 +77,7 @@ ga-analyzer-fetch \
 1. ブラウザが開く
 2. Googleアカウントでログイン
 3. 権限を許可
-4. トークンが `~/.ga_tokens.json` に保存される
+4. トークンが `~/.config/ga4/token.json` に保存される
 
 2回目以降はブラウザ認証不要。
 
@@ -141,5 +142,5 @@ ga-analyzer-fetch \
 ## Security Best Practices
 
 1. **client_secret.json**: `.gitignore`に追加、共有しない
-2. **トークンファイル** (`~/.ga_tokens.json`): 自動生成、削除すれば再認証
+2. **トークンファイル** (`~/.config/ga4/token.json`): 自動生成、削除すれば再認証
 3. **定期的な確認**: Cloud Console > Credentialsで不要なクライアントを削除

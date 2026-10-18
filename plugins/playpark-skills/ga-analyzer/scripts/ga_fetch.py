@@ -17,7 +17,7 @@ Options:
     --end-date          End date (YYYY-MM-DD or today)
     --output            Output file path (default: ga_report.json)
     --report-type       Report type: full, traffic, conversion, content (default: full)
-    --token-path        Path to store OAuth tokens (default: ~/.ga_tokens.json)
+    --token-path        Path to store OAuth tokens (default: ~/.config/ga4/token.json)
 """
 
 import argparse
@@ -61,8 +61,13 @@ try:
 except ImportError:
     SA_AVAILABLE = False
 
-SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
-DEFAULT_TOKEN_PATH = Path.home() / ".ga_tokens.json"
+# Search Console と token を共有するため webmasters も要求する。
+# 片方のスコープで再認証すると共有 token からもう片方が落ちる。
+SCOPES = [
+    "https://www.googleapis.com/auth/analytics.readonly",
+    "https://www.googleapis.com/auth/webmasters.readonly",
+]
+DEFAULT_TOKEN_PATH = Path.home() / ".config" / "ga4" / "token.json"
 DEFAULT_OAUTH_CLIENT_PATH = Path.home() / ".config" / "ga4" / "client_secret.json"
 
 
@@ -104,6 +109,7 @@ def create_oauth_client(
         creds = flow.run_local_server(port=0)
 
         # Save token for future use (owner-only permissions)
+        token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json())
         os.chmod(token_path, 0o600)
         print(f"Token saved to: {token_path}")
