@@ -16,6 +16,9 @@
 #   3. バイナリ文書 (pdf/docx/xlsx/pptx/epub/zip/sqlite) への rg/grep
 #      - そもそも失敗するので rga へ誘導
 #
+# 画像 (png/jpg/jpeg/gif/webp) の Read はサイズで止めない:
+#   Read は画像をテキストとして全文載せるわけではなく、rg / sed -n も代替にならない。
+#
 # fail-open の方針:
 #   これは安全性ではなく効率のためのガードなので、判定できないものは通す。
 #     - ファイルが存在しない / パスが変数・glob → 通す
@@ -68,7 +71,7 @@ human_size() {
   echo "$((bytes / 1024))KB"
 }
 
-# 拡張子から種別を返す: structured_json / structured_yaml / tabular / binary_doc / plain
+# 拡張子から種別を返す: structured_json / structured_yaml / tabular / binary_doc / image / plain
 classify() {
   local f="$1"
   local ext="${f##*.}"
@@ -77,6 +80,7 @@ classify() {
   yaml | yml | toml | xml) echo "structured_yaml" ;;
   csv | tsv | parquet) echo "tabular" ;;
   pdf | docx | xlsx | pptx | epub | zip | sqlite | sqlite3 | db) echo "binary_doc" ;;
+  png | jpg | jpeg | gif | webp) echo "image" ;;
   *) echo "plain" ;;
   esac
 }
@@ -232,7 +236,7 @@ while IFS= read -r SEG; do
 → $(advice_for "$KIND" "$TARGET")"
       fi
       ;;
-    plain)
+    plain | image)
       if ((SIZE > PLAIN_LIMIT)); then
         emit_deny "$(human_size "$SIZE") のファイルを ${READ_CMD} で全部コンテキストに載せようとしている: ${TARGET}
 → $(advice_for "$KIND" "$TARGET")"
