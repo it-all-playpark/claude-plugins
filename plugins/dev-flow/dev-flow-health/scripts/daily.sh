@@ -8,8 +8,13 @@
 #    交互に走っても同じ失敗を 2 回 new / regressed にしない。
 # 2. new / regressed が 1 件以上の実行だけ、`claude -p "/dev-flow:dev-flow-health <report>"` で
 #    原因の推定と issue 起票を LLM に任せる。0 件なら LLM を呼ばない。出力はレポートと同じ名前の .llm.log。
+# 3. LLM を呼んだ実行では、.llm.log の振り分けブロック（CLASS_BEGIN 〜 CLASS_END の行の間。複数あれば最後の 1 つ）を
+#    record-classification.sh の --input に渡し、<out-dir>/classifications.jsonl に追記する。記録をここで行うのは、
+#    claude -p の Bash は sandbox 内で動き、~/.claude/logs は組み込みの書き込み保護で skill から書けないため。
+#    検証と行の形は record-classification.sh だけが持つ — ここで行を組み立てたり JSONL に直接書いたりしない。
+#    ブロックが無い・記録に失敗しても実行は止めず、理由を classification_error に出す。
 #
-# 1〜2 は <out-dir>/.lock（mkdir の lock）を持って 1 本ずつ走らせる。重なった実行は前の実行が終わるまで
+# 1〜3 は <out-dir>/.lock（mkdir の lock）を持って 1 本ずつ走らせる。重なった実行は前の実行が終わるまで
 # 待ち、前の実行のレポートを窓の始点にして走る。
 #
 # Usage:
@@ -19,7 +24,9 @@
 #   --now          窓の終点。既定は現在の秒で、NOW_LAG_SECONDS 秒待ってから走査する（終点以前の entry の書き込み完了を待つ）
 #   --journal-dir / --repo は health-report.sh へそのまま渡す
 #
-# 出力: stdout に {report, needs_llm, llm_invoked, llm_exit} の JSON 1 行。
+# 出力: stdout に {report, needs_llm, llm_invoked, llm_exit, classifications_recorded, classification_error} の JSON 1 行。
+#   classifications_recorded は追記した行数（記録できなければ 0）、classification_error は記録できなかった理由。
+#   LLM を呼ばない実行ではどちらも null。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,6 +38,9 @@ NOW=""
 # 書かれた失敗は今回の窓に入らず、次の窓 (終点, ...] からも外れて二度と new にならない。
 # 終点を過去にずらす形にはしない — WatchPaths の即時トリガが自分を起こした entry（timestamp ≒ 現在）を窓から外す
 NOW_LAG_SECONDS="${DEV_FLOW_HEALTH_NOW_LAG_SECONDS:-5}"
+# 振り分けブロックの区切り行。SKILL.md の手順 7 と同じ文字列
+CLASS_BEGIN='<!-- dev-flow-health-classifications:begin -->'
+CLASS_END='<!-- dev-flow-health-classifications:end -->'
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -96,6 +106,8 @@ mv "$TMP" "$REPORT"
 NEEDS_LLM="$(jq -r '.needs_llm' "$REPORT")"
 LLM_INVOKED=false
 LLM_EXIT=null
+CLASS_RECORDED=null
+CLASS_ERROR=""
 if [[ "$NEEDS_LLM" == "true" ]]; then
     LLM_INVOKED=true
     if claude -p "/dev-flow:dev-flow-health $REPORT" > "$BASE.llm.log" 2>&1; then
@@ -103,7 +115,29 @@ if [[ "$NEEDS_LLM" == "true" ]]; then
     else
         LLM_EXIT=$?
     fi
+
+    # 一時ファイルは <out-dir> の dotfile — 窓の始点を探す glob（YYYY-MM-DDTHHMMSSZ*.json）に掛からない名前にする
+    BLOCK="$(mktemp "$OUT_DIR/.classifications.XXXXXX")"
+    awk -v b="$CLASS_BEGIN" -v e="$CLASS_END" '
+        { line = $0; sub(/\r$/, "", line); gsub(/^[ \t]+|[ \t]+$/, "", line) }
+        line == b { f = 1; buf = ""; next }
+        f && line == e { f = 0; last = buf; next }
+        f { buf = buf $0 "\n" }
+        END { printf "%s", last }' "$BASE.llm.log" > "$BLOCK"
+    if ! grep -q '[^[:space:]]' "$BLOCK"; then
+        CLASS_RECORDED=0
+        CLASS_ERROR="no classification block in LLM output"
+    elif rec="$(bash "$SCRIPT_DIR/record-classification.sh" --report "$REPORT" --input "$BLOCK" 2> "$BLOCK.err")"; then
+        CLASS_RECORDED="$(printf '%s' "$rec" | jq '.appended')"
+    else
+        CLASS_RECORDED=0
+        CLASS_ERROR="$(jq -r '.error // empty' "$BLOCK.err" 2>/dev/null || true)"
+        [[ -n "$CLASS_ERROR" ]] || CLASS_ERROR="record-classification.sh failed: $(cat "$BLOCK.err")"
+    fi
+    rm -f "$BLOCK" "$BLOCK.err"
 fi
 
 jq -nc --arg report "$REPORT" --argjson needs "$NEEDS_LLM" --argjson invoked "$LLM_INVOKED" --argjson rc "$LLM_EXIT" \
-    '{report: $report, needs_llm: $needs, llm_invoked: $invoked, llm_exit: $rc}'
+    --argjson recorded "$CLASS_RECORDED" --arg cerr "$CLASS_ERROR" \
+    '{report: $report, needs_llm: $needs, llm_invoked: $invoked, llm_exit: $rc,
+      classifications_recorded: $recorded, classification_error: (if $cerr == "" then null else $cerr end)}'

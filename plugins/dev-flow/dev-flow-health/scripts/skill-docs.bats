@@ -2,7 +2,7 @@
 # Static pins for dev-flow-health SKILL.md の起票手順（issue #993 / #1009 / #1018）
 #
 # - 各 signature を dev_flow / target_repo / environment / transient に振り分け、dev_flow だけを
-#   重複確認 → git-issue で起票し、全 signature の振り分けを record-classification.sh に渡す
+#   重複確認 → git-issue で起票し、全 signature の振り分けをマーカー付きブロックで出力する（記録は daily.sh）
 # - 起票は signature ごとの finding を Skill ツールで dev-flow:git-issue（--repo <issue_repo> --labels self-improve）に
 #   1 回でまとめて渡し、git-issue の軽い経路と Phase 7（dev-flow-ready-set）を通す
 # - create_issue.py の直接実行と素の gh issue create を手順に書かない（起票手順を git-issue の 1 箇所にまとめる。
@@ -105,13 +105,20 @@ extract_report_step() {
     grep -qF '`dev_flow` に分類した signature だけ 1 signature = 1 issue で起票する' "$SKILL_MD"
 }
 
-@test "記録は全 signature の振り分けを record-classification.sh に --report / --input で 1 回渡す" {
+@test "記録は全 signature の振り分けを daily.sh と同じマーカーで囲んだブロックとして最終出力に含め、skill からは記録スクリプトを実行しない" {
     step="$(awk '/\*\*記録\*\*/ { f = 1 } f && /^[0-9]+\. / { exit } f { print }' "$SKILL_MD")"
     [ -n "$step" ]
     [[ "$step" == *'全 signature（`dev_flow` 以外も含む）の `{id, signature, classification, reason, issue}`'* ]]
-    [[ "$step" == *'bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/record-classification.sh --report <レポートのパス> --input <JSON file>'* ]]
-    [[ "$step" == *'JSONL を Write / Edit / echo で直接書かない'* ]]
-    [ -f "$SKILL_DIR/scripts/record-classification.sh" ]
+    [[ "$step" == *'マーカー行で囲んだブロックとして最終出力に 1 回だけ含める'* ]]
+    # マーカーは daily.sh が .llm.log から取り出すときの区切り行と同じ文字列
+    begin="$(sed -n "s/^CLASS_BEGIN='\(.*\)'$/\1/p" "$SKILL_DIR/scripts/daily.sh")"
+    end="$(sed -n "s/^CLASS_END='\(.*\)'$/\1/p" "$SKILL_DIR/scripts/daily.sh")"
+    [ "$begin" = '<!-- dev-flow-health-classifications:begin -->' ]
+    [ "$end" = '<!-- dev-flow-health-classifications:end -->' ]
+    [[ "$step" == *"      $begin"$'\n'*$'\n'"      $end"* ]]
+    [[ "$step" == *'本 skill から `record-classification.sh` を実行せず、JSONL を Write / Edit / echo で直接書かない'* ]]
+    run grep -F 'record-classification.sh --report' "$SKILL_MD"
+    [ "$status" -ne 0 ]
     # 記録は起票の後（issue 番号を載せる）
     filing_line="$(grep -n '\*\*起票\*\*' "$SKILL_MD" | cut -d: -f1)"
     record_line="$(grep -n '\*\*記録\*\*' "$SKILL_MD" | cut -d: -f1)"

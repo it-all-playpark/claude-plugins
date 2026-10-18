@@ -3,6 +3,7 @@
 #
 # claude CLI は PATH stub に置き換え、呼ばれたら引数を記録する。
 # new / regressed が 0 件の実行は stub が呼ばれないこと（LLM を起動しないこと）を確かめる。
+# 振り分けの記録は、stub に SKILL.md 手順 7 の振り分けブロックを出力させて確かめる。
 # HOME / CLAUDE_JOURNAL_DIR は一時ディレクトリ、launchctl は PATH stub にして、実ディレクトリと実 launchd には触れない。
 # 日次ジョブと即時トリガの起動は、install-schedule.sh --print の plist の ProgramArguments をそのまま実行して再現する。
 
@@ -35,6 +36,34 @@ setup() {
 
 daily() {
     bash "$DAILY" --out-dir "$OUT" --journal-dir "$JOURNAL" --repo "$BATS_TEST_TMPDIR/no-repo" "$@"
+}
+
+# SKILL.md 手順 7 の振り分けブロックの区切り行
+CLASS_BEGIN='<!-- dev-flow-health-classifications:begin -->'
+CLASS_END='<!-- dev-flow-health-classifications:end -->'
+
+# claude stub を、渡されたレポートの new / regressed の全 signature に classification を付けたブロックを出力する形にする。
+# $1 = 空白区切りの classification。1 語ごとに 1 ブロックを順に出す（途中の下書き → 最後の確定、を再現する）。$2 = 終了コード
+stub_claude_classify() {
+    {
+        printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$CALLS"
+        printf 'report="${2#/dev-flow:dev-flow-health }"\n'
+        printf 'echo "new / regressed を振り分けました"\n'
+        for c in $1; do
+            printf "echo '%s'\n" "$CLASS_BEGIN"
+            printf 'jq %s "$report"\n' \
+                "'[.signatures[] | select(.status == \"new\" or .status == \"regressed\") | {id, signature, classification: \"$c\", reason: \"test\", issue: null}]'"
+            printf "echo '%s'\n" "$CLASS_END"
+        done
+        printf 'exit %s\n' "${2:-0}"
+    } > "$STUB/claude"
+    chmod +x "$STUB/claude"
+}
+
+# claude stub を、$1 のファイルの中身をそのまま出力する形にする
+stub_claude_print() {
+    printf '#!/bin/sh\ncat "%s"\n' "$1" > "$STUB/claude"
+    chmod +x "$STUB/claude"
 }
 
 claude_calls() {
@@ -214,6 +243,79 @@ run_watch_trigger() {
     run daily --now 2026-10-05T00:00:00Z
     [ "$status" -eq 0 ]
     [ "$(printf '%s' "$output" | jq '.llm_exit')" = "3" ]
+}
+
+@test "LLM の出力の振り分けブロックを record-classification.sh に渡し、classifications.jsonl に signature ごとに 1 行追記する" {
+    stub_claude_classify transient
+    run daily --now 2026-10-05T00:00:00Z
+    [ "$status" -eq 0 ]
+    report="$OUT/2026-10-05T000000Z.json"
+    [ "$(printf '%s' "$output" | jq '.classifications_recorded')" = "3" ]
+    [ "$(printf '%s' "$output" | jq '.classification_error')" = "null" ]
+    [ "$(wc -l < "$OUT/classifications.jsonl" | tr -d ' ')" = "3" ]
+    # 行は record-classification.sh の形（レポートのパス・generated_at 付き）で、new / regressed の signature と 1 対 1
+    [ "$(jq -sc '[.[].id] | sort' "$OUT/classifications.jsonl")" = \
+      "$(jq -c '[.signatures[] | select(.status == "new" or .status == "regressed") | .id] | sort' "$report")" ]
+    [ "$(jq -sc '[.[] | {report, generated_at, classification}] | unique' "$OUT/classifications.jsonl")" = \
+      "$(jq -c --arg r "$report" '[{report: $r, generated_at, classification: "transient"}]' "$report")" ]
+    # 受け渡しの一時ファイルを残さない
+    [ -z "$(find "$OUT" -name '.classifications.*')" ]
+}
+
+@test "振り分けブロックが複数あれば最後の 1 つだけを記録する" {
+    stub_claude_classify "dev_flow environment"
+    run daily --now 2026-10-05T00:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.classifications_recorded')" = "3" ]
+    [ "$(jq -sc '[.[].classification] | unique' "$OUT/classifications.jsonl")" = '["environment"]' ]
+}
+
+@test "振り分けブロックが無い・JSON が不正・enum 外なら何も追記せず、exit 0 で記録 0 件と理由を出す" {
+    # ブロックが無い（既定の stub は何も出力しない）
+    run daily --now 2026-10-05T00:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.classifications_recorded')" = "0" ]
+    [ "$(printf '%s' "$output" | jq -r '.classification_error | type')" = "string" ]
+    [ ! -e "$OUT/classifications.jsonl" ]
+
+    # JSON が不正
+    printf '%s\n[{"id": "abc",\n%s\n' "$CLASS_BEGIN" "$CLASS_END" > "$BATS_TEST_TMPDIR/llm-out"
+    stub_claude_print "$BATS_TEST_TMPDIR/llm-out"
+    rm -rf "$OUT"
+    run daily --now 2026-10-05T00:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.classifications_recorded')" = "0" ]
+    [ "$(printf '%s' "$output" | jq -r '.classification_error | type')" = "string" ]
+    [ ! -e "$OUT/classifications.jsonl" ]
+
+    # enum 外の classification
+    stub_claude_classify bogus
+    rm -rf "$OUT"
+    run daily --now 2026-10-05T00:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.classifications_recorded')" = "0" ]
+    [[ "$(printf '%s' "$output" | jq -r '.classification_error')" == *"invalid classification entry"* ]]
+    [ ! -e "$OUT/classifications.jsonl" ]
+    [ -z "$(find "$OUT" -name '.classifications.*')" ]
+}
+
+@test "LLM を呼ばない実行は記録を試みず、classifications_recorded / classification_error は null" {
+    stub_claude_classify transient
+    run daily --now 2026-10-06T00:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.needs_llm')" = "false" ]
+    [ "$(printf '%s' "$output" | jq -c '[.classifications_recorded, .classification_error]')" = "[null,null]" ]
+    [ ! -e "$OUT/classifications.jsonl" ]
+}
+
+@test "claude が exit 3 で終わっても llm_exit 3 を記録し、出力に振り分けブロックがあれば記録する" {
+    stub_claude_classify target_repo 3
+    run daily --now 2026-10-05T00:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.llm_exit')" = "3" ]
+    [ "$(printf '%s' "$output" | jq '.classifications_recorded')" = "3" ]
+    [ "$(printf '%s' "$output" | jq '.classification_error')" = "null" ]
+    [ "$(wc -l < "$OUT/classifications.jsonl" | tr -d ' ')" = "3" ]
 }
 
 @test "install-schedule --print: 毎日 07:00 に checkout の daily.sh を --repo 付き・登録時の PATH で起動する plist" {
