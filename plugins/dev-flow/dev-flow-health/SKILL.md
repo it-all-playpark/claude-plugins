@@ -5,7 +5,8 @@ description: |
   signatures with new / ongoing / resolved / regressed status and candidate commits), classifies
   each new or regressed signature as dev_flow / target_repo / environment / transient, explains the
   cause of each dev_flow signature from its runs and the candidate commit diffs, files one
-  self-improve issue per dev_flow signature, and records every classification via a script.
+  self-improve issue per dev_flow signature, and outputs every classification in a marked block
+  that daily.sh records.
   Use when: (1) the daily job or the journal trigger hands over a report with new / regressed signatures,
   (2) user asks why dev-flow started failing or which commit broke it,
   (3) keywords: dev-flow health, ヘルスレポート, 失敗の型, 再発, regressed, 回帰, どの commit から, self-improve.
@@ -17,8 +18,8 @@ description: |
 dev-flow の失敗を決定論スクリプトで集計し、**新しく出た型（new）と、直ったはずが再び出た型
 （regressed）があった実行だけ** LLM が原因の所在を振り分け、dev-flow 本体の欠陥と判断したものだけ原因と
 修正案を書いて issue にする。集計・判定・候補 commit の列挙はすべて `scripts/health-report.sh` が行い、
-振り分け結果の記録は `scripts/record-classification.sh` が行う。本 skill はその JSON を読んで考える部分（分類と
-理由・原因の推定）だけを担う。
+振り分け結果の記録は `scripts/daily.sh` が本 skill の出力から `scripts/record-classification.sh` に渡して行う。
+本 skill はその JSON を読んで考える部分（分類と理由・原因の推定）だけを担う。
 
 ## 日次の流れ
 
@@ -28,6 +29,7 @@ launchd 07:00（日次ジョブ）／ journal に entry が書かれた時（即
   → scripts/health-report.sh（LLM 不使用。窓は直前の実行の generated_at から今まで）
     → ~/.claude/logs/dev-flow-health/YYYY-MM-DDTHHMMSSZ.json（実行ごとに別ファイル）
   → summary.new + summary.regressed > 0 の実行だけ claude -p "/dev-flow:dev-flow-health <report>"
+    → 出力の振り分けブロック（手順 7）を scripts/record-classification.sh に渡し classifications.jsonl に追記
 ```
 
 即時トリガは journal ディレクトリ（`$CLAUDE_JOURNAL_DIR`、未設定なら `~/.claude/journal`）を launchd の
@@ -67,7 +69,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
    `issue_repo` が `null` なら、重複確認・起票をせずに「起票先を解決できない（`--repo` に GitHub の origin を持つ
    checkout を渡す）」と報告して終える。起票先を推測したり別の repo を代わりに使ったりしない。
 2. `status` が `new` / `regressed` の signature を原因の所在で振り分け、`dev_flow` に分類したものだけ finding に
-   まとめて git-issue で起票し、全 signature の振り分けを記録する（`<issue_repo>` はレポートの `issue_repo` の値）。
+   まとめて git-issue で起票し、全 signature の振り分けを記録用のブロックとして出力する（`<issue_repo>` はレポートの `issue_repo` の値）。
    1〜5 は signature ごとに行い、6・7 は全 signature の分を 1 回で行う:
    1. **該当 run を読む**: `recent_runs[].file` を `~/.claude/journal/` から Read し、error と telemetry を確認する。
       `recent_runs[].repo` が `issue_repo` と違えば、その run は PR 先の別 repo で走っている。
@@ -103,19 +105,25 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
       本 skill は本文の雛形を持たない（素の `gh issue create` は dev-flow の hook が拒否する）。1 回の起動で渡すので、
       git-issue 軽い経路の手順 5 により `dev-flow-ready-set` が起票した全 issue に 1 回だけ走る。
    7. **記録**: 2 で振り分けた全 signature（`dev_flow` 以外も含む）の `{id, signature, classification, reason, issue}` を
-      配列にして `$TMPDIR` の JSON file に書き、記録スクリプトを 1 回だけ実行する:
+      1 つの JSON 配列にし、次の 2 つのマーカー行で囲んだブロックとして最終出力に 1 回だけ含める。マーカー行は
+      そのまま 1 行ずつ書き、間には JSON 配列だけを置く（コードフェンスで囲まない）:
 
-      ```bash
-      bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/record-classification.sh --report <レポートのパス> --input <JSON file>
+      ```
+      <!-- dev-flow-health-classifications:begin -->
+      [{"id": "<id>", "signature": "<signature>", "classification": "dev_flow", "reason": "<理由 1 文>", "issue": 123}]
+      <!-- dev-flow-health-classifications:end -->
       ```
 
       `id` / `signature` はレポートの値をそのまま写す。`issue` は 6 で起票した issue 番号か 3 で見つかった既存の
-      issue 番号で、`dev_flow` 以外の分類と番号の無いものは `null`。スクリプトがレポートと同じディレクトリの
-      `classifications.jsonl` に 1 signature 1 行で追記する。JSONL を Write / Edit / echo で直接書かない。
-      enum 外の `classification` があると何も追記せず非 0 で終わるので、stderr の `error` を見て入力を直して再実行する。
+      issue 番号で、`dev_flow` 以外の分類と番号の無いものは `null`。記録は `claude -p` の終了後に `daily.sh` が
+      出力の最後のブロックを `scripts/record-classification.sh` に渡し、レポートと同じディレクトリの
+      `classifications.jsonl` に 1 signature 1 行で追記する — skill の Bash は sandbox 内で動き、`~/.claude/logs` に
+      書けないため。本 skill から `record-classification.sh` を実行せず、JSONL を Write / Edit / echo で直接書かない。
+      enum 外の `classification` が 1 件でもあると 1 行も記録されない。対話セッションから起動したときもブロックは
+      出力する（その場合は記録されない）。
 3. 分類ごとの signature 数、起票した issue 番号、重複で見送った signature、
-   `candidates.error` で原因を絞れなかった signature、記録した `classifications.jsonl` のパスと、git-issue が返した
-   `## Launch Order` を報告する。
+   `candidates.error` で原因を絞れなかった signature と、git-issue が返した `## Launch Order` を報告し、
+   最後に 7 の振り分けブロックを置く。
 
 ## 守ること
 
