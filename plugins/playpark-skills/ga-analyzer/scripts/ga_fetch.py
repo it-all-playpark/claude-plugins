@@ -109,6 +109,7 @@ def create_oauth_client(
         creds = flow.run_local_server(port=0)
 
         # Save token for future use (owner-only permissions)
+        token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json())
         os.chmod(token_path, 0o600)
         print(f"Token saved to: {token_path}")
