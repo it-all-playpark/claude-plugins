@@ -23,6 +23,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_NAME="sandbox-tune.json"
+# run の要約の recurring（今も再発している remaining の型）: 発生がこの回数以上で、最終発生が期間終端からこの日数以内
+RECURRING_MIN_COUNT=2
+RECURRING_WITHIN_DAYS=7
 
 die() {
   local code="$1"
@@ -316,10 +319,17 @@ cmd_run() {
   jqs --argjson cfg "$cfg" 'include "redact"; .criteria_files = ($cfg.criteriaFiles // []) | redact_all' "$tmp" >"$json"
   rm -f "$tmp"
   md="$(cmd_report "$json" --out "$out")"
-  jq -c --arg report "$md" --arg analysis "$json" '{report: $report, analysis: $analysis, verified: (.verify != null),
+  # recurring は verify が無ければ status が無いので数えない（null）
+  jqs -c --arg report "$md" --arg analysis "$json" \
+    --argjson min_count "$RECURRING_MIN_COUNT" --argjson within_days "$RECURRING_WITHIN_DAYS" '
+    include "verify";
+    ((.period.until | epoch) - $within_days * 86400) as $recent
+    | {report: $report, analysis: $analysis, verified: (.verify != null),
     types: (.types | length), remaining: ([.types[] | select(.status == "remaining")] | length),
     stale_branch: ([.types[] | select(.status == "stale_branch")] | length),
-    resolved: ([.types[] | select(.status == "resolved")] | length)}' "$json"
+    resolved: ([.types[] | select(.status == "resolved")] | length),
+    recurring: (if .verify == null then null
+                else [.types[] | select(.status == "remaining" and .count >= $min_count and (.last_seen | epoch) >= $recent)] | length end)}' "$json"
 }
 
 cmd_config() {

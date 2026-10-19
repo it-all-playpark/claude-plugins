@@ -61,6 +61,10 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
   ユーザーに `configRepo` を書いた設定を用意してもらうか、集計だけでよいか確かめて `--no-verify` で再実行する
 - `--no-verify` は設定の有無にかかわらず verify しない。レポート冒頭に verify 未実施と書かれ、resolved / remaining の判定は付かない
 - `run` は `claudedocs/sandbox-tune-<日付>.md`（レポート）と同名の `.json`（集計結果）を cwd に書く。`--out DIR` で変えられる
+- `run` の最終行は要約 JSON（`report`・`analysis`・`verified`・`types` と status ごとの型の数 `remaining`・`stale_branch`・`resolved`、`recurring`）。
+  `recurring` は今も再発している remaining の型の数で、status が `remaining`・`count` が 2 以上・`last_seen` が期間終端（`.period.until`）から
+  7 日以内（ちょうど 7 日前を含む）の型を数える。閾値は `sandbox-tune.sh` の `RECURRING_MIN_COUNT` / `RECURRING_WITHIN_DAYS`。
+  `--no-verify` の run では status が無いので `null`
 - 期間は既定 30 日。ユーザーが `--days N` を渡したらそのまま渡す
 
 ### 日次実行（任意・macOS）
@@ -69,7 +73,7 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
 launchd に登録する。登録すると毎日 06:30 に `scripts/daily.sh` が `run --config <設定> --out ~/.claude/logs/sandbox-tune`
 を走らせ（LLM は呼ばない。`draft` / `handoff` は含まない）、実行ごとに `~/.claude/logs/sandbox-tune/runs.jsonl` へ 1 行追記する。
 
-- 成功: `run` の要約 JSON（`report`・`analysis`・`verified`・`types`・`remaining`・`stale_branch`・`resolved`）に `ts`（ISO 8601 UTC）を足した行
+- 成功: `run` の要約 JSON（`report`・`analysis`・`verified`・`types`・`remaining`・`stale_branch`・`resolved`・`recurring`）に `ts`（ISO 8601 UTC）を足した行
 - 失敗: `{ts, exit, error}`（`exit` は `run` の終了コード、`error` は stderr の末尾）
 
 ```bash
