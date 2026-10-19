@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "playpark",
-  "description": "playpark LLC marketplace: playpark-core (shared base), dev-flow (issue-to-LGTM workflows + 7 dev-flow agents), playpark-skills (personal skills), host-exec (approved host execution outside the sandbox), meeting (auto meeting recording + local transcription + notes), bg-sessions (where each background Claude session is working), mosh-paste (fetch files pasted by path from the Mac you mosh in from)",
+  "description": "playpark LLC marketplace: playpark-core (shared base), dev-flow (issue-to-LGTM workflows + 7 dev-flow agents), playpark-skills (personal skills), host-exec (approved host execution outside the sandbox), meeting (auto meeting recording + local transcription + notes), bg-sessions (where each background Claude session is working), mosh-paste (fetch files pasted by path from the Mac you mosh in from), health-status (when dev-flow-health and sandbox-tune last ran, in the status line)",
   "owner": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
   "plugins": [
     {
@@ -44,6 +44,12 @@
       "name": "mosh-paste",
       "description": "When a pasted path only exists on the Mac you mosh / ssh in from (a dropped screenshot), fetches the file over ssh and swaps in the local copy's path",
       "source": "./plugins/mosh-paste",
+      "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" }
+    },
+    {
+      "name": "health-status",
+      "description": "Shows when dev-flow-health and sandbox-tune last ran and how it went in the status line, warning when a run is overdue, finds new or regressed failures, or fails",
+      "source": "./plugins/health-status",
       "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" }
     }
   ]
