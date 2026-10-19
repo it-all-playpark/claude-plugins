@@ -1,9 +1,9 @@
 #!/usr/bin/env bats
 # plugin-manifest.bats - Regression tests for the marketplace layout
-# (playpark-core / dev-flow / playpark-skills / host-exec / meeting / bg-sessions / mosh-paste, issue #571).
+# (playpark-core / dev-flow / playpark-skills / host-exec / meeting / bg-sessions / mosh-paste / health-status, issue #571).
 #
 # Invariants pinned here:
-#   - marketplace.json lists exactly the 7 plugins, each sourced from
+#   - marketplace.json lists exactly the 8 plugins, each sourced from
 #     ./plugins/<name>, so they can be installed independently.
 #   - Each plugin.json is valid, its name matches its directory, skills
 #     is ["./"] for the skill-shipping plugins and absent for host-exec
@@ -32,7 +32,7 @@ REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 MARKETPLACE_JSON="$REPO_ROOT/.claude-plugin/marketplace.json"
 ROOT_PLUGIN_JSON="$REPO_ROOT/.claude-plugin/plugin.json"
 
-PLUGIN_NAMES=(playpark-core dev-flow playpark-skills host-exec meeting bg-sessions mosh-paste)
+PLUGIN_NAMES=(playpark-core dev-flow playpark-skills host-exec meeting bg-sessions mosh-paste health-status)
 SKILL_PLUGIN_NAMES=(playpark-core dev-flow playpark-skills meeting)
 
 plugin_json_path() {
@@ -52,16 +52,16 @@ plugin_json_path() {
     [ ! -f "$ROOT_PLUGIN_JSON" ]
 }
 
-@test "marketplace.json の plugins は 7 件である" {
+@test "marketplace.json の plugins は 8 件である" {
     run jq -r '.plugins | length' "$MARKETPLACE_JSON"
     [ "$status" -eq 0 ]
-    [ "$output" = "7" ]
+    [ "$output" = "8" ]
 }
 
-@test "marketplace.json の plugins[].name が playpark-core/dev-flow/playpark-skills/host-exec/meeting/bg-sessions/mosh-paste に完全一致する" {
+@test "marketplace.json の plugins[].name が playpark-core/dev-flow/playpark-skills/host-exec/meeting/bg-sessions/mosh-paste/health-status に完全一致する" {
     run jq -r '[.plugins[].name] | sort | join(",")' "$MARKETPLACE_JSON"
     [ "$status" -eq 0 ]
-    [ "$output" = "bg-sessions,dev-flow,host-exec,meeting,mosh-paste,playpark-core,playpark-skills" ]
+    [ "$output" = "bg-sessions,dev-flow,health-status,host-exec,meeting,mosh-paste,playpark-core,playpark-skills" ]
 }
 
 @test "marketplace.json の各 plugins[].source が ./plugins/<name> である" {
@@ -123,8 +123,8 @@ plugin_json_path() {
     [ "$output" = "false" ]
 }
 
-@test "host-exec・bg-sessions・mosh-paste は skill を持たず、hooks.json の modules で register module を読み込む" {
-    for pair in host-exec:register.ts bg-sessions:register.tsx mosh-paste:register.ts; do
+@test "host-exec・bg-sessions・mosh-paste・health-status は skill を持たず、hooks.json の modules で register module を読み込む" {
+    for pair in host-exec:register.ts bg-sessions:register.tsx mosh-paste:register.ts health-status:register.ts; do
         name="${pair%%:*}" module="${pair#*:}"
         pj="$(plugin_json_path "$name")"
         run jq -r 'has("skills")' "$pj"
@@ -168,7 +168,7 @@ plugin_json_path() {
 }
 
 @test "dev-flow 以外の plugin.json に workflows キーが存在しない" {
-    for name in playpark-core playpark-skills host-exec meeting bg-sessions mosh-paste; do
+    for name in playpark-core playpark-skills host-exec meeting bg-sessions mosh-paste health-status; do
         pj="$(plugin_json_path "$name")"
         run jq -r 'has("workflows")' "$pj"
         [ "$status" -eq 0 ]

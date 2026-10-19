@@ -1,0 +1,7 @@
+{
+  "name": "health-status",
+  "description": "dev-flow-health と sandbox-tune が最後にいつ動いたかと結果を status line に 1 行で出す。最終実行が 26 時間より古い・new / regressed がある・sandbox-tune が失敗したときは ⚠ にする",
+  "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
+  "repository": "https://github.com/it-all-playpark/claude-plugins",
+  "license": "MIT"
+}
