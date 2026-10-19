@@ -63,6 +63,25 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
 - `run` は `claudedocs/sandbox-tune-<日付>.md`（レポート）と同名の `.json`（集計結果）を cwd に書く。`--out DIR` で変えられる
 - 期間は既定 30 日。ユーザーが `--days N` を渡したらそのまま渡す
 
+### 日次実行（任意・macOS）
+
+既定では何も登録しない。ユーザーが日次の集計を望んだときだけ、`install-schedule.sh` を手で 1 回実行して
+launchd に登録する。登録すると毎日 06:30 に `scripts/daily.sh` が `run --config <設定> --out ~/.claude/logs/sandbox-tune`
+を走らせ（LLM は呼ばない。`draft` / `handoff` は含まない）、実行ごとに `~/.claude/logs/sandbox-tune/runs.jsonl` へ 1 行追記する。
+
+- 成功: `run` の要約 JSON（`report`・`analysis`・`verified`・`types`・`remaining`・`stale_branch`・`resolved`）に `ts`（ISO 8601 UTC）を足した行
+- 失敗: `{ts, exit, error}`（`exit` は `run` の終了コード、`error` は stderr の末尾）
+
+```bash
+bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --print --repo <skills checkout> --config <sandbox-tune.json>    # plist を確認（登録しない）
+bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --install --repo <skills checkout> --config <sandbox-tune.json>  # 登録
+bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --uninstall                                                     # 解除（bootout と plist 削除）
+```
+
+- `--repo` は skills repo の git checkout。plist は checkout 内の `daily.sh` を指す（版付きの plugin cache パスに固定しない）
+- `--config` は `configRepo` を書いた設定。launchd は `~` を展開しないので、登録時に絶対パスにして plist に書く
+- launchd の PATH は最小なので、登録時の PATH を plist に焼き込む（jq / git の解決用）。PATH が変わったら登録し直す
+
 ### 集計の決まり（スクリプトが守っていること）
 
 - 型は「拒否された対象」で分ける: `sandbox:path:<書き込み先>` / `sandbox:unix_socket:<path>` / `sandbox:network:<host>` /
