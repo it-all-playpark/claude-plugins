@@ -51,12 +51,17 @@ const FILES: Record<string, string> = {
 }
 
 /**
- * excludedCommands は settings の sandbox.excludedCommands として返す。
+ * excludedCommands は settings の sandbox.excludedCommands として返す。hostExecEnv はホストの HOST_EXEC_ENV。
  * 返す files はこのテストだけのコピーで、書き換えると以降の呼び出しの実行ファイル解決が変わる。
  */
-function host(on: any, opts: { excludedCommands?: string[] } = {}) {
+function host(on: any, opts: { excludedCommands?: string[]; hostExecEnv?: string } = {}) {
   const files = { ...FILES }
-  mock.env(on, { PATH: '/usr/bin:/opt/homebrew/bin', TMPDIR: '/var/folders/xx/T', HOME: '/w' })
+  mock.env(on, {
+    PATH: '/usr/bin:/opt/homebrew/bin',
+    TMPDIR: '/var/folders/xx/T',
+    HOME: '/w',
+    ...(opts.hostExecEnv !== undefined ? { HOST_EXEC_ENV: opts.hostExecEnv } : {}),
+  })
   on('session.cwd', async () => ({ value: '/w/repo' }))
   on('session.root', async () => ({ value: '/w/repo' }))
   on('settings.read', async () => ({ value: { sandbox: { excludedCommands: opts.excludedCommands ?? [] } } }))
@@ -74,6 +79,14 @@ function stubExits(on: any, exitCodes: number[], ran: string[][], stdout = (n: n
   on('process.run', async ($: any, e: any) => {
     ran.push([...e.argv])
     return { value: { exitCode: exitCodes[ran.length - 1] ?? 0, stdout: stdout(ran.length), stderr: '' } }
+  })
+}
+
+/** $.process.run に渡った argv と init をそのまま記録するスタブ */
+function recordRuns(on: any, runs: Array<{ argv: string[]; init: unknown }>) {
+  on('process.run', async ($: any, e: any) => {
+    runs.push({ argv: [...e.argv], init: e.init })
+    return { value: { exitCode: 0, stdout: 'ok', stderr: '' } }
   })
 }
 
@@ -563,5 +576,94 @@ describe('host-exec', () => {
     expect(asked.length).toBe(2)
     expect(asked[1]).toContain('検出: AWS アクセスキー ×1')
     expect(JSON.stringify(r)).not.toContain('AKIAABCDEFGHIJKLMNOP')
+  })
+
+  test('HOST_EXEC_ENV が無ければ、実行ファイルをそのまま起動し env を渡さない', async ($, on) => {
+    const asked: string[] = []
+    const runs: Array<{ argv: string[]; init: unknown }> = []
+    host(on)
+    answer(on, ['実行する'], asked)
+    recordRuns(on, runs)
+    await $.tool.call({ tool: TOOL, argv: ['gh', 'repo', 'view'], reason: 'x' } as any)
+    expect(asked[0]).not.toContain('環境変数')
+    expect(asked[0]).not.toContain('上書き')
+    expect(runs).toEqual([{ argv: ['/opt/homebrew/bin/gh', 'repo', 'view'], init: { cwd: '/w/repo', timeoutMs: 30000 } }])
+  })
+
+  for (const [hostExecEnv, prefix, init] of [
+    ['{"A":null,"B":"v"}', ['/usr/bin/env', '-u', 'A'], { env: { B: 'v' } }],
+    ['{"A":null,"C":null}', ['/usr/bin/env', '-u', 'A', '-u', 'C'], {}],
+    ['{"B":"v"}', [], { env: { B: 'v' } }],
+  ] as const) {
+    test(`HOST_EXEC_ENV=${hostExecEnv} なら、null の名前を外し文字列の名前を上書きして全ステップを起動する`, async ($, on) => {
+      const asked: string[] = []
+      const runs: Array<{ argv: string[]; init: unknown }> = []
+      host(on, { hostExecEnv })
+      answer(on, ['2 個とも実行する'], asked)
+      recordRuns(on, runs)
+      const r: any = await $.tool.call({ tool: TOOL, steps: [['gh', 'repo', 'view'], ['terraform', 'plan']], reason: 'x' } as any)
+      expect(runs).toEqual([
+        { argv: [...prefix, '/opt/homebrew/bin/gh', 'repo', 'view'], init: { cwd: '/w/repo', timeoutMs: 30000, ...init } },
+        { argv: [...prefix, '/opt/homebrew/bin/terraform', 'plan'], init: { cwd: '/w/repo', timeoutMs: 30000, ...init } },
+      ])
+      // 承認画面と Claude に返す結果には本来のコマンドを見せる
+      expect(asked[0]).toContain('  実行ファイル  1  /opt/homebrew/bin/gh\n')
+      expect(String(r.result)).toContain('$ gh repo view\nexit code: 0')
+      expect(String(r.result)).not.toContain('/usr/bin/env')
+    })
+  }
+
+  test('HOST_EXEC_ENV があれば、承認画面に外す名前と上書きする名前=値をエスケープして出す', async ($, on) => {
+    const asked: string[] = []
+    host(on, { hostExecEnv: JSON.stringify({ A: null, B: 'v', C: null, D: 'x y\n‮z' }) })
+    answer(on, ['拒否'], asked)
+    await $.tool.call({ tool: TOOL, argv: ['gh', 'repo', 'view'], reason: 'x' } as any)
+    expect(asked[0]).toContain('  場所          ~/repo\n  外す環境変数  A C\n  上書き        B=v D="x y\\n\\u202ez"')
+    expect(asked[0]).not.toContain('x y\n')
+    expect(asked[0]).not.toContain('‮')
+  })
+
+  for (const [kind, hostExecEnv, why] of [
+    ['JSON として読めない', '{A:null}', 'not valid JSON'],
+    ['空文字', '', 'not valid JSON'],
+    ['配列', '["A"]', 'not a JSON object'],
+    ['null', 'null', 'not a JSON object'],
+    ['文字列', '"A"', 'not a JSON object'],
+    ['値が数値', '{"A":1}', 'the value of A is neither null nor a string'],
+    ['値がオブジェクト', '{"B":"v","A":{}}', 'the value of A is neither null nor a string'],
+    ['名前が数字始まり', '{"1A":null}', '"1A" is not a valid environment variable name'],
+    ['名前に = を含む', '{"A=B":"v"}', '"A=B" is not a valid environment variable name'],
+    ['名前が空', '{"":"v"}', '"" is not a valid environment variable name'],
+  ] as const) {
+    test(`HOST_EXEC_ENV が不正（${kind}）なら、承認を聞かず何も実行せずに HOST_EXEC_ENV が不正だと返す`, async ($, on) => {
+      const asked: string[] = []
+      const ran: string[][] = []
+      host(on, { hostExecEnv })
+      answer(on, ['実行する'], asked)
+      stubExits(on, [], ran)
+      const r: any = await $.tool.call({ tool: TOOL, argv: ['gh', 'repo', 'view'], reason: 'x' } as any)
+      expect(String(r.deny)).toContain(`HOST_EXEC_ENV is invalid (${why}), so nothing was run`)
+      expect(asked.length).toBe(0)
+      expect(ran.length).toBe(0)
+    })
+  }
+
+  test('HOST_EXEC_ENV が不正でも、excludedCommands に一致するコマンドは今まで通り Bash を使うよう返す', async ($, on) => {
+    host(on, { hostExecEnv: 'x', excludedCommands: ['/usr/bin/pgrep *'] })
+    const r: any = await $.tool.call({ tool: TOOL, argv: ['/usr/bin/pgrep', '-lf', 'x'], reason: 'x' } as any)
+    expect(String(r.deny)).toContain('Bash ツールで実行してください')
+  })
+
+  test('HOST_EXEC_ENV で外す名前があるとき、= を含む実行ファイルは承認を聞かずに拒否する', async ($, on) => {
+    const asked: string[] = []
+    const ran: string[][] = []
+    const { files } = host(on, { hostExecEnv: '{"A":null}' })
+    files['/opt/a=b/tool'] = '/opt/a=b/tool'
+    answer(on, ['実行する'], asked)
+    stubExits(on, [], ran)
+    const r: any = await $.tool.call({ tool: TOOL, argv: ['/opt/a=b/tool', 'gh'], reason: 'x' } as any)
+    expect(String(r.deny)).toContain('contains "="')
+    expect(asked.length).toBe(0)
+    expect(ran.length).toBe(0)
   })
 })
