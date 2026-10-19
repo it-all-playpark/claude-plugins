@@ -15,6 +15,8 @@ import type { HostExecApproved } from '../types'
 //   ゲート3: 出力の機密チェック → 引っかかったら Claude に渡す前に停止（記憶済みでも毎回）
 // sandbox.excludedCommands に一致して Bash でも sandbox の外で動くコマンドは、承認を取らずに
 // Bash へ回す（一致すると確実に言える形だけを拾い、それ以外は今まで通りダイアログを出す）。
+// 起動元がホストの環境変数 HOST_EXEC_ENV で渡した変更（sandbox 用に Claude 本体へ入れた proxy などを
+// 外す・上書きする）を、host-exec で動かすコマンドにだけ掛ける。
 //
 // 比べる相手は sandbox ではなく「人間がコピペして実行する」運用。実行ファイルを
 // 許可リストで絞らないのは、コピペでも動くものを止めると結局コピペに戻るから。
@@ -277,6 +279,35 @@ function excludedPattern(entry: string, home: string | undefined): RegExp | unde
   return new RegExp(`^${src}${isPrefix ? '' : '$'}`)
 }
 
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+/** $.process.run の init.env は上書きしかできないので、外す変数は env -u で子プロセスに渡る前に取り除く */
+const ENV_BIN = '/usr/bin/env'
+
+/** HOST_EXEC_ENV から読んだ、host-exec のコマンドに掛ける環境の変更 */
+type EnvChange = { unset: string[]; set: Array<[string, string]> }
+
+/**
+ * HOST_EXEC_ENV（`{"<名前>": null | "<値>"}`）を読む。null の名前は外し、文字列の名前はその値に上書きする。
+ * 読めなければ、何が不正かを返す（呼び出し側は何も実行せずに拒否する）。
+ */
+function parseEnvChange(raw: string): EnvChange | string {
+  let v: unknown
+  try {
+    v = JSON.parse(raw)
+  } catch {
+    return 'not valid JSON'
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return 'not a JSON object'
+  const change: EnvChange = { unset: [], set: [] }
+  for (const [name, value] of Object.entries(v)) {
+    if (!ENV_NAME.test(name)) return `${visible(name)} is not a valid environment variable name`
+    if (value === null) change.unset.push(name)
+    else if (typeof value === 'string') change.set.push([name, value])
+    else return `the value of ${name} is neither null nor a string`
+  }
+  return change
+}
+
 function format(argv: readonly string[], r: { exitCode: number; stdout: string; stderr: string }): string {
   return [
     `$ ${shownCommand(argv)}`,
@@ -377,6 +408,18 @@ export const register: Register = on => {
       return { deny: 'host-exec: このコマンドは Bash で実行すれば sandbox の外で動く（sandbox.excludedCommands に一致）ので、Bash ツールで実行してください。' }
     }
 
+    // ── 起動元が渡した環境の変更（ホストのプロセス環境からだけ読む。読めなければ何も実行しない） ──
+    const rawEnvChange = await $.env.get('HOST_EXEC_ENV')
+    const envChange: EnvChange | string = rawEnvChange === undefined ? { unset: [], set: [] } : parseEnvChange(rawEnvChange)
+    if (typeof envChange === 'string') {
+      return {
+        deny:
+          `host-exec: HOST_EXEC_ENV is invalid (${envChange}), so nothing was run. ` +
+          'It is set by whoever launched Claude Code and must be a JSON object mapping environment variable names to null (remove) or a string (override). ' +
+          'Do not retry; tell the user that HOST_EXEC_ENV needs fixing.',
+      }
+    }
+
     // ── 実行されるものを確定する（ダイアログに出すものと実際に動かすものを一致させる） ──
     const stat = (p: string): Promise<Stat | undefined> =>
       $.fs.stat(p, { resolve: true }).catch(() => undefined)
@@ -414,6 +457,10 @@ export const register: Register = on => {
           ? ''
           : ' on PATH. Commands that a plugin provides by bare name in its bin/ are on the Bash tool\'s PATH only, so run them with the Bash tool'
         return { deny: `host-exec: executable ${visible(argv0)}${at(i)} was not found${bare}. Nothing was run.` }
+      }
+      // env は = を含む引数を代入として読むので、= を含む実行ファイルを渡すと次の引数が実行ファイルとして動いてしまう
+      if (envChange.unset.length > 0 && exe.includes('=')) {
+        return { deny: `host-exec: executable ${visible(exe)}${at(i)} contains "=", so it cannot be run with the variables HOST_EXEC_ENV removes. Nothing was run.` }
       }
       resolved.push({ argv, exe, exeReal: exeStat.realPath ?? exe })
     }
@@ -472,6 +519,8 @@ export const register: Register = on => {
           return `${label}${isMulti ? `${i + 1}  ` : ''}${shownPath(exe)}${exeReal !== exe ? ` → ${shownPath(exeReal)}` : ''}`
         }),
         `  場所          ${shownPath(cwdReal)}`,
+        ...(envChange.unset.length > 0 ? [`  外す環境変数  ${envChange.unset.join(' ')}`] : []),
+        ...(envChange.set.length > 0 ? [`  上書き        ${envChange.set.map(([n, v]) => `${n}=${shellish(v)}`).join(' ')}`] : []),
         ...(isMulti ? ['  失敗したらそこで止めます'] : []),
       ].join('\n')
       let approval = ''
@@ -502,9 +551,11 @@ export const register: Register = on => {
     /** 結果の後ろに足す次の手。出力を渡さないときも足す（秘密情報は含まない） */
     const hints = new Set<string>()
     let stoppedAt: number | undefined
+    const unsetArgs = envChange.unset.length > 0 ? [ENV_BIN, ...envChange.unset.flatMap(n => ['-u', n])] : []
+    const envInit = envChange.set.length > 0 ? { env: Object.fromEntries(envChange.set) } : {}
     for (const [i, { argv, exe }] of resolved.entries()) {
       try {
-        const r = await $.process.run([exe, ...argv.slice(1)], { cwd: cwdReal, timeoutMs: timeoutSec * 1000 })
+        const r = await $.process.run([...unsetArgs, exe, ...argv.slice(1)], { cwd: cwdReal, timeoutMs: timeoutSec * 1000, ...envInit })
         sections.push(format(argv, r))
         outcomes.push(`exit code ${r.exitCode}`)
         if (KEYCHAIN_DENIAL_MARKERS.some(m => r.stdout.includes(m) || r.stderr.includes(m))) hints.add(KEYCHAIN_HINT)
