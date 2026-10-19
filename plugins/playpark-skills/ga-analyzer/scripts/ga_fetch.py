@@ -63,8 +63,10 @@ except ImportError:
 
 # Search Console と token を共有するため webmasters も要求する。
 # 片方のスコープで再認証すると共有 token からもう片方が落ちる。
+# analytics.edit は Admin API でイベント作成ルール・キーイベント等を追加するため。
 SCOPES = [
     "https://www.googleapis.com/auth/analytics.readonly",
+    "https://www.googleapis.com/auth/analytics.edit",
     "https://www.googleapis.com/auth/webmasters.readonly",
 ]
 DEFAULT_TOKEN_PATH = Path.home() / ".config" / "ga4" / "token.json"

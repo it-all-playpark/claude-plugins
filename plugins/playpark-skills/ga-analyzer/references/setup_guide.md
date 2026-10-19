@@ -21,6 +21,8 @@ GA4 Data APIを使用するための初期設定手順。
 ```bash
 # gcloud CLI
 gcloud services enable analyticsdata.googleapis.com
+# イベント作成ルール・キーイベント等を追加する場合
+gcloud services enable analyticsadmin.googleapis.com
 
 # または Cloud Console > APIs & Services > Library で手動有効化
 ```
@@ -35,6 +37,7 @@ gcloud services enable analyticsdata.googleapis.com
    - Developer contact: 自分のメール
 4. Scopes: 「ADD OR REMOVE SCOPES」
    - `https://www.googleapis.com/auth/analytics.readonly` を追加
+   - `https://www.googleapis.com/auth/analytics.edit` を追加（Admin API でイベント作成ルール・キーイベント等を追加する）
    - `https://www.googleapis.com/auth/webmasters.readonly` を追加（Search Console と token を共有する）
 5. 「SAVE AND CONTINUE」
 
