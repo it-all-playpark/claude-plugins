@@ -38,7 +38,7 @@ stub_run_ok() {
     cat > "$STUB_SCRIPTS/sandbox-tune.sh" <<EOF
 printf '%s\n' "\$@" > "$RUN_ARGS"
 echo 'progress line'
-echo '{"report":"r.md","analysis":"r.json","verified":true,"types":5,"remaining":3,"stale_branch":1,"resolved":1}'
+echo '{"report":"r.md","analysis":"r.json","verified":true,"types":5,"remaining":3,"stale_branch":1,"resolved":1,"recurring":2}'
 EOF
 }
 
@@ -148,7 +148,7 @@ $LOGS" ]
 
     [ "$(wc -l < "$LOGS/runs.jsonl" | tr -d ' ')" = "1" ]
     jq -e '(.ts | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
-        and .remaining == 3 and .types == 5 and .stale_branch == 1 and .resolved == 1 and .verified == true
+        and .remaining == 3 and .types == 5 and .stale_branch == 1 and .resolved == 1 and .recurring == 2 and .verified == true
         and .report == "r.md" and .analysis == "r.json"' "$LOGS/runs.jsonl"
     [ "$output" = "$(cat "$LOGS/runs.jsonl")" ]
 
@@ -201,7 +201,7 @@ $LOGS" ]
 
     run bash "${job_args[@]}"
     [ "$status" -eq 0 ]
-    jq -e '.ts and .verified == true and .remaining == 0' "$LOGS/runs.jsonl"
+    jq -e '.ts and .verified == true and .remaining == 0 and .recurring == 0' "$LOGS/runs.jsonl"
     report="$(jq -r '.report' "$LOGS/runs.jsonl")"
     [[ "$report" == "$LOGS/sandbox-tune-"*".md" ]]
     [ -f "$report" ]

@@ -409,6 +409,37 @@ deny_at() {
     = "[\"remaining\",\"$FIX_COMMIT\",{\"contains\":0,\"not_contains\":0,\"unknown\":1},\"config\"]" ]
 }
 
+@test "run: 要約の recurring は remaining のうち発生 2 回以上で最終発生が期間終端から 7 日以内の型の数" {
+  export GIT_CEILING_DIRECTORIES="$WORK"
+  mkdir -p "$HOME/plain"
+  # fixed.example.test を 2026-09-29 に許可した設定 repo
+  local repo="$WORK/conf"
+  git -C "$WORK" init -q conf
+  echo '{"sandbox":{"network":{"allowedDomains":["fixed.example.test"]}}}' >"$repo/settings.json"
+  git -C "$repo" add settings.json
+  GIT_AUTHOR_DATE=2026-09-29T00:00:00Z GIT_COMMITTER_DATE=2026-09-29T00:00:00Z \
+    git -C "$repo" -c user.name=t -c user.email=t@example.com commit -q -m 'sandbox: allow test host'
+  echo '{"configRepo":{"path":"conf","paths":["settings.json"]}}' >"$WORK/sandbox-tune.json"
+  # 2 回・最終発生がちょうど 7 日前（NOW = 2026-10-01T00:00:00Z）→ 数える
+  deny_at e1 2026-09-01T00:00:00Z edge.example.test "$HOME/plain"
+  deny_at e2 2026-09-24T00:00:00Z edge.example.test "$HOME/plain"
+  # 2 回・最終発生が 7 日と 1 秒前 → 数えない
+  deny_at b1 2026-09-01T00:00:00Z before.example.test "$HOME/plain"
+  deny_at b2 2026-09-23T23:59:59Z before.example.test "$HOME/plain"
+  # 2 回・最終発生が 7 日より 1 秒後 → 数える
+  deny_at a1 2026-09-01T00:00:00Z after.example.test "$HOME/plain"
+  deny_at a2 2026-09-24T00:00:01Z after.example.test "$HOME/plain"
+  # 1 回だけ（最近）→ 数えない
+  deny_at o1 2026-09-30T00:00:00Z once.example.test "$HOME/plain"
+  # 2 回・最近だが修正 commit より前だけ（resolved）→ 数えない
+  deny_at f1 2026-09-27T00:00:00Z fixed.example.test "$HOME/plain"
+  deny_at f2 2026-09-28T00:00:00Z fixed.example.test "$HOME/plain"
+  cd "$WORK"
+  run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c '[.types, .remaining, .resolved, .recurring]')" = '[5,4,1,2]' ]
+}
+
 @test "verify: occurrences が時刻だけの古い collect の JSON は受け付けない" {
   make_config_repo
   echo '{"types":[{"id":"sandbox:network:x.example","needle":"x.example","count":1,"last_seen":"2026-09-10T00:00:00Z","occurrences":["2026-09-10T00:00:00Z"]}]}' >"$WORK/old.json"
@@ -455,7 +486,8 @@ deny_at() {
   make_config_repo
   run bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" --out "$WORK/nv"
   [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -c '[.verified, .resolved, .remaining]')" = '[false,0,0]' ]
+  # status が無いので recurring は数えず null
+  [ "$(printf '%s' "$output" | jq -c '[.verified, .resolved, .remaining, has("recurring"), .recurring]')" = '[false,0,0,true,null]' ]
   [ "$(jq -c '[.verify, ([.types[] | has("status")] | any)]' "$WORK/nv/sandbox-tune-2026-10-01.json")" = '[null,false]' ]
   head -n 5 "$WORK/nv/sandbox-tune-2026-10-01.md" | grep -q 'verify は未実施'
 }
