@@ -101,6 +101,7 @@ describe('host-exec', () => {
     expect(specs.length).toBe(1)
     expect(specs[0].name).toBe('run')
     expect(specs[0].isDeferred).toBe(false)
+    expect(specs[0].description).toContain('Long-running commands (builds, docker, recording, etc.) need timeoutSec from the first call')
   })
 
   for (const [mark, text] of [
@@ -174,13 +175,78 @@ describe('host-exec', () => {
     expect(asked.length).toBe(0)
   })
 
-  test('PATH に無い実行ファイルは承認を聞かずに拒否', async ($, on) => {
+  test('PATH に無い実行ファイルは承認を聞かずに拒否し、plugin の bin/ のコマンドは Bash で実行するよう返す', async ($, on) => {
     const asked: string[] = []
     host(on)
     answer(on, [], asked)
     const r: any = await $.tool.call({ tool: TOOL, argv: ['kubectl', 'get', 'pods'], reason: 'x' } as any)
     expect(String(r.deny ?? r.text)).toContain('not found on PATH')
+    expect(String(r.deny ?? r.text)).toContain('Commands that a plugin provides by bare name in its bin/ are on the Bash tool\'s PATH only, so run them with the Bash tool')
     expect(asked.length).toBe(0)
+  })
+
+  test('承認ダイアログが閉じられた・使えなかったら実行せず、ユーザーが返事をするまで host-exec を呼ばないよう返す', async ($, on) => {
+    const ran: string[][] = []
+    host(on)
+    on('tool.call', { tool: 'AskUserQuestion' }, async () => ({ deny: 'dismissed' }))
+    stubProcess(on, { stdout: 'ok' }, ran)
+    const r: any = await $.tool.call({ tool: TOOL, argv: ['gh', 'repo', 'view'], reason: 'x' } as any)
+    const s = String(r.deny)
+    expect(s).toContain('dialog dismissed or unavailable')
+    expect(s).toContain(`Do not call ${TOOL} again, for this command or any other, until the user replies in the conversation`)
+    expect(s).toContain('Tell the user what you wanted to run and why')
+    expect(ran.length).toBe(0)
+  })
+
+  test('時間切れには使った timeoutSec と、同じ値で再実行せず上げるか別の方法を使う案内を添え、起動失敗には添えない', async ($, on) => {
+    const asked: string[] = []
+    host(on)
+    answer(on, ['実行する', '実行する'], asked)
+    const errors = ['aborted: still running after 45000ms', 'spawn EACCES']
+    on('process.run', async () => ({ deny: errors.shift() }))
+    const timedOut: any = await $.tool.call({ tool: TOOL, argv: ['gh', 'run', 'watch'], reason: 'x', timeoutSec: 45 } as any)
+    const t = String(timedOut.result)
+    expect(t).toContain('timed out after 45s')
+    expect(t).toContain('timed out at timeoutSec 45. Re-running it with the same timeoutSec will time out the same way')
+    expect(t).toContain('raise timeoutSec (max 600)')
+    expect(t).toContain('for a command that does not exit on its own')
+
+    const failed: any = await $.tool.call({ tool: TOOL, argv: ['gh', 'run', 'watch'], reason: 'x', timeoutSec: 45 } as any)
+    const f = String(failed.result)
+    expect(f).toContain('could not start')
+    expect(f).toContain('spawn EACCES')
+    expect(f).not.toContain('timeoutSec')
+    expect(f).not.toContain('timed out')
+  })
+
+  for (const mark of ['-25308', 'errSecInteractionNotAllowed', 'User interaction is not allowed']) {
+    test(`出力に macOS キーチェーンの拒否（${mark}）があれば、出力はそのままで host-exec で再実行せず \`!\` で頼む案内を添える`, async ($, on) => {
+      const asked: string[] = []
+      const ran: string[][] = []
+      host(on)
+      answer(on, ['実行する'], asked)
+      const stderr = `security: SecKeychainSearchCopyNext: ${mark}`
+      stubProcess(on, { stdout: '', stderr, exitCode: 36 }, ran)
+      const r: any = await $.tool.call({ tool: TOOL, argv: ['gh', 'auth', 'login'], reason: 'x' } as any)
+      const s = String(r.result)
+      expect(s).toContain(`exit code: 36\n--- stdout ---\n(empty)\n--- stderr ---\n${stderr}`)
+      expect(s).toContain(`the macOS keychain is not reachable from this session (-25308 errSecInteractionNotAllowed), so do not re-run this with ${TOOL}: ask the user to run the command themselves with \`!\``)
+    })
+  }
+
+  test('キーチェーンの拒否は、秘密情報で出力を「渡さない」ときの結果にも添え、印が無ければ添えない', async ($, on) => {
+    const asked: string[] = []
+    const ran: string[][] = []
+    host(on)
+    answer(on, ['実行する', '渡さない', '実行する'], asked)
+    stubExits(on, [1, 0], ran, n => (n === 1 ? 'AKIAABCDEFGHIJKLMNOP\nerrSecInteractionNotAllowed' : 'ok'))
+    const withheld: any = await $.tool.call({ tool: TOOL, argv: ['gh', 'api', 'user'], reason: 'x' } as any)
+    expect(String(withheld.result)).toContain('withheld')
+    expect(String(withheld.result)).not.toContain('AKIAABCDEFGHIJKLMNOP')
+    expect(String(withheld.result)).toContain('the macOS keychain is not reachable from this session')
+    const plain: any = await $.tool.call({ tool: TOOL, argv: ['gh', 'api', 'user'], reason: 'x' } as any)
+    expect(String(plain.result)).toContain('--- stdout ---\nok')
+    expect(String(plain.result)).not.toContain('keychain')
   })
 
   test('ユーザーが拒否したら実行しない', async ($, on) => {

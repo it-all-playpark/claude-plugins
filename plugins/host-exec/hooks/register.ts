@@ -112,6 +112,21 @@ const WORKTREE_GUARD_HINT =
   'variables in double quotes, no $(…). To read files, use the Read / Grep tools; for longer logic, ' +
   'write a script under $TMPDIR and run that.'
 
+// host-exec の失敗のあと、Claude が同じ呼び出しを繰り返して承認ダイアログを出し直さないよう、結果に添える次の手。
+// 判定には使わず、stdout / stderr / exit code の中身も書き換えない（結果の後ろに足すだけ）。
+
+/** $.process.run は時間切れのとき `aborted: still running after <ms>ms` で reject する（起動失敗・中断は別の文面） */
+const TIMEOUT_MARKER = 'still running after'
+const timeoutHint = (sec: number) =>
+  `host-exec: the command timed out at timeoutSec ${sec}. Re-running it with the same timeoutSec will time out the same way: ` +
+  `raise timeoutSec (max ${MAX_TIMEOUT_SEC}), or, for a command that does not exit on its own (a server, a watcher, a recorder), ` +
+  'use another way instead of mcp__host-exec__run.'
+/** macOS キーチェーンに対話なしで届かないときの印。host-exec の子プロセスからは何度やっても届かない */
+const KEYCHAIN_DENIAL_MARKERS = ['-25308', 'errSecInteractionNotAllowed', 'User interaction is not allowed']
+const KEYCHAIN_HINT =
+  'host-exec: the macOS keychain is not reachable from this session (-25308 errSecInteractionNotAllowed), ' +
+  'so do not re-run this with mcp__host-exec__run: ask the user to run the command themselves with `!`.'
+
 /** コマンド文字列を引数で受け取って実行するシェル。host-exec はシェルを通さないので、-c は渡させない。 */
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'fish', 'dash', 'ksh'])
 
@@ -289,6 +304,7 @@ export const register: Register = on => {
         'Do not use it to read files or transcripts: those are readable inside the sandbox with the Read / Grep tools.',
         'Commands that the Bash tool already runs outside the sandbox (sandbox.excludedCommands) are refused: run them with Bash.',
         'If the output contains secrets, the user may mask or withhold it; do not try to obtain the secret another way.',
+        `Long-running commands (builds, docker, recording, etc.) need timeoutSec from the first call: the default is 30s, max ${MAX_TIMEOUT_SEC}.`,
       ].join(' '),
       inputSchema: {
         type: 'object',
@@ -394,7 +410,10 @@ export const register: Register = on => {
         }
       }
       if (exe === undefined || exeStat?.kind !== 'file') {
-        return { deny: `host-exec: executable ${visible(argv0)}${at(i)} was not found${argv0.includes('/') ? '' : ' on PATH'}. Nothing was run.` }
+        const bare = argv0.includes('/')
+          ? ''
+          : ' on PATH. Commands that a plugin provides by bare name in its bin/ are on the Bash tool\'s PATH only, so run them with the Bash tool'
+        return { deny: `host-exec: executable ${visible(argv0)}${at(i)} was not found${bare}. Nothing was run.` }
       }
       resolved.push({ argv, exe, exeReal: exeStat.realPath ?? exe })
     }
@@ -461,7 +480,12 @@ export const register: Register = on => {
         const options = key === undefined ? [DECLINE, runLabel] : [DECLINE, runLabel, RUN_REMEMBER]
         approval = await $.ui.ask(shown, { options, header: 'sandbox 外で実行' })
       } catch {
-        return { deny: 'host-exec: nobody approved the command (dialog dismissed or unavailable). Wait for the user.' }
+        return {
+          deny:
+            'host-exec: nobody approved the command (dialog dismissed or unavailable). Nothing was run. ' +
+            'Do not call mcp__host-exec__run again, for this command or any other, until the user replies in the conversation. ' +
+            'Tell the user what you wanted to run and why.',
+        }
       }
       if (approval === RUN_REMEMBER && key !== undefined) {
         await $.state.set(APPROVED, { ...approved, [key]: 1 })
@@ -475,16 +499,21 @@ export const register: Register = on => {
     // ── 実行（失敗・起動失敗・タイムアウトで止め、残りは実行しない） ──
     const sections: string[] = []
     const outcomes: string[] = []
+    /** 結果の後ろに足す次の手。出力を渡さないときも足す（秘密情報は含まない） */
+    const hints = new Set<string>()
     let stoppedAt: number | undefined
     for (const [i, { argv, exe }] of resolved.entries()) {
       try {
         const r = await $.process.run([exe, ...argv.slice(1)], { cwd: cwdReal, timeoutMs: timeoutSec * 1000 })
         sections.push(format(argv, r))
         outcomes.push(`exit code ${r.exitCode}`)
+        if (KEYCHAIN_DENIAL_MARKERS.some(m => r.stdout.includes(m) || r.stderr.includes(m))) hints.add(KEYCHAIN_HINT)
         if (r.exitCode !== 0) stoppedAt = i
       } catch (err) {
-        sections.push(`$ ${shownCommand(argv)}\nhost-exec: the command could not start or timed out after ${timeoutSec}s: ${String(err)}`)
-        outcomes.push('could not start or timed out')
+        const timedOut = String(err).includes(TIMEOUT_MARKER)
+        sections.push(`$ ${shownCommand(argv)}\nhost-exec: the command ${timedOut ? `timed out after ${timeoutSec}s` : 'could not start'}: ${String(err)}`)
+        outcomes.push(timedOut ? 'timed out' : 'could not start')
+        if (timedOut) hints.add(timeoutHint(timeoutSec))
         stoppedAt = i
       }
       if (stoppedAt !== undefined) break
@@ -494,10 +523,11 @@ export const register: Register = on => {
       outcomes.push('未実行')
     }
     const text = sections.join('\n\n')
+    const withHints = (s: string) => (hints.size > 0 ? `${s}\n\n${[...hints].join('\n')}` : s)
 
     // ── ゲート3: 出力の機密チェック（全ステップの出力をまとめて 1 回） ──
     const findings = scan(text)
-    if (findings.length === 0) return { result: text }
+    if (findings.length === 0) return { result: withHints(text) }
 
     const detected = findings.map(f => `${f.kind} ×${f.count}`).join('、')
     let choice = ''
@@ -523,17 +553,18 @@ export const register: Register = on => {
       choice = WITHHOLD
     }
 
-    if (choice === PASS_RAW) return { result: text }
+    if (choice === PASS_RAW) return { result: withHints(text) }
     if (choice === PASS_MASKED) {
       $.ui.toast(`host-exec: ${findings.length} 種類の秘密情報をマスクして渡しました`)
-      return { result: mask(text) + '\n\n[host-exec: secrets in this output were redacted by the user\'s choice]' }
+      return { result: withHints(mask(text) + '\n\n[host-exec: secrets in this output were redacted by the user\'s choice]') }
     }
     // 渡さない（既定）: 実行結果の事実だけ返す
     return {
-      result:
+      result: withHints(
         `host-exec: the command ran (${isMulti ? outcomes.map((o, i) => `step ${i + 1}: ${o}`).join(', ') : outcomes[0]}), but its output was withheld because it contained: ` +
         findings.map(f => f.kind).join(', ') +
         '. Do not try to read these values another way. Ask the user for the specific non-secret information you need.',
+      ),
     }
   }).catch(($, e, next) =>
     next.called ? next(e) : { deny: 'host-exec: its guard failed, so the command was not run.' },
