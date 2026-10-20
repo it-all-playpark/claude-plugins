@@ -643,6 +643,43 @@ REG_MARKERS="[[jev:ac_2:0.04]] [[jev:ac_3:0.5]] [[jev:ac_4:0.96]] [[jev:ac_5:0.0
     [ "$(jev_calls)" -eq 0 ]
 }
 
+# path_without_node: PATH のうち node を持つ dir だけを、node 以外の symlink を並べた影 dir に差し替えた PATH
+path_without_node() {
+    local dir entry shadow n=0 out=""
+    local -a dirs
+    IFS=: read -r -a dirs <<<"$PATH"
+    for dir in "${dirs[@]}"; do
+        if [[ -n "$dir" && -e "$dir/node" ]]; then
+            n=$((n + 1))
+            shadow="$WORK/no-node-path/$n"
+            mkdir -p "$shadow"
+            for entry in "$dir"/*; do
+                [[ "$(basename "$entry")" == "node" ]] && continue
+                ln -s "$entry" "$shadow/$(basename "$entry")"
+            done
+            dir="$shadow"
+        fi
+        out="${out:+$out:}$dir"
+    done
+    printf '%s' "$out"
+}
+
+@test "観測型 AC: PATH に node が無い -> uncertain に node を実行できない旨を積み、全 AC を null（確定させない、issue #1048）" {
+    fixture "$WORK/i.json" "feat: add button" "$AC_BODY"
+    NO_NODE_PATH="$(path_without_node)"
+    ! PATH="$NO_NODE_PATH" command -v node || false
+    PATH="$NO_NODE_PATH" run_analyze "$WORK/i.json"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .acceptance_criteria == ["AC one", "AC two"]'
+    # analyze ゲートが needs_clarification に倒す入力: node を実行できないことを示す uncertain が 1 件以上
+    echo "$output" | jq -e '[.uncertain[] | select(test("node"))] | length >= 1'
+    echo "$output" | jq -e '.uncertain[0] | test("node を実行できない")'
+    # 各 AC は true / false に確定させない（分類 agent が確定済みとして扱わない）
+    echo "$output" | jq -e '(.ac_observational | length) == 2 and all(.ac_observational[]; . != true and . != false)'
+    echo "$output" | jq -e 'all(.ac_observational_evidence[]; test("node を実行できない"))'
+    [ "$(jev_calls)" -eq 0 ]
+}
+
 # ---- 引数 ----
 
 @test "--issue 欠落 / 非数値 -> exit 2" {

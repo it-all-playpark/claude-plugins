@@ -44,8 +44,10 @@
 #                                 について述べているなら no」。state は issue の title と当たった AC の文面だけ（本文は
 #                                 送らない）。p>=0.9 で true、p<=0.1 で false、低確信・Jev 応答なし・無効は null。
 #                                 当たらない AC は Jev に聞かず false。絞り込み自体が失敗したら全 AC を null。
+#                                 ただし PATH に node が無いときは全 AC を null にした上で uncertain に積む
+#                                 （環境の問題を分類 agent で黙って埋めず、analyze ゲートで人間に返す）。
 #                                 結果は ac_observational（AC ごとの true / false / null）、根拠は
-#                                 ac_observational_evidence（AC ごとの 1 文）に載せ、uncertain には積まない — null は
+#                                 ac_observational_evidence（AC ごとの 1 文）に載せ、uncertain には積まない（node 不在を除く）— null は
 #                                 Workflow の analyze ゲートが AC の文面と title だけを読む分類 agent に 1 回で渡し、
 #                                 そこでも決まらなければ観測型（true）として扱う（観測型への誤判定は人手 AC 待ちの
 #                                 HOLD で止まるだけだが、逆は evaluator のコード読みだけで達成扱いになるため）
@@ -306,18 +308,26 @@ OBS_VALUES=()
 OBS_EVIDENCE=()
 if [[ "$AC_COUNT" -gt 0 ]]; then
     PREFILTER=""
-    if PREFILTER="$(printf '%s' "$AC_JSON" | node "$AC_OBS_PREFILTER" 2>"$ERR_FILE")" \
+    if ! command -v node >/dev/null 2>&1; then
+        # node 不在は環境の問題。分類 agent に黙って回すと、コマンドが通ることを主張する AC まで観測型に
+        # 誤判定されて人手 AC 待ちの HOLD になるので、uncertain に積んで analyze ゲートで人間に返す
+        NODE_MISSING="node を実行できない（PATH に node が無い）"
+        UNCERTAIN+=("observational_ac: ${NODE_MISSING}ため観測型 AC の正規表現の絞り込みを実行できない — prerun を実行する環境の PATH に node を通して再実行せよ")
+        HITS_JSON="null"
+        OBS_NULL_EVIDENCE="正規表現の絞り込みを実行できない（${NODE_MISSING}）— 判定を確定せず analyze ゲートで止める"
+    elif PREFILTER="$(printf '%s' "$AC_JSON" | node "$AC_OBS_PREFILTER" 2>"$ERR_FILE")" \
         && printf '%s' "$PREFILTER" | jq -e --argjson n "$AC_COUNT" 'type == "array" and length == $n and all(.[]; type == "boolean")' >/dev/null 2>&1; then
         HITS_JSON="$(printf '%s' "$PREFILTER" | jq -c '[to_entries[] | select(.value) | .key]')"
     else
         PREFILTER_ERR="$(tr '\n' ' ' <"$ERR_FILE")"
         PREFILTER_ERR="${PREFILTER_ERR:0:200}"
         HITS_JSON="null"
+        OBS_NULL_EVIDENCE="正規表現の絞り込みを実行できない（${PREFILTER_ERR:-出力が不正}）— 分類 agent に回す"
     fi
     if [[ "$HITS_JSON" == "null" ]]; then
         for ((i = 0; i < AC_COUNT; i++)); do
             OBS_VALUES+=("null")
-            OBS_EVIDENCE+=("正規表現の絞り込みを実行できない（${PREFILTER_ERR:-出力が不正}）— 分類 agent に回す")
+            OBS_EVIDENCE+=("$OBS_NULL_EVIDENCE")
         done
     else
         for ((i = 0; i < AC_COUNT; i++)); do
