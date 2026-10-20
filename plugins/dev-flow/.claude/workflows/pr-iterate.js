@@ -279,7 +279,7 @@ const NESTED = args?.nested == null
     })()
 // ci_verify: dev-flow が ci の AC（repo が "dev-flow".ci_verify で CI の check で判定すると宣言した AC）を
 // 持つ run でだけ渡す { label, checks, wait_ceiling_seconds }。checks は review ⇄ fix の各 round の CI 判定から外し
-// （CI_EXCLUDE — E2E 等は round の待機上限 CI_WAIT_CEILING_SECONDS に収まらず ci_pending で終端するため）、LGTM 後に
+// （CI_EXCLUDE — E2E 等は round の待機上限 CI_WAIT_CEILING に収まらず ci_pending で終端するため）、LGTM 後に
 // 別ループ（waitCiVerify）で wait_ceiling_seconds まで完了を待つ。単体起動（/pr-iterate）は渡さない。不正形は明示 throw。
 // wait:false は dev-flow が ci の AC を PR 前のローカル実行（local-verify）で決着させた run。checks は round の
 // CI 判定から外したまま、LGTM 後の完了待ちに入らない（返り値 ci_verify.status は 'not_run'）。
@@ -824,7 +824,18 @@ function ghBareStepInstr(cmd) {
 
 const CI_POLL_SECONDS = 45;
 const CI_WAIT_CEILING_SECONDS = 300;
-const CI_MAX_POLLS = Math.floor(CI_WAIT_CEILING_SECONDS / CI_POLL_SECONDS) + 1;
+
+function ciWaitCeiling(raw) {
+  if (raw == null) return CI_WAIT_CEILING_SECONDS;
+  if (!(Number.isInteger(raw) && raw > 0)) {
+    throw new Error(`pr-iterate: args.ci_wait_ceiling_seconds は正の整数（受信: ${JSON.stringify(raw)}）`);
+  }
+  return raw;
+}
+
+function ciMaxPolls(ceilingSeconds) {
+  return Math.floor(ceilingSeconds / CI_POLL_SECONDS) + 1;
+}
 const CI_TURN_MARGIN = 3;
 
 const CI_STATUS = {
@@ -1140,6 +1151,12 @@ const COMMIT_ENSURE = {
     head_sha: { type: 'string' }, delta_shortstat: { type: 'string' },
   },
 }
+
+// CI 待ちの上限（秒）: prerun が PR の base branch の CI 所要時間から決めた値。dev-flow（nested）は
+// args.setup の値を、単体起動の wrapper は pr-iterate-prerun の出力を args.ci_wait_ceiling_seconds で渡す。
+// 未指定は CI_WAIT_CEILING_SECONDS。poll 回数の上限はこの値から導く
+const CI_WAIT_CEILING = ciWaitCeiling(args?.ci_wait_ceiling_seconds)
+const CI_GATE_MAX_POLLS = ciMaxPolls(CI_WAIT_CEILING)
 
 phase('Iterate')
 
@@ -1762,9 +1779,9 @@ for (i = 1; i <= MAX; i++) {
     // ci-check#i を採用できていればそれを使い、不採用なら直列で起動し直す — firstCiCheck）、pending なら
     // 2 回目以降は ci-wait-check（`ci-wait` で待機 → gh fetch → check-ci を 1 spawn）で再判定する。
     // 待機は nominal 積算（ci-wait-check 成功回数 × CI_POLL_SECONDS）で、次の wait を足すと
-    // CI_WAIT_CEILING_SECONDS を超える時点で打ち切り、最後の判定（pending）で ci_pending 終端へ流す
-    // （spawn 回数の上限 CI_MAX_POLLS は ceiling から導出した同値の guard。ループ条件を変えても
-    // exec-proxy.md の「spawn 回数は CI_MAX_POLLS で有界」が黙って崩れないよう明示する）。
+    // CI_WAIT_CEILING を超える時点で打ち切り、最後の判定（pending）で ci_pending 終端へ流す
+    // （spawn 回数の上限 CI_GATE_MAX_POLLS は ceiling から導出した同値の guard。ループ条件を変えても
+    // exec-proxy.md の「spawn 回数は ciMaxPolls(上限) で有界」が黙って崩れないよう明示する）。
     // ci-wait-check の応答は slept===true のときだけ加算し判定を採る: null / throw / slept:false は
     // 実待機が成立していない証拠であり、nominal に加算すると実待機ゼロのまま poll を消費し尽くして
     // 誤った ci_wait_seconds を報告する。待機失敗を検出した時点で即座に ci_pending 終端へ流す
@@ -1798,14 +1815,14 @@ for (i = 1; i <= MAX; i++) {
         }
         gatePolls += 1
         gateWaited += CI_POLL_SECONDS
-        log(`iteration ${i}: CI pending — ${CI_POLL_SECONDS}s 待機して再判定した（累積 ${gateWaited}s / 上限 ${CI_WAIT_CEILING_SECONDS}s）`)
+        log(`iteration ${i}: CI pending — ${CI_POLL_SECONDS}s 待機して再判定した（累積 ${gateWaited}s / 上限 ${CI_WAIT_CEILING}s）`)
         ci = waitResult
       }
       ciEff = effectiveCi(ci, gatePolls === 1 ? `ci-check#${i}` : `ci-wait-check#${i}.${gatePolls}`)
       if (Number.isFinite(ci?.epoch)) lastCiEpoch = ci.epoch
       if (ciEff.status !== 'pending') break
-      if (gateWaited + CI_POLL_SECONDS > CI_WAIT_CEILING_SECONDS || gatePolls >= CI_MAX_POLLS) {
-        log(`iteration ${i}: CI pending のまま待機上限 ${CI_WAIT_CEILING_SECONDS}s / poll 上限 ${CI_MAX_POLLS} 回に到達（累積 ${gateWaited}s / poll ${gatePolls} 回）— ci_pending で終端`)
+      if (gateWaited + CI_POLL_SECONDS > CI_WAIT_CEILING || gatePolls >= CI_GATE_MAX_POLLS) {
+        log(`iteration ${i}: CI pending のまま待機上限 ${CI_WAIT_CEILING}s / poll 上限 ${CI_GATE_MAX_POLLS} 回に到達（累積 ${gateWaited}s / poll ${gatePolls} 回）— ci_pending で終端`)
         break
       }
     }
@@ -1924,7 +1941,7 @@ for (i = 1; i <= MAX; i++) {
     // blocking round でも CI を 1 回だけ判定する。review が毎 round blocking を出す PR では
     // ci_gate に一度も到達せず、CI が赤のまま stuck / fix_failed で終端して誰にも見えなかった。
     // 判定には review#i と並列に取った ci-check#i を使う（不採用なら直列で起動し直す — firstCiCheck）。
-    // ここでは待機しない（pending は finding にせず観測のみ — review ⇄ fix の各 round に CI_WAIT_CEILING_SECONDS
+    // ここでは待機しない（pending は finding にせず観測のみ — review ⇄ fix の各 round に CI_WAIT_CEILING
     // を足さない）。failed のときだけ ci::<name> を review の blocking と同じ fix prompt に合流させ、
     // reviewSeen にも register して同一 check の反復失敗を REVIEW_STUCK に乗せる。
     // null / error は fail-open（finding を足さず fix へ進む。CI 状態は ci_last_status で人間に見せる）。
@@ -2072,11 +2089,13 @@ const telemetryHandoff = buildJournalHandoffPayload({
   args: `pr=${PR}`,
   repo: REPO,
   pr_number: Number(PR),
-  // telemetry キーは dev-flow/references/telemetry.md の 13 キーに限る（_lib/telemetry-keys.test.mjs が pin）。
-  // round ごとの詳細・CI 待ち・retry 回数等は返り値に載る。
+  // telemetry キーは dev-flow/references/telemetry.md の 15 キーに限る（_lib/telemetry-keys.test.mjs が pin）。
+  // round ごとの詳細・poll 回数・retry 回数等は返り値に載る。
   telemetry: {
     merge_tier: 'PR_ITERATE',
     iterate_status: status,
+    ci_wait_ceiling_seconds: CI_WAIT_CEILING,  // CI 待ちの上限（秒）。nested・単体起動とも同じ値
+    ci_wait_seconds: totalCiWaitSeconds,  // 全 round の CI 待ちの nominal 累積秒
     review_model_config: 'opus',  // pr-reviewer の model。override を渡さないので agents/pr-reviewer.md frontmatter の値（一致は review-model-frontmatter.test.mjs が pin）
     plugin_version: PLUGIN_VERSION,  // _lib/plugin-version.mjs の定数。plugin.json との一致は plugin-version.sync.test.mjs が pin
     plugin_commit: PLUGIN_COMMIT,  // plugin の commit（12 桁 hex / null）。記録専用
@@ -2102,6 +2121,7 @@ return {
   fixes_applied: fixesApplied,
   last_decision: lastReview?.decision ?? null,
   last_summary: lastReview?.summary ?? null,
+  ci_wait_ceiling_seconds: CI_WAIT_CEILING,
   ci_wait_seconds: totalCiWaitSeconds,
   ci_poll_attempts: totalCiPollAttempts,
   ci_last_status: ciLastStatus,  // 最後に観測した CI 状態（null は未観測）。stuck / fix_failed 終端でも CI 赤を呼び出し側に見せる

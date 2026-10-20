@@ -154,7 +154,7 @@ function resolvePositiveIntArg(args, name) {
 // ==== END inline: _lib/resolve-arg.mjs ====
 // ==== BEGIN inline: _lib/prerun-setup.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
-const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end'];
+const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds'];
 
 const PRERUN_MISSING_MSG = 'dev-flow: args.setup が無い — /dev-flow wrapper（dev-flow/SKILL.md の preflight）で `dev-flow-prerun --issue <N> --worktree <path>` を実行し、続けて別の Bash 呼び出しで `ensure-worktree-deps --setup <worktree>/.devflow-tmp/prerun-setup.json` を実行して、その stdout JSON を Workflow の args.setup に渡せ（workflow 内 fallback は無い）';
 
@@ -223,6 +223,7 @@ function validatePrerunSetup(raw, issue) {
   if (raw.analyze.ok === false && !isNonEmptyString(raw.analyze.reason)) fail('analyze.reason', raw.analyze.reason);
   if (!(Number.isInteger(raw.epoch) && raw.epoch > 0)) fail('epoch', raw.epoch);
   if (!(Number.isInteger(raw.epoch_end) && raw.epoch_end > 0)) fail('epoch_end', raw.epoch_end);
+  if (!(Number.isInteger(raw.ci_wait_ceiling_seconds) && raw.ci_wait_ceiling_seconds > 0)) fail('ci_wait_ceiling_seconds', raw.ci_wait_ceiling_seconds);
 
   const repo = isNonEmptyString(raw.repo) ? raw.repo : null;
   const branch = isNonEmptyString(raw.branch) ? raw.branch : `feature/issue-${issue}`;
@@ -243,6 +244,7 @@ function validatePrerunSetup(raw, issue) {
     analyze: raw.analyze,
     epoch: raw.epoch,
     epoch_end: raw.epoch_end,
+    ci_wait_ceiling_seconds: raw.ci_wait_ceiling_seconds,
     ci_verify: ciVerify,
     local_verify: localVerify,
   };
@@ -3371,7 +3373,18 @@ function finalCiVerdict({ expectedSha, meta }) {
 
 const CI_POLL_SECONDS = 45;
 const CI_WAIT_CEILING_SECONDS = 300;
-const CI_MAX_POLLS = Math.floor(CI_WAIT_CEILING_SECONDS / CI_POLL_SECONDS) + 1;
+
+function ciWaitCeiling(raw) {
+  if (raw == null) return CI_WAIT_CEILING_SECONDS;
+  if (!(Number.isInteger(raw) && raw > 0)) {
+    throw new Error(`pr-iterate: args.ci_wait_ceiling_seconds は正の整数（受信: ${JSON.stringify(raw)}）`);
+  }
+  return raw;
+}
+
+function ciMaxPolls(ceilingSeconds) {
+  return Math.floor(ceilingSeconds / CI_POLL_SECONDS) + 1;
+}
 const CI_TURN_MARGIN = 3;
 
 const CI_STATUS = {
@@ -6920,6 +6933,8 @@ const LOCAL_VERIFY_DECIDED = localVerifyCiOutcome(state.localVerify) != null
 const prIterateArgs = () => ({
   pr: pr.pr_number, acceptance_criteria: req.acceptance_criteria,
   plugin_commit: PLUGIN_COMMIT,
+  // CI 待ちの上限（秒）。dev-flow-prerun が base の CI 所要時間から決めた値（単体起動の pr-iterate-prerun と同じ求め方）
+  ci_wait_ceiling_seconds: PRERUN.ci_wait_ceiling_seconds,
   ...(CI_AC_INDEXES.length ? { ci_verify: { label: CI_VERIFY.label, checks: CI_VERIFY.checks, wait_ceiling_seconds: CI_VERIFY.wait_ceiling_seconds, ...(LOCAL_VERIFY_DECIDED ? { wait: false } : {}) } } : {}),
   nested: {
     caller: 'dev-flow', cwd: WT, head_ref: state.setup.branch,
@@ -7668,7 +7683,7 @@ const telemetryHandoff = buildJournalHandoffPayload({
   // plugin bin/ の bare 名。dotfiles Stop hook の [[ -x ]] は bare 名では真にならず FALLBACK_JOURNAL で解決される（fail-open、tilde 形と同挙動）
   journal_sh: 'journal',
   ...(state.guardBlockedResults.length ? { error_category: 'guard_blocked' } : {}),
-  // telemetry キーは dev-flow/references/telemetry.md の 13 キーに限る（_lib/telemetry-keys.test.mjs が pin）。
+  // telemetry キーは dev-flow/references/telemetry.md の 15 キーに限る（_lib/telemetry-keys.test.mjs が pin）。
   // 記録専用で gate / merge tier / ledger の判定入力にはしない。
   telemetry: {
     merge_tier: mergeTier.tier,

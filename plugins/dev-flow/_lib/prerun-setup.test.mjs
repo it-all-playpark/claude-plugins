@@ -35,6 +35,7 @@ function validRaw(overrides = {}) {
     analyze: validAnalyze(),
     epoch: 1787000000,
     epoch_end: 1787000060,
+    ci_wait_ceiling_seconds: 515,
     ...overrides,
   };
 }
@@ -68,6 +69,7 @@ test('validatePrerunSetup: 正常な setup は各値をそのまま返し framew
   assert.deepEqual(result.testRunners, [PYTEST_RUNNER, BATS_RUNNER]);
   assert.equal(result.epoch, 1787000000);
   assert.equal(result.epoch_end, 1787000060);
+  assert.equal(result.ci_wait_ceiling_seconds, 515);
   assert.deepEqual(result.analyze, validAnalyze());
 });
 
@@ -153,6 +155,9 @@ const REQUIRED_KEY_CASES = [
   ['epoch_end が 0', { epoch_end: 0 }, 'epoch_end'],
   ['epoch_end 欠落', { epoch_end: DELETE }, 'epoch_end'],
   ['epoch_end が非整数(12.5)', { epoch_end: 12.5 }, 'epoch_end'],
+  ['ci_wait_ceiling_seconds 欠落', { ci_wait_ceiling_seconds: DELETE }, 'ci_wait_ceiling_seconds'],
+  ['ci_wait_ceiling_seconds が文字列("300")', { ci_wait_ceiling_seconds: '300' }, 'ci_wait_ceiling_seconds'],
+  ['ci_wait_ceiling_seconds が 0', { ci_wait_ceiling_seconds: 0 }, 'ci_wait_ceiling_seconds'],
 ];
 
 test.each(REQUIRED_KEY_CASES)('validatePrerunSetup: %s は「必須キーが欠落/型不正: <key>」で throw する', (_name, overrides, key) => {
@@ -208,7 +213,7 @@ test('validatePrerunSetup: 未知キーがあっても throw しない', () => {
 // ── PRERUN_SETUP_REQUIRED ───────────────────────────────────────────────────
 
 test('PRERUN_SETUP_REQUIRED: 必須キー一覧を定義する', () => {
-  assert.deepEqual(PRERUN_SETUP_REQUIRED, ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end']);
+  assert.deepEqual(PRERUN_SETUP_REQUIRED, ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds']);
 });
 
 // ── rejectLegacyBaseArg ──────────────────────────────────────────────────────

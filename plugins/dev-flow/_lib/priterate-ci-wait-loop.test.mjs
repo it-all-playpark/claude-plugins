@@ -1,7 +1,9 @@
 // pr-iterate.js の CI gate が script 側 poll ループで、2 回目以降の poll を待機 + 判定の 1 spawn
 // （ci-wait-check）で行うことの検証（issue #663 / #805）。
 //
-// - CI 待ちが script 側ループで、総待機の上限が定数 CI_WAIT_CEILING_SECONDS（既定 300）で決まる。
+// - CI 待ちが script 側ループで、総待機の上限は args.ci_wait_ceiling_seconds（prerun が base branch の CI 所要時間から
+//   決めた値。未指定は CI_WAIT_CEILING_SECONDS=300）で決まり、poll 回数の上限もそこから導く（issue #1046）。
+//   nested（dev-flow）・単体起動（wrapper の caller:'standalone'）で同じ扱い。
 // - ci_wait_seconds / ci_poll_attempts が script 側積算で現行と同じキー・意味（(N-1)×M / N）で return 値に載る。
 // - ceiling 到達時は ci_pending 終端（ci_error にならない）。CI failed は現行どおり fix loop へ。
 // - 1 回目の poll は ci-check 単体（待機なし）、2 回目以降は `ci-wait <秒>` → gh pr checks → check-ci を
@@ -21,8 +23,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const prIteratePath = join(here, '..', '.claude', 'workflows', 'pr-iterate.js');
 const src = readFileSync(prIteratePath, 'utf8');
 
-async function run(overrides) {
-  const { ctx, calls } = makePrIterateSandbox({ overrides });
+async function run(overrides, args) {
+  const { ctx, calls } = makePrIterateSandbox({ overrides, ...(args ? { args } : {}) });
   const { result, error } = await runWorkflowCapture(src, ctx, '.claude/workflows/pr-iterate.js');
   assertNoCrash(error, 'priterate-ci-wait-loop');
   return { result, error, calls };
@@ -74,7 +76,53 @@ test('[ci-wait-loop] ceiling: 常に pending なら ci-check 1 回 + ci-wait-che
   const waitCheckCalls = calls.filter((c) => c.label.startsWith('ci-wait-check#'));
   assert.equal(ciCheckCalls.length, 1, `ci-check# 呼び出しは 1 回目の poll だけであるべきだが ${ciCheckCalls.length} 回だった`);
   assert.equal(waitCheckCalls.length, 6, `ci-wait-check# 呼び出しは 6 回であるべきだが ${waitCheckCalls.length} 回だった`);
-  assert.equal(ciCheckCalls.length + waitCheckCalls.length, 7, 'poll 1 回 = spawn 1 本（判定 spawn 合計は CI_MAX_POLLS=7）');
+  assert.equal(ciCheckCalls.length + waitCheckCalls.length, 7, 'poll 1 回 = spawn 1 本（判定 spawn 合計は ciMaxPolls(300)=7）');
+  assert.equal(result?.ci_wait_ceiling_seconds, 300, `上限が渡されないときは 300 秒であるべきだが ${result?.ci_wait_ceiling_seconds} だった`);
+});
+
+// ---- 上限を args.ci_wait_ceiling_seconds で受ける（issue #1046） ----
+
+const NESTED_DEVFLOW = { caller: 'dev-flow', cwd: '/tmp/wt', head_ref: 'feature/x', base_ref: 'main', repo: 'acme/skills' };
+const NESTED_STANDALONE = { ...NESTED_DEVFLOW, caller: 'standalone' };
+
+for (const [name, nested] of [['nested（dev-flow）', NESTED_DEVFLOW], ['単体起動（standalone）', NESTED_STANDALONE]]) {
+  test(`[ci-wait-loop] ${name}: 上限 600 秒なら 300 秒を超えて待ち、9 回目の poll（360 秒待機後）の passed で lgtm`, async () => {
+    const overrides = { 'ci-check#1': { status: 'pending', passed: 0, failed: 0, pending: 1, skipped: 0, failed_checks: [] } };
+    for (let k = 2; k <= 8; k++) overrides[`ci-wait-check#1.${k}`] = waitedPending;
+    overrides['ci-wait-check#1.9'] = { slept: true, status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [] };
+
+    const { result, error, calls } = await run(overrides, { pr: 5, ci_wait_ceiling_seconds: 600, nested });
+
+    assert.equal(error, null, `run が throw した: ${error?.message}`);
+    assert.equal(result?.status, 'lgtm', `上限 600 秒では 360 秒待った後の passed で lgtm になるべきだが '${result?.status}' だった`);
+    assert.equal(result?.ci_wait_seconds, 360, `ci_wait_seconds は 360（300 超）であるべきだが ${result?.ci_wait_seconds} だった`);
+    assert.equal(result?.ci_poll_attempts, 9);
+    assert.equal(result?.ci_wait_ceiling_seconds, 600);
+    assert.equal(calls.filter((c) => c.label.startsWith('ci-wait-check#')).length, 8);
+  });
+
+  test(`[ci-wait-loop] ${name}: 上限 600 秒で常に pending なら ci-check 1 回 + ci-wait-check 13 回（585 秒）で ci_pending 終端`, async () => {
+    const overrides = { 'ci-check#1': { status: 'pending', passed: 0, failed: 0, pending: 1, skipped: 0, failed_checks: [] } };
+    // 上限を超えて poll したら passed を返す（打ち切らずに 14 回目以降の待機へ進むと lgtm に化けて検出できる）
+    for (let k = 2; k <= 14; k++) overrides[`ci-wait-check#1.${k}`] = waitedPending;
+    for (let k = 15; k <= 30; k++) overrides[`ci-wait-check#1.${k}`] = { slept: true, status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [] };
+
+    const { result, error, calls } = await run(overrides, { pr: 5, ci_wait_ceiling_seconds: 600, nested });
+
+    assert.equal(error, null, `run が throw した: ${error?.message}`);
+    assert.equal(result?.status, 'ci_pending', `上限到達で ci_pending 終端すべきだが '${result?.status}' だった`);
+    assert.equal(result?.ci_wait_seconds, 585, `次の 45 秒で 600 を超える 585 秒で打ち切るべきだが ${result?.ci_wait_seconds} だった`);
+    assert.equal(result?.ci_poll_attempts, 14, `poll 回数の上限は ciMaxPolls(600)=14 であるべきだが ${result?.ci_poll_attempts} だった`);
+    assert.equal(calls.filter((c) => c.label.startsWith('ci-wait-check#')).length, 13);
+    assert.equal(result?.ci_wait_ceiling_seconds, 600);
+  });
+}
+
+test('[ci-wait-loop] args.ci_wait_ceiling_seconds が正の整数でなければ CI を待つ前に明示 throw する', async () => {
+  const { ctx, calls } = makePrIterateSandbox({ args: { pr: 5, ci_wait_ceiling_seconds: '600', nested: NESTED_DEVFLOW } });
+  const { error } = await runWorkflowCapture(src, ctx, '.claude/workflows/pr-iterate.js');
+  assert.match(error?.message ?? '', /args\.ci_wait_ceiling_seconds は正の整数/);
+  assert.equal(calls.filter((c) => c.label.startsWith('ci-')).length, 0, 'CI の判定 spawn を起動しないべき');
 });
 
 for (const [name, response] of [

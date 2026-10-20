@@ -43,6 +43,13 @@ setup() {
     mkdir -p "$STUB_DIR"
     cat >"$STUB_DIR/gh" <<'STUB'
 #!/usr/bin/env bash
+# gh run list（CI 待ちの上限）は GH_RUN_STUB_FIXTURE 未設定なら失敗（上限は既定の 300）
+if [[ "$1" == "run" ]]; then
+    printf '%s\n' "$*" >>"$GH_RUN_STUB_LOG"
+    [[ -n "${GH_RUN_STUB_FIXTURE:-}" ]] || { echo "gh stub: no run fixture" >&2; exit 1; }
+    cat "$GH_RUN_STUB_FIXTURE"
+    exit 0
+fi
 if [[ -z "${GH_STUB_FIXTURE:-}" ]]; then
     echo "gh stub: no fixture (GH_STUB_FIXTURE unset)" >&2
     exit 1
@@ -56,7 +63,8 @@ STUB
     chmod +x "$STUB_DIR/gh"
     export PATH="$STUB_DIR:$PATH"
     export DEVFLOW_JEV_CLASSIFY=jev-classify-not-installed
-    unset GH_STUB_FIXTURE
+    export GH_RUN_STUB_LOG="$BATS_TEST_TMPDIR/gh-run.log"
+    unset GH_STUB_FIXTURE GH_RUN_STUB_FIXTURE
 }
 
 # issue fixture（AC あり・comment 無し・breaking 無し → Jev 不要の contract 経路）
@@ -103,6 +111,25 @@ make_issue_fixture() {
     run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused"'
+}
+
+# ---- (1d) CI 待ちの上限（ci_wait_ceiling_seconds。issue #1046） ----
+# 上限の求め方（p90 + 60 秒・300〜900 秒・5 件未満は 300）は _shared/scripts/ci-wait-ceiling.bats が見る。ここは配線だけ。
+
+@test "(1d) 解決した base の成功 run から ci_wait_ceiling_seconds を出し、gh run list が失敗したら 300" {
+    export GH_RUN_STUB_FIXTURE="$BATS_TEST_TMPDIR/runs.json"
+    jq -nc '[range(5) | {startedAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:10:00Z"}]' >"$GH_RUN_STUB_FIXTURE"
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .base == "dev" and .ci_wait_ceiling_seconds == 660'
+    grep -qx "run list --branch dev --status success --limit 20 --json startedAt,updatedAt" "$GH_RUN_STUB_LOG"
+    jq -e '.ci_wait_ceiling_seconds == 660' "$WT/.devflow-tmp/prerun-setup.json"
+
+    unset GH_RUN_STUB_FIXTURE
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .ci_wait_ceiling_seconds == 300'
 }
 
 # ---- (2) origin に dev 無し ----

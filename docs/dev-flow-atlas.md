@@ -456,7 +456,7 @@ tier は動かない。
 | `BLOCK_MAX` | 2 | BLOCKED 由来の再計画 |
 | `AGENT_AC_REIMPL_MAX` | 2 | agent AC の未達を理由にした evaluate 差し戻し（standard も延長） |
 | `REVIEW_STUCK` | 2 | pr-iterate の同一 topic 反復での stuck 判定 |
-| `CI_WAIT_CEILING_SECONDS` | 300 | pr-iterate の CI pending 待ち（script 側 ci-wait ループ）の nominal 総待機上限（秒） |
+| `CI_WAIT_CEILING_SECONDS` | 300 | pr-iterate の CI pending 待ち（script 側 ci-wait ループ）の nominal 総待機上限（秒）の既定値。prerun が base branch の CI 所要時間から決めた `args.ci_wait_ceiling_seconds`（300〜900）があればそちらを使う |
 
 <!-- atlas:loop-constants:end -->
 

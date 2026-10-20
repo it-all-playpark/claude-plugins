@@ -12,7 +12,7 @@ dev-flow.js / pr-iterate.js は run の終端（成功・失敗・abort）で te
 
 telemetry の読み手は `dev-flow-health` だけ。`health-report.sh` がプログラムから読むのは `plugin_commit`、
 LLM ステップは原因推定のときに該当 run の telemetry を手で読む。読み手の無いキーは書かない — 書くキーは下の
-13 個に限り、`_lib/telemetry-keys.test.mjs` が workflow の telemetry object literal（成功・失敗・abort）と
+15 個に限り、`_lib/telemetry-keys.test.mjs` が workflow の telemetry object literal（成功・失敗・abort）と
 VM 実行の handoff の両方で pin する。キーを足すときは読み手を先に決め、この一覧と同テストを同時に更新する。
 いずれも記録専用で、gate・merge tier・ledger・shape 判定の入力にはしない（軸A 非抵触）。
 
@@ -33,6 +33,8 @@ VM 実行の handoff の両方で pin する。キーを足すときは読み手
 | `plugin_version` | dev-flow / pr-iterate | 成功・失敗・abort | `_lib/plugin-version.mjs` の `PLUGIN_VERSION` |
 | `plugin_commit` | dev-flow / pr-iterate | 成功・失敗・abort | 実行中の dev-flow plugin の skills repo commit SHA 先頭 12 桁、決められなければ `null` |
 | `final_test_flaky` | dev-flow | 成功（flake の run のみ） | test#final で落ち、落ちたファイルだけの単体再実行で green だったテストファイルと 1 回目のログのパス `{files, logs}` |
+| `ci_wait_ceiling_seconds` | pr-iterate | 成功（nested・単体起動とも） | CI 待ちに使った上限（秒）。prerun が base branch の CI 所要時間から決めた `args.ci_wait_ceiling_seconds`、渡されなければ 300 |
+| `ci_wait_seconds` | pr-iterate | 成功（nested・単体起動とも） | 全 round の CI 待ちの nominal 累積秒（返り値の `ci_wait_seconds` と同じ値） |
 
 nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の entry が 1 件ずつ残る。集計は dev-flow entry
 を使う。
@@ -74,6 +76,11 @@ nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の e
   red で `failed_files` が非空のとき、そのファイルだけを `run-tests <WT> --files …` で 1 回流し直し、green なら
   `final_test_green` を true にして載せる。同じファイルが run をまたいで繰り返し載るなら、そのテストの負荷耐性を
   直す issue の根拠になる（原因推定ではこのキーと `logs` の 1 回目の出力を読む）。再実行も red・再実行しなかった run には載らない。
+- `ci_wait_ceiling_seconds` / `ci_wait_seconds`: `ci_pending` で終わった run が「上限が CI 所要時間に足りなかった」のか
+  「CI 自体が詰まっていた」のかを、原因推定で切り分けるための値。上限は prerun の
+  `_shared/scripts/ci-wait-ceiling.sh` が base branch の直近 20 件の成功 run の所要時間の p90 + 60 秒を 300〜900 秒に
+  収めて決める（履歴 5 件未満・gh の読み取り失敗は 300）。`ci_wait_seconds` が上限に近い run の数で、上限の求め方を見直す。
+  nested 起動でも pr-iterate entry に載る（dev-flow entry には載せない）。
 
 ## 失敗・abort entry
 

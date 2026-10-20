@@ -21,7 +21,8 @@
 # branch の reflog の作成記録（`branch: Created from <ref>`）で判定する。
 #
 # GitHub I/O は analyze 段の `analyze-issue`（GitHub CLI の issue 取得を内蔵）と blocker 判定
-# （prerun-analyze.sh の dependencies API / Blocked by 先の issue 状態）の読み取りのみ。
+# （prerun-analyze.sh の dependencies API / Blocked by 先の issue 状態）、CI 待ちの上限を決める base branch の
+# 成功 run の一覧（ci-wait-ceiling.sh が内蔵する run list）の読み取りのみ。
 # リモート更新系の書き込みコマンドは持たない（.claude/rules/dev-flow.md 参照）。
 
 set -euo pipefail
@@ -35,6 +36,8 @@ has_jq || { echo "jq is required" >&2; exit 127; }
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=../../_shared/scripts/worktree-checkout.sh
 source "$PLUGIN_ROOT/_shared/scripts/worktree-checkout.sh"
+# shellcheck source=../../_shared/scripts/ci-wait-ceiling.sh
+source "$PLUGIN_ROOT/_shared/scripts/ci-wait-ceiling.sh"
 
 usage() {
     echo "Usage: dev-flow-prerun --issue <N> --worktree <abs-path> [--base <ref>]" >&2
@@ -178,6 +181,13 @@ if FETCH_OUT="$(git -C "$ROOT" fetch origin --quiet 2>&1)"; then
     fi
 else
     base_error="git fetch origin failed: ${FETCH_OUT}"
+fi
+
+# ci_wait_ceiling_seconds: nested pr-iterate の CI 待ちの上限（秒）。PR の base（= 上で解決した base）の
+# CI 所要時間から決める（pr-iterate-prerun と同じ ci-wait-ceiling.sh）。base 未解決・run 一覧の読み取り失敗は 300
+ci_wait_ceiling_seconds="$CI_WAIT_CEILING_DEFAULT"
+if [[ "$BASE_OK" == true ]]; then
+    ci_wait_ceiling_seconds="$(ci_wait_ceiling "$base" "$repo")"
 fi
 
 # ============================================================================
@@ -492,6 +502,7 @@ OUT_JSON="$(jq -n \
     --argjson local_verify "$local_verify_json" \
     --argjson skip_worktree "$(skip_worktree_json)" \
     --argjson epoch "$epoch" \
+    --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
     --arg plugin_commit "$plugin_commit" \
     '
     {ok: $ok, issue: $issue}
@@ -502,6 +513,7 @@ OUT_JSON="$(jq -n \
     + (if $have_worktree_error then {worktree_error: $worktree_error} else {} end)
     + {worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree}
     + {clean: $clean, stack: $stack, analyze: $analyze, ci_verify: $ci_verify, local_verify: $local_verify, epoch: $epoch}
+    + {ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds}
     + {plugin_commit: (if ($plugin_commit | test("^[0-9a-f]{12}$")) then $plugin_commit else null end)}
     ')"
 

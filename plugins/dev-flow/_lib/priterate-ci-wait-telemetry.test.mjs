@@ -1,6 +1,8 @@
 // F2: CI ポーリング配線の検証テスト（TDD）。
 // AC-1: CI の判定で pr-iterate が LGTM へ進む。
 // AC-7: waited_seconds/poll_attempts が終端サマリー / return に反映される。
+// issue #1046: 使った上限 ci_wait_ceiling_seconds と待ち秒数 ci_wait_seconds を、nested・単体起動とも
+// return と journal telemetry の両方に載せる。
 // issue #488: fetch は subagent の bare `gh pr checks`、check-ci.sh はその snapshot に対する
 // 純変換。ポーリングは pr-iterate.js の script 側 ci-wait ループが持つ（issue #663）。
 // dispatch された ci-check prompt の正負 grep は priterate-ci-failopen.test.mjs (c)（canonical との一致）と
@@ -76,4 +78,48 @@ test('[ci-wait-telemetry] ci-check#1 が即 no_checks（poll 1 回・待機な�
   assert.equal(result?.status, 'lgtm');
   assert.equal(result?.ci_wait_seconds, 0, `no_checks・poll 1 回でも waited_seconds=0 ならば累積 0 のはずだが ${result?.ci_wait_seconds} だった`);
   assert.equal(result?.ci_poll_attempts, 1, `poll_attempts=1 が累積されるべきだが ${result?.ci_poll_attempts} だった`);
+});
+
+// ---- 上限と待ち秒数を返り値と journal telemetry に残す（issue #1046） ----
+// journal-log の prompt に載る handoff JSON（delimiter の間）の telemetry を読む。
+function handoffTelemetry(calls) {
+  const save = calls.find((c) => c.label === 'journal-log');
+  assert.ok(save, `journal-log が呼ばれていない: ${calls.map((c) => c.label).join(', ')}`);
+  const m = save.prompt.match(/<<<JOURNAL_HANDOFF_BODY_BEGIN>>>\n([\s\S]*?)\n<<<JOURNAL_HANDOFF_BODY_END>>>/);
+  assert.ok(m, 'journal-log prompt に JOURNAL_HANDOFF_BODY delimiter が見つからない');
+  return JSON.parse(m[1]).telemetry;
+}
+
+const NESTED = { cwd: '/tmp/wt', head_ref: 'feature/x', base_ref: 'main', repo: 'acme/skills' };
+const pendingOnce = {
+  'ci-check#1': { status: 'pending', passed: 0, failed: 0, pending: 1, skipped: 0, failed_checks: [] },
+  'ci-wait-check#1.2': { slept: true, status: 'pending', passed: 0, failed: 0, pending: 1, skipped: 0, failed_checks: [] },
+  'ci-wait-check#1.3': { slept: true, status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [] },
+};
+
+for (const [name, args] of [
+  ['nested（dev-flow）', { pr: 5, ci_wait_ceiling_seconds: 515, nested: { ...NESTED, caller: 'dev-flow' } }],
+  ['単体起動（standalone）', { pr: 5, ci_wait_ceiling_seconds: 515, nested: { ...NESTED, caller: 'standalone' } }],
+]) {
+  test(`[ci-wait-telemetry] ${name}: 使った上限 ci_wait_ceiling_seconds と待ち秒数 ci_wait_seconds が返り値と journal telemetry の両方に載る`, async () => {
+    const { ctx, calls } = makePrIterateSandbox({ overrides: pendingOnce, args });
+    const { result, error } = await runPrIterateCapture(src, ctx);
+    assert.equal(error, null, `run が throw した: ${error?.message}`);
+    assert.equal(result?.status, 'lgtm');
+    assert.equal(result?.ci_wait_ceiling_seconds, 515);
+    assert.equal(result?.ci_wait_seconds, 90);
+    const telemetry = handoffTelemetry(calls);
+    assert.equal(telemetry.ci_wait_ceiling_seconds, 515, `telemetry: ${JSON.stringify(telemetry)}`);
+    assert.equal(telemetry.ci_wait_seconds, 90, `telemetry: ${JSON.stringify(telemetry)}`);
+  });
+}
+
+test('[ci-wait-telemetry] 上限が渡されない run は ci_wait_ceiling_seconds=300 を返り値と journal telemetry に載せる', async () => {
+  const { ctx, calls } = makePrIterateSandbox();
+  const { result, error } = await runPrIterateCapture(src, ctx);
+  assert.equal(error, null, `run が throw した: ${error?.message}`);
+  assert.equal(result?.ci_wait_ceiling_seconds, 300);
+  const telemetry = handoffTelemetry(calls);
+  assert.equal(telemetry.ci_wait_ceiling_seconds, 300);
+  assert.equal(telemetry.ci_wait_seconds, result?.ci_wait_seconds);
 });

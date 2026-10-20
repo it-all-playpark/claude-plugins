@@ -4,7 +4,8 @@
 //   - ci-check 1 spawn（head sha 1 + gh 1 + 変換 1 + StructuredOutput 1 + margin = 7）と ci-wait-check 1 spawn
 //     （待機 1 + gh 1 + 変換 1 + StructuredOutput 1 + margin = 7）が dev-runner-haiku-ro の maxTurns を超えない
 //     （agent md を実読して pin。issue #663 / #805 / #806）
-//   - CI_WAIT_CEILING_SECONDS=300, CI_POLL_SECONDS=45, CI_MAX_POLLS=7（script 側 poll ループの定数）
+//   - 既定の上限 CI_WAIT_CEILING_SECONDS=300, CI_POLL_SECONDS=45。poll 回数の上限は待機上限から導く（ciMaxPolls）。
+//     args.ci_wait_ceiling_seconds は正の整数だけ受け、未指定は既定値（ciWaitCeiling。issue #1046）
 //   - prompt にループ指示が無い（1 spawn = 1 判定。ci-check は待機もしない。issue #663）
 //   - CI_STATUS の status enum は closed（'error' が欠けると gh fetch 失敗を green と誤認しうる）
 //   - CI_STATUS は check-ci の件数を required に持ち、ciEffectiveStatus は件数から導いた status と食い違う
@@ -21,7 +22,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { CI_POLL_SECONDS, CI_WAIT_CEILING_SECONDS, CI_MAX_POLLS, CI_TURN_MARGIN, CI_STATUS, CI_WAIT_CHECK, ciCheckPrompt, ciWaitCheckPrompt, ciFetchSteps, ciHeadRejectReason, isFullCommitSha, ciStatusFromCounts, ciEffectiveStatus, CI_VERIFY_POLL_SECONDS, CI_VERIFY_CHECK, ciVerifyPrompt, ciVerifyVerdict } from './ci-check.mjs';
+import { CI_POLL_SECONDS, CI_WAIT_CEILING_SECONDS, ciWaitCeiling, ciMaxPolls, CI_TURN_MARGIN, CI_STATUS, CI_WAIT_CHECK, ciCheckPrompt, ciWaitCheckPrompt, ciFetchSteps, ciHeadRejectReason, isFullCommitSha, ciStatusFromCounts, ciEffectiveStatus, CI_VERIFY_POLL_SECONDS, CI_VERIFY_CHECK, ciVerifyPrompt, ciVerifyVerdict } from './ci-check.mjs';
 
 // ============================================================
 // 定数
@@ -82,11 +83,26 @@ test('[ci-check] CI_TURN_MARGIN は 3（実測: 文書化 worst case 8 に対し
   assert.equal(CI_TURN_MARGIN, 3);
 });
 
-test('[ci-check] script 側ループの定数: CI_WAIT_CEILING_SECONDS=300 / CI_POLL_SECONDS=45 / CI_MAX_POLLS=7', () => {
+test('[ci-check] script 側ループの定数: 既定の上限 CI_WAIT_CEILING_SECONDS=300 / CI_POLL_SECONDS=45 / ciMaxPolls(300)=7', () => {
   assert.equal(CI_WAIT_CEILING_SECONDS, 300);
   assert.equal(CI_POLL_SECONDS, 45);
-  assert.equal(CI_MAX_POLLS, 7);
-  assert.ok(CI_POLL_SECONDS * (CI_MAX_POLLS - 1) <= CI_WAIT_CEILING_SECONDS);
+  assert.equal(ciMaxPolls(CI_WAIT_CEILING_SECONDS), 7);
+});
+
+test('[ci-check] ciMaxPolls: poll 回数の上限は待機上限から導き、待機の合計は上限を超えない', () => {
+  for (const [ceiling, polls] of [[300, 7], [515, 12], [600, 14], [900, 21]]) {
+    assert.equal(ciMaxPolls(ceiling), polls, `ciMaxPolls(${ceiling})`);
+    assert.ok(CI_POLL_SECONDS * (ciMaxPolls(ceiling) - 1) <= ceiling, `ceiling ${ceiling} の待機合計が上限を超える`);
+  }
+});
+
+test('[ci-check] ciWaitCeiling: 未指定は既定 300、正の整数はそのまま、それ以外は明示 throw', () => {
+  assert.equal(ciWaitCeiling(undefined), CI_WAIT_CEILING_SECONDS);
+  assert.equal(ciWaitCeiling(null), CI_WAIT_CEILING_SECONDS);
+  assert.equal(ciWaitCeiling(600), 600);
+  for (const bad of [0, -300, 450.5, '600', true, {}]) {
+    assert.throws(() => ciWaitCeiling(bad), /args\.ci_wait_ceiling_seconds は正の整数/, `${JSON.stringify(bad)} を受理した`);
+  }
 });
 
 // ============================================================
