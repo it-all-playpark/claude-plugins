@@ -125,6 +125,9 @@ Jev のクライアントは plugin に同梱せず、公開された参照実�
 - **効かないときの挙動**: `jev-classify` が PATH に無い・鍵が無い・届かない・タイムアウト・低確信のとき、breaking と comment の判定は
   uncertain に積まれ、run は Setup 末尾の analyze ゲートで**必ず needs_clarification で止まる**（実装に進まない）。
   観測型 AC の判定だけは止まらず、分類 agent の 1 spawn に回る。`DEVFLOW_JEV_DISABLE=1` で切ったときも同じ
+- **node が無いとき**: 観測型 AC の正規表現の絞り込みは `node` で動くので、prerun を実行する環境の PATH に `node` が
+  無いと「node を実行できない」が uncertain に積まれ、AC を持つ issue の run は analyze ゲートで needs_clarification で止まる
+  （分類 agent には回さない。PATH に node を通すのは実行環境の側）
 - **注記: 作者の `jev-classify` 実装を使う場合の鍵の設定**（その実装は上から順に試す。plugin には含まれず、
   自前の実装ならこの手順ではなくその実装に従う。`AI_GATEWAY_API_KEY` を置くだけでは `jev-classify` は手に入らない）:
   1. 環境変数 `AI_GATEWAY_API_KEY`（Vercel AI Gateway の API key `vck_…`）— 第一の方法。`dev-flow-prerun` を
