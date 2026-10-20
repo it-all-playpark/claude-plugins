@@ -45,13 +45,19 @@ if [[ -n "${GH_STUB_FAIL:-}" ]]; then
     echo "gh stub: HTTP 404" >&2
     exit 1
 fi
+# gh run list（CI 待ちの上限）は GH_RUN_STUB_FIXTURE 未設定なら失敗（上限は既定の 300）
+if [[ "$1" == "run" ]]; then
+    [[ -n "${GH_RUN_STUB_FIXTURE:-}" ]] || { echo "gh stub: no run fixture" >&2; exit 1; }
+    cat "$GH_RUN_STUB_FIXTURE"
+    exit 0
+fi
 cat "$GH_STUB_FIXTURE"
 STUB
     chmod +x "$STUB_DIR/gh"
     export PATH="$STUB_DIR:$PATH"
     export GH_STUB_LOG="$BATS_TEST_TMPDIR/gh.log"
     export GH_STUB_FIXTURE="$BATS_TEST_TMPDIR/pr.json"
-    unset GH_STUB_FAIL
+    unset GH_STUB_FAIL GH_RUN_STUB_FIXTURE
     write_pr_fixture "$HEAD_SHA"
 }
 
@@ -404,7 +410,7 @@ comment_json() {
     jq -n --arg body "$1" --arg url "$2" '{author: {login: "bot"}, body: $body, url: $url}'
 }
 
-@test "(5f) dev-flow marker を持つ最後のコメントから prior_devflow {tier, codes, url} を出し、gh は pr view 1 回だけ" {
+@test "(5f) dev-flow marker を持つ最後のコメントから prior_devflow {tier, codes, url} を出し、gh pr view は 1 回だけ" {
     local hold_old hold_new iterate comments
     hold_old="$(comment_json $'## dev-flow\n<!-- gate_policy: llm-major-advisory -->\n<!-- dev-flow:HOLD codes=escalate -->' "https://github.com/acme/skills/pull/5#issuecomment-1")"
     # AC の引用で本文中に marker と同じ形の文字列があっても、末尾の marker を採る
@@ -417,7 +423,7 @@ comment_json() {
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e '.prior_devflow == {tier: "HOLD", codes: ["iterate_non_lgtm", "ci_checks_failed"], url: "https://github.com/acme/skills/pull/5#issuecomment-2"}'
-    [ "$(wc -l <"$GH_STUB_LOG" | tr -d ' ')" -eq 1 ]
+    [ "$(grep -c '^pr ' "$GH_STUB_LOG")" -eq 1 ]
     grep -qx "pr view 5 --json url,headRefName,baseRefName,headRefOid,comments" "$GH_STUB_LOG"
 }
 
@@ -441,9 +447,34 @@ comment_json() {
     echo "$output" | jq -e '.ok == true and has("prior_devflow") and .prior_devflow == null'
 }
 
+# ---- CI 待ちの上限（ci_wait_ceiling_seconds。issue #1046） ----
+# 上限の求め方（p90 + 60 秒・300〜900 秒・5 件未満は 300）は ci-wait-ceiling.bats が見る。ここは配線だけ。
+
+@test "(5i) PR の base branch の成功 run から ci_wait_ceiling_seconds を出す" {
+    export GH_RUN_STUB_FIXTURE="$BATS_TEST_TMPDIR/runs.json"
+    jq -nc '[range(5) | {startedAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:07:35Z"}]' >"$GH_RUN_STUB_FIXTURE"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .ci_wait_ceiling_seconds == 515'
+    grep -qx "run list --branch main --status success --limit 20 --json startedAt,updatedAt --repo acme/skills" "$GH_STUB_LOG"
+}
+
+@test "(5j) gh run list の失敗・PR を読めない ok:false でも ci_wait_ceiling_seconds は 300" {
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .ci_wait_ceiling_seconds == 300'
+
+    export GH_STUB_FAIL=1
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .ci_wait_ceiling_seconds == 300'
+}
+
 # ---- (6) 静的 pin ----
 
-@test "(6a) 静的pin: push しない・gh は pr view のみ" {
+@test "(6a) 静的pin: push しない・gh は読み取り（pr view / run list）のみ" {
     run grep -E 'git (-C [^ ]+ )?push' "$SCRIPT"
     [ "$status" -ne 0 ]
     run grep -E '(^|[^A-Za-z0-9_-])gh (issue|api|pr (comment|edit|merge|create|close))' "$SCRIPT"

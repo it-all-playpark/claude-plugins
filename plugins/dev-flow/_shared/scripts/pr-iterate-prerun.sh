@@ -25,14 +25,16 @@
 # 再利用した worktree が書けない場合は退避しない（branch がそこで checkout 済み）— ok:false で人間に返す。
 #
 # Output (stdout, JSON 1 行):
-#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, error?}
+#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, ci_wait_ceiling_seconds, error?}
 #   worktree_status: created / reused / unwritable / error / skipped
 #   skip_worktree: 作成時に取り出せず skip-worktree を付けたパス（worktree-checkout.sh。full checkout できれば []）
 #   prior_devflow: PR コメントのうち `<!-- dev-flow:<tier>[ codes=<code>,...] -->` marker を持つ最後のもの
 #     {tier, codes, url}（codes は HOLD 理由の code。HOLD 以外は []）。marker を持つコメントが無ければ null
+#   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。PR の base branch の CI 所要時間から決める
+#     （ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
 #   不明な値は null。ok:false でも exit 0（引数不正のみ exit 2、stdout 空）。
 #
-# GitHub I/O は `gh pr view`（読み取り）のみ。push / comment / worktree の削除（この呼び出しで作った
+# GitHub I/O は `gh pr view` と `gh run list`（base branch の成功 run。いずれも読み取り）のみ。push / comment / worktree の削除（この呼び出しで作った
 # 書けない worktree の退避を除く）はしない — 単体起動の worktree は回収後も人間が確認できるよう残す。
 #
 # sandbox 内で動く。起動元 repo の .git/config は sandbox 内から書けないので、worktree は --no-track で作る
@@ -44,6 +46,8 @@ command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 127; }
 
 # shellcheck source=worktree-checkout.sh
 source "$(dirname "${BASH_SOURCE[0]}")/worktree-checkout.sh"
+# shellcheck source=ci-wait-ceiling.sh
+source "$(dirname "${BASH_SOURCE[0]}")/ci-wait-ceiling.sh"
 
 usage() {
     echo "Usage: pr-iterate-prerun <PR> [--repo owner/name]" >&2
@@ -93,6 +97,7 @@ WT=""
 worktree_status="skipped"
 worktree_removed=false
 prior_devflow="null"
+ci_wait_ceiling_seconds="$CI_WAIT_CEILING_DEFAULT"
 error=""
 
 emit() {
@@ -110,13 +115,14 @@ emit() {
         --argjson worktree_removed "$worktree_removed" \
         --argjson skip_worktree "$(skip_worktree_json)" \
         --argjson prior_devflow "$prior_devflow" \
+        --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
         --arg error "$error" \
         '
         def nz: if . == "" then null else . end;
         {ok: $ok, pr: $pr, worktree: ($worktree | nz), head_ref: ($head_ref | nz), base_ref: ($base_ref | nz),
          head_sha: ($head_sha | nz), repo: ($repo | nz), epoch: $epoch,
          worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree,
-         prior_devflow: $prior_devflow}
+         prior_devflow: $prior_devflow, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds}
         + (if $error == "" then {} else {error: $error} end)
         '
     exit 0
@@ -163,6 +169,8 @@ fi
 [[ -n "$head_ref" ]] || fail "gh pr view ${PR} did not return headRefName"
 git check-ref-format --branch "$head_ref" >/dev/null 2>&1 || fail "headRefName is not a valid branch name: ${head_ref}"
 [[ "$PR_HEAD_OID" =~ ^[0-9a-f]{40}$ ]] || fail "gh pr view ${PR} did not return a 40-hex headRefOid: ${PR_HEAD_OID}"
+# CI 待ちの上限は PR の base branch の CI 所要時間から決める（dev-flow-prerun と同じ ci-wait-ceiling.sh）
+[[ -n "$base_ref" ]] && ci_wait_ceiling_seconds="$(ci_wait_ceiling "$base_ref" "$repo")"
 
 # ============================================================================
 # Segment 2: ROOT resolution + fetch + PR head 一致検証

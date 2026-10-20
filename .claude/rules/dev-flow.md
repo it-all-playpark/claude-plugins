@@ -74,8 +74,8 @@ dev-flow 本体・dev-flow-health（frontmatter の paths）を触るときだ�
 > スクリプトは snapshot 1 枚の純変換に保つ。
 >
 > polling ループを subagent 内に置いてはならない（turn 会計が CI 所要時間に連動し、StructuredOutput
-> 未達で `ci_error` に化ける）。総待機上限は `CI_WAIT_CEILING_SECONDS`（`_lib/ci-check.mjs`）。
-> 1 spawn の必要 turn（ci-check / ci-wait-check とも 1 + 2 + 1 + CI_TURN_MARGIN）が
+> 未達で `ci_error` に化ける）。総待機上限は `args.ci_wait_ceiling_seconds`（未指定は
+> `CI_WAIT_CEILING_SECONDS`）。1 spawn の必要 turn（1 + 2 + 1 + CI_TURN_MARGIN）が
 > 当該 agent の `maxTurns` を超えないこと。`slept:true` 以外は積算せず `ci_pending` で終端する
 
 - exec-proxy と inline generator は harness-capability-bound な橋。再評価トリガ: harness が直接 exec / ESM import を解禁した時点で撤去（`/dev-flow-canary` の report で判定）

@@ -30,7 +30,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 1. **prerun 実行**: launch dir（リポジトリルートか、その worktree）で Bash 1 コマンドとして
    `pr-iterate-prerun <PR>` を実行する（PR が cwd の repo と別なら `--repo owner/name` を付ける）。前置形
    （`cd X && ...` / `VAR=x ...` / `bash <path>` 等）は使わず、bare 名を先頭トークンにする。stdout の
-   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, error?}`）
+   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, ci_wait_ceiling_seconds, error?}`）
    をそのまま保持する。
 
    `pr-iterate-prerun` は PR の url / head / base / head の commit を `gh pr view` で取り、`git fetch origin` 後の
@@ -49,6 +49,8 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - 前 run の `.devflow-tmp/.isolation-probe*` を除去する（`.devflow-tmp` の他のファイルは残す）
    - 同じ `gh pr view` で PR コメントも取り、`<!-- dev-flow:<tier>[ codes=...] -->` marker を持つ最後のコメント
      （dev-flow の終端サマリー）を `prior_devflow`（`{tier, codes, url}`、無ければ null）に載せる
+   - PR の base branch で直近に成功した CI の所要時間から CI 待ちの上限（秒）を決め、`ci_wait_ceiling_seconds` に載せる
+     （dev-flow の nested 起動と同じ求め方。読み取りに失敗したら 300）
 
    結果に応じて分岐する:
 
@@ -62,7 +64,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    worktree なら不要）。別の worktree に入っている場合は先に `ExitWorktree`（worktree は keep）で launch dir へ
    戻ってから入る。
 
-3. **Workflow 起動**: 次の形で起動する。`nested` と `prior_devflow` の値は prerun 出力をそのまま転記し、加工・要約しない:
+3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`ci_wait_ceiling_seconds` の値は prerun 出力をそのまま転記し、加工・要約しない:
 
    ```
    Workflow({ name: 'dev-flow:pr-iterate-run', args: {
@@ -70,6 +72,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      nested: { caller: 'standalone', cwd: <worktree>, head_ref: <head_ref>, head_sha: <head_sha>,
                base_ref: <base_ref>, repo: <repo>, epoch: <epoch> },
      prior_devflow: <prior_devflow>,
+     ci_wait_ceiling_seconds: <ci_wait_ceiling_seconds>,
    } })
    ```
 

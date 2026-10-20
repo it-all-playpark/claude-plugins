@@ -107,7 +107,7 @@ export function devFlowArgs(issue = 1, setupOverrides = {}) {
       worktree: '/tmp/wt', branch: `feature/issue-${n}`, head: 'a'.repeat(40),
       worktree_status: 'created', clean: { ok: true },
       deps: { ok: true, note: '' }, stack: { frameworks: [], test_runners: [] }, analyze: prerunAnalyze(),
-      epoch: 1000, epoch_end: 1050,
+      epoch: 1000, epoch_end: 1050, ci_wait_ceiling_seconds: 300,
       ...setupOverrides,
     },
   };

@@ -305,12 +305,14 @@ test('[implementer] AC-6: empty-diff retry 後の test#retry-1 red → green-fix
 // （nested 起動は pr-meta probe を通らない本番経路。ここが切れると review#2 以降が黙って
 //   全件 full review にフォールバックする — fail-open のため run 結果には出ない）
 // ============================================================
-async function runStandardWithWorkflowCapture(overrides = {}) {
+async function runStandardWithWorkflowCapture(overrides = {}, setupOverrides = {}) {
   const workflowCalls = [];
+  const args = argsOf('standard');
+  Object.assign(args.setup, setupOverrides);
   const { ctx, calls, logs } = makeDevFlowSandbox({
     overrides: { ...overrides },
     workflow: async (name, opts) => { workflowCalls.push({ name, opts }); return { status: 'lgtm', iterations: 1, fixes_applied: 0 }; },
-    extra: { args: argsOf('standard') },
+    extra: { args },
   });
   const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error, 'standard-workflow-capture');
@@ -326,6 +328,16 @@ test('[implementer] AC-7: pr.head_sha が workflow(pr-iterate) の nested.head_s
   assert.equal(workflowCalls.length, 1, `workflow('dev-flow:pr-iterate-run') は 1 回のはず: ${workflowCalls.map((w) => w.name).join(', ')}`);
   assert.equal(workflowCalls[0].name, 'dev-flow:pr-iterate-run');
   assert.equal(workflowCalls[0].opts?.nested?.head_sha, HEAD_SHA, `nested.head_sha が pr.head_sha と一致しない: ${JSON.stringify(workflowCalls[0].opts?.nested)}`);
+});
+
+test('[implementer] args.setup.ci_wait_ceiling_seconds（prerun が base の CI 所要時間から決めた上限）が workflow(pr-iterate) の args にそのまま渡る（issue #1046）', async () => {
+  const { workflowCalls, error } = await runStandardWithWorkflowCapture(
+    { 'pr#1': { pr_url: 'http://x', pr_number: 1, committed: true, head_sha: 'a'.repeat(40) } },
+    { ci_wait_ceiling_seconds: 600 },
+  );
+  assert.equal(error, null, `run が throw した: ${error?.message}`);
+  assert.equal(workflowCalls.length, 1);
+  assert.equal(workflowCalls[0].opts?.ci_wait_ceiling_seconds, 600, `args: ${JSON.stringify(workflowCalls[0].opts)}`);
 });
 
 test('[implementer] AC-7: pr.head_sha が空文字のとき nested に head_sha キーが含まれない', async () => {

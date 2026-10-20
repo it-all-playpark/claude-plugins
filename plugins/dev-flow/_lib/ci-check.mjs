@@ -28,8 +28,30 @@
 // 実待機が成立した証拠は応答の `slept:true` のみで、pr-iterate.js はそれ以外（null / throw /
 // slept:false）を積算せず、同じ応答の status も採らずに即 ci_pending 終端にする。
 export const CI_POLL_SECONDS = 45; // script 側 poll ループの poll 間隔（秒）
-export const CI_WAIT_CEILING_SECONDS = 300; // script 側ループの nominal 総待機上限（秒）
-export const CI_MAX_POLLS = Math.floor(CI_WAIT_CEILING_SECONDS / CI_POLL_SECONDS) + 1; // 判定 spawn（ci-check + ci-wait-check）回数の上限
+// script 側ループの nominal 総待機上限（秒）の既定値。上限は prerun（dev-flow-prerun / pr-iterate-prerun の
+// _shared/scripts/ci-wait-ceiling.sh）が PR の base branch の CI 所要時間から決めて args.ci_wait_ceiling_seconds で
+// 渡し、渡されないときだけこの値を使う（ciWaitCeiling）。一律の上限では CI が長い repo で ci_pending → HOLD になる（issue #1046）。
+export const CI_WAIT_CEILING_SECONDS = 300;
+
+/**
+ * args.ci_wait_ceiling_seconds を CI 待ちの上限（秒）に直す純関数。未指定（null / undefined）は既定値、
+ * 正の整数でなければ明示 throw（不正な上限で黙って待ち時間を変えない）。
+ *
+ * @param {unknown} raw - args.ci_wait_ceiling_seconds
+ * @returns {number}
+ */
+export function ciWaitCeiling(raw) {
+  if (raw == null) return CI_WAIT_CEILING_SECONDS;
+  if (!(Number.isInteger(raw) && raw > 0)) {
+    throw new Error(`pr-iterate: args.ci_wait_ceiling_seconds は正の整数（受信: ${JSON.stringify(raw)}）`);
+  }
+  return raw;
+}
+
+// 判定 spawn（ci-check + ci-wait-check）回数の上限。待機上限から導く（300 秒なら 6 wait・7 poll）。
+export function ciMaxPolls(ceilingSeconds) {
+  return Math.floor(ceilingSeconds / CI_POLL_SECONDS) + 1;
+}
 // 実測マージン。文書化 worst case 8 tool call に対し実測 10 で StructuredOutput 未達だった差分に基づく。
 export const CI_TURN_MARGIN = 3;
 
@@ -181,7 +203,7 @@ export function ciWaitCheckPrompt({ pr, repo, seconds, exclude = [] }) {
 
 // ---- ci-verify（issue #861）: LGTM 後に ci_verify.checks の完了を待つ poll ----
 // repo が "dev-flow".ci_verify で宣言した check（E2E 等。sandbox 内で実行できず、CI でも数十分かかる）は
-// review ⇄ fix の各 round の CI 判定（CI_WAIT_CEILING_SECONDS）から外し（--exclude）、pr-iterate が LGTM に
+// review ⇄ fix の各 round の CI 判定（上限は ciWaitCeiling）から外し（--exclude）、pr-iterate が LGTM に
 // 達した後に別ループで ci_verify.wait_ceiling_seconds まで待つ（--only）。1 spawn = 1 判定・ループは
 // script 側なのは ci-check / ci-wait-check と同じ。2 回目以降の poll は CI_VERIFY_POLL_SECONDS 待ってから判定する
 // （ci-wait は Bash tool の既定 timeout 120 秒に収まる長さにする。長い待ちで poll 間隔を延ばし spawn 数を抑える）。
