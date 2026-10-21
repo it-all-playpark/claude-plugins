@@ -151,6 +151,7 @@ transcript_path: <保存した全文の絶対パス>
 
 1. NOTE の frontmatter の `unresolved_speakers` と `attendees`、DIR の `transcript.json` を Read する
 2. `unresolved_speakers` の話者だけを Step 2 の「この発言は誰？」の形で聞く（`attendees` の実名はもう割り当て済み）
-3. 名前が入った話者を Bash で `meeting name <DIR> --set "話者A=田中,話者B=佐藤"` に渡す（「不明のまま」は渡さない）。
-   議事録と全文のラベルの置き換えと `unresolved_speakers` からの削除はこのコマンドが行うので、ファイルを直接編集しない
+3. 名前が入った話者を Bash で `meeting set-names <DIR> "話者A=田中,話者B=佐藤"` に渡す（「不明のまま」は渡さない）。
+   議事録と全文のラベルの置き換えと `unresolved_speakers` からの削除はこのコマンドが行うので、ファイルを直接編集しない。
+   失敗したら（保存先の外・シンボリックリンク・`notes_dir` 未設定など）出力をそのまま返し、ファイルを直接直さない
 4. コマンドの出力（更新したファイルと残った未確定の話者）を返す

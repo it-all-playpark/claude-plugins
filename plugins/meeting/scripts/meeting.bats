@@ -1065,6 +1065,194 @@ add_transcript_path() {
     grep -qxF -- '- 田中 が提案し、佐藤 と 話者AB が合意' "$note"
 }
 
+@test "set-names は議事録と全文のラベルを置き換え、答えた話者を unresolved_speakers から外す" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    write_note 2026-01-01-a "$rec" "話者A, 話者B"
+    note="$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md"
+    tx="$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
+    notes_config
+    run bash "$SCRIPT" set-names "$rec/" "話者A=田中"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"未確定の話者: 話者B"* ]]
+    grep -qxF 'unresolved_speakers: [話者B]' "$note"
+    grep -qxF 'attendees: [自分, 田中, 話者B]' "$note"
+    grep -qxF -- '- 田中 が提案し、話者B と 話者AB が合意' "$note"
+    grep -qxF "recording: $rec" "$note"
+    grep -qxF '**[00:00:01] 田中**: はい' "$tx"
+
+    # グローバルの output_dir (notes_dir の外) にある議事録と、transcript_path: の全文も書き換え、
+    # 最後の 1 人に名前が入ると unresolved_speakers の行ごと消える
+    global_output_dir "~/Google Drive/議事録"
+    out="$HOME/Google Drive/議事録"
+    mkdir -p "$out" "$BATS_TEST_TMPDIR/elsewhere"
+    mv "$note" "$out/"
+    add_transcript_path "$out/2026-01-01-a.md" "$tx"
+    cd "$BATS_TEST_TMPDIR/elsewhere"
+    run bash "$SCRIPT" set-names "$rec" "話者B=佐藤"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    run grep -q '^unresolved_speakers:' "$out/2026-01-01-a.md"
+    [ "$status" -eq 1 ]
+    grep -qxF -- '- 田中 が提案し、佐藤 と 話者AB が合意' "$out/2026-01-01-a.md"
+    grep -qxF "transcript_path: $tx" "$out/2026-01-01-a.md"
+    grep -qxF '**[00:00:05] 佐藤**: どうも' "$tx"
+}
+
+@test "set-names は話者の指定が無い・空なら claude を起動せず、何も書かずに非 0 で終わる" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_tools
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    write_note 2026-01-01-a "$rec" "話者A"
+    note="$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md"
+    cp "$note" "$BATS_TEST_TMPDIR/note.orig"
+    notes_config
+
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" set-names
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"meeting set-names <DIR> <話者A=名前,話者B=名前>"* ]]
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" set-names "$rec"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"meeting set-names <DIR> <話者A=名前,話者B=名前>"* ]]
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" set-names "$rec" ""
+    [ "$status" -ne 0 ]
+    local spec
+    for spec in "," "話者A=" "話者A"; do
+        PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" set-names "$rec" "$spec"
+        echo "$spec: $output"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"話者A=田中,話者B=佐藤 の形で渡してください"* ]]
+    done
+    [ ! -e "$BATS_TEST_TMPDIR/claude.args" ]
+    cmp "$note" "$BATS_TEST_TMPDIR/note.orig"
+}
+
+@test "set-names は transcript_path: / transcript: が notes_dir・output_dir の外を指すなら議事録・全文・指した先のどれも書き換えずに非 0 で終わる" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    note="$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md"
+    tx="$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
+    outside="$BATS_TEST_TMPDIR/outside"
+    notes_config
+    local line
+    # 絶対パス・.. ・notes_dir の中の symlink 経由 (transcript_path: / root 相対の transcript: それぞれ)
+    for line in "transcript_path: $outside/x.md" \
+                "transcript_path: $BATS_TEST_TMPDIR/notes/meetings/../../outside/x.md" \
+                'transcript: "[[../outside/x]]"' \
+                "transcript_path: $BATS_TEST_TMPDIR/notes/meetings/link/x.md" \
+                'transcript: "[[meetings/link/x]]"'; do
+        rm -rf "$BATS_TEST_TMPDIR/notes" "$outside"
+        mkdir -p "$outside"
+        printf '話者A の秘密\n' > "$outside/x.md"
+        write_note 2026-01-01-a "$rec" "話者A"
+        ln -s "$outside" "$BATS_TEST_TMPDIR/notes/meetings/link"
+        if [[ "$line" == transcript_path:* ]]; then
+            add_transcript_path "$note" "${line#transcript_path: }"
+        else
+            awk -v l="$line" '/^transcript: /{ print l; next } { print }' "$note" > "$note.tmp"
+            mv "$note.tmp" "$note"
+        fi
+        cp "$note" "$BATS_TEST_TMPDIR/note.orig"
+        cp "$tx" "$BATS_TEST_TMPDIR/tx.orig"
+
+        run bash "$SCRIPT" set-names "$rec" "話者A=田中"
+        echo "$line: $output"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"は議事録の保存先"*"の外です"* ]]
+        cmp "$note" "$BATS_TEST_TMPDIR/note.orig"
+        cmp "$tx" "$BATS_TEST_TMPDIR/tx.orig"
+        [ "$(cat "$outside/x.md")" = "話者A の秘密" ]
+    done
+}
+
+@test "set-names は議事録・全文がシンボリックリンクならどのファイルも書き換えずに非 0 で終わる" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    notes="$BATS_TEST_TMPDIR/notes"
+    note="$notes/meetings/2026-01-01-a.md"
+    tx="$notes/meetings/transcripts/2026-01-01-a.md"
+    notes_config
+    local f
+    # リンク先は notes_dir の中 (探索しない . 始まりのディレクトリ) に置き、保存先の外かどうかとは別に拒むことを見る
+    for f in "$note" "$tx"; do
+        rm -rf "$notes"
+        write_note 2026-01-01-a "$rec" "話者A"
+        mkdir -p "$notes/.store"
+        mv "$f" "$notes/.store/target.md"
+        ln -s "$notes/.store/target.md" "$f"
+        cp -R "$notes" "$BATS_TEST_TMPDIR/notes.orig"
+
+        run bash "$SCRIPT" set-names "$rec" "話者A=田中"
+        echo "$f: $output"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"$f がシンボリックリンクです"* ]]
+        diff -r "$notes" "$BATS_TEST_TMPDIR/notes.orig"
+        [ -L "$f" ]
+        rm -rf "$BATS_TEST_TMPDIR/notes.orig"
+    done
+}
+
+@test "set-names は cwd・notes_dir の git root の skill-config.json を探索先・書き込み先に使わず、notes_dir が無ければ cwd に落ちずに非 0 で終わる" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    global_output_dir "~/Google Drive/議事録"
+    out="$HOME/Google Drive/議事録"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    notes="$BATS_TEST_TMPDIR/notes"
+    tx="$notes/meetings/transcripts/2026-01-01-a.md"
+    write_note 2026-01-01-a "$rec" "話者A, 話者B"
+    mkdir -p "$out"
+    mv "$notes/meetings/2026-01-01-a.md" "$out/"
+    add_transcript_path "$out/2026-01-01-a.md" "$tx"
+
+    # cwd 側の skill-config.json / .claude/skill-config.json は別の output_dir を指し、そこにも同じ録音の議事録がある
+    evil="$BATS_TEST_TMPDIR/evil" cwd="$BATS_TEST_TMPDIR/cwd"
+    mkdir -p "$evil" "$cwd/.git" "$cwd/.claude" "$notes/.git"
+    printf -- '---\nrecording: %s\nunresolved_speakers: [話者A, 話者B]\ntranscript_path: %s/tx.md\n---\n話者A\n' "$rec" "$evil" \
+        > "$evil/2026-01-01-a.md"
+    printf '話者A\n' > "$evil/tx.md"
+    cp -R "$evil" "$BATS_TEST_TMPDIR/evil.orig"
+    local d
+    for d in "$cwd" "$cwd/.claude" "$notes"; do
+        printf '{"meeting-notes": {"output_dir": "%s"}}\n' "$evil" > "$d/skill-config.json"
+    done
+    notes_config
+
+    # cwd が notes_dir (git root に skill-config.json がある) のときも、別の repo のときも結果は同じ
+    cd "$notes"
+    run bash "$SCRIPT" set-names "$rec" "話者A=田中"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qxF 'unresolved_speakers: [話者B]' "$out/2026-01-01-a.md"
+    grep -qxF '**[00:00:01] 田中**: はい' "$tx"
+    cd "$cwd"
+    run bash "$SCRIPT" set-names "$rec" "話者B=佐藤"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    run grep -q '^unresolved_speakers:' "$out/2026-01-01-a.md"
+    [ "$status" -eq 1 ]
+    grep -qxF '**[00:00:05] 佐藤**: どうも' "$tx"
+    diff -r "$evil" "$BATS_TEST_TMPDIR/evil.orig"
+
+    # notes_dir が無ければ cwd (と cwd の skill-config.json) で探さない
+    mkdir -p "$cwd/meetings"
+    cp "$evil/2026-01-01-a.md" "$cwd/meetings/"
+    cp "$cwd/meetings/2026-01-01-a.md" "$BATS_TEST_TMPDIR/cwd-note.orig"
+    write_config
+    run bash "$SCRIPT" set-names "$rec" "話者A=田中"
+    echo "$output"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"notes_dir がありません"* ]]
+    cmp "$cwd/meetings/2026-01-01-a.md" "$BATS_TEST_TMPDIR/cwd-note.orig"
+    diff -r "$evil" "$BATS_TEST_TMPDIR/evil.orig"
+}
+
+@test "/meeting-notes の名前の後入れは meeting set-names で反映し、README は set-names だけを sandbox の外で動かす例を載せる" {
+    skill="$BATS_TEST_DIRNAME/../meeting-notes/SKILL.md"
+    sed -n '/^## 名前の後入れ/,$p' "$skill" | grep -qF 'meeting set-names <DIR> "話者A=田中,話者B=佐藤"'
+    grep -qF '"excludedCommands": ["meeting set-names *"]' "$BATS_TEST_DIRNAME/../README.md"
+}
+
 # doctor の全項目が ✅ になる環境を作る。PATH は stub (swift / ffmpeg / uv / launchctl / security) と、
 # 実機の swift などを含まないよう必要なコマンドだけを並べた $BATS_TEST_TMPDIR/sys にする。
 # plugin は $BATS_TEST_TMPDIR/plugin、インストール先はそこから setup したのと同じ中身にする
