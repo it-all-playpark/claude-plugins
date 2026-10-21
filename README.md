@@ -392,7 +392,6 @@ config = merge_config({"property_id": None}, "ga-analyzer")  # defaults → glob
 | `skill-creator` | 新規スキル作成ガイド（当リポジトリ規約版） |
 | `mem-triage` | macOS のメモリをアプリ・端末から起動したもの・launchd の常駐の塊ごとに合算し、解放方法と「聞かずに消してよいか」を示す（kill はユーザーが実行） |
 | `sandbox-tune` | transcript から sandbox 拒否・permission 拒否・人間への実行依頼を型ごとに集計し、設定 repo の git log と突き合わせて settings 修正の候補を根拠付きで出す（issue 化は `--issue` のときだけ） |
-| `suica-to-csv` | モバイルSuica明細PDFをマネーフォワード経費CSVに変換 |
 
 ## 使い方
 

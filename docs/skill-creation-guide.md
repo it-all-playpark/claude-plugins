@@ -66,7 +66,7 @@ user-invocable: true                # false でメニュー非表示（backgroun
 
 | 値 | 用途 | 例 |
 |---|------|-----|
-| `low` | 決定論的処理・CLI wrapper・フォーマット変換 | `suica-to-csv` |
+| `low` | 決定論的処理・CLI wrapper・フォーマット変換 | `zernio` |
 | `medium` | 軽度の判断を伴う処理 | `sns-announce` |
 | `high` | 標準的なコード生成・通常ワークフロー / 計画・レビュー・批判的分析（A/B 実測で max と精度同等） | デフォルト推奨。dev-flow の pr-reviewer と dev-implementer はこれ（evaluator は medium） |
 | `xhigh` | 長時間 agentic / 大規模コーディング（Opus 4.7 限定） | 複雑な実装タスク |
