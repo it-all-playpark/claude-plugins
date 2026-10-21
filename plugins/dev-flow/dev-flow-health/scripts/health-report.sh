@@ -10,6 +10,15 @@
 #      dev-flow の欠陥ではないので signature にしない（1 signature = 1 issue で毎回起票されるのを防ぐ）。
 #      error.category == "pr_phase_failed"（PR phase の commit / push / gh pr create が失敗し、throw せずに終えた run）は
 #      人間の回収が要る失敗なので abort と同じく signature にする（phase は PR）。
+#      merge tier が HOLD の dev-flow run（outcome は success）は、telemetry.hold_reason_codes のうち dev-flow 自身や
+#      実行環境の不具合で出る HOLD 理由を 1 つずつ signature にする（skill | hold | Merge tier | <code>）:
+#        - HOLD_SIGNATURE_CODES の code
+#        - iterate_non_lgtm のうち telemetry.iterate_status が HOLD_SIGNATURE_ITERATE_STATUSES のもの
+#          （template は "iterate_non_lgtm status=<iterate_status>"）
+#        - ac_human_pending のうち telemetry.hold_ac_human_judged が true のもの（観測型の判定か evaluator の
+#          unreachable_env で人手になった AC が未達）
+#      再現率を優先する（誤って拾ったものは LLM の分類で dev_flow 以外になり起票されない）。
+#      hold_reason_codes を持たない entry は拾わない。
 #   2. signature ごとに first_seen / last_seen（timestamp と telemetry.plugin_commit）を出し、状態を決める:
 #        resolved  : last_seen 以後に、last_seen と別の plugin_commit で同じ skill が N 回以上成功し、再発していない
 #                    （別の失敗で止まった run はその phase まで到達した証拠にならないので数えない）
@@ -48,6 +57,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CANDIDATE_PATH="plugins/dev-flow/"
+
+# 異常とする HOLD 理由（dev-flow 自身や実行環境の不具合で出るもの）。一覧はここだけに持ち、health-report.bats と
+# skill-docs.bats がこの 2 行を読んで参照する。iterate_non_lgtm と ac_human_pending は条件付き（上の 1.）
+HOLD_SIGNATURE_CODES='["final_reconcile_unavailable","final_ac_unavailable","pr_closes_missing","merge_facts_dropped","danger_fail_closed","ac_agent_unsatisfied","final_test_red"]'
+HOLD_SIGNATURE_ITERATE_STATUSES='["ci_pending","ci_error","review_contract_error"]'
 
 die_json() {
     jq -n --arg e "$1" '{error: $e}' >&2
@@ -110,6 +124,9 @@ fi
 ENTRY_FILTER='select(type == "object")
   | {skill, outcome, timestamp, source, error,
      commit: (.telemetry.plugin_commit // null),
+     hold_codes: (.telemetry.hold_reason_codes // null),
+     hold_ac_human_judged: (.telemetry.hold_ac_human_judged // null),
+     iterate_status: (.telemetry.iterate_status // null),
      issue: (.context.issue // null),
      pr_number: (.context.pr_number // null),
      repo: (.context.repo // null),
@@ -160,6 +177,17 @@ def template:
 
 def point: {timestamp, plugin_commit: .commit, file};
 
+# HOLD の dev-flow run 1 件から、異常とする HOLD 理由ごとに 1 つの発生を作る（1 run に複数あれば別々の signature）
+def hold_occurrences:
+  select(.skill == "dev-flow" and (.hold_codes | type) == "array")
+  | . as $e
+  | ($e.hold_codes | map(select(type == "string")) | unique)[]
+  | select(IN($hold_codes[])
+           or (. == "iterate_non_lgtm" and ($e.iterate_status | IN($hold_iterate_statuses[])))
+           or (. == "ac_human_pending" and $e.hold_ac_human_judged == true))
+  | (if . == "iterate_non_lgtm" then "iterate_non_lgtm status=\($e.iterate_status)" else . end) as $t
+  | $e + {category: "hold", phase: "Merge tier", template: $t, message: $t};
+
 # run r の後（until より前）に、commit が分かっていて c と異なる成功 run が何回あったか。
 # 失敗 run は該当 phase まで到達した証拠にならないので数えない（last_good と同じ規則）
 def clean_runs($runs; $after; $until; $c):
@@ -177,11 +205,12 @@ def clean_runs($runs; $after; $until; $c):
   | .commit = (if (.commit | type) == "string" and (.commit | test("^[0-9a-f]{7,40}$")) then .commit else null end)
 ] | sort_by(.timestamp, .file)
 | to_entries | map(.value + {idx: .key}) as $all
-| [ $all[]
-    | select(.outcome == "failure" and (.error | type) == "object")
-    | select(.error.category != "needs_clarification")
-    | . + {category: (.error.category // ""), phase: (.error.phase // ""),
-           template: ((.error.message // "") | tostring | template)}
+| [ ($all[]
+      | select(.outcome == "failure" and (.error | type) == "object")
+      | select(.error.category != "needs_clarification")
+      | . + {category: (.error.category // ""), phase: (.error.phase // ""),
+             template: ((.error.message // "") | tostring | template), message: .error.message}),
+    ($all[] | hold_occurrences)
     | . + {signature: ([.skill, .category, .phase, .template] | join(" | "))}
   ] as $fails
 | ($fails | group_by(.signature)
@@ -217,7 +246,7 @@ def clean_runs($runs; $after; $until; $c):
            last_seen: ($last | point),
            regressed_at: (if ($regressions | length) > 0 then ($regressions | last | point) else null end),
            clean_runs_since_last_seen: $clean_after,
-           recent_runs: [ $occ[-5:][] | {timestamp, plugin_commit: .commit, file, issue, pr_number, repo, message: .error.message} ],
+           recent_runs: [ $occ[-5:][] | {timestamp, plugin_commit: .commit, file, issue, pr_number, repo, message} ],
            candidates: (if $bad == null then null
                         else {first_bad_commit: $bad.commit,
                               last_good_commit: (if $good == null then null else $good.commit end),
@@ -251,6 +280,8 @@ REPORT="$(printf '%s\n' "$ENTRIES" | jq -s \
     --arg now "$NOW" --arg since "$SINCE" \
     --argjson resolve_after "$RESOLVE_AFTER" \
     --arg candidate_path "$CANDIDATE_PATH" \
+    --argjson hold_codes "$HOLD_SIGNATURE_CODES" \
+    --argjson hold_iterate_statuses "$HOLD_SIGNATURE_ITERATE_STATUSES" \
     "$REPORT_PROGRAM")"
 
 # --- signature id と候補 commit ---------------------------------------------------

@@ -10,9 +10,9 @@ dev-flow.js / pr-iterate.js は run の終端（成功・失敗・abort）で te
 （`hooks/hooks.json` から plugin root 変数経由で発火）が `journal.sh log` へ毎回自動 flush する。flush 失敗は
 `~/.claude/logs/stop-devflow-telemetry.log` に記録され pending file が残るため記録漏れに気づける。
 
-telemetry の読み手は `dev-flow-health` だけ。`health-report.sh` がプログラムから読むのは `plugin_commit`、
+telemetry の読み手は `dev-flow-health` だけ。`health-report.sh` がプログラムから読むのは `plugin_commit` と、HOLD の run の `hold_reason_codes` / `hold_ac_human_judged` / `iterate_status`、
 LLM ステップは原因推定のときに該当 run の telemetry を手で読む。読み手の無いキーは書かない — 書くキーは下の
-15 個に限り、`_lib/telemetry-keys.test.mjs` が workflow の telemetry object literal（成功・失敗・abort）と
+17 個に限り、`_lib/telemetry-keys.test.mjs` が workflow の telemetry object literal（成功・失敗・abort）と
 VM 実行の handoff の両方で pin する。キーを足すときは読み手を先に決め、この一覧と同テストを同時に更新する。
 いずれも記録専用で、gate・merge tier・ledger・shape 判定の入力にはしない（軸A 非抵触）。
 
@@ -35,6 +35,8 @@ VM 実行の handoff の両方で pin する。キーを足すときは読み手
 | `final_test_flaky` | dev-flow | 成功（flake の run のみ） | test#final で落ち、落ちたファイルだけの単体再実行で green だったテストファイルと 1 回目のログのパス `{files, logs}` |
 | `ci_wait_ceiling_seconds` | pr-iterate | 成功（nested・単体起動とも） | CI 待ちに使った上限（秒）。prerun が base branch の CI 所要時間から決めた `args.ci_wait_ceiling_seconds`、渡されなければ 300 |
 | `ci_wait_seconds` | pr-iterate | 成功（nested・単体起動とも） | 全 round の CI 待ちの nominal 累積秒（返り値の `ci_wait_seconds` と同じ値） |
+| `hold_reason_codes` | dev-flow | 成功（merge tier が `HOLD` の run のみ） | HOLD 理由の code の配列（返り値の `merge_tier_hold_reasons[].code` と同じ順） |
+| `hold_ac_human_judged` | dev-flow | 成功（merge tier が `HOLD` の run のみ） | 人手 AC 待ちの未達 AC に、文面で人手になった AC（`HUMAN_AC_PATTERNS` に当たる・`classifyAcScope` が `external`）ではない AC が 1 件以上あるか（boolean） |
 
 nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の entry が 1 件ずつ残る。集計は dev-flow entry
 を使う。
@@ -81,6 +83,12 @@ nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の e
   `_shared/scripts/ci-wait-ceiling.sh` が base branch の直近 20 件の成功 run の所要時間の p90 + 60 秒を 300〜900 秒に
   収めて決める（履歴 5 件未満・gh の読み取り失敗は 300）。`ci_wait_seconds` が上限に近い run の数で、上限の求め方を見直す。
   nested 起動でも pr-iterate entry に載る（dev-flow entry には載せない）。
+- `hold_reason_codes` / `hold_ac_human_judged`: dev-flow 自身や実行環境の不具合で出た HOLD を `dev-flow-health` が
+  signature にするための値（issue #1055）。HOLD の run も `outcome` は `success` のままなので、`health-report.sh` は
+  この 2 つと `iterate_status` から、異常とする HOLD 理由（一覧は `health-report.sh` の `HOLD_SIGNATURE_CODES` /
+  `HOLD_SIGNATURE_ITERATE_STATUSES`）を 1 つずつ signature にする。`hold_ac_human_judged` が true なのは、観測型の
+  判定（`observational:true`）か evaluator の `unreachable_env:true` で人手になった AC が未達のとき
+  （`_lib/ac-actor.mjs` の `hasJudgedHumanAcGap`）。merge tier が `HOLD` 以外の run には両キーとも載らない。
 
 ## 失敗・abort entry
 
@@ -125,4 +133,5 @@ CI 待ち・終端理由などは run の返り値に載り、telemetry には�
 `deterministic_recheck`（決定論再チェックで解消しうる HOLD。Final reconcile unavailable の CI 不成立理由のうち
 pending / fetch-failed / invalid）と `human_judgment`（人間判断が必須な HOLD）の 2 値 closed enum）と
 `merge_tier_hold_kind`（集約値。human_judgment が 1 件でもあれば `human_judgment`、全件 deterministic_recheck なら
-`deterministic_recheck`、tier が HOLD でなければ `null`）が乗る。
+`deterministic_recheck`、tier が HOLD でなければ `null`）が乗る。journal に残るのは code だけ（telemetry の
+`hold_reason_codes`）で、reason の文面と `kind` は返り値と PR の終端サマリーにだけ載る。

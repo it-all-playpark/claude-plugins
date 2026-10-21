@@ -105,6 +105,133 @@ sig_field() {
     [ "$(sig_field 'step: commit' '.recent_runs[0].repo')" = "null" ]
 }
 
+# --- HOLD 由来の signature ---------------------------------------------------------
+# tests/fixtures/hold.jsonl: outcome success・merge_tier HOLD の dev-flow run。telemetry.hold_reason_codes /
+# hold_ac_human_judged / iterate_status から、異常とする HOLD 理由だけが signature になる。
+
+# health-report.sh の異常とする HOLD 理由の定数（1 か所に持つ一覧）を JSON で読む
+hold_constant() {
+    sed -n "s/^$1='\(.*\)'\$/\1/p" "$SCRIPT"
+}
+
+hold_sig_count() {
+    # $1 = template の完全一致
+    printf '%s' "$output" | jq --arg t "$1" '[.signatures[] | select(.category == "hold" and .template == $t)] | length'
+}
+
+@test "HOLD: final_reconcile_unavailable は signature になり、category / phase は固定値・template は code" {
+    load_fixture hold.jsonl
+    run report --repo "$BATS_TEST_TMPDIR/no-repo"
+    [ "$status" -eq 0 ]
+    [ "$(hold_sig_count final_reconcile_unavailable)" = "1" ]
+    [ "$(sig_field final_reconcile_unavailable .signature)" = "dev-flow | hold | Merge tier | final_reconcile_unavailable" ]
+    [ "$(sig_field final_reconcile_unavailable .status)" = "new" ]
+    [ "$(sig_field final_reconcile_unavailable '.recent_runs[0] | "\(.issue) \(.pr_number) \(.repo) \(.message)"')" = "31 431 acme/target-app final_reconcile_unavailable" ]
+    # new の候補 commit は失敗 signature と同じ仕組み（HOLD の run の commit と、その前の最後の成功 run の commit）
+    [ "$(sig_field final_reconcile_unavailable .candidates.first_bad_commit)" = "ddddddddddd4" ]
+    [ "$(sig_field final_reconcile_unavailable .candidates.last_good_commit)" = "bbbbbbbbbbb2" ]
+    [ "$(printf '%s' "$output" | jq '.needs_llm')" = "true" ]
+}
+
+@test "HOLD: mergeable_conflicting だけの HOLD は signature にならない" {
+    load_fixture hold.jsonl
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.template | contains("mergeable_conflicting"))] | length')" = "0" ]
+    [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.template | contains("danger_unresolved"))] | length')" = "0" ]
+}
+
+@test "HOLD: iterate_non_lgtm は終端 status が ci_pending なら signature（template に status を含む）、fix_failed ならならない" {
+    load_fixture hold.jsonl
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(hold_sig_count 'iterate_non_lgtm status=ci_pending')" = "1" ]
+    [ "$(sig_field 'status=ci_pending' .signature)" = "dev-flow | hold | Merge tier | iterate_non_lgtm status=ci_pending" ]
+    [ "$(sig_field 'status=ci_pending' '.recent_runs[0].issue')" = "33" ]
+    [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.template | contains("fix_failed"))] | length')" = "0" ]
+}
+
+@test "HOLD: ac_human_pending は hold_ac_human_judged が false ならならず、true ならなる" {
+    load_fixture hold.jsonl
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(hold_sig_count ac_human_pending)" = "1" ]
+    [ "$(sig_field ac_human_pending .count)" = "1" ]
+    # issue 35（false）は数えず、issue 36（true）だけが発生
+    [ "$(sig_field ac_human_pending '[.recent_runs[].issue] | join(",")')" = "36" ]
+}
+
+@test "HOLD: 1 run に異常な理由が複数あればそれぞれ別の signature に数える" {
+    load_fixture hold.jsonl
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(hold_sig_count final_test_red)" = "1" ]
+    [ "$(hold_sig_count pr_closes_missing)" = "1" ]
+    [ "$(sig_field final_test_red '.recent_runs[0].issue')" = "38" ]
+    [ "$(sig_field pr_closes_missing '.recent_runs[0].issue')" = "38" ]
+    # fixture 全体: final_reconcile_unavailable / ci_pending / ac_human_pending / final_test_red / pr_closes_missing の 5 つ
+    [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.category == "hold")] | length')" = "5" ]
+    [ "$(printf '%s' "$output" | jq -c '.summary')" = '{"new":5,"regressed":0,"ongoing":0,"resolved":0}' ]
+}
+
+@test "HOLD: hold_reason_codes を持たない既存形式の entry は signature にならず、エラーにもならない" {
+    jq -n '{skill:"dev-flow", outcome:"success", source:"skill", timestamp:"2026-10-04T16:00:00Z",
+            telemetry:{plugin_commit:"ddddddddddd4", merge_tier:"HOLD", iterate_status:"ci_error"}}' \
+        > "$JOURNAL/2026-10-04-16-00-00-dev-flow-601.json"
+    # hold_reason_codes が配列でない entry も同じく読み飛ばす
+    jq -n '{skill:"dev-flow", outcome:"success", source:"skill", timestamp:"2026-10-04T17:00:00Z",
+            telemetry:{plugin_commit:"ddddddddddd4", merge_tier:"HOLD", hold_reason_codes:"final_test_red"}}' \
+        > "$JOURNAL/2026-10-04-17-00-00-dev-flow-602.json"
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.signatures | length')" = "0" ]
+    [ "$(printf '%s' "$output" | jq '.runs["dev-flow"]')" = "2" ]
+    [ "$(printf '%s' "$output" | jq '.needs_llm')" = "false" ]
+}
+
+@test "HOLD: 定数 HOLD_SIGNATURE_CODES の各 code と HOLD_SIGNATURE_ITERATE_STATUSES の各 status は signature になる" {
+    local codes statuses code st ss n=0
+    codes="$(hold_constant HOLD_SIGNATURE_CODES)"
+    statuses="$(hold_constant HOLD_SIGNATURE_ITERATE_STATUSES)"
+    [ "$(printf '%s' "$codes" | jq 'length')" -ge 7 ]
+    [ "$(printf '%s' "$statuses" | jq 'length')" -ge 3 ]
+    for code in $(printf '%s' "$codes" | jq -r '.[]'); do
+        n=$((n + 1))
+        ss="$(printf '%02d' "$n")"
+        jq -n --arg c "$code" --arg ts "2026-10-04T12:00:${ss}Z" \
+            '{skill:"dev-flow", outcome:"success", source:"skill", timestamp:$ts,
+              telemetry:{plugin_commit:"ddddddddddd4", merge_tier:"HOLD", hold_reason_codes:[$c], hold_ac_human_judged:false}}' \
+            > "$JOURNAL/2026-10-04-12-00-${ss}-dev-flow-7${ss}.json"
+    done
+    for st in $(printf '%s' "$statuses" | jq -r '.[]'); do
+        n=$((n + 1))
+        ss="$(printf '%02d' "$n")"
+        jq -n --arg s "$st" --arg ts "2026-10-04T13:00:${ss}Z" \
+            '{skill:"dev-flow", outcome:"success", source:"skill", timestamp:$ts,
+              telemetry:{plugin_commit:"ddddddddddd4", merge_tier:"HOLD", iterate_status:$s, hold_reason_codes:["iterate_non_lgtm"], hold_ac_human_judged:false}}' \
+            > "$JOURNAL/2026-10-04-13-00-${ss}-dev-flow-8${ss}.json"
+    done
+    run report
+    [ "$status" -eq 0 ]
+    for code in $(printf '%s' "$codes" | jq -r '.[]'); do
+        [ "$(hold_sig_count "$code")" = "1" ]
+    done
+    for st in $(printf '%s' "$statuses" | jq -r '.[]'); do
+        [ "$(hold_sig_count "iterate_non_lgtm status=$st")" = "1" ]
+    done
+}
+
+@test "HOLD: 定数の code は merge tier の HOLD_REASON_CODES に実在する（rename で黙って拾わなくならない）" {
+    local merge_tier="$SKILL_DIR/../_lib/merge-tier.mjs" codes code
+    codes="$(hold_constant HOLD_SIGNATURE_CODES)"
+    [ -n "$codes" ]
+    known="$(awk '/^export const HOLD_REASON_CODES = \[/ { f = 1; next } f && /^\];/ { exit } f { print }' "$merge_tier")"
+    [ -n "$known" ]
+    for code in $(printf '%s' "$codes" | jq -r '.[]') iterate_non_lgtm ac_human_pending; do
+        [[ "$known" == *"'$code'"* ]]
+    done
+}
+
 # --- 解消済みの判定 -------------------------------------------------------------
 
 @test "last_seen と別の commit で N 回（既定 5）成功し再発しなければ resolved" {

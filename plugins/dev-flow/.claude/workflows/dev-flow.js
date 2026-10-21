@@ -1230,6 +1230,14 @@ function unsatisfiedAcByActor(acResults, actors) {
   return out
 }
 
+function hasJudgedHumanAcGap(humanIndexes, acceptanceCriteria, opts = {}) {
+  const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
+  return (Array.isArray(humanIndexes) ? humanIndexes : []).some((i) => {
+    const text = String(acs[i] ?? '').replace(INLINE_CODE_RE, ' ')
+    return !HUMAN_AC_PATTERNS.some((re) => re.test(text)) && classifyAcScope(acs[i], opts) !== 'external'
+  })
+}
+
 function agentAcFeedback(indexes, acceptanceCriteria, acResults) {
   const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
   const results = Array.isArray(acResults) ? acResults : []
@@ -7683,10 +7691,16 @@ const telemetryHandoff = buildJournalHandoffPayload({
   // plugin bin/ の bare 名。dotfiles Stop hook の [[ -x ]] は bare 名では真にならず FALLBACK_JOURNAL で解決される（fail-open、tilde 形と同挙動）
   journal_sh: 'journal',
   ...(state.guardBlockedResults.length ? { error_category: 'guard_blocked' } : {}),
-  // telemetry キーは dev-flow/references/telemetry.md の 15 キーに限る（_lib/telemetry-keys.test.mjs が pin）。
+  // telemetry キーは dev-flow/references/telemetry.md のキー一覧に限る（_lib/telemetry-keys.test.mjs が pin）。
   // 記録専用で gate / merge tier / ledger の判定入力にはしない。
   telemetry: {
     merge_tier: mergeTier.tier,
+    // hold_reason_codes / hold_ac_human_judged: HOLD の run だけ。dev-flow-health が dev-flow・実行環境の不具合で出た
+    // HOLD 理由を signature にするための値（outcome は success のまま）
+    ...(mergeTier.tier === 'HOLD' ? {
+      hold_reason_codes: mergeTier.holdReasons.map((r) => r.code),
+      hold_ac_human_judged: hasJudgedHumanAcGap(acGapsFinal.human, req.acceptance_criteria, { repo: REPO }),
+    } : {}),
     // final_test_flaky: test#final で落ち、単体再実行で green だったファイルと 1 回目のログ。flake の run だけ載せる
     ...(finalTestFlaky ? { final_test_flaky: finalTestFlaky } : {}),
     // shape: 実効 shape（realized diff の file 数・行数から classifyShape が決めた値）

@@ -52,7 +52,7 @@ test("[abort-telemetry] (1) isolation probe fail-closed（written:false）→ ru
     assert.ok(savePrompt.includes(key),
       `(1) journal-log-abort prompt に '${key}' が含まれるべきだが含まれていなかった。prompt:\n${savePrompt.slice(0, 900)}`);
   }
-  // label は error_msg に載る。telemetry には複製しない（残す 15 キー以外を書かない）
+  // label は error_msg に載る。telemetry には複製しない（残すキー以外を書かない）
   for (const key of ['"abort_label"', '"abort_phase"', '"iterate_rounds"', '"subagent_invocations"']) {
     assert.ok(!savePrompt.includes(key),
       `(1) journal-log-abort prompt に削除済み telemetry キー '${key}' が含まれていた。prompt:\n${savePrompt.slice(0, 900)}`);

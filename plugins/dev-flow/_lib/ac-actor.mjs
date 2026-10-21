@@ -393,6 +393,19 @@ export function unsatisfiedAcByActor(acResults, actors) {
   return out
 }
 
+// 人手 AC 待ち（unsatisfiedAcByActor の human の index）に、文面で人手になった AC（HUMAN_AC_PATTERNS に当たる・
+// classifyAcScope が external）ではない AC が 1 件以上あるか。観測型の判定（observational:true）か evaluator の
+// unreachable_env:true で人手になった AC がこれに当たる。dev-flow の HOLD telemetry（hold_ac_human_judged）に載せ、
+// dev-flow-health が ac_human_pending の HOLD を dev-flow / 実行環境の不具合の候補として拾う。記録専用で gate には使わない。
+// opts.repo は classifyAcScope と同じ。
+export function hasJudgedHumanAcGap(humanIndexes, acceptanceCriteria, opts = {}) {
+  const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
+  return (Array.isArray(humanIndexes) ? humanIndexes : []).some((i) => {
+    const text = String(acs[i] ?? '').replace(INLINE_CODE_RE, ' ')
+    return !HUMAN_AC_PATTERNS.some((re) => re.test(text)) && classifyAcScope(acs[i], opts) !== 'external'
+  })
+}
+
 // agent AC の未達を dev-implementer へ渡す fix_feedback 項目にする（evaluator feedback と同じ形）。
 // 「計測して PR 本文に書く」型の AC は、コードのコメントでは PR 本文に届かないので pr_notes / design_decisions で
 // 返すよう suggestion に明記する。
