@@ -722,10 +722,12 @@ stub_player() {
     printf '#!/bin/sh\necho "$*" >> "%s/ffmpeg.args"\nfor a; do out="$a"; done\n: > "$out"\n' "$BATS_TEST_TMPDIR" \
         > "$BATS_TEST_TMPDIR/stub/ffmpeg"
     printf '#!/bin/sh\necho "$1" >> "%s/afplay.args"\n' "$BATS_TEST_TMPDIR" > "$BATS_TEST_TMPDIR/stub/afplay"
+    # getconf は既定で失敗させる (切り出し先は $TMPDIR の下)。DARWIN_USER_TEMP_DIR を返させるテストは上書きする
+    printf '#!/bin/sh\nexit 1\n' > "$BATS_TEST_TMPDIR/stub/getconf"
     chmod +x "$BATS_TEST_TMPDIR/stub/"*
 }
 
-@test "play は話者の長い発言から合計約 5 秒を system.wav から切り出して再生する" {
+@test "play は話者の長い発言から合計約 5 秒を system.wav から wav 形式に固定して切り出して再生する" {
     command -v python3 >/dev/null 2>&1 || skip "python3 not available"
     make_recording
     stub_player
@@ -736,8 +738,8 @@ stub_player() {
     [ "${lines[1]}" = "[00:00:01] はい" ]
     mapfile -t cuts < "$BATS_TEST_TMPDIR/ffmpeg.args"
     [ "${#cuts[@]}" -eq 2 ]
-    [[ "${cuts[0]}" == *"-ss 4.00 -t 3.50 -i $dir/system.wav "* ]]
-    [[ "${cuts[1]}" == *"-ss 1.00 -t 1.50 -i $dir/system.wav "* ]]
+    [[ "${cuts[0]}" == *"-ss 4.00 -t 3.50 -f wav -i $dir/system.wav "* ]]
+    [[ "${cuts[1]}" == *"-ss 1.00 -t 1.50 -f wav -i $dir/system.wav "* ]]
     [ "$(wc -l < "$BATS_TEST_TMPDIR/afplay.args")" -eq 2 ]
 }
 
@@ -748,7 +750,98 @@ stub_player() {
     PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" play "$dir" 自分
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$(cat "$BATS_TEST_TMPDIR/ffmpeg.args")" == *"-ss 8.00 -t 5.00 -i $dir/mic.wav "* ]]
+    [[ "$(cat "$BATS_TEST_TMPDIR/ffmpeg.args")" == *"-ss 8.00 -t 5.00 -f wav -i $dir/mic.wav "* ]]
+}
+
+@test "play は cwd に置かれた json.py を import しない" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    make_recording
+    stub_player
+    mkdir -p "$BATS_TEST_TMPDIR/cwd"
+    printf 'print("IMPORTED-FROM-CWD")\n' > "$BATS_TEST_TMPDIR/cwd/json.py"
+    cd "$BATS_TEST_TMPDIR/cwd"
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" play "$dir" 話者A
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"IMPORTED-FROM-CWD"* ]]
+    [ "${lines[0]}" = "[00:00:04] 田中です" ]
+}
+
+@test "play は発言の改行・タブでクリップ行を増やさず、空白にして 1 行で出す" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    make_recording
+    stub_player
+    # 改行の後ろが「wav<TAB>start<TAB>dur<TAB>発言」として読まれると、録音 DIR の外の ../secret を切り出させられる
+    : > "$MEETING_HOME/secret"
+    cat > "$dir/transcript.json" <<'EOF'
+{"utterances": [
+  {"start": 1.0, "end": 3.0, "speaker": "話者A", "text": "はい", "source": "system"},
+  {"start": 4.0, "end": 7.5, "speaker": "話者A", "text": "田中です\n../secret\t0.00\t1.00\t盗む", "source": "system"}
+]}
+EOF
+    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" play "$dir" 話者A
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 2 ]
+    [ "${lines[0]}" = "[00:00:04] 田中です ../secret 0.00 1.00 盗む" ]
+    [ "${lines[1]}" = "[00:00:01] はい" ]
+    mapfile -t cuts < "$BATS_TEST_TMPDIR/ffmpeg.args"
+    [ "${#cuts[@]}" -eq 2 ]
+    for c in "${cuts[@]}"; do
+        [[ "$c" == *" -i $dir/system.wav "* || "$c" == *" -i $dir/mic.wav "* ]]
+        [[ "$c" != *secret* ]]
+    done
+}
+
+@test "play は DARWIN_USER_TEMP_DIR に切り出し、getconf が失敗すれば \$TMPDIR に切り出す" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    make_recording
+    stub_player
+    local tmpdir="$BATS_TEST_TMPDIR/tmp" usertmp="$BATS_TEST_TMPDIR/usertmp" out
+    mkdir -p "$tmpdir" "$usertmp"
+    # 実物の getconf と同じく末尾に / を付けて返す
+    printf '#!/bin/sh\n[ "$1" = DARWIN_USER_TEMP_DIR ] || exit 1\necho "%s/"\n' "$usertmp" > "$BATS_TEST_TMPDIR/stub/getconf"
+    TMPDIR="$tmpdir" PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" play "$dir" 自分
+    echo "$output"
+    [ "$status" -eq 0 ]
+    out="$(cat "$BATS_TEST_TMPDIR/ffmpeg.args")"
+    out="${out##* }"
+    [[ "$out" == "$usertmp/meeting-play."*/0.wav ]]
+    [[ "$out" != "$tmpdir/"* ]]
+
+    rm "$BATS_TEST_TMPDIR/ffmpeg.args"
+    printf '#!/bin/sh\nexit 1\n' > "$BATS_TEST_TMPDIR/stub/getconf"
+    TMPDIR="$tmpdir" PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" play "$dir" 自分
+    echo "$output"
+    [ "$status" -eq 0 ]
+    out="$(cat "$BATS_TEST_TMPDIR/ffmpeg.args")"
+    out="${out##* }"
+    [[ "$out" == "$tmpdir/meeting-play."*/0.wav ]]
+}
+
+@test "play は transcript.json・切り出す wav がシンボリックリンクなら ffmpeg も afplay も呼ばずに失敗する" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    stub_player
+    : > "$BATS_TEST_TMPDIR/elsewhere.wav"
+    local f label
+    for f in transcript.json system.wav mic.wav; do
+        make_recording
+        if [ "$f" = transcript.json ]; then
+            mv "$dir/transcript.json" "$BATS_TEST_TMPDIR/transcript.json"
+            ln -s "$BATS_TEST_TMPDIR/transcript.json" "$dir/transcript.json"
+        else
+            ln -sf "$BATS_TEST_TMPDIR/elsewhere.wav" "$dir/$f"
+        fi
+        label=話者A
+        [ "$f" = mic.wav ] && label=自分
+        PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" play "$dir" "$label"
+        echo "$f: $output"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"$dir/$f がシンボリックリンクです"* ]]
+        [ ! -e "$BATS_TEST_TMPDIR/ffmpeg.args" ]
+        [ ! -e "$BATS_TEST_TMPDIR/afplay.args" ]
+        rm -rf "$dir"
+    done
 }
 
 @test "play は引数が足りない・発言の無いラベルで失敗する" {
