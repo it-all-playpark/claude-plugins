@@ -211,7 +211,7 @@ hf_logged_in() {
 #                       値を足して書き戻す (無ければ作る)。--check は確かめるだけで書かない
 #   show                中身を 1 キー 1 行で出す (meeting doctor)
 config_tool() {
-  python3 - "$CONFIG" "$@" <<'PY'
+  python3 -I - "$CONFIG" "$@" <<'PY'
 import json, os, re, sys
 
 KEYS = {"home": str, "notes_dir": str, "auto_notes": bool, "calendar_tools": list, "apps": list,
@@ -319,7 +319,7 @@ load_config() {
 # installed_plugins.json ({"plugins": {"meeting@<marketplace>": [{"scope", "installPath", "lastUpdated", ...}]}}) から
 # ソース (recorder/Package.swift と scripts/meeting.sh) のある meeting plugin の installPath を出す。無ければ失敗
 installed_plugin() {
-  python3 - "$1" <<'PY'
+  python3 -I - "$1" <<'PY'
 import json, os, sys
 try:
     plugins = json.load(open(sys.argv[1], encoding="utf-8"))["plugins"].items()
@@ -346,7 +346,7 @@ PY
 #   print          plist を出す
 #   check <plist>  <plist> が今の print と PATH 以外で同じなら 0 (PATH は実行したシェルで変わるので比べない)
 plist_tool() {
-  python3 - "$LABEL" "$REC_BIN" "$INSTALLED" "$WATCH_LOG" "$CONFIG" "$@" <<'PY'
+  python3 -I - "$LABEL" "$REC_BIN" "$INSTALLED" "$WATCH_LOG" "$CONFIG" "$@" <<'PY'
 import os, plistlib, sys
 label, rec, selfp, logp, config, cmd = sys.argv[1:7]
 env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ["HOME"], "LANG": "ja_JP.UTF-8",
@@ -504,7 +504,7 @@ installed_matches() {
 keychain_from_launchd() {
   local label="$LABEL.doctor" domain="gui/$(id -u)" tmp rc="" i
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/meeting-doctor.XXXXXX")"
-  python3 - "$label" "$tmp" "$GROQ_SERVICE" > "$tmp/probe.plist" <<'PY'
+  python3 -I - "$label" "$tmp" "$GROQ_SERVICE" > "$tmp/probe.plist" <<'PY'
 import os, plistlib, sys
 label, tmp, service = sys.argv[1:]
 sys.stdout.buffer.write(plistlib.dumps({
@@ -541,7 +541,7 @@ cmd_watch() {
 }
 
 write_meta() {
-  python3 - "$@" <<'PY'
+  python3 -I - "$@" <<'PY'
 import datetime, json, os, sys
 path, key = sys.argv[1], sys.argv[2]
 meta = json.load(open(path)) if os.path.exists(path) else {}
@@ -643,31 +643,42 @@ outside_notes_dir() {
 
 # 話者の声を確かめる (/meeting-notes の「この発言は誰？」で質問の前に鳴らす)。
 # どの区間を鳴らすかは align.pick_clips が決め、発言の source でトラックを選ぶ (自分 = mic.wav)
+# afplay が sandbox の中で鳴らないので play だけは sandbox の外で動かす。録音 DIR・cwd・$TMPDIR は sandbox から
+# 書けるので、そこに置かれたものに外の権限で読み書きさせない: python は -I (cwd の *.py を import しない)、
+# 発言の改行・タブは空白にして 1 クリップ 1 行を保つ、入力はシンボリックリンクを拒んで wav 形式に固定する、
+# 切り出し先は sandbox から書けない per-user の一時ディレクトリ (DARWIN_USER_TEMP_DIR) に作る
 cmd_play() {
   [[ $# -eq 2 ]] || die "使い方: meeting play <DIR> <話者ラベル>"
   local dir="${1%/}" label="$2"
   [[ -f "$dir/transcript.json" ]] || die "$dir/transcript.json がありません。先に meeting transcribe"
+  [[ ! -L "$dir/transcript.json" ]] || die "$dir/transcript.json がシンボリックリンクです"
   command -v ffmpeg >/dev/null || die "ffmpeg がありません"
   command -v afplay >/dev/null || die "afplay がありません (macOS 専用)"
   local clips
-  clips="$(python3 - "$SRC/transcribe" "$dir/transcript.json" "$label" <<'PY'
+  clips="$(python3 -I - "$SRC/transcribe" "$dir/transcript.json" "$label" <<'PY'
 import json, sys
 sys.path.insert(0, sys.argv[1])
 from align import Utterance, fmt_ts, pick_clips
 utts = [Utterance(**u) for u in json.load(open(sys.argv[2]))["utterances"]]
 for c in pick_clips(utts, sys.argv[3]):
     wav = "mic.wav" if c.source == "mic" else "system.wav"
-    print(f"{wav}\t{c.start:.2f}\t{c.end - c.start:.2f}\t[{fmt_ts(c.start)}] {c.text}")
+    text = c.text.translate({ord("\n"): " ", ord("\r"): " ", ord("\t"): " "})
+    print(f"{wav}\t{c.start:.2f}\t{c.end - c.start:.2f}\t[{fmt_ts(c.start)}] {text}")
 PY
 )"
   [[ -n "$clips" ]] || die "$label の発言がありません"
-  local tmp wav start dur line i=0
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/meeting-play.XXXXXX")"
+  local tmp base wav start dur line i=0
+  # 切り出す前に全クリップの wav を確かめる (途中で止めて一部だけ鳴らさない)
+  while IFS=$'\t' read -r wav _; do
+    [[ -f "$dir/$wav" ]] || die "$dir/$wav がありません"
+    [[ ! -L "$dir/$wav" ]] || die "$dir/$wav がシンボリックリンクです"
+  done <<< "$clips"
+  base="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" || base="${TMPDIR:-/tmp}"
+  tmp="$(mktemp -d "${base%/}/meeting-play.XXXXXX")"
   trap "rm -rf '$tmp'" EXIT
   while IFS=$'\t' read -r wav start dur line; do
-    [[ -f "$dir/$wav" ]] || die "$dir/$wav がありません"
     echo "$line"
-    ffmpeg -nostdin -loglevel error -y -ss "$start" -t "$dur" -i "$dir/$wav" "$tmp/$i.wav"
+    ffmpeg -nostdin -loglevel error -y -ss "$start" -t "$dur" -f wav -i "$dir/$wav" "$tmp/$i.wav"
     afplay "$tmp/$i.wav" < /dev/null
     i=$((i + 1))
   done <<< "$clips"
@@ -682,7 +693,7 @@ PY
 #                           議事録と全文 (frontmatter の transcript_path:、無ければ root 相対の transcript:) の
 #                           ラベルを置き換え、unresolved_speakers から外す。全文が見つからなければ非 0
 note_tool() {
-  python3 - "$@" <<'PY'
+  python3 -I - "$@" <<'PY'
 import json, os, re, sys
 
 def unq(v):
