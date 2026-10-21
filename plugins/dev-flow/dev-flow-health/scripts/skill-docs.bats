@@ -140,3 +140,28 @@ extract_report_step() {
     [[ "$step" == *'`candidates.error` で原因を絞れなかった signature'* ]]
     [[ "$step" == *'`## Launch Order`'* ]]
 }
+
+@test "レポートの読み方は HOLD 由来の signature が拾う HOLD 理由（health-report.sh の定数と同じ）と、再現率優先・精度は分類で担うことを書く" {
+    reading="$(awk '/^## レポートの読み方/ { f = 1; next } f && /^## / { exit } f { print }' "$SKILL_MD")"
+    row="$(printf '%s\n' "$reading" | grep -F '| HOLD 由来の signature |')"
+    [ -n "$row" ]
+    [[ "$row" == *'`dev-flow \| hold \| Merge tier \| <HOLD 理由の code>`'* ]]
+    script="$SKILL_DIR/scripts/health-report.sh"
+    codes="$(sed -n "s/^HOLD_SIGNATURE_CODES='\(.*\)'\$/\1/p" "$script")"
+    statuses="$(sed -n "s/^HOLD_SIGNATURE_ITERATE_STATUSES='\(.*\)'\$/\1/p" "$script")"
+    [ -n "$codes" ]
+    [ -n "$statuses" ]
+    for v in $(printf '%s' "$codes" | jq -r '.[]') $(printf '%s' "$statuses" | jq -r '.[]') iterate_non_lgtm ac_human_pending; do
+        [[ "$row" == *"\`$v\`"* ]]
+    done
+    [[ "$row" == *'再現率を優先'* ]]
+    [[ "$row" == *'精度は手順の分類'* ]]
+}
+
+@test "HOLD 由来の signature は該当 PR の dev-flow 終端サマリーを gh pr view で読んでから振り分ける" {
+    step="$(awk '/\*\*該当 run を読む\*\*/ { f = 1 } f && /\*\*振り分け\*\*/ { exit } f { print }' "$SKILL_MD")"
+    [ -n "$step" ]
+    [[ "$step" == *'HOLD 由来の signature（category が `hold`）'* ]]
+    [[ "$step" == *'dev-flow'*'終端サマリー'* ]]
+    [[ "$step" == *'`gh pr view <recent_runs[].pr_number> --repo <recent_runs[].repo> --comments`'* ]]
+}

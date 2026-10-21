@@ -1,15 +1,15 @@
 // telemetry-keys.test.mjs — dev-flow.js / pr-iterate.js が journal handoff に書く telemetry キーの集合を pin する（issue #789）。
 //
-// telemetry の読み手は dev-flow-health だけで、残すキーは dev-flow/references/telemetry.md の 15 個。
+// telemetry の読み手は dev-flow-health だけで、残すキーは dev-flow/references/telemetry.md の 17 個。
 // それ以外のキーを書くと、読まれない値を計算・転記するコードが再び増える。
 //
 //   (1) 静的 pin: 両 workflow の inline 生成区間の外にある `telemetry: { … }` object literal を全部拾い、
-//       直下のキーと spread（`...(cond ? { k: v } : {})`）内のキーが 15 キーの部分集合であること。
+//       直下のキーと spread（`...(cond ? { k: v } : {})`）内のキーが 17 キーの部分集合であること。
 //       成功・失敗（writeFailureTelemetry）・abort の各組み立て口が literal として存在すること、
 //       telemetry を literal 以外（変数・shorthand）で渡す箇所が無いことも pin する。
 //   (2) 挙動 pin: DEV_FLOW_SCENARIOS（成功 / lite / abort / empty-diff / cross-repo / needs_clarification …）と
-//       pr-iterate.js の成功・abort を VM 実行し、journal handoff payload の telemetry キーが 15 キーの部分集合であること。
-//   (3) telemetry.md のキー一覧が 15 キーと一致すること。
+//       pr-iterate.js の成功・abort を VM 実行し、journal handoff payload の telemetry キーが 17 キーの部分集合であること。
+//   (3) telemetry.md のキー一覧が 17 キーと一致すること。
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { stripComments } from '../../../tools/sync-inlines.mjs';
 import { neutralizeRegexLiterals, blankStringLiterals } from './test-helpers/source-scan.mjs';
-import { makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
 import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -32,6 +32,7 @@ const KEPT_TELEMETRY_KEYS = [
   'plugin_commit', 'plugin_version', 'shape', 'route', 'duration_seconds', 'phase_durations',
   'merge_tier', 'iterate_status', 'eval_verdict', 'eval_model_config', 'impl_model_config', 'review_model_config',
   'final_test_flaky', 'ci_wait_ceiling_seconds', 'ci_wait_seconds',
+  'hold_reason_codes', 'hold_ac_human_judged',
 ];
 
 // ---- 静的走査 ----
@@ -103,13 +104,13 @@ function telemetryLiterals(src) {
 }
 
 for (const [name, src, minLiterals] of [['dev-flow.js', devFlowSrc, 3], ['pr-iterate.js', prIterateSrc, 2]]) {
-  test(`[telemetry-keys] 静的: ${name} の telemetry object literal のキーは残す 15 キーの部分集合`, () => {
+  test(`[telemetry-keys] 静的: ${name} の telemetry object literal のキーは残す 17 キーの部分集合`, () => {
     const literals = telemetryLiterals(src);
     // dev-flow.js: 成功 handoff / writeFailureTelemetry / abort、pr-iterate.js: 成功 / abort
     assert.ok(literals.length >= minLiterals, `${name}: telemetry literal が ${literals.length} 件しか見つからない（成功・失敗・abort の組み立て口が literal でない可能性）`);
     for (const { line, keys } of literals) {
       const extra = keys.filter((k) => !KEPT_TELEMETRY_KEYS.includes(k));
-      assert.deepEqual(extra, [], `${name} line ~${line}: 残す 15 キー以外の telemetry キー ${JSON.stringify(extra)}`);
+      assert.deepEqual(extra, [], `${name} line ~${line}: 残す 17 キー以外の telemetry キー ${JSON.stringify(extra)}`);
     }
   });
 
@@ -120,7 +121,7 @@ for (const [name, src, minLiterals] of [['dev-flow.js', devFlowSrc, 3], ['pr-ite
   });
 }
 
-test('[telemetry-keys] 静的: 走査器は 15 キー外のキー（直下・条件付き spread 内）と literal 以外の渡し方を検出する', () => {
+test('[telemetry-keys] 静的: 走査器は 17 キー外のキー（直下・条件付き spread 内）と literal 以外の渡し方を検出する', () => {
   const fake = [
     'const a = buildJournalHandoffPayload({ telemetry: { merge_tier: x, gate_policy: y, ...(c ? { guard_id: z } : {}), route } })',
     'const b = buildAbortHandoffPayload({ telemetry: someVar })',
@@ -142,14 +143,14 @@ function handoffTelemetry(calls) {
 }
 
 for (const [name, sc] of Object.entries(DEV_FLOW_SCENARIOS)) {
-  test(`[telemetry-keys] 挙動: dev-flow.js[${name}] の journal handoff telemetry キーは残す 15 キーの部分集合`, async () => {
+  test(`[telemetry-keys] 挙動: dev-flow.js[${name}] の journal handoff telemetry キーは残す 17 キーの部分集合`, async () => {
     const { ctx, calls } = makeDevFlowSandbox({ overrides: sc.overrides ?? {}, workflow: sc.workflow, extra: sc.extra ?? {} });
     const { error } = await runWorkflowCapture(devFlowSrc, ctx);
     assertNoCrash(error, name);
     const telemetry = handoffTelemetry(calls);
     assert.ok(telemetry, `[${name}] journal handoff が呼ばれていない: ${calls.map((c) => c.label).join(', ')}`);
     const extra = Object.keys(telemetry).filter((k) => !KEPT_TELEMETRY_KEYS.includes(k));
-    assert.deepEqual(extra, [], `[${name}] 残す 15 キー以外の telemetry キー: ${JSON.stringify(telemetry)}`);
+    assert.deepEqual(extra, [], `[${name}] 残す 17 キー以外の telemetry キー: ${JSON.stringify(telemetry)}`);
     assert.ok('plugin_version' in telemetry && 'plugin_commit' in telemetry, `[${name}] 世代キーが無い: ${JSON.stringify(telemetry)}`);
   });
 }
@@ -167,25 +168,89 @@ test('[telemetry-keys] 挙動: dev-flow.js 成功 run の telemetry は merge_ti
   assert.equal(telemetry.route, result.route);
 });
 
+// HOLD 理由（hold_reason_codes）と、人手 AC 待ちに文面以外（観測型・unreachable_env）で人手になった AC があるか
+// （hold_ac_human_judged）は HOLD の run だけに載る。dev-flow-health の health-report.sh が HOLD 由来の signature にする入力。
+const HOLD_ACS = ['実 run の journal に `duration_seconds` が記録される', '（人手）staging で動作を確認する'];
+const holdRun = (acResults) => makeDevFlowSandbox({
+  overrides: {
+    'eval#1': {
+      verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation',
+      ac_results: acResults, security_clearance: [], concern_resolutions: [],
+    },
+  },
+  extra: { args: devFlowArgs(1, { analyze: prerunAnalyze({ acceptance_criteria: HOLD_ACS, ac_observational: [true, false], ac_observational_evidence: ['Jev 観測型 p=0.97', '正規表現の絞り込みに当たらない'] }) }) },
+});
+const acResult = (i, satisfied) => ({ ac_index: i, satisfied, verified_by: 'inspection', evidence: satisfied ? 'ok' : '未達' });
+
+for (const [name, acResults, judged] of [
+  ['観測型 AC の未達（文面は agent）', [acResult(0, true), acResult(1, true)], true],
+  ['観測型 AC と（人手）staging の AC がともに未達', [acResult(0, true), acResult(1, false)], true],
+]) {
+  test(`[telemetry-keys] 挙動: HOLD の run[${name}] は hold_reason_codes と hold_ac_human_judged を載せる`, async () => {
+    const { ctx, calls } = holdRun(acResults);
+    const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
+    assert.equal(error, null, `run が throw した: ${error?.message}`);
+    assert.equal(result.merge_tier, 'HOLD');
+    const telemetry = handoffTelemetry(calls);
+    assert.deepEqual(telemetry.hold_reason_codes, JSON.parse(JSON.stringify(result.merge_tier_hold_reasons.map((r) => r.code))));
+    assert.ok(telemetry.hold_reason_codes.includes('ac_human_pending'), JSON.stringify(telemetry));
+    assert.equal(telemetry.hold_ac_human_judged, judged);
+  });
+}
+
+test('[telemetry-keys] 挙動: 文面で人手になった AC だけが未達の HOLD は hold_ac_human_judged:false', async () => {
+  // 観測型 AC は red→green 実証済み（deterministic 昇格）で達成、（人手）staging の AC だけが未達
+  const { ctx, calls } = makeDevFlowSandbox({
+    overrides: {
+      'eval#1': {
+        verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation',
+        ac_results: [
+          { ac_index: 0, satisfied: true, verified_by: 'test', evidence: 'test green', test_files: ['src/x.test.ts'], impl_files: ['src/x.ts'] },
+          acResult(1, false),
+        ],
+        security_clearance: [], concern_resolutions: [],
+      },
+      redgreen: { results: [{ index: 0, red: true, green: true }] },
+    },
+    extra: { args: devFlowArgs(1, { analyze: prerunAnalyze({ acceptance_criteria: HOLD_ACS, ac_observational: [true, false], ac_observational_evidence: ['Jev 観測型 p=0.97', '正規表現の絞り込みに当たらない'] }) }) },
+  });
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
+  assert.equal(error, null, `run が throw した: ${error?.message}`);
+  assert.equal(result.merge_tier, 'HOLD');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.final_unsatisfied_ac_by_actor)), { agent: [], human: [1], ci: [] });
+  const telemetry = handoffTelemetry(calls);
+  assert.deepEqual(telemetry.hold_reason_codes, ['ac_human_pending']);
+  assert.equal(telemetry.hold_ac_human_judged, false);
+});
+
+test('[telemetry-keys] 挙動: HOLD でない run は hold_reason_codes / hold_ac_human_judged を載せない', async () => {
+  const { ctx, calls } = makeDevFlowSandbox();
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
+  assert.equal(error, null, `run が throw した: ${error?.message}`);
+  assert.notEqual(result.merge_tier, 'HOLD');
+  const telemetry = handoffTelemetry(calls);
+  assert.ok(!('hold_reason_codes' in telemetry) && !('hold_ac_human_judged' in telemetry), JSON.stringify(telemetry));
+});
+
 for (const [name, overrides] of [
   ['lgtm', {}],
   ['abort（isolation probe fail-closed）', { 'isolation-probe': { written: false } }],
 ]) {
-  test(`[telemetry-keys] 挙動: pr-iterate.js[${name}] の journal handoff telemetry キーは残す 15 キーの部分集合`, async () => {
+  test(`[telemetry-keys] 挙動: pr-iterate.js[${name}] の journal handoff telemetry キーは残す 17 キーの部分集合`, async () => {
     const { ctx, calls } = makePrIterateSandbox({ overrides });
     const { error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
     assertNoCrash(error, `pr-iterate ${name}`);
     const telemetry = handoffTelemetry(calls);
     assert.ok(telemetry, `journal handoff が呼ばれていない: ${calls.map((c) => c.label).join(', ')}`);
     const extra = Object.keys(telemetry).filter((k) => !KEPT_TELEMETRY_KEYS.includes(k));
-    assert.deepEqual(extra, [], `残す 15 キー以外の telemetry キー: ${JSON.stringify(telemetry)}`);
+    assert.deepEqual(extra, [], `残す 17 キー以外の telemetry キー: ${JSON.stringify(telemetry)}`);
     assert.equal(telemetry.merge_tier, 'PR_ITERATE');
   });
 }
 
 // ---- ドキュメント ----
 
-test('[telemetry-keys] telemetry.md のキー一覧が残す 15 キーと一致する', () => {
+test('[telemetry-keys] telemetry.md のキー一覧が残す 17 キーと一致する', () => {
   const md = readFileSync(TELEMETRY_MD, 'utf8');
   const section = md.split(/^## /m).find((s) => s.startsWith('キー一覧'));
   assert.ok(section, 'telemetry.md に「## キー一覧」節が無い');

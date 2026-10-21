@@ -42,7 +42,7 @@ async function runScenario({ overrides = {}, extra = {} } = {}) {
   return { calls, logs, result, telemetry: extractTelemetry(calls) };
 }
 
-// 判定根拠・analyze 経路は返り値 / log に載り、telemetry には書かない（残す 15 キーに含まれない）
+// 判定根拠・analyze 経路は返り値 / log に載り、telemetry には書かない（残すキーに含まれない）
 const NOT_IN_TELEMETRY = [
   'shape_reason', 'shape_uncorrected', 'realized_file_count', 'realized_file_count_raw', 'ac_count',
   'analyze_path', 'analyze_ineligible_reason', 'prerun_durations',

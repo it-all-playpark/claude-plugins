@@ -55,6 +55,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
 | フィールド | 意味 |
 |------------|------|
 | `signatures[].signature` | `skill \| error.category \| error.phase \| テンプレート化した error.message`。パス・URL・hash・PR 番号・数値は `<*>`。`error.category == needs_clarification`（人間の判断待ちで止めた設計どおりの停止）は signature にしない |
+| HOLD 由来の signature | `dev-flow \| hold \| Merge tier \| <HOLD 理由の code>`。merge tier が HOLD で終わった run（journal の `outcome` は `success`）の HOLD 理由のうち、dev-flow 自身や実行環境の不具合で出るものを 1 理由 1 signature で拾う（1 run に複数あれば別々に数える）。拾う理由は `final_reconcile_unavailable` / `final_ac_unavailable` / `pr_closes_missing` / `merge_facts_dropped` / `danger_fail_closed` / `ac_agent_unsatisfied` / `final_test_red`、pr-iterate の終端 status が `ci_pending` / `ci_error` / `review_contract_error` の `iterate_non_lgtm`（template は `iterate_non_lgtm status=<status>`）、観測型の判定か evaluator の `unreachable_env` で人手になった AC が未達の `ac_human_pending`。`mergeable_conflicting` など他の HOLD 理由は拾わない。再現率を優先して拾うので、必要だった HOLD も混ざる — 精度は手順の分類（`dev_flow` 以外は起票しない）で担う |
 | `signatures[].id` | signature の sha1 先頭 12 桁。issue の重複検出に使う |
 | `status` | `new`（窓内に初出）/ `regressed`（resolved の条件を満たした後に窓内で再発）/ `ongoing` / `resolved`（last_seen と別の `plugin_commit` で同じ skill が `resolve_after_runs` 回成功して再発なし。失敗 run は数えない） |
 | `first_seen` / `last_seen` / `regressed_at` | `{timestamp, plugin_commit, file}`。`file` は `~/.claude/journal/` 下の entry |
@@ -73,6 +74,10 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
    1〜5 は signature ごとに行い、6・7 は全 signature の分を 1 回で行う:
    1. **該当 run を読む**: `recent_runs[].file` を `~/.claude/journal/` から Read し、error と telemetry を確認する。
       `recent_runs[].repo` が `issue_repo` と違えば、その run は PR 先の別 repo で走っている。
+      HOLD 由来の signature（category が `hold`）は journal に HOLD 理由の code しか残らないので、該当 PR の dev-flow
+      終端サマリー（PR コメント）を `gh pr view <recent_runs[].pr_number> --repo <recent_runs[].repo> --comments` で読み、
+      HOLD の理由と現状から、HOLD が dev-flow・実行環境の不具合で出たのか、PR に必要な停止だったのかを判断する
+      （`recent_runs[].repo` が `null` の run は `--repo <issue_repo>`）。必要な停止だったものは `dev_flow` にしない。
    2. **振り分け**: 次の 4 つのどれか 1 つに分類し、根拠を 1 文の理由にする（判定基準は 1 行ずつ）:
       - `dev_flow`: skills repo の plugin を直せば消える（dev-flow / pr-iterate の workflow・agent・script の欠陥）
       - `target_repo`: PR 先 repo のテスト・hook・lint が原因（pre-push の husky・tsc・vitest の失敗など）

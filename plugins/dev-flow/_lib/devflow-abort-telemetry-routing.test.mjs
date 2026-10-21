@@ -165,7 +165,7 @@ test('[abort-telemetry] (1) Validate で diff-gate proxy が throw → abort ent
     assert.ok(savePrompt.includes(key),
       `(1) journal-log-abort prompt に '${key}' が含まれるべきだが含まれていなかった。prompt:\n${savePrompt.slice(0, 800)}`);
   }
-  // phase/label は error_phase と error_msg に載る。telemetry には複製しない（残す 15 キー以外を書かない）。
+  // phase/label は error_phase と error_msg に載る。telemetry には複製しない（残すキー以外を書かない）。
   for (const key of ['"abort_phase"', '"abort_label"', '"eval_iter"', '"gate_policy"', '"subagent_invocations"']) {
     assert.ok(!savePrompt.includes(key),
       `(1) journal-log-abort prompt に削除済み telemetry キー '${key}' が含まれていた。prompt:\n${savePrompt.slice(0, 800)}`);

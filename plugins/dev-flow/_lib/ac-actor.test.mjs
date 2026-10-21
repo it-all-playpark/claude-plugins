@@ -2,7 +2,7 @@
 // AC の actor 分類（agent / human / ci）と、ac_results の actor 別集計・差し戻し用 fix_feedback の pin（issue #747 / #861）。
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, isObservationalAc, acObservationalOf, deterministicAcIndexes, demoteUnprovenObservationalAc, pendingAcObservationalIndexes, resolveAcObservational, acObservationalPrompt } from './ac-actor.mjs';
+import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, isObservationalAc, acObservationalOf, deterministicAcIndexes, demoteUnprovenObservationalAc, pendingAcObservationalIndexes, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap } from './ac-actor.mjs';
 import { KNOWN_OBSERVATIONAL_ACS } from './test-helpers/observational-ac-controls.mjs';
 
 // repo 内外が混ざった AC（テスト・README・rules の削除と dotfiles の excludedCommands の変更を 1 つに書いたもの）
@@ -139,6 +139,25 @@ test('[ac-actor] unsatisfiedAcByActor: unreachable_env:true の agent AC は差�
     { ac_index: 1, satisfied: false },
   ], actors);
   assert.deepEqual(r, { agent: [1], human: [0], ci: [] });
+});
+
+test('[ac-actor] hasJudgedHumanAcGap: 人手 AC 待ちに文面で人手になった AC（HUMAN_AC_PATTERNS・external）以外があるときだけ true', () => {
+  const acs = [
+    '（人手）staging で動作を確認する',
+    '`~/.claude/settings.json` に許可を足す',
+    '実 run の journal に `duration_seconds` が記録される',
+    'worker 数の上限を設定で変えられる',
+  ];
+  // 文面で人手（明示・repo 外）だけなら false
+  assert.equal(hasJudgedHumanAcGap([0, 1], acs, { repo: 'acme/app' }), false);
+  // 観測型（文面は agent）・unreachable_env（文面は agent）で人手になった AC があれば true
+  assert.equal(hasJudgedHumanAcGap([0, 2], acs, { repo: 'acme/app' }), true);
+  assert.equal(hasJudgedHumanAcGap([3], acs, { repo: 'acme/app' }), true);
+  // 人手 AC 待ちが無ければ false
+  assert.equal(hasJudgedHumanAcGap([], acs), false);
+  assert.equal(hasJudgedHumanAcGap(null, acs), false);
+  // inline code で引用しただけの `（人手）` は文面の人手にしない
+  assert.equal(hasJudgedHumanAcGap([0], ['`（人手）` の表記を README に書く']), true);
 });
 
 test('[ac-actor] agentAcFeedback: evaluator feedback と同じ形で AC 番号・本文・根拠と PR 本文の返し方を渡す', () => {
