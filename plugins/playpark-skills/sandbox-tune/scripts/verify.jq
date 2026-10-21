@@ -45,3 +45,11 @@ def verify_types($by; $repos; $checks):
                                         unknown: ([$after[] | select(. == "unknown")] | length)},
                        related_commits: [ $cs[0:3][] | {repo, source, hash: .hash[0:12], committed_at: (.epoch | todate), subject} ]}
       end);
+
+# 設定の intended（意図した拒否）に id か kind が一致する型は、突き合わせの結果にかかわらず intended にする。
+# remaining から外れるので、修正候補にも recurring にも数えない。先に書いた項目を優先する
+def mark_intended($intended):
+  map(
+    . as $t
+    | ([$intended[] | select(.id == $t.id or .kind == $t.kind)] | first) as $m
+    | if $m then .status = "intended" | .intended = {reason: $m.reason, by: (if $m.id then "id" else "kind" end)} else . end);

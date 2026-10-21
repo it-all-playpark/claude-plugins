@@ -65,7 +65,7 @@ validate_jq() {
 def strs: type == "array" and all(.[]; type == "string" and . != "");
 if type != "object" then "設定は JSON オブジェクトにしてください"
 else
-  (keys - ["configRepo", "criteriaFiles", "issue"] | .[] | "未知のキー: \(.)"),
+  (keys - ["configRepo", "criteriaFiles", "intended", "issue"] | .[] | "未知のキー: \(.)"),
   (if has("configRepo") then
      .configRepo
      | if type != "object" then "configRepo はオブジェクトにしてください"
@@ -76,6 +76,21 @@ else
        end
    else empty end),
   (if has("criteriaFiles") and (.criteriaFiles | strs | not) then "criteriaFiles は空でない文字列の配列にしてください" else empty end),
+  (if has("intended") then
+     .intended
+     | if type != "array" then "intended は配列にしてください"
+       else
+         to_entries[] | "intended[\(.key)]" as $at | .value
+         | if type != "object" then "\($at) はオブジェクトにしてください"
+           else
+             (keys - ["id", "kind", "reason"] | .[] | "\($at) の未知のキー: \(.)"),
+             (if ([has("id"), has("kind")] | map(select(.)) | length) != 1 then "\($at) は id か kind のどちらか一方を書いてください" else empty end),
+             (if has("id") and ((.id | type) != "string" or .id == "") then "\($at).id は空でない文字列にしてください" else empty end),
+             (if has("kind") and ((.kind | type) != "string" or .kind == "") then "\($at).kind は空でない文字列にしてください" else empty end),
+             (if (.reason | type) != "string" or .reason == "" then "\($at).reason は空でない文字列にしてください" else empty end)
+           end
+       end
+   else empty end),
   (if has("issue") then
      .issue
      | if type != "object" then "issue はオブジェクトにしてください"
@@ -263,12 +278,13 @@ cmd_verify() {
       | unique[]' "$analysis")" >"$checks"
 
   jqs --slurpfile c "$commits" --slurpfile r "$repos" --rawfile k "$checks" \
-    --arg repo "$(home_rel "$repo")" --argjson paths "$(jq -c '.configRepo.paths' <<<"$cfg")" '
+    --arg repo "$(home_rel "$repo")" --argjson paths "$(jq -c '.configRepo.paths' <<<"$cfg")" \
+    --argjson intended "$(jq -c '.intended // []' <<<"$cfg")" '
     include "verify";
     ($c | commits_by_type) as $by
     | ($k | split("\n") | map(select(. != "") | split("\t") | {key: (.[0:3] | join("\t")), value: .[3]}) | from_entries) as $checks
     | .verify = {repo: $repo, paths: $paths}
-    | .types |= verify_types($by; $r[0]; $checks)' "$analysis"
+    | .types |= (verify_types($by; $r[0]; $checks) | mark_intended($intended))' "$analysis"
   rm -f "$commits" "$repos" "$checks"
 }
 
@@ -328,6 +344,7 @@ cmd_run() {
     types: (.types | length), remaining: ([.types[] | select(.status == "remaining")] | length),
     stale_branch: ([.types[] | select(.status == "stale_branch")] | length),
     resolved: ([.types[] | select(.status == "resolved")] | length),
+    intended: ([.types[] | select(.status == "intended")] | length),
     recurring: (if .verify == null then null
                 else [.types[] | select(.status == "remaining" and .count >= $min_count and (.last_seen | epoch) >= $recent)] | length end)}' "$json"
 }

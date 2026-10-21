@@ -4,7 +4,7 @@
 # `sandbox-tune.sh run` を出力先 ~/.claude/logs/sandbox-tune で走らせ、実行ごとの要約を
 # ~/.claude/logs/sandbox-tune/runs.jsonl に 1 行追記する。status line 等の読み手はこのファイルだけで
 # 最後の集計の時刻・remaining の件数・失敗したかを読む。止まっているのか失敗しているのかを区別できるよう、失敗も 1 行残す。
-#   - 成功: run の最終行の要約 JSON（{report, analysis, verified, types, remaining, stale_branch, resolved, recurring}）に ts を足した行
+#   - 成功: run の最終行の要約 JSON（{report, analysis, verified, types, remaining, stale_branch, resolved, intended, recurring}）に ts を足した行
 #   - 失敗: {ts, exit, error} — exit は run の終了コード、error は run の stderr の末尾
 # ts は ISO 8601 UTC。決定論のみで LLM は呼ばない（draft / handoff は日次実行に含めない）。
 #

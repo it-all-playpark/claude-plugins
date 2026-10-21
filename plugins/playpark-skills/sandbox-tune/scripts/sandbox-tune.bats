@@ -440,6 +440,38 @@ deny_at() {
   [ "$(printf '%s' "$output" | jq -c '[.types, .remaining, .resolved, .recurring]')" = '[5,4,1,2]' ]
 }
 
+@test "verify: 設定の intended に id か kind で一致する型は intended にし、remaining・recurring から外してレポートの別の節に出す" {
+  export GIT_CEILING_DIRECTORIES="$WORK"
+  mkdir -p "$HOME/plain"
+  make_config_repo
+  echo '{"configRepo":{"path":"conf","paths":["settings.json"]},
+         "intended":[{"kind":"permission-rule","reason":"permissions.deny で止めている"},
+                     {"id":"sandbox:network:intended.example.test","reason":"送らせない宛先"}]}' >"$WORK/sandbox-tune.json"
+  # id で一致（2 回・最近）
+  deny_at i1 2026-09-29T00:00:00Z intended.example.test "$HOME/plain"
+  deny_at i2 2026-09-30T00:00:00Z intended.example.test "$HOME/plain"
+  # kind で一致（2 回・最近）
+  use proj-a/s1.jsonl S1 2026-09-29T00:00:00Z k1 'node -e 1'
+  result proj-a/s1.jsonl S1 2026-09-29T00:00:01Z k1 'Permission to use Bash with command node -e 1 has been denied.' '{"toolDenialKind":"permission-rule"}'
+  use proj-a/s1.jsonl S1 2026-09-30T00:00:00Z k2 'node -e 2'
+  result proj-a/s1.jsonl S1 2026-09-30T00:00:01Z k2 'Permission to use Bash with command node -e 2 has been denied.' '{"toolDenialKind":"permission-rule"}'
+  # どれにも一致しない（2 回・最近）→ remaining のまま recurring に数える
+  deny_at o1 2026-09-29T00:00:00Z other.example.test "$HOME/plain"
+  deny_at o2 2026-09-30T00:00:00Z other.example.test "$HOME/plain"
+  cd "$WORK"
+  run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c '[.types, .remaining, .intended, .recurring]')" = '[3,1,2,1]' ]
+  json="$WORK/claudedocs/sandbox-tune-2026-10-01.json"
+  [ "$(jq -c '[.types[] | select(.status == "intended") | [.id, .intended.by, .intended.reason]] | sort' "$json")" \
+    = '[["permission:permission-rule:Bash node","kind","permissions.deny で止めている"],["sandbox:network:intended.example.test","id","送らせない宛先"]]' ]
+  md="$WORK/claudedocs/sandbox-tune-2026-10-01.md"
+  sed -n '/^## intended/,$p' "$md" | grep -q 'sandbox:network:intended.example.test'
+  sed -n '/^## intended/,$p' "$md" | grep -q '意図した拒否: 送らせない宛先（設定の intended に id で一致）'
+  ! sed -n '/^## remaining/,/^## stale_branch/p' "$md" | grep -q 'intended.example.test'
+  sed -n '/^## remaining/,/^## stale_branch/p' "$md" | grep -q 'sandbox:network:other.example.test'
+}
+
 @test "verify: occurrences が時刻だけの古い collect の JSON は受け付けない" {
   make_config_repo
   echo '{"types":[{"id":"sandbox:network:x.example","needle":"x.example","count":1,"last_seen":"2026-09-10T00:00:00Z","occurrences":["2026-09-10T00:00:00Z"]}]}' >"$WORK/old.json"
@@ -504,6 +536,19 @@ deny_at() {
   run bash "$SCRIPT" config --config "$WORK/bad2.json"
   [ "$status" -eq 2 ]
   [[ "$output" == *"git repo ではありません"* ]]
+
+  # intended の項目は id か kind の一方と reason を持つ
+  echo '{"intended":[{"id":"a","kind":"b","reason":"r"},{"kind":"hook"},{"id":"x","reason":"r","typo":1},"s"]}' >"$WORK/bad5.json"
+  run bash "$SCRIPT" config --config "$WORK/bad5.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"intended[0] は id か kind のどちらか一方を書いてください"* ]]
+  [[ "$output" == *"intended[1].reason は空でない文字列にしてください"* ]]
+  [[ "$output" == *"intended[2] の未知のキー: typo"* ]]
+  [[ "$output" == *"intended[3] はオブジェクトにしてください"* ]]
+  echo '{"intended":{}}' >"$WORK/bad6.json"
+  run bash "$SCRIPT" config --config "$WORK/bad6.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"intended は配列にしてください"* ]]
 
   # issue.template は {{ac}} と {{paths}} の両方を持つ
   printf '## 概要\n\n{{title}}\n\n{{ac}}\n' >"$WORK/tpl-ac-only.md"
