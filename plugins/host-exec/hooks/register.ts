@@ -218,7 +218,7 @@ function shownCommand(argv: readonly string[]): string {
 
 const OUTSIDE_CWD = 'プロジェクトの外で実行します。この場所で実行してよいか確認してください'
 
-const NOT_SHOWN ='この画面には中身が出ないので、確認していなければ「拒否」して内容を見せてもらってください'
+const NOT_SHOWN = 'この画面には中身が出ないので、確認していなければ「拒否」して内容を見せてもらってください'
 
 /** argv（[0] を除く）から、この画面に中身が出ないコードを実行する兆候を拾い、何が起きるかとどうすればいいかを返す。 */
 function codeRunWarnings(bin: string, args: readonly string[]): string[] {
