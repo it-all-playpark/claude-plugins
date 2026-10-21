@@ -32,6 +32,7 @@ const DIRS: Record<string, string> = {
   '/w/repo': '/w/repo',
   '/w/repo/sub': '/w/repo/sub',
   '/w/other': '/w/other',
+  '/w/another': '/w/another',
   '/tmp': '/private/tmp',
   '/tmp/evil': '/private/tmp/evil',
   '/var/folders': '/private/var/folders',
@@ -556,9 +557,27 @@ describe('host-exec', () => {
     answer(on, ['拒否', '拒否', '拒否'], asked, options)
     await $.tool.call({ tool: TOOL, argv: ['pnpm', 'dev'], reason: 'x' } as any)
     await $.tool.call({ tool: TOOL, argv: ['/var/folders/xx/T/x/git', 'status'], reason: 'x' } as any)
-    await $.tool.call({ tool: TOOL, argv: ['gh', 'repo', 'view'], cwd: '/w/other', reason: 'x' } as any)
+    await $.tool.call({ tool: TOOL, argv: ['pnpm', 'dev'], cwd: '/w/other', reason: 'x' } as any)
     expect(asked.every(q => q.startsWith('⚠'))).toBe(true)
     expect(options).toEqual([['拒否', '実行する'], ['拒否', '実行する'], ['拒否', '実行する']])
+  })
+
+  test('警告がプロジェクト外の cwd だけなら記憶でき、同じ場所では聞き直さず、別の場所では聞く', async ($, on) => {
+    const asked: string[] = []
+    const options: string[][] = []
+    const ran: string[][] = []
+    host(on)
+    answer(on, ['実行して、このセッションでは同じコマンドを聞かない', '拒否'], asked, options)
+    stubExits(on, [], ran)
+    const call = (cwd: string) => $.tool.call({ tool: TOOL, argv: ['gh', 'repo', 'view'], cwd, reason: 'x' } as any)
+    await call('/w/other')
+    await call('/w/other')
+    await call('/w/another')
+    expect(asked[0]).toMatch(/^⚠ 注意（1 件）\n・プロジェクトの外で実行します/)
+    expect(options[0]).toEqual(['拒否', '実行する', '実行して、このセッションでは同じコマンドを聞かない'])
+    expect(asked.length).toBe(2)
+    expect(asked[1]).toContain('場所          ~/another')
+    expect(ran.length).toBe(2)
   })
 
   test('記憶済みのコマンドでも、出力に秘密情報があれば渡す前に聞く', async ($, on) => {

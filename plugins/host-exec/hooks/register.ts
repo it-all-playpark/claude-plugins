@@ -11,7 +11,7 @@ import type { HostExecApproved } from '../types'
 //   ゲート1: 拒否パターン（静的チェック。全ステップ）
 //   ゲート2: 実行承認（ダイアログ）。人間が「このセッションでは同じコマンドを聞かない」を
 //            選んだものだけ、実行ファイル実パス・argv・cwd 実パスが完全に同じ呼び出しを
-//            そのセッションでは聞き直さない。警告が出るコマンドは記憶しない
+//            そのセッションでは聞き直さない。警告が出るコマンドは記憶しない（プロジェクト外の cwd の警告だけなら記憶する）
 //   ゲート3: 出力の機密チェック → 引っかかったら Claude に渡す前に停止（記憶済みでも毎回）
 // sandbox.excludedCommands に一致して Bash でも sandbox の外で動くコマンドは、承認を取らずに
 // Bash へ回す（一致すると確実に言える形だけを拾い、それ以外は今まで通りダイアログを出す）。
@@ -216,7 +216,9 @@ function shownCommand(argv: readonly string[]): string {
   return argv.map(shellish).join(' ')
 }
 
-const NOT_SHOWN = 'この画面には中身が出ないので、確認していなければ「拒否」して内容を見せてもらってください'
+const OUTSIDE_CWD = 'プロジェクトの外で実行します。この場所で実行してよいか確認してください'
+
+const NOT_SHOWN ='この画面には中身が出ないので、確認していなければ「拒否」して内容を見せてもらってください'
 
 /** argv（[0] を除く）から、この画面に中身が出ないコードを実行する兆候を拾い、何が起きるかとどうすればいいかを返す。 */
 function codeRunWarnings(bin: string, args: readonly string[]): string[] {
@@ -482,7 +484,7 @@ export const register: Register = on => {
     if (isUnder(cwdReal, tempDirs)) {
       warnings.push('一時ディレクトリで実行します。Claude が置いた設定ファイル（.git/config など）が読み込まれる可能性があります')
     } else if (!isUnder(cwdReal, [root])) {
-      warnings.push('プロジェクトの外で実行します。この場所で実行してよいか確認してください')
+      warnings.push(OUTSIDE_CWD)
     }
 
     // ── ゲート2: 実行承認 ──
@@ -493,8 +495,9 @@ export const register: Register = on => {
     const commandLines = isMulti
       ? resolved.map(({ argv }, i) => `  ${i + 1}  $ ${shownCommand(argv)}`)
       : resolved.map(({ argv }) => `  $ ${shownCommand(argv)}`)
-    // 警告が出るものは記憶しない（中身が変わっても同じキーで通ってしまうため）。キーは実行されるものそのもの
-    const key = warnings.length === 0
+    // 警告が出るものは記憶しない（中身が変わっても同じキーで通ってしまうため）。キーは実行されるものそのもの。
+    // プロジェクト外の cwd だけは中身の話ではなく場所の確認で、その場所（cwd 実パス）がキーに入るので記憶してよい
+    const key = warnings.every(w => w === OUTSIDE_CWD)
       ? JSON.stringify([cwdReal, ...resolved.map(({ argv, exeReal }) => [exeReal, ...argv])])
       : undefined
     const approved: HostExecApproved = key === undefined ? {} : ((await $.state.get(APPROVED)).value ?? {})
