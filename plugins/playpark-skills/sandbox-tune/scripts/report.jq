@@ -30,6 +30,7 @@ def detail:
           else "関係する commit なし（発生 \(.count) 件、最終 \(.last_seen)）" + (if .evidence.note then "。\(.evidence.note)" else "" end) end)
        + "\n"
      else "" end)
+  + (if .intended then "- 意図した拒否: \(.intended.reason)（設定の intended に \(.intended.by) で一致）\n" else "" end)
   + "- 代表的なエラー文:\n\n" + ([ .examples[] | "  ~~~\n  \(gsub("\\n"; "\n  "))\n  ~~~" ] | join("\n")) + "\n";
 
 redact_all
@@ -50,6 +51,8 @@ redact_all
        + ([ .types[] | select(.status == "stale_branch") | detail ] | if length == 0 then "なし\n" else join("\n") end)
        + "\n## resolved\n\n"
        + ([ .types[] | select(.status == "resolved") | detail ] | if length == 0 then "なし\n" else join("\n") end)
+       + "\n## intended（設定の intended に当たる意図した拒否。修正案は出さない）\n\n"
+       + ([ .types[] | select(.status == "intended") | detail ] | if length == 0 then "なし\n" else join("\n") end)
      else
        "## 型の詳細\n\n" + ([ .types[] | detail ] | if length == 0 then "なし\n" else join("\n") end)
      end)

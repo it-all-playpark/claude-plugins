@@ -31,6 +31,7 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 {
   "configRepo": { "path": "~/src/dotfiles", "paths": ["claude/settings.json", "claude/bin", "claude/hooks"] },
   "criteriaFiles": ["~/src/dotfiles/claude/RULES.md"],
+  "intended": [{ "kind": "permission-rule", "reason": "permissions.deny で止めている" }],
   "issue": { "repo": "owner/dotfiles", "template": "sandbox-tune-issue.md", "labels": ["sandbox"] }
 }
 ```
@@ -40,6 +41,7 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 | `configRepo.path` | 文字列（必須: configRepo を書くとき） | settings を管理している git repo。`run` の verify に使い、無ければ `run` は exit 2（`--no-verify` を除く） |
 | `configRepo.paths` | 空でない文字列の配列 | verify で git log を見るパス（設定ファイル・wrapper・hook）。repo root 相対 |
 | `criteriaFiles` | 文字列の配列 | 安全性の判定に加える基準のファイル（個人の運用ルール等）。必ず読む |
+| `intended` | オブジェクトの配列 | 意図した拒否（permissions.deny・組み込みガード・人間がやると決めた操作等）。各項目は `id`（型の id と完全一致）か `kind`（型の kind と一致）のどちらか一方と、`reason`（空でない文字列）を持つ。verify で一致した型は status を `intended` にし、remaining・`recurring` から外す。同じ型に意図した拒否と直すべき拒否が混ざる kind（hook 等）は kind で書かず、型の `id` で書く |
 | `issue.repo` | `owner/name` | issue の提出先。`--issue` のときに必須 |
 | `issue.template` | 文字列 | issue 化の材料（下書き）のテンプレート。`{{title}}` `{{id}}` `{{evidence}}` `{{cause}}` `{{fix}}` `{{safety}}` `{{ac}}`（`ac` を `- [ ] ` で並べたもの）`{{paths}}`（`paths` を `- ` で並べたもの）を置換する。`{{ac}}` と `{{paths}}` の両方が無いテンプレートはエラー（exit 2）。dev-flow で走らせるには `{{ac}}` を受け入れ基準の見出し（`## 受け入れ基準（Acceptance Criteria）` 等）、`{{paths}}` を `## 変更対象パス` の下に置く。省略時は既定のテンプレート（両方の節を持つ） |
 | `issue.labels` | 文字列の配列 | git-issue に渡すラベル |
@@ -61,7 +63,7 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
   ユーザーに `configRepo` を書いた設定を用意してもらうか、集計だけでよいか確かめて `--no-verify` で再実行する
 - `--no-verify` は設定の有無にかかわらず verify しない。レポート冒頭に verify 未実施と書かれ、resolved / remaining の判定は付かない
 - `run` は `claudedocs/sandbox-tune-<日付>.md`（レポート）と同名の `.json`（集計結果）を cwd に書く。`--out DIR` で変えられる
-- `run` の最終行は要約 JSON（`report`・`analysis`・`verified`・`types` と status ごとの型の数 `remaining`・`stale_branch`・`resolved`、`recurring`）。
+- `run` の最終行は要約 JSON（`report`・`analysis`・`verified`・`types` と status ごとの型の数 `remaining`・`stale_branch`・`resolved`・`intended`、`recurring`）。
   `recurring` は今も再発している remaining の型の数で、status が `remaining`・`count` が 2 以上・`last_seen` が期間終端（`.period.until`）から
   7 日以内（ちょうど 7 日前を含む）の型を数える。閾値は `sandbox-tune.sh` の `RECURRING_MIN_COUNT` / `RECURRING_WITHIN_DAYS`。
   `--no-verify` の run では status が無いので `null`
@@ -73,7 +75,7 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
 launchd に登録する。登録すると毎日 06:30 に `scripts/daily.sh` が `run --config <設定> --out ~/.claude/logs/sandbox-tune`
 を走らせ（LLM は呼ばない。`draft` / `handoff` は含まない）、実行ごとに `~/.claude/logs/sandbox-tune/runs.jsonl` へ 1 行追記する。
 
-- 成功: `run` の要約 JSON（`report`・`analysis`・`verified`・`types`・`remaining`・`stale_branch`・`resolved`・`recurring`）に `ts`（ISO 8601 UTC）を足した行
+- 成功: `run` の要約 JSON（`report`・`analysis`・`verified`・`types`・`remaining`・`stale_branch`・`resolved`・`intended`・`recurring`）に `ts`（ISO 8601 UTC）を足した行
 - 失敗: `{ts, exit, error}`（`exit` は `run` の終了コード、`error` は stderr の末尾）
 
 ```bash
@@ -109,6 +111,8 @@ bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --uninstall 
   repo や関係 commit が無い）を判定し、`evidence.after_branches` に件数を載せる。すべて「含まない」なら `stale_branch`、
   1 件でも「含む」か「判定不能」があれば `remaining`。branch は今の先端で見る（発生後に修正を取り込んだ branch は「含む」になる）
 - 対象が 1 語のコマンド名（`node` 等）の型は無関係な commit に当たるので突き合わせず `remaining` にする
+- 設定の `intended` に `id` か `kind` が一致する型は、上の判定にかかわらず `intended` にする（先に書いた項目を優先し、`intended.reason` と
+  一致の仕方 `intended.by` を付ける）。レポートでは resolved の後の `intended` 節に出す。`--no-verify` の run では付かない
 - 型は数百件になることがある。レポートは件数順なので、Read の offset / limit で `remaining` 節を上から読む
 
 ## 判断手順（remaining の型ごと）
@@ -121,6 +125,8 @@ bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --uninstall 
    後の発生に「修正を含む branch」が 1 件でもある型は再発として扱う。
    commit の後の発生が、commit より前に起動していた session だけなら（`first_seen` と commit 日時で判断）再発ではない可能性を書く
    - `stale_branch` 節の型には原因・修正案を出さない。「修正前の branch での発生」として型と件数を一覧に留める
+   - `intended` 節の型にも原因・修正案を出さない。ただし同じ型が多くの session で繰り返すなら、エージェントが拒否を避ける手順
+     （RULES 等）を知らない兆候として件数を添えて伝える
 3. 型ごとに次の 3 つを出す
    - **原因**: 何が何を拒否したか（sandbox の書き込み・socket・ネットワーク、permission rule、hook、classifier）。代表例の文から言い切れることだけ書く
    - **修正案**: settings のキー（`sandbox.filesystem.allowWrite` / `sandbox.network.allowUnixSockets` / `sandbox.excludedCommands` / `permissions.allow` 等）、
