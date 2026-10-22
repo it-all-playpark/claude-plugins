@@ -1221,6 +1221,30 @@ add_transcript_path() {
     done
 }
 
+@test "set-names は transcript_path: が保存先の中でも . 始まりの要素を含むか .md でないなら (.git/config 等) どのファイルも書き換えずに非 0 で終わる" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    notes="$BATS_TEST_TMPDIR/notes"
+    note="$notes/meetings/2026-01-01-a.md"
+    notes_config
+    local target
+    for target in "$notes/.git/config" "$notes/.obsidian/x.md" "$notes/meetings/x.txt"; do
+        rm -rf "$notes"
+        write_note 2026-01-01-a "$rec" "話者A"
+        mkdir -p "$(dirname "$target")"
+        printf '[core]\n\tbare = 話者A\n' > "$target"
+        add_transcript_path "$note" "$target"
+        cp -R "$notes" "$BATS_TEST_TMPDIR/notes.orig"
+
+        run bash "$SCRIPT" set-names "$rec" "話者A=田中"
+        echo "$target: $output"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"/notes/${target#"$notes"/} は保存先の中の . 始まりでない .md ではありません"* ]]
+        diff -r "$notes" "$BATS_TEST_TMPDIR/notes.orig"
+        rm -rf "$BATS_TEST_TMPDIR/notes.orig"
+    done
+}
+
 @test "set-names は話者のラベル・名前に改行があれば何も書かずに非 0 で終わる" {
     command -v python3 >/dev/null 2>&1 || skip "python3 not available"
     rec="$MEETING_HOME/2026-01-01_1000-a"

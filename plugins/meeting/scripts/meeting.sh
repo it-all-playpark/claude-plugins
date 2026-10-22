@@ -879,6 +879,11 @@ def set_names(root, note, spec, allowed=None):
     path_f = None
     if strict and path:
         path, path_f = open_checked(path, allowed)
+        # 保存先の中でも .git/config などは外の権限で書き換えるとコード実行に繋がる。全文は . 始まりの要素を
+        # 含まない .md だけにする
+        rel = next(os.path.relpath(path, a) for a in allowed if path.startswith(os.path.join(a, "")))
+        if not path.endswith(".md") or any(p.startswith(".") for p in rel.split(os.sep)):
+            sys.exit(f"meeting: 全文 {path} は保存先の中の . 始まりでない .md ではありません")
 
     rewrite(note_f, "\n".join(["---", *out, "---"]) + "\n" + sub(body))
     print(f"✓ {note}")
