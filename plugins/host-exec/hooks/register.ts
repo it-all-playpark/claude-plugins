@@ -146,6 +146,34 @@ function isShellInline(argv: readonly string[]): boolean {
   return false
 }
 
+/** env のオプションのうち、次の引数を値として取るもの（-u NAME / -C dir / -P path / -S string） */
+const ENV_VALUE_OPTIONS = new Set(['-u', '-C', '-P', '-S'])
+
+/**
+ * argv が sudo を起動するか（先頭が sudo、または env の変数代入とオプションを飛ばした最初のコマンドが sudo）。
+ * 引数に sudo という語があるだけのもの（git commit -m "sudo …"、rg sudo）を拾わないよう、連結した文字列ではなく要素で見る。
+ */
+function isSudo(argv: readonly string[]): boolean {
+  if (basename(argv[0] ?? '') === 'sudo') return true
+  if (basename(argv[0] ?? '') !== 'env') return false
+  const rest = argv.slice(1)
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]!
+    if (a === '--') return basename(rest[i + 1] ?? '') === 'sudo'
+    if (ENV_VALUE_OPTIONS.has(a)) i++
+    else if (!a.startsWith('-') && !a.includes('=')) return basename(a) === 'sudo'
+  }
+  return false
+}
+
+/** sudo の拒否理由。sudo の解決（root 以外は読めない実行ファイル）より前に返すので、「見つからない」とは言わない */
+const SUDO_REFUSAL =
+  'host-exec does not run sudo, because the user cannot judge root commands whose arguments Claude composes. ' +
+  'Do not build sudo into a wrapper script or another command yourself. ' +
+  'If something needs root, it has to be confined to a fixed command that takes no arguments ' +
+  '(for example a root-owned script that sudoers allows to run as root): tell the user what you need, ' +
+  'and once that command exists, run it with mcp__host-exec__run.'
+
 const MAX_TIMEOUT_SEC = 600
 const DECLINE = '拒否'
 const RUN = '実行する'
@@ -383,6 +411,9 @@ export const register: Register = on => {
 
     // ── ゲート1: 静的チェック（1 つでも当たれば何も実行しない） ──
     for (const [i, argv] of steps.entries()) {
+      if (isSudo(argv)) {
+        return { deny: `host-exec: refused (sudo)${at(i)}. Nothing was run. ${SUDO_REFUSAL}` }
+      }
       const line = argv.join(' ')
       for (const [re, why] of DENY_PATTERNS) {
         if (re.test(line)) {
