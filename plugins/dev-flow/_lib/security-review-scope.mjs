@@ -38,6 +38,7 @@ const REVIEWER_CONTEXT_BASENAMES = ['claude.md', 'claude.local.md', 'agents.md']
 const GIT_METADATA_BASENAMES = ['.gitattributes', '.gitmodules'];
 const REGULAR_FILE_MODE = '100644';
 const MAX_REASONS = 20;
+const MAX_IMPORT_STEPS = 2000;
 
 // agent が指示として読み込むファイルか（大文字小文字を区別しない）。
 export function isInstructionPath(path) {
@@ -70,11 +71,18 @@ export function isReviewerContextPath(path) {
 // AGENTS.md 等の `@<path>` を自動で読み込み、相対パスは import 元のディレクトリから解決する。code span・code block の
 // 中の `@` も拾うのは、多めに拾っても対象が増えるだけで素通りは生まないため。末尾の句読点を落とした形も加える。
 // `~/`・repo の外へ出るパスは repo の diff に現れないので除く。絶対パスは root（repo の絶対パス）配下だけ相対にする。
+// Claude Code の import の書き方と食い違うと import 先を取りこぼす（素通りになる）ので、`\ ` で空白をエスケープした形を
+// 1 トークンとして読み、空白に戻した形・`#` 以降と `?` 以降を落とした形・`\` の手前までの形も加える。
 export function claudeImportPaths(text, fromPath, root = null) {
   const dir = String(fromPath).split('/').slice(0, -1);
   const out = new Set();
-  for (const m of String(text).matchAll(/(?:^|\s)@(\S+)/g)) {
-    for (const raw of new Set([m[1], m[1].replace(/[.,;:!?)\]}>'"`]+$/, '')])) {
+  const trimPunct = (s) => s.replace(/[.,;:!?)\]}>'"`]+$/, '');
+  for (const m of String(text).matchAll(/(?:^|\s)@((?:\\\s|\S)+)/g)) {
+    const tok = m[1];
+    const unescaped = tok.replace(/\\(\s)/g, '$1');
+    const variants = [tok, unescaped, tok.split('\\')[0]];
+    for (const v of [...variants]) variants.push(v.split('#')[0], v.split('?')[0]);
+    for (const raw of new Set(variants.flatMap((v) => [v, trimPunct(v)]))) {
       let p = raw;
       if (p === '' || p.startsWith('~')) continue;
       let segs;
@@ -98,16 +106,25 @@ export function claudeImportPaths(text, fromPath, root = null) {
 }
 
 // roots（isReviewerContextPath に当たるファイル）から `@<path>` import を再帰的にたどり、読み込まれるファイルの
-// 集合を返す（roots 自身は含めない）。read(path) はその rev の本文（無ければ null）。
+// 集合を返す（roots 自身は含めない）。read(path) はその rev の
+//   { text }（通常ファイルの本文）/ { link }（symlink の指す先。link のディレクトリから解決する）/ null（その rev に無い）
+// を返し、ある筈のものを読めないときは throw する（呼び出し側が対象に倒す — 読めない import 先の先を黙って飛ばさない）。
+// 大文字小文字だけが違うパスの解決は read 側が持つ（macOS の FS は区別しないが git の tree は区別する）。
 export function reviewerImportClosure(roots, read, root = null) {
   const seen = new Set(roots.map((p) => p.toLowerCase()));
   const imported = new Set();
   const queue = [...roots];
+  let steps = 0;
   while (queue.length > 0) {
+    // symlink の循環（`a` → `a/b`）は新しいパスを作り続けるので上限で打ち切り、判定できないとして throw する
+    if (++steps > MAX_IMPORT_STEPS) throw new Error('import のたどりが上限を超えた');
     const from = queue.shift();
-    const text = read(from);
-    if (text == null) continue;
-    for (const p of claudeImportPaths(text, from, root)) {
+    const entry = read(from);
+    if (entry == null) continue;
+    const found = typeof entry.link === 'string'
+      ? claudeImportPaths(`@${entry.link.replace(/(\s)/g, '\\$1')}`, from, root)
+      : claudeImportPaths(entry.text, from, root);
+    for (const p of found) {
       const key = p.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);

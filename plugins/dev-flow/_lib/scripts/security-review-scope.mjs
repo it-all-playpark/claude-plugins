@@ -74,8 +74,32 @@ try {
   // security-reviewer の session に攻撃者の文が指示として届くので、文書の拡張子でも対象にする
   const root = gitText(['rev-parse', '--show-toplevel'])
   const imports = revs.flatMap((rev) => {
-    const roots = git(['ls-tree', '-r', '-z', '--name-only', rev]).toString('utf8').split('\u0000').filter((p) => p !== '' && isReviewerContextPath(p))
-    const read = (p) => { try { return git(['cat-file', 'blob', `${rev}:${p}`]).toString('utf8') } catch { return null } }
+    // `<mode> <type> <oid>\t<path>`。import は大文字小文字を区別しない FS で解決されるので、小文字のキーで tree の実パスを引く
+    const entries = new Map()
+    for (const rec of git(['ls-tree', '-r', '-z', rev]).toString('utf8').split('\u0000')) {
+      const m = rec.match(/^(\d{6}) (\w+) ([0-9a-f]+)\t(.+)$/s)
+      if (m) entries.set(m[4].toLowerCase(), { mode: m[1], oid: m[3], path: m[4] })
+    }
+    const roots = [...entries.values()].map((e) => e.path).filter(isReviewerContextPath)
+    // 無いパスは null。ある筈の blob を読めなければ git が throw し、全体が git_failed（対象）に倒れる
+    // 途中のディレクトリが symlink（`docs` → `real` で `@docs/x.md`）なら、その symlink を link として返し、
+    // closure 側が symlink の先 + 残りのパスとしてたどり直す
+    const read = (p) => {
+      const segs = String(p).split('/')
+      for (let k = 1; k < segs.length; k++) {
+        const d = entries.get(segs.slice(0, k).join('/').toLowerCase())
+        if (d?.mode === '120000') {
+          const target = git(['cat-file', 'blob', d.oid]).toString('utf8').replace(/\/+$/, '')
+          // closure は link を p のディレクトリから解決するので、symlink の親ディレクトリまで `..` で戻す
+          const up = target.startsWith('/') ? [] : Array(segs.length - k).fill('..')
+          return { link: [...up, target, ...segs.slice(k)].join('/') }
+        }
+      }
+      const e = entries.get(String(p).toLowerCase())
+      if (e == null || e.mode === '160000') return null
+      const body = git(['cat-file', 'blob', e.oid]).toString('utf8')
+      return e.mode === '120000' ? { link: body } : { text: body }
+    }
     return reviewerImportClosure(roots, read, root)
   })
   const scope = securityReviewScope({ patch: patchBuf.toString('utf8'), names, imports })

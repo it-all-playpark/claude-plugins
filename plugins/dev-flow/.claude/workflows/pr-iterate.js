@@ -1857,9 +1857,14 @@ async function securityGate(iteration, round) {
   if (scope?.ok !== true) return stop('PR の diff を取得できない')
   if (!isFullCommitSha(headSha)) return stop('PR head の sha が分からない')
   if (isFullCommitSha(shaNow) && headSha.toLowerCase() !== shaNow.toLowerCase()) return stop(`diff の head ${headSha.slice(0, 7)} が今の PR head ${shaNow.slice(0, 7)} と一致しない`)
-  // `.` / `..` の要素を含むパスは prefix 比較では worktree の外かを決められない（`/tmp/x/../<worktree>` 等）ので受け付けない
-  const hasDotSegment = (p) => p.split('/').some((s) => s === '.' || s === '..')
-  if (!reviewDir.startsWith('/') || hasDotSegment(reviewDir) || hasDotSegment(diffPath) || !diffPath.startsWith(`${reviewDir}/`) || !isOutsideWorktree(reviewDir, isoWt)) return stop('diff の保存先が PR の worktree の外の絶対パスでない')
+  // workflow からは realpath を取れず、prefix 比較は `..`・空の要素・大文字小文字の違い（macOS の FS は区別しない）・symlink で
+  // worktree の中を外と見誤る。CLI が mkdtemp で作る形（`/<…>/dev-flow-security-review-XXXXXX/pr.diff`）だけを受け付け、
+  // worktree との比較は大文字小文字を区別しない
+  const segsOf = (p) => p.split('/').slice(1)
+  const plainAbs = (p) => p.startsWith('/') && segsOf(p).every((s) => s !== '' && s !== '.' && s !== '..')
+  const dirName = reviewDir.split('/').pop()
+  if (!plainAbs(reviewDir) || !/^dev-flow-security-review-[A-Za-z0-9]{6}$/.test(dirName) || diffPath !== `${reviewDir}/pr.diff`
+    || !isOutsideWorktree(reviewDir.toLowerCase(), String(isoWt).toLowerCase())) return stop('diff の保存先が PR の worktree の外の絶対パスでない')
   // workflow の agent 起動は cwd を受け付けず security-reviewer は PR の worktree を cwd に起動する。PR が reviewer の session に自動で
   // 読み込まれる指示ファイルを変えると攻撃者の文が判定者に届くので、自動の review では clear にしない（人間が確かめる）
   if (isReviewerContextChanged(scope)) return stop('PR が security-reviewer に読み込まれる指示ファイル（CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変える')

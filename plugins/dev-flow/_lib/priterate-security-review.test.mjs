@@ -142,16 +142,16 @@ test('[security-review][A] args.security_review の不正形は agent 起動前�
 test('[security-review][B] round ごとに新しい spawn で PR 全 diff を読み、前回の未解消の指摘を「直ったか確かめる項目」として受け取る', async () => {
   const { result, calls } = await run({
     overrides: {
-      'security-scope#1': () => securityScopeResponse({ head: SHA_A, reviewDir: '/tmp/sec-r1' }),
+      'security-scope#1': () => securityScopeResponse({ head: SHA_A, reviewDir: '/tmp/dev-flow-security-review-aaaaa1' }),
       'security-review#1': reviewWith([finding('hardlink-write'), finding('minor-hardening', 'minor')]),
       'commit-ensure#1': { dirty: false, committed: false, pushed: false, head_sha: SHA_B },
-      'security-scope#2': () => securityScopeResponse({ head: SHA_B, reviewDir: '/tmp/sec-r2' }),
+      'security-scope#2': () => securityScopeResponse({ head: SHA_B, reviewDir: '/tmp/dev-flow-security-review-aaaaa2' }),
       'security-review#2': reviewWith([]),
     },
   });
   const [r1, r2] = calls.filter((c) => c.label.startsWith('security-review#'));
-  assert.ok(r1.prompt.includes('diff_path: /tmp/sec-r1/pr.diff') && r1.prompt.includes(`head_sha: ${SHA_A}`), r1.prompt);
-  assert.ok(r2.prompt.includes('diff_path: /tmp/sec-r2/pr.diff') && r2.prompt.includes(`head_sha: ${SHA_B}`), '2 回目は新しい head の全 diff を読む');
+  assert.ok(r1.prompt.includes('diff_path: /tmp/dev-flow-security-review-aaaaa1/pr.diff') && r1.prompt.includes(`head_sha: ${SHA_A}`), r1.prompt);
+  assert.ok(r2.prompt.includes('diff_path: /tmp/dev-flow-security-review-aaaaa2/pr.diff') && r2.prompt.includes(`head_sha: ${SHA_B}`), '2 回目は新しい head の全 diff を読む');
   assert.ok(r2.prompt.includes(`origin/main...${SHA_B}`), '読む範囲は PR 全体（<base>...<head>）');
   assert.ok(r1.prompt.includes('verify_items: []'), '1 回目に確かめる項目は無い');
   const verify = JSON.parse(r2.prompt.match(/^verify_items: (.*)$/m)[1]);
@@ -268,14 +268,22 @@ test('[security-review][D] security-reviewer の読み取りは diff の保存�
 });
 
 test('[security-review][D] diff の保存先が PR の worktree の中なら review を spawn せず clear にしない', async () => {
-  for (const reviewDir of ['/tmp/wt/.devflow-tmp/sec', 'relative/dir', '/var/x/../../tmp/wt/sec', '/var/./x']) {
+  // mkdtemp の形（dev-flow-security-review-XXXXXX）でも、worktree の中（大文字小文字だけ違う表記を含む）・`.` / `..` /
+  // 空の要素を含む・相対パスは受け付けない
+  const NAME = 'dev-flow-security-review-abc123';
+  for (const reviewDir of [
+    `/tmp/wt/.devflow-tmp/${NAME}`, `/TMP/WT/${NAME}`, `relative/${NAME}`, `/var/x/../../tmp/wt/${NAME}`, `/var/./${NAME}`,
+    `/var//${NAME}`, '/tmp/sec', '/tmp/dev-flow-security-review-abc', '/tmp/dev-flow-security-review-abc12!',
+  ]) {
     const { result, calls } = await run({ overrides: { 'security-scope#1': () => securityScopeResponse({ reviewDir }) } });
     assert.equal(result.status, 'security_unresolved', reviewDir);
     assert.ok(!calls.some((c) => c.label.startsWith('security-review#')), reviewDir);
   }
-  const { result, calls } = await run({ overrides: { 'security-scope#1': () => securityScopeResponse({ diffPath: `${SECURITY_REVIEW_DIR}/../../tmp/wt/x` }) } });
-  assert.equal(result.status, 'security_unresolved', 'diff_path に .. を含む');
-  assert.ok(!calls.some((c) => c.label.startsWith('security-review#')));
+  for (const diffPath of [`${SECURITY_REVIEW_DIR}/../../tmp/wt/x`, `${SECURITY_REVIEW_DIR}/other.diff`, `${SECURITY_REVIEW_DIR}/x/pr.diff`]) {
+    const { result, calls } = await run({ overrides: { 'security-scope#1': () => securityScopeResponse({ diffPath }) } });
+    assert.equal(result.status, 'security_unresolved', diffPath);
+    assert.ok(!calls.some((c) => c.label.startsWith('security-review#')), diffPath);
+  }
 });
 
 test('[security-review][D] PR が reviewer に読み込まれる指示ファイルを変える（reviewer_context_changed が false でない）なら review を spawn せず clear にしない', async () => {

@@ -425,7 +425,7 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
 /** security-scope 応答の head を省いたときの既定（40 桁）。 */
 export const SECURITY_SCOPE_DEFAULT_HEAD = 'c'.repeat(40);
 /** security-scope 応答の review_dir / diff_path の既定（PR の worktree '/tmp/wt' の外）。 */
-export const SECURITY_REVIEW_DIR = '/tmp/dev-flow-security-review-stub';
+export const SECURITY_REVIEW_DIR = '/tmp/dev-flow-security-review-Stub01';
 
 /**
  * security-review-scope の stdout と同形の応答を返す。
