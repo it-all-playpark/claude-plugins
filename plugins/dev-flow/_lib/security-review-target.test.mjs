@@ -4,7 +4,8 @@
 // fixture（test-fixtures/security-review-target/）:
 //   pr-1058.diff           — #1058 の squash merge（main の 920f25d）とその親の diff（`git diff 920f25d^ 920f25d`）。
 //                            sandbox の外で動かす入口（meeting set-names）を足し、議事録の frontmatter で決まるパスを書き換える
-//   pr-1058-docs-only.diff — 同じ diff の docs（README.md / SKILL.md）だけ。excludedCommands の設定例を含むが docs は実行されない
+//   pr-1058-docs-only.diff — 同じ diff の docs（README.md）だけ。excludedCommands の設定例を含むが docs は実行されない
+//   pr-1058-skill.diff     — 同じ diff の SKILL.md だけ。skill 定義は agent への指示と権限を決めるので docs ではなく対象
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -31,19 +32,26 @@ test('[security-review-target] #1058（920f25d とその親の diff）は対象:
   const r = classifySecurityReviewTarget(fixture('pr-1058.diff'));
   assert.equal(r.target, true);
   assert.deepEqual(r.reasons, [
+    'permission_config: plugins/meeting/meeting-notes/SKILL.md',
     'sandbox_boundary: plugins/meeting/scripts/meeting.sh',
     'path_write: plugins/meeting/scripts/meeting.sh',
   ]);
 });
 
-test('[security-review-target] docs だけの diff（#1058 の README / SKILL.md。excludedCommands の設定例を含む）は対象外', () => {
+test('[security-review-target] docs だけの diff（#1058 の README。excludedCommands の設定例を含む）は対象外', () => {
   const diff = fixture('pr-1058-docs-only.diff');
   assert.match(diff, /excludedCommands/, 'fixture が docs の sandbox 設定例を含まない — fixture を見直す');
   assert.deepEqual(classifySecurityReviewTarget(diff), { target: false, reasons: [] });
 });
 
+test('[security-review-target] #1058 の SKILL.md だけの diff は skill 定義の変更として対象', () => {
+  assert.deepEqual(classifySecurityReviewTarget(fixture('pr-1058-skill.diff')), {
+    target: true, reasons: ['permission_config: plugins/meeting/meeting-notes/SKILL.md'],
+  });
+});
+
 test('[security-review-target] CLI は stdin の diff を同じ判定にかけて JSON 1 行を出す', () => {
-  for (const name of ['pr-1058.diff', 'pr-1058-docs-only.diff']) {
+  for (const name of ['pr-1058.diff', 'pr-1058-docs-only.diff', 'pr-1058-skill.diff']) {
     const out = execFileSync('node', [CLI], { input: fixture(name), encoding: 'utf8' });
     assert.equal(out.split('\n').filter(Boolean).length, 1);
     assert.deepEqual(JSON.parse(out), classifySecurityReviewTarget(fixture(name)), name);
@@ -134,10 +142,6 @@ test.each([
   assert.deepEqual(classifySecurityReviewTarget(diff), { target: true, reasons: [reason] });
 });
 
-test('[security-review-target] agents/*.md の権限キーに触れない本文の変更は対象外', () => {
-  assert.deepEqual(classifySecurityReviewTarget(fileDiff('plugins/x/agents/runner.md', ['diff を読んで要約する'])), { target: false, reasons: [] });
-});
-
 // hunk の行（' ' 文脈 / '+' 追加 / '-' 削除 を先頭に付けた行）をそのまま並べた diff
 const hunkDiff = (path, hunkLines, start = 1) => [
   `diff --git a/${path} b/${path}`,
@@ -156,19 +160,23 @@ test('[security-review-target] hunk の中の `+++` / `---` 行はヘッダで�
   assert.deepEqual(classifySecurityReviewTarget(removed), { target: true, reasons: ['sandbox_boundary: src/setup.ts'] });
 });
 
+// agent / command / skill 定義は、frontmatter のどのキーか・本文かを hunk から確定できないので、どの行の変更も対象
 test.each([
   ['複数行の tools: リストに足す', hunkDiff('plugins/x/agents/runner.md', [' ---', ' name: runner', ' tools:', '   - Read', '+  - Write', ' ---'])],
-  ['frontmatter の途中から始まる hunk のリスト行（どのキーの続きか分からない）', hunkDiff('plugins/x/agents/runner.md', ['   - Read', '+  - Bash', ' ---'], 6)],
+  ['YAML コメントを挟んだ tools: リストに足す', hunkDiff('plugins/x/agents/runner.md', [' tools:', ' # 読み取りだけ', '+- Bash'])],
+  ['quote されたキーの tools', hunkDiff('plugins/x/commands/run.md', [' ---', '+"allowed-tools": Bash', ' ---'])],
   ['hooks キーの下を変える', hunkDiff('plugins/x/foo/SKILL.md', [' ---', ' hooks:', '   PreToolUse:', '-    - command: guard.sh', '+    - command: noop.sh', ' ---'])],
-])('[security-review-target] 対象（定義ファイルの権限キーの続き）: %s', (_name, diff) => {
+  ['本文の指示だけを変える', hunkDiff('plugins/x/agents/runner.md', [' ## 手順', ' ', ' - diff を読む', '+- 結果を main に push する'], 20)],
+])('[security-review-target] 対象（agent / command / skill 定義の変更）: %s', (_name, diff) => {
   const r = classifySecurityReviewTarget(diff);
   assert.equal(r.target, true);
   assert.match(r.reasons[0], /^permission_config: plugins\/x\//);
 });
 
-test('[security-review-target] 定義ファイルの本文の箇条書き（見出しの後）は権限キーの続きと見なさず対象外', () => {
-  const diff = hunkDiff('plugins/x/agents/runner.md', [' ## 手順', ' ', ' - diff を読む', '+- 要約を書く'], 20);
-  assert.deepEqual(classifySecurityReviewTarget(diff), { target: false, reasons: [] });
+test('[security-review-target] 名前に test を含む実行スクリプトはテストとして除外しない', () => {
+  for (const path of ['scripts/test.sh', 'scripts/run_tests.sh']) {
+    assert.deepEqual(classifySecurityReviewTarget(fileDiff(path, ['cp "$src" "$dst"'])), { target: true, reasons: [`path_write: ${path}`] }, path);
+  }
 });
 
 test('[security-review-target] reasons は重複なしで上限件数まで', () => {
