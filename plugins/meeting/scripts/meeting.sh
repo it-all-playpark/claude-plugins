@@ -701,7 +701,7 @@ PY
 #                           保存先の配下にあることを確かめ、1 つでも外れたら (全文が無いときも) 何も書かずに非 0
 note_tool() {
   python3 -I - "$@" <<'PY'
-import json, os, re, sys
+import json, os, re, stat, sys
 
 def unq(v):
     return v.strip().strip("\"'")
@@ -792,14 +792,33 @@ def checked(path, allowed):
         sys.exit(f"meeting: {path} は議事録の保存先 ({', '.join(allowed)}) の外です")
     return real
 
-def write(path, text, nofollow=False):
-    # set-names は確かめたあとで symlink に差し替えられても、その先を書かない
-    if nofollow:
-        f = os.fdopen(os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW), "w", encoding="utf-8")
-    else:
-        f = open(path, "w", encoding="utf-8")
-    with f:
-        f.write(text)
+def open_checked(path, allowed):
+    """checked で確かめた realpath を / から 1 要素ずつ O_NOFOLLOW でたどって開き、(realpath, file) を返す。
+    確かめたあとで途中のディレクトリや最後の要素を symlink に差し替えられても、許可外のファイルを開かない
+    (O_NOFOLLOW は最後の要素にしか効かないので、パスを開き直さず dir_fd でたどる)。読み書きはこの 1 つの fd で行う。"""
+    real = checked(path, allowed)
+    parts = real.strip("/").split("/")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for p in parts[:-1]:
+            nxt = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        ffd = os.open(parts[-1], os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    except OSError as e:
+        sys.exit(f"meeting: {path} を開けません (確かめたあとで差し替えられた可能性があります): {e}")
+    finally:
+        os.close(fd)
+    if not stat.S_ISREG(os.fstat(ffd).st_mode):
+        os.close(ffd)
+        sys.exit(f"meeting: {path} が通常のファイルではありません")
+    return real, os.fdopen(ffd, "r+", encoding="utf-8")
+
+def rewrite(f, text):
+    f.seek(0)
+    f.truncate()
+    f.write(text)
+    f.close()
 
 def set_names(root, note, spec, allowed=None):
     """allowed (set-names) があれば、書く前に議事録と全文を checked で確かめ、1 つでも外れたら何も書かない。
@@ -818,8 +837,10 @@ def set_names(root, note, spec, allowed=None):
 
     if strict:
         allowed = [os.path.realpath(a) for a in allowed]
-        note = checked(note, allowed)
-    fm_lines, body = split_note(open(note, encoding="utf-8").read())
+        note, note_f = open_checked(note, allowed)
+    else:
+        note_f = open(note, "r+", encoding="utf-8")
+    fm_lines, body = split_note(note_f.read())
     out, transcript, transcript_path, left = [], None, None, []
     for line in fm_lines:
         k, _, v = line.partition(":")
@@ -847,16 +868,18 @@ def set_names(root, note, spec, allowed=None):
     elif transcript:
         path = transcript if transcript.endswith(".md") else transcript + ".md"
         path = os.path.join(root, os.path.expanduser(path))
+    path_f = None
     if strict and path:
-        path = checked(path, allowed)
+        path, path_f = open_checked(path, allowed)
 
-    write(note, "\n".join(["---", *out, "---"]) + "\n" + sub(body), strict)
+    rewrite(note_f, "\n".join(["---", *out, "---"]) + "\n" + sub(body))
     print(f"✓ {note}")
     missing = False
     if path:
-        if os.path.isfile(path):
-            text = open(path, encoding="utf-8").read()
-            write(path, sub(text), strict)
+        if path_f is None and os.path.isfile(path):
+            path_f = open(path, "r+", encoding="utf-8")
+        if path_f is not None:
+            rewrite(path_f, sub(path_f.read()))
             print(f"✓ {path}")
         else:
             print(f"! 全文が見つかりません: {path}", file=sys.stderr)
