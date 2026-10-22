@@ -21,7 +21,9 @@
 #   meeting play <DIR> <話者ラベル>     その話者の声を約 5 秒再生する (自分 は mic.wav から)
 #   meeting name [DIR]                  議事録の未確定の話者 (unresolved_speakers) に名前を入れる
 #                                       DIR 省略時は未確定の話者が残る最新の録音
-#   meeting ls                          録音一覧
+#   meeting set-names <DIR> <話者A=名前,...>
+#                                       議事録と全文の話者ラベルを置き換える (claude は起動しない。sandbox の外で動かす入口)
+#   meeting ls                         録音一覧
 #
 # 設定ファイル ${XDG_CONFIG_HOME:-~/.config}/meeting/config.json (meeting setup が書く。手で編集してもよい)。
 # meeting / transcribe.py / meeting-rec (常駐) が起動のたびに読むので、変えても meeting install は要らない:
@@ -686,15 +688,20 @@ PY
 
 # 議事録 = frontmatter の recording: が録音 DIR を指す Markdown。output_dir を変えても前の議事録を見失わないよう、
 # 探索は root 配下を全部見て、output_dir が root の外 (Drive の同期フォルダ等) ならそこも見る (notes_roots)
-#   outdir <base>           skill-config の output_dir (既定 meetings) を base 相対で絶対パスにして出す
+#   outdir [--global] <base>
+#                           skill-config の output_dir (既定 meetings) を base 相対で絶対パスにして出す。
+#                           --global はグローバルの ~/.config/skills/config.json だけを読む
 #   find <DIR|""> <root>... DIR の議事録 (DIR が空なら unresolved_speakers が残る最新の録音の議事録) を
 #                           「議事録<TAB>録音 DIR<TAB>未確定のラベル (, 区切り)」で出す。無ければ何も出さない
 #   set <root> <議事録> <話者A=田中,...>
 #                           議事録と全文 (frontmatter の transcript_path:、無ければ root 相対の transcript:) の
 #                           ラベルを置き換え、unresolved_speakers から外す。全文が見つからなければ非 0
+#   set-names <root> <議事録> <話者A=田中,...> <許可する保存先>...
+#                           set と同じ。ただし書く前に議事録と全文がシンボリックリンクでなく realpath が許可する
+#                           保存先の配下にあることを確かめ、1 つでも外れたら (全文が無いときも) 何も書かずに非 0
 note_tool() {
   python3 -I - "$@" <<'PY'
-import json, os, re, sys
+import json, os, re, stat, sys
 
 def unq(v):
     return v.strip().strip("\"'")
@@ -738,11 +745,12 @@ def notes(root):
             if fm.get("recording"):
                 yield path, unq(fm["recording"]), labels_of(fm.get("unresolved_speakers", ""))
 
-def output_dir(base):
+def output_dir(base, project=True):
     """SKILL.md と同じ順 (git root の skill-config.json → .claude/skill-config.json → グローバル) で
-    最初に見つかった meeting-notes セクションの output_dir を、base 相対で絶対パスにする。"""
+    最初に見つかった meeting-notes セクションの output_dir を、base 相対で絶対パスにする。
+    project=False はグローバルだけを読む (set-names: base とその git root は sandbox から書ける)。"""
     top, d = None, os.path.abspath(base)
-    while True:
+    while project:
         if os.path.exists(os.path.join(d, ".git")):
             top = d
             break
@@ -772,19 +780,75 @@ def find(roots, want=None):
         path, rec, labels = hits[-1]
         print(f"{path}\t{rec}\t{','.join(labels)}")
 
-def set_names(root, note, spec):
+def checked(path, allowed):
+    """set-names: path がシンボリックリンクでない既存のファイルで、realpath が allowed のどれかの配下にあれば
+    realpath を返す。外れたら何も書かずに非 0 で終わる。"""
+    if os.path.islink(path):
+        sys.exit(f"meeting: {path} がシンボリックリンクです")
+    if not os.path.isfile(path):
+        sys.exit(f"meeting: {path} がありません")
+    real = os.path.realpath(path)
+    if not any(real.startswith(os.path.join(a, "")) for a in allowed):
+        sys.exit(f"meeting: {path} は議事録の保存先 ({', '.join(allowed)}) の外です")
+    return real
+
+def open_checked(path, allowed):
+    """checked で確かめた realpath を / から 1 要素ずつ O_NOFOLLOW でたどって開き、(realpath, file) を返す。
+    確かめたあとで途中のディレクトリや最後の要素を symlink に差し替えられても、許可外のファイルを開かない
+    (O_NOFOLLOW は最後の要素にしか効かないので、パスを開き直さず dir_fd でたどる)。読み書きはこの 1 つの fd で行う。"""
+    real = checked(path, allowed)
+    parts = real.strip("/").split("/")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for p in parts[:-1]:
+            nxt = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        ffd = os.open(parts[-1], os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    except OSError as e:
+        sys.exit(f"meeting: {path} を開けません (確かめたあとで差し替えられた可能性があります): {e}")
+    finally:
+        os.close(fd)
+    st = os.fstat(ffd)
+    if not stat.S_ISREG(st.st_mode):
+        os.close(ffd)
+        sys.exit(f"meeting: {path} が通常のファイルではありません")
+    # ハードリンクは realpath が保存先の中でも、保存先の外のファイルと同じ中身を指せる
+    if st.st_nlink != 1:
+        os.close(ffd)
+        sys.exit(f"meeting: {path} にハードリンクがあります")
+    return real, os.fdopen(ffd, "r+", encoding="utf-8")
+
+def rewrite(f, text):
+    f.seek(0)
+    f.truncate()
+    f.write(text)
+    f.close()
+
+def set_names(root, note, spec, allowed=None):
+    """allowed (set-names) があれば、書く前に議事録と全文を checked で確かめ、1 つでも外れたら何も書かない。
+    全文の transcript_path: は絶対パスだけを受け付ける (相対だと cwd 基準になる)。"""
+    strict = allowed is not None
     names = {}
     for pair in spec.split(","):
         k, sep, v = pair.partition("=")
         if sep and k.strip() and v.strip():
             names[k.strip()] = v.strip()
     if not names:
-        sys.exit("meeting: --set には 話者A=田中,話者B=佐藤 の形で渡してください")
+        sys.exit("meeting: " + ("話者は" if strict else "--set には") + " 話者A=田中,話者B=佐藤 の形で渡してください")
+    # 改行を含む名前は frontmatter に行を足せる
+    if strict and any(ord(c) < 0x20 or c == "\x7f" for kv in names.items() for c in "".join(kv)):
+        sys.exit("meeting: 話者のラベル・名前に改行などの制御文字は使えません")
     # 話者A を置き換えるとき 話者AB や 話者27 の頭を巻き込まない
     pat = re.compile("(?:" + "|".join(re.escape(k) for k in sorted(names, key=len, reverse=True)) + ")(?![A-Za-z0-9])")
     sub = lambda s: pat.sub(lambda m: names[m.group(0)], s)
 
-    fm_lines, body = split_note(open(note, encoding="utf-8").read())
+    if strict:
+        allowed = [os.path.realpath(a) for a in allowed]
+        note, note_f = open_checked(note, allowed)
+    else:
+        note_f = open(note, "r+", encoding="utf-8")
+    fm_lines, body = split_note(note_f.read())
     out, transcript, transcript_path, left = [], None, None, []
     for line in fm_lines:
         k, _, v = line.partition(":")
@@ -801,24 +865,29 @@ def set_names(root, note, spec):
             out.append(line)
             continue
         out.append(sub(line))
-    with open(note, "w", encoding="utf-8") as f:
-        f.write("\n".join(["---", *out, "---"]) + "\n" + sub(body))
-    print(f"✓ {note}")
 
     # transcript: は作成時の cwd 相対なので、作成時の絶対パス (transcript_path:) があればそちらを使う。
     # 無い議事録は root 相対で探す
     path = None
     if transcript_path:
         path = os.path.expanduser(transcript_path)
+        if strict and not os.path.isabs(path):
+            sys.exit(f"meeting: transcript_path: が絶対パスではありません: {transcript_path}")
     elif transcript:
         path = transcript if transcript.endswith(".md") else transcript + ".md"
         path = os.path.join(root, os.path.expanduser(path))
+    path_f = None
+    if strict and path:
+        path, path_f = open_checked(path, allowed)
+
+    rewrite(note_f, "\n".join(["---", *out, "---"]) + "\n" + sub(body))
+    print(f"✓ {note}")
     missing = False
     if path:
-        if os.path.isfile(path):
-            text = open(path, encoding="utf-8").read()
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(sub(text))
+        if path_f is None and os.path.isfile(path):
+            path_f = open(path, "r+", encoding="utf-8")
+        if path_f is not None:
+            rewrite(path_f, sub(path_f.read()))
             print(f"✓ {path}")
         else:
             print(f"! 全文が見つかりません: {path}", file=sys.stderr)
@@ -831,9 +900,11 @@ cmd = sys.argv[1]
 if cmd == "find":
     find(sys.argv[3:], sys.argv[2] or None)
 elif cmd == "outdir":
-    output_dir(sys.argv[2])
+    output_dir(sys.argv[-1], project=sys.argv[2] != "--global")
 elif cmd == "set":
     set_names(*sys.argv[2:5])
+elif cmd == "set-names":
+    set_names(*sys.argv[2:5], allowed=sys.argv[5:])
 PY
 }
 
@@ -867,6 +938,30 @@ cmd_name() {
   fi
   command -v claude >/dev/null || die "claude (Claude Code) がありません"
   cd "$root" && claude --add-dir "$dir" ${ext:+--add-dir "$ext"} "/meeting-notes $dir --name-unresolved $note"
+}
+
+# name --set と同じ置き換えを、sandbox の外で動かしてよい形で行う (sandbox.excludedCommands に "meeting set-names *"
+# だけを登録する)。録音 DIR・cwd・notes_dir は sandbox から書けるので、そこに置かれたものに外の権限で書く先を
+# 決めさせない: root は notes_dir だけ ($PWD に落ちない)、output_dir はグローバルの skill-config だけから読み
+# (cwd や notes_dir の git root の skill-config.json は sandbox から書ける)、claude は起動しない。
+# 議事録と全文は書く前に symlink でなく realpath が notes_dir / output_dir の配下にあることを確かめる
+cmd_set_names() {
+  [[ $# -eq 2 && -n "$1" && -n "$2" ]] || die "使い方: meeting set-names <DIR> <話者A=名前,話者B=名前>"
+  local dir="${1%/}" spec="$2"
+  [[ -n "$NOTES_DIR" ]] || die "設定ファイルに notes_dir がありません (meeting setup --notes-dir DIR)"
+  local root ext found note labels
+  root="$(cd "$NOTES_DIR" && pwd -P)" || die "notes_dir がありません ($NOTES_DIR)"
+  ext="$(note_tool outdir --global "$root")" || die "議事録の保存先を解決できません"
+  case "$ext/" in "$root"/*) ext="" ;; esac
+  [[ -z "$ext" || -d "$ext" ]] || ext=""
+  found="$(note_tool find "$dir" "$root" ${ext:+"$ext"})"
+  [[ -n "$found" ]] || die "$dir の議事録が $root${ext:+ / $ext} にありません (frontmatter の recording: で探します)"
+  IFS=$'\t' read -r note dir labels <<< "$found"
+  if [[ -z "$labels" ]]; then
+    echo "未確定の話者はありません: $note"
+    return 0
+  fi
+  note_tool set-names "$root" "$note" "$spec" "$root" ${ext:+"$ext"}
 }
 
 cmd_ls() {
@@ -907,6 +1002,7 @@ case "$sub" in
   notes) cmd_notes "$@" ;;
   play) cmd_play "$@" ;;
   name) cmd_name "$@" ;;
+  set-names) cmd_set_names "$@" ;;
   ls) cmd_ls ;;
   -h|--help|help) usage ;;
   *) usage; exit 2 ;;

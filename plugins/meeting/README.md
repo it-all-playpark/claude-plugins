@@ -150,6 +150,7 @@ meeting notes                         # 最新の録音から議事録（設定�
 meeting transcribe <DIR> --num-speakers 3 --prompt "固有名詞, 社内用語"
 meeting play <DIR> 話者A              # その話者の声を約 5 秒再生（自分 は mic.wav から）
 meeting name                          # 未確定の話者が残る最新の議事録に「この発言は誰？」で名前を入れる
+meeting set-names <DIR> 話者A=田中    # その録音の議事録と全文のラベルを置き換える（claude は起動しない）
 meeting ls
 ```
 
@@ -191,8 +192,29 @@ meeting ls
 }
 ```
 
-Claude Code の sandbox を使っている場合、`meeting name` は Bash から議事録を書き換えるので、`output_dir` を
-sandbox の書き込み許可（`sandbox.filesystem.allowWrite`）に入れておく。
+Claude Code の sandbox を使っている場合、名前の後入れ（`/meeting-notes --name-unresolved`）は Bash の
+`meeting set-names <DIR> "話者A=田中,..."` で議事録と全文を書き換える。保存先を sandbox の書き込み許可に入れる代わりに、
+このコマンドだけを sandbox の外で動かす:
+
+```json
+{
+  "sandbox": {
+    "excludedCommands": ["meeting set-names *"]
+  }
+}
+```
+
+`meeting set-names` は sandbox から書ける場所（録音 DIR・cwd・議事録）に置かれたものに書き込み先を決めさせない:
+
+- 書くのは `notes_dir` と `output_dir` の配下（realpath で比べる）だけ。議事録の `transcript_path:` / `transcript:` が
+  その外を指す（絶対パス・`..`・シンボリックリンク経由）か、議事録・全文がシンボリックリンクなら、どれも書かずに失敗する
+- `notes_dir` は `meeting` の設定ファイルから、`notes_dir` の外の `output_dir` はグローバルの
+  `~/.config/skills/config.json` からだけ読む。cwd や `notes_dir` の git root の `skill-config.json` は読まず、
+  `notes_dir` が無ければ cwd では探さずに失敗する。この 2 つの設定ファイルは sandbox の書き込み許可に入れない
+- claude を起動しない
+
+`"meeting name *"` は登録しない。`meeting name` は claude を起動し、cwd や `notes_dir` の `skill-config.json` で
+書き込み先が決まる。
 
 ## Whisper を Groq で処理する
 
