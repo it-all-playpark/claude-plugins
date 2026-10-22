@@ -371,6 +371,7 @@ async function failOpenAgent(prompt, opts) {
 // Adversarial Opener の「能動的に探せ」指示と相まって、安定コードに新しい主観的 major を捻り出しうる）。
 // orchestrator 側で churn だけを殺す（ゲートは堅いまま）:
 //   1. 既出 findings を pr-reviewer に渡し「対応済み・新規 critical/major のみ・蒸し返し禁止」を指示
+//      （critical 後に戻した full review だけは critical に掛けない。priorFindingsBlock）
 //   2. 同一 topic が REVIEW_STUCK 回出たら stuck と判定（fingerprint を JS 側で突合）→ status:'stuck' で人間へ
 //   3. fix の applied:false を検出したら status:'fix_failed' で即座に人間へエスカレーション
 //      （無言で MAX 回燃やさない。現状この返り値は捨てられていた）
@@ -550,6 +551,23 @@ function reviewDeltaBlock({ shaPrev, shaNow }) {
   return `delta_range: ${range}\n`
     + `\`git diff ${range}\` が fix delta。既出 findings が delta で解消されたかの確認と、`
     + `delta 内の新規 critical/major のみ報告せよ。PR 全 diff の再読は不要。\n`;
+}
+
+function priorFindingsBlock({ prior, reason }) {
+  if (!prior.length) return '';
+  const head = `既出 findings（前ラウンドまでに指摘済み。author は対応済みのはず）:\n${JSON.stringify(prior)}\n`;
+  if (reason === 'critical_in_full_review') {
+    return head
+      + `この round は前の full review が critical を返したため PR 全 diff を読み直す full review。`
+      + `**critical は既出 findings と関係なく**、PR 全 diff のどこにあるものも報告せよ（既出と別観点のものも含む）。`
+      + `major は新規のもののみ報告し、前ラウンドで対応済み・却下済みの論点の蒸し返しと`
+      + `別観点の上乗せ（moving target）は禁止。既出問題を再提起する場合は既出と同じ topic 文字列を`
+      + `必ず再利用せよ（orchestrator が topic で stuck を突合する）。`;
+  }
+  return head
+    + `**新規の critical/major のみ報告**せよ。前ラウンドで対応済み・却下済みの論点の蒸し返し、`
+    + `別観点の上乗せ（moving target）は禁止。既出問題を再提起する場合は既出と同じ topic 文字列を`
+    + `必ず再利用せよ（orchestrator が topic で stuck を突合する）。`;
 }
 
 function parseShortstatLines(text) {
@@ -1944,12 +1962,7 @@ for (i = 1; i <= MAX; i++) {
     + `summary は結論 1-2 文に留めよ。検証した根拠（テスト実行・diff 照合・edge case 確認等）は verification_evidence に 1 項目 1 文の配列で列挙せよ。\n`
     // remerge round も読む範囲が PR 全体ではないので、AC は delta round と同じく既出 findings の解消確認にだけ使わせる
     + acceptanceCriteriaBlock(ACCEPTANCE_CRITERIA, { scope: roundScope === 'full' ? 'full' : 'delta' })
-    + (prior.length
-        ? `既出 findings（前ラウンドまでに指摘済み。author は対応済みのはず）:\n${JSON.stringify(prior)}\n`
-          + `**新規の critical/major のみ報告**せよ。前ラウンドで対応済み・却下済みの論点の蒸し返し、`
-          + `別観点の上乗せ（moving target）は禁止。既出問題を再提起する場合は既出と同じ topic 文字列を`
-          + `必ず再利用せよ（orchestrator が topic で stuck を突合する）。`
-        : '')
+    + priorFindingsBlock({ prior, reason: reviewScope.reason })
   remergeSha = null
   // review#i と ci-check#i を parallel() で同時に起動する。ci-check は review の結果に依存しないので、
   // review の待ち時間に隠す（1 round の spawn は review + ci-check の 2 本のまま）。両 thunk は throw

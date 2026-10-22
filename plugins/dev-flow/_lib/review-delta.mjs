@@ -78,6 +78,33 @@ export function reviewDeltaBlock({ shaPrev, shaNow }) {
 }
 
 /**
+ * review#i（i ≥ 2）の prompt へ連結する既出 findings ブロック。既出 findings が空なら空文字。
+ * reason が critical_in_full_review の round（critical 後に戻した full review）だけは、critical に
+ * 「別観点の上乗せ禁止」を掛けず PR 全 diff の critical を既出 findings と関係なく報告させる（既出を見せて
+ * 上乗せを禁じると、読む範囲が PR 全体でも新しい critical を出し渋りうる）。major の蒸し返し・上乗せの禁止
+ * （moving target 対策）と topic 再利用（stuck 突合）はどの round でも残す。
+ * @param {{prior: unknown[], reason: string|null}} p
+ *   prior: 前 round までの累積 findings / reason: resolveReviewScope の reason（delta / remerge round は null）
+ * @returns {string}
+ */
+export function priorFindingsBlock({ prior, reason }) {
+  if (!prior.length) return '';
+  const head = `既出 findings（前ラウンドまでに指摘済み。author は対応済みのはず）:\n${JSON.stringify(prior)}\n`;
+  if (reason === 'critical_in_full_review') {
+    return head
+      + `この round は前の full review が critical を返したため PR 全 diff を読み直す full review。`
+      + `**critical は既出 findings と関係なく**、PR 全 diff のどこにあるものも報告せよ（既出と別観点のものも含む）。`
+      + `major は新規のもののみ報告し、前ラウンドで対応済み・却下済みの論点の蒸し返しと`
+      + `別観点の上乗せ（moving target）は禁止。既出問題を再提起する場合は既出と同じ topic 文字列を`
+      + `必ず再利用せよ（orchestrator が topic で stuck を突合する）。`;
+  }
+  return head
+    + `**新規の critical/major のみ報告**せよ。前ラウンドで対応済み・却下済みの論点の蒸し返し、`
+    + `別観点の上乗せ（moving target）は禁止。既出問題を再提起する場合は既出と同じ topic 文字列を`
+    + `必ず再利用せよ（orchestrator が topic で stuck を突合する）。`;
+}
+
+/**
  * `git diff --shortstat A..B` の stdout（1 行）から変更行数（insertions + deletions）を取り出す。
  * 空文字は差分なし = 0。非文字列 / 数値を含まない文字列は null（不明）。
  * @param {unknown} text
