@@ -809,9 +809,14 @@ def open_checked(path, allowed):
         sys.exit(f"meeting: {path} を開けません (確かめたあとで差し替えられた可能性があります): {e}")
     finally:
         os.close(fd)
-    if not stat.S_ISREG(os.fstat(ffd).st_mode):
+    st = os.fstat(ffd)
+    if not stat.S_ISREG(st.st_mode):
         os.close(ffd)
         sys.exit(f"meeting: {path} が通常のファイルではありません")
+    # ハードリンクは realpath が保存先の中でも、保存先の外のファイルと同じ中身を指せる
+    if st.st_nlink != 1:
+        os.close(ffd)
+        sys.exit(f"meeting: {path} にハードリンクがあります")
     return real, os.fdopen(ffd, "r+", encoding="utf-8")
 
 def rewrite(f, text):
@@ -831,6 +836,9 @@ def set_names(root, note, spec, allowed=None):
             names[k.strip()] = v.strip()
     if not names:
         sys.exit("meeting: " + ("話者は" if strict else "--set には") + " 話者A=田中,話者B=佐藤 の形で渡してください")
+    # 改行を含む名前は frontmatter に行を足せる
+    if strict and any(ord(c) < 0x20 or c == "\x7f" for kv in names.items() for c in "".join(kv)):
+        sys.exit("meeting: 話者のラベル・名前に改行などの制御文字は使えません")
     # 話者A を置き換えるとき 話者AB や 話者27 の頭を巻き込まない
     pat = re.compile("(?:" + "|".join(re.escape(k) for k in sorted(names, key=len, reverse=True)) + ")(?![A-Za-z0-9])")
     sub = lambda s: pat.sub(lambda m: names[m.group(0)], s)

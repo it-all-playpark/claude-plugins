@@ -1193,6 +1193,54 @@ add_transcript_path() {
     done
 }
 
+@test "set-names は議事録・全文が保存先の外のファイルとハードリンクならどのファイルも書き換えずに非 0 で終わる" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    notes="$BATS_TEST_TMPDIR/notes"
+    note="$notes/meetings/2026-01-01-a.md"
+    tx="$notes/meetings/transcripts/2026-01-01-a.md"
+    outside="$BATS_TEST_TMPDIR/outside"
+    notes_config
+    local f
+    for f in "$note" "$tx"; do
+        rm -rf "$notes" "$outside"
+        write_note 2026-01-01-a "$rec" "話者A"
+        mkdir -p "$outside"
+        mv "$f" "$outside/x.md"
+        ln "$outside/x.md" "$f"
+        cp "$outside/x.md" "$BATS_TEST_TMPDIR/x.orig"
+        cp -R "$notes" "$BATS_TEST_TMPDIR/notes.orig"
+
+        run bash "$SCRIPT" set-names "$rec" "話者A=田中"
+        echo "$f: $output"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"$f にハードリンクがあります"* ]]
+        diff -r "$notes" "$BATS_TEST_TMPDIR/notes.orig"
+        cmp "$outside/x.md" "$BATS_TEST_TMPDIR/x.orig"
+        rm -rf "$BATS_TEST_TMPDIR/notes.orig"
+    done
+}
+
+@test "set-names は話者のラベル・名前に改行があれば何も書かずに非 0 で終わる" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    rec="$MEETING_HOME/2026-01-01_1000-a"
+    write_note 2026-01-01-a "$rec" "話者A"
+    note="$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md"
+    tx="$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
+    cp "$note" "$BATS_TEST_TMPDIR/note.orig"
+    cp "$tx" "$BATS_TEST_TMPDIR/tx.orig"
+    notes_config
+    local spec
+    for spec in $'話者A=田中\nauto_notes: true' $'話者A=田\r中' $'話者A=田\x1b中'; do
+        run bash "$SCRIPT" set-names "$rec" "$spec"
+        echo "$output"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"改行などの制御文字は使えません"* ]]
+        cmp "$note" "$BATS_TEST_TMPDIR/note.orig"
+        cmp "$tx" "$BATS_TEST_TMPDIR/tx.orig"
+    done
+}
+
 @test "set-names は cwd・notes_dir の git root の skill-config.json を探索先・書き込み先に使わず、notes_dir が無ければ cwd に落ちずに非 0 で終わる" {
     command -v python3 >/dev/null 2>&1 || skip "python3 not available"
     global_output_dir "~/Google Drive/議事録"
