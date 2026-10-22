@@ -32,9 +32,11 @@
 #     {tier, codes, url}（codes は HOLD 理由の code。HOLD 以外は []）。marker を持つコメントが無ければ null
 #   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。PR の base branch の CI 所要時間から決める
 #     （ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
-#   security_review: 敵対的 security review の起動時の判定 {target, reasons}。origin/<base>...<PR head> の diff を
+#   security_review: 敵対的 security review の起動時の判定 {target, reasons, reviewer_context_changed}。origin/<base>...<PR head> の diff を
 #     security-review-scope.sh で判定し、全ファイルが許可リストに当たるときだけ target:false。判定できない（ok:false の
-#     早期終端・base 不明・node 不在・取得失敗）ときは target:true
+#     早期終端・base 不明・node 不在・取得失敗）ときは target:true。reviewer_context_changed は diff が reviewer の指示ファイル
+#     （CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変えるか — 判定できたうえで false のときだけ false（workflow は
+#     この決定論の値を run の終わりまで固定する。run 中の判定は LLM の中継を通るので PR の指示文で偽れる）
 #   不明な値は null。ok:false でも exit 0（引数不正のみ exit 2、stdout 空）。
 #
 # GitHub I/O は `gh pr view` と `gh run list`（base branch の成功 run。いずれも読み取り）のみ。push / comment / worktree の削除（この呼び出しで作った
@@ -102,7 +104,7 @@ worktree_removed=false
 prior_devflow="null"
 ci_wait_ceiling_seconds="$CI_WAIT_CEILING_DEFAULT"
 # 敵対的 security review の起動時の判定。判定できるまで（ok:false の早期終端を含む）は対象（fail-closed）
-security_review='{"target":true,"reasons":["not_determined"]}'
+security_review='{"target":true,"reasons":["not_determined"],"reviewer_context_changed":true}'
 error=""
 
 emit() {
@@ -370,11 +372,12 @@ git -C "$WT" clean -fdx -- '.devflow-tmp/.isolation-probe*' >/dev/null 2>&1 || t
 if [[ -n "$base_ref" ]]; then
     scope_out="$(bash "$(dirname "${BASH_SOURCE[0]}")/security-review-scope.sh" "$WT" "origin/${base_ref}" "$head_sha" 2>/dev/null)" || scope_out=""
     if scope_json="$(printf '%s' "$scope_out" | jq -ce '
-        if type == "object" and .ok == true and .target == false then {target: false, reasons: []}
-        else {target: true, reasons: ((.reasons // []) | map(select(type == "string")) | .[:20])} end' 2>/dev/null)"; then
+        (type == "object" and .ok == true and .reviewer_context_changed == false | not) as $ctx
+        | if type == "object" and .ok == true and .target == false then {target: false, reasons: [], reviewer_context_changed: $ctx}
+        else {target: true, reasons: ((.reasons // []) | map(select(type == "string")) | .[:20]), reviewer_context_changed: $ctx} end' 2>/dev/null)"; then
         security_review="$scope_json"
     else
-        security_review='{"target":true,"reasons":["scope_unreadable"]}'
+        security_review='{"target":true,"reasons":["scope_unreadable"],"reviewer_context_changed":true}'
     fi
 fi
 

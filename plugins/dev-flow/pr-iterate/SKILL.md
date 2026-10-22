@@ -52,7 +52,8 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - PR の base branch で直近に成功した CI の所要時間から CI 待ちの上限（秒）を決め、`ci_wait_ceiling_seconds` に載せる
      （dev-flow の nested 起動と同じ求め方。読み取りに失敗したら 300）
    - PR 全体（`origin/<base>...<PR head>`）の diff が敵対的 security review の対象かを決定論の許可リストで判定し、
-     `security_review`（`{target, reasons}`）に載せる。判定できないときは `target:true`
+     `security_review`（`{target, reasons, reviewer_context_changed}`）に載せる。判定できないときは `target:true`・
+     `reviewer_context_changed:true`
 
    結果に応じて分岐する:
 

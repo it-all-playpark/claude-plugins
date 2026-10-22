@@ -1207,10 +1207,10 @@ const SECURITY_REVIEW_SCHEMA = {
 function parseSecurityReviewArg(raw) {
   if (raw == null) return null;
   const reasonsOk = raw.reasons === undefined || (Array.isArray(raw.reasons) && raw.reasons.every((s) => typeof s === 'string'));
-  if (typeof raw !== 'object' || typeof raw.target !== 'boolean' || !reasonsOk) {
-    throw new Error(`pr-iterate: args.security_review が不正形です（target: boolean / reasons: string[]（省略可））: ${JSON.stringify(raw)}`);
+  if (typeof raw !== 'object' || typeof raw.target !== 'boolean' || !reasonsOk || typeof raw.reviewer_context_changed !== 'boolean') {
+    throw new Error(`pr-iterate: args.security_review が不正形です（target: boolean / reasons: string[]（省略可） / reviewer_context_changed: boolean）: ${JSON.stringify(raw)}`);
   }
-  return { target: raw.target, reasons: raw.reasons ?? [] };
+  return { target: raw.target, reasons: raw.reasons ?? [], reviewer_context_changed: raw.reviewer_context_changed };
 }
 
 const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
@@ -1821,6 +1821,9 @@ async function ensureFixCommitted(i, shaPrev) {
 // 公開コメントにも history にも載せない（fix の prompt にだけ渡す）。
 let securityTarget = SECURITY_REVIEW_ARG == null ? true : SECURITY_REVIEW_ARG.target
 if (SECURITY_REVIEW_ARG == null) log('security review: args.security_review が無い — 対象として扱う（fail-closed）')
+// diff が reviewer の指示ファイルを変えるか。起動時の決定論の値（args）と run 中の判定のどれか 1 回でも true なら run の終わりまで
+// true（run 中の判定は PR の worktree を cwd に起動する中継の返り値で、PR が書いた指示文で false に偽れるため、後の判定で戻さない）
+let reviewerContextChanged = SECURITY_REVIEW_ARG?.reviewer_context_changed === true
 let securityStatus = null   // 'cleared' | 'unresolved'（null は LGTM の前の review に到達していない）
 let securityRounds = 0      // security-reviewer の spawn 回数
 let securityCounts = { critical: 0, major: 0, minor: 0 }  // 最後の review の件数
@@ -1867,7 +1870,8 @@ async function securityGate(iteration, round) {
     || !isOutsideWorktree(reviewDir.toLowerCase(), String(isoWt).toLowerCase())) return stop('diff の保存先が PR の worktree の外の絶対パスでない')
   // workflow の agent 起動は cwd を受け付けず security-reviewer は PR の worktree を cwd に起動する。PR が reviewer の session に自動で
   // 読み込まれる指示ファイルを変えると攻撃者の文が判定者に届くので、自動の review では clear にしない（人間が確かめる）
-  if (isReviewerContextChanged(scope)) return stop('PR が security-reviewer に読み込まれる指示ファイル（CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変える')
+  reviewerContextChanged = reviewerContextChanged || isReviewerContextChanged(scope)
+  if (reviewerContextChanged) return stop('PR が security-reviewer に読み込まれる指示ファイル（CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変える')
   securityRounds += 1
   let review = null
   try {

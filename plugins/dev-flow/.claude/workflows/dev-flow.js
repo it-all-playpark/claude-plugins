@@ -6221,6 +6221,8 @@ async function execSecurityFloorPhase(state) {
   const securityReview = {
     target: !isSecurityScopeExempt(secScope),
     reasons: Array.isArray(secScope?.reasons) ? secScope.reasons.filter((s) => typeof s === 'string').slice(0, 20) : [],
+    // diff が reviewer の指示ファイルを変えるか（欠落・取得失敗は変えた扱い）。pr-iterate はこの値を run の終わりまで固定する
+    reviewer_context_changed: isReviewerContextChanged(secScope),
   }
   log(`security-scope: ${securityReview.target ? `対象（${secScope == null ? '取得失敗 — fail-closed' : securityReview.reasons.slice(0, 3).join(' / ') || (secScope.error ?? '理由なし')}）` : '対象外（変更が許可リストだけ）'}`)
   ledger = reconcileDanger(ledger, risk)
@@ -7009,7 +7011,7 @@ const prIterateArgs = () => ({
   // CI 待ちの上限（秒）。dev-flow-prerun が base の CI 所要時間から決めた値（単体起動の pr-iterate-prerun と同じ求め方）
   ci_wait_ceiling_seconds: PRERUN.ci_wait_ceiling_seconds,
   // 敵対的 security review の起動時の判定（Security floor）。pr-iterate は LGTM の前に PR head の diff で判定し直す
-  security_review: { target: state.securityReview.target, reasons: state.securityReview.reasons },
+  security_review: { target: state.securityReview.target, reasons: state.securityReview.reasons, reviewer_context_changed: state.securityReview.reviewer_context_changed },
   ...(CI_AC_INDEXES.length ? { ci_verify: { label: CI_VERIFY.label, checks: CI_VERIFY.checks, wait_ceiling_seconds: CI_VERIFY.wait_ceiling_seconds, ...(LOCAL_VERIFY_DECIDED ? { wait: false } : {}) } } : {}),
   nested: {
     caller: 'dev-flow', cwd: WT, head_ref: state.setup.branch,

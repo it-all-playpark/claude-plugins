@@ -268,7 +268,8 @@ pr-iterate      → CI gate を通り conflict も無い round（LGTM の候補�
                     → critical/major あり → fix#i（dev-runner）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
                       上限まで残れば max_reached）
                     → worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致・
-                      reviewer_context_changed が false でない → status: security_unresolved
+                      reviewer_context_changed が false でない（起動時の args.security_review の決定論の値と run 中の判定の
+                      どれか 1 回でも true なら run の終わりまで true）→ status: security_unresolved
 Merge tier      → 対象（Security floor か pr-iterate のどちらか）かつ pr-iterate が lgtm + security_review.status 'cleared'
                   でなければ HOLD（security_review_unresolved）
 ```

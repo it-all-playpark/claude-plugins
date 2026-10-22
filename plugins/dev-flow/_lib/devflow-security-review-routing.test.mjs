@@ -35,7 +35,12 @@ const codes = (result) => JSON.parse(JSON.stringify(result.merge_tier_hold_reaso
 test('[devflow-security-review] (a) Security floor の対象判定を nested pr-iterate の args.security_review で渡す', async () => {
   const { workflowCalls, calls } = await run({ iterate: { status: 'lgtm', fixes_applied: 0, security_review: sr('cleared', { critical: 0 }) } });
   assert.equal(workflowCalls.length, 1);
-  assert.deepEqual(JSON.parse(JSON.stringify(workflowCalls[0].opts.security_review)), { target: true, reasons: ['not_allowlisted:1'] });
+  assert.deepEqual(JSON.parse(JSON.stringify(workflowCalls[0].opts.security_review)), { target: true, reasons: ['not_allowlisted:1'], reviewer_context_changed: false });
+  // reviewer の指示ファイルを変える diff（と取得失敗）は reviewer_context_changed:true で渡す（pr-iterate が run の終わりまで固定する）
+  for (const scope of [securityScopeResponse({ target: true, head: null, contextChanged: true }), null]) {
+    const changed = await run({ overrides: { 'security-scope': scope }, iterate: { status: 'security_unresolved', fixes_applied: 0, security_review: sr('unresolved') } });
+    assert.equal(changed.workflowCalls[0].opts.security_review.reviewer_context_changed, true, JSON.stringify(scope));
+  }
   const scope = calls.find((c) => c.label === 'security-scope');
   assert.equal(scope.agentType, 'dev-flow:dev-runner-haiku-ro');
   assert.ok(scope.prompt.endsWith('\nsecurity-review-scope /tmp/wt origin/main --working-tree'), scope.prompt);

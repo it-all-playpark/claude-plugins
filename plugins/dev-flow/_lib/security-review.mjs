@@ -40,13 +40,16 @@ export const SECURITY_REVIEW_SCHEMA = {
 
 // args.security_review（起動時の判定。dev-flow の Security floor / pr-iterate-prerun の出力）。
 // 無ければ null（呼び出し側が対象として扱う — 判定できない入力は対象）。不正形は明示 throw（legacy fallback なし）。
+// reviewer_context_changed は起動時に決定論で取った「diff が reviewer の指示ファイルを変えるか」。run 中の判定は PR の
+// worktree を cwd に起動する中継（LLM）を通るので、PR が書いた指示文でその値を偽れる。起動時の値を run の終わりまで固定し、
+// 一度 true なら clear にしない。
 export function parseSecurityReviewArg(raw) {
   if (raw == null) return null;
   const reasonsOk = raw.reasons === undefined || (Array.isArray(raw.reasons) && raw.reasons.every((s) => typeof s === 'string'));
-  if (typeof raw !== 'object' || typeof raw.target !== 'boolean' || !reasonsOk) {
-    throw new Error(`pr-iterate: args.security_review が不正形です（target: boolean / reasons: string[]（省略可））: ${JSON.stringify(raw)}`);
+  if (typeof raw !== 'object' || typeof raw.target !== 'boolean' || !reasonsOk || typeof raw.reviewer_context_changed !== 'boolean') {
+    throw new Error(`pr-iterate: args.security_review が不正形です（target: boolean / reasons: string[]（省略可） / reviewer_context_changed: boolean）: ${JSON.stringify(raw)}`);
   }
-  return { target: raw.target, reasons: raw.reasons ?? [] };
+  return { target: raw.target, reasons: raw.reasons ?? [], reviewer_context_changed: raw.reviewer_context_changed };
 }
 
 const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
