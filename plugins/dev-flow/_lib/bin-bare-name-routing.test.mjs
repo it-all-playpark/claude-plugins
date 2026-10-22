@@ -5,7 +5,7 @@
 // AC1: 絶対パス literal が 0 箇所。
 // AC2: workflow が使う call site が bare 名で配線されている。
 // [first-token]: bash 前置の bare 名呼び出しや拡張子付き呼び出しの残存が無い。
-// [bin]: workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 25 本に分割一致する。
+// [bin]: workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 24 本に分割一致する。
 //
 // AC1 の検査文字列自体が禁止パターンの literal を含むと自己矛盾するため、
 // join() で組み立てる（_lib/*.mjs は本テストファイル自身も走査対象に含むため）。
@@ -35,7 +35,6 @@ const BARE = [
   'redgreen-verify',
   'secfloor-classify',
   'structural-classify',
-  'veridelta-archive',
   'worktree-diff-hash',
   'worktree-teardown',
   'journal',
@@ -185,12 +184,12 @@ for (const [name, src] of [
   });
 }
 
-// ---- [bin] workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 25 本に分割一致する ----
+// ---- [bin] workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 24 本に分割一致する ----
 
-test('[bin-bare-name-routing][bin] plugins/dev-flow/bin は BARE から journal を除いた 25 名に完全一致する', () => {
+test('[bin-bare-name-routing][bin] plugins/dev-flow/bin は BARE から journal を除いた 24 名に完全一致する', () => {
   const actual = readdirSync(binDir).sort();
   const expected = BARE.filter((name) => name !== 'journal').sort();
-  assert.deepEqual(actual, expected, `plugins/dev-flow/bin の内容が期待 25 名と一致しない: actual=${JSON.stringify(actual)}`);
+  assert.deepEqual(actual, expected, `plugins/dev-flow/bin の内容が期待 24 名と一致しない: actual=${JSON.stringify(actual)}`);
 });
 
 test("[bin-bare-name-routing][bin] plugins/playpark-core/bin は ['journal'] に完全一致する", () => {

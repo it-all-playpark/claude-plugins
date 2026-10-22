@@ -359,10 +359,7 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
   `agent()` が opts.cwd 指定で throw した。pass でも canary は report を出すだけで、起動形は変えない。
 - **1 issue = 1 PR**。Implement は全 shape で `dev-implementer` を単一 worktree に 1 spawn する（parallel fan-out / `pipeline()` は持たない）。
 - **merge は手動** (LGTM 後にユーザーが merge)。
-- worktree の後片付けは `_shared/scripts/worktree-teardown.sh <worktree-path>` を使う
-  (`git worktree remove` 直打ちは `.veridelta/runs/*.json` の red→green 検証証跡を失う)。
-  archive の fail-open 仕様・sandbox 実行文脈の制約は同スクリプトと
-  `_shared/scripts/veridelta-archive.sh` のヘッダコメントが正典。
+- worktree の後片付けは `_shared/scripts/worktree-teardown.sh <worktree-path>` を使う。
 - **bg-isolation guard と isolation probe**: bg 起動セッションが呼び出し元 cwd を worktree へ
   isolate しないまま dev-flow / pr-iterate を起動すると、harness の bg-isolation guard が
   subagent の Write/Edit を共有 checkout への書き込みとして拒否する。dev-flow は Setup 末尾の analyze

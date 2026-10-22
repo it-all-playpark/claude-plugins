@@ -35,9 +35,6 @@ __pycache__/
 # veridelta run records (redgreen-verify.sh の vdelta run 経路の出力)
 .veridelta/
 
-# veridelta archived records (worktree-teardown.sh が worktree 削除前に退避)
-.veridelta-archive/
-
 # dev-flow ephemeral handoff files (must not be committed)
 .devflow-tmp/
 

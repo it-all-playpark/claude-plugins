@@ -32,7 +32,7 @@ dev-flow 本体・dev-flow-health（frontmatter の paths）を触るときだ�
 - model 既定は frontmatter。override は green-fix（`'sonnet'`）と pr-iterate の fix（`dev-runner` に `'opus'`）のみ。品質ゲート agent には渡さない — gate の判定モデルを credit で黙って変えない
 - merge は常に人間（全 tier）
 - 後方互換 scaffolding を作らない — out-of-enum は明示 error
-- worktree の後片付けは `worktree-teardown`（`git worktree remove` 直打ちは veridelta 証跡を失う）
+- worktree の後片付けは `worktree-teardown`
 
 ## ゲート（fail-closed / fail-safe の理由）
 
