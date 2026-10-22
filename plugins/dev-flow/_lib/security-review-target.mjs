@@ -14,7 +14,8 @@
 //   - path_write（追加行）: ファイルを書く・開いて書き換える・リンクを作る API。書き込み先のパスが sandbox から
 //     書ける入力（cwd・設定・議事録の frontmatter 等）で決まると、sandbox の外の権限で任意の場所を書ける
 //   - permission_config（agent / command / skill 定義）: `agents/*.md` / `commands/*.md` / `SKILL.md` の frontmatter の
-//     権限キー（tools / allowed-tools / permissionMode 等）の行を足す・消す変更
+//     権限キー（tools / allowed-tools / permissionMode / hooks / mcpServers 等）の行と、その下のリスト・インデントの
+//     行を足す・消す変更
 //   - unparsed_path: `diff --git` のヘッダからパスを読めない file（判定できない入力を対象外に倒さない）
 // 上の 2 つの permission_config を除き、docs（.md / .mdx / .txt / .rst、docs/ 配下）とテスト（*.test.* / *.spec.* /
 // .bats / tests/ 配下等）には規則を当てない — どちらも sandbox の外で実行される入口ではない。sandbox_boundary は
@@ -45,10 +46,38 @@ const PATH_WRITE_RES = [
   /\b(tee|cp|mv|ln)\s[^#\n]*"?\$\{?[A-Za-z_]/,
 ];
 
-// agent / command / skill の定義は .md でも frontmatter で権限（使える tool・permission mode）を決める。
-// 権限のキーの行に触れた変更は docs として除外しない
+// agent / command / skill の定義は .md でも frontmatter で権限（使える tool・permission mode・起動する hook / MCP）を
+// 決める。権限のキーの行と、その下のリスト・インデントの行に触れた変更は docs として除外しない
 const PLUGIN_DEF_PATH_RE = /(^|\/)(agents|commands)\/[^/]+\.md$|(^|\/)SKILL\.md$/;
-const PERMISSION_KEY_RE = /^\s*(tools|allowed-tools|allowedTools|disallowedTools|disallowed-tools|permissionMode|permission-mode)\s*:/;
+const PERMISSION_KEYS = new Set(['tools', 'allowed-tools', 'allowedTools', 'disallowedTools', 'disallowed-tools',
+  'permissionMode', 'permission-mode', 'hooks', 'mcpServers', 'mcp-servers']);
+
+// hunk の行を順にたどり、変更行（追加・削除）が権限のキーかその続き（インデント・リストの行）に当たるかを見る。
+// 続きの行はそれより前に出たトップレベルのキーに属する。hunk の先頭でどのキーの続きか分からない行は権限の行として
+// 扱う（frontmatter の途中から始まる hunk を対象外に倒さない）
+function touchesPermissionKey(hunks) {
+  for (const lines of hunks) {
+    let key; // undefined = 分からない / null = 権限と無関係 / string = 直前のトップレベルのキー
+    for (const { kind, text } of lines) {
+      let relevant;
+      const top = /^([A-Za-z][\w-]*)\s*:/.exec(text);
+      if (/^---\s*$/.test(text) || /^#/.test(text)) {
+        key = null;
+        relevant = false;
+      } else if (top) {
+        key = top[1];
+        relevant = PERMISSION_KEYS.has(key);
+      } else if (/^(\s+\S|-\s)/.test(text)) {
+        relevant = key === undefined || (key != null && PERMISSION_KEYS.has(key));
+      } else {
+        if (text.trim() !== '') key = null;
+        relevant = false;
+      }
+      if (kind !== ' ' && relevant) return true;
+    }
+  }
+  return false;
+}
 
 const DOC_PATH_RE = /\.(md|mdx|txt|rst)$|(^|\/)docs\//i;
 const TEST_PATH_RE = /(^|\/|\.|_)(test|spec)s?([./_]|$)|\.bats$|(^|\/)tests?\/|(^|\/)test-fixtures\//i;
@@ -94,30 +123,44 @@ function headerPath(rest) {
   return m ? m[1] : null;
 }
 
-// unified diff を file ごとの { path, added: string[], removed: string[] } に分ける。path は新しい側
+// unified diff を file ごとの { path, added: string[], removed: string[], hunks } に分ける。path は新しい側
 // （`+++ b/<path>`）、削除された file は `diff --git a/<path> b/<path>` の b 側。`git diff --no-index /dev/null <file>`
-// の新規 file も同じ形。読めないヘッダの file は path: null（判定できないので対象に倒す）
+// の新規 file も同じ形。読めないヘッダの file は path: null（判定できないので対象に倒す）。
+// `--- ` / `+++ ` をヘッダとして読むのは `diff --git` から最初の `@@` までだけ。hunk の中は先頭 1 文字で分ける
+// （`++ x` を足した行は diff 上 `+++ x` になる。ヘッダと読むと path が書き換わり、その行も判定から漏れる）
 function splitDiff(diffText) {
   const files = [];
   let cur = null;
+  let hunk = null;
   for (const line of String(diffText ?? '').split('\n')) {
     if (line.startsWith('diff --git ')) {
-      cur = { path: headerPath(line.slice('diff --git '.length)), raw: line, added: [], removed: [] };
+      cur = { path: headerPath(line.slice('diff --git '.length)), raw: line, added: [], removed: [], hunks: [] };
       files.push(cur);
+      hunk = null;
       continue;
     }
     if (cur == null) continue;
-    if (line.startsWith('+++ ')) {
-      const target = line.slice(4);
-      if (target !== '/dev/null') {
-        const p = unquoteGitPath(target);
-        cur.path = p != null && p.startsWith('b/') ? p.slice(2) : null;
+    if (line.startsWith('@@')) {
+      hunk = [];
+      cur.hunks.push(hunk);
+      continue;
+    }
+    if (hunk == null) {
+      if (line.startsWith('+++ ')) {
+        const target = line.slice(4);
+        if (target !== '/dev/null') {
+          const p = unquoteGitPath(target);
+          cur.path = p != null && p.startsWith('b/') ? p.slice(2) : null;
+        }
       }
       continue;
     }
-    if (line.startsWith('--- ')) continue;
-    if (line.startsWith('+')) cur.added.push(line.slice(1));
-    else if (line.startsWith('-')) cur.removed.push(line.slice(1));
+    const kind = line[0];
+    if (kind !== '+' && kind !== '-' && kind !== ' ') continue;
+    const text = line.slice(1);
+    hunk.push({ kind, text });
+    if (kind === '+') cur.added.push(text);
+    else if (kind === '-') cur.removed.push(text);
   }
   return files;
 }
@@ -128,7 +171,7 @@ export function classifySecurityReviewTarget(diffText) {
     const r = `${rule}: ${path}`;
     if (!reasons.includes(r)) reasons.push(r);
   };
-  for (const { path, raw, added, removed } of splitDiff(diffText)) {
+  for (const { path, raw, added, removed, hunks } of splitDiff(diffText)) {
     if (path == null) {
       push('unparsed_path', raw);
       continue;
@@ -136,7 +179,7 @@ export function classifySecurityReviewTarget(diffText) {
     const changed = [...added, ...removed];
     // 権限の設定は docs・テストの除外より先に見る（hooks/ 配下の .md・agents/*.md の frontmatter）
     if (PERMISSION_CONFIG_PATH_RE.test(path)) push('permission_config', path);
-    if (PLUGIN_DEF_PATH_RE.test(path) && changed.some((l) => PERMISSION_KEY_RE.test(l))) push('permission_config', path);
+    if (PLUGIN_DEF_PATH_RE.test(path) && touchesPermissionKey(hunks)) push('permission_config', path);
     if (isDocOrTestPath(path)) continue;
     // sandbox / 権限の設定は、足す変更だけでなく消す変更（deny を外す等）も境界を動かす
     if (changed.some((l) => SANDBOX_BOUNDARY_RE.test(l))) push('sandbox_boundary', path);

@@ -134,6 +134,39 @@ test('[security-review-target] agents/*.md の権限キーに触れない本文�
   assert.deepEqual(classifySecurityReviewTarget(fileDiff('plugins/x/agents/runner.md', ['diff を読んで要約する'])), { target: false, reasons: [] });
 });
 
+// hunk の行（' ' 文脈 / '+' 追加 / '-' 削除 を先頭に付けた行）をそのまま並べた diff
+const hunkDiff = (path, hunkLines, start = 1) => [
+  `diff --git a/${path} b/${path}`,
+  `--- a/${path}`,
+  `+++ b/${path}`,
+  `@@ -${start},9 +${start},9 @@`,
+  ...hunkLines,
+].join('\n');
+
+test('[security-review-target] hunk の中の `+++` / `---` 行はヘッダではなく追加行・削除行として判定する', () => {
+  // `++ x` を足した行は diff 上 `+++ x`。ヘッダと読むと path が書き換わり、後続の追加行も別 file 扱いになる
+  const added = hunkDiff('bin/a.sh', [' context', '+++ b/docs/x.md', '+mv "$a" "$b"']);
+  assert.deepEqual(classifySecurityReviewTarget(added), { target: true, reasons: ['path_write: bin/a.sh'] });
+  // `-- excludedCommands` を消した行は diff 上 `--- excludedCommands`。削除行として sandbox_boundary に当てる
+  const removed = hunkDiff('src/setup.ts', [' context', '--- excludedCommands: ["x"]']);
+  assert.deepEqual(classifySecurityReviewTarget(removed), { target: true, reasons: ['sandbox_boundary: src/setup.ts'] });
+});
+
+test.each([
+  ['複数行の tools: リストに足す', hunkDiff('plugins/x/agents/runner.md', [' ---', ' name: runner', ' tools:', '   - Read', '+  - Write', ' ---'])],
+  ['frontmatter の途中から始まる hunk のリスト行（どのキーの続きか分からない）', hunkDiff('plugins/x/agents/runner.md', ['   - Read', '+  - Bash', ' ---'], 6)],
+  ['hooks キーの下を変える', hunkDiff('plugins/x/foo/SKILL.md', [' ---', ' hooks:', '   PreToolUse:', '-    - command: guard.sh', '+    - command: noop.sh', ' ---'])],
+])('[security-review-target] 対象（定義ファイルの権限キーの続き）: %s', (_name, diff) => {
+  const r = classifySecurityReviewTarget(diff);
+  assert.equal(r.target, true);
+  assert.match(r.reasons[0], /^permission_config: plugins\/x\//);
+});
+
+test('[security-review-target] 定義ファイルの本文の箇条書き（見出しの後）は権限キーの続きと見なさず対象外', () => {
+  const diff = hunkDiff('plugins/x/agents/runner.md', [' ## 手順', ' ', ' - diff を読む', '+- 要約を書く'], 20);
+  assert.deepEqual(classifySecurityReviewTarget(diff), { target: false, reasons: [] });
+});
+
 test('[security-review-target] reasons は重複なしで上限件数まで', () => {
   const many = Array.from({ length: SECURITY_REVIEW_REASONS_MAX + 5 }, (_, k) => fileDiff(`bin/s${k}.sh`, ['mv "$a" "$b"', 'mv "$c" "$d"'])).join('\n');
   const r = classifySecurityReviewTarget(many);

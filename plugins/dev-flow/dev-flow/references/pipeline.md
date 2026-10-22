@@ -57,7 +57,8 @@ handoff の `skill` キーは `'dev-flow'` のまま据え置く（集計連続�
 **security review（信頼境界をまたぐ PR だけ）**: 対象かどうかは LLM に判定させず、`_lib/security-review-target.mjs` の
 `classifySecurityReviewTarget` が unified diff から決定論で決める（CLI は `_lib/scripts/security-review-target.mjs`）。
 規則は `permission_config`（`.claude/settings*.json`・`hooks/`・`.githooks/`・`.husky/` のパスと、`agents/*.md`・
-`commands/*.md`・`SKILL.md` の frontmatter の権限キーの行を足す・消す変更）・`sandbox_boundary`（追加行か削除行が
+`commands/*.md`・`SKILL.md` の frontmatter の権限キー — tools / allowed-tools / permissionMode / hooks / mcpServers 等 —
+の行とその下のリスト・インデントの行を足す・消す変更。hunk の先頭でどのキーの続きか分からない行も含める）・`sandbox_boundary`（追加行か削除行が
 `excludedCommands` 等の sandbox / 権限設定のキーに触れる）・`path_write`（追加行がファイルを書く・開いて書き換える・
 リンクを作る API）・`unparsed_path`（`diff --git` のヘッダからパスを読めない。`core.quotePath` の C-quote は戻して
 読む）で、`permission_config` 以外は docs とテストに当てない。判定入力は 2 経路で同じ関数を通る:
