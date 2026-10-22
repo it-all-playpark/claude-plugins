@@ -100,7 +100,12 @@ try {
       const body = git(['cat-file', 'blob', e.oid]).toString('utf8')
       return e.mode === '120000' ? { link: body } : { text: body }
     }
-    return reviewerImportClosure(roots, read, root)
+    // path をディレクトリとする配下のファイル（ディレクトリへの symlink の先を closure が展開する）
+    const list = (p) => {
+      const prefix = `${String(p).toLowerCase()}/`
+      return [...entries.entries()].filter(([k]) => k.startsWith(prefix)).map(([, e]) => e.path)
+    }
+    return reviewerImportClosure(roots, read, root, list)
   })
   const scope = securityReviewScope({ patch: patchBuf.toString('utf8'), names, imports })
   let reviewDir = null

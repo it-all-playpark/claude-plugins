@@ -118,7 +118,9 @@ function resolveRepoPath(p, dir, root) {
 //   { text }（通常ファイルの本文）/ { link }（symlink の指す先。link のディレクトリから解決する）/ null（その rev に無い）
 // を返し、ある筈のものを読めないときは throw する（呼び出し側が対象に倒す — 読めない import 先の先を黙って飛ばさない）。
 // 大文字小文字だけが違うパスの解決は read 側が持つ（macOS の FS は区別しないが git の tree は区別する）。
-export function reviewerImportClosure(roots, read, root = null) {
+// list(path) はその rev で path をディレクトリとする配下のファイル（repo 相対）。read が null のパスがディレクトリ
+// （`.claude` → `evil/` の先等）なら配下を全部たどる — 配下の指示ファイルの import と、配下の symlink を取りこぼさないため。
+export function reviewerImportClosure(roots, read, root = null, list = null) {
   const seen = new Set(roots.map((p) => p.toLowerCase()));
   const imported = new Set();
   const queue = [...roots];
@@ -128,9 +130,10 @@ export function reviewerImportClosure(roots, read, root = null) {
     if (++steps > MAX_IMPORT_STEPS) throw new Error('import のたどりが上限を超えた');
     const from = queue.shift();
     const entry = read(from);
-    if (entry == null) continue;
     let found;
-    if (typeof entry.link === 'string') {
+    if (entry == null) {
+      found = list == null ? [] : list(from);
+    } else if (typeof entry.link === 'string') {
       // symlink の先は import の書き方ではなくパスそのものとして解決する。repo の外を指す link は先を確かめられないので、
       // 黙って捨てずに判定できないとして throw する
       const p = resolveRepoPath(entry.link, String(from).split('/').slice(0, -1), root);
