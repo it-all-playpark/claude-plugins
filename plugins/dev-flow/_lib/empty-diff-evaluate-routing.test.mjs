@@ -368,7 +368,7 @@ test('[empty-diff] (P-3) iterate status=fix_failed + history → HOLD / iterate_
   assert.ok(journalCall?.prompt?.includes('"iterate_status":"fix_failed"'), `(P-3) telemetry に iterate_status が無い: ${journalCall?.prompt?.slice(0, 500)}`);
   const post = calls.find((c) => c.label === 'post-summary');
   assert.ok(post, '(P-3) post-summary が呼ばれていない');
-  const holdCodes = post.prompt.match(/<!-- dev-flow:HOLD codes=([a-z_,]*) -->/)?.[1];
+  const holdCodes = post.prompt.match(/<!-- dev-flow:HOLD codes=([a-z_,]*) head=[0-9a-f]{40} -->/)?.[1];
   assert.ok(holdCodes != null, '(P-3) post-summary に HOLD marker が無い');
   assert.ok(holdCodes.split(',').includes('iterate_non_lgtm'), `(P-3) HOLD marker の codes に iterate_non_lgtm が無い: ${holdCodes}`);
   assert.ok(post.prompt.includes('src/wired-by-history.ts'), '(P-3) post-summary に iterateHistory 末尾 round の file パスが無い（iterateHistory / iterateIterations の配線切れ）');

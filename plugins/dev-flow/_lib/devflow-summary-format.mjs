@@ -174,6 +174,8 @@ function resolvedCell(v) {
  * @param {{target:boolean, status:string, rounds?:number, critical?:number, major?:number, minor?:number}|null|undefined} [opts.securityReview] -
  *   敵対的 security review の結果（issue #1063）。security_review_unresolved の「現状」に回数と件数だけを出す — 指摘の本文
  *   （攻撃経路）は公開コメントに載せない（表示専用）
+ * @param {string|null|undefined} [opts.headSha] - merge tier の結論を出した PR head の commit sha（merge-tier-facts の headRefOid）。
+ *   40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる（issue #1065）
  * @returns {string}
  */
 export function buildDevflowSummaryBody({
@@ -218,6 +220,7 @@ export function buildDevflowSummaryBody({
   localVerify,
   conflictAutoresolve,
   securityReview,
+  headSha,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -1093,7 +1096,10 @@ export function buildDevflowSummaryBody({
   const holdCodes = mergeTier === 'HOLD'
     ? ` codes=${(holdReasons || []).map((hr) => hr && hr.code).filter((c) => typeof c === 'string').join(',')}`
     : '';
-  lines.push(`<!-- dev-flow:${mergeTier}${holdCodes} -->`);
+  // head は結論を出した PR head。pr-iterate-prerun が今の PR head と比べ、食い違えば単体 pr-iterate が「この結論は今の head に
+  // 当てはまらない」コメントを足す（head の無い marker は食い違い扱い）
+  const markerHead = typeof headSha === 'string' && /^[0-9a-f]{40}$/i.test(headSha.trim()) ? ` head=${headSha.trim().toLowerCase()}` : '';
+  lines.push(`<!-- dev-flow:${mergeTier}${holdCodes}${markerHead} -->`);
 
   return lines.join('\n');
 }

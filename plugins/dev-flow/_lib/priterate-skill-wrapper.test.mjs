@@ -50,6 +50,13 @@ test('[priterate-skill-wrapper] Workflow の args に prerun の prior_devflow �
   assert.ok(args.includes('prior_devflow: <prior_devflow>'), `Workflow の args に prior_devflow が無い: ${args}`);
 });
 
+test('[priterate-skill-wrapper] Workflow の args に prerun の prior_summary を渡し、再 review 中コメントの意味を書く（issue #1065）', () => {
+  const launch = steps.slice(steps.indexOf("Workflow({ name: 'dev-flow:pr-iterate-run'"));
+  const args = launch.slice(0, launch.indexOf('} })'));
+  assert.ok(args.includes('prior_summary: <prior_summary>'), `Workflow の args に prior_summary が無い: ${args}`);
+  assert.ok(steps.includes('の結論はこの head に当てはまらない') && steps.includes('merge の根拠にしない'), '再 review 中コメントの意味が書かれていない');
+});
+
 test('[priterate-skill-wrapper] Workflow の args に prerun の ci_wait_ceiling_seconds を渡す（単体起動も base の CI 所要時間から決めた上限で待つ。issue #1046）', () => {
   const launch = steps.slice(steps.indexOf("Workflow({ name: 'dev-flow:pr-iterate-run'"));
   const args = launch.slice(0, launch.indexOf('} })'));

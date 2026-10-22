@@ -447,6 +447,62 @@ comment_json() {
     echo "$output" | jq -e '.ok == true and has("prior_devflow") and .prior_devflow == null'
 }
 
+@test "(5h2) dev-flow marker に head が載っていても prior_devflow の tier / codes を読む" {
+    write_pr_fixture "$HEAD_SHA" "[$(comment_json "<!-- dev-flow:HOLD codes=escalate,ci_checks_failed head=${HEAD_SHA} -->" "https://github.com/acme/skills/pull/5#issuecomment-1")]"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.prior_devflow == {tier: "HOLD", codes: ["escalate", "ci_checks_failed"], url: "https://github.com/acme/skills/pull/5#issuecomment-1"}'
+}
+
+# ---- 最後の終端サマリーの head と今の PR head の食い違い（prior_summary。issue #1065） ----
+
+@test "(5h3) 最後の終端サマリーの head が今の PR head と違えば prior_summary.head_mismatch は true" {
+    local old_head="0123456789abcdef0123456789abcdef01234567" devflow iterate comments
+    devflow="$(comment_json "<!-- dev-flow:REVIEW head=${HEAD_SHA} -->" "https://github.com/acme/skills/pull/5#issuecomment-1")"
+    # 本文中に引用された marker ではなく、最後のコメントの末尾の marker を採る
+    iterate="$(comment_json $'引用: `<!-- pr-iterate:stuck:2 -->`\n---\n'"<!-- pr-iterate:lgtm:1 head=${old_head} -->" "https://github.com/acme/skills/pull/5#issuecomment-2")"
+    comments="$(jq -cn --argjson a "$devflow" --argjson b "$iterate" '[$a, $b]')"
+    write_pr_fixture "$HEAD_SHA" "$comments"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --arg old "$old_head" '.ok == true and .prior_summary == {source: "pr-iterate", url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: $old, head_mismatch: true}'
+}
+
+@test "(5h4) 最後の終端サマリーの head が今の PR head と一致すれば head_mismatch は false" {
+    local iterate devflow comments
+    iterate="$(comment_json "<!-- pr-iterate:lgtm:1 head=0123456789abcdef0123456789abcdef01234567 -->" "https://github.com/acme/skills/pull/5#issuecomment-1")"
+    devflow="$(comment_json "<!-- gate_policy: llm-major-advisory -->"$'\n'"<!-- dev-flow:HOLD codes=escalate head=${HEAD_SHA} -->" "https://github.com/acme/skills/pull/5#issuecomment-2")"
+    comments="$(jq -cn --argjson a "$iterate" --argjson b "$devflow" '[$a, $b]')"
+    write_pr_fixture "$HEAD_SHA" "$comments"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --arg head "$HEAD_SHA" '.prior_summary == {source: "dev-flow", url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: $head, head_mismatch: false}'
+}
+
+@test "(5h5) marker に head が無い終端サマリーは head_sha:null・head_mismatch:true" {
+    write_pr_fixture "$HEAD_SHA" "[$(comment_json $'## PR #5 — pr-iterate 終了レポート\n<!-- pr-iterate:lgtm:1 -->' "https://github.com/acme/skills/pull/5#issuecomment-1")]"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.prior_summary == {source: "pr-iterate", url: "https://github.com/acme/skills/pull/5#issuecomment-1", head_sha: null, head_mismatch: true}'
+
+    write_pr_fixture "$HEAD_SHA" "[$(comment_json '<!-- dev-flow:AUTO -->' "https://github.com/acme/skills/pull/5#issuecomment-2")]"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.prior_summary == {source: "dev-flow", url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: null, head_mismatch: true}'
+}
+
+@test "(5h6) 終端サマリーの marker を持つコメントが無ければ prior_summary は null" {
+    write_pr_fixture "$HEAD_SHA" "[$(comment_json 'LGTM っぽい人のコメント' "https://github.com/acme/skills/pull/5#issuecomment-1")]"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and has("prior_summary") and .prior_summary == null'
+}
+
 # ---- CI 待ちの上限（ci_wait_ceiling_seconds。issue #1046） ----
 # 上限の求め方（p90 + 60 秒・300〜900 秒・5 件未満は 300）は ci-wait-ceiling.bats が見る。ここは配線だけ。
 

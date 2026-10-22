@@ -240,7 +240,7 @@ test('[merge-tier-sec-clearance] シナリオ1: PR#16 再現 — cleared:true+ev
   // clearance 解消の返り値 routing 側の証拠: post-summary prompt の tier marker が REVIEW
   // （HOLD ではない）+ journal-log prompt の telemetry JSON の merge_tier が返り値と一致
   assert.ok(
-    summaryPrompts[0].includes('<!-- dev-flow:REVIEW -->'),
+    summaryPrompts[0].includes(`<!-- dev-flow:REVIEW head=${'a'.repeat(40)} -->`),
     `post-summary prompt に '<!-- dev-flow:REVIEW -->' marker が含まれるべき。body:\n${summaryPrompts[0]}`,
   );
   assert.ok(

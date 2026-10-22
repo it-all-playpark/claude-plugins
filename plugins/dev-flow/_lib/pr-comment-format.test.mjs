@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { buildTerminalSummaryBody } from './pr-comment-format.mjs';
+import { buildTerminalSummaryBody, buildRereviewNoticeBody } from './pr-comment-format.mjs';
 import { mdCell } from './md-cell.mjs';
 globalThis.mdCell = mdCell;
 
@@ -173,6 +173,30 @@ test('buildTerminalSummaryBody: 末尾マーカーが /<!-- pr-iterate:(lgtm|stu
       status + ': マーカーが完全一致で含まれる (AC-3)',
     );
   }
+});
+
+test('buildTerminalSummaryBody: issue #1065 — 末尾マーカーに結論を出した head sha が head=<sha> で載り、40 桁 hex 以外は載せない', () => {
+  const sha = 'ABCDEF0123456789abcdef0123456789ABCDEF01';
+  const base = { pr: 55, status: 'lgtm', iterations: 2, lastDecision: 'approve', lastSummary: 'ok', history: [] };
+  const body = buildTerminalSummaryBody({ ...base, headSha: sha });
+  assert.equal(body.split('\n').at(-1), `<!-- pr-iterate:lgtm:2 head=${sha.toLowerCase()} -->`);
+  for (const bad of [null, undefined, '', 'abc1234', 'z'.repeat(40)]) {
+    const b = buildTerminalSummaryBody({ ...base, headSha: bad });
+    assert.equal(b.split('\n').at(-1), '<!-- pr-iterate:lgtm:2 -->', `headSha=${JSON.stringify(bad)} は marker に head を載せない`);
+  }
+});
+
+test('buildRereviewNoticeBody: issue #1065 — 今の head と、古いサマリーの URL の結論がこの head に当てはまらないことを書く', () => {
+  const head = 'b'.repeat(40);
+  const url = 'https://github.com/acme/skills/pull/5#issuecomment-2';
+  const body = buildRereviewNoticeBody({ pr: 5, headSha: head, priorSummary: { source: 'pr-iterate', url, head_sha: 'a'.repeat(40) } });
+  assert.ok(body.includes(`head \`${head}\` で再 review 中。${url} の結論`), body);
+  assert.ok(body.includes('この head に当てはまらない'), body);
+  assert.ok(body.includes(`head \`${'a'.repeat(40)}\` に対する結論`), '古いサマリーの head を書く');
+  assert.ok(!/<!-- (dev-flow|pr-iterate):/.test(body), '終端サマリーの marker を持たない（次の prerun が終端サマリーと取り違えない）');
+
+  const noHead = buildRereviewNoticeBody({ pr: 5, headSha: head, priorSummary: { source: 'dev-flow', url: null, head_sha: null } });
+  assert.ok(noHead.includes('（URL 不明） の結論（dev-flow の終端サマリー・head の記録が無い結論）'), noHead);
 });
 
 test('buildTerminalSummaryBody: history 3 round（うち 2 round に blocking 計 3 件）で "#### Iteration" 見出しが存在せず <details> が 1 個だけ・統合テーブルに 反復 列と 3 行が入る (AC-7)', () => {

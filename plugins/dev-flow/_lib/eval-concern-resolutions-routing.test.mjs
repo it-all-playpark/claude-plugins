@@ -254,7 +254,7 @@ test('[eval-concern-resolutions][#626] CONCERN-2 は triaged として解消済�
   const post = sharedCalls.find((c) => c.label === 'post-summary');
   assert.ok(post != null, `label === 'post-summary' の call が見つからない`);
   assert.ok(
-    post.prompt.includes('<!-- dev-flow:REVIEW -->'),
+    post.prompt.includes(`<!-- dev-flow:REVIEW head=${'a'.repeat(40)} -->`),
     `post-summary の prompt に <!-- dev-flow:REVIEW --> marker が無い:\nprompt(先頭2000):\n${post.prompt.slice(0, 2000)}`,
   );
   assert.ok(

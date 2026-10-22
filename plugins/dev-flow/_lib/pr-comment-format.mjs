@@ -163,9 +163,10 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
  *   dev-flow サマリー（pr-iterate-prerun の prior_devflow）。tier が HOLD のときだけ HOLD 理由の回収状況を出す
  * @param {{target: boolean, status: string, rounds: number, critical?: number, major?: number, minor?: number}|null} [opts.securityReview] -
  *   敵対的 security review の結果（pr-iterate の返り値 security_review）。件数だけを 1 行出す（null なら出さない）
+ * @param {string|null} [opts.headSha] - この結論を出した PR head の commit sha。40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる
  * @returns {string}
  */
-export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, securityReview = null }) {
+export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, securityReview = null, headSha = null }) {
   const DECISION_EMOJI = { 'approve': '✅', 'request-changes': '🔴', 'comment': '💬' };
   const lines = [];
   const priorHold = priorDevflow != null && priorDevflow.tier === 'HOLD'
@@ -297,7 +298,39 @@ export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision,
   lines.push('');
   lines.push('---');
   lines.push('*このコメントは pr-iterate により自動生成されました。*');
-  lines.push(`<!-- pr-iterate:${status}:${iterations} -->`);
+  // head は pr-iterate-prerun が「この結論が今の PR head に当てはまるか」を比べる材料（head の無い marker は食い違い扱い）
+  lines.push(`<!-- pr-iterate:${status}:${iterations}${markerHead(headSha)} -->`);
 
   return lines.join('\n');
+}
+
+const TERMINAL_HEAD_SHA_RE = /^[0-9a-f]{40}$/i;
+
+function markerHead(headSha) {
+  return typeof headSha === 'string' && TERMINAL_HEAD_SHA_RE.test(headSha.trim()) ? ` head=${headSha.trim().toLowerCase()}` : '';
+}
+
+/**
+ * 単体 pr-iterate が review を始める前に投稿する「再 review 中」コメントの本文（issue #1065）。
+ * PR の最後の終端サマリーが今の head と別の head に対する結論のとき、そのサマリーを見て merge されないよう、
+ * 古いサマリーは編集・削除せず（PR 上の証跡を残す）このコメントを足して、古い結論が今の head に当てはまらないことを示す。
+ * @param {object} opts
+ * @param {number|string} opts.pr - PR 番号
+ * @param {string} opts.headSha - 今の PR head の commit sha
+ * @param {{source: string, url: string|null, head_sha: string|null}} opts.priorSummary - pr-iterate-prerun の prior_summary
+ * @returns {string}
+ */
+export function buildRereviewNoticeBody({ pr, headSha, priorSummary }) {
+  const url = priorSummary.url ?? '（URL 不明）';
+  const priorHead = priorSummary.head_sha ? `head \`${priorSummary.head_sha}\` に対する結論` : 'head の記録が無い結論';
+  return [
+    `## PR #${pr} — pr-iterate 再 review 中`,
+    '',
+    `head \`${headSha}\` で再 review 中。${url} の結論（${mdCell(priorSummary.source)} の終端サマリー・${priorHead}）はこの head に当てはまらない。`,
+    '',
+    'この head に対する結論は、この後に載る pr-iterate の終了レポート。それまで古いサマリーを根拠に merge しない。',
+    '',
+    '---',
+    '*このコメントは pr-iterate により自動生成されました。*',
+  ].join('\n');
 }
