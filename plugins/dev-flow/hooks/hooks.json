@@ -27,6 +27,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pretool-security-reviewer-read-scope.sh\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [

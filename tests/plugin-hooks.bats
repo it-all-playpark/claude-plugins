@@ -112,8 +112,8 @@ PLUGIN_NAMES=(dev-flow playpark-core)
 
 # --- 4. dev-flow: 参照集合・event/matcher 配線 ------------------------------
 
-@test "dev-flow の参照 rel 集合が計画どおり 4 hook に完全一致する" {
-    expected=$'hooks/pretool-bash-inline-commit-gate.sh\nhooks/pretool-bash-issue-create-guard.sh\nhooks/pretool-inline-edit-guard.sh\nhooks/stop-devflow-telemetry.sh'
+@test "dev-flow の参照 rel 集合が計画どおり 5 hook に完全一致する" {
+    expected=$'hooks/pretool-bash-inline-commit-gate.sh\nhooks/pretool-bash-issue-create-guard.sh\nhooks/pretool-inline-edit-guard.sh\nhooks/pretool-security-reviewer-read-scope.sh\nhooks/stop-devflow-telemetry.sh'
     actual="$(plugin_root_refs dev-flow)"
     [ "$actual" = "$expected" ]
 }
@@ -124,10 +124,10 @@ PLUGIN_NAMES=(dev-flow playpark-core)
     [ "$output" = "1" ]
 }
 
-@test "dev-flow の .hooks.PreToolUse[].matcher 集合が Bash と Edit|Write である" {
+@test "dev-flow の .hooks.PreToolUse[].matcher 集合が Bash と Edit|Write と Read|Grep|Glob である" {
     run jq -r '[.hooks.PreToolUse[].matcher] | sort | join(",")' "$(hooks_json_path dev-flow)"
     [ "$status" -eq 0 ]
-    [ "$output" = "Bash,Edit|Write" ]
+    [ "$output" = "Bash,Edit|Write,Read|Grep|Glob" ]
 }
 
 # --- 5. playpark-core: 参照集合・配線 ---------------------------------------

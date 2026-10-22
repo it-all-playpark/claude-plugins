@@ -307,7 +307,10 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
   作った一時ディレクトリを作業ディレクトリにし、PR 本文・diff・コード中のコメントをデータとして扱う。品質ゲート agent なので
   `opts.model` を渡さない
 - workflow の `agent()` には cwd を渡せないので、security-reviewer の session の cwd は PR の worktree のまま。reviewer が読む
-  ファイルは prompt と agent 定義で保存先の配下に限り、PR が reviewer の session に自動で読み込まれる指示ファイル
+  ファイルは保存先の配下に限る。保存先の外への Read / Grep / Glob は PreToolUse hook（`hooks/pretool-security-reviewer-read-scope.sh`。
+  入力の `agent_type` が `dev-flow:security-reviewer` のときだけ判定）が拒否する — 許可は対象パスの realpath が basename
+  `dev-flow-security-review-[A-Za-z0-9]{6}` のディレクトリの配下で、そのディレクトリと対象パスが session の cwd の配下でないときだけ。
+  Grep / Glob の `path` 無し・`pattern` / `glob` の絶対パスや `..`・判定できない入力も拒否する。PR が reviewer の session に自動で読み込まれる指示ファイル
   （basename が `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`、または repo 直下の `.claude/` 配下）を変える run は、
   security-scope#i の `reviewer_context_changed` で検出して review を spawn せず `security_unresolved`（人間が確かめる）
 - security-scope の CLI は stdout・stderr に PR 由来の文字列（ファイルパス・git の stderr）を出さない。reasons は固定 code と
