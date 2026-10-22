@@ -16,6 +16,10 @@
 //     「新規なし → approve」へ倒さない。sha_prev === sha_now（fix が commit を積まなかった）も
 //     同じ理由で full に倒す（空 delta を approve の根拠にしない）。
 //   - delta 外の regression は CI / Final reconcile の test 再実行が担当（ゲート境界は不変）。
+//   - full review が critical を返した次の round は sha が揃っていても full に戻す。critical の無い full review を
+//     経るまで delta にしない（delta review は delta 外の新規指摘を出さないので、critical が 1 件出た PR の
+//     残りの critical は以後どの review にも載らない。critical が 1 件出た PR は他にもある前提で扱う）。
+//     判定は reviewer 出力の severity だけで行う（security かどうかの分類・LLM 判定は挟まない）。
 
 const SHA_RE = /^[0-9a-f]{7,40}$/i;
 
@@ -31,19 +35,34 @@ export function isDeltaSha(s) {
 /**
  * review#iteration の diff 範囲を決める。
  *
- * @param {{iteration: number, shaPrev: unknown, shaNow: unknown}} p
+ * @param {{iteration: number, shaPrev: unknown, shaNow: unknown, criticalPending?: boolean}} p
  *   shaPrev: 前 round の review 時点の head sha / shaNow: 現在の head sha（fix 後の ensure-committed が返す）
+ *   criticalPending: full review が critical を返し、まだ critical の無い full review を経ていない（nextCriticalPending）
  * @returns {{scope: 'full'|'delta', range: string|null, reason: string|null}}
- *   reason は full にフォールバックした理由（iteration 1 は null）。呼び出し側が log に出す。
+ *   reason は full にした理由（iteration 1 は null）。呼び出し側が log に出す。
  */
-export function resolveReviewScope({ iteration, shaPrev, shaNow }) {
+export function resolveReviewScope({ iteration, shaPrev, shaNow, criticalPending = false }) {
   if (!(Number(iteration) >= 2)) return { scope: 'full', range: null, reason: null };
+  if (criticalPending === true) return { scope: 'full', range: null, reason: 'critical_in_full_review' };
   if (!isDeltaSha(shaPrev)) return { scope: 'full', range: null, reason: 'sha_prev_unavailable' };
   if (!isDeltaSha(shaNow)) return { scope: 'full', range: null, reason: 'sha_now_unavailable' };
   const prev = shaPrev.trim();
   const now = shaNow.trim();
   if (prev.toLowerCase() === now.toLowerCase()) return { scope: 'full', range: null, reason: 'sha_unchanged' };
   return { scope: 'delta', range: `${prev}..${now}`, reason: null };
+}
+
+/**
+ * round の review 結果から、次 round の criticalPending を決める。full review だけが値を更新する
+ * （critical を 1 件以上返せば true、返さなければ false）。delta / remerge round は読んだ範囲が PR 全体ではないので
+ * 値を変えない — critical の fix を delta review が approve しただけでは pending を解かない。
+ * @param {{pending: boolean, scope: string, blocking: unknown}} p
+ *   blocking: その round で fix の対象にした critical/major（classifyReviewRoute → routeInsideWorktree の後）
+ * @returns {boolean}
+ */
+export function nextCriticalPending({ pending, scope, blocking }) {
+  if (scope !== 'full') return pending === true;
+  return Array.isArray(blocking) && blocking.some((x) => x?.severity === 'critical');
 }
 
 /**
