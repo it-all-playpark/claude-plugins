@@ -380,6 +380,74 @@ describe('host-exec', () => {
     expect(String(r.deny)).toContain('declined')
   })
 
+  /** sudo の拒否理由が、見つからない扱いではなく固定のコマンドに閉じ込める案内になっていることを確かめる */
+  function expectSudoRefusal(r: any, step = '') {
+    const s = String(r.deny)
+    expect(s).toContain(`host-exec: refused (sudo)${step}. Nothing was run.`)
+    expect(s).toContain('confined to a fixed command that takes no arguments')
+    expect(s).toContain(`run it with ${TOOL}`)
+    expect(s).not.toContain('not found')
+  }
+
+  test('先頭が sudo のもの（絶対パス・steps の 2 つ目以降を含む）は、解決できても承認を聞かずに拒否して何も実行しない', async ($, on) => {
+    const asked: string[] = []
+    const ran: string[][] = []
+    const { files } = host(on)
+    files['/usr/bin/sudo'] = '/usr/bin/sudo'
+    answer(on, ['実行する'], asked)
+    stubExits(on, [], ran)
+    for (const argv of [['sudo', 'id'], ['/usr/bin/sudo', '-n', 'true']]) {
+      expectSudoRefusal(await $.tool.call({ tool: TOOL, argv, reason: 'x' } as any))
+    }
+    expectSudoRefusal(await $.tool.call({ tool: TOOL, steps: [['gh', 'repo', 'view'], ['gh', 'pr', 'list'], ['sudo', 'id']], reason: 'x' } as any), ' at step 3')
+    expect(asked.length).toBe(0)
+    expect(ran.length).toBe(0)
+  })
+
+  test('env の変数代入とオプションを飛ばした最初のコマンドが sudo なら、同じく承認を聞かずに拒否する', async ($, on) => {
+    const asked: string[] = []
+    const ran: string[][] = []
+    const { files } = host(on)
+    files['/usr/bin/env'] = '/usr/bin/env'
+    files['/usr/bin/sudo'] = '/usr/bin/sudo'
+    answer(on, ['実行する'], asked)
+    stubExits(on, [], ran)
+    for (const argv of [['env', 'FOO=1', 'sudo', 'id'], ['/usr/bin/env', '-i', '-u', 'A', 'FOO=1', '/usr/bin/sudo', 'id'], ['env', '--', 'sudo', 'id']]) {
+      expectSudoRefusal(await $.tool.call({ tool: TOOL, argv, reason: 'x' } as any))
+    }
+    expectSudoRefusal(await $.tool.call({ tool: TOOL, steps: [['gh', 'repo', 'view'], ['env', 'FOO=1', 'sudo', 'id']], reason: 'x' } as any), ' at step 2')
+    expect(asked.length).toBe(0)
+    expect(ran.length).toBe(0)
+  })
+
+  test('引数に sudo という語があるだけのコマンドは拒否せず承認を聞く', async ($, on) => {
+    const asked: string[] = []
+    const { files } = host(on)
+    files['/usr/bin/git'] = '/usr/bin/git'
+    files['/opt/homebrew/bin/rg'] = '/opt/homebrew/bin/rg'
+    files['/usr/bin/env'] = '/usr/bin/env'
+    answer(on, ['拒否', '拒否', '拒否', '拒否'], asked)
+    for (const argv of [['git', 'commit', '-m', 'sudo を拒否'], ['rg', 'sudo'], ['env', 'FOO=sudo', 'rg', 'sudo'], ['env', '-u', 'sudo', 'git', 'status']]) {
+      const r: any = await $.tool.call({ tool: TOOL, argv, reason: 'x' } as any)
+      expect(String(r.deny)).toContain('declined')
+    }
+    expect(asked.length).toBe(4)
+  })
+
+  test('sudo の拒否は実行ファイルの解決より前に行い、stat が sudo を解決できなくても見つからないではなく sudo の理由を返す', async ($, on) => {
+    const asked: string[] = []
+    const ran: string[][] = []
+    // host() のファイルシステムには sudo が無く、stat は /usr/bin/sudo を ENOENT で返す（root 以外は読めない sudo と同じ）
+    host(on)
+    answer(on, ['実行する'], asked)
+    stubExits(on, [], ran)
+    for (const argv of [['sudo', 'id'], ['/usr/bin/sudo', 'id'], ['env', 'FOO=1', 'sudo', 'id']]) {
+      expectSudoRefusal(await $.tool.call({ tool: TOOL, argv, reason: 'x' } as any))
+    }
+    expect(asked.length).toBe(0)
+    expect(ran.length).toBe(0)
+  })
+
   test('機密を含む出力は止めて、マスクを選べばマスク済みで返す', async ($, on) => {
     const asked: string[] = []
     firstOptions = []
