@@ -1,6 +1,6 @@
 export const meta = {
   name: 'dev-flow-canary',
-  description: 'dev-flow harness capability の read-only canary: schema付きagent/parallel/pipeline/nested workflow/model・effort routing（agent() opts の effort 受理 probe を含む）/pause・resume/direct fs・shell・import を pass/fail/unsupported で構造化出力。repo/git/GitHub state 不変。bridge 撤去は行わない（report のみ）。結果は report_path の JSON を直近世代と比べて読む',
+  description: 'dev-flow harness capability の read-only canary: schema付きagent/parallel/pipeline/nested workflow/model・effort routing（agent() opts の effort 受理 probe・cwd 適用 probe を含む）/pause・resume/direct fs・shell・import を pass/fail/unsupported で構造化出力。repo/git/GitHub state 不変。bridge 撤去は行わない（report のみ）。結果は report_path の JSON を直近世代と比べて読む',
   phases: [
     { title: 'Probe' },
     { title: 'Agents' },
@@ -51,6 +51,15 @@ const ECHO = {
     token: { type: 'string' },
   },
   required: ['ok', 'token'],
+}
+
+const CWD_REPORT = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' },
+    cwd: { type: 'string' },
+  },
+  required: ['ok', 'cwd'],
 }
 
 const WRITE_RESULT = {
@@ -196,6 +205,25 @@ function echoPrompt(token) {
   ].join('\n')
 }
 
+function cwdReportPrompt() {
+  return [
+    '## Objective',
+    '自分の作業ディレクトリ（Bash tool がコマンドを実行するディレクトリ）を報告する。',
+    '',
+    '## Output format',
+    'JSON: {"ok": boolean, "cwd": string}。cwd は `pwd` の生出力を verbatim で入れる（末尾改行は除く）。',
+    '',
+    '## Tools',
+    '実行してよいコマンドは `pwd` の1つのみ（単文。cd 等の前置・連結禁止）。他のコマンド・他の tool は一切使わない。',
+    '',
+    '## Boundary',
+    'ファイルの作成・変更・git 操作・gh コマンドは禁止。read-only probe のみ。',
+    '',
+    '## Token cap',
+    '出力は schema フィールドのみ。',
+  ].join('\n')
+}
+
 function reportWritePrompt(report, targetPath) {
   const json = JSON.stringify(report, null, 2)
   return [
@@ -294,6 +322,26 @@ try {
   agentOptsEffortAccepted = { status: 'unsupported', detail: `agent() が opts.effort 指定で throw: ${e?.message ?? String(e)} — opts 経由の effort 指定は現 harness で受理されない` }
 }
 
+// agent() opts.cwd probe（issue #1070）: repo 外の一時ディレクトリを opts.cwd に渡して 1 回 spawn し、
+// agent が `pwd` で報告した作業ディレクトリが渡した値と一致するかを見る。throw は unsupported、
+// throw せず無視された（既定 cwd のまま）場合は fail。canary は read-only のため一時ディレクトリを
+// 作らず、どの環境にも在る /tmp を使う。macOS の /tmp は /private/tmp への symlink で pwd が実パスを
+// 返し得るため、'/private' 前置の値も一致とみなす。
+const CWD_PROBE_DIR = '/tmp'
+let agentOptsCwdApplied
+try {
+  const cwdProbe = await agent(
+    cwdReportPrompt(),
+    { agentType: 'dev-flow:dev-runner-haiku-ro', schema: CWD_REPORT, label: 'canary:agent-cwd', phase: 'Agents', cwd: CWD_PROBE_DIR },
+  )
+  const reportedCwd = typeof cwdProbe?.cwd === 'string' ? cwdProbe.cwd.trim() : null
+  agentOptsCwdApplied = (reportedCwd === CWD_PROBE_DIR || reportedCwd === '/private' + CWD_PROBE_DIR)
+    ? { status: 'pass', detail: `agent() opts.cwd='${CWD_PROBE_DIR}' で spawn した agent の作業ディレクトリが一致（報告: ${reportedCwd}）` }
+    : { status: 'fail', detail: `agent() は opts.cwd='${CWD_PROBE_DIR}' で throw しなかったが、agent の作業ディレクトリが一致しない（応答: ${JSON.stringify(cwdProbe)}）— opts.cwd は無視されたか別名で受け付けられている` }
+} catch (e) {
+  agentOptsCwdApplied = { status: 'unsupported', detail: `agent() が opts.cwd 指定で throw: ${e?.message ?? String(e)} — opts 経由の cwd 指定は現 harness で受理されない` }
+}
+
 const parTokens = ['A', 'B']
 const parThunks = parTokens.map((t) => () => agent(
   echoPrompt(t),
@@ -387,6 +435,7 @@ const capabilities = [
   { id: 'model_routing', ...modelRouting },
   { id: 'effort_routing', ...effortRouting },
   { id: 'agent_opts_effort_accepted', ...agentOptsEffortAccepted },
+  { id: 'agent_opts_cwd_applied', ...agentOptsCwdApplied },
   { id: 'parallel_fanout', ...parallelFanout },
   { id: 'pipeline_fanout', ...pipelineFanout },
   { id: 'pipeline_failure_semantics', ...pipelineFailureSemantics },

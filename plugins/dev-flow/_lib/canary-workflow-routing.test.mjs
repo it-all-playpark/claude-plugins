@@ -20,6 +20,7 @@ const EXPECTED_CAPABILITY_IDS = [
   'model_routing',
   'effort_routing',
   'agent_opts_effort_accepted',
+  'agent_opts_cwd_applied',
   'parallel_fanout',
   'pipeline_fanout',
   'pipeline_failure_semantics',
@@ -34,7 +35,7 @@ const EXPECTED_CAPABILITY_IDS = [
 //
 // label ごとの既定 happy-path 応答 + overrideMap による上書き（null や別 shape を注入できる）。
 
-function defaultAgentReturn(label) {
+function defaultAgentReturn(label, opts) {
   if (label === 'canary:version') {
     return { ok: true, version: '2.1.99', timestamp_utc: '2026-07-13T00:00:00Z', epoch: '1756700000' };
   }
@@ -43,6 +44,10 @@ function defaultAgentReturn(label) {
   }
   if (label === 'canary:effort-opts') {
     return { ok: true, token: 'EFFORT-OPTS' };
+  }
+  if (label === 'canary:agent-cwd') {
+    // harness が opts.cwd を agent の作業ディレクトリに適用した場合の応答
+    return { ok: true, cwd: opts?.cwd ?? '/repo/worktree' };
   }
   if (label.startsWith('canary:par:')) {
     const token = label.slice('canary:par:'.length);
@@ -66,12 +71,12 @@ function makeAgentStub(overrideMap = {}) {
   const stub = async (prompt, opts) => {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
-    calls.push({ label, agentType });
+    calls.push({ label, agentType, opts, prompt });
     if (Object.prototype.hasOwnProperty.call(overrideMap, label)) {
       const v = overrideMap[label];
       return typeof v === 'function' ? v(prompt, opts) : v;
     }
-    return defaultAgentReturn(label);
+    return defaultAgentReturn(label, opts);
   };
   return { stub, calls };
 }
@@ -188,7 +193,7 @@ test('[canary] happy path: 10 capability が全て enum 内・agent/model/parall
   assert.equal(report.claude_code_version, '2.1.99');
 
   assert.ok(Array.isArray(report.capabilities));
-  assert.equal(report.capabilities.length, 12, 'capabilities は正確に12件であること');
+  assert.equal(report.capabilities.length, 13, 'capabilities は正確に13件であること');
 
   // report.capabilities は vm sandbox（別 realm）内で生成された配列のため、.map()/.sort() を
   // そのまま呼ぶと結果が sandbox realm の Array のままになり、deepStrictEqual が
@@ -196,7 +201,7 @@ test('[canary] happy path: 10 capability が全て enum 内・agent/model/parall
   // host realm の配列へ変換してから比較する。
   const actualIds = Array.from(report.capabilities, (c) => c.id).sort();
   const expectedIds = Array.from(EXPECTED_CAPABILITY_IDS).sort();
-  assert.deepEqual(actualIds, expectedIds, 'capability id set が期待の12個と一致すること');
+  assert.deepEqual(actualIds, expectedIds, 'capability id set が期待の13個と一致すること');
 
   for (const c of report.capabilities) {
     assert.ok(['pass', 'fail', 'unsupported'].includes(c.status), `id=${c.id} の status が enum 内であること (got ${c.status})`);
@@ -325,7 +330,127 @@ test('[canary] agent() が opts.effort 指定で throw する場合 agent_opts_e
   assert.equal(findCap(report, 'parallel_fanout').status, 'pass');
   assert.equal(findCap(report, 'nested_workflow').status, 'pass');
   assert.equal(report.report_path, '/home/u/.claude/logs/dev-flow-canary/canary-1756700000.json');
-  assert.equal(report.capabilities.length, 12);
+  assert.equal(report.capabilities.length, 13);
+});
+
+// ============================================================
+// 4b2. agent() opts.cwd probe — 1 回 spawn・repo 外の一時ディレクトリを渡す・pass / fail / unsupported
+// ============================================================
+
+test('[canary] agent() に opts.cwd（repo 外の一時ディレクトリ）を渡して 1 回 spawn し、報告された作業ディレクトリが一致すれば agent_opts_cwd_applied=pass', async () => {
+  const src = readFileSync(canaryPath, 'utf8');
+  const { ctx, calls } = makeCanarySandbox();
+  const { result, error } = await runCanaryInSandbox(src, ctx);
+
+  assertNoStructuralError(error);
+  assert.ok(result);
+
+  const cwdCalls = calls.filter((c) => c.opts && Object.prototype.hasOwnProperty.call(c.opts, 'cwd'));
+  assert.equal(cwdCalls.length, 1, 'opts.cwd を渡す agent 呼び出しは 1 回だけであること');
+  assert.equal(cwdCalls[0].label, 'canary:agent-cwd');
+  const passedCwd = cwdCalls[0].opts.cwd;
+  assert.equal(typeof passedCwd, 'string');
+  assert.ok(passedCwd.startsWith('/'), `opts.cwd は絶対パスであること (got ${passedCwd})`);
+  const repoTop = join(repoRoot, '..', '..');
+  assert.ok(passedCwd !== repoTop && !passedCwd.startsWith(repoTop + '/'), `opts.cwd は repo の外であること (got ${passedCwd})`);
+  assert.match(passedCwd, /^\/(private\/)?tmp(\/|$)/, 'opts.cwd は一時ディレクトリであること');
+
+  const cap = findCap(result, 'agent_opts_cwd_applied');
+  assert.equal(cap.status, 'pass');
+  assert.ok(cap.detail.includes(passedCwd), 'detail に渡した cwd が記録されること');
+});
+
+test('[canary] macOS で /tmp の実パス /private/tmp が報告された場合も agent_opts_cwd_applied=pass', async () => {
+  const src = readFileSync(canaryPath, 'utf8');
+  const { ctx } = makeCanarySandbox({
+    agentOverrides: {
+      'canary:agent-cwd': (_prompt, opts) => ({ ok: true, cwd: `/private${opts.cwd}\n` }),
+    },
+  });
+  const { result, error } = await runCanaryInSandbox(src, ctx);
+
+  assertNoStructuralError(error);
+  assert.ok(result);
+  assert.equal(findCap(result, 'agent_opts_cwd_applied').status, 'pass');
+});
+
+test('[canary] agent が報告した作業ディレクトリが opts.cwd と一致しない（throw せず無視された）場合 agent_opts_cwd_applied=fail', async () => {
+  const src = readFileSync(canaryPath, 'utf8');
+  const { ctx } = makeCanarySandbox({
+    agentOverrides: {
+      'canary:agent-cwd': { ok: true, cwd: '/home/u/repo/.claude/worktrees/x' },
+    },
+  });
+  const { result, error } = await runCanaryInSandbox(src, ctx);
+
+  assertNoStructuralError(error);
+  assert.ok(result);
+  const cap = findCap(result, 'agent_opts_cwd_applied');
+  assert.equal(cap.status, 'fail');
+  assert.ok(cap.detail.includes('/home/u/repo/.claude/worktrees/x'), 'detail に報告された作業ディレクトリが記録されること');
+});
+
+test('[canary] cwd probe agent が null を返す場合 agent_opts_cwd_applied=fail', async () => {
+  const src = readFileSync(canaryPath, 'utf8');
+  const { ctx } = makeCanarySandbox({ agentOverrides: { 'canary:agent-cwd': null } });
+  const { result, error } = await runCanaryInSandbox(src, ctx);
+
+  assertNoStructuralError(error);
+  assert.ok(result);
+  assert.equal(findCap(result, 'agent_opts_cwd_applied').status, 'fail');
+});
+
+test('[canary] agent() が opts.cwd 指定で throw する場合 agent_opts_cwd_applied=unsupported かつ他 capability・report 生成に影響しない', async () => {
+  const src = readFileSync(canaryPath, 'utf8');
+  const { ctx } = makeCanarySandbox({
+    agentOverrides: {
+      'canary:agent-cwd': () => { throw new Error('unknown option: cwd'); },
+    },
+  });
+  const { result, error } = await runCanaryInSandbox(src, ctx);
+
+  assertNoStructuralError(error);
+  assert.ok(result, 'cwd probe が throw しても report が return されること');
+
+  const report = result;
+  const cap = findCap(report, 'agent_opts_cwd_applied');
+  assert.equal(cap.status, 'unsupported');
+  assert.match(cap.detail, /unknown option: cwd/);
+
+  assert.equal(findCap(report, 'agent_schema').status, 'pass');
+  assert.equal(findCap(report, 'agent_opts_effort_accepted').status, 'pass');
+  assert.equal(findCap(report, 'parallel_fanout').status, 'pass');
+  assert.equal(findCap(report, 'nested_workflow').status, 'pass');
+  assert.equal(report.bridge_sunset.verdict, 'keep-bridges');
+  assert.equal(report.report_path, '/home/u/.claude/logs/dev-flow-canary/canary-1756700000.json');
+  assert.equal(report.capabilities.length, 13);
+});
+
+test('[canary] cwd probe は read-only agent（dev-runner-haiku-ro）に pwd だけを許し、ファイル作成・変更・git/gh を禁じる', async () => {
+  const src = readFileSync(canaryPath, 'utf8');
+  const { ctx, calls } = makeCanarySandbox();
+  const { result, error } = await runCanaryInSandbox(src, ctx);
+
+  assertNoStructuralError(error);
+  assert.ok(result);
+
+  const cwdCalls = calls.filter((c) => c.label === 'canary:agent-cwd');
+  assert.equal(cwdCalls.length, 1);
+  const { agentType, prompt } = cwdCalls[0];
+  // 書き込み可能な dev-runner-haiku（Write を持つ）ではなく read-only バリアントで spawn する
+  assert.equal(agentType, 'dev-flow:dev-runner-haiku-ro');
+
+  const toolsSection = prompt.split('## Tools')[1].split('## ')[0];
+  const allowedCommands = [...toolsSection.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  assert.deepEqual(allowedCommands, ['pwd'], 'Tools 節で許すコマンドは pwd だけであること');
+  assert.match(toolsSection, /他のコマンド・他の tool は一切使わない/);
+  assert.doesNotMatch(prompt, /\bWrite\b|\bEdit\b/, 'cwd probe prompt が Write/Edit tool を指示しないこと');
+
+  const boundary = prompt.split('## Boundary')[1].split('## ')[0];
+  assert.match(boundary, /ファイルの作成・変更/);
+  assert.match(boundary, /git 操作/);
+  assert.match(boundary, /gh コマンド/);
+  assert.match(boundary, /禁止/);
 });
 
 // ============================================================
@@ -357,7 +482,7 @@ test('[canary] pipeline が未定義の場合 pipeline_fanout/pipeline_failure_s
   assert.equal(findCap(report, 'direct_import').status, 'unsupported');
   assert.equal(findCap(report, 'pause_resume').status, 'unsupported');
 
-  assert.equal(report.capabilities.length, 12, 'capabilities は正確に12件であること');
+  assert.equal(report.capabilities.length, 13, 'capabilities は正確に13件であること');
 });
 
 // ============================================================

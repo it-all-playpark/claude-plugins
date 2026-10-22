@@ -287,6 +287,13 @@ hit で `runEval=true` になったケースは lite ゲート条件を満たさ
   dev-implementer / dev-runner は
   `effort: high`、dev-runner-haiku / dev-runner-haiku-ro は `effort: low`（mechanical exec-proxy は
   low が high に schema 成功率で劣後しない）。
+- **`agent()` の cwd 指定は `dev-flow-canary` の `agent_opts_cwd_applied` で判定する** — canary は
+  `agent()` に `opts.cwd: '/tmp'`（repo 外の一時ディレクトリ。read-only のため作らず既存のものを使う）を渡して
+  `dev-runner-haiku-ro` を 1 回 spawn し、agent が `pwd` だけで報告した作業ディレクトリと比べる
+  （macOS の実パス `/private/tmp` も一致とみなす）。読み方: `pass` = cwd 指定が効く（security-reviewer を PR の
+  worktree の外で起動する形へ移す後続 issue の着手条件）、`fail` = throw は
+  しないが作業ディレクトリが変わらない（opts.cwd は無視されたか別名で受け付けられている）、`unsupported` =
+  `agent()` が opts.cwd 指定で throw した。pass でも canary は report を出すだけで、起動形は変えない。
 - **1 issue = 1 PR**。Implement は全 shape で `dev-implementer` を単一 worktree に 1 spawn する（parallel fan-out / `pipeline()` は持たない）。
 - **merge は手動** (LGTM 後にユーザーが merge)。
 - worktree の後片付けは `_shared/scripts/worktree-teardown.sh <worktree-path>` を使う
