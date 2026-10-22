@@ -145,6 +145,16 @@ const EXPECTED_DEV_FLOW = {
       assert.equal(result?.merge_tier, 'HOLD', 'danger-grep と merge-tier-facts の risk が共に fail-closed の場合 merge_tier は HOLD になるべき');
     },
   },
+  'security-scope': {
+    config: DF_B1,
+    policy: 'continue',
+    reason: 'failOpenAgent経由。throw/nullは敵対的security reviewの対象として扱い（fail-closed）、pr-iterateがcleared を返さなければHOLD',
+    extra: async ({ result }) => {
+      assert.equal(result?.security_review?.target, true, 'security-scope throw は対象（fail-closed）になるべき');
+      assert.equal(result?.merge_tier, 'HOLD', 'nested pr-iterate が cleared を返さない対象の run は HOLD になるべき');
+      assert.ok(result?.merge_tier_hold_reasons?.some((r) => r.code === 'security_review_unresolved'), JSON.stringify(result?.merge_tier_hold_reasons));
+    },
+  },
   'diff-hash-eval': { config: DF_B1, policy: 'continue', reason: 'failOpenAgent経由。stale検出をskipするだけのadvisory信号' },
   'eval#1': { config: DF_B1, policy: 'abort', reason: 'need()包み。評価取得不能のままPRへ進めない致命契約' },
   'diff-hash-pr': { config: DF_B1, policy: 'continue', reason: 'failOpenAgent経由。stale検出をskipするだけのadvisory信号' },
@@ -477,6 +487,11 @@ const EXPECTED_PR_ITERATE = {
   'mergeable-check#1': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはconflict不明として自動解消を試みずlgtmへ進むfail-open' },
   'mergeable-check#2': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはconflict不明として自動解消を試みずlgtmへ進むfail-open' },
   'conflict-resolve#1': { config: PR_B8, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはproxy_failedとして記録し自動解消せずlgtmへ（Merge tierがconflictをHOLD）' },
+  // ── issue #1063: LGTM 前の敵対的 security review（対象判定 + security-reviewer）──
+  'security-scope#1': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは対象として扱い、diffが無いのでreviewできずsecurity_unresolvedで終端（LGTMにしない）' },
+  'security-scope#2': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは対象として扱い、diffが無いのでreviewできずsecurity_unresolvedで終端（LGTMにしない）' },
+  'security-review#1': { config: PR_B1, policy: 'continue', reason: 'securityGate内try/catchで吸収し結果なし（no_result）としてsecurity_unresolvedで終端（LGTMにしない）' },
+  'security-review#2': { config: PR_B2, policy: 'continue', reason: 'securityGate内try/catchで吸収し結果なし（no_result）としてsecurity_unresolvedで終端（LGTMにしない）' },
 };
 
 for (const [label, spec] of Object.entries(EXPECTED_PR_ITERATE)) {

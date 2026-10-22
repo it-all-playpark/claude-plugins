@@ -649,6 +649,31 @@ test('buildTerminalSummaryBody: 回収状況の写像 — 条件を満たさな�
   ]);
 });
 
+test('buildTerminalSummaryBody: security_review_unresolved はこの run が lgtm で security review が clear / 対象外なら解消、それ以外は未解消', () => {
+  const opts = { pr: 5, iterations: 2, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed' };
+  const prior = { tier: 'HOLD', codes: ['security_review_unresolved'], url: PRIOR_URL };
+  const sr = (status) => ({ target: status !== 'not_target', status, rounds: 1, critical: 0, major: 0, minor: 0 });
+  for (const [status, review, want] of [
+    ['lgtm', sr('cleared'), '- `security_review_unresolved` — ✅ 解消 — この run の security review: cleared'],
+    ['lgtm', sr('not_target'), '- `security_review_unresolved` — ✅ 解消 — この run の security review: not_target'],
+    ['security_unresolved', sr('unresolved'), `- \`security_review_unresolved\` — ${UNRESOLVED} — この run の security review: unresolved`],
+    ['max_reached', sr('not_run'), `- \`security_review_unresolved\` — ${UNRESOLVED} — この run の security review: not_run`],
+  ]) {
+    const body = buildTerminalSummaryBody({ ...opts, status, priorDevflow: prior, securityReview: review });
+    assert.deepEqual(recoveryLines(body), [want], status);
+  }
+});
+
+test('buildTerminalSummaryBody: security review の行は件数だけを出す（対象外 / clear / 未完了）', () => {
+  const opts = { pr: 5, iterations: 2, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed' };
+  const line = (status, securityReview) => buildTerminalSummaryBody({ ...opts, status, securityReview }).split('\n').find((l) => l.startsWith('**Security review**'));
+  assert.equal(line('lgtm', { target: false, status: 'not_target', rounds: 0 }), '**Security review**: 対象外（変更が許可リスト — 指示ファイルでない文書・テスト — だけ）');
+  assert.equal(line('lgtm', { target: true, status: 'cleared', rounds: 2, critical: 0, major: 0, minor: 1 }), '**Security review**: ✅ clear（敵対的 review 2 回・最終 critical 0 / major 0 / minor 1）');
+  assert.equal(line('max_reached', { target: true, status: 'unresolved', rounds: 3, critical: 1, major: 2, minor: 0 }), '**Security review**: ❌ 未完了（敵対的 review 3 回・最終 critical 1 / major 2 / minor 0）— 指摘の本文は公開コメントに載せない。merge 前に人が diff を確認する');
+  assert.equal(line('lgtm', null), undefined, 'securityReview が無ければ行を出さない');
+  assert.equal(buildTerminalSummaryBody({ ...opts, status: 'security_unresolved', securityReview: { target: true, status: 'unresolved', rounds: 1 } }).split('\n').find((l) => l.startsWith('### ')), '### 🛡️ SECURITY REVIEW 未完了 — 敵対的 security review が今の head で clear にならなかった。人間へエスカレーション');
+});
+
 test('buildTerminalSummaryBody: code の無い HOLD marker（codes 空）は理由を確かめられないので未解消 1 件', () => {
   const body = buildTerminalSummaryBody({
     pr: 5, status: 'lgtm', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed',

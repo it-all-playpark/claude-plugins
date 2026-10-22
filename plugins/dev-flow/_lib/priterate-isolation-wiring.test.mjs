@@ -324,7 +324,7 @@ test('[isolation-wiring][standalone] caller:standalone でも written:false は 
 test('[isolation-wiring][nested] caller:dev-flow で nested.epoch 省略時は pr-meta / isolation-cleanup を起動せず、isoToken が PR 番号へ fallback する', async () => {
   const { ctx, calls } = makeSandbox({
     isolationProbeResult: { written: true },
-    args: { pr: '7', nested: { caller: 'dev-flow', cwd: '/wt', head_ref: 'feature/issue-1' } },
+    args: { pr: '7', nested: { caller: 'dev-flow', cwd: '/wt', head_ref: 'feature/issue-1', base_ref: 'main' } },
   });
   const { result, error } = await runPrIterateCapture(src, ctx);
 

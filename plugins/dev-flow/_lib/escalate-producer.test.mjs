@@ -52,6 +52,8 @@ function makeSandbox(analyzeReq, evaluatorResponse) {
     if (label.startsWith('analyze')) {
       return analyzeReq;
     }
+    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // Security floor / Merge tier: danger-grep 系（label が 'danger-grep' で始まる）
     // → danger clean にして HOLD 要因を escalate のみに絞る
     if (label.startsWith('danger-grep')) {
@@ -355,6 +357,8 @@ test('[escalate-producer] テスト4: complex shape iteration 2 に初出 escala
       if (label.startsWith('analyze')) {
         return complexAnalyzeReq;
       }
+      // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+      if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
       if (label.startsWith('danger-grep')) {
         return { ok: true, hits: [] };
       }

@@ -43,6 +43,8 @@ const EXPECTED_DEV_FLOW = {
   'diff-gate': RO,
   'diff-gate-retry': RO,
   'danger-grep': RO,
+  // 敵対的 security review の対象判定（security-review-scope。読み取りのみ — 一時 index と worktree の外の一時ディレクトリ）
+  'security-scope': RO,
   'diff-hash-eval': RO,
   'diff-hash-pr': RO,
   // local-verify を実行した tree / 最終 tree の diff hash（issue #863。exit 0 を最終 tree と突き合わせる）
@@ -92,6 +94,7 @@ const EXPECTED_DEV_FLOW = {
 
 const EXPECTED_PR_ITERATE = {
   'pr-meta': RO,
+  'security-scope#*': RO,
   'ci-check#*': RO,
   'ci-wait-check#*': RO,
   'isolation-cleanup': RW,

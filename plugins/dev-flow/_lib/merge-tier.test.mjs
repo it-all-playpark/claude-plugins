@@ -1278,13 +1278,22 @@ test('classifyMergeTier: evalStaleness:undefined/null → throw しない(従来
 
 // ---- issue #658: HOLD_REASON_CODES + holdReasons[].code + disclosures ----
 
-test('HOLD_REASON_CODES は 18 の閉じた enum と一致', () => {
+test('HOLD_REASON_CODES は 19 の閉じた enum と一致', () => {
   assert.deepEqual(HOLD_REASON_CODES, [
     'ledger_unconverged', 'danger_unresolved', 'breaking_structured', 'escalate',
     'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
     'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
     'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
+    'security_review_unresolved',
   ]);
+});
+
+test('classifyMergeTier: securityReviewUnresolved:true → HOLD 理由 security_review_unresolved（human_judgment）。boolean 以外は明示 error', () => {
+  const r = classifyMergeTier({ ...standardBase(), iterateStatus: 'lgtm', evalStaleness: 'none', securityReviewUnresolved: true });
+  assert.equal(r.tier, 'HOLD');
+  assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['security_review_unresolved', 'human_judgment']]);
+  assert.equal(classifyMergeTier({ ...standardBase(), iterateStatus: 'lgtm', evalStaleness: 'none', securityReviewUnresolved: false }).tier, 'REVIEW');
+  assert.throws(() => classifyMergeTier({ ...standardBase(), iterateStatus: 'lgtm', securityReviewUnresolved: 'yes' }), /invalid securityReviewUnresolved/);
 });
 
 test('classifyMergeTier: holdReasons[].code — escalate', () => {

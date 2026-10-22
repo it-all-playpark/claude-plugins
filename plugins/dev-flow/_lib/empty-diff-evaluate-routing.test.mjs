@@ -45,6 +45,8 @@ function makeCountingSandbox(analyzeReq, diffHashConfig) {
     if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
     if (label.startsWith('analyze')) return analyzeReq;
+    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // label 'danger-grep'（issue #544 統合呼び出し）: risk/files を 1 応答で返す。
     if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: [...realizedFiles], struct: null, diffhash: null };
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };

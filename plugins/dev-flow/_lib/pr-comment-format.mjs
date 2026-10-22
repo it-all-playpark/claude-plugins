@@ -47,7 +47,21 @@ const STATUS_HEADLINE = {
   'ci_error': '⚠️ CI エラー — CI ステータスを確定できなかった（proxy が結果を返さなかった）。`gh pr checks <PR>` で実状態を確認すること。人間へエスカレーション',
   'ci_pending': '⏳ CI 未完了 — checks pending。人間/CI 完了待ちへエスカレーション',
   'review_contract_error': '⚠️ REVIEW CONTRACT ERROR — reviewer の decision/blocking 矛盾の再発、または reviewer が StructuredOutput 契約違反で結果を返さず。人間へエスカレーション',
+  'security_unresolved': '🛡️ SECURITY REVIEW 未完了 — 敵対的 security review が今の head で clear にならなかった。人間へエスカレーション',
 };
+
+/**
+ * 敵対的 security review の結果行（issue #1063）。公開の PR コメントに載るので、指摘の本文（攻撃経路）は載せず件数だけを出す。
+ * @param {{target: boolean, status: string, rounds: number, critical?: number, major?: number, minor?: number}} sr
+ *   status: 'cleared' | 'unresolved' | 'not_run' | 'not_target'
+ * @returns {string}
+ */
+function formatSecurityReviewLine(sr) {
+  if (sr.target !== true) return '**Security review**: 対象外（変更が許可リスト — 指示ファイルでない文書・テスト — だけ）';
+  const counts = `敵対的 review ${sr.rounds ?? 0} 回・最終 critical ${sr.critical ?? 0} / major ${sr.major ?? 0} / minor ${sr.minor ?? 0}`;
+  if (sr.status === 'cleared') return `**Security review**: ✅ clear（${counts}）`;
+  return `**Security review**: ❌ 未完了（${sr.status === 'not_run' ? 'LGTM の前の review に到達していない' : counts}）— 指摘の本文は公開コメントに載せない。merge 前に人が diff を確認する`;
+}
 
 // 最終 CI 状態行のラベル。null（未観測）は「CI を判定していない」ことを明示する —
 // stuck / fix_failed 終端で CI が赤のまま気づかれない事故を、終端サマリで必ず可視化するため
@@ -102,16 +116,21 @@ const PRIOR_HOLD_UNRESOLVED = '未解消（pr-iterate は再判定しない — 
 
 /**
  * 直前の dev-flow サマリーが HOLD のとき、HOLD 理由の code ごとの回収状況を決定論で 1 行ずつ出す（issue #930）。
- * pr-iterate が自分で確かめられるのは review の LGTM・最終 CI・conflict の自動解消だけで、AC・ledger・security・
- * 最終 tree のテストは再判定しない — それらの code は常に未解消として人に返す。
+ * pr-iterate が自分で確かめられるのは review の LGTM・最終 CI・conflict の自動解消・敵対的 security review だけで、
+ * AC・ledger・danger-grep の security clearance・最終 tree のテストは再判定しない — それらの code は常に未解消として人に返す。
  * code が 1 件も無い HOLD（code を marker に載せる前のサマリー）は理由を確かめられないので未解消 1 件にする。
  * @returns {{rows: Array<{code: string|null, resolved: boolean, detail: string|null}>, unresolved: number}}
  */
-function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve }) {
+function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, securityReview }) {
   const attempts = (conflictAutoresolve || []).filter((r) => r != null);
   const lastConflict = attempts.length > 0 ? attempts[attempts.length - 1].status : null;
   const rows = (codes || []).map((code) => {
     if (code === 'iterate_non_lgtm') return { code, resolved: status === 'lgtm', detail: `この run の終了状態: ${status}` };
+    // 敵対的 security review はこの run が今の head で判定し直す（対象外か、対象で clear のまま LGTM なら解消）
+    if (code === 'security_review_unresolved') {
+      const sr = securityReview?.status ?? '未実施';
+      return { code, resolved: status === 'lgtm' && (sr === 'cleared' || sr === 'not_target'), detail: `この run の security review: ${sr}` };
+    }
     if (code === 'ci_checks_failed' || code === 'ac_ci_pending') {
       return { code, resolved: ciLastStatus === 'passed', detail: `最終 CI 状態: ${ciLastStatus ?? '未観測'}` };
     }
@@ -128,7 +147,7 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve })
  * 終端サマリー markdown を生成する。
  * @param {object} opts
  * @param {number|string} opts.pr - PR 番号
- * @param {string} opts.status - 'lgtm' | 'stuck' | 'fix_failed' | 'max_reached' | 'ci_error' | 'ci_pending' | 'review_contract_error'
+ * @param {string} opts.status - 'lgtm' | 'stuck' | 'fix_failed' | 'max_reached' | 'ci_error' | 'ci_pending' | 'review_contract_error' | 'security_unresolved'
  * @param {number} opts.iterations - 総反復回数
  * @param {string} opts.lastDecision - 最終判定
  * @param {string} opts.lastSummary - 最終サマリーテキスト
@@ -142,13 +161,15 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve })
  * @param {Array} [opts.conflictAutoresolve] - base との conflict の自動解消の試行（_lib/conflict-autoresolve.mjs の conflictAutoresolveRecord の配列）
  * @param {{tier: string, codes: string[], url: string|null}|null} [opts.priorDevflow] - 単体起動の前に PR に載っていた
  *   dev-flow サマリー（pr-iterate-prerun の prior_devflow）。tier が HOLD のときだけ HOLD 理由の回収状況を出す
+ * @param {{target: boolean, status: string, rounds: number, critical?: number, major?: number, minor?: number}|null} [opts.securityReview] -
+ *   敵対的 security review の結果（pr-iterate の返り値 security_review）。件数だけを 1 行出す（null なら出さない）
  * @returns {string}
  */
-export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null }) {
+export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, securityReview = null }) {
   const DECISION_EMOJI = { 'approve': '✅', 'request-changes': '🔴', 'comment': '💬' };
   const lines = [];
   const priorHold = priorDevflow != null && priorDevflow.tier === 'HOLD'
-    ? priorHoldRecovery(priorDevflow.codes, { status, ciLastStatus, conflictAutoresolve })
+    ? priorHoldRecovery(priorDevflow.codes, { status, ciLastStatus, conflictAutoresolve, securityReview })
     : null;
 
   // dev-flow の HOLD 後の回収では、このレポートが PR の最後のコメント（最新の結論）になる。HOLD 理由が残っているのに
@@ -181,6 +202,11 @@ export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision,
   // 全終端で必ず出す（lgtm / stuck / fix_failed / max_reached / ci_error / ci_pending / review_contract_error）
   lines.push('');
   lines.push(formatCiLastStatusLine(ciLastStatus, ciLastFailedChecks, pr));
+
+  if (securityReview != null) {
+    lines.push('');
+    lines.push(formatSecurityReviewLine(securityReview));
+  }
 
   if (priorHold) {
     lines.push('');

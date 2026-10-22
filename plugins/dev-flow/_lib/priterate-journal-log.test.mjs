@@ -18,7 +18,7 @@ const src = readFileSync(join(here, '..', '.claude/workflows/pr-iterate.js'), 'u
 function makeSandbox(journalResult) {
   const { ctx, calls } = makePrIterateSandbox({
     overrides: {
-      'pr-meta': { url: 'https://github.com/acme/skills/pull/5', cwd: '/tmp/wt' },
+      'pr-meta': { url: 'https://github.com/acme/skills/pull/5', base_ref: 'main', cwd: '/tmp/wt' },
       'journal-log': () => {
         if (journalResult instanceof Error) throw journalResult;
         return journalResult;

@@ -51,6 +51,8 @@ function makeSandbox(analyzeReq, dangerGrepPre, dangerGrepFinal, evaluatorRespon
     if (label.startsWith('analyze')) {
       return analyzeReq;
     }
+    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // Security floor（Evaluate 前）の danger-grep（issue #544 統合呼び出し。dangerGrepPre を
     // risk フィールドへ包む。diffhash は Merge tier 側（'H_MERGE'）と意図的に異なる値にして
     // reuse を発火させない — シナリオが pre/final の乖離を前提にしているため）。

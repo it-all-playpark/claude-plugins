@@ -2,7 +2,7 @@
 // dev-flow.js は workflow('pr-iterate') 復帰直後に隣接する agent 呼び出しを持たないため、
 // pr-iterate の返り値自体に最後の ci-check 応答の epoch を end_epoch として載せる（issue #443）。
 // harness は test-helpers/vm-sandbox.mjs の makePrIterateSandbox / prIterateRounds / runWorkflowCapture。
-// ci-check 以外の応答には epoch を載せない（pr-meta は未応答、post-summary は epoch なし）— 既定 responder の
+// ci-check 以外の応答には epoch を載せない（pr-meta・post-summary は epoch なし）— 既定 responder の
 // epoch が end_epoch に混ざると「ci-check が epoch を返さない run」を作れないため。
 
 import { test } from 'vitest';
@@ -18,7 +18,8 @@ const src = readFileSync(join(here, '..', '.claude/workflows/pr-iterate.js'), 'u
 function makeSandbox({ ciResponses }) {
   const { ctx, calls } = makePrIterateSandbox({
     overrides: {
-      'pr-meta': null,
+      // base_ref は LGTM の前の security review の diff に要る（epoch は載せない）
+      'pr-meta': { url: 'https://github.com/acme/skills/pull/5', head_ref: 'feature/x', base_ref: 'main', cwd: '/tmp/wt' },
       'post-summary': { posted: true, method: 'gh', url: 'http://x' },
     },
     rounds: prIterateRounds({

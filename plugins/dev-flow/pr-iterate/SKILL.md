@@ -30,7 +30,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 1. **prerun 実行**: launch dir（リポジトリルートか、その worktree）で Bash 1 コマンドとして
    `pr-iterate-prerun <PR>` を実行する（PR が cwd の repo と別なら `--repo owner/name` を付ける）。前置形
    （`cd X && ...` / `VAR=x ...` / `bash <path>` 等）は使わず、bare 名を先頭トークンにする。stdout の
-   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, ci_wait_ceiling_seconds, error?}`）
+   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, ci_wait_ceiling_seconds, security_review, error?}`）
    をそのまま保持する。
 
    `pr-iterate-prerun` は PR の url / head / base / head の commit を `gh pr view` で取り、`git fetch origin` 後の
@@ -51,6 +51,9 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      （dev-flow の終端サマリー）を `prior_devflow`（`{tier, codes, url}`、無ければ null）に載せる
    - PR の base branch で直近に成功した CI の所要時間から CI 待ちの上限（秒）を決め、`ci_wait_ceiling_seconds` に載せる
      （dev-flow の nested 起動と同じ求め方。読み取りに失敗したら 300）
+   - PR 全体（`origin/<base>...<PR head>`）の diff が敵対的 security review の対象かを決定論の許可リストで判定し、
+     `security_review`（`{target, reasons, reviewer_context_changed}`）に載せる。判定できないときは `target:true`・
+     `reviewer_context_changed:true`
 
    結果に応じて分岐する:
 
@@ -64,7 +67,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    worktree なら不要）。別の worktree に入っている場合は先に `ExitWorktree`（worktree は keep）で launch dir へ
    戻ってから入る。
 
-3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`ci_wait_ceiling_seconds` の値は prerun 出力をそのまま転記し、加工・要約しない:
+3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`ci_wait_ceiling_seconds`・`security_review` の値は prerun 出力をそのまま転記し、加工・要約しない:
 
    ```
    Workflow({ name: 'dev-flow:pr-iterate-run', args: {
@@ -73,8 +76,13 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
                base_ref: <base_ref>, repo: <repo>, epoch: <epoch> },
      prior_devflow: <prior_devflow>,
      ci_wait_ceiling_seconds: <ci_wait_ceiling_seconds>,
+     security_review: <security_review>,
    } })
    ```
+
+   - `security_review` を省くと workflow は対象として扱う（fail-closed）。対象の PR は、LGTM の前に PR 全 diff を
+     敵対的 security review（security-reviewer）が読み、critical / major が 0 件になるまで LGTM にしない。
+     終端サマリーには指摘の件数だけが載る
 
    - `prior_devflow` が HOLD の dev-flow サマリーなら、終端サマリーは HOLD 理由の code ごとの回収状況を出し、
      未解消が残れば見出しを「🎉 LGTM」にしない（このレポートが PR の最後のコメント＝最新の結論になるため）。
@@ -86,7 +94,8 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - Workflow 名は namespaced の `dev-flow:pr-iterate-run` のみ（bare 名・旧名 `pr-iterate` は解決しない）
 
 4. **完了後**: 返り値の `status`（`lgtm` / `stuck` / `fix_failed` / `max_reached` / `ci_error` / `ci_pending` /
-   `review_contract_error`）と終端サマリーの URL を人間に報告する。merge は人間が行う。worktree は削除しない
+   `review_contract_error` / `security_unresolved`）と終端サマリーの URL を人間に報告する。security review の指摘の
+   本文は報告に書き写さない（返り値 `security_review` の件数だけを伝える）。merge は人間が行う。worktree は削除しない
    （回収後も人間が中身を確認できるように残す。後片付けは人間が `worktree-teardown` で行う）。
 
 ## 再実行

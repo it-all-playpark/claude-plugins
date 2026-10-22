@@ -59,6 +59,8 @@ function makeSandbox(analyzeReq, dangerGrepResponse, evaluatorResponse) {
     if (label.startsWith('analyze')) {
       return analyzeReq;
     }
+    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // Security floor: label 'danger-grep' は issue #544 で統合呼び出しへ変わった
     // （secfloor-classify.sh 経由の {risk, files, struct, diffhash} 応答）。dangerGrepResponse
     // を risk フィールドに包んで返す（fail-closed / clean を切り替え可能）。

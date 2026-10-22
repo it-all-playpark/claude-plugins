@@ -224,7 +224,7 @@ Evaluate 時点から tree が変わったことによる `eval_staleness=hash_m
 flowchart TD
     IN["Evaluate 完了 / micro path"] --> R1["diff-hash 比較<br/>不一致なら stale-eval"]
     R1 --> R2["pr-artifacts で commit message / PR body 確定<br/>haiku が verbatim 転写 + git commit / push / gh pr create"]
-    R2 --> R4{"LITE ?<br/>micro かつ runEval=false<br/>かつ danger clean<br/>かつ ci の AC なし"}
+    R2 --> R4{"LITE ?<br/>micro かつ runEval=false<br/>かつ danger clean<br/>かつ ci の AC なし<br/>かつ security review 対象外"}
     R4 -->|yes| LITE["lite route<br/>pr-reviewer 1-pass → ci-check"]
     R4 -->|no| FULL["workflow: pr-iterate"]
     LITE -->|"clean かつ CI green"| OUT["Final reconcile へ"]
@@ -233,7 +233,10 @@ flowchart TD
 ```
 
 nested 起動する `pr-iterate` には issue の acceptance criteria と
-nested context（cwd / head_ref / repo / epoch）を渡す。
+nested context（cwd / head_ref / repo / epoch）と、Security floor の敵対的 security review の対象判定
+（`security_review`）を渡す。Security floor は merge-base と作業ツリーの diff を `security-review-scope --working-tree`
+で判定し、全ファイルが決定論の許可リスト（指示ファイルでない文書・テスト）に当たる run だけが対象外 — lite route に
+入れるのもこの run だけ。
 
 ### 1.8 Final reconcile
 
@@ -312,7 +315,8 @@ flowchart TD
 | `complex` | 同上 | 差し戻し loop（`EVAL_MAX` 上限、design 差し戻しは `DESIGN_REPLAN_MAX` まで。差し戻し先は同じ `dev-implementer`） | `REVIEW` / `HOLD`（danger・breaking 検出時） |
 
 micro のうち `runEval=false` かつ danger clean かつ ci の AC（`ci_verify` の check で判定する AC。
-`CI_AC_INDEXES`）を持たないものだけが PR phase で **lite route** に入り、
+`CI_AC_INDEXES`）を持たず、敵対的 security review の対象外（merge-base 基準の diff が許可リストだけ）のものだけが
+PR phase で **lite route** に入り、
 pr-reviewer 1-pass と CI green だけで終端する。blocking finding か CI 非 green を検出した時点で
 通常の pr-iterate へ自動昇格する。
 
@@ -326,6 +330,14 @@ pr-reviewer 1-pass と CI green だけで終端する。blocking finding か CI 
 CI gate を通らなければ LGTM にならず、**CI pending を成功扱いすることは決してない**。
 同じ topic が `REVIEW_STUCK` 回繰り返された時点で stuck と判定して人間へ渡す。
 
+CI gate を通った round でも、LGTM を確定する前に **敵対的 security review** の gate がある。今の PR head の
+`<base>...<head>` の diff を `security-scope#i` が決定論の許可リストで判定し、起動時の判定（`args.security_review`。
+無ければ対象）か run 中の判定のどれか 1 回でも対象なら run の終わりまで対象のまま。対象なら `security-reviewer` を
+毎回新しく spawn して PR 全 diff（worktree の外に保存した file）を読ませ、critical / major が 0 件かつ `reviewed_sha` が
+今の head と一致したときだけ LGTM にする。critical / major は fix に回し（同じ指摘の反復は stuck）、worktree の外を
+指す指摘・diff を取れない・review が結果を返さない・head 不一致は `security_unresolved` で終端する。終端サマリーには
+指摘の件数だけを載せる。
+
 ```mermaid
 flowchart TD
     IN["pr-iterate PR 番号<br/>MAX / REVIEW_STUCK<br/>nested 起動時（dev-flow / /pr-iterate wrapper）は<br/>pr-meta / isolation-cleanup を skip<br/>（isolation probe 本体は不変で実行）"] --> LOOP["iteration i"]
@@ -337,7 +349,13 @@ flowchart TD
     D -->|"request_changes / comment"| BL{"blocking findings あり ?"}
 
     CI --> CS{"status"}
-    CS -->|"passed / no_checks"| LGTM["status: lgtm"]
+    CS -->|"passed / no_checks"| SEC{"security review<br/>対象 ?"}
+    SEC -->|"対象外"| LGTM["status: lgtm"]
+    SEC -->|"対象: critical / major 0 件<br/>かつ reviewed_sha が今の head"| LGTM
+    SEC -->|"対象: critical / major あり"| STK3{"同一 topic が反復 ?"}
+    STK3 -->|yes| STUCK
+    STK3 -->|no| FIX
+    SEC -->|"worktree の外を指す /<br/>diff・結果・head が揃わない"| SECU["status: security_unresolved"]
     CS -->|error| ERR["status: ci_error<br/>CI 状態を確定できない<br/>（proxy が結果を返さない / gh 取得失敗 /<br/>status と件数の食い違い）"]
     CS -->|pending| PEND["status: ci_pending<br/>ceiling 到達・never auto-approve"]
     CS -->|failed| CIF["CI failure を findings 化"]
@@ -364,13 +382,14 @@ flowchart TD
 
 | status | 意味 | dev-flow 側の扱い |
 | --- | --- | --- |
-| `lgtm` | review clean かつ CI passed / no_checks | Final reconcile へ。`fixes_applied` が 1 以上なら最終 tree を再検証 |
+| `lgtm` | review clean かつ CI passed / no_checks（security review の対象なら今の head で clear） | Final reconcile へ。`fixes_applied` が 1 以上なら最終 tree を再検証 |
 | `stuck` | 同一 topic が反復（review / CI failure） | merge tier `HOLD` |
 | `fix_failed` | fix 未適用、または commit / push の保証に失敗 | merge tier `HOLD` |
 | `max_reached` | `MAX` iteration で収束せず | merge tier `HOLD` |
 | `ci_error` | CI 状態を確定できない（ci-check の proxy が結果を返さない / check-ci の gh 取得失敗 / proxy の status と件数の食い違い）。`gh pr checks` で実状態を確認する | merge tier `HOLD` |
 | `ci_pending` | checks 未完了。自動承認しない | merge tier `HOLD` |
 | `review_contract_error` | pr-reviewer が schema-retry 後も結果を返さない、または decision=approve と blocking の矛盾が 1 回の再 review 後も再発 | merge tier `HOLD` |
+| `security_unresolved` | 敵対的 security review を今の head で clear にできない（worktree の外を指す critical / major・diff を取れない・review が結果を返さない・review した head が今の head と違う） | merge tier `HOLD`（`security_review_unresolved`） |
 
 ---
 
@@ -419,6 +438,7 @@ flowchart TD
 | `mergeable_conflicting` | base branch と conflict（`CONFLICTING` / `DIRTY`） | `UNKNOWN` は fail-open |
 | `pr_closes_missing` | PR body に `Closes #<issue>` 行が無く、本文の再投入も失敗 | 決定論再チェックで解消しうる |
 | `ci_checks_failed` | PR head の CI checks が red（bucket が fail / cancel / 未知値） | pending・取得不能は HOLD にせず開示行だけ |
+| `security_review_unresolved` | 敵対的 security review の対象の run で、pr-iterate が今の PR head で clear にしていない（LGTM 以外で終端した run を含む） | 指摘の本文は公開しない。件数だけを出す |
 
 ### gate_policy に依らず常に blocking
 
@@ -432,6 +452,7 @@ flowchart TD
 | `eval_staleness = hash_mismatch` | 評価済み tree と merge 対象 tree の乖離 |
 | base branch conflict | `mergeStateStatus=DIRTY` / `mergeable=CONFLICTING` |
 | danger-grep 実行不能 | security 未検証のまま出荷しない fail-closed |
+| 敵対的 security review 未 clear | 信頼境界をまたぎうる変更を critical / major が残ったまま出荷しない。対象判定できない入力は対象 |
 
 `mergeable` が `UNKNOWN` の場合や proxy 失敗は fail-open で、definitive な `CONFLICTING` / `DIRTY` の
 ときだけ HOLD する。breaking の keyword scan 単独ヒットは HOLD 理由に採用せず、構造化判定
@@ -473,6 +494,7 @@ pr-iterate の `MAX`（review ⇄ fix 反復、既定 10）は `args.max_iterati
 | `dev-implementer` | plan+impl 統合実装（全 shape の唯一の実装 agent。Implement・BLOCKED 再実装・green-fix・evaluator 差し戻しを担う） | opus / high |
 | `evaluator` | 実装品質ゲート | opus / medium |
 | `pr-reviewer` | PR レビュー | opus / high |
+| `security-reviewer` | 敵対的 security review（LGTM の前。PR 全 diff を worktree の外で読み取り専用に読む） | opus / high |
 | `dev-runner` | Setup 末尾の analyze ゲート後の `analyze-clarify#N`（missing_context 生成）と `ac-observational#N`（観測型 AC の分類）、pr-iterate の fix。通常経路の Setup では起動しない | frontmatter / high |
 | `dev-runner-haiku` | 書き込み・Skill 呼び出しを伴う exec-proxy | haiku / low |
 | `dev-runner-haiku-ro` | read-only exec-proxy | haiku / low |

@@ -171,6 +171,9 @@ function resolvedCell(v) {
  * @param {Array<{iteration:number, status:string, reason?:string, files?:Array<{path:string,type:string}>, merge_sha?:string|null}>|null|undefined} [opts.conflictAutoresolve] -
  *   pr-iterate の返り値 conflict_autoresolve（base との conflict の自動解消の試行。issue #916）。自動解消した試行は「参考」に型とファイルを、
  *   解消しなかった試行は mergeable_conflicting の HOLD 理由の「現状」に止めたファイルと型を出す（表示専用）
+ * @param {{target:boolean, status:string, rounds?:number, critical?:number, major?:number, minor?:number}|null|undefined} [opts.securityReview] -
+ *   敵対的 security review の結果（issue #1063）。security_review_unresolved の「現状」に回数と件数だけを出す — 指摘の本文
+ *   （攻撃経路）は公開コメントに載せない（表示専用）
  * @returns {string}
  */
 export function buildDevflowSummaryBody({
@@ -214,6 +217,7 @@ export function buildDevflowSummaryBody({
   ciVerify,
   localVerify,
   conflictAutoresolve,
+  securityReview,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -688,6 +692,7 @@ export function buildDevflowSummaryBody({
         unreachableAcGaps: unreachableGaps,
         ciVerify,
         conflictAutoresolve,
+        securityReview,
       });
       lines.push(`| ${mdCell(hr && hr.reason)} | ${current} | ${action} |`);
     }
@@ -1171,6 +1176,16 @@ function holdReasonDisplay(code, kind, ctx) {
         current: 'PR head の CI checks が失敗（fail / cancel）',
         action: `\`gh pr checks ${ctx.pr}\` で失敗した check を確認し、修正して push する`,
       };
+    case 'security_review_unresolved': {
+      const s = ctx.securityReview;
+      const counts = s && s.status !== 'not_run' && Number.isFinite(s.rounds)
+        ? `（敵対的 review ${s.rounds} 回・最終 critical ${s.critical ?? 0} / major ${s.major ?? 0}）`
+        : '（LGTM の前の review に到達していない）';
+      return {
+        current: `security review が今の PR head で clear になっていない${counts}`,
+        action: `\`/pr-iterate ${ctx.pr}\` で回収するか、人が diff を確認する（指摘の本文は公開コメントに載せない）`,
+      };
+    }
     default:
       return { current: '—', action: '人が確認する' };
   }

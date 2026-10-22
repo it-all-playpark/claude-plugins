@@ -25,13 +25,18 @@
 # 再利用した worktree が書けない場合は退避しない（branch がそこで checkout 済み）— ok:false で人間に返す。
 #
 # Output (stdout, JSON 1 行):
-#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, ci_wait_ceiling_seconds, error?}
+#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, ci_wait_ceiling_seconds, security_review, error?}
 #   worktree_status: created / reused / unwritable / error / skipped
 #   skip_worktree: 作成時に取り出せず skip-worktree を付けたパス（worktree-checkout.sh。full checkout できれば []）
 #   prior_devflow: PR コメントのうち `<!-- dev-flow:<tier>[ codes=<code>,...] -->` marker を持つ最後のもの
 #     {tier, codes, url}（codes は HOLD 理由の code。HOLD 以外は []）。marker を持つコメントが無ければ null
 #   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。PR の base branch の CI 所要時間から決める
 #     （ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
+#   security_review: 敵対的 security review の起動時の判定 {target, reasons, reviewer_context_changed}。origin/<base>...<PR head> の diff を
+#     security-review-scope.sh で判定し、全ファイルが許可リストに当たるときだけ target:false。判定できない（ok:false の
+#     早期終端・base 不明・node 不在・取得失敗）ときは target:true。reviewer_context_changed は diff が reviewer の指示ファイル
+#     （CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変えるか — 判定できたうえで false のときだけ false（workflow は
+#     この決定論の値を run の終わりまで固定する。run 中の判定は LLM の中継を通るので PR の指示文で偽れる）
 #   不明な値は null。ok:false でも exit 0（引数不正のみ exit 2、stdout 空）。
 #
 # GitHub I/O は `gh pr view` と `gh run list`（base branch の成功 run。いずれも読み取り）のみ。push / comment / worktree の削除（この呼び出しで作った
@@ -98,6 +103,8 @@ worktree_status="skipped"
 worktree_removed=false
 prior_devflow="null"
 ci_wait_ceiling_seconds="$CI_WAIT_CEILING_DEFAULT"
+# 敵対的 security review の起動時の判定。判定できるまで（ok:false の早期終端を含む）は対象（fail-closed）
+security_review='{"target":true,"reasons":["not_determined"],"reviewer_context_changed":true}'
 error=""
 
 emit() {
@@ -116,13 +123,15 @@ emit() {
         --argjson skip_worktree "$(skip_worktree_json)" \
         --argjson prior_devflow "$prior_devflow" \
         --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
+        --argjson security_review "$security_review" \
         --arg error "$error" \
         '
         def nz: if . == "" then null else . end;
         {ok: $ok, pr: $pr, worktree: ($worktree | nz), head_ref: ($head_ref | nz), base_ref: ($base_ref | nz),
          head_sha: ($head_sha | nz), repo: ($repo | nz), epoch: $epoch,
          worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree,
-         prior_devflow: $prior_devflow, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds}
+         prior_devflow: $prior_devflow, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds,
+         security_review: $security_review}
         + (if $error == "" then {} else {error: $error} end)
         '
     exit 0
@@ -352,5 +361,24 @@ fi
 # `.devflow-tmp` 全体は消さない（dev-flow の df-<N> を再利用したとき、PR phase 失敗の回収用 commit
 # message / PR body 等が残っている）
 git -C "$WT" clean -fdx -- '.devflow-tmp/.isolation-probe*' >/dev/null 2>&1 || true
+
+# ============================================================================
+# Segment 5: 敵対的 security review の起動時の判定
+# ============================================================================
+
+# PR 全体（origin/<base>...<PR head>）の diff が決定論の許可リスト（_lib/security-review-scope.mjs）だけなら対象外。
+# 判定できない（base 不明・node 不在・取得失敗・出力が読めない）ときは対象のまま。workflow は LGTM の前に PR head の diff で
+# 判定し直し、どれか 1 回でも対象なら対象のまま扱う。
+if [[ -n "$base_ref" ]]; then
+    scope_out="$(bash "$(dirname "${BASH_SOURCE[0]}")/security-review-scope.sh" "$WT" "origin/${base_ref}" "$head_sha" 2>/dev/null)" || scope_out=""
+    if scope_json="$(printf '%s' "$scope_out" | jq -ce '
+        (type == "object" and .ok == true and .reviewer_context_changed == false | not) as $ctx
+        | if type == "object" and .ok == true and .target == false then {target: false, reasons: [], reviewer_context_changed: $ctx}
+        else {target: true, reasons: ((.reasons // []) | map(select(type == "string")) | .[:20]), reviewer_context_changed: $ctx} end' 2>/dev/null)"; then
+        security_review="$scope_json"
+    else
+        security_review='{"target":true,"reasons":["scope_unreadable"],"reviewer_context_changed":true}'
+    fi
+fi
 
 emit true
