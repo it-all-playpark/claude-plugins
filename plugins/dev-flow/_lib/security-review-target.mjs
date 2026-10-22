@@ -7,7 +7,7 @@
 // 同じ判定を通る。workflow へは inline しない（workflow は判定結果だけを受け取る）。
 //
 // 規則（どれか 1 つでも当たれば対象）:
-//   - permission_config（パス）: sandbox の外で動く入口・権限の設定そのもの — `.claude/settings*.json`、plugin の
+//   - permission_config（パス）: sandbox の外で動く入口・権限の設定そのもの — 置き場所を問わない `(managed-)settings*.json`（dotfiles 管理の `claude-code/settings.json` 等も sandbox を決める）、plugin の
 //     `hooks/`（hooks.json と hook script。harness が sandbox の外で起動する）、`.githooks/` / `.husky/`
 //   - sandbox_boundary（追加行）: sandbox / 権限設定のキー（excludedCommands 等）に触れるコード。sandbox の外で
 //     動かす入口を足す・広げる変更（#1058 の `meeting set-names` はこれ）
@@ -27,7 +27,7 @@
 
 export const SECURITY_REVIEW_REASONS_MAX = 20;
 
-const PERMISSION_CONFIG_PATH_RE = /(^|\/)\.claude\/settings(\.[^/]*)?\.json$|(^|\/)hooks\/|(^|\/)\.githooks\/|(^|\/)\.husky\/|(^|\/)\.mcp\.json$|(^|\/)\.claude-plugin\/plugin\.json$/;
+const PERMISSION_CONFIG_PATH_RE = /(^|\/)(managed-)?settings(\.[^/]*)?\.json$|(^|\/)hooks\/|(^|\/)\.githooks\/|(^|\/)\.husky\/|(^|\/)\.mcp\.json$|(^|\/)\.claude-plugin\/plugin\.json$/;
 
 const SANDBOX_BOUNDARY_RE = /\b(excludedCommands|dangerouslyDisableSandbox|allowWrite|denyWrite|allowRead|denyRead|allowUnixSockets|allowAllUnixSockets|allowedDomains|allowMachLookup|bypassPermissions|mcpServers)\b/;
 

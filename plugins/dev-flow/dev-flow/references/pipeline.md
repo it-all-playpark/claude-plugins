@@ -56,7 +56,7 @@ handoff の `skill` キーは `'dev-flow'` のまま据え置く（集計連続�
 
 **security review（信頼境界をまたぐ PR だけ）**: 対象かどうかは LLM に判定させず、`_lib/security-review-target.mjs` の
 `classifySecurityReviewTarget` が unified diff から決定論で決める（CLI は `_lib/scripts/security-review-target.mjs`）。
-規則は `permission_config`（`.claude/settings*.json`・`hooks/`・`.githooks/`・`.husky/`・`.mcp.json`・plugin manifest の
+規則は `permission_config`（置き場所を問わない `(managed-)settings*.json`・`hooks/`・`.githooks/`・`.husky/`・`.mcp.json`・plugin manifest の
 パスと、`agents/*.md`・`commands/*.md`・`SKILL.md` のどの行の変更も。定義ファイルは frontmatter の権限キーかどうかを
 hunk から確定できないので fail-closed）・`sandbox_boundary`（追加行か削除行が
 `excludedCommands` 等の sandbox / 権限設定のキーに触れる）・`path_write`（追加行がファイルを書く・開いて書き換える・

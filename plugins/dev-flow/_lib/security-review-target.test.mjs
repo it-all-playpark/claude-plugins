@@ -60,6 +60,8 @@ test('[security-review-target] CLI は stdin の diff を同じ判定にかけ�
 
 test.each([
   ['.claude/settings.json の変更', fileDiff('.claude/settings.json', ['"x": 1']), 'permission_config: .claude/settings.json'],
+  ['.claude の外の settings.json（dotfiles 管理の設定）', fileDiff('claude-code/settings.json', ['"x": 1']), 'permission_config: claude-code/settings.json'],
+  ['managed-settings.json', fileDiff('etc/managed-settings.json', ['"x": 1']), 'permission_config: etc/managed-settings.json'],
   ['plugin の hook script', fileDiff('plugins/x/hooks/guard.sh', ['echo ok']), 'permission_config: plugins/x/hooks/guard.sh'],
   ['.githooks の hook', fileDiff('.githooks/pre-commit', ['exit 0']), 'permission_config: .githooks/pre-commit'],
   ['.mcp.json の変更', fileDiff('.mcp.json', ['"command": "npx"']), 'permission_config: .mcp.json'],
