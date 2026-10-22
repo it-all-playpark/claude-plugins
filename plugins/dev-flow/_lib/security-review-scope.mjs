@@ -83,30 +83,38 @@ export function claudeImportPaths(text, fromPath, root = null) {
     const variants = [tok, unescaped, tok.split('\\')[0]];
     for (const v of [...variants]) variants.push(v.split('#')[0], v.split('?')[0]);
     for (const raw of new Set(variants.flatMap((v) => [v, trimPunct(v)]))) {
-      let p = raw;
-      if (p === '' || p.startsWith('~')) continue;
-      let segs;
-      if (p.startsWith('/')) {
-        if (root == null || !p.startsWith(`${String(root).replace(/\/+$/, '')}/`)) continue;
-        segs = p.slice(String(root).replace(/\/+$/, '').length + 1).split('/');
-      } else {
-        segs = [...dir, ...p.split('/')];
-      }
-      const norm = [];
-      let escaped = false;
-      for (const s of segs) {
-        if (s === '' || s === '.') continue;
-        if (s === '..') { if (norm.length === 0) { escaped = true; break; } norm.pop(); continue; }
-        norm.push(s);
-      }
-      if (!escaped && norm.length > 0) out.add(norm.join('/'));
+      if (raw.startsWith('~')) continue;
+      const p = resolveRepoPath(raw, dir, root);
+      if (p != null) out.add(p);
     }
   }
   return [...out];
 }
 
+// dir（repo 相対のディレクトリの要素）から見た p を repo 相対に正規化する。repo の外（root の外の絶対パス・root より上へ
+// 出る `..`）や空は null。
+function resolveRepoPath(p, dir, root) {
+  if (p === '') return null;
+  let segs;
+  if (p.startsWith('/')) {
+    const r = root == null ? null : String(root).replace(/\/+$/, '');
+    if (r == null || !p.startsWith(`${r}/`)) return null;
+    segs = p.slice(r.length + 1).split('/');
+  } else {
+    segs = [...dir, ...p.split('/')];
+  }
+  const norm = [];
+  for (const s of segs) {
+    if (s === '' || s === '.') continue;
+    if (s === '..') { if (norm.length === 0) return null; norm.pop(); continue; }
+    norm.push(s);
+  }
+  return norm.length > 0 ? norm.join('/') : null;
+}
+
 // roots（isReviewerContextPath に当たるファイル）から `@<path>` import を再帰的にたどり、読み込まれるファイルの
-// 集合を返す（roots 自身は含めない）。read(path) はその rev の
+// 集合を返す（roots 自身は含めない）。ディレクトリへの symlink の先はディレクトリのパスのまま入るので、照合は
+// importHit で配下まで含める。read(path) はその rev の
 //   { text }（通常ファイルの本文）/ { link }（symlink の指す先。link のディレクトリから解決する）/ null（その rev に無い）
 // を返し、ある筈のものを読めないときは throw する（呼び出し側が対象に倒す — 読めない import 先の先を黙って飛ばさない）。
 // 大文字小文字だけが違うパスの解決は read 側が持つ（macOS の FS は区別しないが git の tree は区別する）。
@@ -121,9 +129,16 @@ export function reviewerImportClosure(roots, read, root = null) {
     const from = queue.shift();
     const entry = read(from);
     if (entry == null) continue;
-    const found = typeof entry.link === 'string'
-      ? claudeImportPaths(`@${entry.link.replace(/(\s)/g, '\\$1')}`, from, root)
-      : claudeImportPaths(entry.text, from, root);
+    let found;
+    if (typeof entry.link === 'string') {
+      // symlink の先は import の書き方ではなくパスそのものとして解決する。repo の外を指す link は先を確かめられないので、
+      // 黙って捨てずに判定できないとして throw する
+      const p = resolveRepoPath(entry.link, String(from).split('/').slice(0, -1), root);
+      if (p == null) throw new Error('symlink が repo の外を指す');
+      found = [p];
+    } else {
+      found = claudeImportPaths(entry.text, from, root);
+    }
     for (const p of found) {
       const key = p.toLowerCase();
       if (seen.has(key)) continue;
@@ -229,13 +244,20 @@ function fileReasons(f, imported) {
   if (f.hunks === 0 && !f.newFile && !f.deleted) reasons.push(`no_content_change: ${f.path}`);
   if (GIT_METADATA_BASENAMES.includes(base)) reasons.push(`git_metadata: ${f.path}`);
   // import されたファイルは指示として読み込まれるので、文書の拡張子でも許可リストから外す
-  if (imported.has(f.path.toLowerCase()) || !isSecurityReviewExemptPath(f.path)) reasons.push(`not_allowlisted: ${f.path}`);
+  if (importHit(f.path, imported) || !isSecurityReviewExemptPath(f.path)) reasons.push(`not_allowlisted: ${f.path}`);
   return reasons;
+}
+
+// path が import 先そのものか、import 先のディレクトリ（ディレクトリへの symlink の先）の配下か（大文字小文字を区別しない）。
+function importHit(path, imported) {
+  const segs = String(path).toLowerCase().split('/');
+  for (let k = 1; k <= segs.length; k++) if (imported.has(segs.slice(0, k).join('/'))) return true;
+  return false;
 }
 
 // ファイル一覧・import 一覧が読めない・空なら true（fail-closed）。
 const contextChanged = (files, imported) => !Array.isArray(files) || files.length === 0 || imported == null
-  || files.some((p) => isReviewerContextPath(p) || imported.has(p.toLowerCase()));
+  || files.some((p) => isReviewerContextPath(p) || importHit(p, imported));
 const targetOf = (reasons, files, imported = null) => ({ target: true, reasons: reasons.slice(0, MAX_REASONS).concat(reasons.length > MAX_REASONS ? [`他 ${reasons.length - MAX_REASONS} 件`] : []), codes: reasonCodeCounts(reasons), files, reviewer_context_changed: contextChanged(files, imported) });
 
 // 理由の固定 code。CLI の stdout にはこの code と件数（`<code>:<n>`）だけを出す。reasons にはファイルパス・diff 由来の
