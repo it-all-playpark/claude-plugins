@@ -1,0 +1,2 @@
+# この repo は public。dotfiles の claude-code/hooks/pretool-public-repo-guard.sh が git push / gh pr|issue の前に
+# 個人情報・取引先名・secret を検査する（このファイルがある repo だけが対象）。
