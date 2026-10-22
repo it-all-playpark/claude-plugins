@@ -33,14 +33,16 @@ const PERMISSION_CONFIG_PATH_RE = /(^|\/)\.claude\/settings(\.[^/]*)?\.json$|(^|
 const SANDBOX_BOUNDARY_RE = /\b(excludedCommands|dangerouslyDisableSandbox|allowWrite|denyWrite|allowRead|denyRead|allowUnixSockets|allowAllUnixSockets|allowedDomains|allowMachLookup|bypassPermissions|mcpServers)\b/;
 
 const PATH_WRITE_RES = [
-  // Python: os の書き込み・リンク系、書き込みモードの open()、Path.write_*、shutil の copy / move
+  // Python: os の書き込み・リンク系、書き込みモードの open()、Path.write_*、shutil の copy / move。
+  // open の mode literal は同じ行のどこにあっても当てる（`open(os.path.join(d, n), "w")` の内側の `)` で止めない）
   /\bos\.(open|rename|replace|link|symlink|unlink|remove|chmod|chown|truncate)\s*\(/,
-  /\bopen\s*\([^)]*['"][rwax]?b?\+?[wax+]b?['"]/,
+  /\bopen\s*\(.*['"][rwax]?b?\+?[wax+]b?['"]/,
   /\.write_(text|bytes)\s*\(/,
   /\bshutil\.(copy\w*|move)\s*\(/,
   // Node: fs の書き込み・リンク系
-  /\b(writeFileSync|appendFileSync|createWriteStream|copyFileSync|renameSync|symlinkSync|linkSync|unlinkSync|rmSync|chmodSync|truncateSync)\s*\(/,
-  /\bfs(\.promises)?\.(writeFile|appendFile|copyFile|rename|symlink|link|unlink|rm|chmod|truncate)\s*\(/,
+  /\b(writeFileSync|appendFileSync|createWriteStream|copyFileSync|cpSync|renameSync|symlinkSync|linkSync|unlinkSync|rmSync|mkdirSync|chmodSync|truncateSync)\s*\(/,
+  // `fs.` の有無を問わない（node:fs/promises から import した素の `writeFile(...)` も当てる）
+  /\b(writeFile|appendFile|copyFile|cp|rename|symlink|link|unlink|rm|mkdir|chmod|truncate)\s*\(/,
   // shell: 変数で決まるパスへのリダイレクト・tee・cp / mv / ln
   /(^|[^<>&0-9=-])>>?\s*"?\$\{?[A-Za-z_]/,
   /\b(tee|cp|mv|ln)\s[^#\n]*"?\$\{?[A-Za-z_]/,
