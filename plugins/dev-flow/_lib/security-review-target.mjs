@@ -27,9 +27,9 @@
 
 export const SECURITY_REVIEW_REASONS_MAX = 20;
 
-const PERMISSION_CONFIG_PATH_RE = /(^|\/)\.claude\/settings(\.[^/]*)?\.json$|(^|\/)hooks\/|(^|\/)\.githooks\/|(^|\/)\.husky\//;
+const PERMISSION_CONFIG_PATH_RE = /(^|\/)\.claude\/settings(\.[^/]*)?\.json$|(^|\/)hooks\/|(^|\/)\.githooks\/|(^|\/)\.husky\/|(^|\/)\.mcp\.json$|(^|\/)\.claude-plugin\/plugin\.json$/;
 
-const SANDBOX_BOUNDARY_RE = /\b(excludedCommands|dangerouslyDisableSandbox|allowWrite|denyWrite|allowRead|denyRead|allowUnixSockets|allowAllUnixSockets|allowedDomains|allowMachLookup|bypassPermissions)\b/;
+const SANDBOX_BOUNDARY_RE = /\b(excludedCommands|dangerouslyDisableSandbox|allowWrite|denyWrite|allowRead|denyRead|allowUnixSockets|allowAllUnixSockets|allowedDomains|allowMachLookup|bypassPermissions|mcpServers)\b/;
 
 const PATH_WRITE_RES = [
   // Python: os の書き込み・リンク系、書き込みモードの open()、Path.write_*、shutil の copy / move
