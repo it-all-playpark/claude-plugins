@@ -123,6 +123,19 @@ for (const [name, caller] of CALLERS) {
     assert.deepEqual(plain(result.security_review.open.map((f) => f.topic)), [`hardlink-write::scripts/m${SECURITY_REVIEW_MAX}.sh`]);
     assert.equal(result.security_review.rounds, SECURITY_REVIEW_MAX);
   });
+
+  test(`[security-review] ${name}: security review が worktree の外を指す critical を返したら fix できないので LGTM にせず security_unresolved で終える`, async () => {
+    const outsideFinding = { ...finding(1), topic: 'settings-escape::~/.claude/settings.json', file: '~/.claude/settings.json' };
+    const { result, calls } = await runPrIterate({
+      args: argsFor(caller, { security_review: TARGET }),
+      secReview: () => ({ decision: 'request-changes', issues: [outsideFinding], summary: 'ng' }),
+    });
+    assert.equal(result.status, SECURITY_UNRESOLVED_STATUS);
+    assert.equal(secCalls(calls).length, 1);
+    assert.equal(calls.filter((c) => c.label.startsWith('fix#')).length, 0);
+    assert.deepEqual(plain(result.security_review.open.map((f) => f.file)), ['~/.claude/settings.json']);
+    assert.deepEqual(plain(result.human_followups.map((f) => f.file)), ['~/.claude/settings.json']);
+  });
 }
 
 test('[security-review] security review が schema-retry 後も結果を返さなければ LGTM にしない（review_contract_error）', async () => {

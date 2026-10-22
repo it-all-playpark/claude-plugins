@@ -56,9 +56,11 @@ handoff の `skill` キーは `'dev-flow'` のまま据え置く（集計連続�
 
 **security review（信頼境界をまたぐ PR だけ）**: 対象かどうかは LLM に判定させず、`_lib/security-review-target.mjs` の
 `classifySecurityReviewTarget` が unified diff から決定論で決める（CLI は `_lib/scripts/security-review-target.mjs`）。
-規則は `permission_config`（`.claude/settings*.json`・`hooks/`・`.githooks/`・`.husky/` のパス）・`sandbox_boundary`
-（追加行が `excludedCommands` 等の sandbox / 権限設定のキーに触れる）・`path_write`（追加行がファイルを書く・開いて
-書き換える・リンクを作る API）で、docs とテストにはどれも当てない。判定入力は 2 経路で同じ関数を通る:
+規則は `permission_config`（`.claude/settings*.json`・`hooks/`・`.githooks/`・`.husky/` のパスと、`agents/*.md`・
+`commands/*.md`・`SKILL.md` の frontmatter の権限キーの行を足す・消す変更）・`sandbox_boundary`（追加行か削除行が
+`excludedCommands` 等の sandbox / 権限設定のキーに触れる）・`path_write`（追加行がファイルを書く・開いて書き換える・
+リンクを作る API）・`unparsed_path`（`diff --git` のヘッダからパスを読めない。`core.quotePath` の C-quote は戻して
+読む）で、`permission_config` 以外は docs とテストに当てない。判定入力は 2 経路で同じ関数を通る:
 
 - `/dev-flow`: Security floor の `secfloor-classify` が realized diff（tracked は HEAD からの diff、untracked は
   `/dev/null` からの diff）を判定して `secreview` に載せ、`parseSecfloorFields` が `state.securityReview` にする
@@ -69,8 +71,9 @@ handoff の `skill` キーは `'dev-flow'` のまま据え置く（集計連続�
 pr-iterate は対象の run でだけ、review と CI が通り LGTM を確定する直前（base との conflict の自動解消の後）に
 `security-reviewer`（`agents/security-reviewer.md`。脅威モデル — 攻撃者が握る入力・守る資産・sandbox の内外 — を
 定義に持つ）を `security-review#k` として新しい spawn で起動し、PR 全 diff を読ませる（delta に絞らず、前 round の
-指摘も渡さない）。出力は pr-reviewer と同じ REVIEW schema。worktree の中を指す critical/major が 0 件ならその round を
-LGTM にする。残れば `fix#i`（dev-runner）に回し、commit を保証して次 iteration（fix delta の review → CI → 新しい
+指摘も渡さない）。出力は pr-reviewer と同じ REVIEW schema。critical/major が 0 件ならその round を LGTM にする。
+worktree の外を指す critical/major が 1 件でもあれば fix で直せないので、fix せず `status: 'security_unresolved'` で
+終える（人間側 follow-up にも載せる。pr-reviewer の round のように follow-up に流して LGTM へ進めない）。残りは `fix#i`（dev-runner）に回し、commit を保証して次 iteration（fix delta の review → CI → 新しい
 spawn の security review）へ進む。`SECURITY_REVIEW_MAX`（3）回目の spawn が critical/major を返したら fix せず
 `status: 'security_unresolved'` で終え、dev-flow の Merge tier は `iterate_non_lgtm` と専用の
 `security_review_unresolved` で HOLD にする。指摘は reviewSeen に積まない（stuck 突合は pr-reviewer の topic だけ）。

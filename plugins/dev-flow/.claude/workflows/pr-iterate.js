@@ -1706,8 +1706,8 @@ async function ensureFixCommitted(i, shaPrev) {
 }
 
 // security review（対象の PR だけ。_lib/security-review.mjs）: review と CI が通り LGTM を確定する直前に、毎回新しい
-// spawn の security-reviewer に PR 全 diff を読ませる。critical/major（worktree の中を指すもの）が 0 件なら 'clear' で
-// LGTM へ進む。残れば fix に回して commit を保証し 'fixed' を返す — 呼び出し側は次 iteration（fix delta の review →
+// spawn の security-reviewer に PR 全 diff を読ませる。critical/major が 0 件なら 'clear' で LGTM へ進む。worktree の
+// 外を指すものが 1 件でもあれば fix できないので SECURITY_UNRESOLVED_STATUS で終える。残りは fix に回して commit を保証し 'fixed' を返す — 呼び出し側は次 iteration（fix delta の review →
 // CI → ここ）へ進む。SECURITY_REVIEW_MAX 回目の spawn が critical/major を返したら fix せず SECURITY_UNRESOLVED_STATUS で
 // 終える（直した結果を確かめる spawn が残らない）。review / fix の失敗は既存の review_contract_error / fix_failed。
 // 指摘は reviewSeen に積まない — 次の security review には既出 findings を渡さず、pr-reviewer の stuck 突合とも混ぜない。
@@ -1726,12 +1726,21 @@ async function runSecurityReview(iteration) {
     log(`⚠️ iteration ${iteration}: ${label} が schema-retry 後も結果を返さず — LGTM にせず人間へエスカレーション`)
     return 'stop'
   }
-  const outcome = routeInsideWorktree(classifyReviewRoute(review), iteration)
+  const routed = classifyReviewRoute(review)
+  const outcome = routeInsideWorktree(routed, iteration)
   const blocking = outcome.blocking
-  securityOpen = blocking
-  securityReviewBlocking += blocking.length
-  const round = { iteration, decision: review.decision, summary: review.summary, blocking, minor: outcome.minor, scope: 'security', delta_lines: null }
+  // worktree の外を指す critical/major は fix で直せないが、解消したわけではない。pr-reviewer の round と違い
+  // clear に数えず、security review 未収束として人間へ返す（攻撃経路の指摘を follow-up に流して LGTM にしない）
+  const outside = routed.blocking.length - blocking.length
+  securityOpen = routed.blocking
+  securityReviewBlocking += routed.blocking.length
+  const round = { iteration, decision: review.decision, summary: review.summary, blocking: routed.blocking, minor: outcome.minor, scope: 'security', delta_lines: null }
   history.push(round)
+  if (outside > 0) {
+    terminal = SECURITY_UNRESOLVED_STATUS
+    log(`⚠️ iteration ${iteration}: ${label} が worktree の外を指す critical/major ${outside} 件を返した — fix で直せないため LGTM にせず人間へ`)
+    return 'stop'
+  }
   if (blocking.length === 0) {
     log(`iteration ${iteration}: ${label} — critical/major 0 件（PR 全 diff）`)
     return 'clear'

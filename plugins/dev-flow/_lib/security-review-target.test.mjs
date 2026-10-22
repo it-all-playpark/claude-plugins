@@ -75,6 +75,62 @@ test.each([
   assert.deepEqual(classifySecurityReviewTarget(diff), { target: false, reasons: [] });
 });
 
+const removedDiff = (path, removed) => [
+  `diff --git a/${path} b/${path}`,
+  `--- a/${path}`,
+  `+++ b/${path}`,
+  `@@ -1,${removed.length + 1} +1,1 @@`,
+  ' context',
+  ...removed.map((l) => `-${l}`),
+].join('\n');
+
+test('[security-review-target] core.quotePath で quote された非 ASCII のパスも戻して判定する', () => {
+  // git が `scripts/議事録.sh` を出す形（UTF-8 のバイトを 8 進でエスケープ）
+  const q = '"b/scripts/\\350\\255\\260\\344\\272\\213\\351\\214\\262.sh"';
+  const diff = [
+    `diff --git "a/scripts/\\350\\255\\260\\344\\272\\213\\351\\214\\262.sh" ${q}`,
+    '--- "a/scripts/\\350\\255\\260\\344\\272\\213\\351\\214\\262.sh"',
+    `+++ ${q}`,
+    '@@ -1,1 +1,2 @@',
+    ' context',
+    '+mv "$a" "$b"',
+  ].join('\n');
+  assert.deepEqual(classifySecurityReviewTarget(diff), { target: true, reasons: ['path_write: scripts/議事録.sh'] });
+});
+
+test('[security-review-target] quote された docs のパスは戻したうえで docs として対象外', () => {
+  const diff = [
+    'diff --git "a/docs/\\346\\211\\213\\351\\240\\206.md" "b/docs/\\346\\211\\213\\351\\240\\206.md"',
+    '--- "a/docs/\\346\\211\\213\\351\\240\\206.md"',
+    '+++ "b/docs/\\346\\211\\213\\351\\240\\206.md"',
+    '@@ -1,1 +1,2 @@',
+    ' context',
+    '+手順',
+  ].join('\n');
+  assert.deepEqual(classifySecurityReviewTarget(diff), { target: false, reasons: [] });
+});
+
+test('[security-review-target] パスを読めない diff ヘッダは対象に倒す', () => {
+  const diff = ['diff --git "a/broken\\q" "b/broken\\q"', '+mv x y'].join('\n');
+  const r = classifySecurityReviewTarget(diff);
+  assert.equal(r.target, true);
+  assert.equal(r.reasons.length, 1);
+  assert.match(r.reasons[0], /^unparsed_path: diff --git /);
+});
+
+test.each([
+  ['excludedCommands を消す変更（deny の削除も境界を動かす）', removedDiff('src/setup.ts', ['denyWrite: ["~/.ssh"],']), 'sandbox_boundary: src/setup.ts'],
+  ['agents/*.md の tools を変える変更', fileDiff('plugins/x/agents/runner.md', ['tools: Bash, Write']), 'permission_config: plugins/x/agents/runner.md'],
+  ['SKILL.md の allowed-tools を消す変更', removedDiff('plugins/x/foo/SKILL.md', ['allowed-tools: Read']), 'permission_config: plugins/x/foo/SKILL.md'],
+  ['hooks/ 配下の .md（docs の除外より先に権限設定として見る）', fileDiff('plugins/x/hooks/README.md', ['x']), 'permission_config: plugins/x/hooks/README.md'],
+])('[security-review-target] 対象（削除行・定義ファイル）: %s', (_name, diff, reason) => {
+  assert.deepEqual(classifySecurityReviewTarget(diff), { target: true, reasons: [reason] });
+});
+
+test('[security-review-target] agents/*.md の権限キーに触れない本文の変更は対象外', () => {
+  assert.deepEqual(classifySecurityReviewTarget(fileDiff('plugins/x/agents/runner.md', ['diff を読んで要約する'])), { target: false, reasons: [] });
+});
+
 test('[security-review-target] reasons は重複なしで上限件数まで', () => {
   const many = Array.from({ length: SECURITY_REVIEW_REASONS_MAX + 5 }, (_, k) => fileDiff(`bin/s${k}.sh`, ['mv "$a" "$b"', 'mv "$c" "$d"'])).join('\n');
   const r = classifySecurityReviewTarget(many);
