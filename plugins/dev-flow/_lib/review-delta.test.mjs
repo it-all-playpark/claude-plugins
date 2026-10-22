@@ -6,13 +6,15 @@
 //   - sha_prev / sha_now が取得できない round は full にフォールバックし log に出す（fail-open。
 //     delta を空扱いにして approve へ倒さない）
 //   - 返り値 history[] の各 round に scope('full'|'delta') / delta_lines（full は null）が載る
+//   - full review が critical を返した次の round は full review に戻り、critical の無い full review を経るまで
+//     delta にも LGTM にもならない。critical の出なかった run の scope の選び方は変わらない
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { isDeltaSha, resolveReviewScope, reviewDeltaBlock, parseShortstatLines } from './review-delta.mjs';
+import { isDeltaSha, resolveReviewScope, nextCriticalPending, reviewDeltaBlock, parseShortstatLines } from './review-delta.mjs';
 import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -57,6 +59,23 @@ test('[review-delta] sha_now 欠落は full にフォールバック（reason=sh
 
 test('[review-delta] sha_prev === sha_now（fix が commit を積まなかった）は空 delta を approve の根拠にせず full', () => {
   assert.deepEqual(resolveReviewScope({ iteration: 2, shaPrev: SHA_A, shaNow: SHA_A.toUpperCase() }), { scope: 'full', range: null, reason: 'sha_unchanged' });
+});
+
+test('[review-delta][critical-full] criticalPending の round は sha が揃っていても full（reason=critical_in_full_review）', () => {
+  assert.deepEqual(resolveReviewScope({ iteration: 2, shaPrev: SHA_A, shaNow: SHA_B, criticalPending: true }), { scope: 'full', range: null, reason: 'critical_in_full_review' });
+  assert.deepEqual(resolveReviewScope({ iteration: 1, shaPrev: SHA_A, shaNow: SHA_B, criticalPending: true }), { scope: 'full', range: null, reason: null });
+  assert.deepEqual(resolveReviewScope({ iteration: 3, shaPrev: SHA_A, shaNow: SHA_B, criticalPending: false }), { scope: 'delta', range: `${SHA_A}..${SHA_B}`, reason: null });
+});
+
+test('[review-delta][critical-full] nextCriticalPending は full review の severity だけで決まり、delta / remerge round は値を変えない', () => {
+  const crit = [{ severity: 'critical' }, { severity: 'major' }];
+  const major = [{ severity: 'major' }];
+  assert.equal(nextCriticalPending({ pending: false, scope: 'full', blocking: crit }), true, 'full が critical を返したら pending');
+  assert.equal(nextCriticalPending({ pending: true, scope: 'full', blocking: major }), false, 'critical の無い full review で解除');
+  assert.equal(nextCriticalPending({ pending: true, scope: 'full', blocking: [] }), false);
+  assert.equal(nextCriticalPending({ pending: true, scope: 'delta', blocking: [] }), true, 'delta review の approve だけでは解除しない');
+  assert.equal(nextCriticalPending({ pending: true, scope: 'remerge', blocking: [] }), true);
+  assert.equal(nextCriticalPending({ pending: false, scope: 'delta', blocking: crit }), false, 'delta review の critical は full に戻す条件にしない');
 });
 
 // ============================================================
@@ -261,4 +280,89 @@ test('[review-delta][AC-6] full フォールバック round は scope:full / del
   const { result } = await runTwoRounds({ overrides: { 'commit-ensure#1': ENSURE_WITH_SHA(SHA_B) } });
   assert.deepEqual(roundScopes(result).map((r) => [r.scope, r.delta_lines]), [['full', null], ['full', null]],
     `2 round とも scope:full / delta_lines:null であるべき: ${JSON.stringify(roundScopes(result))}`);
+});
+
+// ============================================================
+// 配線: full review の critical の後は full review に戻す（pr-iterate.js の VM 挙動で観測）
+// ============================================================
+
+// commit-ensure#i ごとに別の head sha を返し、sha の都合で full にフォールバックしない状態を作る
+const shaOf = (i) => String(i).padStart(2, '0').repeat(20);
+const finding = (severity, topic) => ({ severity, topic, file: 'a.js', line: 1, description: 'd', suggestion: 's' });
+const requestChanges = (...issues) => ({ decision: 'request-changes', summary: 'ng', issues });
+
+// reviewer: (n, prompt) => 応答。n は pr-reviewer の呼び出し順（1 始まり）
+async function runRounds({ reviewer, maxIterations } = {}) {
+  let reviews = 0;
+  const { ctx, calls, logs } = makePrIterateSandbox({
+    args: maxIterations == null ? '5' : { pr: '5', max_iterations: maxIterations },
+    overrides: { 'pr-meta': PR_META_WITH_SHA },
+    rounds: ({ label, agentType, prompt }) => {
+      if (agentType === 'dev-flow:pr-reviewer') return reviewer(++reviews, String(prompt));
+      const m = /^commit-ensure#(\d+)$/.exec(label);
+      if (m) return ENSURE_WITH_SHA(shaOf(Number(m[1])));
+      return undefined;
+    },
+  });
+  const { result, error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
+  assertNoCrash(error, 'pr-iterate-critical-full');
+  const reviews_ = calls.filter((c) => /^review#\d+$/.test(c.label));
+  return { result, calls, logs, reviews: reviews_ };
+}
+
+test('[review-delta][critical-full][AC-1] full review が critical を返した次の round は delta_range を渡さない full review', async () => {
+  const { result, reviews, logs } = await runRounds({
+    reviewer: (n) => (n === 1 ? requestChanges(finding('critical', 'security::toctou')) : APPROVE_REVIEW),
+  });
+  assert.equal(result?.status, 'lgtm', `critical の無い full review で lgtm になるべきだが ${result?.status}`);
+  const r2 = reviews.find((c) => c.label === 'review#2');
+  assert.ok(r2, 'review#2 が dispatch されていない');
+  assert.ok(!r2.prompt.includes('delta_range:'), `critical の後の review#2 が delta review になっている:\n${r2.prompt.slice(0, 600)}`);
+  assert.ok(r2.prompt.includes('gh pr diff'), 'critical の後の review#2 は PR 全 diff を読む');
+  assert.ok(logs.some((l) => l.includes('review#2') && l.includes('critical') && l.includes('full review に戻す')), `full に戻した log が無い: ${logs.join(' | ')}`);
+  assert.deepEqual(roundScopes(result).map((r) => r.scope), ['full', 'full']);
+});
+
+test('[review-delta][critical-full][AC-2] 戻した full review が critical を返さなければ、以降は delta review に戻る', async () => {
+  const { result, reviews } = await runRounds({
+    reviewer: (n) => (n === 1 ? requestChanges(finding('critical', 'security::toctou'))
+      : n === 2 ? requestChanges(finding('major', 'logic-bug::b.js'))
+      : APPROVE_REVIEW),
+  });
+  assert.equal(result?.status, 'lgtm', `3 round で lgtm になるべきだが ${result?.status}`);
+  assert.deepEqual(roundScopes(result).map((r) => r.scope), ['full', 'full', 'delta']);
+  const r3 = reviews.find((c) => c.label === 'review#3');
+  assert.ok(r3.prompt.includes(`delta_range: ${shaOf(1)}..${shaOf(2)}`), `review#3 の delta_range が想定と違う:\n${r3.prompt.slice(0, 400)}`);
+});
+
+test('[review-delta][critical-full][AC-3] critical の fix を delta review が approve するだけでは LGTM にならず、critical の無い full review を経るまで LGTM しない', async () => {
+  // delta review なら必ず approve し、full review なら毎回別 topic の critical を返す reviewer
+  const { result, reviews } = await runRounds({
+    maxIterations: 3,
+    reviewer: (n, prompt) => (prompt.includes('delta_range:') ? APPROVE_REVIEW : requestChanges(finding('critical', `security::c${n}`))),
+  });
+  assert.equal(result?.status, 'max_reached', `critical を返し続ける full review の run が ${result?.status} で終わった`);
+  assert.equal(reviews.length, 3);
+  for (const r of reviews) assert.ok(!r.prompt.includes('delta_range:'), `${r.label} が delta review になっている`);
+  assert.deepEqual(roundScopes(result).map((r) => r.scope), ['full', 'full', 'full']);
+});
+
+test('[review-delta][critical-full][AC-3] critical を返さない full review を経た round で LGTM になる', async () => {
+  const { result } = await runRounds({
+    reviewer: (n) => (n <= 2 ? requestChanges(finding('critical', `security::c${n}`)) : APPROVE_REVIEW),
+  });
+  assert.equal(result?.status, 'lgtm');
+  const rounds = roundScopes(result);
+  assert.deepEqual(rounds.map((r) => r.scope), ['full', 'full', 'full'], 'LGTM の round は full review であるべき');
+});
+
+test('[review-delta][critical-full][AC-4] full review で critical が出なかった run は従来どおり iteration 2 以降 delta review', async () => {
+  const { result, logs } = await runRounds({
+    reviewer: (n) => (n === 1 ? requestChanges(finding('major', 'logic-bug::a.js'))
+      : n === 2 ? requestChanges(finding('major', 'logic-bug::b.js'))
+      : APPROVE_REVIEW),
+  });
+  assert.equal(result?.status, 'lgtm');
+  assert.deepEqual(roundScopes(result).map((r) => [r.scope, r.delta_lines]), [['full', null], ['delta', 10], ['delta', 10]]);
+  assert.ok(!logs.some((l) => l.includes('full review に戻す')), `critical の無い run で full に戻している: ${logs.join(' | ')}`);
 });

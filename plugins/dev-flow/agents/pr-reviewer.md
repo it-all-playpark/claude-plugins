@@ -107,6 +107,12 @@ delta 外の regression は CI と dev-flow の Final reconcile（test 再実行
 `delta_range` が渡されない round は orchestrator が full にフォールバックさせた round であり、
 iteration 1 と同じ full review を行う。
 
+**critical 後は full review に戻る**: full review（`delta_range` の無い round）が critical を 1 件以上返したら、
+orchestrator は次の round に `delta_range` を渡さず full review に戻す。critical を返さない full review を経るまで
+delta review に戻さず、LGTM にもしない（critical の fix を delta review が approve しただけでは LGTM にならない）。
+delta review は delta 外の新規指摘を出さないので、critical が 1 件出た PR は他にも critical がある前提で、
+PR 全 diff を読み直す round を挟む。判定は出力の `severity` だけで決まる — critical は実在するものだけに付ける。
+
 これは**ゲートの緩和ではない**: delta 内の本物の新規 critical/major は依然として必ず報告する。
 殺すのは「同じコードを別の切り口で蒸し返す churn」だけ。
 

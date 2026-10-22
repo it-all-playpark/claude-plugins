@@ -529,14 +529,20 @@ function isDeltaSha(s) {
   return typeof s === 'string' && SHA_RE.test(s.trim());
 }
 
-function resolveReviewScope({ iteration, shaPrev, shaNow }) {
+function resolveReviewScope({ iteration, shaPrev, shaNow, criticalPending = false }) {
   if (!(Number(iteration) >= 2)) return { scope: 'full', range: null, reason: null };
+  if (criticalPending === true) return { scope: 'full', range: null, reason: 'critical_in_full_review' };
   if (!isDeltaSha(shaPrev)) return { scope: 'full', range: null, reason: 'sha_prev_unavailable' };
   if (!isDeltaSha(shaNow)) return { scope: 'full', range: null, reason: 'sha_now_unavailable' };
   const prev = shaPrev.trim();
   const now = shaNow.trim();
   if (prev.toLowerCase() === now.toLowerCase()) return { scope: 'full', range: null, reason: 'sha_unchanged' };
   return { scope: 'delta', range: `${prev}..${now}`, reason: null };
+}
+
+function nextCriticalPending({ pending, scope, blocking }) {
+  if (scope !== 'full') return pending === true;
+  return Array.isArray(blocking) && blocking.some((x) => x?.severity === 'critical');
 }
 
 function reviewDeltaBlock({ shaPrev, shaNow }) {
@@ -1704,9 +1710,12 @@ function routeInsideWorktree(outcome, iteration) {
 // shaNow: 現在の PR head（review#1 は pr-meta / nested args の head_sha、以降は ensure-committed の head_sha）。
 // shaPrev: 直前 round の review 時点の head。delta = shaPrev..shaNow。どちらかが欠ければ full にフォールバック。
 // pendingDeltaLines: ensure-committed が shortstat から出した delta の変更行数（次 round の history 用）。
+// criticalPending: full review が critical を返し、まだ critical の無い full review を経ていない。true の間は
+// 次 round も full review にする（nextCriticalPending / resolveReviewScope）— delta review の approve だけで LGTM にしない。
 let shaNow = isDeltaSha(prMeta?.head_sha) ? prMeta.head_sha.trim() : null
 let shaPrev = null
 let pendingDeltaLines = null
+let criticalPending = false
 if (shaNow == null) log('⚠️ review#1 時点の head sha を取得できず — review#2 は full review にフォールバックする（fail-open）')
 
 // fix agent が throw（StructuredOutput 契約違反等の harness 例外）または null（schema 不一致/技術的
@@ -1917,13 +1926,15 @@ for (i = 1; i <= MAX; i++) {
   const prior = reviewSeen.prior()   // 前 iteration までの累積 findings
   // review scope: i ≥ 2 で sha_prev..sha_now が確定していれば delta、確定できなければ full（fail-open。
   // delta を空扱いにして approve へ倒さない）。scope / delta_lines は round の history に載せる。
+  // full review が critical を返した後は、critical の無い full review を経るまで full に戻す（criticalPending）。
   // 直前 round で conflict 自動解消の merge commit を push した round は、解消で入った行（remerge-diff）だけを読む。
   const reviewScope = remergeSha != null
     ? { scope: 'remerge', range: null, reason: null }
-    : resolveReviewScope({ iteration: i, shaPrev, shaNow })
+    : resolveReviewScope({ iteration: i, shaPrev, shaNow, criticalPending })
   const roundScope = reviewScope.scope
   const roundDeltaLines = roundScope === 'delta' ? pendingDeltaLines : null
-  if (reviewScope.reason) log(`⚠️ review#${i}: ${reviewScope.reason} — fix delta を確定できず full review にフォールバック（fail-open）`)
+  if (reviewScope.reason === 'critical_in_full_review') log(`review#${i}: 前の full review が critical を返した — critical の無い full review を経るまで delta にせず full review に戻す`)
+  else if (reviewScope.reason) log(`⚠️ review#${i}: ${reviewScope.reason} — fix delta を確定できず full review にフォールバック（fail-open）`)
   const reviewPrompt = (roundScope === 'remerge'
       ? remergeReviewPrompt({ pr: PR, mergeSha: remergeSha })
       : roundScope === 'delta'
@@ -2014,6 +2025,8 @@ for (i = 1; i <= MAX; i++) {
       break
     }
   }
+  // full review の critical（fix の対象にしたもの）で次 round の scope を決める。delta / remerge round は値を変えない。
+  criticalPending = nextCriticalPending({ pending: criticalPending, scope: roundScope, blocking: outcome.blocking })
 
   if (outcome.route === 'ci_gate') {
     // CI gate — restores the gate lost in eb8aa7e。blocking 0 件の comment/request-changes も

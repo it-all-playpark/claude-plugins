@@ -77,6 +77,14 @@ HOLD のとき単体 pr-iterate の終端サマリーは code ごとの回収状
 （最後の conflict 自動解消が resolved）だけで、それ以外の code は未解消として人に返す。未解消が残れば見出しを「🎉 LGTM」に
 しない（HOLD 後の回収ではこのレポートが PR の最後のコメント＝最新の結論になるため）。dev-flow のサマリー自体は編集しない。
 
+pr-iterate の review#i（i ≥ 2）は fix delta（前 round の review 時点の head .. 今の head）だけを読む delta review
+（`_lib/review-delta.mjs` の `resolveReviewScope`）。sha が確定できない round は full review にフォールバックする。
+**full review が critical を 1 件以上返したら、次の round は `delta_range` を渡さない full review に戻す**
+（`nextCriticalPending`。判定は fix の対象にした finding の `severity` だけ）。critical を返さない full review を経るまで
+delta review に戻さず LGTM にもしない — critical の fix を delta review が approve しただけでは LGTM にならない。
+delta review は delta 外の新規指摘を出さないので、critical が 1 件出た PR は他にもある前提で扱う。full review が critical を
+返さなければ以降の round は従来どおり delta review。反復上限（`max_reached`）と stuck 判定は変えない。
+
 pr-iterate は review と CI gate が通った round で LGTM を確定する直前に base との conflict を読む（`mergeable-check#i`）。
 CONFLICTING / DIRTY のときだけ `conflict-resolve#i` が base を merge し、決定論スクリプト `conflict-autoresolve` が
 衝突ファイルを diff3 で型 A（全 hunk の base 側が空 → PR 側 → base 側の和集合）/ 型 B（`.claude/workflows/*.js` の
