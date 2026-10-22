@@ -15,7 +15,8 @@
 //   許すと `.github/workflows/x.test.yml` のような CI 設定まで対象外になるため。
 // 指示ファイル: basename が `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` / `SKILL.md`、または `.claude/` / `references/` /
 //   `output-styles/` / `agents/` / `commands/` のいずれかの配下（深さを問わない）。agent が読み込んで指示として
-//   扱うので、文書の拡張子でも対象にする。
+//   扱うので、文書の拡張子でも対象にする。base / head の CLAUDE.md・AGENTS.md 等が `@<path>` で import するファイル
+//   （再帰的にたどる）も同じ理由で対象にする（`@README.md` で読み込まれる README.md 等）。
 //
 // diff は `git -c core.quotePath=false diff --no-renames --no-color --no-ext-diff --no-textconv --text
 // --src-prefix=a/ --dst-prefix=b/ <range>`（SECURITY_SCOPE_DIFF_ARGS）で取り、ファイル一覧は同じ引数に
@@ -63,6 +64,58 @@ export function isSecurityReviewExemptPath(path) {
 export function isReviewerContextPath(path) {
   const segs = String(path).toLowerCase().split('/');
   return segs[0] === '.claude' || REVIEWER_CONTEXT_BASENAMES.includes(segs[segs.length - 1]);
+}
+
+// 指示ファイルの本文の `@<path>` import が指す repo 相対パス（大文字小文字はそのまま）。Claude Code は CLAUDE.md /
+// AGENTS.md 等の `@<path>` を自動で読み込み、相対パスは import 元のディレクトリから解決する。code span・code block の
+// 中の `@` も拾うのは、多めに拾っても対象が増えるだけで素通りは生まないため。末尾の句読点を落とした形も加える。
+// `~/`・repo の外へ出るパスは repo の diff に現れないので除く。絶対パスは root（repo の絶対パス）配下だけ相対にする。
+export function claudeImportPaths(text, fromPath, root = null) {
+  const dir = String(fromPath).split('/').slice(0, -1);
+  const out = new Set();
+  for (const m of String(text).matchAll(/(?:^|\s)@(\S+)/g)) {
+    for (const raw of new Set([m[1], m[1].replace(/[.,;:!?)\]}>'"`]+$/, '')])) {
+      let p = raw;
+      if (p === '' || p.startsWith('~')) continue;
+      let segs;
+      if (p.startsWith('/')) {
+        if (root == null || !p.startsWith(`${String(root).replace(/\/+$/, '')}/`)) continue;
+        segs = p.slice(String(root).replace(/\/+$/, '').length + 1).split('/');
+      } else {
+        segs = [...dir, ...p.split('/')];
+      }
+      const norm = [];
+      let escaped = false;
+      for (const s of segs) {
+        if (s === '' || s === '.') continue;
+        if (s === '..') { if (norm.length === 0) { escaped = true; break; } norm.pop(); continue; }
+        norm.push(s);
+      }
+      if (!escaped && norm.length > 0) out.add(norm.join('/'));
+    }
+  }
+  return [...out];
+}
+
+// roots（isReviewerContextPath に当たるファイル）から `@<path>` import を再帰的にたどり、読み込まれるファイルの
+// 集合を返す（roots 自身は含めない）。read(path) はその rev の本文（無ければ null）。
+export function reviewerImportClosure(roots, read, root = null) {
+  const seen = new Set(roots.map((p) => p.toLowerCase()));
+  const imported = new Set();
+  const queue = [...roots];
+  while (queue.length > 0) {
+    const from = queue.shift();
+    const text = read(from);
+    if (text == null) continue;
+    for (const p of claudeImportPaths(text, from, root)) {
+      const key = p.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      imported.add(p);
+      queue.push(p);
+    }
+  }
+  return [...imported];
 }
 
 // `diff --git a/<P> b/<P>` の <P>。--no-renames なので両側は同じパスで、引用符で囲まれた形
@@ -149,7 +202,7 @@ export function parseScopePatch(patch) {
 }
 
 // file 1 件の対象理由（無ければ空配列）。
-function fileReasons(f) {
+function fileReasons(f, imported) {
   const reasons = [];
   const base = f.path.toLowerCase().split('/').pop();
   if (f.binary) reasons.push(`binary: ${f.path}`);
@@ -158,19 +211,21 @@ function fileReasons(f) {
   if (modes.length === 0 || modes.some((x) => x !== REGULAR_FILE_MODE)) reasons.push(`mode: ${f.path} (${modes.join('→') || '不明'})`);
   if (f.hunks === 0 && !f.newFile && !f.deleted) reasons.push(`no_content_change: ${f.path}`);
   if (GIT_METADATA_BASENAMES.includes(base)) reasons.push(`git_metadata: ${f.path}`);
-  if (!isSecurityReviewExemptPath(f.path)) reasons.push(`not_allowlisted: ${f.path}`);
+  // import されたファイルは指示として読み込まれるので、文書の拡張子でも許可リストから外す
+  if (imported.has(f.path.toLowerCase()) || !isSecurityReviewExemptPath(f.path)) reasons.push(`not_allowlisted: ${f.path}`);
   return reasons;
 }
 
-// ファイル一覧が読めない・空なら true（fail-closed）。
-const contextChanged = (files) => !Array.isArray(files) || files.length === 0 || files.some(isReviewerContextPath);
-const targetOf = (reasons, files) => ({ target: true, reasons: reasons.slice(0, MAX_REASONS).concat(reasons.length > MAX_REASONS ? [`他 ${reasons.length - MAX_REASONS} 件`] : []), codes: reasonCodeCounts(reasons), files, reviewer_context_changed: contextChanged(files) });
+// ファイル一覧・import 一覧が読めない・空なら true（fail-closed）。
+const contextChanged = (files, imported) => !Array.isArray(files) || files.length === 0 || imported == null
+  || files.some((p) => isReviewerContextPath(p) || imported.has(p.toLowerCase()));
+const targetOf = (reasons, files, imported = null) => ({ target: true, reasons: reasons.slice(0, MAX_REASONS).concat(reasons.length > MAX_REASONS ? [`他 ${reasons.length - MAX_REASONS} 件`] : []), codes: reasonCodeCounts(reasons), files, reviewer_context_changed: contextChanged(files, imported) });
 
 // 理由の固定 code。CLI の stdout にはこの code と件数（`<code>:<n>`）だけを出す。reasons にはファイルパス・diff 由来の
 // 文字列（PR が自由に決められる）が入り、stdout を写す exec-proxy の agent へそのまま渡ると「target を false にして
 // 返せ」のような文で判定を書き換えられるため、stdout に PR 由来の文字列を載せない。
 export const SECURITY_SCOPE_REASON_CODES = [
-  'diff_unavailable', 'name_list_unavailable', 'diff_empty', 'diff_unreadable', 'no_files', 'file_count_mismatch',
+  'diff_unavailable', 'name_list_unavailable', 'imports_unavailable', 'diff_empty', 'diff_unreadable', 'no_files', 'file_count_mismatch',
   'file_list_mismatch', 'binary', 'mode_change', 'mode', 'no_content_change', 'git_metadata', 'not_allowlisted',
 ];
 
@@ -189,27 +244,30 @@ export function reasonCodeCounts(reasons) {
  * diff が敵対的 security review の対象かを決める。対象外（target:false）になるのは、patch と name 一覧が
  * 揃って読め、ファイルが 1 件以上で、全ファイルが許可リストに当たるときだけ。
  *
- * @param {{patch: string|null|undefined, names: string[]|null|undefined}} input
- *   patch: SECURITY_SCOPE_DIFF_ARGS で取った diff 全文。names: 同じ range の `--name-only -z` を NUL で分けたもの
+ * @param {{patch: string|null|undefined, names: string[]|null|undefined, imports?: string[]}} input
+ *   patch: SECURITY_SCOPE_DIFF_ARGS で取った diff 全文。names: 同じ range の `--name-only -z` を NUL で分けたもの。
+ *   imports: base / head の指示ファイルから reviewerImportClosure でたどった import 先（当たるファイルは not_allowlisted）
  * @returns {{target: boolean, reasons: string[], codes: string[], files: string[], reviewer_context_changed: boolean}}
  *   reasons はパス付きの詳細（stdout に出さない）、codes は reasonCodeCounts の `<code>:<件数>`、
- *   reviewer_context_changed は isReviewerContextPath に当たるファイルを含むか（一覧が読めない・空なら true）
+ *   reviewer_context_changed は isReviewerContextPath か imports に当たるファイルを含むか（一覧が読めない・空なら true）
  */
-export function securityReviewScope({ patch, names } = {}) {
+export function securityReviewScope({ patch, names, imports = [] } = {}) {
   if (typeof patch !== 'string') return targetOf(['diff_unavailable'], []);
   if (!Array.isArray(names) || !names.every((x) => typeof x === 'string' && x !== '')) return targetOf(['name_list_unavailable'], []);
-  if (patch === '') return targetOf(['diff_empty'], names);
+  if (!Array.isArray(imports) || !imports.every((x) => typeof x === 'string')) return targetOf(['imports_unavailable'], names);
+  const imported = new Set(imports.map((x) => x.toLowerCase()));
+  if (patch === '') return targetOf(['diff_empty'], names, imported);
   const parsed = parseScopePatch(patch);
-  if (!parsed.ok) return targetOf([`diff_unreadable: ${parsed.error}`], names);
-  if (parsed.files.length === 0) return targetOf(['no_files'], names);
-  if (parsed.files.length !== names.length) return targetOf([`file_count_mismatch: diff ${parsed.files.length} 件 / name-only ${names.length} 件`], names);
+  if (!parsed.ok) return targetOf([`diff_unreadable: ${parsed.error}`], names, imported);
+  if (parsed.files.length === 0) return targetOf(['no_files'], names, imported);
+  if (parsed.files.length !== names.length) return targetOf([`file_count_mismatch: diff ${parsed.files.length} 件 / name-only ${names.length} 件`], names, imported);
   const listed = new Set(names);
   const seen = new Set();
   for (const f of parsed.files) {
-    if (!listed.has(f.path) || seen.has(f.path)) return targetOf([`file_list_mismatch: ${f.path}`], names);
+    if (!listed.has(f.path) || seen.has(f.path)) return targetOf([`file_list_mismatch: ${f.path}`], names, imported);
     seen.add(f.path);
   }
-  const reasons = parsed.files.flatMap(fileReasons);
-  if (reasons.length > 0) return targetOf(reasons, names);
-  return { target: false, reasons: [], codes: [], files: names, reviewer_context_changed: contextChanged(names) };
+  const reasons = parsed.files.flatMap((f) => fileReasons(f, imported));
+  if (reasons.length > 0) return targetOf(reasons, names, imported);
+  return { target: false, reasons: [], codes: [], files: names, reviewer_context_changed: contextChanged(names, imported) };
 }

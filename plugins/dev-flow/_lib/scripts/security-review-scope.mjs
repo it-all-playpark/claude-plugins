@@ -16,13 +16,15 @@
 //   文字列を出さない（stdout を写す agent へ PR が決めた文字列を渡すと、判定を書き換える文を混ぜられる）。error も
 //   固定の code（`usage` / `git_failed`）だけで、git の stderr は stdout にも stderr にも出さない（同じ理由）。
 //   reviewer_context_changed: diff が security-reviewer の session に自動で読み込まれる指示ファイルを含むか
-//   （_lib の isReviewerContextPath。取得に失敗したときは true）。
+//   （_lib の isReviewerContextPath と、base / head の指示ファイルが `@<path>` で import するファイル。取得に失敗したときは true）。
 //   ok:false（取得・判定に失敗）のときも target:true を出す（fail-closed）。usage error だけ exit 2、それ以外は exit 0。
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { securityReviewScope, SECURITY_SCOPE_DIFF_ARGS, SECURITY_SCOPE_GIT_CONFIG } from '../security-review-scope.mjs'
+import {
+  isReviewerContextPath, reviewerImportClosure, securityReviewScope, SECURITY_SCOPE_DIFF_ARGS, SECURITY_SCOPE_GIT_CONFIG,
+} from '../security-review-scope.mjs'
 
 const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
@@ -49,6 +51,7 @@ let result
 try {
   let range
   let headSha = null
+  let revs
   if (workingTree) {
     tmpIndexDir = mkdtempSync(join(tmpdir(), 'dev-flow-scope-index-'))
     const env = { GIT_INDEX_FILE: join(tmpIndexDir, 'index') }
@@ -59,13 +62,23 @@ try {
     const tree = gitText(['write-tree'], env)
     const mergeBase = gitText(['merge-base', base, 'HEAD'])
     range = [mergeBase, tree]
+    revs = [mergeBase, tree]
   } else {
     headSha = gitText(['rev-parse', '--verify', `${head}^{commit}`])
     range = [`${base}...${headSha}`]
+    revs = [gitText(['merge-base', base, headSha]), headSha]
   }
   const patchBuf = git(['diff', ...SECURITY_SCOPE_DIFF_ARGS, ...range])
   const names = git(['diff', ...SECURITY_SCOPE_DIFF_ARGS, '--name-only', '-z', ...range]).toString('utf8').split('\u0000').filter((x) => x !== '')
-  const scope = securityReviewScope({ patch: patchBuf.toString('utf8'), names })
+  // base / head の指示ファイル（isReviewerContextPath）から `@<path>` import を再帰的にたどる。import 先を PR が変えると
+  // security-reviewer の session に攻撃者の文が指示として届くので、文書の拡張子でも対象にする
+  const root = gitText(['rev-parse', '--show-toplevel'])
+  const imports = revs.flatMap((rev) => {
+    const roots = git(['ls-tree', '-r', '-z', '--name-only', rev]).toString('utf8').split('\u0000').filter((p) => p !== '' && isReviewerContextPath(p))
+    const read = (p) => { try { return git(['cat-file', 'blob', `${rev}:${p}`]).toString('utf8') } catch { return null } }
+    return reviewerImportClosure(roots, read, root)
+  })
+  const scope = securityReviewScope({ patch: patchBuf.toString('utf8'), names, imports })
   let reviewDir = null
   let diffPath = null
   if (saveDiff) {
