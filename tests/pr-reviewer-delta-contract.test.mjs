@@ -71,6 +71,19 @@ test('[pr-reviewer-delta] 反復レビュー節と pipeline.md に、full review
   }
 });
 
+test('[pr-reviewer-delta] 反復レビュー節と「蒸し返さない」の項に、critical 後の full review round では critical に上乗せ禁止を掛けない旨がある', () => {
+  const itemStart = src.indexOf('- **蒸し返さない**');
+  assert.ok(itemStart >= 0, '「蒸し返さない」の項が無い');
+  const itemEnd = src.indexOf('\n- ', itemStart + 1);
+  const noRehashItem = itemEnd >= 0 ? src.slice(itemStart, itemEnd) : src.slice(itemStart);
+  for (const [name, text] of [['反復レビュー節', iterSection], ['「蒸し返さない」の項', noRehashItem]]) {
+    assert.ok(text.includes('critical 後の full review round'), `${name} に critical 後の full review round の扱いが無い`);
+    assert.ok(text.includes('critical に上乗せ禁止を掛けない'), `${name} に critical に上乗せ禁止を掛けない旨が無い`);
+  }
+  assert.ok(iterSection.includes('major の蒸し返し・別観点の上乗せの禁止') && iterSection.includes('topic 再利用はこの round でも変わらない'),
+    '反復レビュー節に、critical 後の full review round でも major の禁止と topic 再利用が残る旨が無い');
+});
+
 test('[pr-reviewer-delta] 入力節に delta_range が定義されている', () => {
   const inputSection = section(src, '## 入力');
   assert.ok(inputSection.includes('delta_range: <sha_prev>..<sha_now>'), '入力節に delta_range の定義が無い');

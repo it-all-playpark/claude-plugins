@@ -8,13 +8,15 @@
 //   - 返り値 history[] の各 round に scope('full'|'delta') / delta_lines（full は null）が載る
 //   - full review が critical を返した次の round は full review に戻り、critical の無い full review を経るまで
 //     delta にも LGTM にもならない。critical の出なかった run の scope の選び方は変わらない
+//   - critical 後に戻した full review の既出 findings ブロックは critical に上乗せ禁止を掛けない（major の禁止と
+//     topic 再利用は残す）。それ以外の round のブロックは従来の文字列のまま
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { isDeltaSha, resolveReviewScope, nextCriticalPending, reviewDeltaBlock, parseShortstatLines } from './review-delta.mjs';
+import { isDeltaSha, resolveReviewScope, nextCriticalPending, reviewDeltaBlock, priorFindingsBlock, parseShortstatLines } from './review-delta.mjs';
 import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -94,6 +96,49 @@ test('[review-delta] reviewDeltaBlock は「必要なら全体も読め」の裁
   const block = reviewDeltaBlock({ shaPrev: SHA_A, shaNow: SHA_B });
   for (const phrase of ['必要に応じて全体', '必要なら全体', '全体を確認', '全体も読']) {
     assert.ok(!block.includes(phrase), `delta ブロックに裁量文言 "${phrase}" が含まれてはならない`);
+  }
+});
+
+// ============================================================
+// 単体: priorFindingsBlock
+// ============================================================
+
+const PRIOR = [{ severity: 'critical', topic: 'security::toctou', file: 'a.js', line: 1, description: 'd' }];
+const PRIOR_HEAD = `既出 findings（前ラウンドまでに指摘済み。author は対応済みのはず）:\n${JSON.stringify(PRIOR)}\n`;
+// critical_in_full_review 以外の round の既出 findings 指示（#1075 より前の main loop の文字列）
+const PRIOR_INSTRUCTION = '**新規の critical/major のみ報告**せよ。前ラウンドで対応済み・却下済みの論点の蒸し返し、'
+  + '別観点の上乗せ（moving target）は禁止。既出問題を再提起する場合は既出と同じ topic 文字列を'
+  + '必ず再利用せよ（orchestrator が topic で stuck を突合する）。';
+const TOPIC_REUSE = '既出問題を再提起する場合は既出と同じ topic 文字列を必ず再利用せよ';
+const sentences = (s) => s.split('。').filter(Boolean);
+
+test('[review-delta][prior-findings] critical_in_full_review 以外の round（delta / remerge / sha 不明の full fallback）は従来どおりの文字列', () => {
+  for (const reason of [null, 'sha_prev_unavailable', 'sha_now_unavailable', 'sha_unchanged']) {
+    assert.equal(priorFindingsBlock({ prior: PRIOR, reason }), PRIOR_HEAD + PRIOR_INSTRUCTION, `reason=${reason}`);
+  }
+});
+
+test('[review-delta][prior-findings] critical_in_full_review の round は既出 JSON・topic 再利用・全 diff の critical 報告を含み、上乗せ禁止を critical に掛けない', () => {
+  const block = priorFindingsBlock({ prior: PRIOR, reason: 'critical_in_full_review' });
+  assert.ok(block.startsWith(PRIOR_HEAD), `既出 findings の JSON が無い:\n${block}`);
+  assert.ok(block.includes(TOPIC_REUSE), 'topic 再利用の指示が無い');
+  assert.ok(block.includes('**critical は既出 findings と関係なく**、PR 全 diff のどこにあるものも報告せよ'), `PR 全 diff の critical を既出と関係なく報告する指示が無い:\n${block}`);
+  assert.ok(!block.includes('新規の critical/major のみ報告'), 'critical を「新規のみ」に絞る指示が残っている');
+  const banned = sentences(block).filter((s) => s.includes('別観点の上乗せ（moving target）は禁止'));
+  assert.equal(banned.length, 1, `上乗せ禁止の文がちょうど 1 つでない:\n${block}`);
+  assert.ok(!banned[0].includes('critical'), `上乗せ禁止の文が critical に掛かっている: ${banned[0]}`);
+});
+
+test('[review-delta][prior-findings] critical_in_full_review の round でも major の蒸し返し・別観点の上乗せの禁止は残る', () => {
+  const block = priorFindingsBlock({ prior: PRIOR, reason: 'critical_in_full_review' });
+  const banned = sentences(block).find((s) => s.includes('別観点の上乗せ（moving target）は禁止'));
+  assert.ok(banned?.startsWith('major は新規のもののみ報告し'), `上乗せ禁止の対象が major でない: ${banned}`);
+  assert.ok(banned.includes('前ラウンドで対応済み・却下済みの論点の蒸し返し'), `major の蒸し返し禁止が無い: ${banned}`);
+});
+
+test('[review-delta][prior-findings] 既出 findings が空ならどの round でも空文字', () => {
+  for (const reason of [null, 'critical_in_full_review', 'sha_prev_unavailable', 'sha_now_unavailable', 'sha_unchanged']) {
+    assert.equal(priorFindingsBlock({ prior: [], reason }), '', `reason=${reason}`);
   }
 });
 
@@ -321,6 +366,19 @@ test('[review-delta][critical-full][AC-1] full review が critical を返した�
   assert.ok(r2.prompt.includes('gh pr diff'), 'critical の後の review#2 は PR 全 diff を読む');
   assert.ok(logs.some((l) => l.includes('review#2') && l.includes('critical') && l.includes('full review に戻す')), `full に戻した log が無い: ${logs.join(' | ')}`);
   assert.deepEqual(roundScopes(result).map((r) => r.scope), ['full', 'full']);
+});
+
+test('[review-delta][critical-full][prior-findings] critical 後に戻した full review の prompt は priorFindingsBlock の critical 用ブロックで組み立てられ、delta review は従来の指示のまま', async () => {
+  const { reviews } = await runRounds({
+    reviewer: (n) => (n === 1 ? requestChanges(finding('critical', 'security::toctou'))
+      : n === 2 ? requestChanges(finding('major', 'logic-bug::b.js'))
+      : APPROVE_REVIEW),
+  });
+  const [r1, r2, r3] = ['review#1', 'review#2', 'review#3'].map((l) => reviews.find((c) => c.label === l)?.prompt ?? '');
+  assert.ok(!r1.includes('既出 findings（'), 'review#1 に既出 findings ブロックが付いている');
+  assert.ok(r2.includes('**critical は既出 findings と関係なく**、PR 全 diff のどこにあるものも報告せよ'), `critical 後の full review に critical 用ブロックが無い:\n${r2}`);
+  assert.ok(!r2.includes('新規の critical/major のみ報告'), 'critical 後の full review に従来の「新規の critical/major のみ」が残っている');
+  assert.ok(r3.includes('delta_range:') && r3.endsWith(PRIOR_INSTRUCTION), `delta review の既出 findings 指示が従来と違う:\n${r3}`);
 });
 
 test('[review-delta][critical-full][AC-2] 戻した full review が critical を返さなければ、以降は delta review に戻る', async () => {

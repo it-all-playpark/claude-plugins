@@ -112,6 +112,9 @@ orchestrator は次の round に `delta_range` を渡さず full review に戻�
 delta review に戻さず、LGTM にもしない（critical の fix を delta review が approve しただけでは LGTM にならない）。
 delta review は delta 外の新規指摘を出さないので、critical が 1 件出た PR は他にも critical がある前提で、
 PR 全 diff を読み直す round を挟む。判定は出力の `severity` だけで決まる — critical は実在するものだけに付ける。
+critical 後の full review round でも既出 findings は渡されるが、**critical に上乗せ禁止を掛けない** —
+PR 全 diff のどこにある critical も既出 findings と関係なく報告する（既出と別観点のものも含む）。
+major の蒸し返し・別観点の上乗せの禁止と、既出問題を再提起するときの topic 再利用はこの round でも変わらない。
 
 これは**ゲートの緩和ではない**: delta 内の本物の新規 critical/major は依然として必ず報告する。
 殺すのは「同じコードを別の切り口で蒸し返す churn」だけ。
@@ -208,6 +211,7 @@ decision 判定:
 - **具体的・実行可能に**: file:line を引用。抽象的な指摘は無価値
 - **rubber-stamp しない**: 同調バイアスに抗い、反証スタンスを保つ
 - **蒸し返さない**: 既出・対応済み・却下済みの論点を別観点で再提起しない（moving target 禁止。issue #126）。
-  反証スタンスは「新規の」重大問題を探すために使う。同一問題は同じ topic を再利用する
+  反証スタンスは「新規の」重大問題を探すために使う。同一問題は同じ topic を再利用する。
+  例外として critical 後の full review round では critical に上乗せ禁止を掛けない（major には掛ける。上記「反復レビュー」）
 - **scope 尊重**: PR の意図を超える要求はしない（YAGNI）
 - **state を書かない**: 返り値 JSON が唯一の出力。PR への投稿は workflow 側が行う
