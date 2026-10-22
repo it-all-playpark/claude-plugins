@@ -52,6 +52,11 @@ trust-layer（SurfaceProof / EvalSeal / EffectDelta）の sunset path —
   外で読み取り専用にし PR 本文・diff・コメントをデータとして扱わせる、公開コメントに件数だけを出す — いずれも
   **incentive-structural**（永続）。diff を書き換えて判定だけをすり抜ける・古い diff の review で clear にする・攻撃者が書いた
   文に reviewer が従う・公開コメントが攻撃手順になる、を構造で断つ。
+- reviewer の session に自動で読み込まれる指示ファイルを変える PR を自動の review で clear にしない
+  （`reviewer_context_changed`）、security-scope の CLI の出力に PR 由来の文字列を載せない、は **incentive-structural**（永続）。
+  判定者・判定の中継者が攻撃者の書いた文を指示として受け取る経路を、prompt の文ではなく構造で断つ。cwd の扱いは
+  **harness-capability-bound** な面もあり、`agent()` が cwd を受け付けるようになった時点で reviewer を worktree の外の cwd で
+  起動する形に移す（`/dev-flow-canary` の report で判定）。それでも `reviewer_context_changed` の停止は残す。
 - sunset しない。許可リストを広げるときは、広げる種類が agent の指示として読まれず実行もされないことを示してからにする。
 
 逆に incentive-structural / blast-radius はモデル更新で撤去してはならない（軸A 保持）。

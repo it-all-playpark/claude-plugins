@@ -1278,6 +1278,7 @@ const SECURITY_SCOPE_SCHEMA = {
     reasons: { type: 'array', items: { type: 'string' } },
     file_count: { type: ['number', 'null'] },
     head_sha: { type: ['string', 'null'] },
+    reviewer_context_changed: { type: 'boolean' },
     review_dir: { type: ['string', 'null'] },
     diff_path: { type: ['string', 'null'] },
     error: { type: 'string' },
@@ -1287,7 +1288,7 @@ const SECURITY_SCOPE_SCHEMA = {
 function securityScopePrompt({ worktree, base, head = null, saveDiff = false }) {
   const tail = head == null ? '--working-tree' : `${head}${saveDiff ? ' --save-diff' : ''}`;
   return '次のコマンドを 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ（判定・要約・脚色をしない。'
-    + 'exit 非0・stdout 空・JSON 不正なら {"ok":false,"target":true,"reasons":[],"error":"<stderr の末尾>"} で返せ。'
+    + 'exit 非0・stdout 空・JSON 不正なら {"ok":false,"target":true,"reasons":[],"reviewer_context_changed":true,"error":"relay_failed"} で返せ。'
     + '失敗時に target:false を生成してはならない）。先頭トークンが bare 名の単文で実行し、cd 前置・`bash` 前置・'
     + '環境変数代入前置・&& 連結・パイプ・リダイレクトは付けない:\n'
     + `security-review-scope ${worktree} ${base} ${tail}`;
@@ -1295,6 +1296,10 @@ function securityScopePrompt({ worktree, base, head = null, saveDiff = false }) 
 
 function isSecurityScopeExempt(res) {
   return res != null && typeof res === 'object' && res.ok === true && res.target === false;
+}
+
+function isReviewerContextChanged(res) {
+  return !(res != null && typeof res === 'object' && res.ok === true && res.reviewer_context_changed === false);
 }
 // ==== END inline: _lib/security-scope.mjs ====
 
@@ -1852,7 +1857,12 @@ async function securityGate(iteration, round) {
   if (scope?.ok !== true) return stop('PR の diff を取得できない')
   if (!isFullCommitSha(headSha)) return stop('PR head の sha が分からない')
   if (isFullCommitSha(shaNow) && headSha.toLowerCase() !== shaNow.toLowerCase()) return stop(`diff の head ${headSha.slice(0, 7)} が今の PR head ${shaNow.slice(0, 7)} と一致しない`)
-  if (!reviewDir.startsWith('/') || !diffPath.startsWith(`${reviewDir}/`) || !isOutsideWorktree(reviewDir, isoWt)) return stop('diff の保存先が PR の worktree の外の絶対パスでない')
+  // `.` / `..` の要素を含むパスは prefix 比較では worktree の外かを決められない（`/tmp/x/../<worktree>` 等）ので受け付けない
+  const hasDotSegment = (p) => p.split('/').some((s) => s === '.' || s === '..')
+  if (!reviewDir.startsWith('/') || hasDotSegment(reviewDir) || hasDotSegment(diffPath) || !diffPath.startsWith(`${reviewDir}/`) || !isOutsideWorktree(reviewDir, isoWt)) return stop('diff の保存先が PR の worktree の外の絶対パスでない')
+  // workflow の agent 起動は cwd を受け付けず security-reviewer は PR の worktree を cwd に起動する。PR が reviewer の session に自動で
+  // 読み込まれる指示ファイルを変えると攻撃者の文が判定者に届くので、自動の review では clear にしない（人間が確かめる）
+  if (isReviewerContextChanged(scope)) return stop('PR が security-reviewer に読み込まれる指示ファイル（CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変える')
   securityRounds += 1
   let review = null
   try {

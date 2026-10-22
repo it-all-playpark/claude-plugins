@@ -11,9 +11,12 @@
 //   --save-diff: diff 全文を worktree の外の新しい一時ディレクトリ（os.tmpdir() 配下）の pr.diff に書き、
 //     review_dir / diff_path を返す（pr-iterate の security-reviewer が読む）
 //
-// stdout: JSON 1 行 {ok, target, reasons, file_count, head_sha, review_dir, diff_path, error?}
+// stdout: JSON 1 行 {ok, target, reasons, file_count, head_sha, reviewer_context_changed, review_dir, diff_path, error?}
 //   reasons は固定の code と件数（`not_allowlisted:3` 等。_lib の reasonCodeCounts）だけで、ファイルパス・diff 由来の
-//   文字列を出さない（stdout を写す agent へ PR が決めた文字列を渡すと、判定を書き換える文を混ぜられる）。
+//   文字列を出さない（stdout を写す agent へ PR が決めた文字列を渡すと、判定を書き換える文を混ぜられる）。error も
+//   固定の code（`usage` / `git_failed`）だけで、git の stderr は stdout にも stderr にも出さない（同じ理由）。
+//   reviewer_context_changed: diff が security-reviewer の session に自動で読み込まれる指示ファイルを含むか
+//   （_lib の isReviewerContextPath。取得に失敗したときは true）。
 //   ok:false（取得・判定に失敗）のときも target:true を出す（fail-closed）。usage error だけ exit 2、それ以外は exit 0。
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
@@ -25,14 +28,14 @@ const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
   process.exit(code)
 }
-const failClosed = (error, extra = {}) => ({ ok: false, target: true, reasons: ['scope_unavailable:1'], file_count: null, head_sha: null, review_dir: null, diff_path: null, ...extra, error })
+const failClosed = (error) => ({ ok: false, target: true, reasons: ['scope_unavailable:1'], file_count: null, head_sha: null, reviewer_context_changed: true, review_dir: null, diff_path: null, error })
 
 const argv = process.argv.slice(2)
 const saveDiff = argv.includes('--save-diff')
 const workingTree = argv.includes('--working-tree')
 const positional = argv.filter((a) => a !== '--save-diff' && a !== '--working-tree')
 if (positional.length < 2 || positional.length > 3 || (workingTree && positional.length === 3) || positional.some((a) => a.startsWith('-'))) {
-  emit(failClosed('usage: security-review-scope <worktree> <base-ref> [<head-ref> | --working-tree] [--save-diff]'), 2)
+  emit(failClosed('usage'), 2)
 }
 const [worktree, base, head = 'HEAD'] = positional
 
@@ -70,10 +73,9 @@ try {
     diffPath = join(reviewDir, 'pr.diff')
     writeFileSync(diffPath, patchBuf)
   }
-  result = { ok: true, target: scope.target, reasons: scope.codes, file_count: names.length, head_sha: headSha, review_dir: reviewDir, diff_path: diffPath }
-} catch (e) {
-  const stderr = e?.stderr ? e.stderr.toString('utf8').trim() : ''
-  result = failClosed(`${e?.message ?? e}${stderr ? ` — ${stderr}` : ''}`.slice(0, 500))
+  result = { ok: true, target: scope.target, reasons: scope.codes, file_count: names.length, head_sha: headSha, reviewer_context_changed: scope.reviewer_context_changed, review_dir: reviewDir, diff_path: diffPath }
+} catch {
+  result = failClosed('git_failed')
 }
 if (tmpIndexDir) rmSync(tmpIndexDir, { recursive: true, force: true })
 emit(result)

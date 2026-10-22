@@ -9,9 +9,11 @@
 //
 // 許可リスト（パスは大文字小文字を区別しない）:
 //   - `.md` / `.mdx` / `.rst` のうち指示ファイルでないもの
-//   - `*.test.*` / `*.spec.*` / `*.bats`（指示ファイルの場所にあるものは除く）
-//   いずれも mode 100644 の通常ファイルで、mode の変更・binary を含まないこと。
-// 指示ファイル: basename が `CLAUDE.md` / `AGENTS.md` / `SKILL.md`、または `.claude/` / `references/` /
+//   - `*.test.<ext>` / `*.spec.<ext>`（<ext> は TEST_SOURCE_EXTS のテストコードの拡張子）/ `*.bats`
+//   いずれも mode 100644 の通常ファイルで、mode の変更・binary を含まないこと。指示ファイルの場所と、ドット始まりの
+//   要素（`.github/` / `.husky/` / `.circleci/` 等 — CI・hook の設定の置き場）の配下にあるものは除く。拡張子を問わずに
+//   許すと `.github/workflows/x.test.yml` のような CI 設定まで対象外になるため。
+// 指示ファイル: basename が `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` / `SKILL.md`、または `.claude/` / `references/` /
 //   `output-styles/` / `agents/` / `commands/` のいずれかの配下（深さを問わない）。agent が読み込んで指示として
 //   扱うので、文書の拡張子でも対象にする。
 //
@@ -26,7 +28,12 @@ export const SECURITY_SCOPE_DIFF_ARGS = ['--no-renames', '--no-color', '--no-ext
 export const SECURITY_SCOPE_GIT_CONFIG = ['-c', 'core.quotePath=false'];
 
 const INSTRUCTION_DIRS = ['.claude', 'references', 'output-styles', 'agents', 'commands'];
-const INSTRUCTION_BASENAMES = ['claude.md', 'agents.md', 'skill.md'];
+const INSTRUCTION_BASENAMES = ['claude.md', 'claude.local.md', 'agents.md', 'skill.md'];
+const TEST_SOURCE_EXTS = ['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'py', 'rb', 'go', 'rs', 'java', 'kt', 'swift', 'php', 'cs'];
+// security-reviewer の session に自動で読み込まれる指示（basename が CLAUDE.md / CLAUDE.local.md / AGENTS.md、または
+// repo 直下の `.claude/` 配下）。workflow の agent() には cwd を渡せず reviewer は PR の worktree を cwd に起動するので、
+// PR がこれらを変えると攻撃者の文が判定者の指示として届く。
+const REVIEWER_CONTEXT_BASENAMES = ['claude.md', 'claude.local.md', 'agents.md'];
 const GIT_METADATA_BASENAMES = ['.gitattributes', '.gitmodules'];
 const REGULAR_FILE_MODE = '100644';
 const MAX_REASONS = 20;
@@ -43,11 +50,19 @@ export function isInstructionPath(path) {
 export function isSecurityReviewExemptPath(path) {
   const p = String(path);
   if (p === '' || isInstructionPath(p)) return false;
-  const base = p.toLowerCase().split('/').pop();
-  if (base.startsWith('.')) return false;
+  const segs = p.toLowerCase().split('/');
+  const base = segs[segs.length - 1];
+  if (segs.some((s) => s.startsWith('.'))) return false;
   if (/\.(md|mdx|rst)$/.test(base)) return true;
-  if (/^.+\.(test|spec)\.[^.].*$/.test(base)) return true;
+  const m = base.match(/^.+\.(?:test|spec)\.([a-z0-9]+)$/);
+  if (m) return TEST_SOURCE_EXTS.includes(m[1]);
   return /^.+\.bats$/.test(base);
+}
+
+// security-reviewer の session に自動で読み込まれる指示ファイルか（大文字小文字を区別しない）。
+export function isReviewerContextPath(path) {
+  const segs = String(path).toLowerCase().split('/');
+  return segs[0] === '.claude' || REVIEWER_CONTEXT_BASENAMES.includes(segs[segs.length - 1]);
 }
 
 // `diff --git a/<P> b/<P>` の <P>。--no-renames なので両側は同じパスで、引用符で囲まれた形
@@ -147,7 +162,9 @@ function fileReasons(f) {
   return reasons;
 }
 
-const targetOf = (reasons, files) => ({ target: true, reasons: reasons.slice(0, MAX_REASONS).concat(reasons.length > MAX_REASONS ? [`他 ${reasons.length - MAX_REASONS} 件`] : []), codes: reasonCodeCounts(reasons), files });
+// ファイル一覧が読めない・空なら true（fail-closed）。
+const contextChanged = (files) => !Array.isArray(files) || files.length === 0 || files.some(isReviewerContextPath);
+const targetOf = (reasons, files) => ({ target: true, reasons: reasons.slice(0, MAX_REASONS).concat(reasons.length > MAX_REASONS ? [`他 ${reasons.length - MAX_REASONS} 件`] : []), codes: reasonCodeCounts(reasons), files, reviewer_context_changed: contextChanged(files) });
 
 // 理由の固定 code。CLI の stdout にはこの code と件数（`<code>:<n>`）だけを出す。reasons にはファイルパス・diff 由来の
 // 文字列（PR が自由に決められる）が入り、stdout を写す exec-proxy の agent へそのまま渡ると「target を false にして
@@ -174,8 +191,9 @@ export function reasonCodeCounts(reasons) {
  *
  * @param {{patch: string|null|undefined, names: string[]|null|undefined}} input
  *   patch: SECURITY_SCOPE_DIFF_ARGS で取った diff 全文。names: 同じ range の `--name-only -z` を NUL で分けたもの
- * @returns {{target: boolean, reasons: string[], codes: string[], files: string[]}}
- *   reasons はパス付きの詳細（stdout に出さない）、codes は reasonCodeCounts の `<code>:<件数>`
+ * @returns {{target: boolean, reasons: string[], codes: string[], files: string[], reviewer_context_changed: boolean}}
+ *   reasons はパス付きの詳細（stdout に出さない）、codes は reasonCodeCounts の `<code>:<件数>`、
+ *   reviewer_context_changed は isReviewerContextPath に当たるファイルを含むか（一覧が読めない・空なら true）
  */
 export function securityReviewScope({ patch, names } = {}) {
   if (typeof patch !== 'string') return targetOf(['diff_unavailable'], []);
@@ -193,5 +211,5 @@ export function securityReviewScope({ patch, names } = {}) {
   }
   const reasons = parsed.files.flatMap(fileReasons);
   if (reasons.length > 0) return targetOf(reasons, names);
-  return { target: false, reasons: [], codes: [], files: names };
+  return { target: false, reasons: [], codes: [], files: names, reviewer_context_changed: contextChanged(names) };
 }

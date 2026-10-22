@@ -268,10 +268,24 @@ test('[security-review][D] security-reviewer の読み取りは diff の保存�
 });
 
 test('[security-review][D] diff の保存先が PR の worktree の中なら review を spawn せず clear にしない', async () => {
-  for (const reviewDir of ['/tmp/wt/.devflow-tmp/sec', 'relative/dir']) {
+  for (const reviewDir of ['/tmp/wt/.devflow-tmp/sec', 'relative/dir', '/var/x/../../tmp/wt/sec', '/var/./x']) {
     const { result, calls } = await run({ overrides: { 'security-scope#1': () => securityScopeResponse({ reviewDir }) } });
     assert.equal(result.status, 'security_unresolved', reviewDir);
     assert.ok(!calls.some((c) => c.label.startsWith('security-review#')), reviewDir);
+  }
+  const { result, calls } = await run({ overrides: { 'security-scope#1': () => securityScopeResponse({ diffPath: `${SECURITY_REVIEW_DIR}/../../tmp/wt/x` }) } });
+  assert.equal(result.status, 'security_unresolved', 'diff_path に .. を含む');
+  assert.ok(!calls.some((c) => c.label.startsWith('security-review#')));
+});
+
+test('[security-review][D] PR が reviewer に読み込まれる指示ファイルを変える（reviewer_context_changed が false でない）なら review を spawn せず clear にしない', async () => {
+  for (const scope of [
+    securityScopeResponse({ contextChanged: true }),
+    (({ reviewer_context_changed, ...rest }) => rest)(securityScopeResponse()),
+  ]) {
+    const { result, calls } = await run({ overrides: { 'security-scope#1': () => scope } });
+    assert.equal(result.status, 'security_unresolved', JSON.stringify(scope));
+    assert.ok(!calls.some((c) => c.label.startsWith('security-review#')));
   }
 });
 

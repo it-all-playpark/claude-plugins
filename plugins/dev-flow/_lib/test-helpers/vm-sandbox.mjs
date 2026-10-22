@@ -430,12 +430,12 @@ export const SECURITY_REVIEW_DIR = '/tmp/dev-flow-security-review-stub';
 /**
  * security-review-scope の stdout と同形の応答を返す。
  *
- * @param {{target?: boolean, ok?: boolean, head?: string|null, reasons?: string[], reviewDir?: string}} [o]
+ * @param {{target?: boolean, ok?: boolean, head?: string|null, reasons?: string[], reviewDir?: string, diffPath?: string, contextChanged?: boolean}} [o]
  */
-export function securityScopeResponse({ target = true, ok = true, head = SECURITY_SCOPE_DEFAULT_HEAD, reasons, reviewDir = SECURITY_REVIEW_DIR } = {}) {
+export function securityScopeResponse({ target = true, ok = true, head = SECURITY_SCOPE_DEFAULT_HEAD, reasons, reviewDir = SECURITY_REVIEW_DIR, diffPath, contextChanged = false } = {}) {
   return {
-    ok, target, reasons: reasons ?? (target ? ['not_allowlisted: src/x.ts'] : []), file_count: 1,
-    head_sha: head, review_dir: reviewDir, diff_path: `${reviewDir}/pr.diff`,
+    ok, target, reasons: reasons ?? (target ? ['not_allowlisted:1'] : []), file_count: 1,
+    head_sha: head, reviewer_context_changed: contextChanged, review_dir: reviewDir, diff_path: diffPath ?? `${reviewDir}/pr.diff`,
   };
 }
 

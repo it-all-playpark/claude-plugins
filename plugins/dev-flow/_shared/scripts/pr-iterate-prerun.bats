@@ -492,7 +492,9 @@ comment_json() {
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .security_review.target == true'
-    echo "$output" | jq -e '.security_review.reasons | index("not_allowlisted: run.sh") != null'
+    echo "$output" | jq -e '.security_review.reasons | index("not_allowlisted:1") != null'
+    # 理由は固定 code と件数だけで、PR が決めたファイル名を出さない
+    ! echo "$output" | jq -e '.security_review.reasons | map(test("run\\.sh")) | any'
 }
 
 @test "(7c) PR を読めない ok:false でも security_review.target は true（判定できない入力は対象）" {

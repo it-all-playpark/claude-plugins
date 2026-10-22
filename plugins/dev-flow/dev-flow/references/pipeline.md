@@ -267,21 +267,29 @@ pr-iterate      → CI gate を通り conflict も無い round（LGTM の候補�
                     → critical/major 0 件かつ reviewed_sha が今の head → LGTM
                     → critical/major あり → fix#i（dev-runner）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
                       上限まで残れば max_reached）
-                    → worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致 → status: security_unresolved
+                    → worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致・
+                      reviewer_context_changed が false でない → status: security_unresolved
 Merge tier      → 対象（Security floor か pr-iterate のどちらか）かつ pr-iterate が lgtm + security_review.status 'cleared'
                   でなければ HOLD（security_review_unresolved）
 ```
 
 - 対象かどうかは `_lib/security-review-scope.mjs` の決定論の判定だけで決める（LLM は使わない。コードの diff を外部 API に
   送らない）。対象外は「ファイルが 1 件以上で、全ファイルが許可リスト（mode 100644 の `.md` / `.mdx` / `.rst` のうち指示
-  ファイルでないもの、`*.test.*` / `*.spec.*` / `.bats`）に当たる」diff だけ。指示ファイルは大文字小文字を区別せず
-  `CLAUDE.md`・`AGENTS.md`・`SKILL.md` と `.claude/`・`references/`・`output-styles/`・`agents/`・`commands/` 配下。diff は
+  ファイルでないもの、テストコードの拡張子の `*.test.*` / `*.spec.*`、`.bats`。ドット始まりの要素の配下は除く）に当たる」
+  diff だけ。指示ファイルは大文字小文字を区別せず `CLAUDE.md`・`CLAUDE.local.md`・`AGENTS.md`・`SKILL.md` と
+  `.claude/`・`references/`・`output-styles/`・`agents/`・`commands/` 配下。diff は
   `git -c core.quotePath=false diff --no-renames --no-color --no-ext-diff --no-textconv --text --src-prefix=a/ --dst-prefix=b/`
   で取り、`--name-only -z` の一覧と件数・集合を照合する。取得失敗・空・読めない diff・binary・mode 120000 / 160000・mode の
   変更・`.gitattributes` / `.gitmodules` は対象
 - security-reviewer（opus / high、tools は Read / Grep / Glob だけ）は `security-review-scope --save-diff` が worktree の外に
   作った一時ディレクトリを作業ディレクトリにし、PR 本文・diff・コード中のコメントをデータとして扱う。品質ゲート agent なので
   `opts.model` を渡さない
+- workflow の `agent()` には cwd を渡せないので、security-reviewer の session の cwd は PR の worktree のまま。reviewer が読む
+  ファイルは prompt と agent 定義で保存先の配下に限り、PR が reviewer の session に自動で読み込まれる指示ファイル
+  （basename が `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`、または repo 直下の `.claude/` 配下）を変える run は、
+  security-scope#i の `reviewer_context_changed` で検出して review を spawn せず `security_unresolved`（人間が確かめる）
+- security-scope の CLI は stdout・stderr に PR 由来の文字列（ファイルパス・git の stderr）を出さない。reasons は固定 code と
+  件数、error は固定 code（`usage` / `git_failed`）だけ。stdout を写す exec-proxy の agent に判定を書き換える文を渡さないため
 - 公開の PR コメント（pr-iterate・dev-flow の終端サマリー）には指摘の件数だけを載せ、本文（攻撃経路）は fix の prompt にだけ渡す。
   security の指摘は `history` / `human_followups` に入れない。返り値 `security_review` は `{target, status, rounds, critical, major, minor}`
 
