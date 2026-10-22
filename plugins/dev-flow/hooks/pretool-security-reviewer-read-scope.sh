@@ -16,7 +16,7 @@
 #      Glob の pattern と Grep の glob は `/` か `~` 始まり、または `/` `{` `}` `,` で区切った要素に `..` があれば deny
 #   5. 許可は、対象パスの realpath T が、basename が `dev-flow-security-review-[A-Za-z0-9]{6}` のディレクトリ D
 #      （T 自身かその祖先。T が realpath なので D も realpath）の配下で、D と T が入力の cwd の realpath の配下でないときだけ。
-#      cwd との比較は大文字小文字を区別しない（macOS の FS は区別しない。区別する FS では deny 側に倒れるだけ）
+#      cwd の配下かは、パスとその各祖先が cwd と同じ inode か（[[ -ef ]]）で判定する（firmlink・大文字小文字の別表記に依らない）
 #
 # fail-closed: exit 2 以外の非 0 終了は tool を通すので、security-reviewer の判定中に想定外で終わったら
 # EXIT trap が deny を出して exit 0 にする。timeout で kill された場合は防げないので、外部コマンドは
@@ -120,16 +120,17 @@ resolve() {
 CWD_REAL=$(resolve "$CWD") || emit_deny "cwd の realpath を取れない"
 TARGET_REAL=$(resolve "$TARGET") || emit_deny "対象パスが存在しないか realpath を取れない"
 
-lower() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
-}
-
-CWD_LC=$(lower "$CWD_REAL")
-# $1 が cwd の realpath 自身かその配下か（大文字小文字を区別しない）
+# $1（realpath）自身かその祖先のどれかが cwd と同じディレクトリか。文字列ではなく dev+inode（[[ -ef ]]）で比べる:
+# macOS の firmlink（/System/Volumes/Data/Users ↔ /Users）は realpath が正規化しないので、
+# 文字列の prefix 比較だと別名の表記 1 つで cwd 配下の判定を抜けられる。大文字小文字の違いも同じ inode に解決される
 under_cwd() {
-  local p
-  p=$(lower "$1")
-  [[ $CWD_LC == / || $p == "$CWD_LC" || $p == "$CWD_LC"/* ]]
+  local a="$1"
+  while :; do
+    [[ $a -ef $CWD_REAL ]] && return 0
+    [[ -z $a || $a == / ]] && return 1
+    a="${a%/*}"
+    [[ -n $a ]] || a=/
+  done
 }
 
 under_cwd "$TARGET_REAL" && emit_deny "対象パスが cwd の配下"

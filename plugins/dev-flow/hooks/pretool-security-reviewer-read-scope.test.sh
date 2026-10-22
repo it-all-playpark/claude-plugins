@@ -151,6 +151,18 @@ else
   echo "  SKIP /tmp と /private/tmp の表記（TMPDIR の realpath が /private/ 配下でない環境）"
 fi
 
+# macOS の firmlink（/System/Volumes/Data 経由）の表記。realpath はこの表記を正規化しない
+WT_REAL=$(realpath "$WT")
+FIRM_WT="/System/Volumes/Data${WT_REAL}"
+if [[ -d $FIRM_WT && $FIRM_WT -ef $WT_REAL ]]; then
+  run_tool "/System/Volumes/Data 経由の cwd 配下の CLAUDE.md" deny "$AGENT" Read "$(read_input "${FIRM_WT}/CLAUDE.md")"
+  run_tool "/System/Volumes/Data 経由の cwd 配下の同じ名前のディレクトリ" deny "$AGENT" Read "$(read_input "${FIRM_WT}/dev-flow-security-review-Ab12Cd/pr.diff")"
+  run_tool "/System/Volumes/Data 経由の cwd 配下の同じ名前のディレクトリを Glob" deny "$AGENT" Glob "$(jq -cn --arg p "${FIRM_WT}/dev-flow-security-review-Ab12Cd" '{pattern:"*", path:$p}')"
+  run_tool "/System/Volumes/Data 経由の保存先の pr.diff は許可" silent "$AGENT" Read "$(read_input "/System/Volumes/Data$(realpath "$D")/pr.diff")"
+else
+  echo "  SKIP /System/Volumes/Data 経由の表記（firmlink の無い環境）"
+fi
+
 echo "[保存先の外 — deny]"
 run_tool "cwd 配下の CLAUDE.md" deny "$AGENT" Read "$(read_input "${WT}/CLAUDE.md")"
 run_tool "cwd 配下の .claude/rules" deny "$AGENT" Read "$(read_input "${WT}/.claude/rules/dev-flow.md")"
