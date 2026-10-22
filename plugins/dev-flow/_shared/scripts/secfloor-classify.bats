@@ -166,6 +166,54 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# secreview: realized diff（tracked + untracked）を security-review-target の判定にかける (issue #1063)
+# ---------------------------------------------------------------------------
+@test "secreview: untracked file のパス書き込み・tracked file の excludedCommands を対象として返す" {
+    printf 'const cfg = {}\n' > "$REPO/conf.js"
+    git -C "$REPO" add -A
+    git -C "$REPO" commit -q -m setup-conf
+    printf 'cp "$src" "$dst"\n' > "$REPO/new.sh"
+    printf 'cfg.excludedCommands = ["x"]\n' >> "$REPO/conf.js"
+    run bash "$SCRIPT" "$REPO" "$BASE_REF"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | jq -e '
+        .secreview.target == true
+        and (.secreview.reasons | sort) == (["path_write: new.sh", "sandbox_boundary: conf.js"] | sort)
+    '
+}
+
+@test "secreview: docs だけの変更は対象外" {
+    printf 'sandbox.excludedCommands に足す\n' > "$REPO/notes.md"
+    run bash "$SCRIPT" "$REPO" "$BASE_REF"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | jq -e '.secreview == {target: false, reasons: []}'
+}
+
+@test "secreview: realized diff を取れない（git diff 失敗）-> 対象に倒す (fail-safe) が files/risk は正常のまま" {
+    REAL_GIT="$(command -v git)"
+    GIT_STUB_BIN="$(mktemp -d)"
+    cat > "$GIT_STUB_BIN/git" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+    [[ "\$arg" == "--no-renames" ]] && exit 2
+done
+exec "$REAL_GIT" "\$@"
+STUB
+    chmod +x "$GIT_STUB_BIN/git"
+    printf 'x\n' >> "$REPO/base.txt"
+
+    run bash -c "PATH='$GIT_STUB_BIN:$ORIG_PATH' bash '$SCRIPT' '$REPO' '$BASE_REF'"
+    rm -rf "$GIT_STUB_BIN"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | jq -e '
+        .secreview.target == true
+        and (.secreview.reasons[0] | startswith("unavailable:"))
+        and .files == ["base.txt"]
+        and .risk.ok == true
+    '
+}
+
+# ---------------------------------------------------------------------------
 # (d) base-ref 不正 -> risk.ok==false (fail-closed) かつ exit 0
 # ---------------------------------------------------------------------------
 @test "base-ref 不正 -> risk.ok==false (fail-closed) かつ exit 0" {

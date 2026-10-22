@@ -224,7 +224,7 @@ Evaluate 時点から tree が変わったことによる `eval_staleness=hash_m
 flowchart TD
     IN["Evaluate 完了 / micro path"] --> R1["diff-hash 比較<br/>不一致なら stale-eval"]
     R1 --> R2["pr-artifacts で commit message / PR body 確定<br/>haiku が verbatim 転写 + git commit / push / gh pr create"]
-    R2 --> R4{"LITE ?<br/>micro かつ runEval=false<br/>かつ danger clean<br/>かつ ci の AC なし"}
+    R2 --> R4{"LITE ?<br/>micro かつ runEval=false<br/>かつ danger clean<br/>かつ ci の AC なし<br/>かつ security review 対象外"}
     R4 -->|yes| LITE["lite route<br/>pr-reviewer 1-pass → ci-check"]
     R4 -->|no| FULL["workflow: pr-iterate"]
     LITE -->|"clean かつ CI green"| OUT["Final reconcile へ"]
@@ -233,7 +233,8 @@ flowchart TD
 ```
 
 nested 起動する `pr-iterate` には issue の acceptance criteria と
-nested context（cwd / head_ref / repo / epoch）を渡す。
+nested context（cwd / head_ref / repo / epoch）と、Security floor が realized diff から決めた security review の
+対象判定（`security_review`）を渡す。
 
 ### 1.8 Final reconcile
 
@@ -312,7 +313,7 @@ flowchart TD
 | `complex` | 同上 | 差し戻し loop（`EVAL_MAX` 上限、design 差し戻しは `DESIGN_REPLAN_MAX` まで。差し戻し先は同じ `dev-implementer`） | `REVIEW` / `HOLD`（danger・breaking 検出時） |
 
 micro のうち `runEval=false` かつ danger clean かつ ci の AC（`ci_verify` の check で判定する AC。
-`CI_AC_INDEXES`）を持たないものだけが PR phase で **lite route** に入り、
+`CI_AC_INDEXES`）を持たず、security review の対象でもないものだけが PR phase で **lite route** に入り、
 pr-reviewer 1-pass と CI green だけで終端する。blocking finding か CI 非 green を検出した時点で
 通常の pr-iterate へ自動昇格する。
 
@@ -337,7 +338,12 @@ flowchart TD
     D -->|"request_changes / comment"| BL{"blocking findings あり ?"}
 
     CI --> CS{"status"}
-    CS -->|"passed / no_checks"| LGTM["status: lgtm"]
+    CS -->|"passed / no_checks"| SR{"security review の対象 ?"}
+    SR -->|no| LGTM["status: lgtm"]
+    SR -->|yes| SRV["security-reviewer（新しい spawn）が<br/>PR 全 diff を脅威モデルに沿って読む"]
+    SRV -->|"critical/major 0 件"| LGTM
+    SRV -->|"critical/major あり<br/>（上限未満）"| FIX
+    SRV -->|"critical/major あり<br/>（SECURITY_REVIEW_MAX 回目）"| SECU["status: security_unresolved"]
     CS -->|error| ERR["status: ci_error<br/>CI 状態を確定できない<br/>（proxy が結果を返さない / gh 取得失敗 /<br/>status と件数の食い違い）"]
     CS -->|pending| PEND["status: ci_pending<br/>ceiling 到達・never auto-approve"]
     CS -->|failed| CIF["CI failure を findings 化"]
@@ -371,6 +377,7 @@ flowchart TD
 | `ci_error` | CI 状態を確定できない（ci-check の proxy が結果を返さない / check-ci の gh 取得失敗 / proxy の status と件数の食い違い）。`gh pr checks` で実状態を確認する | merge tier `HOLD` |
 | `ci_pending` | checks 未完了。自動承認しない | merge tier `HOLD` |
 | `review_contract_error` | pr-reviewer が schema-retry 後も結果を返さない、または decision=approve と blocking の矛盾が 1 回の再 review 後も再発 | merge tier `HOLD` |
+| `security_unresolved` | security review の対象の PR で、security-reviewer が `SECURITY_REVIEW_MAX` 回目まで critical/major を返した | merge tier `HOLD`（`security_review_unresolved`） |
 
 ---
 
@@ -419,6 +426,7 @@ flowchart TD
 | `mergeable_conflicting` | base branch と conflict（`CONFLICTING` / `DIRTY`） | `UNKNOWN` は fail-open |
 | `pr_closes_missing` | PR body に `Closes #<issue>` 行が無く、本文の再投入も失敗 | 決定論再チェックで解消しうる |
 | `ci_checks_failed` | PR head の CI checks が red（bucket が fail / cancel / 未知値） | pending・取得不能は HOLD にせず開示行だけ |
+| `security_review_unresolved` | pr-iterate が `security_unresolved` で終端（信頼境界をまたぐ変更の security review が上限まで critical/major を返した） | `iterate_non_lgtm` と同時に積む |
 
 ### gate_policy に依らず常に blocking
 

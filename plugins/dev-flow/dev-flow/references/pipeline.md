@@ -54,6 +54,30 @@ handoff の `skill` キーは `'dev-flow'` のまま据え置く（集計連続�
                       → workflow('dev-flow:pr-iterate-run') で review ⇄ fix loop (LGTM まで, 上限10) → 終端サマリー
 ```
 
+**security review（信頼境界をまたぐ PR だけ）**: 対象かどうかは LLM に判定させず、`_lib/security-review-target.mjs` の
+`classifySecurityReviewTarget` が unified diff から決定論で決める（CLI は `_lib/scripts/security-review-target.mjs`）。
+規則は `permission_config`（`.claude/settings*.json`・`hooks/`・`.githooks/`・`.husky/` のパス）・`sandbox_boundary`
+（追加行が `excludedCommands` 等の sandbox / 権限設定のキーに触れる）・`path_write`（追加行がファイルを書く・開いて
+書き換える・リンクを作る API）で、docs とテストにはどれも当てない。判定入力は 2 経路で同じ関数を通る:
+
+- `/dev-flow`: Security floor の `secfloor-classify` が realized diff（tracked は HEAD からの diff、untracked は
+  `/dev/null` からの diff）を判定して `secreview` に載せ、`parseSecfloorFields` が `state.securityReview` にする
+  （欠落・不正は対象に倒す fail-safe）。対象の run は lite route に入らず、`args.security_review` で nested pr-iterate に渡す
+- 単体 `/pr-iterate`: `pr-iterate-prerun` が PR の diff（`origin/<base>...<head>`）を判定して `security_review` に載せ
+  （diff が取れなければ対象）、wrapper が `args.security_review` で渡す
+
+pr-iterate は対象の run でだけ、review と CI が通り LGTM を確定する直前（base との conflict の自動解消の後）に
+`security-reviewer`（`agents/security-reviewer.md`。脅威モデル — 攻撃者が握る入力・守る資産・sandbox の内外 — を
+定義に持つ）を `security-review#k` として新しい spawn で起動し、PR 全 diff を読ませる（delta に絞らず、前 round の
+指摘も渡さない）。出力は pr-reviewer と同じ REVIEW schema。worktree の中を指す critical/major が 0 件ならその round を
+LGTM にする。残れば `fix#i`（dev-runner）に回し、commit を保証して次 iteration（fix delta の review → CI → 新しい
+spawn の security review）へ進む。`SECURITY_REVIEW_MAX`（3）回目の spawn が critical/major を返したら fix せず
+`status: 'security_unresolved'` で終え、dev-flow の Merge tier は `iterate_non_lgtm` と専用の
+`security_review_unresolved` で HOLD にする。指摘は reviewSeen に積まない（stuck 突合は pr-reviewer の topic だけ）。
+security review の round は返り値 `history` に `scope: 'security'` で載り、返り値 `security_review`
+（`{target, reasons, rounds, open}`）が判定と最後の未解消の指摘を返す。対象外の run（`target:false` と
+`args.security_review` 未指定）は spawn する agent も回数も変わらない。
+
 `/pr-iterate <pr>` は wrapper skill（`pr-iterate/SKILL.md`）。workflow の meta 名は skill 名と衝突しないよう
 `pr-iterate-run`（`dev-flow-run` と対称）で、起動名は namespaced の `dev-flow:pr-iterate-run`（bare 名・旧名
 `pr-iterate` へのフォールバックや alias は無い）。telemetry handoff の `skill` は `'pr-iterate'` のまま。
@@ -244,8 +268,9 @@ LLM の事前見積もり（shape / 見込み file 数）は REQ に
 `realized_file_count` に、判定根拠は `shape_reason` に載る（journal telemetry には実効 `shape` だけを書く）。danger-grep hit が
 あれば micro でも Evaluate を強制実行（security path）。
 
-**micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0`
-（clean-micro かつ contract 準拠かつ danger clean かつ ci の AC — `ci_verify` の check で判定する AC — を持たない）を満たす run は、PR phase で dev-implementer 1 spawn → targeted test →
+**micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && state.securityReview?.target !== true`
+（clean-micro かつ contract 準拠かつ danger clean かつ ci の AC — `ci_verify` の check で判定する AC — を持たず、security review の
+対象でもない）を満たす run は、PR phase で dev-implementer 1 spawn → targeted test →
 PR → pr-reviewer 1-pass の縮約経路（lite route、判断系 agent 呼び出し ≤10）を通る。lite の pr-reviewer
 1-pass が `review==null || blocking.length>0`（critical/major finding あり）を検出した場合のみ
 `workflow('dev-flow:pr-iterate-run')` フル loop へ自動昇格し、以降は通常の review⇄fix 経路で処理する。danger-grep
@@ -259,14 +284,15 @@ hit で `runEval=true` になったケースは lite ゲート条件を満たさ
   namespace は `agent()` を呼ぶ直前の `nsAgentOpts()` (canonical `_lib/agent-namespace.mjs`。dev-flow.js /
   pr-iterate.js へ inline 生成) でのみ付与する。dev-flow-canary.js は inline bridge 非依存
   (self-contained) を保つため例外で、namespaced id を直接書く。新しい call site はこの経路に乗せる。
-- **判断系 leaf は subagent** (`.claude/agents/{dev-implementer,evaluator,pr-reviewer,dev-runner,dev-runner-haiku,dev-runner-haiku-ro,dev-runner-haiku-wo}.md`)。
+- **判断系 leaf は subagent** (`.claude/agents/{dev-implementer,evaluator,pr-reviewer,security-reviewer,dev-runner,dev-runner-haiku,dev-runner-haiku-ro,dev-runner-haiku-wo}.md`)。
   effort は原則 subagent frontmatter で決める。`agent()` の `opts.effort` は frontmatter より優先して実効値に反映される
   （transcript で確認済み。dev-flow-canary の `agent_opts_effort_accepted` probe は受理の有無だけを見る）が、
   opts で effort を渡すのは pr-iterate の fix（`fix#i` / `fix#i-retry`、`FIX_EFFORT = 'medium'`）のみ
   （`_lib/agent-frontmatter.test.mjs` が pin）。
   model は subagent frontmatter で決める。品質ゲート agent の call site は `opts.model` を渡さない —
   evaluator（`eval#i` / `eval-green-fix` / `final-ac-reconcile` / `security-clearance-final`）と pr-reviewer（`review#i` /
-  schema-retry / `pr-review-lite`）はともに frontmatter（evaluator は opus / medium、pr-reviewer は opus / high）で spawn し、workflow 側に model 定数・
+  schema-retry / `pr-review-lite`）と security-reviewer（`security-review#k` / schema-retry）はいずれも frontmatter（evaluator は
+  opus / medium、pr-reviewer・security-reviewer は opus / high）で spawn し、workflow 側に model 定数・
   null 時の model fallback 機構は持たない（`_lib/review-model-frontmatter.test.mjs` が call site と telemetry
   `eval_model_config` / `review_model_config` / `impl_model_config` = frontmatter 値の一致を pin）。同一入力での paired 比較で
   opus-high は fable-high と verdict・major 検出が同等以上かつコストが 2/3 だったため、両 gate とも override を外している。

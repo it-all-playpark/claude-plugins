@@ -114,7 +114,7 @@ function makeLiteRouteSandbox(analyzeReq, opts = {}) {
     // state.runEval が強制 true になり LITE ゲートを常に無効化してしまうため、clean シナリオでは
     // realized 変更なしを明示的に返す）は [] 固定。
     if (label === 'danger-grep') {
-      return { risk: { ok: true, hits: dangerHits }, files: [], struct: null, diffhash: null };
+      return { risk: { ok: true, hits: dangerHits }, files: [], struct: null, diffhash: null, secreview: { target: false, reasons: [] } };
     }
     if (label === 'danger-grep-final') {
       return { ok: true, hits: dangerHits };

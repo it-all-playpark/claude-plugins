@@ -748,6 +748,7 @@ const HOLD_REASON_CODES = [
   'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
   'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
   'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
+  'security_review_unresolved',
 ];
 
 function classifyCiChecks(ciChecks) {
@@ -883,6 +884,7 @@ function classifyMergeTier(s) {
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
   if (s.finalAcReconcile === 'unavailable') pushBlocking('final_ac_unavailable', 'Final AC reconcile 判定不能（最終 PR tree に対する AC 再検証結果を取得できず — agent null / schema 不一致 / index 欠落・重複・範囲外 / evidence 不足）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   if (s.iterateStatus !== 'lgtm') pushBlocking('iterate_non_lgtm', `pr-iterate 非LGTM終端（status=${s.iterateStatus ?? 'null'}）— review⇄fix loop が LGTM 未到達のため人間確認必須（gate_policy に依らず不変）`, 'human_judgment');
+  if (s.iterateStatus === 'security_unresolved') pushBlocking('security_review_unresolved', 'security review 未収束（信頼境界をまたぐ変更の敵対的 security review が上限回数まで critical/major を返し続けた）— sandbox 脱出・任意パス書き込み等の指摘が残っている可能性。人間が確認する（gate_policy に依らず不変）', 'human_judgment');
   if (s.evalStaleness === 'hash_mismatch') {
     const short8 = (h) => (typeof h === 'string' && h.length > 0) ? h.slice(0, 8) : '不明';
     if (Array.isArray(s.staleDiffFiles)) {
@@ -3086,6 +3088,8 @@ function holdReasonDisplay(code, kind, ctx) {
       return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
     case 'iterate_non_lgtm':
       return { current: `pr-iterate status=${ctx.iterateStatus ?? 'null'}`, action: `未解消指摘を修正する（\`/pr-iterate ${ctx.pr}\` 単体起動で回収可）` };
+    case 'security_review_unresolved':
+      return { current: '信頼境界をまたぐ変更の security review が上限回数まで critical/major を返した', action: `残った指摘（run の返り値 \`security_review.open\`）を修正し、\`/pr-iterate ${ctx.pr}\` で security review を取り直す` };
     case 'hash_mismatch':
       return { current: '評価済み tree と PR tree が乖離', action: '差分を確認し必要なら再評価する' };
     case 'testsurf_uncleared':
@@ -4077,6 +4081,7 @@ const SECFLOOR = {
     struct: { type: ['object', 'null'] },
     diffhash: { type: ['object', 'null'] },
     lines: { type: ['array', 'null'] },
+    secreview: { type: ['object', 'null'] },
   },
 }
 // secfloor-unified-schema-end: SECFLOOR 直後に parseSecfloorFields の inline 区間を続ける（anchor 用の一意行）。
@@ -4134,6 +4139,19 @@ function parseLinesField(unified) {
   return null;
 }
 
+const SECREVIEW_UNAVAILABLE_REASON = 'unavailable: secfloor proxy の secreview が欠落・不正（fail-safe で対象扱い）';
+
+function parseSecreviewField(unified) {
+  const sr = unified?.secreview;
+  if (
+    sr != null && typeof sr === 'object' && typeof sr.target === 'boolean'
+    && Array.isArray(sr.reasons) && sr.reasons.every((r) => typeof r === 'string')
+  ) {
+    return { target: sr.target, reasons: sr.reasons };
+  }
+  return { target: true, reasons: [SECREVIEW_UNAVAILABLE_REASON] };
+}
+
 function parseSecfloorFields(unified) {
   return {
     risk: parseRiskField(unified),
@@ -4141,6 +4159,7 @@ function parseSecfloorFields(unified) {
     struct: parseStructField(unified),
     hash: parseHashField(unified),
     lines: parseLinesField(unified),
+    secreview: parseSecreviewField(unified),
   };
 }
 
@@ -5541,7 +5560,7 @@ let state = {
   implResults: null, concerns: [], blockedConcerns: [], guardBlockedResults: [],
   implDroppedCount: 0,
   val: null, greenFixCount: 0, greenFixIterations: [],
-  ledger: null, risk: null, dangerHits: [], realized: null,
+  ledger: null, risk: null, dangerHits: [], realized: null, securityReview: null,
   realizedCount: NaN, triage: null,
   EFFECTIVE_SHAPE: null, EVAL_PASSES: null, runEval: null,
   dhPrompt: null, evalResult: null, designReplanCount: 0, reimplCount: 0,
@@ -6116,7 +6135,7 @@ async function reconcileLocalVerifyTree(state, { worktreeAtFinal }) {
 function secfloorClassifyPrompt() {
   return `cd ${WT} で作業。次を実行し **stdout の JSON object をそのまま** 返せ`
     + `（判定や脚色をしない。exit 非0・stdout 空・JSON 不正なら `
-    + `{"risk":{"ok":false,"hits":[],"error":"..."},"files":null,"struct":null,"diffhash":null,"lines":null} で返せ。`
+    + `{"risk":{"ok":false,"hits":[],"error":"..."},"files":null,"struct":null,"diffhash":null,"lines":null,"secreview":null} で返せ。`
     + `失敗時に risk.ok:true を生成してはならない）:\n`
     + `secfloor-classify ${WT} origin/${BASE}`
 }
@@ -6150,7 +6169,7 @@ async function execSecurityFloorPhase(state) {
       { agentType: 'dev-runner-haiku-ro', schema: SECFLOOR, label: 'danger-grep', phase: 'Security floor', retryOnContractViolation: true },
     )
   } catch (e) { log(`⚠️ secfloor-classify 呼び出しが例外 — unified=null として per-field フォールバック（risk fail-closed）で続行: ${e && e.message ? e.message : e}`) }
-  const { risk, files, struct, hash, lines } = parseSecfloorFields(unified)
+  const { risk, files, struct, hash, lines, secreview } = parseSecfloorFields(unified)
   // fail-closed の 2 原因を出し分ける。形状不一致は top-level キー一覧が、
   // proxy 自身の失敗報告（形状は契約通り）は risk.error が診断値になる。
   if (risk.ok !== true) {
@@ -6262,6 +6281,10 @@ async function execSecurityFloorPhase(state) {
   state.testsurfPatterns = testsurfPatterns
   state.realized = realized
   state.realizedCount = realizedCount
+  // pr-iterate の security review の対象判定（secfloor-classify の secreview。_lib/security-review-target.mjs の決定論判定。
+  // 欠落・不正は parseSecfloorFields が対象に倒す）。LITE gate と pr-iterate の args.security_review の入力
+  state.securityReview = secreview
+  log(`security review: ${secreview.target ? `対象（${secreview.reasons.join(' / ')}）— pr-iterate が LGTM の前に security-reviewer を挟む` : '対象外（信頼境界をまたぐ変更なし）'}`)
   state.triage = triage
   state.EFFECTIVE_SHAPE = EFFECTIVE_SHAPE
   state.EVAL_PASSES = EVAL_PASSES
@@ -6944,6 +6967,9 @@ const prIterateArgs = () => ({
   // CI 待ちの上限（秒）。dev-flow-prerun が base の CI 所要時間から決めた値（単体起動の pr-iterate-prerun と同じ求め方）
   ci_wait_ceiling_seconds: PRERUN.ci_wait_ceiling_seconds,
   ...(CI_AC_INDEXES.length ? { ci_verify: { label: CI_VERIFY.label, checks: CI_VERIFY.checks, wait_ceiling_seconds: CI_VERIFY.wait_ceiling_seconds, ...(LOCAL_VERIFY_DECIDED ? { wait: false } : {}) } } : {}),
+  // security review の対象判定（Security floor の realized diff から）。target:true なら pr-iterate が LGTM の前に
+  // security-reviewer を挟み、上限まで critical/major が残れば status 'security_unresolved'（Merge tier の HOLD）で返る
+  ...(state.securityReview ? { security_review: { target: state.securityReview.target, reasons: state.securityReview.reasons } } : {}),
   nested: {
     caller: 'dev-flow', cwd: WT, head_ref: state.setup.branch,
     // base_ref: pr-iterate が LGTM 前に base との conflict を自動解消するときの merge 元
@@ -6966,7 +6992,8 @@ const prIterateArgs = () => ({
 //     pr-iterate.js 内に workflow() を足すと2段になり throw するので入れないこと。
 // ============================================================
 // ci の AC がある run は lite に入れない（ci_verify.checks の完了待ちは pr-iterate だけが持つ）。
-const LITE = state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0
+// security review の対象の run も lite に入れない（security review は pr-iterate だけが持つ）。
+const LITE = state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && state.securityReview?.target !== true
 let iterate
 // route: PR phase の経路識別子（'lite'|'full'）。返り値と telemetry に載る。
 let route
@@ -7746,6 +7773,8 @@ return {
   validate_tests: state.val?.tests ?? null,
   ci_test_verified: summaryCiTestVerified,
   iterate_status: iterate?.status ?? null,
+  // security review の判定と結果（pr-iterate の返り値。lite 経路・対象判定前の終端は Security floor の判定だけ）
+  security_review: iterate?.security_review ?? state.securityReview,
   route,
   shape: state.EFFECTIVE_SHAPE,
   shape_reason: state.triage.reason,

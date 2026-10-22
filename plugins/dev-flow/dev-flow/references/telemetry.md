@@ -12,7 +12,7 @@ dev-flow.js / pr-iterate.js は run の終端（成功・失敗・abort）で te
 
 telemetry の読み手は `dev-flow-health` だけ。`health-report.sh` がプログラムから読むのは `plugin_commit` と、HOLD の run の `hold_reason_codes` / `hold_ac_human_judged` / `iterate_status`、
 LLM ステップは原因推定のときに該当 run の telemetry を手で読む。読み手の無いキーは書かない — 書くキーは下の
-17 個に限り、`_lib/telemetry-keys.test.mjs` が workflow の telemetry object literal（成功・失敗・abort）と
+19 個に限り、`_lib/telemetry-keys.test.mjs` が workflow の telemetry object literal（成功・失敗・abort）と
 VM 実行の handoff の両方で pin する。キーを足すときは読み手を先に決め、この一覧と同テストを同時に更新する。
 いずれも記録専用で、gate・merge tier・ledger・shape 判定の入力にはしない（軸A 非抵触）。
 
@@ -36,6 +36,8 @@ VM 実行の handoff の両方で pin する。キーを足すときは読み手
 | `ci_wait_ceiling_seconds` | pr-iterate | 成功（nested・単体起動とも） | CI 待ちに使った上限（秒）。prerun が base branch の CI 所要時間から決めた `args.ci_wait_ceiling_seconds`、渡されなければ 300 |
 | `ci_wait_seconds` | pr-iterate | 成功（nested・単体起動とも） | 全 round の CI 待ちの nominal 累積秒（返り値の `ci_wait_seconds` と同じ値） |
 | `hold_reason_codes` | dev-flow | 成功（merge tier が `HOLD` の run のみ） | HOLD 理由の code の配列（返り値の `merge_tier_hold_reasons[].code` と同じ順） |
+| `security_review_rounds` | pr-iterate | 成功（security review の対象の run のみ。nested・単体起動とも） | `security-reviewer` を spawn した回数（schema-retry を除く。上限 `SECURITY_REVIEW_MAX`） |
+| `security_review_blocking` | pr-iterate | 成功（security review の対象の run のみ。nested・単体起動とも） | 全 round の security review が返した critical/major（worktree の中を指すもの）の累計 |
 | `hold_ac_human_judged` | dev-flow | 成功（merge tier が `HOLD` の run のみ） | 人手 AC 待ちの未達 AC に、文面で人手になった AC（`HUMAN_AC_PATTERNS` に当たる・`classifyAcScope` が `external`）ではない AC が 1 件以上あるか（boolean） |
 
 nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の entry が 1 件ずつ残る。集計は dev-flow entry
@@ -83,6 +85,10 @@ nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の e
   `_shared/scripts/ci-wait-ceiling.sh` が base branch の直近 20 件の成功 run の所要時間の p90 + 60 秒を 300〜900 秒に
   収めて決める（履歴 5 件未満・gh の読み取り失敗は 300）。`ci_wait_seconds` が上限に近い run の数で、上限の求め方を見直す。
   nested 起動でも pr-iterate entry に載る（dev-flow entry には載せない）。
+- `security_review_rounds` / `security_review_blocking`: 信頼境界をまたぐ PR に置いた security review 段（issue #1063）が
+  どれだけ指摘を出し、何回 spawn したか（= 追加の所要時間）を実測するための値。読み手は `dev-flow-health` の原因推定と、
+  `justification-classes.md` の security review 段の再評価（pr-reviewer の LGTM 後に security review が critical/major を
+  返さない run が続けば段を畳む・上限を下げる）。対象外の run には両キーとも載らない。
 - `hold_reason_codes` / `hold_ac_human_judged`: dev-flow 自身や実行環境の不具合で出た HOLD を `dev-flow-health` が
   signature にするための値（issue #1055）。HOLD の run も `outcome` は `success` のままなので、`health-report.sh` は
   この 2 つと `iterate_status` から、異常とする HOLD 理由（一覧は `health-report.sh` の `HOLD_SIGNATURE_CODES` /

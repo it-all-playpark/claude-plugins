@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { parseSecfloorFields, lineStatsFor, isWellFormedRiskField } from './secfloor-unified.mjs';
+import { parseSecfloorFields, lineStatsFor, isWellFormedRiskField, SECREVIEW_UNAVAILABLE_REASON } from './secfloor-unified.mjs';
 
 // (1) null 入力 → risk.ok===false かつ hits===[]、files/struct/hash は null。hits フィールド欠落を
 // clean と同一視しない fail-closed が要件。
@@ -279,4 +279,33 @@ test.each([
   const unified = { risk: { ok: true, hits: [] } };
   if (struct !== undefined) unified.struct = struct;
   assert.equal(parseSecfloorFields(unified).struct, null);
+});
+
+// ---- secreview フィールドの fail-safe（issue #1063）----
+// pr-iterate の security review の対象判定。形の正しい {target, reasons} だけを採り、欠落・型不正は対象に倒す
+// （判定入力の不明を「信頼境界をまたがない」と同一視しない）。他フィールドの判定には波及しない。
+
+test.each([
+  ['対象', { target: true, reasons: ['path_write: bin/x.sh'] }],
+  ['対象外', { target: false, reasons: [] }],
+])('parseSecfloorFields(unified).secreview: 形の正しい %s はそのまま採る', (_name, secreview) => {
+  const unified = { risk: { ok: true, hits: [] }, files: ['a.js'], secreview };
+  const result = parseSecfloorFields(unified);
+  assert.deepEqual(result.secreview, secreview);
+  assert.deepEqual(result.files, ['a.js']);
+});
+
+test.each([
+  ['欠落', undefined],
+  ['null', null],
+  ['target が boolean でない', { target: 'yes', reasons: [] }],
+  ['reasons が配列でない', { target: false, reasons: 'x' }],
+  ['reasons に string 以外', { target: false, reasons: [1] }],
+])('parseSecfloorFields(unified).secreview: %s → 対象に倒す（fail-safe）、risk / files は不変', (_name, secreview) => {
+  const unified = { risk: { ok: true, hits: [] }, files: ['a.js'] };
+  if (secreview !== undefined) unified.secreview = secreview;
+  const result = parseSecfloorFields(unified);
+  assert.deepEqual(result.secreview, { target: true, reasons: [SECREVIEW_UNAVAILABLE_REASON] });
+  assert.deepEqual(result.risk, { ok: true, hits: [] });
+  assert.deepEqual(result.files, ['a.js']);
 });

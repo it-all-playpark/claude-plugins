@@ -131,7 +131,7 @@ const AC_ARGS = { args: analyzeArgs(1, { acceptance_criteria: AC }) };
 // clean-micro-lite が成立する override（lite-route-routing.test.mjs と同型。realized 0 files → micro）
 const LITE_OVERRIDES = {
   'plan#micro': { summary: 'p', serial: [] },
-  'danger-grep': { risk: { ok: true, hits: [] }, files: [], struct: null, diffhash: null },
+  'danger-grep': { risk: { ok: true, hits: [] }, files: [], struct: null, diffhash: null, secreview: { target: false, reasons: [] } },
 };
 const BLOCKING_REVIEW = { decision: 'request_changes', issues: [{ severity: 'major', topic: 't', file: 'a.js', line: 1, description: 'd', suggestion: null }], summary: 'ng' };
 

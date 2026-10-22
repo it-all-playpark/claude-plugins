@@ -56,7 +56,7 @@ function filesOf(shape) {
   if (shape === 'micro') {
     return {
       'impl:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: [...MICRO_FILES], summary: 's', concerns: [] },
-      'danger-grep': { risk: { ok: true, hits: [] }, files: [...MICRO_FILES], struct: null, diffhash: { hash: 'AAA', empty: false } },
+      'danger-grep': { risk: { ok: true, hits: [] }, files: [...MICRO_FILES], struct: null, diffhash: { hash: 'AAA', empty: false }, secreview: { target: false, reasons: [] } },
       'ci-check-lite': { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], waited_seconds: 0, poll_attempts: 0 },
     };
   }
@@ -187,7 +187,7 @@ test('[implementer] micro（clean, docs-only）: LITE 経路 — pr-review-lite 
     'impl:serial:issue-1': implementerStubWith(DOCS),
     'pr-review-lite': { decision: 'approve', issues: [], summary: 'ok' },
     'ci-check-lite': { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], waited_seconds: 0, poll_attempts: 0 },
-    'danger-grep': { risk: { ok: true, hits: [] }, files: DOCS, struct: null, diffhash: { hash: 'AAA', empty: false } },
+    'danger-grep': { risk: { ok: true, hits: [] }, files: DOCS, struct: null, diffhash: { hash: 'AAA', empty: false }, secreview: { target: false, reasons: [] } },
   });
   assert.equal(error, null, `run が throw した: ${error?.message}`);
   assert.deepEqual(byType(calls, IMPLEMENTER).map((c) => c.label), ['impl:serial:issue-1'], 'dev-implementer は Implement で 1 回のはず');
@@ -205,7 +205,7 @@ test('[implementer] AC 2 件 + realized 6 files（adoptReportedFiles 由来の�
   const SIX = ['a', 'b', 'c', 'd', 'e', 'f'];
   const { calls, result, error } = await runMicro({
     'impl:serial:issue-1': implementerStubWith(SIX),
-    'danger-grep': { risk: { ok: true, hits: [] }, files: SIX, struct: null, diffhash: { hash: 'AAA', empty: false } },
+    'danger-grep': { risk: { ok: true, hits: [] }, files: SIX, struct: null, diffhash: { hash: 'AAA', empty: false }, secreview: { target: false, reasons: [] } },
   });
   assert.equal(error, null, `run が throw した: ${error?.message}`);
   assert.equal(result?.shape, 'complex', `realized 6 files で complex になっていない: ${JSON.stringify({ shape: result?.shape, reason: result?.shape_reason })}`);
@@ -254,7 +254,7 @@ test('[implementer] AC-5 AC 4 件 + realized 6 files（complex）: reimpl#1 が 
   const { calls, error } = await runFlow('standard', {
     'impl:serial:issue-1': implementerStubWith(SIX),
     'reimpl#1:serial:issue-1': implementerStubWith(SIX),
-    'danger-grep': { risk: { ok: true, hits: [] }, files: SIX, struct: null, diffhash: { hash: 'AAA', empty: false } },
+    'danger-grep': { risk: { ok: true, hits: [] }, files: SIX, struct: null, diffhash: { hash: 'AAA', empty: false }, secreview: { target: false, reasons: [] } },
     'eval#1': EVAL_FAIL('design'),
     'eval#2': EVAL_PASS,
   });

@@ -1,0 +1,58 @@
+diff --git a/plugins/meeting/README.md b/plugins/meeting/README.md
+index a401acc..5a899aa 100644
+--- a/plugins/meeting/README.md
++++ b/plugins/meeting/README.md
+@@ -150,6 +150,7 @@ meeting notes                         # 最新の録音から議事録（設定
+ meeting transcribe <DIR> --num-speakers 3 --prompt "固有名詞, 社内用語"
+ meeting play <DIR> 話者A              # その話者の声を約 5 秒再生（自分 は mic.wav から）
+ meeting name                          # 未確定の話者が残る最新の議事録に「この発言は誰？」で名前を入れる
++meeting set-names <DIR> 話者A=田中    # その録音の議事録と全文のラベルを置き換える（claude は起動しない）
+ meeting ls
+ ```
+ 
+@@ -191,8 +192,29 @@ meeting ls
+ }
+ ```
+ 
+-Claude Code の sandbox を使っている場合、`meeting name` は Bash から議事録を書き換えるので、`output_dir` を
+-sandbox の書き込み許可（`sandbox.filesystem.allowWrite`）に入れておく。
++Claude Code の sandbox を使っている場合、名前の後入れ（`/meeting-notes --name-unresolved`）は Bash の
++`meeting set-names <DIR> "話者A=田中,..."` で議事録と全文を書き換える。保存先を sandbox の書き込み許可に入れる代わりに、
++このコマンドだけを sandbox の外で動かす:
++
++```json
++{
++  "sandbox": {
++    "excludedCommands": ["meeting set-names *"]
++  }
++}
++```
++
++`meeting set-names` は sandbox から書ける場所（録音 DIR・cwd・議事録）に置かれたものに書き込み先を決めさせない:
++
++- 書くのは `notes_dir` と `output_dir` の配下（realpath で比べる）だけ。議事録の `transcript_path:` / `transcript:` が
++  その外を指す（絶対パス・`..`・シンボリックリンク経由）か、議事録・全文がシンボリックリンクなら、どれも書かずに失敗する
++- `notes_dir` は `meeting` の設定ファイルから、`notes_dir` の外の `output_dir` はグローバルの
++  `~/.config/skills/config.json` からだけ読む。cwd や `notes_dir` の git root の `skill-config.json` は読まず、
++  `notes_dir` が無ければ cwd では探さずに失敗する。この 2 つの設定ファイルは sandbox の書き込み許可に入れない
++- claude を起動しない
++
++`"meeting name *"` は登録しない。`meeting name` は claude を起動し、cwd や `notes_dir` の `skill-config.json` で
++書き込み先が決まる。
+ 
+ ## Whisper を Groq で処理する
+ 
+diff --git a/plugins/meeting/meeting-notes/SKILL.md b/plugins/meeting/meeting-notes/SKILL.md
+index 277f1cd..7486828 100644
+--- a/plugins/meeting/meeting-notes/SKILL.md
++++ b/plugins/meeting/meeting-notes/SKILL.md
+@@ -151,6 +151,7 @@ transcript_path: <保存した全文の絶対パス>
+ 
+ 1. NOTE の frontmatter の `unresolved_speakers` と `attendees`、DIR の `transcript.json` を Read する
+ 2. `unresolved_speakers` の話者だけを Step 2 の「この発言は誰？」の形で聞く（`attendees` の実名はもう割り当て済み）
+-3. 名前が入った話者を Bash で `meeting name <DIR> --set "話者A=田中,話者B=佐藤"` に渡す（「不明のまま」は渡さない）。
+-   議事録と全文のラベルの置き換えと `unresolved_speakers` からの削除はこのコマンドが行うので、ファイルを直接編集しない
++3. 名前が入った話者を Bash で `meeting set-names <DIR> "話者A=田中,話者B=佐藤"` に渡す（「不明のまま」は渡さない）。
++   議事録と全文のラベルの置き換えと `unresolved_speakers` からの削除はこのコマンドが行うので、ファイルを直接編集しない。
++   失敗したら（保存先の外・シンボリックリンク・`notes_dir` 未設定など）出力をそのまま返し、ファイルを直接直さない
+ 4. コマンドの出力（更新したファイルと残った未確定の話者）を返す

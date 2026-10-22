@@ -1155,6 +1155,8 @@ function holdReasonDisplay(code, kind, ctx) {
       return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
     case 'iterate_non_lgtm':
       return { current: `pr-iterate status=${ctx.iterateStatus ?? 'null'}`, action: `未解消指摘を修正する（\`/pr-iterate ${ctx.pr}\` 単体起動で回収可）` };
+    case 'security_review_unresolved':
+      return { current: '信頼境界をまたぐ変更の security review が上限回数まで critical/major を返した', action: `残った指摘（run の返り値 \`security_review.open\`）を修正し、\`/pr-iterate ${ctx.pr}\` で security review を取り直す` };
     case 'hash_mismatch':
       return { current: '評価済み tree と PR tree が乖離', action: '差分を確認し必要なら再評価する' };
     case 'testsurf_uncleared':

@@ -76,6 +76,11 @@ const AGENTS = [
   },
   { name: 'evaluator', effort: 'medium' },
   { name: 'pr-reviewer', effort: 'high' },
+  // security review（issue #1063）: 品質ゲート。model は frontmatter（call site は override しない）。読み取り専用
+  {
+    name: 'security-reviewer', model: 'opus', effort: 'high',
+    tools: { exact: ['Read', 'Grep', 'Glob', 'Bash'], exclude: ['Write', 'Edit', 'Skill', 'TodoWrite'] },
+  },
   { name: 'dev-implementer', effort: 'high' },
 ];
 

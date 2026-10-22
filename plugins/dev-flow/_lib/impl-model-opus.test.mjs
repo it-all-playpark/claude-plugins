@@ -103,7 +103,7 @@ const IMPL_ROUTES = {
     overrides: {
       'impl:serial:issue-1': IMPL_DONE(COMPLEX_FILES),
       'reimpl#1:serial:issue-1': IMPL_DONE(COMPLEX_FILES),
-      'danger-grep': { risk: { ok: true, hits: [] }, files: [...COMPLEX_FILES], struct: null, diffhash: { hash: 'AAA', empty: false } },
+      'danger-grep': { risk: { ok: true, hits: [] }, files: [...COMPLEX_FILES], struct: null, diffhash: { hash: 'AAA', empty: false }, secreview: { target: false, reasons: [] } },
       'eval#1': EVAL_FAIL,
       'eval#2': EVAL_PASS,
     },
@@ -163,7 +163,7 @@ const SHAPES = {
     args: analyzeArgs(1, { acceptance_criteria: ['a', 'b'], issue_type: 'fix' }),
     overrides: {
       'impl:serial:issue-1': IMPL_DONE(MICRO_FILES),
-      'danger-grep': { risk: { ok: true, hits: [] }, files: [...MICRO_FILES], struct: null, diffhash: { hash: 'AAA', empty: false } },
+      'danger-grep': { risk: { ok: true, hits: [] }, files: [...MICRO_FILES], struct: null, diffhash: { hash: 'AAA', empty: false }, secreview: { target: false, reasons: [] } },
       'ci-check-lite': { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], waited_seconds: 0, poll_attempts: 0 },
     },
     total: 11,

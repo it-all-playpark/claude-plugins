@@ -25,13 +25,15 @@
 # 再利用した worktree が書けない場合は退避しない（branch がそこで checkout 済み）— ok:false で人間に返す。
 #
 # Output (stdout, JSON 1 行):
-#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, ci_wait_ceiling_seconds, error?}
+#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, ci_wait_ceiling_seconds, security_review, error?}
 #   worktree_status: created / reused / unwritable / error / skipped
 #   skip_worktree: 作成時に取り出せず skip-worktree を付けたパス（worktree-checkout.sh。full checkout できれば []）
 #   prior_devflow: PR コメントのうち `<!-- dev-flow:<tier>[ codes=<code>,...] -->` marker を持つ最後のもの
 #     {tier, codes, url}（codes は HOLD 理由の code。HOLD 以外は []）。marker を持つコメントが無ければ null
 #   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。PR の base branch の CI 所要時間から決める
 #     （ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
+#   security_review: PR の diff（origin/<base>...<head>）が pr-iterate の security review の対象か
+#     {target, reasons}（_lib/scripts/security-review-target.mjs。diff・判定が取れなければ target:true）。ok:false は null
 #   不明な値は null。ok:false でも exit 0（引数不正のみ exit 2、stdout 空）。
 #
 # GitHub I/O は `gh pr view` と `gh run list`（base branch の成功 run。いずれも読み取り）のみ。push / comment / worktree の削除（この呼び出しで作った
@@ -97,6 +99,7 @@ WT=""
 worktree_status="skipped"
 worktree_removed=false
 prior_devflow="null"
+security_review="null"
 ci_wait_ceiling_seconds="$CI_WAIT_CEILING_DEFAULT"
 error=""
 
@@ -116,13 +119,15 @@ emit() {
         --argjson skip_worktree "$(skip_worktree_json)" \
         --argjson prior_devflow "$prior_devflow" \
         --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
+        --argjson security_review "$security_review" \
         --arg error "$error" \
         '
         def nz: if . == "" then null else . end;
         {ok: $ok, pr: $pr, worktree: ($worktree | nz), head_ref: ($head_ref | nz), base_ref: ($base_ref | nz),
          head_sha: ($head_sha | nz), repo: ($repo | nz), epoch: $epoch,
          worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree,
-         prior_devflow: $prior_devflow, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds}
+         prior_devflow: $prior_devflow, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds,
+         security_review: $security_review}
         + (if $error == "" then {} else {error: $error} end)
         '
     exit 0
@@ -352,5 +357,20 @@ fi
 # `.devflow-tmp` 全体は消さない（dev-flow の df-<N> を再利用したとき、PR phase 失敗の回収用 commit
 # message / PR body 等が残っている）
 git -C "$WT" clean -fdx -- '.devflow-tmp/.isolation-probe*' >/dev/null 2>&1 || true
+
+# ============================================================================
+# Segment 5: security review の対象判定（issue #1063）
+# ============================================================================
+
+# PR の diff（origin/<base>...<head>。fetch 済み）を _lib/security-review-target.mjs の CLI にかける。dev-flow の
+# Security floor（secfloor-classify.sh の secreview）と同じ判定。diff か CLI の出力が取れなければ対象に倒す（fail-safe）
+SECREVIEW_CLI="$(dirname "${BASH_SOURCE[0]}")/../../_lib/scripts/security-review-target.mjs"
+security_review='{"target":true,"reasons":["unavailable: PR の diff を判定できない（fail-safe で対象扱い）"]}'
+if [[ -n "$base_ref" ]] && PR_DIFF="$(git -C "$ROOT" diff --no-renames "origin/${base_ref}...${head_sha}" 2>/dev/null)"; then
+    SECREVIEW_OUT="$(printf '%s\n' "$PR_DIFF" | node "$SECREVIEW_CLI" 2>/dev/null)" || SECREVIEW_OUT=""
+    if printf '%s' "$SECREVIEW_OUT" | jq -e '(.target | type) == "boolean" and (.reasons | type) == "array"' >/dev/null 2>&1; then
+        security_review="$SECREVIEW_OUT"
+    fi
+fi
 
 emit true

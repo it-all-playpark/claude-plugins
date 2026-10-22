@@ -41,6 +41,7 @@ function filesOverrides(files, { declared = files, changed = files, lines = unde
     'reimpl#1:serial:issue-1': impl,
     'danger-grep': {
       risk: { ok: true, hits: [] }, files: files === null ? null : [...files], struct: null, diffhash: { hash: 'AAA', empty: false },
+      secreview: { target: false, reasons: [] },
       ...(lines !== undefined ? { lines } : {}),
     },
     'merge-tier-facts': mergeTierFacts({ files: changed === null ? ['src/x.ts'] : [...changed] }),

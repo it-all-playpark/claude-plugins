@@ -347,7 +347,7 @@ export function shapeOverrides(shape, { issue = 1 } = {}) {
     [`impl:serial:issue-${issue}`]: impl,
     [`reimpl#1:serial:issue-${issue}`]: impl,
     [`reimpl#2:serial:issue-${issue}`]: impl,
-    'danger-grep': { risk: { ok: true, hits: [] }, files: [...files], struct: null, diffhash: { hash: 'AAA', empty: false } },
+    'danger-grep': { risk: { ok: true, hits: [] }, files: [...files], struct: null, diffhash: { hash: 'AAA', empty: false }, secreview: { target: false, reasons: [] } },
     ...(shape === 'micro' ? { 'ci-check-lite': { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], waited_seconds: 0, poll_attempts: 0 } } : {}),
   };
 }
@@ -384,8 +384,9 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
     // 実効 shape は realized diff の file 数だけで決まる（issue #676）。既定の 3 件 + AC 2 件 + type=fix →
     // 'standard'（Evaluate 1 pass・full route）。micro / complex に倒したい test は files を override する。
+    // secreview は security review の対象外（issue #1063。欠落は workflow が対象に倒すので既定で明示する）。
     if (label === 'danger-grep') {
-      return { risk: { ok: true, hits: [] }, files: [...STANDARD_FILES], struct: null, diffhash: { hash: 'AAA', empty: false } };
+      return { risk: { ok: true, hits: [] }, files: [...STANDARD_FILES], struct: null, diffhash: { hash: 'AAA', empty: false }, secreview: { target: false, reasons: [] } };
     }
     // label 'merge-tier-facts'（Merge tier。issue #637 統合呼び出し）は 6 サブ結果を {ok,value,error} で返す。
     // diffhash は既定で danger-grep（Security floor）と同一ハッシュ 'AAA'（Security floor 結果の再利用が発火）。

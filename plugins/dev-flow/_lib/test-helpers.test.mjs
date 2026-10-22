@@ -343,6 +343,7 @@ test('[test-helpers] (d) devFlowResponder: 既定の "danger-grep" 応答が仕�
     files: ['src/x.ts', 'src/y.ts', 'src/z.ts'],
     struct: null,
     diffhash: { hash: 'AAA', empty: false },
+    secreview: { target: false, reasons: [] },
   });
   assert.deepEqual(STANDARD_FILES, ['src/x.ts', 'src/y.ts', 'src/z.ts']);
   // dev-implementer 既定応答も同じ 3 件を申告する（宣言外 0 件で shape だけが standard になる）

@@ -47,6 +47,7 @@ const STATUS_HEADLINE = {
   'ci_error': '⚠️ CI エラー — CI ステータスを確定できなかった（proxy が結果を返さなかった）。`gh pr checks <PR>` で実状態を確認すること。人間へエスカレーション',
   'ci_pending': '⏳ CI 未完了 — checks pending。人間/CI 完了待ちへエスカレーション',
   'review_contract_error': '⚠️ REVIEW CONTRACT ERROR — reviewer の decision/blocking 矛盾の再発、または reviewer が StructuredOutput 契約違反で結果を返さず。人間へエスカレーション',
+  'security_unresolved': '⚠️ SECURITY REVIEW 未収束 — 信頼境界をまたぐ変更の security review が上限回数まで critical/major を返した。反復履歴の security の行の指摘を人間が確認する',
 };
 
 // 最終 CI 状態行のラベル。null（未観測）は「CI を判定していない」ことを明示する —
@@ -128,7 +129,7 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve })
  * 終端サマリー markdown を生成する。
  * @param {object} opts
  * @param {number|string} opts.pr - PR 番号
- * @param {string} opts.status - 'lgtm' | 'stuck' | 'fix_failed' | 'max_reached' | 'ci_error' | 'ci_pending' | 'review_contract_error'
+ * @param {string} opts.status - 'lgtm' | 'stuck' | 'fix_failed' | 'max_reached' | 'ci_error' | 'ci_pending' | 'review_contract_error' | 'security_unresolved'
  * @param {number} opts.iterations - 総反復回数
  * @param {string} opts.lastDecision - 最終判定
  * @param {string} opts.lastSummary - 最終サマリーテキスト
@@ -223,7 +224,9 @@ export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision,
       const mCount = (round.minor ?? []).length;
       const rawSummary = mdCell(round.summary);
       const rSummary = rawSummary.length > 120 ? rawSummary.slice(0, 120) + '…' : rawSummary;
-      lines.push(`| ${round.iteration} | ${rEmoji} ${rLabel} | ${bCount} | ${mCount} | ${rSummary} |`);
+      // security review の round（scope: 'security'。issue #1063）は同じ反復の review の行と区別する
+      const iterCell = round.scope === 'security' ? `${round.iteration}（security）` : round.iteration;
+      lines.push(`| ${iterCell} | ${rEmoji} ${rLabel} | ${bCount} | ${mCount} | ${rSummary} |`);
     }
   }
 

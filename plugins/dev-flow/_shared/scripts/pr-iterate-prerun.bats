@@ -472,6 +472,29 @@ comment_json() {
     echo "$output" | jq -e '.ok == false and .ci_wait_ceiling_seconds == 300'
 }
 
+@test "(5k) security_review: PR の diff（origin/<base>...<head>）が docs だけなら対象外、パスを書くスクリプトを足せば対象。ok:false は null" {
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_review == {target: false, reasons: []}'
+
+    git -C "$SEED" checkout -q feature/x
+    printf 'cp "$src" "$dst"\n' > "$SEED/install.sh"
+    git -C "$SEED" add install.sh
+    git -C "$SEED" commit -q -m "add install"
+    git -C "$SEED" push -q origin feature/x
+    HEAD_SHA="$(git -C "$SEED" rev-parse feature/x)"
+    write_pr_fixture "$HEAD_SHA"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_review == {target: true, reasons: ["path_write: install.sh"]}'
+
+    export GH_STUB_FAIL=1
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .security_review == null'
+}
+
 # ---- (6) 静的 pin ----
 
 @test "(6a) 静的pin: push しない・gh は読み取り（pr view / run list）のみ" {

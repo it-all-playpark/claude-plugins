@@ -141,6 +141,7 @@ export const HOLD_REASON_CODES = [
   'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
   'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
   'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
+  'security_review_unresolved',
 ];
 
 // merge-tier-facts の checks サブ結果（parseChecks の返り値 {ok:true, checks} | {ok:false, error}）を
@@ -246,10 +247,12 @@ export function classifyMergeableState(meta) {
 //   変えない可視化 reason を末尾に追記するのみ。コード実体に対する決定論 breaking 検出は
 //   danger-grep 'public-api' クラス（realized diff 上、blast-radius floor）が別途担保する。
 // s.iterateStatus (string|null): pr-iterate の終端 status（'lgtm'|'stuck'|'fix_failed'|
-//   'max_reached'|'ci_error'|'ci_pending'|null）。'lgtm' 以外（未知値・null 含む）は
+//   'max_reached'|'ci_error'|'ci_pending'|'security_unresolved'|null）。'lgtm' 以外（未知値・null 含む）は
 //   決定論的 HOLD（fail-safe、allowlist しない厳格判定）。blast-radius クラス（issue #319）—
 //   merge 直前の最終ゲートが LGTM 未到達のまま AUTO/REVIEW を出すと既知の指摘が未解消のまま
-//   出荷されるため、gate_policy で緩和しない（軸A 不変）。
+//   出荷されるため、gate_policy で緩和しない（軸A 不変）。'security_unresolved'（信頼境界をまたぐ PR の
+//   security review が上限回数まで critical/major を返し続けた。issue #1063）は 'iterate_non_lgtm' に加えて専用の
+//   'security_review_unresolved' を積む — 人間が読むべきは「sandbox 脱出等の指摘が残っている」ことで、一般の非 LGTM と分ける。
 // s.evalStaleness (string): 'none'|'hash_mismatch'|'hash_reconverged'|'iterate_incomplete'|
 //   'iterate_fixed'（issue #288 の 4 値 + issue #631 の hash_reconverged。EVAL_STALENESS_VALUES）。
 //   'hash_mismatch' のみ HOLD 追加（Evaluate 対象 tree と PR tree の乖離）。'hash_reconverged' は
@@ -430,6 +433,7 @@ export function classifyMergeTier(s) {
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
   if (s.finalAcReconcile === 'unavailable') pushBlocking('final_ac_unavailable', 'Final AC reconcile 判定不能（最終 PR tree に対する AC 再検証結果を取得できず — agent null / schema 不一致 / index 欠落・重複・範囲外 / evidence 不足）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   if (s.iterateStatus !== 'lgtm') pushBlocking('iterate_non_lgtm', `pr-iterate 非LGTM終端（status=${s.iterateStatus ?? 'null'}）— review⇄fix loop が LGTM 未到達のため人間確認必須（gate_policy に依らず不変）`, 'human_judgment');
+  if (s.iterateStatus === 'security_unresolved') pushBlocking('security_review_unresolved', 'security review 未収束（信頼境界をまたぐ変更の敵対的 security review が上限回数まで critical/major を返し続けた）— sandbox 脱出・任意パス書き込み等の指摘が残っている可能性。人間が確認する（gate_policy に依らず不変）', 'human_judgment');
   if (s.evalStaleness === 'hash_mismatch') {
     const short8 = (h) => (typeof h === 'string' && h.length > 0) ? h.slice(0, 8) : '不明';
     if (Array.isArray(s.staleDiffFiles)) {

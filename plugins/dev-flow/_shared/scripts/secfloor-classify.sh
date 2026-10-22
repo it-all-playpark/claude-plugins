@@ -15,7 +15,8 @@
 #    "files":["path1",...]|null,
 #    "struct":<structural-classify.sh の出力 object>|null,
 #    "diffhash":<worktree-diff-hash.sh の出力 object>|null,
-#    "lines":[{"path":"path1","added":N,"deleted":M},...]|null}
+#    "lines":[{"path":"path1","added":N,"deleted":M},...]|null,
+#    "secreview":{"target":bool,"reasons":["<規則>: <path>",...]}|null}
 #
 # フィールド別失敗セマンティクス (各フィールドの失敗は他フィールドへ絶対に波及しない):
 #   risk     - fail-closed 用。diff-risk-classify.sh が非0 exit でも stdout に
@@ -37,6 +38,10 @@
 #              触らない)。binary (numstat が "-") と読めない untracked file は要素を出さない
 #              -- その file の行数が欠けると呼び出し側が補正を諦めて file 数判定に戻る。numstat 自体の
 #              失敗は null。
+#   secreview - fail-safe 用 (pr-iterate の security review の対象判定、issue #1063)。lines と同じ realized
+#              diff (tracked は HEAD からの diff、untracked は /dev/null からの diff) を
+#              _lib/scripts/security-review-target.mjs に渡した結果。diff の取得失敗・CLI の出力不正は
+#              {"target":true,"reasons":["unavailable: ..."]} (対象に倒す)。usage error / jq 不在は null。
 #
 # Exit: 0 が既定。usage error (引数不足・worktree パス不在) のみ非0 exit 可
 # (この場合も stdout には risk:{"ok":false,...}, files/struct/diffhash:null の
@@ -54,7 +59,7 @@ source "$(dirname "$_CORE_BIN")/../_lib/common.sh"
 emit_degrade() {
     # $1: risk JSON object (raw, already-complete JSON text). files/struct/diffhash/lines
     # は常に null (usage error / jq 不在は risk 以外の全フィールドが取得不能なため)。
-    printf '{"risk":%s,"files":null,"struct":null,"diffhash":null,"lines":null}\n' "$1"
+    printf '{"risk":%s,"files":null,"struct":null,"diffhash":null,"lines":null,"secreview":null}\n' "$1"
 }
 
 usage_error() {
@@ -171,6 +176,35 @@ if [[ $files_rc -eq 0 ]]; then
 fi
 
 # ============================================================================
+# 2c. secreview = realized diff が pr-iterate の security review の対象か (issue #1063)
+# ============================================================================
+
+# 判定は _lib/security-review-target.mjs（CLI 経由。規則を shell に写さない）。realized diff は lines と同じ範囲:
+# tracked は HEAD からの差分、untracked は /dev/null からの差分。diff か CLI の出力が取れなければ対象に倒す
+# (fail-safe -- 判定入力の不明を「対象外」と同一視しない)。
+SECREVIEW_CLI="$SCRIPT_DIR/../../_lib/scripts/security-review-target.mjs"
+secreview_json='{"target":true,"reasons":["unavailable: realized diff を判定できない（fail-safe で対象扱い）"]}'
+if [[ $files_rc -eq 0 ]]; then
+    set +e
+    secreview_ok=true
+    secreview_diff="$(git -C "$wt" diff --no-renames HEAD 2>/dev/null)" || secreview_ok=false
+    while IFS= read -r line; do
+        [[ "$line" == '?? '* ]] || continue
+        untracked_diff="$(git -C "$wt" diff --no-index --no-renames -- /dev/null "${line:3}" 2>/dev/null)"
+        # --no-index は差分ありで exit 1
+        [[ $? -le 1 ]] || secreview_ok=false
+        secreview_diff+=$'\n'"$untracked_diff"
+    done <<< "$files_raw"
+    if [[ "$secreview_ok" == true ]]; then
+        secreview_out="$(printf '%s\n' "$secreview_diff" | node "$SECREVIEW_CLI" 2>/dev/null)"
+        if printf '%s' "$secreview_out" | jq -e '(.target | type) == "boolean" and (.reasons | type) == "array"' >/dev/null 2>&1; then
+            secreview_json="$secreview_out"
+        fi
+    fi
+    set -e
+fi
+
+# ============================================================================
 # 3. struct = structural-classify.sh <worktree-path> <base-ref>
 # ============================================================================
 
@@ -214,6 +248,7 @@ jq -nc \
     --argjson struct "$struct_json" \
     --argjson diffhash "$diffhash_json" \
     --argjson lines "$lines_json" \
-    '{risk: $risk, files: $files, struct: $struct, diffhash: $diffhash, lines: $lines}'
+    --argjson secreview "$secreview_json" \
+    '{risk: $risk, files: $files, struct: $struct, diffhash: $diffhash, lines: $lines, secreview: $secreview}'
 
 exit 0

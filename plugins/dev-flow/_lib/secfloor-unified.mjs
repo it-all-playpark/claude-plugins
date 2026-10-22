@@ -1,7 +1,7 @@
 // parseSecfloorFields: dev-flow Security floor が使う統合 exec-proxy
 // (`_shared/scripts/secfloor-classify.sh`) の応答を per-field 独立に検証する純関数 (issue #544, S1)。
 //
-// 統合スクリプトは {"risk":..., "files":..., "struct":..., "diffhash":..., "lines":...} の 1 JSON object を返すが、
+// 統合スクリプトは {"risk":..., "files":..., "struct":..., "diffhash":..., "lines":..., "secreview":...} の 1 JSON object を返すが、
 // 各フィールドはそれぞれ別のフィールド別失敗ポリシーを持つ (下記)。本関数は「1 フィールドの不正が
 // 他フィールドの判定に影響しない」ことを保証するため、各フィールドを完全に独立して検証する。
 //
@@ -23,6 +23,9 @@
 //   lines  - fail-safe。Array.isArray(unified?.lines) かつ全要素が {path:string, added/deleted: 0 以上の
 //            整数} のときのみ採用。それ以外は null（classifyShape が行数補正をせず file 数判定に戻る。
 //            取れない行数を 0 と読んで shape を下げない）。
+//   secreview - fail-safe。unified?.secreview が {target: boolean, reasons: string[]} のときのみ採用。それ以外
+//            （欠落・null・型不正）は {target: true, reasons: [SECREVIEW_UNAVAILABLE_REASON]}（pr-iterate の security
+//            review の対象に倒す。判定入力の不明を「信頼境界をまたがない」と同一視しない。issue #1063）。
 //
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
@@ -83,6 +86,19 @@ function parseLinesField(unified) {
   return null;
 }
 
+export const SECREVIEW_UNAVAILABLE_REASON = 'unavailable: secfloor proxy の secreview が欠落・不正（fail-safe で対象扱い）';
+
+function parseSecreviewField(unified) {
+  const sr = unified?.secreview;
+  if (
+    sr != null && typeof sr === 'object' && typeof sr.target === 'boolean'
+    && Array.isArray(sr.reasons) && sr.reasons.every((r) => typeof r === 'string')
+  ) {
+    return { target: sr.target, reasons: sr.reasons };
+  }
+  return { target: true, reasons: [SECREVIEW_UNAVAILABLE_REASON] };
+}
+
 export function parseSecfloorFields(unified) {
   return {
     risk: parseRiskField(unified),
@@ -90,6 +106,7 @@ export function parseSecfloorFields(unified) {
     struct: parseStructField(unified),
     hash: parseHashField(unified),
     lines: parseLinesField(unified),
+    secreview: parseSecreviewField(unified),
   };
 }
 

@@ -1278,12 +1278,13 @@ test('classifyMergeTier: evalStaleness:undefined/null → throw しない(従来
 
 // ---- issue #658: HOLD_REASON_CODES + holdReasons[].code + disclosures ----
 
-test('HOLD_REASON_CODES は 18 の閉じた enum と一致', () => {
+test('HOLD_REASON_CODES は 19 の閉じた enum と一致', () => {
   assert.deepEqual(HOLD_REASON_CODES, [
     'ledger_unconverged', 'danger_unresolved', 'breaking_structured', 'escalate',
     'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
     'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
     'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
+    'security_review_unresolved',
   ]);
 });
 
@@ -1351,6 +1352,21 @@ test('classifyMergeTier: holdReasons[].code — iterate_non_lgtm', () => {
   assert.ok(item);
   assert.equal(item.code, 'iterate_non_lgtm');
   assert.ok(HOLD_REASON_CODES.includes(item.code));
+});
+
+// issue #1063: 信頼境界をまたぐ PR の security review が上限まで critical/major を返し続けた run は、
+// iterate_non_lgtm に加えて専用の security_review_unresolved で HOLD にする。他の非 LGTM には積まない。
+test('classifyMergeTier: holdReasons[].code — security_review_unresolved（iterateStatus=security_unresolved のときだけ）', () => {
+  const r = classifyMergeTier({ ...autoBase(), iterateStatus: 'security_unresolved', evalStaleness: 'none' });
+  assert.equal(r.tier, 'HOLD');
+  assert.deepEqual(r.holdReasons.map((x) => x.code), ['iterate_non_lgtm', 'security_review_unresolved']);
+  const item = r.holdReasons.find((x) => x.code === 'security_review_unresolved');
+  assert.equal(item.kind, 'human_judgment');
+  assert.match(item.reason, /security review 未収束/);
+  for (const status of ['stuck', 'max_reached', 'fix_failed', 'lgtm']) {
+    const other = classifyMergeTier({ ...autoBase(), iterateStatus: status, evalStaleness: 'none' });
+    assert.ok(!other.holdReasons.some((x) => x.code === 'security_review_unresolved'), status);
+  }
 });
 
 test('classifyMergeTier: holdReasons[].code — hash_mismatch', () => {

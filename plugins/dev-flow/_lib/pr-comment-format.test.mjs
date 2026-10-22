@@ -486,6 +486,24 @@ test('buildTerminalSummaryBody: review_contract_error -> ⚠️ REVIEW CONTRACT 
   assert.ok(body.includes('<!-- pr-iterate:review_contract_error:4 -->'), '終端マーカーに review_contract_error が出る');
 });
 
+// STATUS_HEADLINE: security_unresolved（issue #1063）と、反復履歴の security review の行
+test('buildTerminalSummaryBody: security_unresolved -> SECURITY REVIEW 未収束の見出し、security review の round は「（security）」付きの行', () => {
+  const body = buildTerminalSummaryBody({
+    pr: 31,
+    status: 'security_unresolved',
+    iterations: 3,
+    lastDecision: 'request-changes',
+    lastSummary: '保存先の外へ書ける経路が残る',
+    history: [
+      { iteration: 3, decision: 'approve', summary: 'delta ok', blocking: [], minor: [], scope: 'delta' },
+      { iteration: 3, decision: 'request-changes', summary: 'hardlink 経由で書ける', blocking: [{ severity: 'critical', topic: 'hardlink-write::a.sh', file: 'a.sh', description: 'd', suggestion: 's' }], minor: [], scope: 'security' },
+    ],
+  });
+  assert.ok(body.includes('### ⚠️ SECURITY REVIEW 未収束'), body);
+  assert.ok(body.includes('| 3 | ✅ 承認 (LGTM) | 0 | 0 | delta ok |'), body);
+  assert.ok(body.includes('| 3（security） | 🔴 変更要求 | 1 | 0 | hardlink 経由で書ける |'), body);
+});
+
 // (5) buildTerminalSummaryBody: history に minor を持つ round -> 反復履歴テーブルに minor 件数列、全 minor 詳細 details が箇条書きで出る
 test('buildTerminalSummaryBody: history の minor が反復履歴テーブルの minor 列と全 minor 詳細 details（箇条書き）に出る', () => {
   const body = buildTerminalSummaryBody({

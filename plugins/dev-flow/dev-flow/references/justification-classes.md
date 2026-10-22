@@ -15,8 +15,8 @@ dev-flow の各「distrust 機構」（LLM/自動化の判定を信用しきら�
 | クラス | 正当化根拠 | 能力依存 | 代表機構 |
 |--------|-----------|---------|---------|
 | **incentive-structural**（永続・撤去禁止） | 敵対ループの勝利宣言を当事者に self-judge させない incentive 設計 + cold-context moving-target の抑制 | **非依存**（賢いモデルほどシャープな non-convergent nitpick を出すため逆に悪化） | frozen target（planSeen/evalSeen/blockSeen 累積）・既出 findings/feedback 累積・topic-stuck 検出 + relax + early-cutoff・critical-always-blocks + severity floor + append 単調性・hard cap（PLAN/EVAL/GREEN/BLOCK_MAX, last-resort safety net）・guard_blocked の replan 除外（guard/hook 由来 BLOCKED を「別アプローチ探索」ループに入れず blockedConcerns→evaluator focus へ直行 — guard 迂回手順の探索 incentive を絶つ）・blocking_reason 決定論スクラバー（迂回コマンド列の replan/evaluator prompt への verbatim 伝播遮断）・review-finding 決定論スクラバー（pr-iterate の blocking finding description/suggestion の fix prompt への verbatim 伝播遮断 — メタ指示が実行指示へ変換される経路を断つ）・analyze provenance 突合（取得 issue 番号/title の決定論突合で REQ 捏造を反証可能化 — 取得成功の self-judge をさせない fail-closed） |
-| **blast-radius**（永続） | 不可逆性 / accountability / liability / blast-radius。正確性ではなく当事者性で正当化するため frontier が人間を超えても残る | **非依存** | human merge（accountability/不可逆/values/novelty）・danger-grep on realized diff → security path 強制・seeded SEC + merge tiering HOLD（danger/breaking/不可逆）・pr-iterate critical/major-always-blocks（merge 直前の最終ゲート: この先は human merge のみで、ここで relax すると既知の critical/major が出荷される。修正コストは PR スコープに bounded）・Final reconcile（pr-iterate fix 適用後の最終 tree に対する決定論 test 再実行 + 既存 AC の one-shot 再検証（fail は critical AC-FINAL append・既存 checked は不変の append 単調） → red/unavailable で HOLD。merge 直前の最終ゲート）・sunset 昇格の issue→人間 merge 経由・dev-flow-health の status / 候補 commit 判定は決定論 script のみ（health-report.sh — LLM に解消・再発の self-judge をさせない）・TESTSURF seeding（test-weakening 決定論検出 + evaluator clearance、merge tier HOLD）・lite route の pr-reviewer 1-pass → critical/major findings 検出で `workflow('dev-flow:pr-iterate-run')` フル fix loop へ自動昇格（critical/major-always-blocks 不変。縮約経路でも merge 直前のゲートを維持） |
-| **capability-bound**（**sunset 対象**） | 現行 LLM judge の信頼性不足（ECE≈39% / FPR≈35%）。モデルが賢くなるほど縮む | **依存** | `gate_policy = llm-major-advisory`（LLM major を blocking にしない distrust）・trust-layer 3 層（SurfaceProof / EvalSeal / EffectDelta。call site・exec-proxy・kernel・doctor レポート・telemetry 転送は全て撤去済み。復帰は下記 sunset path に従う） |
+| **blast-radius**（永続） | 不可逆性 / accountability / liability / blast-radius。正確性ではなく当事者性で正当化するため frontier が人間を超えても残る | **非依存** | human merge（accountability/不可逆/values/novelty）・danger-grep on realized diff → security path 強制・seeded SEC + merge tiering HOLD（danger/breaking/不可逆）・pr-iterate critical/major-always-blocks（merge 直前の最終ゲート: この先は human merge のみで、ここで relax すると既知の critical/major が出荷される。修正コストは PR スコープに bounded）・Final reconcile（pr-iterate fix 適用後の最終 tree に対する決定論 test 再実行 + 既存 AC の one-shot 再検証（fail は critical AC-FINAL append・既存 checked は不変の append 単調） → red/unavailable で HOLD。merge 直前の最終ゲート）・sunset 昇格の issue→人間 merge 経由・dev-flow-health の status / 候補 commit 判定は決定論 script のみ（health-report.sh — LLM に解消・再発の self-judge をさせない）・TESTSURF seeding（test-weakening 決定論検出 + evaluator clearance、merge tier HOLD）・lite route の pr-reviewer 1-pass → critical/major findings 検出で `workflow('dev-flow:pr-iterate-run')` フル fix loop へ自動昇格（critical/major-always-blocks 不変。縮約経路でも merge 直前のゲートを維持）・信頼境界をまたぐ PR の security review（対象判定は realized diff / PR diff の決定論判定のみ — LLM に「対象外」を self-judge させない。対象の PR は security-reviewer が critical/major 0 件を返すまで LGTM にせず、上限で `security_unresolved` → merge tier `security_review_unresolved` HOLD。sandbox の外の書き込み・コード実行は出荷後に取り消せない） |
+| **capability-bound**（**sunset 対象**） | 現行 LLM judge の信頼性不足（ECE≈39% / FPR≈35%）。モデルが賢くなるほど縮む | **依存** | `gate_policy = llm-major-advisory`（LLM major を blocking にしない distrust）・pr-reviewer とは別の security review 段（pr-reviewer の 1 回の full review と delta review だけでは列挙外の攻撃経路を拾い切れない distrust。`SECURITY_REVIEW_MAX` と対象判定の規則）・trust-layer 3 層（SurfaceProof / EvalSeal / EffectDelta。call site・exec-proxy・kernel・doctor レポート・telemetry 転送は全て撤去済み。復帰は下記 sunset path に従う） |
 
 **capability-bound の sunset path（必須）**: パラメータ値で表現し再評価トリガを持たせる。
 `gate_policy` の sunset path —
@@ -33,6 +33,20 @@ redgreen vdelta deny の sunset path —
 - 主分類は incentive-structural（red→green 昇格の勝利宣言を test 変更込みで self-judge させないラベル精度保護）だが、**blocking ゲート化しない点**（deny-only 存置）は capability-bound。
 - 表現: 昇格条件の deny `&&` 節（deny-only）。
 - 再評価トリガ: veridelta が record_integrity を advisory から昇格（INV-10 解消）し W6b calibration が vdelta verdict の precision を実証した時点で blocking gate 化を再評価する。
+
+security review 段（pr-iterate の `security-reviewer`、issue #1063）の sunset path —
+- 主分類は blast-radius（永続）: 信頼境界をまたぐ PR で critical/major が残るうちは LGTM にしない部分と、対象判定を
+  決定論に限る部分（LLM に対象外を判定させない）は撤去しない。毎回新しい spawn に PR 全 diff を読ませる部分は
+  incentive-structural（fix の差分・既出の指摘に引きずられると、fix が持ち込んだ別経路や列挙外の攻撃を見落とす）。
+- capability-bound 側面は「pr-reviewer とは別の段を置くこと」そのものと反復上限。現行の pr-reviewer は宣言意図との照合が
+  主で、iteration 2 以降は fix delta しか読まないため、#1058 の hardlink 経由の書き込み・frontmatter 注入・保存先内の
+  `.git/config` 書き換えを拾えなかった。
+- 表現: `_lib/security-review.mjs` の `SECURITY_REVIEW_MAX = 3`（1 run の security-reviewer の spawn 上限 = 初回 + fix 後の
+  確認 2 回）と、`_lib/security-review-target.mjs` の規則（`permission_config` / `sandbox_boundary` / `path_write`）。
+- 再評価トリガ: **major モデルリリース毎** + pr-iterate entry の telemetry `security_review_rounds` /
+  `security_review_blocking` の実測。pr-reviewer が LGTM を出した後の security review が critical/major を返さない run が
+  続く（security review が新しい指摘を出さない）なら、段を pr-reviewer の full review に畳むか上限を下げる。逆に上限で
+  `security_unresolved` が続くなら上限か規則を見直す。
 
 trust-layer（SurfaceProof / EvalSeal / EffectDelta）の sunset path —
 - call site・exec-proxy・kernel・doctor レポート・telemetry 転送は全て撤去済み（接続点は残さない）。復帰は
