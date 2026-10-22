@@ -360,8 +360,44 @@ cmd_config() {
   resolve_config "$config"
 }
 
+# origin の URL から gh に渡す [HOST/]OWNER/REPO（github.com は OWNER/REPO）。git repo でない・origin が無い・形が読めなければ空
+remote_slug() {
+  local url
+  url="$(git -C "$1" remote get-url origin 2>/dev/null)" || return 0
+  jq -rn --arg u "$url" '$u
+    | capture("\\A(?:[A-Za-z][A-Za-z0-9+.-]*://)?(?:[^@/]+@)?(?<host>[^/:]+)(?::[0-9]+)?[:/](?<path>[^/]+/[^/]+?)(?:\\.git)?/?\\z")
+    | if .host == "github.com" then .path else "\(.host)/\(.path)" end'
+}
+
+# repo の公開範囲（PUBLIC / PRIVATE / INTERNAL。gh が失敗したら空）。1 回の draft の中では repo ごとに 1 回だけ gh に問い合わせ、
+# 結果を $vis_cache（draft が作る TSV）に持つ
+repo_visibility() {
+  local slug="$1" v
+  if v="$(awk -F'\t' -v s="$slug" '$1 == s { print $2; found = 1; exit } END { exit !found }' "$vis_cache")"; then
+    printf '%s\n' "$v"
+    return 0
+  fi
+  v="$(gh repo view "$slug" --json visibility --jq .visibility 2>/dev/null)" || v=""
+  printf '%s\t%s\n' "$slug" "$v" >>"$vis_cache"
+  printf '%s\n' "$v"
+}
+
+# 型の出どころ（projects と代表例の cwd）のうち、公開 repo と確かめられた path を {path: true} で出す。
+# git repo でない・origin が無い・gh が失敗する path は公開範囲を確かめられないので入れない（非公開として扱う）
+public_paths() {
+  local analysis="$1" id="$2" p dir slug
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    case "$p" in "~/"*) dir="$HOME/${p#"~/"}" ;; *) dir="$p" ;; esac
+    slug="$(remote_slug "$dir")"
+    if [ -n "$slug" ] && [ "$(repo_visibility "$slug")" = PUBLIC ]; then printf '%s\n' "$p"; fi
+  done <<<"$(jq -r --arg id "$id" '.types[] | select(.id == $id) | [.projects[], (.example_cwds // [])[][]] | map(select(. != null)) | unique[]' "$analysis")" \
+    | jq -R -s 'split("\n") | map(select(. != "") | {key: ., value: true}) | from_entries'
+}
+
 cmd_draft() {
   local analysis="" candidates="" ids="" config="" out="$PWD/claudedocs" issue=0 cfg repo template errs id i=0 base body
+  local vis_cache dest_public=1 public
   while [ $# -gt 0 ]; do
     case "$1" in
       --issue) issue=1; shift ;;
@@ -386,6 +422,9 @@ cmd_draft() {
   [ -z "$errs" ] || die 2 "draft: candidates が不正です ($candidates):
 $errs"
   mkdir -p "$out"
+  vis_cache="$(mktemp "${TMPDIR:-/tmp}/sandbox-tune-vis.XXXXXX")"
+  # 提出先の公開範囲を確かめられないときは公開 repo として扱い、非公開 repo 由来の代表例と projects を外す（起票の可否は handoff が判定する）
+  case "$(repo_visibility "$repo")" in PRIVATE | INTERNAL) dest_public=0 ;; esac
 
   while IFS= read -r id; do
     [ -n "$id" ] || continue
@@ -393,10 +432,12 @@ $errs"
     jq -e --arg id "$id" 'any(.candidates[]; .id == $id)' "$candidates" >/dev/null || die 2 "draft: 候補にない id です: $id"
     jq -e --arg id "$id" 'any(.types[]; .id == $id)' "$analysis" >/dev/null || die 2 "draft: レポートにない id です: $id"
     base="$out/sandbox-tune-issue-$i"
-    body="$(jqs -r -n --arg id "$id" --slurpfile a "$analysis" --slurpfile c "$candidates" \
+    public=null
+    [ "$dest_public" = 0 ] || public="$(public_paths "$analysis" "$id")"
+    body="$(jqs -r -n --arg id "$id" --slurpfile a "$analysis" --slurpfile c "$candidates" --argjson public "$public" \
       --rawfile tpl "${template:-/dev/null}" --arg has_tpl "${template:+1}" '
       include "redact"; include "issue";
-      ($a[0].types[] | select(.id == $id)) as $t
+      ($a[0].types[] | select(.id == $id) | publishable($public)) as $t
       | ($c[0].candidates[] | select(.id == $id)) as $cand
       | (if $has_tpl == "1" then $tpl else default_template end)
       | fill({title: $cand.title, id: $id, cause: $cand.cause, fix: $cand.fix, safety: $cand.safety, evidence: ($t | evidence_md),
@@ -415,6 +456,7 @@ $errs"
       "$(jq -r .security "$base.meta.json")" "$(jq -r .sha256 "$base.meta.json")"
     cat "$base.md"
   done <<<"$(tr ',' '\n' <<<"$ids")"
+  rm -f "$vis_cache"
 }
 
 # 確認済みの下書きを git-issue に渡せるか判定し、渡す引数を JSON で出す。issue は作らない

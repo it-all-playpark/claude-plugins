@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 bats_require_minimum_version 1.5.0
 # sandbox-tune.sh のテスト。合成した transcript（<projects>/<project>/<session>.jsonl）を集計させる。
-# gh は PATH 先頭の偽物で置き換え、呼び出しを記録する。
+# gh は PATH 先頭の偽物で置き換え、呼び出しを記録する。repo view の公開範囲は GH_VISIBILITY（全 repo 共通）か、
+# GH_VIS_MAP（1 行 `<repo> <公開範囲>` のファイル。載っていない repo は失敗）で返す。
 bats_require_minimum_version 1.5.0
 
 NOW="2026-10-01T00:00:00Z"
@@ -19,6 +20,12 @@ setup() {
 echo "$*" >>"$GH_LOG"
 if [ "$1 $2" = "repo view" ]; then
   [ -z "${GH_VIEW_FAIL:-}" ] || exit 1
+  if [ -n "${GH_VIS_MAP:-}" ]; then
+    v="$(awk -v r="$3" '$1 == r { print $2 }' "$GH_VIS_MAP")"
+    [ -n "$v" ] || exit 1
+    echo "$v"
+    exit 0
+  fi
   echo "${GH_VISIBILITY:-PUBLIC}"
 fi
 EOF
@@ -714,6 +721,96 @@ EOF
   [ "$status" -eq 4 ]
   [[ "$output" == *"公開範囲を確認できません"* ]]
   ! grep -q 'issue create' "$GH_LOG"
+}
+
+# 書き込みの拒否 1 件: <tool_use_id> <timestamp> <拒否されたパス> <スクリプト名> <cwd>
+eperm_at() {
+  local x
+  x="$(jq -nc --arg c "$5" '{cwd: $c}')"
+  use proj-a/s1.jsonl S1 "$2" "$1" "bash $4" "$x"
+  result proj-a/s1.jsonl S1 "$2" "$1" "$4: line 1: $3: Operation not permitted" "$x"
+}
+
+# 出どころの公開範囲が違う repo で拒否が起きた run から、提出先 o/r の公開範囲を $1 にして下書きを 4 本作る。
+# repo（$HOME/src/*）: pub 公開 / priv 非公開 / nogh gh が失敗する / noremote origin が無い / plain（$HOME/plain）git repo でない。
+# 代表例のスクリプト名 hidden-* は公開 repo 以外で起きた例で、公開 repo への下書きに出てはいけない
+#   1 /etc/mixed: priv の例が先、pub の例が後 / 2 /etc/nogh / 3 /etc/noremote / 4 /etc/plain: plain と priv
+make_vis_drafts() {
+  export GIT_CEILING_DIRECTORIES="$WORK"
+  local r
+  for r in pub priv nogh noremote; do git init -q "$HOME/src/$r"; done
+  git -C "$HOME/src/pub" remote add origin https://github.com/acme/pub.git
+  git -C "$HOME/src/priv" remote add origin git@github.com:acme/priv.git
+  git -C "$HOME/src/nogh" remote add origin https://github.com/acme/nogh.git
+  mkdir -p "$HOME/plain"
+  export GH_VIS_MAP="$WORK/vis.txt"
+  printf 'acme/pub PUBLIC\nacme/priv PRIVATE\no/r %s\n' "$1" >"$GH_VIS_MAP"
+
+  eperm_at v1 2026-09-10T00:00:00Z /etc/mixed hidden-alpha.sh "$HOME/src/priv"
+  eperm_at v2 2026-09-10T00:01:00Z /etc/mixed public-gamma.sh "$HOME/src/pub"
+  eperm_at v3 2026-09-10T00:02:00Z /etc/nogh hidden-beta.sh "$HOME/src/nogh"
+  eperm_at v4 2026-09-10T00:03:00Z /etc/noremote hidden-delta.sh "$HOME/src/noremote"
+  eperm_at v5 2026-09-10T00:04:00Z /etc/plain hidden-epsilon.sh "$HOME/plain"
+  eperm_at v6 2026-09-10T00:05:00Z /etc/plain hidden-zeta.sh "$HOME/src/priv"
+  cd "$WORK"
+  echo '{"issue":{"repo":"o/r"}}' >"$WORK/sandbox-tune.json"
+  bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" >/dev/null
+  local ids=sandbox:path:/etc/mixed,sandbox:path:/etc/nogh,sandbox:path:/etc/noremote,sandbox:path:/etc/plain
+  tr ',' '\n' <<<"$ids" | jq -R '{id: ., title: "t", cause: "c", fix: "f", safety: "s", ac: ["a"], paths: ["p"]}' \
+    | jq -s '{candidates: .}' >"$WORK/candidates.json"
+  run bash "$SCRIPT" draft --issue --analysis "$WORK/claudedocs/sandbox-tune-2026-10-01.json" --candidates "$WORK/candidates.json" --ids "$ids"
+  [ "$status" -eq 0 ]
+  D="$WORK/claudedocs/sandbox-tune-issue"
+}
+
+# 下書きの「代表的なエラー文」の節（見出しの次の行から）
+examples_of() { sed -n '/^- 代表的なエラー文:$/,/^$/p' "$1" | sed '1d;/^$/d'; }
+
+@test "issue: 提出先が公開 repo なら、非公開 repo でだけ起きた代表例と projects の repo 名を下書きに載せず、数を書く。公開 repo の例は載る" {
+  make_vis_drafts PUBLIC
+  [ "$(examples_of "$D-1.md")" = '  - `public-gamma.sh: line 1: /etc/mixed: Operation not permitted`
+  - （非公開 repo で起きた例 1 件は、提出先が公開 repo なので省いた）' ]
+  grep -qx -- '- projects: ~/src/pub / 非公開 repo 1 件' "$D-1.md"
+  ! grep -q 'hidden-' "$D"-*.md
+  ! grep -q 'src/priv' "$D"-*.md
+  # 表示する本文にも出ない
+  [[ "$output" != *hidden-* ]]
+  [[ "$output" != *src/priv* ]]
+  # 公開範囲は 1 回の draft の中で repo ごとに 1 回だけ問い合わせる（priv は 1 本目と 4 本目の出どころ）
+  [ "$(grep -c '^repo view o/r ' "$GH_LOG")" = 1 ]
+  [ "$(grep -c '^repo view acme/priv ' "$GH_LOG")" = 1 ]
+  [ "$(grep -c '^repo view acme/pub ' "$GH_LOG")" = 1 ]
+  # レポートと集計 JSON（ローカル用）は代表例を削らない
+  grep -q 'hidden-alpha.sh' "$WORK/claudedocs/sandbox-tune-2026-10-01.md"
+  grep -q 'hidden-alpha.sh' "$WORK/claudedocs/sandbox-tune-2026-10-01.json"
+}
+
+@test "issue: 公開範囲を確かめられない repo（gh が失敗する・origin が無い・git repo でない）は非公開として扱い、載せる例が無い型は省いた旨と件数を書く" {
+  make_vis_drafts PUBLIC
+  local n
+  # 2 gh が失敗する / 3 origin が無い
+  for n in 2 3; do
+    [ "$(examples_of "$D-$n.md")" = '  - （非公開 repo で起きた例 1 件は、提出先が公開 repo なので省いた）' ]
+    grep -qx -- '- projects: 非公開 repo 1 件' "$D-$n.md"
+  done
+  # 4 git repo でない ~/plain と非公開の priv
+  [ "$(examples_of "$D-4.md")" = '  - （非公開 repo で起きた例 2 件は、提出先が公開 repo なので省いた）' ]
+  grep -qx -- '- projects: 非公開 repo 2 件' "$D-4.md"
+  ! grep -q 'plain\|nogh\|noremote' "$D"-*.md
+  grep -q '^repo view acme/nogh ' "$GH_LOG"
+}
+
+@test "issue: 提出先が非公開 repo なら、代表例と projects を全部載せ、出どころの公開範囲は問い合わせない" {
+  make_vis_drafts PRIVATE
+  [ "$(examples_of "$D-1.md")" = '  - `hidden-alpha.sh: line 1: /etc/mixed: Operation not permitted`
+  - `public-gamma.sh: line 1: /etc/mixed: Operation not permitted`' ]
+  grep -qx -- '- projects: ~/src/priv, ~/src/pub' "$D-1.md"
+  [ "$(examples_of "$D-4.md")" = '  - `hidden-epsilon.sh: line 1: /etc/plain: Operation not permitted`
+  - `hidden-zeta.sh: line 1: /etc/plain: Operation not permitted`' ]
+  grep -qx -- '- projects: ~/plain, ~/src/priv' "$D-4.md"
+  grep -qx -- '- projects: ~/src/nogh' "$D-2.md"
+  ! grep -q '非公開 repo' "$D"-*.md
+  [ "$(grep -c '^repo view' "$GH_LOG")" = 1 ]
 }
 
 @test "issue: 表示した下書きと違う内容（digest 不一致・書き換え）は渡さない" {

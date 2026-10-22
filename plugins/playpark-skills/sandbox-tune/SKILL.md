@@ -98,8 +98,8 @@ bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --uninstall 
   refused は host-exec 自身の拒否パターン。`git -C <dir>` の値は飛ばし、インタプリタに渡したスクリプトはファイル名でまとめる）
 - `host_exec` の型には `after_block`（同じ transcript で直前の Bash が sandbox / permission に拒否されていた件数）が付く。
   残りは Bash を試さずに host-exec へ行ったもの。代表例は `理由: <Claude が書いた reason> / $ <argv>`
-- 各型に `count`・`sessions`（`sessionId` で数える）・`first_seen`・`last_seen`・`projects`・伏せ字済みの代表例（2 件まで）と、
-  発生ごとの `occurrences`（`ts`・`cwd`（home 相対）・`git_branch`（transcript の `gitBranch`。無ければ null））が付く
+- 各型に `count`・`sessions`（`sessionId` で数える）・`first_seen`・`last_seen`・`projects`・伏せ字済みの代表例（2 件まで）と
+  その例が起きた cwd（`example_cwds`。`examples` と同じ順）、発生ごとの `occurrences`（`ts`・`cwd`（home 相対）・`git_branch`（transcript の `gitBranch`。無ければ null））が付く
 - subagent の transcript と `isSidechain` の行、grep / cat 等の出力やファイル本文に拒否の文言が含まれていただけの行、
   依頼の文に書かれたコマンドやエラー文は数えない
 - verify の「関係する commit」は、型の対象（ホスト・パスの一部・コマンド名）が差分に現れた commit か、commit message に書かれた commit。
@@ -174,6 +174,10 @@ sandbox-tune は伏せ字・人の確認・公開範囲の判定までを受け�
    ```bash
    ST draft --issue --analysis claudedocs/sandbox-tune-<日付>.json --candidates "$TMPDIR/candidates.json" --ids <id>[,<id>]
    ```
+   - 提出先（`issue.repo`）が公開 repo なら（公開範囲を確かめられないときも同じ）、出どころが公開 repo と確かめられない
+     代表例を載せず、`projects` にもその repo 名を出さずに件数だけを書く。出どころの repo は cwd の `origin` から gh で引き、
+     git repo でない・`origin` が無い・gh が失敗するものは非公開として扱う。伏せ字は形しか見ず、取引先名・案件名のような
+     固有名詞は止められないので、名前ではなく出どころの公開範囲で落とす。レポートと集計 JSON（ローカル用）の代表例は削らない
 3. 表示された下書きをそのままユーザーに見せ、これを材料に issue 化してよいか確認を取る（AskUserQuestion）。確認なしに次へ進まない。
    伏せ字は形での判定なので、秘密が残っていないかもユーザーに見てもらう。直すなら候補ファイルを直して 2 からやり直す
 4. 確認が取れた下書きだけを、表示された digest を付けて handoff に通す。issue は作らず、通ったら orchestrator に渡す引数を

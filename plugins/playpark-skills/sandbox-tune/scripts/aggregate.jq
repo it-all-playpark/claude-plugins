@@ -7,7 +7,9 @@ def aggregate:
   unique_by(.id)
   | sort_by(.epoch)
   | group_by(.key)
-  | map({
+  # example_cwds は examples と同じ順で、その例が起きた cwd の一覧（公開 repo への下書きで出どころの公開範囲を見るのに使う）
+  | map((map(.example) | first_n(2)) as $examples
+    | {
       id: .[0].key,
       category: .[0].cat,
       kind: .[0].kind,
@@ -18,7 +20,8 @@ def aggregate:
       first_seen: .[0].ts,
       last_seen: .[-1].ts,
       projects: (map(.project) | unique),
-      examples: (map(.example) | first_n(2)),
+      examples: $examples,
+      example_cwds: [ $examples[] as $e | map(select(.example == $e) | .cwd) | unique ],
       occurrences: map({ts, cwd, git_branch})
     }
     + (if .[0].cat == "host_exec" then {after_block: map(select(.after_block == true)) | length} else {} end))

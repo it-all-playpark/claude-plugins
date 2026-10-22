@@ -42,8 +42,26 @@ def ac_md: map("- [ ] " + .) | join("\n");
 
 def paths_md: map("- " + .) | join("\n");
 
+# 提出先が公開 repo のときに、公開 repo の cwd で起きた代表例と公開 repo の projects だけを残し、外した数を omitted_* に持つ。
+# $public は公開 repo と確かめられた path の {path: true}。提出先が非公開なら null で、型をそのまま返す。
+# 伏せ字は形しか見ず固有名詞（取引先名・案件名）を止められないので、名前ではなく出どころの公開範囲で落とす
+def publishable($public):
+  if $public == null then .
+  else
+    (.example_cwds // []) as $cwds
+    | (.examples | to_entries | map(select(any(($cwds[.key] // [])[]; $public[. // ""] == true)) | .value)) as $examples
+    | (.projects | map(select($public[.] == true))) as $projects
+    | .omitted_examples = ((.examples | length) - ($examples | length))
+    | .omitted_projects = ((.projects | length) - ($projects | length))
+    | .examples = $examples
+    | .projects = $projects
+  end;
+
 def evidence_md:
   "- 件数: \(.count) 件 / \(.sessions) session（\(.first_seen) 〜 \(.last_seen)）\n"
-  + "- projects: \(.projects | join(", "))\n"
+  + "- projects: \([(.projects | join(", ") | select(. != "")), (if (.omitted_projects // 0) > 0 then "非公開 repo \(.omitted_projects) 件" else empty end)] | join(" / "))\n"
   + (if .status then "- 判定: \(.status)" + (if .evidence.commit then "（commit \(.evidence.commit[0:12]) \(.evidence.committed_at) の後に \(.evidence.after_count) 件、最終 \(.evidence.last_after // "なし")）" else "（関係する commit なし）" end) + "\n" else "" end)
-  + "- 代表的なエラー文:\n" + ([ .examples[] | "  - `\(gsub("`"; "'"))`" ] | join("\n"));
+  + "- 代表的なエラー文:\n"
+  + ([ (.examples[] | "  - `\(gsub("`"; "'"))`"),
+       (if (.omitted_examples // 0) > 0 then "  - （非公開 repo で起きた例 \(.omitted_examples) 件は、提出先が公開 repo なので省いた）" else empty end) ]
+     | join("\n"));
