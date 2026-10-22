@@ -2,9 +2,8 @@
 # Tests for _shared/scripts/worktree-teardown.sh
 #
 # Strategy: 各テストは $BATS_TEST_TMPDIR 配下に隔離した tmp git repo + worktree
-# fixture を作る。fixture repo は「.veridelta/ を含む .gitignore」と tracked な
-# README.md を commit 済みとし、remove-blocked ケースは README.md の modify で
-# 発火させる（gitignore 済みファイルは git worktree remove を block しないため）。
+# fixture を作る。fixture repo は tracked な README.md を commit 済みとし、
+# remove-blocked ケースは README.md の modify で発火させる。
 
 setup() {
     SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/worktree-teardown.sh"
@@ -16,119 +15,68 @@ make_repo() {
     git init -q "$repo"
     git -C "$repo" config user.email t@t
     git -C "$repo" config user.name t
-    printf '.veridelta/\n' > "$repo/.gitignore"
     printf '# readme\n' > "$repo/README.md"
     git -C "$repo" add -A
     git -C "$repo" commit -q -m base
 }
 
 # ---------------------------------------------------------------------------
-# ケース1: 正常系(AC-1/AC-4 自動化版) — teardown 成功、worktree 消滅、
-#          archive-root に .veridelta/runs/*.json の内容が読める
+# 正常系 — teardown 成功、worktree 消滅
 # ---------------------------------------------------------------------------
-@test "archives before remove and worktree is removed cleanly" {
+@test "clean worktree is removed" {
     REPO="$BATS_TEST_TMPDIR/repo1"
     make_repo "$REPO"
 
     WT="$BATS_TEST_TMPDIR/wt1"
     git -C "$REPO" worktree add -q "$WT" -b wt1-branch
 
-    mkdir -p "$WT/.veridelta/runs"
-    printf '{"run":"a"}\n' > "$WT/.veridelta/runs/a.json"
-
-    ARCHIVE_ROOT="$BATS_TEST_TMPDIR/archive1"
-
-    run bash "$SCRIPT" "$WT" --archive-root "$ARCHIVE_ROOT"
+    run bash "$SCRIPT" "$WT"
     [ "$status" -eq 0 ]
     [ ! -d "$WT" ]
-
-    found="$(find "$ARCHIVE_ROOT" -name 'a.json' 2>/dev/null | head -n1)"
-    [ -n "$found" ]
-    grep -q '"run":"a"' "$found"
 }
 
 # ---------------------------------------------------------------------------
-# ケース2: remove-blocked 系 — tracked ファイル(README.md)を modify すると
-#          git worktree remove が fatal(exit 128 系)で fail するが、退避は
-#          remove 実行より前に完了済み(順序保証の失敗系証明)
+# remove-blocked 系 — tracked ファイル(README.md)を modify すると
+#          git worktree remove が fail し、その exit code をそのまま返す
 # ---------------------------------------------------------------------------
-@test "remove blocked by modified tracked file still archives first" {
+@test "remove blocked by modified tracked file propagates git exit code" {
     REPO="$BATS_TEST_TMPDIR/repo2"
     make_repo "$REPO"
 
     WT="$BATS_TEST_TMPDIR/wt2"
     git -C "$REPO" worktree add -q "$WT" -b wt2-branch
 
-    mkdir -p "$WT/.veridelta/runs"
-    printf '{"run":"b"}\n' > "$WT/.veridelta/runs/b.json"
-
     # tracked file modify -> blocks git worktree remove
     printf 'modified\n' >> "$WT/README.md"
 
-    ARCHIVE_ROOT="$BATS_TEST_TMPDIR/archive2"
-
-    run bash "$SCRIPT" "$WT" --archive-root "$ARCHIVE_ROOT"
-    [ "$status" -ne 0 ]
+    run bash "$SCRIPT" "$WT"
+    teardown_status="$status"
+    [ "$teardown_status" -ne 0 ]
     [ -d "$WT" ]
-    printf '%s\n' "$output" | grep -q '退避は完了済み'
+    printf '%s\n' "$output" | grep -q -- '--force で再実行可能'
 
-    found="$(find "$ARCHIVE_ROOT" -name 'b.json' 2>/dev/null | head -n1)"
-    [ -n "$found" ]
-    grep -q '"run":"b"' "$found"
+    run git -C "$REPO" worktree remove "$WT"
+    [ "$status" -ne 0 ]
+    [ "$teardown_status" -eq "$status" ]
 
     git -C "$REPO" worktree remove --force "$WT" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
-# ケース3: fail-open 系(AC-2) — archive-root への書込不可でも teardown は
-#          worktree remove を続行して成功する
+# --force — modified file があっても git worktree remove --force で削除される
 # ---------------------------------------------------------------------------
-@test "archive failure is fail-open and worktree is still removed" {
+@test "--force removes worktree with modified tracked file" {
     REPO="$BATS_TEST_TMPDIR/repo3"
     make_repo "$REPO"
 
     WT="$BATS_TEST_TMPDIR/wt3"
     git -C "$REPO" worktree add -q "$WT" -b wt3-branch
 
-    mkdir -p "$WT/.veridelta/runs"
-    printf '{"run":"c"}\n' > "$WT/.veridelta/runs/c.json"
+    printf 'modified\n' >> "$WT/README.md"
 
-    ARCHIVE_ROOT="$BATS_TEST_TMPDIR/archive3"
-    mkdir -p "$ARCHIVE_ROOT"
-    chmod 555 "$ARCHIVE_ROOT"
-
-    LOG_FILE="$BATS_TEST_TMPDIR/logs/veridelta-archive.log"
-
-    VDELTA_ARCHIVE_LOG="$LOG_FILE" run bash "$SCRIPT" "$WT" --archive-root "$ARCHIVE_ROOT"
-
-    chmod 755 "$ARCHIVE_ROOT"
-
+    run bash "$SCRIPT" "$WT" --force
     [ "$status" -eq 0 ]
     [ ! -d "$WT" ]
-    [ -f "$LOG_FILE" ]
-    grep -q "veridelta-archive" "$LOG_FILE"
-}
-
-# ---------------------------------------------------------------------------
-# ケース4: veridelta-archive.sh 不在(スクリプト同梱ディレクトリから外した状態)
-#          -> 警告を出して続行(fail-open)、remove は成功
-# ---------------------------------------------------------------------------
-@test "veridelta-archive.sh missing -> warns and continues (fail-open)" {
-    ISOLATED_DIR="$BATS_TEST_TMPDIR/isolated-scripts"
-    mkdir -p "$ISOLATED_DIR"
-    cp "$SCRIPT" "$ISOLATED_DIR/worktree-teardown.sh"
-    chmod +x "$ISOLATED_DIR/worktree-teardown.sh"
-
-    REPO="$BATS_TEST_TMPDIR/repo4"
-    make_repo "$REPO"
-
-    WT="$BATS_TEST_TMPDIR/wt4"
-    git -C "$REPO" worktree add -q "$WT" -b wt4-branch
-
-    run bash "$ISOLATED_DIR/worktree-teardown.sh" "$WT"
-    [ "$status" -eq 0 ]
-    [ ! -d "$WT" ]
-    printf '%s\n' "$output" | grep -qi 'veridelta-archive.sh not found'
 }
 
 # ---------------------------------------------------------------------------
