@@ -256,6 +256,17 @@ test('[security-review][D] security-reviewer は PR の worktree の外を作業
   assert.equal(r.model, null, '品質ゲート agent に model override を渡さない');
 });
 
+test('[security-review][D] security-reviewer の読み取りは diff の保存先の配下だけで、PR の worktree のファイルを読ませない', async () => {
+  const { calls } = await run();
+  const r = calls.find((c) => c.label === 'security-review#1');
+  assert.ok(r.prompt.includes(`Read / Grep / Glob はこのディレクトリの配下だけに使う。PR の worktree（/tmp/wt）の中のファイルは読まない`), r.prompt);
+  assert.ok(r.prompt.includes(`使用可: Read, Grep, Glob（読み取りのみ・${SECURITY_REVIEW_DIR} の配下だけ）`), r.prompt);
+  assert.ok(r.prompt.includes(`${SECURITY_REVIEW_DIR} の外（PR の worktree を含む）のファイルを読まない`), r.prompt);
+  assert.ok(!r.prompt.includes('worktree のファイルを Read で読む'), 'worktree の Read を許す文が残っている');
+  assert.ok(agentMd.includes('Read / Grep / Glob はその作業ディレクトリの\n配下だけに使い、PR の worktree のファイルは読まない。'));
+  assert.ok(!agentMd.includes('worktree の\nファイルを Read で読む'), 'agent 定義に worktree の Read を許す文が残っている');
+});
+
 test('[security-review][D] diff の保存先が PR の worktree の中なら review を spawn せず clear にしない', async () => {
   for (const reviewDir of ['/tmp/wt/.devflow-tmp/sec', 'relative/dir']) {
     const { result, calls } = await run({ overrides: { 'security-scope#1': () => securityScopeResponse({ reviewDir }) } });

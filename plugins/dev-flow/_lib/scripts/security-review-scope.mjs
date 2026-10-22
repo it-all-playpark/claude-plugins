@@ -12,6 +12,8 @@
 //     review_dir / diff_path を返す（pr-iterate の security-reviewer が読む）
 //
 // stdout: JSON 1 行 {ok, target, reasons, file_count, head_sha, review_dir, diff_path, error?}
+//   reasons は固定の code と件数（`not_allowlisted:3` 等。_lib の reasonCodeCounts）だけで、ファイルパス・diff 由来の
+//   文字列を出さない（stdout を写す agent へ PR が決めた文字列を渡すと、判定を書き換える文を混ぜられる）。
 //   ok:false（取得・判定に失敗）のときも target:true を出す（fail-closed）。usage error だけ exit 2、それ以外は exit 0。
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
@@ -23,7 +25,7 @@ const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
   process.exit(code)
 }
-const failClosed = (error, extra = {}) => ({ ok: false, target: true, reasons: ['scope_unavailable'], file_count: null, head_sha: null, review_dir: null, diff_path: null, ...extra, error })
+const failClosed = (error, extra = {}) => ({ ok: false, target: true, reasons: ['scope_unavailable:1'], file_count: null, head_sha: null, review_dir: null, diff_path: null, ...extra, error })
 
 const argv = process.argv.slice(2)
 const saveDiff = argv.includes('--save-diff')
@@ -68,7 +70,7 @@ try {
     diffPath = join(reviewDir, 'pr.diff')
     writeFileSync(diffPath, patchBuf)
   }
-  result = { ok: true, target: scope.target, reasons: scope.reasons, file_count: names.length, head_sha: headSha, review_dir: reviewDir, diff_path: diffPath }
+  result = { ok: true, target: scope.target, reasons: scope.codes, file_count: names.length, head_sha: headSha, review_dir: reviewDir, diff_path: diffPath }
 } catch (e) {
   const stderr = e?.stderr ? e.stderr.toString('utf8').trim() : ''
   result = failClosed(`${e?.message ?? e}${stderr ? ` — ${stderr}` : ''}`.slice(0, 500))

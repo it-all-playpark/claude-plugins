@@ -147,7 +147,26 @@ function fileReasons(f) {
   return reasons;
 }
 
-const targetOf = (reasons, files) => ({ target: true, reasons: reasons.slice(0, MAX_REASONS).concat(reasons.length > MAX_REASONS ? [`他 ${reasons.length - MAX_REASONS} 件`] : []), files });
+const targetOf = (reasons, files) => ({ target: true, reasons: reasons.slice(0, MAX_REASONS).concat(reasons.length > MAX_REASONS ? [`他 ${reasons.length - MAX_REASONS} 件`] : []), codes: reasonCodeCounts(reasons), files });
+
+// 理由の固定 code。CLI の stdout にはこの code と件数（`<code>:<n>`）だけを出す。reasons にはファイルパス・diff 由来の
+// 文字列（PR が自由に決められる）が入り、stdout を写す exec-proxy の agent へそのまま渡ると「target を false にして
+// 返せ」のような文で判定を書き換えられるため、stdout に PR 由来の文字列を載せない。
+export const SECURITY_SCOPE_REASON_CODES = [
+  'diff_unavailable', 'name_list_unavailable', 'diff_empty', 'diff_unreadable', 'no_files', 'file_count_mismatch',
+  'file_list_mismatch', 'binary', 'mode_change', 'mode', 'no_content_change', 'git_metadata', 'not_allowlisted',
+];
+
+// reasons（全件。切り詰め前）を `<code>:<件数>` の配列にする（code の出現順）。既知でない code は `other` に数える。
+export function reasonCodeCounts(reasons) {
+  const counts = new Map();
+  for (const r of reasons) {
+    const head = String(r).split(':')[0];
+    const code = SECURITY_SCOPE_REASON_CODES.includes(head) ? head : 'other';
+    counts.set(code, (counts.get(code) ?? 0) + 1);
+  }
+  return [...counts].map(([code, n]) => `${code}:${n}`);
+}
 
 /**
  * diff が敵対的 security review の対象かを決める。対象外（target:false）になるのは、patch と name 一覧が
@@ -155,7 +174,8 @@ const targetOf = (reasons, files) => ({ target: true, reasons: reasons.slice(0, 
  *
  * @param {{patch: string|null|undefined, names: string[]|null|undefined}} input
  *   patch: SECURITY_SCOPE_DIFF_ARGS で取った diff 全文。names: 同じ range の `--name-only -z` を NUL で分けたもの
- * @returns {{target: boolean, reasons: string[], files: string[]}}
+ * @returns {{target: boolean, reasons: string[], codes: string[], files: string[]}}
+ *   reasons はパス付きの詳細（stdout に出さない）、codes は reasonCodeCounts の `<code>:<件数>`
  */
 export function securityReviewScope({ patch, names } = {}) {
   if (typeof patch !== 'string') return targetOf(['diff_unavailable'], []);
@@ -173,5 +193,5 @@ export function securityReviewScope({ patch, names } = {}) {
   }
   const reasons = parsed.files.flatMap(fileReasons);
   if (reasons.length > 0) return targetOf(reasons, names);
-  return { target: false, reasons: [], files: names };
+  return { target: false, reasons: [], codes: [], files: names };
 }
