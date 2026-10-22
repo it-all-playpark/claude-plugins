@@ -2293,6 +2293,7 @@ function buildDevflowSummaryBody({
   localVerify,
   conflictAutoresolve,
   securityReview,
+  headSha,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -3030,7 +3031,8 @@ function buildDevflowSummaryBody({
   const holdCodes = mergeTier === 'HOLD'
     ? ` codes=${(holdReasons || []).map((hr) => hr && hr.code).filter((c) => typeof c === 'string').join(',')}`
     : '';
-  lines.push(`<!-- dev-flow:${mergeTier}${holdCodes} -->`);
+  const markerHead = typeof headSha === 'string' && /^[0-9a-f]{40}$/i.test(headSha.trim()) ? ` head=${headSha.trim().toLowerCase()}` : '';
+  lines.push(`<!-- dev-flow:${mergeTier}${holdCodes}${markerHead} -->`);
 
   return lines.join('\n');
 }
@@ -7733,6 +7735,9 @@ const summaryBody = buildDevflowSummaryBody({
   localVerify: state.localVerify ?? null,
   conflictAutoresolve: iterate?.conflict_autoresolve ?? null,
   securityReview: securityReviewFinal,
+  // merge tier を判定した PR head（merge-tier-facts の headRefOid）。取得失敗は marker に head を載せない
+  // → 単体 pr-iterate の再実行時は食い違い扱い（安全側）
+  headSha: prMeta?.ok === true ? prMeta.headRefOid : null,
 })
 // 終端サマリーコメント投稿: bodySaveInstr で body を worktree の .devflow-tmp/ 固定パスへ保存し
 // gh pr comment --body-file を bare 単文で投稿する。投稿失敗は posted:false で fail-open だが、

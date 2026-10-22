@@ -310,6 +310,22 @@ const PRIOR_DEVFLOW = args?.prior_devflow == null
       }
       return p
     })()
+// prior_summary: 単体起動の wrapper が pr-iterate-prerun の出力から渡す、PR の最後の終端サマリー（dev-flow / pr-iterate）
+// { source, url, head_sha, head_mismatch }（無ければ null）。head_mismatch は prerun が marker の head と今の PR head を比べた結果
+// （head の無い marker は true）。true なら review の前に「古い結論はこの head に当てはまらない」コメントを足す。不正形は明示 throw。
+const PRIOR_SUMMARY_SOURCES = ['dev-flow', 'pr-iterate']
+const PRIOR_SUMMARY = args?.prior_summary == null
+  ? null
+  : (() => {
+      const p = args.prior_summary
+      if (typeof p !== 'object' || !PRIOR_SUMMARY_SOURCES.includes(p.source)
+        || (p.url !== null && typeof p.url !== 'string')
+        || (p.head_sha !== null && typeof p.head_sha !== 'string')
+        || typeof p.head_mismatch !== 'boolean') {
+        throw new Error(`pr-iterate: args.prior_summary が不正形です（source: ${PRIOR_SUMMARY_SOURCES.join(' / ')} / url: string | null / head_sha: string | null / head_mismatch: boolean）: ${JSON.stringify(p)}`)
+      }
+      return p
+    })()
 // security_review: 起動時の敵対的 security review の対象判定 { target, reasons }（dev-flow は Security floor の判定、
 // 単体起動の wrapper は pr-iterate-prerun の出力を渡す）。無いときは対象として扱う（判定できない入力を
 // 対象外と同一視しない）。不正形は明示 throw（_lib/security-review.mjs の parseSecurityReviewArg）。
@@ -692,7 +708,7 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
   return { rows, unresolved: rows.filter((r) => !r.resolved).length };
 }
 
-function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, securityReview = null }) {
+function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, securityReview = null, headSha = null }) {
   const DECISION_EMOJI = { 'approve': '✅', 'request-changes': '🔴', 'comment': '💬' };
   const lines = [];
   const priorHold = priorDevflow != null && priorDevflow.tier === 'HOLD'
@@ -818,9 +834,30 @@ function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSu
   lines.push('');
   lines.push('---');
   lines.push('*このコメントは pr-iterate により自動生成されました。*');
-  lines.push(`<!-- pr-iterate:${status}:${iterations} -->`);
+  lines.push(`<!-- pr-iterate:${status}:${iterations}${markerHead(headSha)} -->`);
 
   return lines.join('\n');
+}
+
+const TERMINAL_HEAD_SHA_RE = /^[0-9a-f]{40}$/i;
+
+function markerHead(headSha) {
+  return typeof headSha === 'string' && TERMINAL_HEAD_SHA_RE.test(headSha.trim()) ? ` head=${headSha.trim().toLowerCase()}` : '';
+}
+
+function buildRereviewNoticeBody({ pr, headSha, priorSummary }) {
+  const url = priorSummary.url ?? '（URL 不明）';
+  const priorHead = priorSummary.head_sha ? `head \`${priorSummary.head_sha}\` に対する結論` : 'head の記録が無い結論';
+  return [
+    `## PR #${pr} — pr-iterate 再 review 中`,
+    '',
+    `head \`${headSha}\` で再 review 中。${url} の結論（${mdCell(priorSummary.source)} の終端サマリー・${priorHead}）はこの head に当てはまらない。`,
+    '',
+    'この head に対する結論は、この後に載る pr-iterate の終了レポート。それまで古いサマリーを根拠に merge しない。',
+    '',
+    '---',
+    '*このコメントは pr-iterate により自動生成されました。*',
+  ].join('\n');
 }
 // ==== END inline: _lib/pr-comment-format.mjs ====
 
@@ -1939,6 +1976,31 @@ async function securityGate(iteration, round) {
   return fixed ? 'fix' : 'stop'
 }
 
+// 再 review 中の告知: PR の最後の終端サマリーが今の head と別の head に対する結論なら、review を始める前に
+// 「古い結論はこの head に当てはまらない」コメントを足す — 再 review の間、PR の最新コメントが古い LGTM のまま人が merge しないように。
+// 古いサマリーは編集・削除しない（PR 上の証跡を残す）。投稿は advisory: 失敗しても review は止めない（fail-open）。
+// dev-flow からの nested 起動は prior_summary を渡さない（終端サマリーは dev-flow が投稿する）。
+if (POST_TERMINAL_SUMMARY && PRIOR_SUMMARY?.head_mismatch === true) {
+  const noticeBody = buildRereviewNoticeBody({ pr: PR, headSha: isFullCommitSha(shaNow) ? shaNow : '（取得できず）', priorSummary: PRIOR_SUMMARY })
+  const noticeBodyFile = `${isoWt}/.devflow-tmp/pr-iterate-rereview-${PR}.md`
+  const noticePost = await failOpenAgent(
+    `## Objective\nPR #${PR} に pr-iterate の再 review 中コメントを投稿する。\n\n`
+    + bodySaveInstr(noticeBody, { bodyFile: noticeBodyFile }, 'PR_ITERATE_REREVIEW')
+    + `## Instructions\n`
+    + ghBareStepInstr(`gh pr comment ${PR}${REPO ? ` --repo ${REPO}` : ''} --body-file ${noticeBodyFile}`)
+    + `投稿成功時: posted:true、使用したコマンドを method に、URL があれば url に返す。\n`
+    + `投稿失敗時でも posted:false を返し throw しないこと。原因調査・再試行・別の起動形での実行はしない。\n`
+    + `\n## Output format\n{ "posted": boolean, "method": string, "url": string }\n`
+    + `\n## Tools\n使用可: Bash, Read, Write\n`
+    + `\n## Boundary\n<BODY_FILE> 以外のファイルを変更しない。git commit 禁止。\n`
+    + `\n## Token cap\n200 語以内で完結すること。`,
+    { agentType: 'dev-runner-haiku', schema: POST_RESULT, label: 'post-rereview-notice', phase: 'Iterate' },
+  )
+  log(noticePost?.posted
+    ? `再 review 中コメントを投稿（前の終端サマリー ${PRIOR_SUMMARY.url ?? '（URL 不明）'} は head ${PRIOR_SUMMARY.head_sha ?? '記録なし'} に対する結論）`
+    : `⚠️ 再 review 中コメントの投稿に失敗しました（posted=${noticePost?.posted ?? 'null'}）。review は続けます。`)
+}
+
 for (i = 1; i <= MAX; i++) {
   terminalPath = 'review'
   const prior = reviewSeen.prior()   // 前 iteration までの累積 findings
@@ -2344,6 +2406,8 @@ const summaryBody = buildTerminalSummaryBody({
   conflictAutoresolve: conflictAttempts,
   priorDevflow: PRIOR_DEVFLOW,
   securityReview,
+  // この結論を出した head（最後の fix の push 後の PR head）。marker に載せ、次の単体起動の prerun が今の head と比べる
+  headSha: shaNow,
 })
 log(`終端 CI 状態: ${ciLastStatus ?? '未観測'}${ciLastStatus === 'failed' ? `（${ciLastFailedChecks.join(', ')}）` : ''}`)
 log('終端サマリーは comment として投稿する（formal review は投稿しない — issue #524）')

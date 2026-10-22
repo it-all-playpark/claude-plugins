@@ -30,7 +30,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 1. **prerun 実行**: launch dir（リポジトリルートか、その worktree）で Bash 1 コマンドとして
    `pr-iterate-prerun <PR>` を実行する（PR が cwd の repo と別なら `--repo owner/name` を付ける）。前置形
    （`cd X && ...` / `VAR=x ...` / `bash <path>` 等）は使わず、bare 名を先頭トークンにする。stdout の
-   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, ci_wait_ceiling_seconds, security_review, error?}`）
+   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, error?}`）
    をそのまま保持する。
 
    `pr-iterate-prerun` は PR の url / head / base / head の commit を `gh pr view` で取り、`git fetch origin` 後の
@@ -49,6 +49,9 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - 前 run の `.devflow-tmp/.isolation-probe*` を除去する（`.devflow-tmp` の他のファイルは残す）
    - 同じ `gh pr view` で PR コメントも取り、`<!-- dev-flow:<tier>[ codes=...] -->` marker を持つ最後のコメント
      （dev-flow の終端サマリー）を `prior_devflow`（`{tier, codes, url}`、無ければ null）に載せる
+   - 終端サマリーの marker（`<!-- dev-flow:... head=<sha> -->` / `<!-- pr-iterate:<status>:<n> head=<sha> -->`）を持つ最後の
+     コメントを `prior_summary`（`{source, url, head_sha, head_mismatch}`、無ければ null）に載せる。`head_mismatch` は
+     marker の head（その結論を出した head）が今の PR head と違うか、marker に head が無いとき true
    - PR の base branch で直近に成功した CI の所要時間から CI 待ちの上限（秒）を決め、`ci_wait_ceiling_seconds` に載せる
      （dev-flow の nested 起動と同じ求め方。読み取りに失敗したら 300）
    - PR 全体（`origin/<base>...<PR head>`）の diff が敵対的 security review の対象かを決定論の許可リストで判定し、
@@ -67,7 +70,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    worktree なら不要）。別の worktree に入っている場合は先に `ExitWorktree`（worktree は keep）で launch dir へ
    戻ってから入る。
 
-3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`ci_wait_ceiling_seconds`・`security_review` の値は prerun 出力をそのまま転記し、加工・要約しない:
+3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`prior_summary`・`ci_wait_ceiling_seconds`・`security_review` の値は prerun 出力をそのまま転記し、加工・要約しない:
 
    ```
    Workflow({ name: 'dev-flow:pr-iterate-run', args: {
@@ -75,6 +78,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      nested: { caller: 'standalone', cwd: <worktree>, head_ref: <head_ref>, head_sha: <head_sha>,
                base_ref: <base_ref>, repo: <repo>, epoch: <epoch> },
      prior_devflow: <prior_devflow>,
+     prior_summary: <prior_summary>,
      ci_wait_ceiling_seconds: <ci_wait_ceiling_seconds>,
      security_review: <security_review>,
    } })
@@ -87,6 +91,12 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - `prior_devflow` が HOLD の dev-flow サマリーなら、終端サマリーは HOLD 理由の code ごとの回収状況を出し、
      未解消が残れば見出しを「🎉 LGTM」にしない（このレポートが PR の最後のコメント＝最新の結論になるため）。
      null でもそのまま渡す
+
+   - `prior_summary.head_mismatch` が true なら、workflow は review を始める前に「head `<sha>` で再 review 中。
+     <古いサマリーの URL> の結論はこの head に当てはまらない」コメントを PR に足す。意味: その URL の LGTM / tier は今の
+     head を見ていないので merge の根拠にしない — 今の head に対する結論はこの run の終了レポート（PR の最新コメントが
+     古い LGTM のまま merge されるのを防ぐ）。古いサマリーは編集・削除しない。投稿に失敗しても review は続ける。
+     食い違いが無い（false）・終端サマリーが無い（null）なら投稿しない。null でもそのまま渡す
 
    - `caller: 'standalone'` が単体起動の印で、workflow は終端サマリーを PR に投稿する（dev-flow は
      `caller: 'dev-flow'` を渡し、終端サマリーは dev-flow 自身が投稿する）。`caller` を省くと workflow は即 throw する

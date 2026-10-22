@@ -9,7 +9,7 @@
 # Usage: pr-iterate-prerun <PR> [--repo owner/name]
 #
 # 行う処理: gh pr view で url / headRefName / baseRefName / headRefOid / comments を取得（comments からは直前の
-# dev-flow サマリーの marker を読む）→ git fetch origin →
+# dev-flow サマリーと最後の終端サマリーの marker を読む）→ git fetch origin →
 # origin/<head> が PR の headRefOid と一致することを検証 → PR head の worktree を用意（既存なら再利用、
 # 無ければ origin/<head> から作成。作成時は取り出せないパスに skip-worktree を付け、再利用時は未ステージの
 # 削除が残っていれば fail-closed — worktree-checkout.sh）→ worktree の HEAD を PR head に合わせる（遅れていて未コミット変更が
@@ -25,11 +25,14 @@
 # 再利用した worktree が書けない場合は退避しない（branch がそこで checkout 済み）— ok:false で人間に返す。
 #
 # Output (stdout, JSON 1 行):
-#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, ci_wait_ceiling_seconds, security_review, error?}
+#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, error?}
 #   worktree_status: created / reused / unwritable / error / skipped
 #   skip_worktree: 作成時に取り出せず skip-worktree を付けたパス（worktree-checkout.sh。full checkout できれば []）
-#   prior_devflow: PR コメントのうち `<!-- dev-flow:<tier>[ codes=<code>,...] -->` marker を持つ最後のもの
+#   prior_devflow: PR コメントのうち `<!-- dev-flow:<tier>[ codes=<code>,...][ head=<sha>] -->` marker を持つ最後のもの
 #     {tier, codes, url}（codes は HOLD 理由の code。HOLD 以外は []）。marker を持つコメントが無ければ null
+#   prior_summary: PR コメントのうち終端サマリーの marker（`<!-- dev-flow:... -->` / `<!-- pr-iterate:<status>:<n>[ head=<sha>] -->`）を
+#     持つ最後のもの {source: "dev-flow"|"pr-iterate", url, head_sha, head_mismatch}。head_sha は marker の head（無ければ null）、
+#     head_mismatch は head_sha が今の PR head（headRefOid）と違うか、head_sha が null のとき true。終端サマリーが無ければ null
 #   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。PR の base branch の CI 所要時間から決める
 #     （ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
 #   security_review: 敵対的 security review の起動時の判定 {target, reasons, reviewer_context_changed}。origin/<base>...<PR head> の diff を
@@ -102,6 +105,7 @@ WT=""
 worktree_status="skipped"
 worktree_removed=false
 prior_devflow="null"
+prior_summary="null"
 ci_wait_ceiling_seconds="$CI_WAIT_CEILING_DEFAULT"
 # 敵対的 security review の起動時の判定。判定できるまで（ok:false の早期終端を含む）は対象（fail-closed）
 security_review='{"target":true,"reasons":["not_determined"],"reviewer_context_changed":true}'
@@ -122,6 +126,7 @@ emit() {
         --argjson worktree_removed "$worktree_removed" \
         --argjson skip_worktree "$(skip_worktree_json)" \
         --argjson prior_devflow "$prior_devflow" \
+        --argjson prior_summary "$prior_summary" \
         --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
         --argjson security_review "$security_review" \
         --arg error "$error" \
@@ -130,7 +135,7 @@ emit() {
         {ok: $ok, pr: $pr, worktree: ($worktree | nz), head_ref: ($head_ref | nz), base_ref: ($base_ref | nz),
          head_sha: ($head_sha | nz), repo: ($repo | nz), epoch: $epoch,
          worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree,
-         prior_devflow: $prior_devflow, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds,
+         prior_devflow: $prior_devflow, prior_summary: $prior_summary, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds,
          security_review: $security_review}
         + (if $error == "" then {} else {error: $error} end)
         '
@@ -165,11 +170,24 @@ PR_HEAD_OID="$(printf '%s' "$VIEW_RAW" | jq -r '.headRefOid // "" | strings')"
 prior_devflow="$(printf '%s' "$VIEW_RAW" | jq -c '
     [(.comments // [])[]
      | . as $c
-     | ([(($c.body // "") | match("<!-- dev-flow:([A-Za-z_]+)(?: codes=([a-z_,]*))? -->"; "g"))] | last) as $m
+     | ([(($c.body // "") | match("<!-- dev-flow:([A-Za-z_]+)(?: codes=([a-z_,]*))?(?: head=[0-9a-f]{40})? -->"; "g"))] | last) as $m
      | select($m != null)
      | {tier: $m.captures[0].string,
         codes: (($m.captures[1].string // "") | split(",") | map(select(. != ""))),
         url: ($c.url // null)}]
+    | last')"
+# 最後の終端サマリー（dev-flow / pr-iterate の marker を持つ最後のコメント）の head と今の PR head の食い違い。
+# head の無い marker は、どの head に対する結論か分からないので食い違い扱い
+prior_summary="$(printf '%s' "$VIEW_RAW" | jq -c --arg head "$PR_HEAD_OID" '
+    [(.comments // [])[]
+     | . as $c
+     | ([(($c.body // "") | match("<!-- (dev-flow):[A-Za-z_]+(?: codes=[a-z_,]*)?(?: head=([0-9a-f]{40}))? -->|<!-- (pr-iterate):[a-z_]+:[0-9]+(?: head=([0-9a-f]{40}))? -->"; "g"))] | last) as $m
+     | select($m != null)
+     | ($m.captures[1].string // $m.captures[3].string) as $sha
+     | {source: ($m.captures[0].string // $m.captures[2].string),
+        url: ($c.url // null),
+        head_sha: $sha,
+        head_mismatch: ($sha == null or $sha != ($head | ascii_downcase))}]
     | last')"
 
 if [[ -z "$repo" && "$url" =~ ^https://github\.com/([^/]+)/([^/]+)/pull/[0-9]+$ ]]; then

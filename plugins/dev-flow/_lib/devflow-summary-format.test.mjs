@@ -699,6 +699,21 @@ test('issue #930: HOLD の末尾マーカーは merge tier の holdReasons の c
   assert.equal(body.split('\n').at(-1), `<!-- dev-flow:HOLD codes=${codes.join(',')} -->`);
 });
 
+test('issue #1065: 末尾マーカーに結論を出した head sha が head=<sha> で載る（HOLD は codes の後）。40 桁 hex 以外は載せない', () => {
+  const sha = 'ABCDEF0123456789abcdef0123456789ABCDEF01';
+  const review = buildDevflowSummaryBody({ ...BASE_INPUT, headSha: sha });
+  assert.equal(review.split('\n').at(-1), `<!-- dev-flow:REVIEW head=${sha.toLowerCase()} -->`);
+  const hold = buildDevflowSummaryBody({
+    ...BASE_INPUT, mergeTier: 'HOLD', headSha: sha,
+    holdReasons: [{ code: 'iterate_non_lgtm', reason: 'r', kind: 'deterministic_recheck' }, { code: 'ci_checks_failed', reason: 'r', kind: 'deterministic_recheck' }],
+  });
+  assert.equal(hold.split('\n').at(-1), `<!-- dev-flow:HOLD codes=iterate_non_lgtm,ci_checks_failed head=${sha.toLowerCase()} -->`);
+  for (const bad of [null, undefined, '', 'abc1234', 'z'.repeat(40)]) {
+    const body = buildDevflowSummaryBody({ ...BASE_INPUT, headSha: bad });
+    assert.equal(body.split('\n').at(-1), '<!-- dev-flow:REVIEW -->', `headSha=${JSON.stringify(bad)} は marker に head を載せない`);
+  }
+});
+
 test('末尾に --- 区切り線を含む', () => {
   const body = buildDevflowSummaryBody({ ...BASE_INPUT });
   assert.ok(body.includes('---'), '区切り線を含む');

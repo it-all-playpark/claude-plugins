@@ -69,13 +69,26 @@ enum で必須（欠落・out-of-enum は throw）。終端サマリーの投稿
 （dev-flow は Merge tier の後に自分の終端サマリーを投稿する）。nested 無しで Workflow を直接起動した場合は従来どおり
 pr-meta probe で値を取る。単体起動の worktree は run 後も削除しない（人間が確認してから `worktree-teardown` で片付ける）。
 
-dev-flow の終端サマリーは末尾に `<!-- dev-flow:<tier> -->`（HOLD は `<!-- dev-flow:HOLD codes=<code>,... -->`、code は
-`merge-tier.mjs` の holdReasons の code）を置く。`pr-iterate-prerun` は同じ `gh pr view` で comments を取り、この marker を
+dev-flow の終端サマリーは末尾に `<!-- dev-flow:<tier> head=<sha> -->`（HOLD は `<!-- dev-flow:HOLD codes=<code>,... head=<sha> -->`、
+code は `merge-tier.mjs` の holdReasons の code）を置く。`head` は merge tier を判定した PR head（merge-tier-facts の headRefOid。
+取れなければ載せない）。`pr-iterate-prerun` は同じ `gh pr view` で comments を取り、この marker を
 持つ最後のコメントを `prior_devflow`（`{tier, codes, url}` / null）で出し、wrapper が `args.prior_devflow` で渡す。
 HOLD のとき単体 pr-iterate の終端サマリーは code ごとの回収状況を出す — pr-iterate が自分で確かめられるのは
 `iterate_non_lgtm`（この run が lgtm）・`ci_checks_failed` / `ac_ci_pending`（最終 CI が passed）・`mergeable_conflicting`
 （最後の conflict 自動解消が resolved）だけで、それ以外の code は未解消として人に返す。未解消が残れば見出しを「🎉 LGTM」に
 しない（HOLD 後の回収ではこのレポートが PR の最後のコメント＝最新の結論になるため）。dev-flow のサマリー自体は編集しない。
+
+**再 review 中コメント**: 単体 pr-iterate の終端サマリーも末尾に `<!-- pr-iterate:<status>:<n> head=<sha> -->`（`head` は
+その結論を出した head — 最後の fix の push 後の PR head）を置く。`pr-iterate-prerun` は dev-flow / pr-iterate どちらかの marker を
+持つ最後のコメント（最後の終端サマリー）を `prior_summary`（`{source, url, head_sha, head_mismatch}` / null）で出す。
+`head_mismatch` は marker の head が今の PR head と違うとき true で、marker に head が無いサマリーも true（どの head に対する
+結論か分からない）。wrapper が `args.prior_summary` で渡し、`head_mismatch:true` なら単体 pr-iterate は review を始める前に
+「head `<sha>` で再 review 中。<古いサマリーの URL> の結論はこの head に当てはまらない」コメントを PR に足す。意味は
+**その URL の LGTM / tier は今の head を見ていないので merge の根拠にしない — 今の head に対する結論はこの後に載る
+pr-iterate の終了レポート**。LGTM サマリーの後に push して再実行した間、PR の最新コメントが古い LGTM のまま merge される
+事故を防ぐため。古いサマリーは編集・削除しない（PR 上の証跡を残す）。投稿は `gh pr comment --body-file` の bare 単文で、
+失敗しても review は止めない（advisory）。食い違いが無い・終端サマリーが無い PR、dev-flow からの nested 起動では投稿しない。
+pr-iterate を経ない push（人手の push のみ）は検知しない。
 
 pr-iterate の review#i（i ≥ 2）は fix delta（前 round の review 時点の head .. 今の head）だけを読む delta review
 （`_lib/review-delta.mjs` の `resolveReviewScope`）。sha が確定できない round は full review にフォールバックする。
