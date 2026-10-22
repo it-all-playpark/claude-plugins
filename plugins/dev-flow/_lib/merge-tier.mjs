@@ -141,6 +141,7 @@ export const HOLD_REASON_CODES = [
   'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
   'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
   'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
+  'security_review_unresolved',
 ];
 
 // merge-tier-facts の checks サブ結果（parseChecks の返り値 {ok:true, checks} | {ok:false, error}）を
@@ -322,6 +323,11 @@ export function classifyMergeableState(meta) {
 //   workflow は finalTestGreen を true にするので final_test_red は積まれない。flake は HOLD 理由にせず
 //   開示行（finalTestFlakyDisclosure）だけを disclosures に積む。未指定 = 開示なし。files が非空の string[]
 //   でない / logs が string[] でない / finalTestGreen !== true（red のまま flake を名乗る矛盾）は明示 error。
+// s.securityReviewUnresolved (optional boolean): 敵対的 security review の対象の run（Security floor か pr-iterate の
+//   判定のどちらかで対象）で、pr-iterate が今の PR head で security review を clear にしていない（LGTM 以外で終端した・
+//   critical/major が残った・worktree の外を指す指摘がある・review を回せなかった。issue #1063）。true なら
+//   'security_review_unresolved'（human_judgment）で HOLD。blast-radius — merge 直前の最終ゲートで、gate_policy に
+//   依らず不変。boolean 以外は明示 error。
 // 返り値: { tier, reasons, holdReasons, holdKind, disclosures }（issue #599 で holdReasons/holdKind、
 //   issue #658 で disclosures を追加）。
 //   reasons は従来どおり string[]（HOLD 時は blocking 文言 + 可視化行、AUTO/REVIEW 時は従来文言 +
@@ -359,6 +365,9 @@ export function classifyMergeTier(s) {
   }
   if (s.riskValueDropped != null && typeof s.riskValueDropped !== 'boolean') {
     throw new Error('classifyMergeTier: invalid riskValueDropped: ' + s.riskValueDropped);
+  }
+  if (s.securityReviewUnresolved != null && typeof s.securityReviewUnresolved !== 'boolean') {
+    throw new Error('classifyMergeTier: invalid securityReviewUnresolved: ' + s.securityReviewUnresolved);
   }
   if (s.finalCi != null && typeof s.finalCi.verified !== 'boolean') {
     throw new Error('classifyMergeTier: invalid finalCi');
@@ -429,6 +438,7 @@ export function classifyMergeTier(s) {
   }
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
   if (s.finalAcReconcile === 'unavailable') pushBlocking('final_ac_unavailable', 'Final AC reconcile 判定不能（最終 PR tree に対する AC 再検証結果を取得できず — agent null / schema 不一致 / index 欠落・重複・範囲外 / evidence 不足）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
+  if (s.securityReviewUnresolved === true) pushBlocking('security_review_unresolved', '敵対的 security review が今の PR head で clear になっていない（信頼境界をまたぎうる変更を含む PR で、pr-iterate が critical/major 0 件の review を通さずに終端）— 指摘の本文は公開しない。merge 前に人が diff を確認する（gate_policy に依らず不変）', 'human_judgment');
   if (s.iterateStatus !== 'lgtm') pushBlocking('iterate_non_lgtm', `pr-iterate 非LGTM終端（status=${s.iterateStatus ?? 'null'}）— review⇄fix loop が LGTM 未到達のため人間確認必須（gate_policy に依らず不変）`, 'human_judgment');
   if (s.evalStaleness === 'hash_mismatch') {
     const short8 = (h) => (typeof h === 'string' && h.length > 0) ? h.slice(0, 8) : '不明';

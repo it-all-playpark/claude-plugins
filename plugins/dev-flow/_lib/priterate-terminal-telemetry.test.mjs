@@ -90,7 +90,7 @@ test('[terminal-telemetry] review 経路 commit_unensured: fix_terminal_reason=c
   assert.equal(result.terminal_path, 'review');
 });
 
-test('[terminal-telemetry] 即 lgtm: fix_terminal_reason null / terminal_path=review / history 1 round、telemetry は merge_tier / iterate_status / ci_wait_ceiling_seconds / ci_wait_seconds / review_model_config / plugin_version / plugin_commit だけ', async () => {
+test('[terminal-telemetry] 即 lgtm: fix_terminal_reason null / terminal_path=review / history 1 round、telemetry は merge_tier / iterate_status / ci_wait_ceiling_seconds / ci_wait_seconds / security_review_target / security_review_rounds / review_model_config / plugin_version / plugin_commit だけ', async () => {
   const { ctx, getAgentCalls } = makeSandbox({
     reviewerStub: () => ({ decision: 'approve', issues: [], summary: 'ok' }),
     ciResponses: [{ status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], waited_seconds: 0, poll_attempts: 1 }],
@@ -111,9 +111,12 @@ test('[terminal-telemetry] 即 lgtm: fix_terminal_reason null / terminal_path=re
   const telemetry = extractJournalPayload(journalCall.prompt).telemetry;
   assert.deepEqual(
     Object.keys(telemetry).sort(),
-    ['ci_wait_ceiling_seconds', 'ci_wait_seconds', 'iterate_status', 'merge_tier', 'plugin_commit', 'plugin_version', 'review_model_config'],
+    ['ci_wait_ceiling_seconds', 'ci_wait_seconds', 'iterate_status', 'merge_tier', 'plugin_commit', 'plugin_version', 'review_model_config', 'security_review_rounds', 'security_review_target'],
     `pr-iterate の成功 telemetry キーが想定外: ${JSON.stringify(telemetry)}`,
   );
+  // args.security_review の無い単体起動は対象（fail-closed）で、LGTM の前に security-reviewer を 1 回 spawn する
+  assert.equal(telemetry.security_review_target, true);
+  assert.equal(telemetry.security_review_rounds, 1);
   assert.equal(telemetry.ci_wait_ceiling_seconds, 300, '上限未指定の run は既定 300 秒');
   assert.equal(telemetry.ci_wait_seconds, 0, 'CI が初回 poll で passed なら待機 0 秒');
   assert.equal(telemetry.merge_tier, 'PR_ITERATE');

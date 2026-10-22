@@ -197,7 +197,7 @@ test('[review-delta][AC-3] HEAD が動いていない（sha_prev === sha_now）r
 
 test('[review-delta] nested 起動は args.nested.head_sha を review#1 時点の sha として使う（pr-meta 不起動）', async () => {
   const { result, calls } = await runTwoRounds({
-    args: { pr: '5', nested: { caller: 'dev-flow', cwd: '/tmp/wt', head_ref: 'feature/x', head_sha: SHA_A } },
+    args: { pr: '5', nested: { caller: 'dev-flow', cwd: '/tmp/wt', head_ref: 'feature/x', head_sha: SHA_A, base_ref: 'main' } },
     overrides: { 'commit-ensure#1': ENSURE_WITH_SHA(SHA_B) },
   });
   assert.equal(result?.status, 'lgtm');

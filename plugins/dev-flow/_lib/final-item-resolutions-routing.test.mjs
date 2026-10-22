@@ -105,6 +105,8 @@ function createResponder(overrides = {}) {
     if (label === 'isolation-probe') return { written: true };
     if (label.startsWith('analyze')) return STANDARD_REQ;
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't1', files: ['src/x.ts'], summary: 's', concerns: [] };
+    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
     if (label === 'realized-diff') return { files: ['src/x.ts'] };
     if (agentType === 'dev-flow:evaluator' && label === 'eval#1') {

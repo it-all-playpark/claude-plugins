@@ -74,6 +74,9 @@ function makeCleanMicroReq() {
 function makeLiteRouteSandbox(analyzeReq, opts = {}) {
   const dangerHits = opts.dangerHits ?? [];
   const reviewOverride = 'reviewOverride' in opts ? opts.reviewOverride : { decision: 'approve', issues: [] };
+  // Security floor の敵対的 security review の対象判定（label 'security-scope'。issue #1063）。既定は対象外
+  // （merge-base 基準の diff が許可リストだけ）。関数なら呼び出しごとに評価する（throw の注入用）。
+  const securityScope = 'securityScope' in opts ? opts.securityScope : { ok: true, target: false, reasons: [] };
 
   const calls = [];
   const workflowCalls = [];
@@ -118,6 +121,9 @@ function makeLiteRouteSandbox(analyzeReq, opts = {}) {
     }
     if (label === 'danger-grep-final') {
       return { ok: true, hits: dangerHits };
+    }
+    if (label === 'security-scope') {
+      return typeof securityScope === 'function' ? securityScope() : securityScope;
     }
     // Validate: test runner
     if (label.startsWith('test')) {
@@ -375,4 +381,39 @@ test('[lite-route][E] ci-check-lite が throw しても lite 経路は full pr-i
     1,
     `ci-check-lite throw ケース: workflow('pr-iterate') へ fail-open 委譲されるべきだが ${workflowCalls.length} 回呼ばれた`,
   );
+});
+
+// ============================================================
+// (F) lite に入るのは Security floor の merge-base 基準の diff が敵対的 security review の対象外判定
+//     （_lib/security-review-scope.mjs の許可リスト）に当たるときだけ（issue #1063）
+// ============================================================
+
+test('[lite-route][F] clean-micro でも security-scope が対象外を返さなければ lite に入らず、対象として pr-iterate へ渡す', async () => {
+  for (const [name, securityScope] of [
+    ['target:true', { ok: true, target: true, reasons: ['not_allowlisted: src/foo.ts'] }],
+    ['ok:false（取得失敗）', { ok: false, target: true, reasons: ['scope_unavailable'], error: 'x' }],
+    ['null', null],
+    ['throw', () => { throw new Error('StructuredOutput 未返却'); }],
+    ['target:false でも ok が true でない', { ok: false, target: false, reasons: [] }],
+  ]) {
+    const { ctx, calls, workflowCalls } = makeLiteRouteSandbox(makeCleanMicroReq(), { securityScope });
+    const err = await runDevFlowInSandbox(src, ctx);
+    failOnStructuralCrash(err);
+    assert.equal(err, null, `${name}: run が throw した: ${err?.message}`);
+    assert.equal(calls.filter((c) => c.agentType === 'dev-flow:pr-reviewer').length, 0, `${name}: lite の pr-reviewer が呼ばれた`);
+    assert.equal(workflowCalls.length, 1, `${name}: フル pr-iterate へ委譲されるべき`);
+    assert.equal(workflowCalls[0].opts.security_review.target, true, `${name}: pr-iterate に対象として渡すべき`);
+  }
+});
+
+test('[lite-route][F] 対象判定は merge-base 基準（origin/<base> と作業ツリー）の diff で取り、対象外なら lite に入る', async () => {
+  const { ctx, calls, workflowCalls } = makeLiteRouteSandbox(makeCleanMicroReq());
+  const err = await runDevFlowInSandbox(src, ctx);
+  failOnStructuralCrash(err);
+  const scope = calls.find((c) => c.label === 'security-scope');
+  assert.ok(scope, 'Security floor で security-scope が呼ばれていない');
+  assert.equal(scope.agentType, 'dev-flow:dev-runner-haiku-ro');
+  assert.ok(scope.prompt.endsWith('\nsecurity-review-scope /tmp/wt origin/main --working-tree'), `merge-base 基準の判定になっていない:\n${scope.prompt}`);
+  assert.equal(calls.filter((c) => c.label === 'pr-review-lite').length, 1, '対象外なら lite に入る');
+  assert.equal(workflowCalls.length, 0);
 });

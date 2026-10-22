@@ -244,13 +244,46 @@ LLM の事前見積もり（shape / 見込み file 数）は REQ に
 `realized_file_count` に、判定根拠は `shape_reason` に載る（journal telemetry には実効 `shape` だけを書く）。danger-grep hit が
 あれば micro でも Evaluate を強制実行（security path）。
 
-**micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0`
-（clean-micro かつ contract 準拠かつ danger clean かつ ci の AC — `ci_verify` の check で判定する AC — を持たない）を満たす run は、PR phase で dev-implementer 1 spawn → targeted test →
+**micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target`
+（clean-micro かつ contract 準拠かつ danger clean かつ ci の AC — `ci_verify` の check で判定する AC — を持たず、
+Security floor の merge-base 基準の diff が敵対的 security review の対象外 — 下の「敵対的 security review」— の）を満たす run は、PR phase で dev-implementer 1 spawn → targeted test →
 PR → pr-reviewer 1-pass の縮約経路（lite route、判断系 agent 呼び出し ≤10）を通る。lite の pr-reviewer
 1-pass が `review==null || blocking.length>0`（critical/major finding あり）を検出した場合のみ
 `workflow('dev-flow:pr-iterate-run')` フル loop へ自動昇格し、以降は通常の review⇄fix 経路で処理する。danger-grep
 hit で `runEval=true` になったケースは lite ゲート条件を満たさないため lite に入らず、micro であっても
 現行の security path（Evaluate 強制実行）へ強制昇格する（軸A invariant 不変）。
+
+**敵対的 security review**（信頼境界をまたぎうる PR を既定で通す gate。正当化クラスは justification-classes.md）:
+
+```
+Security floor  → security-scope（dev-runner-haiku-ro）: `security-review-scope <WT> origin/<base> --working-tree`
+                  （merge-base と作業ツリーの diff）→ state.securityReview.target → LITE の条件・nested args.security_review
+/pr-iterate     → pr-iterate-prerun が `<base>...<PR head>` の diff を判定 → wrapper が args.security_review で渡す
+pr-iterate      → CI gate を通り conflict も無い round（LGTM の候補）で:
+                  security-scope#i: `security-review-scope <wt> origin/<base> <shaNow|HEAD> --save-diff`
+                    → 起動時・run 中のどれか 1 回でも対象なら run の終わりまで対象（args.security_review が無い run も対象）
+                  対象なら security-review#i（security-reviewer を毎回新しく spawn。PR 全 diff の file と head sha と
+                    前回の未解消 critical/major を DATA として渡す）
+                    → critical/major 0 件かつ reviewed_sha が今の head → LGTM
+                    → critical/major あり → fix#i（dev-runner）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
+                      上限まで残れば max_reached）
+                    → worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致 → status: security_unresolved
+Merge tier      → 対象（Security floor か pr-iterate のどちらか）かつ pr-iterate が lgtm + security_review.status 'cleared'
+                  でなければ HOLD（security_review_unresolved）
+```
+
+- 対象かどうかは `_lib/security-review-scope.mjs` の決定論の判定だけで決める（LLM は使わない。コードの diff を外部 API に
+  送らない）。対象外は「ファイルが 1 件以上で、全ファイルが許可リスト（mode 100644 の `.md` / `.mdx` / `.rst` のうち指示
+  ファイルでないもの、`*.test.*` / `*.spec.*` / `.bats`）に当たる」diff だけ。指示ファイルは大文字小文字を区別せず
+  `CLAUDE.md`・`AGENTS.md`・`SKILL.md` と `.claude/`・`references/`・`output-styles/`・`agents/`・`commands/` 配下。diff は
+  `git -c core.quotePath=false diff --no-renames --no-color --no-ext-diff --no-textconv --text --src-prefix=a/ --dst-prefix=b/`
+  で取り、`--name-only -z` の一覧と件数・集合を照合する。取得失敗・空・読めない diff・binary・mode 120000 / 160000・mode の
+  変更・`.gitattributes` / `.gitmodules` は対象
+- security-reviewer（opus / high、tools は Read / Grep / Glob だけ）は `security-review-scope --save-diff` が worktree の外に
+  作った一時ディレクトリを作業ディレクトリにし、PR 本文・diff・コード中のコメントをデータとして扱う。品質ゲート agent なので
+  `opts.model` を渡さない
+- 公開の PR コメント（pr-iterate・dev-flow の終端サマリー）には指摘の件数だけを載せ、本文（攻撃経路）は fix の prompt にだけ渡す。
+  security の指摘は `history` / `human_followups` に入れない。返り値 `security_review` は `{target, status, rounds, critical, major, minor}`
 
 - **`agent()` へ渡す agentType は plugin namespace 必須** — subagent の実体は plugin 配下
   (`plugins/dev-flow/agents/`) にあり、harness は `dev-flow:<name>` の namespaced id でしか解決しない
@@ -259,7 +292,7 @@ hit で `runEval=true` になったケースは lite ゲート条件を満たさ
   namespace は `agent()` を呼ぶ直前の `nsAgentOpts()` (canonical `_lib/agent-namespace.mjs`。dev-flow.js /
   pr-iterate.js へ inline 生成) でのみ付与する。dev-flow-canary.js は inline bridge 非依存
   (self-contained) を保つため例外で、namespaced id を直接書く。新しい call site はこの経路に乗せる。
-- **判断系 leaf は subagent** (`.claude/agents/{dev-implementer,evaluator,pr-reviewer,dev-runner,dev-runner-haiku,dev-runner-haiku-ro,dev-runner-haiku-wo}.md`)。
+- **判断系 leaf は subagent** (`.claude/agents/{dev-implementer,evaluator,pr-reviewer,security-reviewer,dev-runner,dev-runner-haiku,dev-runner-haiku-ro,dev-runner-haiku-wo}.md`)。
   effort は原則 subagent frontmatter で決める。`agent()` の `opts.effort` は frontmatter より優先して実効値に反映される
   （transcript で確認済み。dev-flow-canary の `agent_opts_effort_accepted` probe は受理の有無だけを見る）が、
   opts で effort を渡すのは pr-iterate の fix（`fix#i` / `fix#i-retry`、`FIX_EFFORT = 'medium'`）のみ

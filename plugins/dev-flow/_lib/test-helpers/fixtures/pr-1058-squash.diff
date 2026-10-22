@@ -1,0 +1,527 @@
+diff --git a/plugins/meeting/README.md b/plugins/meeting/README.md
+index a401acc..5a899aa 100644
+--- a/plugins/meeting/README.md
++++ b/plugins/meeting/README.md
+@@ -150,6 +150,7 @@ meeting notes                         # 最新の録音から議事録（設定
+ meeting transcribe <DIR> --num-speakers 3 --prompt "固有名詞, 社内用語"
+ meeting play <DIR> 話者A              # その話者の声を約 5 秒再生（自分 は mic.wav から）
+ meeting name                          # 未確定の話者が残る最新の議事録に「この発言は誰？」で名前を入れる
++meeting set-names <DIR> 話者A=田中    # その録音の議事録と全文のラベルを置き換える（claude は起動しない）
+ meeting ls
+ ```
+ 
+@@ -191,8 +192,29 @@ meeting ls
+ }
+ ```
+ 
+-Claude Code の sandbox を使っている場合、`meeting name` は Bash から議事録を書き換えるので、`output_dir` を
+-sandbox の書き込み許可（`sandbox.filesystem.allowWrite`）に入れておく。
++Claude Code の sandbox を使っている場合、名前の後入れ（`/meeting-notes --name-unresolved`）は Bash の
++`meeting set-names <DIR> "話者A=田中,..."` で議事録と全文を書き換える。保存先を sandbox の書き込み許可に入れる代わりに、
++このコマンドだけを sandbox の外で動かす:
++
++```json
++{
++  "sandbox": {
++    "excludedCommands": ["meeting set-names *"]
++  }
++}
++```
++
++`meeting set-names` は sandbox から書ける場所（録音 DIR・cwd・議事録）に置かれたものに書き込み先を決めさせない:
++
++- 書くのは `notes_dir` と `output_dir` の配下（realpath で比べる）だけ。議事録の `transcript_path:` / `transcript:` が
++  その外を指す（絶対パス・`..`・シンボリックリンク経由）か、議事録・全文がシンボリックリンクなら、どれも書かずに失敗する
++- `notes_dir` は `meeting` の設定ファイルから、`notes_dir` の外の `output_dir` はグローバルの
++  `~/.config/skills/config.json` からだけ読む。cwd や `notes_dir` の git root の `skill-config.json` は読まず、
++  `notes_dir` が無ければ cwd では探さずに失敗する。この 2 つの設定ファイルは sandbox の書き込み許可に入れない
++- claude を起動しない
++
++`"meeting name *"` は登録しない。`meeting name` は claude を起動し、cwd や `notes_dir` の `skill-config.json` で
++書き込み先が決まる。
+ 
+ ## Whisper を Groq で処理する
+ 
+diff --git a/plugins/meeting/meeting-notes/SKILL.md b/plugins/meeting/meeting-notes/SKILL.md
+index 277f1cd..7486828 100644
+--- a/plugins/meeting/meeting-notes/SKILL.md
++++ b/plugins/meeting/meeting-notes/SKILL.md
+@@ -151,6 +151,7 @@ transcript_path: <保存した全文の絶対パス>
+ 
+ 1. NOTE の frontmatter の `unresolved_speakers` と `attendees`、DIR の `transcript.json` を Read する
+ 2. `unresolved_speakers` の話者だけを Step 2 の「この発言は誰？」の形で聞く（`attendees` の実名はもう割り当て済み）
+-3. 名前が入った話者を Bash で `meeting name <DIR> --set "話者A=田中,話者B=佐藤"` に渡す（「不明のまま」は渡さない）。
+-   議事録と全文のラベルの置き換えと `unresolved_speakers` からの削除はこのコマンドが行うので、ファイルを直接編集しない
++3. 名前が入った話者を Bash で `meeting set-names <DIR> "話者A=田中,話者B=佐藤"` に渡す（「不明のまま」は渡さない）。
++   議事録と全文のラベルの置き換えと `unresolved_speakers` からの削除はこのコマンドが行うので、ファイルを直接編集しない。
++   失敗したら（保存先の外・シンボリックリンク・`notes_dir` 未設定など）出力をそのまま返し、ファイルを直接直さない
+ 4. コマンドの出力（更新したファイルと残った未確定の話者）を返す
+diff --git a/plugins/meeting/scripts/meeting.bats b/plugins/meeting/scripts/meeting.bats
+index a0a1c25..ad4551b 100644
+--- a/plugins/meeting/scripts/meeting.bats
++++ b/plugins/meeting/scripts/meeting.bats
+@@ -1065,6 +1065,242 @@ add_transcript_path() {
+     grep -qxF -- '- 田中 が提案し、佐藤 と 話者AB が合意' "$note"
+ }
+ 
++@test "set-names は議事録と全文のラベルを置き換え、答えた話者を unresolved_speakers から外す" {
++    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
++    rec="$MEETING_HOME/2026-01-01_1000-a"
++    write_note 2026-01-01-a "$rec" "話者A, 話者B"
++    note="$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md"
++    tx="$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
++    notes_config
++    run bash "$SCRIPT" set-names "$rec/" "話者A=田中"
++    echo "$output"
++    [ "$status" -eq 0 ]
++    [[ "$output" == *"未確定の話者: 話者B"* ]]
++    grep -qxF 'unresolved_speakers: [話者B]' "$note"
++    grep -qxF 'attendees: [自分, 田中, 話者B]' "$note"
++    grep -qxF -- '- 田中 が提案し、話者B と 話者AB が合意' "$note"
++    grep -qxF "recording: $rec" "$note"
++    grep -qxF '**[00:00:01] 田中**: はい' "$tx"
++
++    # グローバルの output_dir (notes_dir の外) にある議事録と、transcript_path: の全文も書き換え、
++    # 最後の 1 人に名前が入ると unresolved_speakers の行ごと消える
++    global_output_dir "~/Google Drive/議事録"
++    out="$HOME/Google Drive/議事録"
++    mkdir -p "$out" "$BATS_TEST_TMPDIR/elsewhere"
++    mv "$note" "$out/"
++    add_transcript_path "$out/2026-01-01-a.md" "$tx"
++    cd "$BATS_TEST_TMPDIR/elsewhere"
++    run bash "$SCRIPT" set-names "$rec" "話者B=佐藤"
++    echo "$output"
++    [ "$status" -eq 0 ]
++    run grep -q '^unresolved_speakers:' "$out/2026-01-01-a.md"
++    [ "$status" -eq 1 ]
++    grep -qxF -- '- 田中 が提案し、佐藤 と 話者AB が合意' "$out/2026-01-01-a.md"
++    grep -qxF "transcript_path: $tx" "$out/2026-01-01-a.md"
++    grep -qxF '**[00:00:05] 佐藤**: どうも' "$tx"
++}
++
++@test "set-names は話者の指定が無い・空なら claude を起動せず、何も書かずに非 0 で終わる" {
++    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
++    stub_tools
++    rec="$MEETING_HOME/2026-01-01_1000-a"
++    write_note 2026-01-01-a "$rec" "話者A"
++    note="$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md"
++    cp "$note" "$BATS_TEST_TMPDIR/note.orig"
++    notes_config
++
++    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" set-names
++    [ "$status" -ne 0 ]
++    [[ "$output" == *"meeting set-names <DIR> <話者A=名前,話者B=名前>"* ]]
++    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" set-names "$rec"
++    [ "$status" -ne 0 ]
++    [[ "$output" == *"meeting set-names <DIR> <話者A=名前,話者B=名前>"* ]]
++    PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" set-names "$rec" ""
++    [ "$status" -ne 0 ]
++    local spec
++    for spec in "," "話者A=" "話者A"; do
++        PATH="$BATS_TEST_TMPDIR/stub:$PATH" run bash "$SCRIPT" set-names "$rec" "$spec"
++        echo "$spec: $output"
++        [ "$status" -ne 0 ]
++        [[ "$output" == *"話者A=田中,話者B=佐藤 の形で渡してください"* ]]
++    done
++    [ ! -e "$BATS_TEST_TMPDIR/claude.args" ]
++    cmp "$note" "$BATS_TEST_TMPDIR/note.orig"
++}
++
++@test "set-names は transcript_path: / transcript: が notes_dir・output_dir の外を指すなら議事録・全文・指した先のどれも書き換えずに非 0 で終わる" {
++    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
++    rec="$MEETING_HOME/2026-01-01_1000-a"
++    note="$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md"
++    tx="$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
++    outside="$BATS_TEST_TMPDIR/outside"
++    notes_config
++    local line
++    # 絶対パス・.. ・notes_dir の中の symlink 経由 (transcript_path: / root 相対の transcript: それぞれ)
++    for line in "transcript_path: $outside/x.md" \
++                "transcript_path: $BATS_TEST_TMPDIR/notes/meetings/../../outside/x.md" \
++                'transcript: "[[../outside/x]]"' \
++                "transcript_path: $BATS_TEST_TMPDIR/notes/meetings/link/x.md" \
++                'transcript: "[[meetings/link/x]]"'; do
++        rm -rf "$BATS_TEST_TMPDIR/notes" "$outside"
++        mkdir -p "$outside"
++        printf '話者A の秘密\n' > "$outside/x.md"
++        write_note 2026-01-01-a "$rec" "話者A"
++        ln -s "$outside" "$BATS_TEST_TMPDIR/notes/meetings/link"
++        if [[ "$line" == transcript_path:* ]]; then
++            add_transcript_path "$note" "${line#transcript_path: }"
++        else
++            awk -v l="$line" '/^transcript: /{ print l; next } { print }' "$note" > "$note.tmp"
++            mv "$note.tmp" "$note"
++        fi
++        cp "$note" "$BATS_TEST_TMPDIR/note.orig"
++        cp "$tx" "$BATS_TEST_TMPDIR/tx.orig"
++
++        run bash "$SCRIPT" set-names "$rec" "話者A=田中"
++        echo "$line: $output"
++        [ "$status" -ne 0 ]
++        [[ "$output" == *"は議事録の保存先"*"の外です"* ]]
++        cmp "$note" "$BATS_TEST_TMPDIR/note.orig"
++        cmp "$tx" "$BATS_TEST_TMPDIR/tx.orig"
++        [ "$(cat "$outside/x.md")" = "話者A の秘密" ]
++    done
++}
++
++@test "set-names は議事録・全文がシンボリックリンクならどのファイルも書き換えずに非 0 で終わる" {
++    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
++    rec="$MEETING_HOME/2026-01-01_1000-a"
++    notes="$BATS_TEST_TMPDIR/notes"
++    note="$notes/meetings/2026-01-01-a.md"
++    tx="$notes/meetings/transcripts/2026-01-01-a.md"
++    notes_config
++    local f
++    # リンク先は notes_dir の中 (探索しない . 始まりのディレクトリ) に置き、保存先の外かどうかとは別に拒むことを見る
++    for f in "$note" "$tx"; do
++        rm -rf "$notes"
++        write_note 2026-01-01-a "$rec" "話者A"
++        mkdir -p "$notes/.store"
++        mv "$f" "$notes/.store/target.md"
++        ln -s "$notes/.store/target.md" "$f"
++        cp -R "$notes" "$BATS_TEST_TMPDIR/notes.orig"
++
++        run bash "$SCRIPT" set-names "$rec" "話者A=田中"
++        echo "$f: $output"
++        [ "$status" -ne 0 ]
++        [[ "$output" == *"$f がシンボリックリンクです"* ]]
++        diff -r "$notes" "$BATS_TEST_TMPDIR/notes.orig"
++        [ -L "$f" ]
++        rm -rf "$BATS_TEST_TMPDIR/notes.orig"
++    done
++}
++
++@test "set-names は議事録・全文が保存先の外のファイルとハードリンクならどのファイルも書き換えずに非 0 で終わる" {
++    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
++    rec="$MEETING_HOME/2026-01-01_1000-a"
++    notes="$BATS_TEST_TMPDIR/notes"
++    note="$notes/meetings/2026-01-01-a.md"
++    tx="$notes/meetings/transcripts/2026-01-01-a.md"
++    outside="$BATS_TEST_TMPDIR/outside"
++    notes_config
++    local f
++    for f in "$note" "$tx"; do
++        rm -rf "$notes" "$outside"
++        write_note 2026-01-01-a "$rec" "話者A"
++        mkdir -p "$outside"
++        mv "$f" "$outside/x.md"
++        ln "$outside/x.md" "$f"
++        cp "$outside/x.md" "$BATS_TEST_TMPDIR/x.orig"
++        cp -R "$notes" "$BATS_TEST_TMPDIR/notes.orig"
++
++        run bash "$SCRIPT" set-names "$rec" "話者A=田中"
++        echo "$f: $output"
++        [ "$status" -ne 0 ]
++        [[ "$output" == *"$f にハードリンクがあります"* ]]
++        diff -r "$notes" "$BATS_TEST_TMPDIR/notes.orig"
++        cmp "$outside/x.md" "$BATS_TEST_TMPDIR/x.orig"
++        rm -rf "$BATS_TEST_TMPDIR/notes.orig"
++    done
++}
++
++@test "set-names は話者のラベル・名前に改行があれば何も書かずに非 0 で終わる" {
++    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
++    rec="$MEETING_HOME/2026-01-01_1000-a"
++    write_note 2026-01-01-a "$rec" "話者A"
++    note="$BATS_TEST_TMPDIR/notes/meetings/2026-01-01-a.md"
++    tx="$BATS_TEST_TMPDIR/notes/meetings/transcripts/2026-01-01-a.md"
++    cp "$note" "$BATS_TEST_TMPDIR/note.orig"
++    cp "$tx" "$BATS_TEST_TMPDIR/tx.orig"
++    notes_config
++    local spec
++    for spec in $'話者A=田中\nauto_notes: true' $'話者A=田\r中' $'話者A=田\x1b中'; do
++        run bash "$SCRIPT" set-names "$rec" "$spec"
++        echo "$output"
++        [ "$status" -ne 0 ]
++        [[ "$output" == *"改行などの制御文字は使えません"* ]]
++        cmp "$note" "$BATS_TEST_TMPDIR/note.orig"
++        cmp "$tx" "$BATS_TEST_TMPDIR/tx.orig"
++    done
++}
++
++@test "set-names は cwd・notes_dir の git root の skill-config.json を探索先・書き込み先に使わず、notes_dir が無ければ cwd に落ちずに非 0 で終わる" {
++    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
++    global_output_dir "~/Google Drive/議事録"
++    out="$HOME/Google Drive/議事録"
++    rec="$MEETING_HOME/2026-01-01_1000-a"
++    notes="$BATS_TEST_TMPDIR/notes"
++    tx="$notes/meetings/transcripts/2026-01-01-a.md"
++    write_note 2026-01-01-a "$rec" "話者A, 話者B"
++    mkdir -p "$out"
++    mv "$notes/meetings/2026-01-01-a.md" "$out/"
++    add_transcript_path "$out/2026-01-01-a.md" "$tx"
++
++    # cwd 側の skill-config.json / .claude/skill-config.json は別の output_dir を指し、そこにも同じ録音の議事録がある
++    evil="$BATS_TEST_TMPDIR/evil" cwd="$BATS_TEST_TMPDIR/cwd"
++    mkdir -p "$evil" "$cwd/.git" "$cwd/.claude" "$notes/.git"
++    printf -- '---\nrecording: %s\nunresolved_speakers: [話者A, 話者B]\ntranscript_path: %s/tx.md\n---\n話者A\n' "$rec" "$evil" \
++        > "$evil/2026-01-01-a.md"
++    printf '話者A\n' > "$evil/tx.md"
++    cp -R "$evil" "$BATS_TEST_TMPDIR/evil.orig"
++    local d
++    for d in "$cwd" "$cwd/.claude" "$notes"; do
++        printf '{"meeting-notes": {"output_dir": "%s"}}\n' "$evil" > "$d/skill-config.json"
++    done
++    notes_config
++
++    # cwd が notes_dir (git root に skill-config.json がある) のときも、別の repo のときも結果は同じ
++    cd "$notes"
++    run bash "$SCRIPT" set-names "$rec" "話者A=田中"
++    echo "$output"
++    [ "$status" -eq 0 ]
++    grep -qxF 'unresolved_speakers: [話者B]' "$out/2026-01-01-a.md"
++    grep -qxF '**[00:00:01] 田中**: はい' "$tx"
++    cd "$cwd"
++    run bash "$SCRIPT" set-names "$rec" "話者B=佐藤"
++    echo "$output"
++    [ "$status" -eq 0 ]
++    run grep -q '^unresolved_speakers:' "$out/2026-01-01-a.md"
++    [ "$status" -eq 1 ]
++    grep -qxF '**[00:00:05] 佐藤**: どうも' "$tx"
++    diff -r "$evil" "$BATS_TEST_TMPDIR/evil.orig"
++
++    # notes_dir が無ければ cwd (と cwd の skill-config.json) で探さない
++    mkdir -p "$cwd/meetings"
++    cp "$evil/2026-01-01-a.md" "$cwd/meetings/"
++    cp "$cwd/meetings/2026-01-01-a.md" "$BATS_TEST_TMPDIR/cwd-note.orig"
++    write_config
++    run bash "$SCRIPT" set-names "$rec" "話者A=田中"
++    echo "$output"
++    [ "$status" -ne 0 ]
++    [[ "$output" == *"notes_dir がありません"* ]]
++    cmp "$cwd/meetings/2026-01-01-a.md" "$BATS_TEST_TMPDIR/cwd-note.orig"
++    diff -r "$evil" "$BATS_TEST_TMPDIR/evil.orig"
++}
++
++@test "/meeting-notes の名前の後入れは meeting set-names で反映し、README は set-names だけを sandbox の外で動かす例を載せる" {
++    skill="$BATS_TEST_DIRNAME/../meeting-notes/SKILL.md"
++    sed -n '/^## 名前の後入れ/,$p' "$skill" | grep -qF 'meeting set-names <DIR> "話者A=田中,話者B=佐藤"'
++    grep -qF '"excludedCommands": ["meeting set-names *"]' "$BATS_TEST_DIRNAME/../README.md"
++}
++
+ # doctor の全項目が ✅ になる環境を作る。PATH は stub (swift / ffmpeg / uv / launchctl / security) と、
+ # 実機の swift などを含まないよう必要なコマンドだけを並べた $BATS_TEST_TMPDIR/sys にする。
+ # plugin は $BATS_TEST_TMPDIR/plugin、インストール先はそこから setup したのと同じ中身にする
+diff --git a/plugins/meeting/scripts/meeting.sh b/plugins/meeting/scripts/meeting.sh
+index 9bd2384..9debf90 100755
+--- a/plugins/meeting/scripts/meeting.sh
++++ b/plugins/meeting/scripts/meeting.sh
+@@ -21,7 +21,9 @@
+ #   meeting play <DIR> <話者ラベル>     その話者の声を約 5 秒再生する (自分 は mic.wav から)
+ #   meeting name [DIR]                  議事録の未確定の話者 (unresolved_speakers) に名前を入れる
+ #                                       DIR 省略時は未確定の話者が残る最新の録音
+-#   meeting ls                          録音一覧
++#   meeting set-names <DIR> <話者A=名前,...>
++#                                       議事録と全文の話者ラベルを置き換える (claude は起動しない。sandbox の外で動かす入口)
++#   meeting ls                         録音一覧
+ #
+ # 設定ファイル ${XDG_CONFIG_HOME:-~/.config}/meeting/config.json (meeting setup が書く。手で編集してもよい)。
+ # meeting / transcribe.py / meeting-rec (常駐) が起動のたびに読むので、変えても meeting install は要らない:
+@@ -686,15 +688,20 @@ PY
+ 
+ # 議事録 = frontmatter の recording: が録音 DIR を指す Markdown。output_dir を変えても前の議事録を見失わないよう、
+ # 探索は root 配下を全部見て、output_dir が root の外 (Drive の同期フォルダ等) ならそこも見る (notes_roots)
+-#   outdir <base>           skill-config の output_dir (既定 meetings) を base 相対で絶対パスにして出す
++#   outdir [--global] <base>
++#                           skill-config の output_dir (既定 meetings) を base 相対で絶対パスにして出す。
++#                           --global はグローバルの ~/.config/skills/config.json だけを読む
+ #   find <DIR|""> <root>... DIR の議事録 (DIR が空なら unresolved_speakers が残る最新の録音の議事録) を
+ #                           「議事録<TAB>録音 DIR<TAB>未確定のラベル (, 区切り)」で出す。無ければ何も出さない
+ #   set <root> <議事録> <話者A=田中,...>
+ #                           議事録と全文 (frontmatter の transcript_path:、無ければ root 相対の transcript:) の
+ #                           ラベルを置き換え、unresolved_speakers から外す。全文が見つからなければ非 0
++#   set-names <root> <議事録> <話者A=田中,...> <許可する保存先>...
++#                           set と同じ。ただし書く前に議事録と全文がシンボリックリンクでなく realpath が許可する
++#                           保存先の配下にあることを確かめ、1 つでも外れたら (全文が無いときも) 何も書かずに非 0
+ note_tool() {
+   python3 -I - "$@" <<'PY'
+-import json, os, re, sys
++import json, os, re, stat, sys
+ 
+ def unq(v):
+     return v.strip().strip("\"'")
+@@ -738,11 +745,12 @@ def notes(root):
+             if fm.get("recording"):
+                 yield path, unq(fm["recording"]), labels_of(fm.get("unresolved_speakers", ""))
+ 
+-def output_dir(base):
++def output_dir(base, project=True):
+     """SKILL.md と同じ順 (git root の skill-config.json → .claude/skill-config.json → グローバル) で
+-    最初に見つかった meeting-notes セクションの output_dir を、base 相対で絶対パスにする。"""
++    最初に見つかった meeting-notes セクションの output_dir を、base 相対で絶対パスにする。
++    project=False はグローバルだけを読む (set-names: base とその git root は sandbox から書ける)。"""
+     top, d = None, os.path.abspath(base)
+-    while True:
++    while project:
+         if os.path.exists(os.path.join(d, ".git")):
+             top = d
+             break
+@@ -772,19 +780,75 @@ def find(roots, want=None):
+         path, rec, labels = hits[-1]
+         print(f"{path}\t{rec}\t{','.join(labels)}")
+ 
+-def set_names(root, note, spec):
++def checked(path, allowed):
++    """set-names: path がシンボリックリンクでない既存のファイルで、realpath が allowed のどれかの配下にあれば
++    realpath を返す。外れたら何も書かずに非 0 で終わる。"""
++    if os.path.islink(path):
++        sys.exit(f"meeting: {path} がシンボリックリンクです")
++    if not os.path.isfile(path):
++        sys.exit(f"meeting: {path} がありません")
++    real = os.path.realpath(path)
++    if not any(real.startswith(os.path.join(a, "")) for a in allowed):
++        sys.exit(f"meeting: {path} は議事録の保存先 ({', '.join(allowed)}) の外です")
++    return real
++
++def open_checked(path, allowed):
++    """checked で確かめた realpath を / から 1 要素ずつ O_NOFOLLOW でたどって開き、(realpath, file) を返す。
++    確かめたあとで途中のディレクトリや最後の要素を symlink に差し替えられても、許可外のファイルを開かない
++    (O_NOFOLLOW は最後の要素にしか効かないので、パスを開き直さず dir_fd でたどる)。読み書きはこの 1 つの fd で行う。"""
++    real = checked(path, allowed)
++    parts = real.strip("/").split("/")
++    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
++    try:
++        for p in parts[:-1]:
++            nxt = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
++            os.close(fd)
++            fd = nxt
++        ffd = os.open(parts[-1], os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
++    except OSError as e:
++        sys.exit(f"meeting: {path} を開けません (確かめたあとで差し替えられた可能性があります): {e}")
++    finally:
++        os.close(fd)
++    st = os.fstat(ffd)
++    if not stat.S_ISREG(st.st_mode):
++        os.close(ffd)
++        sys.exit(f"meeting: {path} が通常のファイルではありません")
++    # ハードリンクは realpath が保存先の中でも、保存先の外のファイルと同じ中身を指せる
++    if st.st_nlink != 1:
++        os.close(ffd)
++        sys.exit(f"meeting: {path} にハードリンクがあります")
++    return real, os.fdopen(ffd, "r+", encoding="utf-8")
++
++def rewrite(f, text):
++    f.seek(0)
++    f.truncate()
++    f.write(text)
++    f.close()
++
++def set_names(root, note, spec, allowed=None):
++    """allowed (set-names) があれば、書く前に議事録と全文を checked で確かめ、1 つでも外れたら何も書かない。
++    全文の transcript_path: は絶対パスだけを受け付ける (相対だと cwd 基準になる)。"""
++    strict = allowed is not None
+     names = {}
+     for pair in spec.split(","):
+         k, sep, v = pair.partition("=")
+         if sep and k.strip() and v.strip():
+             names[k.strip()] = v.strip()
+     if not names:
+-        sys.exit("meeting: --set には 話者A=田中,話者B=佐藤 の形で渡してください")
++        sys.exit("meeting: " + ("話者は" if strict else "--set には") + " 話者A=田中,話者B=佐藤 の形で渡してください")
++    # 改行を含む名前は frontmatter に行を足せる
++    if strict and any(ord(c) < 0x20 or c == "\x7f" for kv in names.items() for c in "".join(kv)):
++        sys.exit("meeting: 話者のラベル・名前に改行などの制御文字は使えません")
+     # 話者A を置き換えるとき 話者AB や 話者27 の頭を巻き込まない
+     pat = re.compile("(?:" + "|".join(re.escape(k) for k in sorted(names, key=len, reverse=True)) + ")(?![A-Za-z0-9])")
+     sub = lambda s: pat.sub(lambda m: names[m.group(0)], s)
+ 
+-    fm_lines, body = split_note(open(note, encoding="utf-8").read())
++    if strict:
++        allowed = [os.path.realpath(a) for a in allowed]
++        note, note_f = open_checked(note, allowed)
++    else:
++        note_f = open(note, "r+", encoding="utf-8")
++    fm_lines, body = split_note(note_f.read())
+     out, transcript, transcript_path, left = [], None, None, []
+     for line in fm_lines:
+         k, _, v = line.partition(":")
+@@ -801,24 +865,29 @@ def set_names(root, note, spec):
+             out.append(line)
+             continue
+         out.append(sub(line))
+-    with open(note, "w", encoding="utf-8") as f:
+-        f.write("\n".join(["---", *out, "---"]) + "\n" + sub(body))
+-    print(f"✓ {note}")
+ 
+     # transcript: は作成時の cwd 相対なので、作成時の絶対パス (transcript_path:) があればそちらを使う。
+     # 無い議事録は root 相対で探す
+     path = None
+     if transcript_path:
+         path = os.path.expanduser(transcript_path)
++        if strict and not os.path.isabs(path):
++            sys.exit(f"meeting: transcript_path: が絶対パスではありません: {transcript_path}")
+     elif transcript:
+         path = transcript if transcript.endswith(".md") else transcript + ".md"
+         path = os.path.join(root, os.path.expanduser(path))
++    path_f = None
++    if strict and path:
++        path, path_f = open_checked(path, allowed)
++
++    rewrite(note_f, "\n".join(["---", *out, "---"]) + "\n" + sub(body))
++    print(f"✓ {note}")
+     missing = False
+     if path:
+-        if os.path.isfile(path):
+-            text = open(path, encoding="utf-8").read()
+-            with open(path, "w", encoding="utf-8") as f:
+-                f.write(sub(text))
++        if path_f is None and os.path.isfile(path):
++            path_f = open(path, "r+", encoding="utf-8")
++        if path_f is not None:
++            rewrite(path_f, sub(path_f.read()))
+             print(f"✓ {path}")
+         else:
+             print(f"! 全文が見つかりません: {path}", file=sys.stderr)
+@@ -831,9 +900,11 @@ cmd = sys.argv[1]
+ if cmd == "find":
+     find(sys.argv[3:], sys.argv[2] or None)
+ elif cmd == "outdir":
+-    output_dir(sys.argv[2])
++    output_dir(sys.argv[-1], project=sys.argv[2] != "--global")
+ elif cmd == "set":
+     set_names(*sys.argv[2:5])
++elif cmd == "set-names":
++    set_names(*sys.argv[2:5], allowed=sys.argv[5:])
+ PY
+ }
+ 
+@@ -869,6 +940,30 @@ cmd_name() {
+   cd "$root" && claude --add-dir "$dir" ${ext:+--add-dir "$ext"} "/meeting-notes $dir --name-unresolved $note"
+ }
+ 
++# name --set と同じ置き換えを、sandbox の外で動かしてよい形で行う (sandbox.excludedCommands に "meeting set-names *"
++# だけを登録する)。録音 DIR・cwd・notes_dir は sandbox から書けるので、そこに置かれたものに外の権限で書く先を
++# 決めさせない: root は notes_dir だけ ($PWD に落ちない)、output_dir はグローバルの skill-config だけから読み
++# (cwd や notes_dir の git root の skill-config.json は sandbox から書ける)、claude は起動しない。
++# 議事録と全文は書く前に symlink でなく realpath が notes_dir / output_dir の配下にあることを確かめる
++cmd_set_names() {
++  [[ $# -eq 2 && -n "$1" && -n "$2" ]] || die "使い方: meeting set-names <DIR> <話者A=名前,話者B=名前>"
++  local dir="${1%/}" spec="$2"
++  [[ -n "$NOTES_DIR" ]] || die "設定ファイルに notes_dir がありません (meeting setup --notes-dir DIR)"
++  local root ext found note labels
++  root="$(cd "$NOTES_DIR" && pwd -P)" || die "notes_dir がありません ($NOTES_DIR)"
++  ext="$(note_tool outdir --global "$root")" || die "議事録の保存先を解決できません"
++  case "$ext/" in "$root"/*) ext="" ;; esac
++  [[ -z "$ext" || -d "$ext" ]] || ext=""
++  found="$(note_tool find "$dir" "$root" ${ext:+"$ext"})"
++  [[ -n "$found" ]] || die "$dir の議事録が $root${ext:+ / $ext} にありません (frontmatter の recording: で探します)"
++  IFS=$'\t' read -r note dir labels <<< "$found"
++  if [[ -z "$labels" ]]; then
++    echo "未確定の話者はありません: $note"
++    return 0
++  fi
++  note_tool set-names "$root" "$note" "$spec" "$root" ${ext:+"$ext"}
++}
++
+ cmd_ls() {
+   local d mark
+   for d in "$MEETING_HOME"/*/; do
+@@ -907,6 +1002,7 @@ case "$sub" in
+   notes) cmd_notes "$@" ;;
+   play) cmd_play "$@" ;;
+   name) cmd_name "$@" ;;
++  set-names) cmd_set_names "$@" ;;
+   ls) cmd_ls ;;
+   -h|--help|help) usage ;;
+   *) usage; exit 2 ;;

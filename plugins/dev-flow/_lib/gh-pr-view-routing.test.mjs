@@ -53,6 +53,8 @@ function createResponder(prMetaResponse) {
       return { worktree: '/tmp/wt', branch: 'feature/issue-405' };
     }
     if (label.startsWith('analyze')) return STANDARD_REQ;
+    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     if (label === 'danger-grep') return { ok: true, hits: [] };
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
     if (agentType === 'dev-flow:evaluator') {

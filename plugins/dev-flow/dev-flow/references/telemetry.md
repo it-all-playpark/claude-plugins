@@ -12,7 +12,7 @@ dev-flow.js / pr-iterate.js は run の終端（成功・失敗・abort）で te
 
 telemetry の読み手は `dev-flow-health` だけ。`health-report.sh` がプログラムから読むのは `plugin_commit` と、HOLD の run の `hold_reason_codes` / `hold_ac_human_judged` / `iterate_status`、
 LLM ステップは原因推定のときに該当 run の telemetry を手で読む。読み手の無いキーは書かない — 書くキーは下の
-17 個に限り、`_lib/telemetry-keys.test.mjs` が workflow の telemetry object literal（成功・失敗・abort）と
+19 個に限り、`_lib/telemetry-keys.test.mjs` が workflow の telemetry object literal（成功・失敗・abort）と
 VM 実行の handoff の両方で pin する。キーを足すときは読み手を先に決め、この一覧と同テストを同時に更新する。
 いずれも記録専用で、gate・merge tier・ledger・shape 判定の入力にはしない（軸A 非抵触）。
 
@@ -37,6 +37,8 @@ VM 実行の handoff の両方で pin する。キーを足すときは読み手
 | `ci_wait_seconds` | pr-iterate | 成功（nested・単体起動とも） | 全 round の CI 待ちの nominal 累積秒（返り値の `ci_wait_seconds` と同じ値） |
 | `hold_reason_codes` | dev-flow | 成功（merge tier が `HOLD` の run のみ） | HOLD 理由の code の配列（返り値の `merge_tier_hold_reasons[].code` と同じ順） |
 | `hold_ac_human_judged` | dev-flow | 成功（merge tier が `HOLD` の run のみ） | 人手 AC 待ちの未達 AC に、文面で人手になった AC（`HUMAN_AC_PATTERNS` に当たる・`classifyAcScope` が `external`）ではない AC が 1 件以上あるか（boolean） |
+| `security_review_target` | pr-iterate | 成功（nested・単体起動とも） | 敵対的 security review の対象だったか（boolean。起動時の判定 `args.security_review` と LGTM 前の `security-scope#i` のどれか 1 回でも対象なら true、`args.security_review` が無い run も true） |
+| `security_review_rounds` | pr-iterate | 成功（nested・単体起動とも） | security-reviewer を spawn した回数（LGTM の候補になった round ごとに 1 回） |
 
 nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の entry が 1 件ずつ残る。集計は dev-flow entry
 を使う。
@@ -89,6 +91,12 @@ nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の e
   `HOLD_SIGNATURE_ITERATE_STATUSES`）を 1 つずつ signature にする。`hold_ac_human_judged` が true なのは、観測型の
   判定（`observational:true`）か evaluator の `unreachable_env:true` で人手になった AC が未達のとき
   （`_lib/ac-actor.mjs` の `hasJudgedHumanAcGap`）。merge tier が `HOLD` 以外の run には両キーとも載らない。
+
+- `security_review_target` / `security_review_rounds`: 信頼境界をまたぎうる PR を既定で敵対的 security review に通す
+  ようにした（issue #1063）ことで、run 時間とコストがどれだけ増えたかを見るための値。対象の run と対象外の run の
+  `duration_seconds`（dev-flow entry）を比べ、`security_review_rounds` が多い run の型（critical/major が残り続ける・
+  `security_unresolved` で終わる）を原因推定で読む。指摘の件数・本文は telemetry に書かない（件数は返り値の
+  `security_review`、本文は fix の prompt にだけ渡る）。
 
 ## 失敗・abort entry
 

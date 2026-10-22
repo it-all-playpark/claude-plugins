@@ -1,0 +1,177 @@
+// security-review-scope.mjs — PR の diff が敵対的 security review の対象かを決める純関数（issue #1063）。
+//
+// 既定は「対象」。対象外にできるのは、ファイルが 1 件以上あり、全ファイルが下の許可リストに当たる diff だけ。
+// 危ない変更を列挙して当たったものだけを対象にする形は、列挙の抜けが黙って素通りになる（引用符付きパス・
+// hunk 内の `+++` 行・YAML の書き方・`.claude/` の外の settings.json など、全体 review のたびに新しい抜けが出て
+// 収束しなかった）ので取らない。判定できない入力（取得の失敗・空・読めない diff・ファイル一覧との食い違い）は
+// すべて対象に倒す（fail-closed）。LLM には判定させない — diff 本文による誘導・黒塗り・切り詰めで素通りでき、
+// コードを外部 API へ送ることになるため。
+//
+// 許可リスト（パスは大文字小文字を区別しない）:
+//   - `.md` / `.mdx` / `.rst` のうち指示ファイルでないもの
+//   - `*.test.*` / `*.spec.*` / `*.bats`（指示ファイルの場所にあるものは除く）
+//   いずれも mode 100644 の通常ファイルで、mode の変更・binary を含まないこと。
+// 指示ファイル: basename が `CLAUDE.md` / `AGENTS.md` / `SKILL.md`、または `.claude/` / `references/` /
+//   `output-styles/` / `agents/` / `commands/` のいずれかの配下（深さを問わない）。agent が読み込んで指示として
+//   扱うので、文書の拡張子でも対象にする。
+//
+// diff は `git -c core.quotePath=false diff --no-renames --no-color --no-ext-diff --no-textconv --text
+// --src-prefix=a/ --dst-prefix=b/ <range>`（SECURITY_SCOPE_DIFF_ARGS）で取り、ファイル一覧は同じ引数に
+// `--name-only -z` を足して取る。repo の設定（color.ui / diff.external / textconv / binary 属性 / noprefix）で
+// diff の見え方が変わると、許可リストに当たる見た目のまま中身を隠せるため、引数で全部打ち消す。
+// 取得は `_lib/scripts/security-review-scope.mjs`（bin/ の bare 名 `security-review-scope`）が行い、本ファイルは
+// 取得結果の判定だけを持つ。
+
+export const SECURITY_SCOPE_DIFF_ARGS = ['--no-renames', '--no-color', '--no-ext-diff', '--no-textconv', '--text', '--src-prefix=a/', '--dst-prefix=b/'];
+export const SECURITY_SCOPE_GIT_CONFIG = ['-c', 'core.quotePath=false'];
+
+const INSTRUCTION_DIRS = ['.claude', 'references', 'output-styles', 'agents', 'commands'];
+const INSTRUCTION_BASENAMES = ['claude.md', 'agents.md', 'skill.md'];
+const GIT_METADATA_BASENAMES = ['.gitattributes', '.gitmodules'];
+const REGULAR_FILE_MODE = '100644';
+const MAX_REASONS = 20;
+
+// agent が指示として読み込むファイルか（大文字小文字を区別しない）。
+export function isInstructionPath(path) {
+  const segs = String(path).toLowerCase().split('/');
+  const base = segs.pop();
+  if (INSTRUCTION_BASENAMES.includes(base)) return true;
+  return segs.some((s) => INSTRUCTION_DIRS.includes(s));
+}
+
+// パスだけで許可リストに当たるか（mode・binary は securityReviewScope が別に見る）。
+export function isSecurityReviewExemptPath(path) {
+  const p = String(path);
+  if (p === '' || isInstructionPath(p)) return false;
+  const base = p.toLowerCase().split('/').pop();
+  if (base.startsWith('.')) return false;
+  if (/\.(md|mdx|rst)$/.test(base)) return true;
+  if (/^.+\.(test|spec)\.[^.].*$/.test(base)) return true;
+  return /^.+\.bats$/.test(base);
+}
+
+// `diff --git a/<P> b/<P>` の <P>。--no-renames なので両側は同じパスで、引用符で囲まれた形
+// （制御文字・`"`・`\` を含むパス）や両側の食い違いは読めないとして null を返す。
+function headerPath(rest) {
+  if (rest.startsWith('"') || rest.length % 2 === 0) return null;
+  const half = (rest.length - 1) / 2;
+  const left = rest.slice(0, half);
+  const right = rest.slice(half + 1);
+  if (rest[half] !== ' ' || !left.startsWith('a/') || !right.startsWith('b/')) return null;
+  return left.slice(2) === right.slice(2) ? left.slice(2) : null;
+}
+
+const HUNK_RE = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
+
+// git diff の patch を file ごとの {path, oldMode, newMode, modeChange, newFile, deleted, binary, hunks} に分ける。
+// hunk の中は `@@` の行数で読み進め、hunk 内の `diff --git` / `+++` / `---` で始まる行をヘッダと取り違えない。
+// 知らない行・途中で切れた hunk・引用符付きパスは { ok:false, error } を返す（呼び出し側が対象に倒す）。
+export function parseScopePatch(patch) {
+  const lines = String(patch).split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  const files = [];
+  let cur = null;
+  let state = 'start';
+  let oldLeft = 0;
+  let newLeft = 0;
+  const fail = (n, what) => ({ ok: false, error: `${n + 1} 行目: ${what}` });
+  const startHunk = (line) => {
+    const m = line.match(HUNK_RE);
+    if (!m) return false;
+    oldLeft = m[1] == null ? 1 : Number(m[1]);
+    newLeft = m[2] == null ? 1 : Number(m[2]);
+    cur.hunks += 1;
+    state = oldLeft === 0 && newLeft === 0 ? 'between' : 'hunk';
+    return true;
+  };
+  for (let n = 0; n < lines.length; n++) {
+    const line = lines[n];
+    if (line.includes('\u0000') && cur) cur.binary = true;
+    if (state === 'hunk') {
+      if (line.startsWith('\\')) continue;
+      const c = line === '' ? ' ' : line[0];
+      if (c === ' ') { oldLeft -= 1; newLeft -= 1; }
+      else if (c === '-') oldLeft -= 1;
+      else if (c === '+') newLeft -= 1;
+      else return fail(n, 'hunk の行を読めない');
+      if (oldLeft < 0 || newLeft < 0) return fail(n, 'hunk の行数が @@ と合わない');
+      if (oldLeft === 0 && newLeft === 0) state = 'between';
+      continue;
+    }
+    if (line.startsWith('diff --git ')) {
+      const path = headerPath(line.slice('diff --git '.length));
+      if (path == null) return fail(n, 'diff --git 行のパスを読めない');
+      cur = { path, oldMode: null, newMode: null, modeChange: false, newFile: false, deleted: false, binary: false, hunks: 0 };
+      files.push(cur);
+      state = 'header';
+      continue;
+    }
+    if (state === 'start') return fail(n, 'diff --git 行で始まらない');
+    if (state === 'between') {
+      if (line.startsWith('\\')) continue;
+      if (startHunk(line)) continue;
+      return fail(n, 'hunk の外の行を読めない');
+    }
+    let m;
+    if ((m = line.match(/^old mode ([0-7]{6})$/))) { cur.oldMode = m[1]; cur.modeChange = true; continue; }
+    if ((m = line.match(/^new mode ([0-7]{6})$/))) { cur.newMode = m[1]; cur.modeChange = true; continue; }
+    if ((m = line.match(/^new file mode ([0-7]{6})$/))) { cur.newMode = m[1]; cur.newFile = true; continue; }
+    if ((m = line.match(/^deleted file mode ([0-7]{6})$/))) { cur.oldMode = m[1]; cur.deleted = true; continue; }
+    if ((m = line.match(/^index [0-9a-f]+\.\.[0-9a-f]+(?: ([0-7]{6}))?$/))) {
+      if (m[1] != null) {
+        if (cur.oldMode == null) cur.oldMode = m[1];
+        if (cur.newMode == null) cur.newMode = m[1];
+      }
+      continue;
+    }
+    if (line.startsWith('--- ') || line.startsWith('+++ ')) continue;
+    if (line.startsWith('Binary files ') || line === 'GIT binary patch') { cur.binary = true; continue; }
+    if (startHunk(line)) continue;
+    return fail(n, 'diff のヘッダ行を読めない');
+  }
+  if (state === 'hunk') return { ok: false, error: '最後の hunk が途中で切れている' };
+  return { ok: true, files };
+}
+
+// file 1 件の対象理由（無ければ空配列）。
+function fileReasons(f) {
+  const reasons = [];
+  const base = f.path.toLowerCase().split('/').pop();
+  if (f.binary) reasons.push(`binary: ${f.path}`);
+  if (f.modeChange) reasons.push(`mode_change: ${f.path}`);
+  const modes = [f.oldMode, f.newMode].filter((x) => x != null && x !== '000000');
+  if (modes.length === 0 || modes.some((x) => x !== REGULAR_FILE_MODE)) reasons.push(`mode: ${f.path} (${modes.join('→') || '不明'})`);
+  if (f.hunks === 0 && !f.newFile && !f.deleted) reasons.push(`no_content_change: ${f.path}`);
+  if (GIT_METADATA_BASENAMES.includes(base)) reasons.push(`git_metadata: ${f.path}`);
+  if (!isSecurityReviewExemptPath(f.path)) reasons.push(`not_allowlisted: ${f.path}`);
+  return reasons;
+}
+
+const targetOf = (reasons, files) => ({ target: true, reasons: reasons.slice(0, MAX_REASONS).concat(reasons.length > MAX_REASONS ? [`他 ${reasons.length - MAX_REASONS} 件`] : []), files });
+
+/**
+ * diff が敵対的 security review の対象かを決める。対象外（target:false）になるのは、patch と name 一覧が
+ * 揃って読め、ファイルが 1 件以上で、全ファイルが許可リストに当たるときだけ。
+ *
+ * @param {{patch: string|null|undefined, names: string[]|null|undefined}} input
+ *   patch: SECURITY_SCOPE_DIFF_ARGS で取った diff 全文。names: 同じ range の `--name-only -z` を NUL で分けたもの
+ * @returns {{target: boolean, reasons: string[], files: string[]}}
+ */
+export function securityReviewScope({ patch, names } = {}) {
+  if (typeof patch !== 'string') return targetOf(['diff_unavailable'], []);
+  if (!Array.isArray(names) || !names.every((x) => typeof x === 'string' && x !== '')) return targetOf(['name_list_unavailable'], []);
+  if (patch === '') return targetOf(['diff_empty'], names);
+  const parsed = parseScopePatch(patch);
+  if (!parsed.ok) return targetOf([`diff_unreadable: ${parsed.error}`], names);
+  if (parsed.files.length === 0) return targetOf(['no_files'], names);
+  if (parsed.files.length !== names.length) return targetOf([`file_count_mismatch: diff ${parsed.files.length} 件 / name-only ${names.length} 件`], names);
+  const listed = new Set(names);
+  const seen = new Set();
+  for (const f of parsed.files) {
+    if (!listed.has(f.path) || seen.has(f.path)) return targetOf([`file_list_mismatch: ${f.path}`], names);
+    seen.add(f.path);
+  }
+  const reasons = parsed.files.flatMap(fileReasons);
+  if (reasons.length > 0) return targetOf(reasons, names);
+  return { target: false, reasons: [], files: names };
+}

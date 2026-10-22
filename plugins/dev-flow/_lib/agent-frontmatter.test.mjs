@@ -76,6 +76,11 @@ const AGENTS = [
   },
   { name: 'evaluator', effort: 'medium' },
   { name: 'pr-reviewer', effort: 'high' },
+  // security-reviewer は読み取りだけ（PR の内容を攻撃者が書ける — コマンド実行・書き込みの tool を持たせない）
+  {
+    name: 'security-reviewer', model: 'opus', effort: 'high', maxTurns: 'finite',
+    tools: { exact: ['Read', 'Grep', 'Glob'], exclude: ['Bash', 'Write', 'Edit', 'Skill', 'TodoWrite'] },
+  },
   { name: 'dev-implementer', effort: 'high' },
 ];
 

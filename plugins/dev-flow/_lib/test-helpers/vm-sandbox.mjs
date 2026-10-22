@@ -387,6 +387,10 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
     if (label === 'danger-grep') {
       return { risk: { ok: true, hits: [] }, files: [...STANDARD_FILES], struct: null, diffhash: { hash: 'AAA', empty: false } };
     }
+    // Security floor の敵対的 security review の対象判定（issue #1063）。既定は対象外（nested pr-iterate の stub が
+    // security_review を返さないので、対象にすると Merge tier が security_review_unresolved で HOLD になる）。
+    // 対象の経路を見る test は override で target:true を返す（securityScopeResponse 参照）。
+    if (label === 'security-scope') return securityScopeResponse({ target: false });
     // label 'merge-tier-facts'（Merge tier。issue #637 統合呼び出し）は 6 サブ結果を {ok,value,error} で返す。
     // diffhash は既定で danger-grep（Security floor）と同一ハッシュ 'AAA'（Security floor 結果の再利用が発火）。
     // 不一致・失敗にしたいテストは override で個別に上書きする（mergeTierFacts() helper 参照）。
@@ -412,6 +416,39 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
     if (label.startsWith('journal-log')) return { saved: true, logged: true };
     return null;
   };
+}
+
+// ============================================================
+// securityScopeResponse: security-review-scope（label 'security-scope' / 'security-scope#i'）の応答
+// ============================================================
+
+/** security-scope 応答の head を省いたときの既定（40 桁）。 */
+export const SECURITY_SCOPE_DEFAULT_HEAD = 'c'.repeat(40);
+/** security-scope 応答の review_dir / diff_path の既定（PR の worktree '/tmp/wt' の外）。 */
+export const SECURITY_REVIEW_DIR = '/tmp/dev-flow-security-review-stub';
+
+/**
+ * security-review-scope の stdout と同形の応答を返す。
+ *
+ * @param {{target?: boolean, ok?: boolean, head?: string|null, reasons?: string[], reviewDir?: string}} [o]
+ */
+export function securityScopeResponse({ target = true, ok = true, head = SECURITY_SCOPE_DEFAULT_HEAD, reasons, reviewDir = SECURITY_REVIEW_DIR } = {}) {
+  return {
+    ok, target, reasons: reasons ?? (target ? ['not_allowlisted: src/x.ts'] : []), file_count: 1,
+    head_sha: head, review_dir: reviewDir, diff_path: `${reviewDir}/pr.diff`,
+  };
+}
+
+/** security-scope#i の prompt の `security-review-scope <wt> <base> <head> --save-diff` から head（40 桁でなければ既定）を取る。 */
+export function securityScopeHeadOf(prompt) {
+  const m = String(prompt).match(/security-review-scope \S+ \S+ ([0-9a-f]{40}) --save-diff/);
+  return m ? m[1] : SECURITY_SCOPE_DEFAULT_HEAD;
+}
+
+/** security-review#i の prompt の DATA 区間の head_sha を取る（見つからなければ空文字）。 */
+export function securityReviewHeadOf(prompt) {
+  const m = String(prompt).match(/^head_sha: ([0-9a-f]{40})$/m);
+  return m ? m[1] : '';
 }
 
 // ============================================================
@@ -446,6 +483,10 @@ export function prIterateResponder(overrides = {}, rounds = null) {
     if (label === 'isolation-cleanup') return { cleaned: true };
     if (label === 'isolation-probe') return { written: true };
     if (agentType === 'dev-flow:pr-reviewer') return { decision: 'approve', issues: [], summary: 'ok' };
+    // 敵対的 security review（issue #1063）: args.security_review の無い単体起動は対象なので、LGTM の前に
+    // security-scope#i（今の head の diff）→ security-review#i が走る。既定は対象・clear（head は prompt の値を写す）
+    if (label.startsWith('security-scope#')) return securityScopeResponse({ target: true, head: securityScopeHeadOf(callCtx.prompt) });
+    if (agentType === 'dev-flow:security-reviewer') return { reviewed_sha: securityReviewHeadOf(callCtx.prompt), issues: [], summary: 'ok' };
     if (label.startsWith('fix#')) return { applied: true, files: [], summary: 'fixed' };
     if (label.startsWith('commit-ensure#')) return { committed: true, pushed: true, dirty: false };
     if (label.startsWith('ci-check')) return { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [] };
