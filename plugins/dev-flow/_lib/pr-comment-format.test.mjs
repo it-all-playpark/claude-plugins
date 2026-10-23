@@ -698,6 +698,30 @@ test('buildTerminalSummaryBody: security review の行は件数だけを出す�
   assert.equal(buildTerminalSummaryBody({ ...opts, status: 'security_unresolved', securityReview: { target: true, status: 'unresolved', rounds: 1 } }).split('\n').find((l) => l.startsWith('### ')), '### 🛡️ SECURITY REVIEW 未完了 — 敵対的 security review が今の head で clear にならなかった。人間へエスカレーション');
 });
 
+test('buildTerminalSummaryBody: stop_reason=reviewer_context_changed は見出しと Security review 行を「自動 review をしていない」に出し分け、それ以外は従来の文面', () => {
+  const opts = { pr: 5, iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed' };
+  const parts = (securityReview) => {
+    const body = buildTerminalSummaryBody({ ...opts, status: 'security_unresolved', securityReview });
+    return { body, headline: body.split('\n').find((l) => l.startsWith('### ')), line: body.split('\n').find((l) => l.startsWith('**Security review**')) };
+  };
+  const changed = parts({ target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0, major: 0, minor: 0 });
+  assert.equal(changed.headline, '### 🛡️ SECURITY REVIEW 未実施 — 指示ファイルを変える PR なので自動 review をしていない（review 0 回）。変わった指示ファイルを人が確認する');
+  assert.equal(changed.line, '**Security review**: ⏸️ 自動 review をしていない（指示ファイルを変える PR — security-reviewer に読み込まれる CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等を変えるので自動の review では clear にしない・review 0 回）— merge 前に人が変わった指示ファイルと diff を確認する');
+  for (const want of ['自動 review をしていない', '指示ファイルを変える PR', 'review 0 回']) assert.ok(changed.headline.includes(want) && changed.line.includes(want), want);
+  assert.ok(!changed.body.includes('clear にならなかった'), changed.body);
+  assert.ok(!changed.body.includes('未完了'), '「未完了」（指摘が残ったように読める）を出さない');
+
+  // review を実行して critical / major が残った・review 前の別の前提チェックで止めた run は従来の文面
+  for (const sr of [
+    { target: true, status: 'unresolved', stop_reason: null, rounds: 2, critical: 1, major: 1, minor: 0 },
+    { target: true, status: 'unresolved', stop_reason: 'diff_unavailable', rounds: 0, critical: 0, major: 0, minor: 0 },
+  ]) {
+    const other = parts(sr);
+    assert.equal(other.headline, '### 🛡️ SECURITY REVIEW 未完了 — 敵対的 security review が今の head で clear にならなかった。人間へエスカレーション', sr.stop_reason);
+    assert.equal(other.line, `**Security review**: ❌ 未完了（敵対的 review ${sr.rounds} 回・最終 critical ${sr.critical} / major ${sr.major} / minor 0）— 指摘の本文は公開コメントに載せない。merge 前に人が diff を確認する`, sr.stop_reason);
+  }
+});
+
 test('buildTerminalSummaryBody: code の無い HOLD marker（codes 空）は理由を確かめられないので未解消 1 件', () => {
   const body = buildTerminalSummaryBody({
     pr: 5, status: 'lgtm', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed',

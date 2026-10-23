@@ -5,6 +5,7 @@
 //       LGTM 以外で終わる）と、Merge tier は専用の hold code security_review_unresolved で HOLD
 //   (c) 対象で clear・対象外の run はこの code を積まない
 //   (d) 公開の終端サマリーには security review の件数だけが載る
+//   (e) pr-iterate が review 前に止めた理由（security_review.stop_reason）を引き継ぎ、終端サマリーを出し分ける（issue #1082）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -76,6 +77,18 @@ test('[devflow-security-review] (c) 対象で clear、または対象外の run 
   const notTarget = await run({ overrides: {}, iterate: { status: 'lgtm', fixes_applied: 0, security_review: { target: false, status: 'not_target', rounds: 0, critical: 0, major: 0, minor: 0 } } });
   assert.equal(notTarget.result.merge_tier, 'REVIEW');
   assert.equal(notTarget.result.security_review.target, false);
+});
+
+test('[devflow-security-review] (e) securityReviewFinal は nested pr-iterate の security_review.stop_reason を引き継ぎ、HOLD 理由の「現状」を出し分ける', async () => {
+  const changed = await run({ iterate: { status: 'security_unresolved', iterations: 1, fixes_applied: 0, security_review: sr('unresolved', { stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0 }) } });
+  assert.equal(changed.result.security_review.stop_reason, 'reviewer_context_changed');
+  assert.equal(changed.result.merge_tier, 'HOLD', 'stop_reason があっても security_review_unresolved の HOLD は変えない');
+  assert.ok(codes(changed.result).includes('security_review_unresolved'));
+  const body = changed.calls.find((c) => c.label === 'post-summary').prompt;
+  assert.ok(body.includes('指示ファイルを変える PR なので自動 review をしていない（review 0 回）'), body.slice(0, 3000));
+  // 返さない pr-iterate（stop_reason の無い返り値）は null
+  const none = await run({ iterate: { status: 'max_reached', iterations: 2, fixes_applied: 1, security_review: sr('unresolved') } });
+  assert.equal(none.result.security_review.stop_reason, null);
 });
 
 test('[devflow-security-review] (d) 終端サマリーの HOLD 理由には security review の回数と件数だけを出す', async () => {

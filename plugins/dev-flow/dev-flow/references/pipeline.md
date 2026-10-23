@@ -316,7 +316,11 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 - security-scope の CLI は stdout・stderr に PR 由来の文字列（ファイルパス・git の stderr）を出さない。reasons は固定 code と
   件数、error は固定 code（`usage` / `git_failed`）だけ。stdout を写す exec-proxy の agent に判定を書き換える文を渡さないため
 - 公開の PR コメント（pr-iterate・dev-flow の終端サマリー）には指摘の件数だけを載せ、本文（攻撃経路）は fix の prompt にだけ渡す。
-  security の指摘は `history` / `human_followups` に入れない。返り値 `security_review` は `{target, status, rounds, critical, major, minor}`
+  security の指摘は `history` / `human_followups` に入れない。返り値 `security_review` は `{target, status, stop_reason, rounds, critical, major, minor}`
+- `stop_reason` は review の前提チェックで clear にできずに止めた理由の閉じた enum（`diff_unavailable` / `head_unknown` /
+  `head_mismatch` / `review_dir_invalid` / `reviewer_context_changed`）。review を実行した・止めていない run は null。
+  `reviewer_context_changed` の run は終端サマリーで「指示ファイルを変える PR なので自動 review をしていない」と出し分ける
+  （HOLD は変えない。変わったファイルのパスは PR が決めた文字列なので載せず、固定の確認コマンドに PR 番号だけを差し込む）
 
 - **`agent()` へ渡す agentType は plugin namespace 必須** — subagent の実体は plugin 配下
   (`plugins/dev-flow/agents/`) にあり、harness は `dev-flow:<name>` の namespaced id でしか解決しない
