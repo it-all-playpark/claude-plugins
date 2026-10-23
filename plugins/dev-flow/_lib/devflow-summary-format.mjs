@@ -171,9 +171,10 @@ function resolvedCell(v) {
  * @param {Array<{iteration:number, status:string, reason?:string, files?:Array<{path:string,type:string}>, merge_sha?:string|null}>|null|undefined} [opts.conflictAutoresolve] -
  *   pr-iterate の返り値 conflict_autoresolve（base との conflict の自動解消の試行。issue #916）。自動解消した試行は「参考」に型とファイルを、
  *   解消しなかった試行は mergeable_conflicting の HOLD 理由の「現状」に止めたファイルと型を出す（表示専用）
- * @param {{target:boolean, status:string, rounds?:number, critical?:number, major?:number, minor?:number}|null|undefined} [opts.securityReview] -
+ * @param {{target:boolean, status:string, stop_reason?:string|null, rounds?:number, critical?:number, major?:number, minor?:number}|null|undefined} [opts.securityReview] -
  *   敵対的 security review の結果（issue #1063）。security_review_unresolved の「現状」に回数と件数だけを出す — 指摘の本文
- *   （攻撃経路）は公開コメントに載せない（表示専用）
+ *   （攻撃経路）は公開コメントに載せない（表示専用）。stop_reason が 'reviewer_context_changed' なら「自動 review をしていない」と
+ *   変わった指示ファイルを一覧する固定の確認コマンドを出す
  * @param {string|null|undefined} [opts.headSha] - merge tier の結論を出した PR head の commit sha（merge-tier-facts の headRefOid）。
  *   40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる（issue #1065）
  * @returns {string}
@@ -1184,6 +1185,14 @@ function holdReasonDisplay(code, kind, ctx) {
       };
     case 'security_review_unresolved': {
       const s = ctx.securityReview;
+      // review 前に指示ファイルの変更で止めた run（issue #1082）は指摘があったのではないので「clear にならない」と書かない。
+      // 確認コマンドは固定で PR 番号だけを差し込む（変わったファイル名・branch 名など PR が決めた文字列を載せない）
+      if (s && s.target === true && s.stop_reason === 'reviewer_context_changed') {
+        return {
+          current: `指示ファイルを変える PR なので自動 review をしていない（review ${Number.isFinite(s.rounds) ? s.rounds : 0} 回）`,
+          action: `\`gh pr diff ${ctx.pr} --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる）`,
+        };
+      }
       const counts = s && s.status !== 'not_run' && Number.isFinite(s.rounds)
         ? `（敵対的 review ${s.rounds} 回・最終 critical ${s.critical ?? 0} / major ${s.major ?? 0}）`
         : '（LGTM の前の review に到達していない）';

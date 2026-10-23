@@ -645,8 +645,15 @@ const STATUS_HEADLINE = {
   'security_unresolved': '🛡️ SECURITY REVIEW 未完了 — 敵対的 security review が今の head で clear にならなかった。人間へエスカレーション',
 };
 
+const SECURITY_CONTEXT_CHANGED_HEADLINE = '🛡️ SECURITY REVIEW 未実施 — 指示ファイルを変える PR なので自動 review をしていない（review <ROUNDS> 回）。変わった指示ファイルを人が確認する';
+
+const isSecurityContextChanged = (sr) => sr != null && sr.target === true && sr.stop_reason === 'reviewer_context_changed';
+
 function formatSecurityReviewLine(sr) {
   if (sr.target !== true) return '**Security review**: 対象外（変更が許可リスト — 指示ファイルでない文書・テスト — だけ）';
+  if (isSecurityContextChanged(sr)) {
+    return `**Security review**: ⏸️ 自動 review をしていない（指示ファイルを変える PR — security-reviewer に読み込まれる CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等を変えるので自動の review では clear にしない・review ${sr.rounds ?? 0} 回）— merge 前に人が変わった指示ファイルと diff を確認する`;
+  }
   const counts = `敵対的 review ${sr.rounds ?? 0} 回・最終 critical ${sr.critical ?? 0} / major ${sr.major ?? 0} / minor ${sr.minor ?? 0}`;
   if (sr.status === 'cleared') return `**Security review**: ✅ clear（${counts}）`;
   return `**Security review**: ❌ 未完了（${sr.status === 'not_run' ? 'LGTM の前の review に到達していない' : counts}）— 指摘の本文は公開コメントに載せない。merge 前に人が diff を確認する`;
@@ -716,6 +723,9 @@ function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSu
     : null;
 
   let headline = (STATUS_HEADLINE[status] ?? status).replace('<PR>', String(pr));
+  if (status === 'security_unresolved' && isSecurityContextChanged(securityReview)) {
+    headline = SECURITY_CONTEXT_CHANGED_HEADLINE.replace('<ROUNDS>', String(securityReview.rounds ?? 0));
+  }
   if (priorHold && status === 'lgtm') {
     headline = priorHold.unresolved > 0
       ? `LGTM（review）— dev-flow の HOLD 理由 ${priorHold.unresolved} 件が未解消。merge 前に確認`
@@ -1890,6 +1900,10 @@ if (SECURITY_REVIEW_ARG == null) log('security review: args.security_review が�
 let reviewerContextChanged = SECURITY_REVIEW_ARG?.reviewer_context_changed === true
 let securityStatus = null   // 'cleared' | 'unresolved'（null は LGTM の前の review に到達していない）
 let securityRounds = 0      // security-reviewer の spawn 回数
+// review の前提チェックで clear にできずに止めた理由（閉じた enum の固定 code。PR 由来の文字列は載せない）:
+// 'diff_unavailable' / 'head_unknown' / 'head_mismatch' / 'review_dir_invalid' / 'reviewer_context_changed'。
+// review を実行してから止めた・止めていないときは null
+let securityStopReason = null
 let securityCounts = { critical: 0, major: 0, minor: 0 }  // 最後の review の件数
 let securityOpen = []       // 前回の review で未解消の critical/major（次の spawn に「直ったか確かめる項目」として渡す）
 const securitySeen = makeSeenTracker(REVIEW_STUCK)  // security の指摘の stuck 検出（review の reviewSeen とは分ける — pr-reviewer の既出 findings に混ぜない）
@@ -1912,8 +1926,9 @@ async function securityGate(iteration, round) {
     log(`iteration ${iteration}: security review 対象外（変更が許可リストだけ）`)
     return 'clear'
   }
-  const stop = (why) => {
+  const stop = (why, reason = null) => {
     securityStatus = 'unresolved'
+    securityStopReason = reason
     terminal = 'security_unresolved'
     log(`⚠️ iteration ${iteration}: security review を clear にできない（${why}）— LGTM にせず人間へエスカレーション`)
     return 'stop'
@@ -1921,9 +1936,9 @@ async function securityGate(iteration, round) {
   const headSha = typeof scope?.head_sha === 'string' ? scope.head_sha.trim() : ''
   const reviewDir = typeof scope?.review_dir === 'string' ? scope.review_dir.trim() : ''
   const diffPath = typeof scope?.diff_path === 'string' ? scope.diff_path.trim() : ''
-  if (scope?.ok !== true) return stop('PR の diff を取得できない')
-  if (!isFullCommitSha(headSha)) return stop('PR head の sha が分からない')
-  if (isFullCommitSha(shaNow) && headSha.toLowerCase() !== shaNow.toLowerCase()) return stop(`diff の head ${headSha.slice(0, 7)} が今の PR head ${shaNow.slice(0, 7)} と一致しない`)
+  if (scope?.ok !== true) return stop('PR の diff を取得できない', 'diff_unavailable')
+  if (!isFullCommitSha(headSha)) return stop('PR head の sha が分からない', 'head_unknown')
+  if (isFullCommitSha(shaNow) && headSha.toLowerCase() !== shaNow.toLowerCase()) return stop(`diff の head ${headSha.slice(0, 7)} が今の PR head ${shaNow.slice(0, 7)} と一致しない`, 'head_mismatch')
   // workflow からは realpath を取れず、prefix 比較は `..`・空の要素・大文字小文字の違い（macOS の FS は区別しない）・symlink で
   // worktree の中を外と見誤る。CLI が mkdtemp で作る形（`/<…>/dev-flow-security-review-XXXXXX/pr.diff`）だけを受け付け、
   // worktree との比較は大文字小文字を区別しない
@@ -1931,11 +1946,11 @@ async function securityGate(iteration, round) {
   const plainAbs = (p) => p.startsWith('/') && segsOf(p).every((s) => s !== '' && s !== '.' && s !== '..')
   const dirName = reviewDir.split('/').pop()
   if (!plainAbs(reviewDir) || !/^dev-flow-security-review-[A-Za-z0-9]{6}$/.test(dirName) || diffPath !== `${reviewDir}/pr.diff`
-    || !isOutsideWorktree(reviewDir.toLowerCase(), String(isoWt).toLowerCase())) return stop('diff の保存先が PR の worktree の外の絶対パスでない')
+    || !isOutsideWorktree(reviewDir.toLowerCase(), String(isoWt).toLowerCase())) return stop('diff の保存先が PR の worktree の外の絶対パスでない', 'review_dir_invalid')
   // workflow の agent 起動は cwd を受け付けず security-reviewer は PR の worktree を cwd に起動する。PR が reviewer の session に自動で
   // 読み込まれる指示ファイルを変えると攻撃者の文が判定者に届くので、自動の review では clear にしない（人間が確かめる）
   reviewerContextChanged = reviewerContextChanged || isReviewerContextChanged(scope)
-  if (reviewerContextChanged) return stop('PR が security-reviewer に読み込まれる指示ファイル（CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変える')
+  if (reviewerContextChanged) return stop('PR が security-reviewer に読み込まれる指示ファイル（CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変える', 'reviewer_context_changed')
   securityRounds += 1
   let review = null
   try {
@@ -2366,11 +2381,12 @@ for (i = 1; i <= MAX; i++) {
 const status = lgtm ? 'lgtm' : (terminal ?? 'max_reached')
 log(`pr-iterate 終端: status=${status}（iterations=${Math.min(i, MAX)}）`)
 // 敵対的 security review の結果（件数だけ。指摘の本文は載せない）。status: 'not_target' / 'cleared' / 'unresolved' /
-// 'not_run'（対象だが LGTM の前の review に到達しなかった）。dev-flow は target かつ status が cleared でない run を
-// Merge tier の security_review_unresolved で HOLD にする。
+// 'not_run'（対象だが LGTM の前の review に到達しなかった）。stop_reason: review の前提チェックで止めた理由（securityStopReason）。
+// dev-flow は target かつ status が cleared でない run を Merge tier の security_review_unresolved で HOLD にする。
 const securityReview = {
   target: securityTarget,
   status: securityTarget ? (securityStatus ?? 'not_run') : 'not_target',
+  stop_reason: securityStopReason,
   rounds: securityRounds,
   ...securityCounts,
 }

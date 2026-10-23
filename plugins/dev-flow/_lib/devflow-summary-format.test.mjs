@@ -2392,6 +2392,38 @@ test('issue #834: ci_checks_failed 単独 HOLD で現状/対応に CI 失敗と 
   assert.ok(body.includes('修正作業が必要です'), '結論行は修正作業が必要');
 });
 
+test('issue #1082: security_review_unresolved は stop_reason=reviewer_context_changed なら「自動 review をしていない」と変わった指示ファイルを一覧する固定コマンド、それ以外は従来の文面', () => {
+  const REASON = '敵対的 security review が今の PR head で clear になっていない';
+  const rowOf = (securityReview) => buildDevflowSummaryBody({
+    ...BASE_INPUT,
+    mergeTier: 'HOLD',
+    mergeTierReasons: [REASON],
+    holdReasons: [{ code: 'security_review_unresolved', reason: REASON, kind: 'human_judgment' }],
+    holdKind: 'human_judgment',
+    securityReview,
+  }).split('\n').find((l) => l.startsWith(`| ${REASON} |`));
+  const changed = rowOf({ target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0, major: 0, minor: 0 });
+  assert.equal(changed, `| ${REASON} | 指示ファイルを変える PR なので自動 review をしていない（review 0 回） | \`gh pr diff 42 --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる） |`);
+  for (const want of ['自動 review をしていない', '指示ファイルを変える PR', 'review 0 回']) assert.ok(changed.includes(want), want);
+  assert.ok(!changed.includes('clear になっていない（'), '現状に「clear になっていない」を出さない');
+  // 確認コマンドは固定で、差し込むのは PR 番号だけ（PR が決めた文字列 — ファイル名・branch 名 — は入らない）
+  const other = buildDevflowSummaryBody({
+    ...BASE_INPUT, pr: 7, mergeTier: 'HOLD', mergeTierReasons: [REASON],
+    holdReasons: [{ code: 'security_review_unresolved', reason: REASON, kind: 'human_judgment' }], holdKind: 'human_judgment',
+    securityReview: { target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0 },
+  }).split('\n').find((l) => l.startsWith(`| ${REASON} |`));
+  assert.equal(other, changed.replace('gh pr diff 42 ', 'gh pr diff 7 '));
+
+  // review を実行して critical / major が残った・review 前の別の前提チェックで止めた・review に到達しなかった run は従来の文面
+  const ACTION = '`/pr-iterate 42` で回収するか、人が diff を確認する（指摘の本文は公開コメントに載せない）';
+  assert.equal(rowOf({ target: true, status: 'unresolved', stop_reason: null, rounds: 2, critical: 1, major: 2, minor: 0 }),
+    `| ${REASON} | security review が今の PR head で clear になっていない（敵対的 review 2 回・最終 critical 1 / major 2） | ${ACTION} |`);
+  assert.equal(rowOf({ target: true, status: 'unresolved', stop_reason: 'diff_unavailable', rounds: 0, critical: 0, major: 0, minor: 0 }),
+    `| ${REASON} | security review が今の PR head で clear になっていない（敵対的 review 0 回・最終 critical 0 / major 0） | ${ACTION} |`);
+  assert.equal(rowOf({ target: true, status: 'not_run', stop_reason: null, rounds: 0, critical: 0, major: 0, minor: 0 }),
+    `| ${REASON} | security review が今の PR head で clear になっていない（LGTM の前の review に到達していない） | ${ACTION} |`);
+});
+
 test('issue #834: 「CI 未完了」の開示（disclosures）は REVIEW の終端サマリの参考に出る', () => {
   const line = 'CI 未完了（pending: Bats Tests）— Merge tier は CI の完了を待たない（fail-open。HOLD 理由にしない）。merge 前に gh pr checks で結果を確認する';
   const body = buildDevflowSummaryBody({

@@ -50,14 +50,24 @@ const STATUS_HEADLINE = {
   'security_unresolved': '🛡️ SECURITY REVIEW 未完了 — 敵対的 security review が今の head で clear にならなかった。人間へエスカレーション',
 };
 
+// securityGate が PR は security-reviewer に読み込まれる指示ファイルを変えるとして review 前に止めた run の見出し（issue #1082）。
+// 止めたのはゲートが正しく働いた結果で、指摘があったのではない — 「clear にならなかった」と読ませない
+const SECURITY_CONTEXT_CHANGED_HEADLINE = '🛡️ SECURITY REVIEW 未実施 — 指示ファイルを変える PR なので自動 review をしていない（review <ROUNDS> 回）。変わった指示ファイルを人が確認する';
+
+const isSecurityContextChanged = (sr) => sr != null && sr.target === true && sr.stop_reason === 'reviewer_context_changed';
+
 /**
  * 敵対的 security review の結果行（issue #1063）。公開の PR コメントに載るので、指摘の本文（攻撃経路）は載せず件数だけを出す。
- * @param {{target: boolean, status: string, rounds: number, critical?: number, major?: number, minor?: number}} sr
+ * 変わった指示ファイルのパスも PR が決めた文字列なので載せない（stop_reason の固定 code で出し分けるだけ）。
+ * @param {{target: boolean, status: string, stop_reason?: string|null, rounds: number, critical?: number, major?: number, minor?: number}} sr
  *   status: 'cleared' | 'unresolved' | 'not_run' | 'not_target'
  * @returns {string}
  */
 function formatSecurityReviewLine(sr) {
   if (sr.target !== true) return '**Security review**: 対象外（変更が許可リスト — 指示ファイルでない文書・テスト — だけ）';
+  if (isSecurityContextChanged(sr)) {
+    return `**Security review**: ⏸️ 自動 review をしていない（指示ファイルを変える PR — security-reviewer に読み込まれる CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等を変えるので自動の review では clear にしない・review ${sr.rounds ?? 0} 回）— merge 前に人が変わった指示ファイルと diff を確認する`;
+  }
   const counts = `敵対的 review ${sr.rounds ?? 0} 回・最終 critical ${sr.critical ?? 0} / major ${sr.major ?? 0} / minor ${sr.minor ?? 0}`;
   if (sr.status === 'cleared') return `**Security review**: ✅ clear（${counts}）`;
   return `**Security review**: ❌ 未完了（${sr.status === 'not_run' ? 'LGTM の前の review に到達していない' : counts}）— 指摘の本文は公開コメントに載せない。merge 前に人が diff を確認する`;
@@ -161,8 +171,9 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
  * @param {Array} [opts.conflictAutoresolve] - base との conflict の自動解消の試行（_lib/conflict-autoresolve.mjs の conflictAutoresolveRecord の配列）
  * @param {{tier: string, codes: string[], url: string|null}|null} [opts.priorDevflow] - 単体起動の前に PR に載っていた
  *   dev-flow サマリー（pr-iterate-prerun の prior_devflow）。tier が HOLD のときだけ HOLD 理由の回収状況を出す
- * @param {{target: boolean, status: string, rounds: number, critical?: number, major?: number, minor?: number}|null} [opts.securityReview] -
- *   敵対的 security review の結果（pr-iterate の返り値 security_review）。件数だけを 1 行出す（null なら出さない）
+ * @param {{target: boolean, status: string, stop_reason?: string|null, rounds: number, critical?: number, major?: number, minor?: number}|null} [opts.securityReview] -
+ *   敵対的 security review の結果（pr-iterate の返り値 security_review）。件数だけを 1 行出す（null なら出さない）。
+ *   stop_reason が 'reviewer_context_changed' なら見出しと行を「自動 review をしていない」に出し分ける
  * @param {string|null} [opts.headSha] - この結論を出した PR head の commit sha。40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる
  * @returns {string}
  */
@@ -176,6 +187,9 @@ export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision,
   // dev-flow の HOLD 後の回収では、このレポートが PR の最後のコメント（最新の結論）になる。HOLD 理由が残っているのに
   // 「🎉 LGTM」を見出しにすると merge 可能に読めるので、見出しを回収状況に合わせる。
   let headline = (STATUS_HEADLINE[status] ?? status).replace('<PR>', String(pr));
+  if (status === 'security_unresolved' && isSecurityContextChanged(securityReview)) {
+    headline = SECURITY_CONTEXT_CHANGED_HEADLINE.replace('<ROUNDS>', String(securityReview.rounds ?? 0));
+  }
   if (priorHold && status === 'lgtm') {
     headline = priorHold.unresolved > 0
       ? `LGTM（review）— dev-flow の HOLD 理由 ${priorHold.unresolved} 件が未解消。merge 前に確認`

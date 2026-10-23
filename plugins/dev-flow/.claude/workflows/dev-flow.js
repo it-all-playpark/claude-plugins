@@ -3113,6 +3113,12 @@ function holdReasonDisplay(code, kind, ctx) {
       };
     case 'security_review_unresolved': {
       const s = ctx.securityReview;
+      if (s && s.target === true && s.stop_reason === 'reviewer_context_changed') {
+        return {
+          current: `指示ファイルを変える PR なので自動 review をしていない（review ${Number.isFinite(s.rounds) ? s.rounds : 0} 回）`,
+          action: `\`gh pr diff ${ctx.pr} --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる）`,
+        };
+      }
       const counts = s && s.status !== 'not_run' && Number.isFinite(s.rounds)
         ? `（敵対的 review ${s.rounds} 回・最終 critical ${s.critical ?? 0} / major ${s.major ?? 0}）`
         : '（LGTM の前の review に到達していない）';
@@ -7617,6 +7623,8 @@ const acGapsFinal = state.finalUnsatisfiedAcByActor ?? state.unsatisfiedAcByActo
 const securityReviewFinal = {
   target: state.securityReview.target === true || iterate?.security_review?.target === true,
   status: iterate?.security_review?.status ?? (state.securityReview.target ? 'not_run' : 'not_target'),
+  // pr-iterate の securityGate が review の前提チェックで止めた理由（固定 code）。終端サマリーの出し分けにだけ使う
+  stop_reason: iterate?.security_review?.stop_reason ?? null,
   rounds: iterate?.security_review?.rounds ?? 0,
   critical: iterate?.security_review?.critical ?? 0,
   major: iterate?.security_review?.major ?? 0,
