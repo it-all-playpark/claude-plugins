@@ -95,6 +95,11 @@ MAJOR_ISSUE='[{"severity":"major","topic":"hook-injection","file":"CLAUDE.md","l
     # argv: -p と --agent dev-flow:security-reviewer
     grep -qxF -- '-p' "$CLAUDE_STUB_DIR/argv"
     [ "$(grep -xF -A1 -- '--agent' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)" = "dev-flow:security-reviewer" ]
+    # argv: tool は Read / Grep / Glob だけ、許可は保存先の配下の Read だけ、他は拒否、project / local 設定を読まない
+    [ "$(grep -xF -A1 -- '--tools' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)" = "Read,Grep,Glob" ]
+    [ "$(grep -xF -A1 -- '--permission-mode' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)" = "dontAsk" ]
+    [ "$(grep -xF -A1 -- '--setting-sources' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)" = "user" ]
+    allowed="$(grep -xF -A1 -- '--allowedTools' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)"
 
     # prompt は securityReviewPrompt（DATA 区間に head_sha と diff_path）
     grep -qxF '<<<SECURITY_REVIEW_DATA_BEGIN>>>' "$CLAUDE_STUB_DIR/prompt"
@@ -105,6 +110,7 @@ MAJOR_ISSUE='[{"severity":"major","topic":"hook-injection","file":"CLAUDE.md","l
     [ "$(basename "$diff_path")" = "pr.diff" ]
     [[ "$review_dir" != "$ROOT_P"/* ]]
     [[ "$review_dir" != "$cwd"/* ]]
+    [ "$allowed" = "Read(/${review_dir}/**)" ]
     # 保存した diff は origin/main...PR head（起動時に読めた）
     grep -qF '+PR_CHANGE_MARKER' "$CLAUDE_STUB_DIR/diff"
 
@@ -135,6 +141,27 @@ MAJOR_ISSUE='[{"severity":"major","topic":"hook-injection","file":"CLAUDE.md","l
     [[ "$output" == *"一時ディレクトリが checkout の中にある"* ]]
     [ ! -e "$CLAUDE_STUB_DIR/argv" ]
     [[ "$output" != *"clear"* ]]
+}
+
+@test "checkout の HEAD が PR head（PR の worktree）なら claude を起動せず exit 2" {
+    respond '[]'
+    cd "$ROOT"
+    git checkout -q "$HEAD_SHA"
+    run bash "$BIN" 5
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"checkout の HEAD が PR の変更を含む"* ]]
+    [ ! -e "$CLAUDE_STUB_DIR/argv" ]
+    [[ "$output" != *"clear"* ]]
+}
+
+@test "checkout の HEAD が PR の commit の上に積んだ branch でも exit 2" {
+    respond '[]'
+    cd "$ROOT"
+    git checkout -q -b local-on-pr "$HEAD_SHA"
+    git -c user.name=T -c user.email=t@example.com commit -q --allow-empty -m "local"
+    run bash "$BIN" 5
+    [ "$status" -eq 2 ]
+    [ ! -e "$CLAUDE_STUB_DIR/argv" ]
 }
 
 # ---- AC-2: 応答の判定（SECURITY_REVIEW_SCHEMA + securityReviewVerdict）----

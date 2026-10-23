@@ -194,6 +194,23 @@ run_tool "Grep: glob が .. の要素を含む" deny "$AGENT" Grep "$(jq -cn --a
 run_tool "Grep: path が cwd" deny "$AGENT" Grep "$(jq -cn --arg p "$WT" '{pattern:"x", path:$p}')"
 run_tool "Grep: path が ." deny "$AGENT" Grep '{"pattern":"x","path":"."}'
 
+echo "[claude -p --agent の main thread（agent_id 無し・agent_type だけ）— security-review-isolated の起動形]"
+# security-review-isolated は空の新しいディレクトリを cwd に `claude -p --agent dev-flow:security-reviewer` を起動する。
+# main thread の hook 入力には agent_id が無く agent_type だけが入るので、その形でも checkout を読ませないことを確かめる
+NEUTRAL="${WORKDIR}/dev-flow-security-review-cwd-x"
+mkdir -p "$NEUTRAL"
+main_input() {
+  jq -cn --arg a "$AGENT" --arg cwd "$NEUTRAL" --arg tool "$1" --argjson ti "$2" \
+    '{session_id:"s", hook_event_name:"PreToolUse", cwd:$cwd, agent_type:$a, tool_name:$tool, tool_input:$ti}'
+}
+run_raw "--agent: checkout の CLAUDE.md を Read" deny "$(main_input Read "$(read_input "${WT}/CLAUDE.md")")"
+run_raw "--agent: checkout の .claude/rules を Read" deny "$(main_input Read "$(read_input "${WT}/.claude/rules/dev-flow.md")")"
+run_raw "--agent: checkout を Grep" deny "$(main_input Grep "$(jq -cn --arg p "$WT" '{pattern:"x", path:$p}')")"
+run_raw "--agent: 相対パスは空の cwd から解決し保存先の外" deny "$(main_input Read "$(read_input "CLAUDE.md")")"
+run_raw "--agent: 保存先の pr.diff は許可" silent "$(main_input Read "$(read_input "${D}/pr.diff")")"
+run_raw "subagent（agent_id 付き）の checkout Read も deny" deny "$(jq -cn --arg a "$AGENT" --arg cwd "$NEUTRAL" --arg p "${WT}/CLAUDE.md" \
+  '{session_id:"s", hook_event_name:"PreToolUse", cwd:$cwd, agent_id:"a1", agent_type:$a, tool_name:"Read", tool_input:{file_path:$p}}')"
+
 echo "[判定できない入力 — deny + exit 0]"
 run_raw "JSON が読めない" deny '{"agent_type":"dev-flow:security-reviewer","tool_name":"Read",'
 run_raw "JSON が object でない" deny '["dev-flow:security-reviewer"]'

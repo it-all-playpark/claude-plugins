@@ -3,7 +3,8 @@
 // bin/security-review-isolated（_shared/scripts/security-review-isolated.sh 経由）から呼ぶ。
 //
 // Usage: security-review-isolated <PR番号> [--repo owner/repo]   （repo の checkout の中で実行する）
-//   1. gh pr view で PR の head sha と base を取る（git fetch origin で head を checkout に取り込む）
+//   1. gh pr view で PR の head sha と base を取る（git fetch origin で head を checkout に取り込む）。checkout の HEAD が
+//      PR の commit を含む（PR の worktree・branch で実行した）ときは exit 2
 //   2. security-review-scope <checkout> origin/<base> <head> --save-diff で diff を checkout の外に保存する
 //   3. 新しく作った空のディレクトリ（checkout の外・保存先の祖先でない）を cwd にする
 //   4. claude -p --agent dev-flow:security-reviewer に securityReviewPrompt を渡して起動する
@@ -117,6 +118,18 @@ try {
 } catch {
   undetermined(`PR head ${headSha} が checkout に無い（fork の PR なら head を fetch する。別 repo の PR なら --repo と cwd の repo を揃える）`)
 }
+// checkout が PR の commit を含む（PR の worktree・PR branch の checkout）なら止める。reviewer が checkout を読めると
+// PR が書いた指示ファイルが判定者に届く。HEAD と PR head の merge-base が base に含まれないとき、HEAD は PR の commit を持つ
+try {
+  const mergeBase = run('git', ['merge-base', 'HEAD', headSha])
+  try {
+    run('git', ['merge-base', '--is-ancestor', mergeBase, `origin/${base}`])
+  } catch {
+    undetermined('checkout の HEAD が PR の変更を含む（PR の worktree・branch の外、base を checkout した repo で実行する）')
+  }
+} catch {
+  undetermined('checkout の HEAD と PR head の関係を確かめられない')
+}
 
 // 2. diff を checkout の外に保存する
 let scope
@@ -147,10 +160,14 @@ if (inside(cwd, checkout) || inside(reviewDir, cwd) || inside(reviewDir, checkou
 }
 
 // 4. security-reviewer を別プロセスで起動する（prompt は stdin で渡す）
+// 読み取りは prompt の文と read-scope hook に加えて起動引数でも保存先の配下に限る: tool は Read / Grep / Glob だけ、
+// 許可は保存先の配下の Read（Grep / Glob も Read の rule に従う）だけ、それ以外は聞かずに拒否する（dontAsk）。
+// project / local の設定は読まない（user 設定は plugin の有効化に要る）
 const prompt = securityReviewPrompt({ pr, reviewDir, diffPath: join(reviewDir, 'pr.diff'), headSha, base, worktree: checkout })
 out(`security-review-isolated: PR #${pr}（head ${headSha}）を ${AGENT} で review する`)
 const res = spawnSync('claude', [
   '-p', '--agent', AGENT, '--output-format', 'json', '--json-schema', JSON.stringify(SECURITY_REVIEW_SCHEMA), '--add-dir', reviewDir,
+  '--tools', 'Read,Grep,Glob', '--allowedTools', `Read(/${reviewDir}/**)`, '--permission-mode', 'dontAsk', '--setting-sources', 'user',
 ], { cwd, input: prompt, maxBuffer: 512 * 1024 * 1024, stdio: ['pipe', 'pipe', 'inherit'] })
 cleanup()
 if (res.error || res.status !== 0) undetermined(`claude が失敗した（exit ${res.status ?? 'なし'}）`)
