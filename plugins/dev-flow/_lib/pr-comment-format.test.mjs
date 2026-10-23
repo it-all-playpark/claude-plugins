@@ -722,6 +722,29 @@ test('buildTerminalSummaryBody: stop_reason=reviewer_context_changed は見出�
   }
 });
 
+test('buildTerminalSummaryBody: stop_reason=reviewer_context_changed のときだけ `security-review-isolated <PR>` の実行案内を出す（値は PR 番号だけ・API に通信できるシェル・gate に戻らない）', () => {
+  const opts = { iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed' };
+  const guideOf = (pr, status, securityReview) => buildTerminalSummaryBody({ ...opts, pr, status, securityReview })
+    .split('\n').filter((l) => l.includes('security-review-isolated'));
+  const changed = { target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0, major: 0, minor: 0 };
+  const guide = guideOf(5, 'security_unresolved', changed);
+  assert.deepEqual(guide, ['**隔離した security review**: Anthropic API に通信できるシェル（plugin の bin/ が PATH に載る Claude Code のセッション等）で `security-review-isolated 5` を実行すると、PR の worktree に入らない別プロセスで security-reviewer が PR の diff を review し、判定・件数・指摘を端末に出す。結果は gate に戻らない（Merge tier は HOLD のまま）— merge 判断の材料にする']);
+  for (const want of ['Anthropic API に通信できるシェル', 'plugin の bin/ が PATH に載る Claude Code のセッション', 'gate に戻らない', 'merge 判断の材料']) assert.ok(guide[0].includes(want), want);
+  // 差し込む値は PR 番号だけ（PR 番号を変えるとコマンドの引数だけが変わる）
+  assert.deepEqual(guideOf(77, 'security_unresolved', changed), [guide[0].replace('`security-review-isolated 5`', '`security-review-isolated 77`')]);
+
+  // reviewer_context_changed 以外（review して残った・別の前提で止めた・clear・対象外・null）では出さない
+  for (const [status, sr] of [
+    ['security_unresolved', { ...changed, stop_reason: null, rounds: 2, critical: 1 }],
+    ['security_unresolved', { ...changed, stop_reason: 'diff_unavailable' }],
+    ['lgtm', { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0 }],
+    ['lgtm', { target: false, status: 'not_target', stop_reason: 'reviewer_context_changed', rounds: 0 }],
+    ['lgtm', null],
+  ]) {
+    assert.deepEqual(guideOf(5, status, sr), [], JSON.stringify(sr));
+  }
+});
+
 test('buildTerminalSummaryBody: code の無い HOLD marker（codes 空）は理由を確かめられないので未解消 1 件', () => {
   const body = buildTerminalSummaryBody({
     pr: 5, status: 'lgtm', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed',

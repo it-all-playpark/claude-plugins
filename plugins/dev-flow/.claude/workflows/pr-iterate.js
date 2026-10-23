@@ -649,6 +649,8 @@ const SECURITY_CONTEXT_CHANGED_HEADLINE = '🛡️ SECURITY REVIEW 未実施 —
 
 const isSecurityContextChanged = (sr) => sr != null && sr.target === true && sr.stop_reason === 'reviewer_context_changed';
 
+const securityIsolatedReviewLine = (pr) => `**隔離した security review**: Anthropic API に通信できるシェル（plugin の bin/ が PATH に載る Claude Code のセッション等）で \`security-review-isolated ${pr}\` を実行すると、PR の worktree に入らない別プロセスで security-reviewer が PR の diff を review し、判定・件数・指摘を端末に出す。結果は gate に戻らない（Merge tier は HOLD のまま）— merge 判断の材料にする`;
+
 function formatSecurityReviewLine(sr) {
   if (sr.target !== true) return '**Security review**: 対象外（変更が許可リスト — 指示ファイルでない文書・テスト — だけ）';
   if (isSecurityContextChanged(sr)) {
@@ -756,6 +758,10 @@ function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSu
   if (securityReview != null) {
     lines.push('');
     lines.push(formatSecurityReviewLine(securityReview));
+    if (isSecurityContextChanged(securityReview)) {
+      lines.push('');
+      lines.push(securityIsolatedReviewLine(Number(pr)));
+    }
   }
 
   if (priorHold) {

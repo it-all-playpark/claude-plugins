@@ -3116,7 +3116,8 @@ function holdReasonDisplay(code, kind, ctx) {
       if (s && s.target === true && s.stop_reason === 'reviewer_context_changed') {
         return {
           current: `指示ファイルを変える PR なので自動 review をしていない（review ${Number.isFinite(s.rounds) ? s.rounds : 0} 回）`,
-          action: `\`gh pr diff ${ctx.pr} --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる）`,
+          action: `\`gh pr diff ${ctx.pr} --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる）。`
+            + `Anthropic API に通信できるシェル（plugin の bin/ が PATH に載る Claude Code のセッション等）で \`security-review-isolated ${ctx.pr}\` を実行すると、PR の worktree に入らない別プロセスで security review を回せる（結果は gate に戻らない — merge 判断の材料）`,
         };
       }
       const counts = s && s.status !== 'not_run' && Number.isFinite(s.rounds)

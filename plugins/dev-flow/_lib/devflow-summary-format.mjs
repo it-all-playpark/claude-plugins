@@ -174,7 +174,7 @@ function resolvedCell(v) {
  * @param {{target:boolean, status:string, stop_reason?:string|null, rounds?:number, critical?:number, major?:number, minor?:number}|null|undefined} [opts.securityReview] -
  *   敵対的 security review の結果（issue #1063）。security_review_unresolved の「現状」に回数と件数だけを出す — 指摘の本文
  *   （攻撃経路）は公開コメントに載せない（表示専用）。stop_reason が 'reviewer_context_changed' なら「自動 review をしていない」と
- *   変わった指示ファイルを一覧する固定の確認コマンドを出す
+ *   変わった指示ファイルを一覧する固定の確認コマンドと、`security-review-isolated <PR>` の実行案内を出す
  * @param {string|null|undefined} [opts.headSha] - merge tier の結論を出した PR head の commit sha（merge-tier-facts の headRefOid）。
  *   40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる（issue #1065）
  * @returns {string}
@@ -1186,11 +1186,13 @@ function holdReasonDisplay(code, kind, ctx) {
     case 'security_review_unresolved': {
       const s = ctx.securityReview;
       // review 前に指示ファイルの変更で止めた run（issue #1082）は指摘があったのではないので「clear にならない」と書かない。
-      // 確認コマンドは固定で PR 番号だけを差し込む（変わったファイル名・branch 名など PR が決めた文字列を載せない）
+      // 確認コマンドは固定で PR 番号だけを差し込む（変わったファイル名・branch 名など PR が決めた文字列を載せない）。
+      // 隔離 review（issue #1083）の結果は gate に戻さない — gate が読む記録には、同じ場所に書ける fix agent が clear を偽造できる
       if (s && s.target === true && s.stop_reason === 'reviewer_context_changed') {
         return {
           current: `指示ファイルを変える PR なので自動 review をしていない（review ${Number.isFinite(s.rounds) ? s.rounds : 0} 回）`,
-          action: `\`gh pr diff ${ctx.pr} --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる）`,
+          action: `\`gh pr diff ${ctx.pr} --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる）。`
+            + `Anthropic API に通信できるシェル（plugin の bin/ が PATH に載る Claude Code のセッション等）で \`security-review-isolated ${ctx.pr}\` を実行すると、PR の worktree に入らない別プロセスで security review を回せる（結果は gate に戻らない — merge 判断の材料）`,
         };
       }
       const counts = s && s.status !== 'not_run' && Number.isFinite(s.rounds)
