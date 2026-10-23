@@ -2403,16 +2403,19 @@ test('issue #1082: security_review_unresolved は stop_reason=reviewer_context_c
     securityReview,
   }).split('\n').find((l) => l.startsWith(`| ${REASON} |`));
   const changed = rowOf({ target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0, major: 0, minor: 0 });
-  assert.equal(changed, `| ${REASON} | 指示ファイルを変える PR なので自動 review をしていない（review 0 回） | \`gh pr diff 42 --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる） |`);
+  // 対応列: 変わった指示ファイルの一覧コマンドと、隔離した security review（issue #1083）の実行案内
+  const ISOLATED = 'Anthropic API に通信できるシェル（plugin の bin/ が PATH に載る Claude Code のセッション等）で `security-review-isolated 42` を実行すると、PR の worktree に入らない別プロセスで security review を回せる（結果は gate に戻らない — merge 判断の材料）';
+  assert.equal(changed, `| ${REASON} | 指示ファイルを変える PR なので自動 review をしていない（review 0 回） | \`gh pr diff 42 --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる）。${ISOLATED} |`);
   for (const want of ['自動 review をしていない', '指示ファイルを変える PR', 'review 0 回']) assert.ok(changed.includes(want), want);
+  for (const want of ['`security-review-isolated 42`', 'Anthropic API に通信できるシェル', 'plugin の bin/ が PATH に載る Claude Code のセッション', 'gate に戻らない', 'merge 判断の材料']) assert.ok(changed.includes(want), want);
   assert.ok(!changed.includes('clear になっていない（'), '現状に「clear になっていない」を出さない');
-  // 確認コマンドは固定で、差し込むのは PR 番号だけ（PR が決めた文字列 — ファイル名・branch 名 — は入らない）
+  // 確認コマンドと実行案内は固定で、差し込むのは PR 番号だけ（PR が決めた文字列 — ファイル名・branch 名 — は入らない）
   const other = buildDevflowSummaryBody({
     ...BASE_INPUT, pr: 7, mergeTier: 'HOLD', mergeTierReasons: [REASON],
     holdReasons: [{ code: 'security_review_unresolved', reason: REASON, kind: 'human_judgment' }], holdKind: 'human_judgment',
     securityReview: { target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0 },
   }).split('\n').find((l) => l.startsWith(`| ${REASON} |`));
-  assert.equal(other, changed.replace('gh pr diff 42 ', 'gh pr diff 7 '));
+  assert.equal(other, changed.replace('gh pr diff 42 ', 'gh pr diff 7 ').replace('`security-review-isolated 42`', '`security-review-isolated 7`'));
 
   // review を実行して critical / major が残った・review 前の別の前提チェックで止めた・review に到達しなかった run は従来の文面
   const ACTION = '`/pr-iterate 42` で回収するか、人が diff を確認する（指摘の本文は公開コメントに載せない）';

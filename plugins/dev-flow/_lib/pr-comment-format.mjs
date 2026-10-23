@@ -56,6 +56,10 @@ const SECURITY_CONTEXT_CHANGED_HEADLINE = '🛡️ SECURITY REVIEW 未実施 —
 
 const isSecurityContextChanged = (sr) => sr != null && sr.target === true && sr.stop_reason === 'reviewer_context_changed';
 
+// reviewer_context_changed の run で人が回す隔離 review の案内（issue #1083）。差し込むのは PR 番号だけ（PR が決めた文字列を載せない）。
+// 結果は gate に戻さない — 記録ファイルや PR コメントを gate が読めば、同じ場所に書ける fix agent が clear を偽造できる
+const securityIsolatedReviewLine = (pr) => `**隔離した security review**: Anthropic API に通信できるシェル（plugin の bin/ が PATH に載る Claude Code のセッション等）で \`security-review-isolated ${pr}\` を実行すると、PR の worktree に入らない別プロセスで security-reviewer が PR の diff を review し、判定・件数・指摘を端末に出す。結果は gate に戻らない（Merge tier は HOLD のまま）— merge 判断の材料にする`;
+
 /**
  * 敵対的 security review の結果行（issue #1063）。公開の PR コメントに載るので、指摘の本文（攻撃経路）は載せず件数だけを出す。
  * 変わった指示ファイルのパスも PR が決めた文字列なので載せない（stop_reason の固定 code で出し分けるだけ）。
@@ -173,7 +177,7 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
  *   dev-flow サマリー（pr-iterate-prerun の prior_devflow）。tier が HOLD のときだけ HOLD 理由の回収状況を出す
  * @param {{target: boolean, status: string, stop_reason?: string|null, rounds: number, critical?: number, major?: number, minor?: number}|null} [opts.securityReview] -
  *   敵対的 security review の結果（pr-iterate の返り値 security_review）。件数だけを 1 行出す（null なら出さない）。
- *   stop_reason が 'reviewer_context_changed' なら見出しと行を「自動 review をしていない」に出し分ける
+ *   stop_reason が 'reviewer_context_changed' なら見出しと行を「自動 review をしていない」に出し分け、`security-review-isolated <PR>` の実行案内を足す
  * @param {string|null} [opts.headSha] - この結論を出した PR head の commit sha。40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる
  * @returns {string}
  */
@@ -221,6 +225,10 @@ export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision,
   if (securityReview != null) {
     lines.push('');
     lines.push(formatSecurityReviewLine(securityReview));
+    if (isSecurityContextChanged(securityReview)) {
+      lines.push('');
+      lines.push(securityIsolatedReviewLine(Number(pr)));
+    }
   }
 
   if (priorHold) {

@@ -12,8 +12,10 @@ workflow / subagent prompt から dev-flow 専用 script を呼ぶときは plug
 破綻する。`bin/` は plugin enable 中 Bash tool の PATH に載る）。`bin/<name>` は本体へ
 `exec bash` する 3 行 wrapper（.py 本体は `exec python3`。dev-flow は `export GIT_OPTIONAL_LOCKS=0` を挟んだ 4 行）で、本体と隣接 `*.bats` は移動しない。
 登録名の集合は `tests/bin-wrappers.bats` と `_lib/bin-bare-name-routing.test.mjs` が pin する
-（core `journal` 1 本 + dev-flow 24 本 + playpark-skills 24 本。playpark-skills は
+（core `journal` 1 本 + dev-flow 25 本 + playpark-skills 24 本。playpark-skills は
 `<skill>-<action>` 命名で `tests/bin-wrappers.bats` が pin）。
+dev-flow の `security-review-isolated` は exec-proxy ではなく人が起動する CLI で、workflow・subagent からは呼ばない
+（中で `gh pr view` と `claude -p` を起動する。sandbox が Anthropic API への通信を塞ぐ）。
 `journal_sh` payload の `'journal'`（bare 名）は Stop hook が `command -v` で PATH 上の playpark-core
 `bin/journal` に解決する。解決順は payload path → payload bare 名 → `command -v journal` → 隣接
 `plugins/playpark-core/journal/scripts/journal.sh`（repo checkout / link mode 用）。
