@@ -192,6 +192,38 @@ EOF
     echo "$JSON" | jq -e '.summary | contains("launch failed: pnpm test")'
 }
 
+@test "run-*.sh 無し: pnpm test がスクリプト起動前に pnpm 自身のエラーで終了したら起動失敗として error（failed にしない）" {
+    echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
+    : > "$WT/pnpm-lock.yaml"
+    printf '#!/usr/bin/env bash\necho " ERROR  packages field missing or empty"\nexit 1\n' > "$STUB_DIR/pnpm"
+    chmod +x "$STUB_DIR/pnpm"
+    export PATH="$STUB_DIR:$PATH"
+    run_tests
+    echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false'
+    echo "$JSON" | jq -e '.scripts == [{path: "pnpm test", exit: 1, launch_failed: true}] and .failed_files == []'
+    echo "$JSON" | jq -e '.summary | contains("launch failed: pnpm test")'
+}
+
+@test "run-*.sh 無し: pnpm test がスクリプトを起動した後の ERROR 行は red のまま（launch_failed にしない）" {
+    echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
+    : > "$WT/pnpm-lock.yaml"
+    printf '#!/usr/bin/env bash\necho\necho "> x@1.0.0 test /wt"\necho "> jest"\necho\necho " ERROR  db connection refused"\nexit 1\n' > "$STUB_DIR/pnpm"
+    chmod +x "$STUB_DIR/pnpm"
+    export PATH="$STUB_DIR:$PATH"
+    run_tests
+    echo "$JSON" | jq -e '.status == "failed" and .scripts == [{path: "pnpm test", exit: 1, launch_failed: false}]'
+}
+
+@test "run-*.sh 無し: pnpm のエラー見出し行が無ければ起動の痕跡が無くても（--silent 等）red のまま" {
+    echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
+    : > "$WT/pnpm-lock.yaml"
+    printf '#!/usr/bin/env bash\necho "Tests: 1 failed, 1 total"\nexit 1\n' > "$STUB_DIR/pnpm"
+    chmod +x "$STUB_DIR/pnpm"
+    export PATH="$STUB_DIR:$PATH"
+    run_tests
+    echo "$JSON" | jq -e '.status == "failed" and .scripts == [{path: "pnpm test", exit: 1, launch_failed: false}]'
+}
+
 @test "run-*.sh 無し: フォールバックの exit 126 も起動失敗として error" {
     echo '{"name":"x","scripts":{"test":"node t.js"}}' > "$WT/package.json"
     printf '#!/usr/bin/env bash\nexit 126\n' > "$STUB_DIR/npm"
