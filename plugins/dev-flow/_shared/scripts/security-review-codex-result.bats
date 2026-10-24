@@ -5,10 +5,11 @@ bats_require_minimum_version 1.5.0
 #
 # result.json の判定規則そのもの（schema 適合・件数・reviewed_sha）は _lib/security-review.test.mjs の codexResultVerdict が確かめる。
 # ここは作業場所への細工で clear にならないこと（AC-8）: result.json が symlink・通常ファイルでない・保存先の外を指す・
-# prep が記録した時刻（prepared_at）より前の mtime なら ok:false・cleared:false。
+# prep が記録した時刻（prepared_at）より前の mtime・nonce が prep の nonce と違うなら ok:false・cleared:false。
 
 BIN="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/bin/security-review-codex-result"
 HEAD_SHA="$(printf 'a%.0s' {1..40})"
+NONCE="$(printf '0123456789abcdef%.0s' 1 2)"
 
 setup() {
     TMP_P="$(cd "$BATS_TEST_TMPDIR" && pwd -P)"
@@ -18,9 +19,9 @@ setup() {
     printf '%s\n' "$(($(date +%s) * 1000))" >"$D/prepared_at"
 }
 
-# 第 1 引数のパスに clear の result.json を書く
+# 第 1 引数のパスに clear の result.json を書く（第 2 引数で nonce を変えられる）
 write_clear() {
-    jq -n --arg sha "$HEAD_SHA" '{reviewed_sha: $sha, issues: [], summary: "s"}' >"$1"
+    jq -n --arg sha "$HEAD_SHA" --arg n "${2:-$NONCE}" '{nonce: $n, reviewed_sha: $sha, issues: [], summary: "s"}' >"$1"
 }
 
 assert_not_cleared() {
@@ -29,50 +30,67 @@ assert_not_cleared() {
 
 @test "prep の後に書かれた通常ファイルの clear の result.json は clear" {
     write_clear "$D/result.json"
-    run bash "$BIN" "$D" "$HEAD_SHA"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg sha "$HEAD_SHA" '.ok == true and .cleared == true and .reviewed_sha == $sha'
+}
+
+@test "prep の後に書かれた result.json でも nonce が prep の nonce と違えば clear にしない（保存先へ先回り・上書きした JSON）" {
+    write_clear "$D/result.json" "$(printf 'f%.0s' {1..32})"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE"
+    assert_not_cleared nonce_mismatch
+    jq -n --arg sha "$HEAD_SHA" '{reviewed_sha: $sha, issues: [], summary: "s"}' >"$D/result.json"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE"
+    assert_not_cleared schema_mismatch
+}
+
+@test "nonce の引数が無い・形が違うなら usage error" {
+    write_clear "$D/result.json"
+    run bash "$BIN" "$D" "$HEAD_SHA"
+    [ "$status" -eq 2 ]
+    run bash "$BIN" "$D" "$HEAD_SHA" "${NONCE^^}"
+    [ "$status" -eq 2 ]
 }
 
 @test "result.json が prepared_at より前の mtime なら clear にしない" {
     write_clear "$D/result.json"
     touch -t 200001010000 "$D/result.json"
-    run bash "$BIN" "$D" "$HEAD_SHA"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE"
     assert_not_cleared result_stale
-    run bash "$BIN" "$D" "$HEAD_SHA" --issues
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" --issues
     echo "$output" | jq -e '.ok == false and .error == "result_stale" and .issues == []'
 }
 
 @test "prepared_at が無い・数字でないなら clear にしない" {
     write_clear "$D/result.json"
     rm "$D/prepared_at"
-    run bash "$BIN" "$D" "$HEAD_SHA"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE"
     assert_not_cleared prepared_at_unreadable
     printf 'yesterday\n' >"$D/prepared_at"
-    run bash "$BIN" "$D" "$HEAD_SHA"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE"
     assert_not_cleared prepared_at_unreadable
 }
 
 @test "result.json が保存先の外を指す symlink なら clear にしない" {
     write_clear "$TMP_P/outside.json"
     ln -s "$TMP_P/outside.json" "$D/result.json"
-    run bash "$BIN" "$D" "$HEAD_SHA"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE"
     assert_not_cleared result_unreadable
 }
 
 @test "result.json が通常ファイルでない（ディレクトリ・FIFO）なら clear にしない" {
     mkdir "$D/result.json"
-    run bash "$BIN" "$D" "$HEAD_SHA"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE"
     assert_not_cleared result_unreadable
     rmdir "$D/result.json"
     mkfifo "$D/result.json"
-    run bash "$BIN" "$D" "$HEAD_SHA"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE"
     assert_not_cleared result_unreadable
 }
 
 @test "保存先が symlink なら clear にしない" {
     write_clear "$D/result.json"
     ln -s "$D" "$TMP_P/dev-flow-security-review-Lnk001"
-    run bash "$BIN" "$TMP_P/dev-flow-security-review-Lnk001" "$HEAD_SHA"
+    run bash "$BIN" "$TMP_P/dev-flow-security-review-Lnk001" "$HEAD_SHA" "$NONCE"
     assert_not_cleared review_dir_invalid
 }

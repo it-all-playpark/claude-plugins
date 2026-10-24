@@ -21,7 +21,7 @@ setup() {
 
 # 第 1 引数の保存先に result.json（第 2 引数の issues）を書く
 write_result() {
-    jq -n --argjson issues "$2" --arg sha "$HEAD_SHA" '{reviewed_sha: $sha, issues: $issues, summary: "s"}' >"$1/result.json"
+    jq -n --argjson issues "$2" --arg sha "$HEAD_SHA" '{nonce: "0123456789abcdef0123456789abcdef", reviewed_sha: $sha, issues: $issues, summary: "s"}' >"$1/result.json"
 }
 
 @test "保存先に prompt.md（diff を末尾に置く）と strict 形の schema.json を書き、新しい空の mkdtemp を返す" {
@@ -33,6 +33,10 @@ write_result() {
     [[ "$(basename "$cwd")" =~ ^dev-flow-codex-cwd-[A-Za-z0-9]{6}$ ]]
     [ -d "$cwd" ]
     [ -z "$(ls -A "$cwd")" ]
+    # nonce: round ごとの 32 桁 hex。sandbox の中から読める保存先・作業ディレクトリのどのファイルにも書かない
+    nonce="$(echo "$output" | jq -r '.nonce')"
+    [[ "$nonce" =~ ^[0-9a-f]{32}$ ]]
+    [ -z "$(grep -rlF "$nonce" "$D" "$cwd")" ]
     # prompt.md: PR 番号・head・脅威モデル、diff は DATA 区間の末尾
     grep -qF '# Security review of PR #5' "$D/prompt.md"
     grep -qxF "head_sha: $HEAD_SHA" "$D/prompt.md"

@@ -11,9 +11,12 @@
 //   <review_dir>/prepared_at（prep 時刻の epoch ms）と、codex の -C に渡す新しい空の mkdtemp（os.tmpdir() 配下の
 //   dev-flow-codex-cwd-XXXXXX）。これらか result.json が既にあれば書かない（前の結果を今の review と取り違えない）。
 //   保存先と os.tmpdir() の祖先（自身を含む）に .git・AGENTS.md・AGENTS.override.md・CLAUDE.md があれば何も作らない（workspace_tainted）。
-// stdout: JSON 1 行 {ok, review_dir, cwd_dir, error?}。error は固定の code だけ（stdout を写す agent へ PR 由来の文字列を渡さない）。
+// stdout: JSON 1 行 {ok, review_dir, cwd_dir, nonce, error?}。error は固定の code だけ（stdout を写す agent へ PR 由来の文字列を渡さない）。
+//   nonce は round ごとの乱数（CODEX_NONCE_RE）。保存先には書かない（sandbox の中から読める場所に置くと、先回りした result.json に
+//   写せる）— workflow が codex の起動形の末尾の prompt と security-review-codex-result の引数にだけ渡す。
 //   usage error だけ exit 2、それ以外は exit 0。
 import { mkdtempSync, readFileSync, writeFileSync, lstatSync, existsSync, rmSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import {
@@ -25,7 +28,7 @@ const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
   process.exit(code)
 }
-const fail = (error, code = 0) => emit({ ok: false, review_dir: null, cwd_dir: null, error }, code)
+const fail = (error, code = 0) => emit({ ok: false, review_dir: null, cwd_dir: null, nonce: null, error }, code)
 
 const argv = process.argv.slice(2)
 let verifyFrom = null
@@ -72,8 +75,9 @@ if (verifyFrom != null) {
   } catch {
     fail('verify_from_unreadable')
   }
-  // 前回の reviewed_sha は今の head と違うので、件数の判定ではなく schema の適合だけを見る
-  const v = codexResultVerdict(prev, prev?.reviewed_sha)
+  // 前回の reviewed_sha・nonce は今の round と違うので、件数の判定ではなく schema の適合だけを見る（verify_items は prompt の
+  // DATA 区間に入るだけで clear の根拠にならない）
+  const v = codexResultVerdict(prev, prev?.reviewed_sha, prev?.nonce)
   if (!v.ok) fail('verify_from_unreadable')
   verifyItems = v.issues.filter((x) => x.severity === 'critical' || x.severity === 'major')
 }
@@ -92,4 +96,4 @@ if (!isCodexArgPath(cwdDir, CODEX_CWD_NAME_RE)) {
   rmSync(cwdDir, { recursive: true, force: true })
   fail('cwd_dir_unsupported')
 }
-emit({ ok: true, review_dir: reviewDir, cwd_dir: cwdDir })
+emit({ ok: true, review_dir: reviewDir, cwd_dir: cwdDir, nonce: randomBytes(16).toString('hex') })

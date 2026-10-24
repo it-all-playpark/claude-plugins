@@ -331,10 +331,13 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 pr-iterate      → security-scope#i の前提チェックを通った round で（指示ファイルを変える PR は Codex の agent を spawn せず、Claude 経路と
                   同じ reviewer_context_changed で止める — 中継も PR の worktree で起動し、PR の CLAUDE.md を受け取れば clear の JSON を捏造できる）:
                   security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`
-                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）
-                  security-review-codex#i（security-codex-relay）: 固定形の `codex exec ...`（先頭トークン codex の単文。返り値は使わない）
-                  security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head>`（自由文を出さない判定）
-                    → clear でなければ security-codex-issues#i: `security-review-codex-result <保存先> <head> --issues`（指摘の本文）
+                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）。
+                      round の nonce はファイルに書かず stdout で返す
+                  security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... "<固定文> <nonce>"`（先頭トークン codex の単文。返り値は使わない）
+                  security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head> <nonce>`（自由文を出さない判定）
+                    → clear でなければ security-codex-issues#i: `security-review-codex-result <保存先> <head> <nonce> --issues`（指摘の本文）
+                    → result.json の nonce が一致しなければ判定できない — 保存先（$TMPDIR 配下）は PR のコードが残した常駐プロセスからも
+                      書けるので、先回り・上書きした JSON で clear にしない
                     → script と workflow の両方が securityReviewVerdict と同じ規則で clear のときだけ LGTM（以降は Claude 経路と同じ）
                     → clear を決める中継に自由文（codex の出力・指摘の本文）を読ませない — 引用された PR の文で偽の clear を作らせない
                     → Codex で判定できない（prep の失敗・codex が無い・hook の拒否・result.json が読めない）→ その round は security-review#i
@@ -344,7 +347,7 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
   sandbox の外で通信できるのは先頭が codex の単文だけで、exec-proxy script の中から起動すると通信が拒否される）: `codex exec -s read-only --ephemeral --ignore-user-config
   --ignore-rules --skip-git-repo-check -C <空の mkdtemp> -c web_search="disabled" --disable shell_tool --disable unified_exec
   --disable apps --disable browser_use --disable computer_use -c model_instructions_file=<保存先>/prompt.md
-  --output-schema <保存先>/schema.json -o <保存先>/result.json "<固定文>"`。空の `-C` で cwd の AGENTS.md を読ませず、shell 等を外して
+  --output-schema <保存先>/schema.json -o <保存先>/result.json "<固定文> <nonce>"`。空の `-C` で cwd の AGENTS.md を読ませず、shell 等を外して
   diff の外を読む手段を無くす。hook は起動の前に、保存先・作業ディレクトリが mkdtemp の形の実ディレクトリで cwd の配下でないこと、
   `-C` が空であること、保存先に prompt.md・schema.json があり result.json（symlink を含む）が無いことを確かめる
 - PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`）は `security-codex-relay` の Bash を

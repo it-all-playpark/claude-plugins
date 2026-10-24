@@ -20,11 +20,11 @@
 #        security-review-codex-prep <D> <sha> <pr>[ --verify-from <D>]
 #        codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C <C>
 #          -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use
-#          --disable computer_use -c model_instructions_file=<D>/prompt.md --output-schema <D>/schema.json -o <D>/result.json "<固定文>"
+#          --disable computer_use -c model_instructions_file=<D>/prompt.md --output-schema <D>/schema.json -o <D>/result.json "<固定文> <N>"
 #        （codex は実際は 1 行。_lib/security-review.mjs の codexSecurityReviewCommand と同じ — 起動形を変えるときは両方を同時に変える）
-#        security-review-codex-result <D> <sha>[ --issues]
+#        security-review-codex-result <D> <sha> <N>[ --issues]
 #      <D> は basename が dev-flow-security-review-XXXXXX、<C> は dev-flow-codex-cwd-XXXXXX の、`.` / `..` の要素を持たない
-#      [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字。prep / result のパスの実体は各 script が確かめる。
+#      [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字、<N> は prep が返した nonce（32 桁の小文字 hex）。prep / result のパスの実体は各 script が確かめる。
 #      codex の形は hook がパスの実体も確かめる: <C> は空の実ディレクトリ、<D> は prompt.md・schema.json を実ファイルとして持ち
 #      result.json を持たない実ディレクトリ（symlink の result.json を通じて保存先の外へ書かせない・先に置かれた result.json を
 #      codex の結果として読ませない）で、どちらも入力の cwd（PR の worktree）の配下でない
@@ -46,8 +46,9 @@ D_RE="(${SEG})*/dev-flow-security-review-[A-Za-z0-9]{6}"
 C_RE="(${SEG})*/dev-flow-codex-cwd-[A-Za-z0-9]{6}"
 SHA_RE='[0-9a-fA-F]{40}'
 PREP_RE="^security-review-codex-prep ${D_RE} ${SHA_RE} [0-9]+( --verify-from ${D_RE})?$"
-CODEX_PROMPT='Run the security review described in your instructions and reply only with the JSON object defined by the output schema.'
-RESULT_RE="^security-review-codex-result ${D_RE} ${SHA_RE}( --issues)?$"
+NONCE_RE='[0-9a-f]{32}'
+CODEX_PROMPT='Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to'
+RESULT_RE="^security-review-codex-result ${D_RE} ${SHA_RE} ${NONCE_RE}( --issues)?$"
 CODEX_WORD_RE='(^|[^A-Za-z0-9_.-])codex([^A-Za-z0-9_.-]|$)'
 DIR_NAME_RE='dev-flow-security-review-|dev-flow-codex-cwd-'
 
@@ -72,13 +73,16 @@ pass_through() {
 
 # 中継の codex の起動が固定形と完全に一致し、パスの実体が条件を満たすか。満たさなければ deny する
 check_codex() {
-  local c d p s cwd cwd_real a expected
+  local c d n p s cwd cwd_real a expected
   [[ $CMD =~ \ -C\ ([^ ]+)\  ]] || emit_deny "codex の起動形が固定形と一致しない"
   c="${BASH_REMATCH[1]}"
   [[ $CMD =~ \ -c\ model_instructions_file=([^ ]+)/prompt\.md\  ]] || emit_deny "codex の起動形が固定形と一致しない"
   d="${BASH_REMATCH[1]}"
+  [[ $CMD =~ \ ([^ \"]+)\"$ ]] || emit_deny "codex の起動形が固定形と一致しない"
+  n="${BASH_REMATCH[1]}"
   [[ $c =~ ^${C_RE}$ && $d =~ ^${D_RE}$ ]] || emit_deny "codex の作業ディレクトリ・保存先が mkdtemp の形でない"
-  expected="codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C ${c} -c web_search=\"disabled\" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=${d}/prompt.md --output-schema ${d}/schema.json -o ${d}/result.json \"${CODEX_PROMPT}\""
+  [[ $n =~ ^${NONCE_RE}$ ]] || emit_deny "codex の prompt の nonce が固定の形でない"
+  expected="codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C ${c} -c web_search=\"disabled\" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=${d}/prompt.md --output-schema ${d}/schema.json -o ${d}/result.json \"${CODEX_PROMPT} ${n}\""
   [[ $CMD == "$expected" ]] || emit_deny "codex の起動形が固定形と一致しない（フラグの過不足・schema / 出力が保存先の外）"
   for p in "$c" "$d"; do
     IFS='/' read -r -a SEGS <<<"${p#/}"
