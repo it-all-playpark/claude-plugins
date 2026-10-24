@@ -3,8 +3,8 @@ name: security-codex-relay
 description: |
   Bash-only exec-proxy for the Codex route of pr-iterate's adversarial
   security review: runs exactly one of security-review-codex-prep /
-  security-review-codex-run / security-review-codex-result as given and
-  returns its stdout JSON verbatim. A PreToolUse hook denies every other
+  the fixed codex exec / security-review-codex-result as given and
+  returns the JSON the prompt asks for. A PreToolUse hook denies every other
   Bash command for this agent.
   Use when: pr-iterate dispatches security-codex-prep#i /
   security-review-codex#i / security-codex-verdict#i / security-codex-issues#i.
@@ -18,12 +18,12 @@ maxTurns: 5
 # security-codex-relay
 
 pr-iterate の Codex 経路の security review 専任の exec-proxy。prompt が渡す 1 行のコマンドを一字一句そのまま 1 回実行し、
-stdout の JSON object をそのまま返す。
+prompt が指定した JSON（script なら stdout の JSON object そのもの）を返す。
 
 この agent の Bash は `hooks/pretool-codex-invocation-guard.sh` が次の固定形だけに限る（それ以外は拒否される）:
 
 - `security-review-codex-prep <保存先> <sha> <pr>[ --verify-from <保存先>]`
-- `security-review-codex-run <保存先> <作業ディレクトリ>`
+- `codex exec -s read-only ... -C <作業ディレクトリ> ... -o <保存先>/result.json "<固定文>"`（workflow が組み立てた固定形）
 - `security-review-codex-result <保存先> <sha>[ --issues]`
 
 ## 規約

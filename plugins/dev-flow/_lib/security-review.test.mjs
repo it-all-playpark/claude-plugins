@@ -4,7 +4,7 @@
 //     全 property が required・maxLength を持たない）
 // (2) prompt: Codex 用の脅威モデルは、攻撃者の入力を PR の内容と外部データに限り（利用者自身が設定する環境変数を含めない）、
 //     業務ロジックの正しさを critical / major にしない。diff はファイルの末尾の DATA 区間に置き、区間を閉じる行を持たない
-// (3) 起動形: codexSecurityReviewCommand は保存先と空の mkdtemp を security-review-codex-run に渡す固定形で、
+// (3) 起動形: codexSecurityReviewCommand は保存先の prompt.md・schema.json・result.json と空の mkdtemp を指す固定形の codex exec で、
 //     hooks/pretool-codex-invocation-guard.sh は security-codex-relay のその形（prep が実際に用意した保存先・作業ディレクトリ）を通す
 // (4) result の判定（codexResultVerdict と CLI _lib/scripts/security-review-codex-result.mjs）: schema に適合し、reviewed_sha が
 //     head と一致し、critical/major が 0 件のときだけ clear。規則は securityReviewVerdict と同じ
@@ -74,9 +74,14 @@ test('[security-review][2] diff と前回の未解消の指摘はファイルの
 
 // ---- (3) 起動形と hook ----
 
-test('[security-review][3] codexSecurityReviewCommand は保存先と空の mkdtemp を security-review-codex-run に渡す固定形（codex を直接起動しない）', () => {
+test('[security-review][3] codexSecurityReviewCommand は先頭トークン codex の固定形で、保存先と空の mkdtemp を指し、それ以外のフラグを含まない', () => {
   const cmd = codexSecurityReviewCommand({ reviewDir: '/tmp/dev-flow-security-review-Ab12Cd', cwdDir: '/tmp/dev-flow-codex-cwd-Qw12Er' });
-  assert.equal(cmd, 'security-review-codex-run /tmp/dev-flow-security-review-Ab12Cd /tmp/dev-flow-codex-cwd-Qw12Er');
+  assert.equal(cmd, 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check'
+    + ' -C /tmp/dev-flow-codex-cwd-Qw12Er -c web_search="disabled"'
+    + ' --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use'
+    + ' -c model_instructions_file=/tmp/dev-flow-security-review-Ab12Cd/prompt.md'
+    + ' --output-schema /tmp/dev-flow-security-review-Ab12Cd/schema.json -o /tmp/dev-flow-security-review-Ab12Cd/result.json'
+    + ' "Run the security review described in your instructions and reply only with the JSON object defined by the output schema."');
 });
 
 // prep CLI で保存先を用意し、そこから組み立てた起動形を hook に通す（prep・起動形・hook の 3 つの形が揃っていること）
@@ -98,6 +103,7 @@ test('[security-review][3] prep が用意した保存先と作業ディレクト
   assert.equal(out.ok, true, JSON.stringify(out));
   const cmd = codexSecurityReviewCommand({ reviewDir: out.review_dir, cwdDir: out.cwd_dir });
   assert.equal(hookDecision(cmd, wt), 'allow');
+  assert.equal(hookDecision(cmd.replace('-s read-only', '-s workspace-write'), wt), 'deny');
   assert.equal(hookDecision(`${cmd} --dangerously-bypass-approvals-and-sandbox`, wt), 'deny');
   assert.equal(hookDecision(`codex exec -s read-only -C ${out.cwd_dir} hi`, wt), 'deny');
 });

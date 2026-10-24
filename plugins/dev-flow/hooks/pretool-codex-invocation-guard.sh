@@ -7,8 +7,8 @@
 #   起動し、指摘の本文（Codex が diff を引用した文）を読む round もあるので、誘導されて別のコマンド（result.json の上書き・
 #   フラグを足した codex の起動）を実行し得る。文字列の一致で「危ないコマンド」を探すやり方は、引用の分割（cod''ex）・
 #   バックスラッシュ・$ 展開・glob で語を組み立てられるので止められない。中継の agent には allowlist（先頭トークンが固定の bare 名で、
-#   引数が mkdtemp の形のパスと sha だけ）を当て、それ以外は語を見ずに全部拒否する。codex 自体は security-review-codex-run が
-#   固定の argv で起動し、出力を中継に返さない。
+#   引数が mkdtemp の形のパスと sha だけ）を当て、それ以外は語を見ずに全部拒否する。codex は中継が先頭トークン codex の固定形の単文で
+#   起動する（sandbox の外で通信できるのは先頭が codex の単文だけで、script の中から起動すると通信が拒否される）。
 #   分類: incentive-structural（中継が攻撃者の文を読める限り誘導を否定できない。sunset しない）。
 #
 # 判定フロー:
@@ -18,10 +18,16 @@
 #   3. agent_type が dev-flow:security-codex-relay → command が次のどれかと完全に一致するときだけ通す（改行・余分な空白・
 #      引用符・shell の記号を含む形は一致しない）:
 #        security-review-codex-prep <D> <sha> <pr>[ --verify-from <D>]
-#        security-review-codex-run <D> <C>
+#        codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C <C>
+#          -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use
+#          --disable computer_use -c model_instructions_file=<D>/prompt.md --output-schema <D>/schema.json -o <D>/result.json "<固定文>"
+#        （codex は実際は 1 行。_lib/security-review.mjs の codexSecurityReviewCommand と同じ — 起動形を変えるときは両方を同時に変える）
 #        security-review-codex-result <D> <sha>[ --issues]
 #      <D> は basename が dev-flow-security-review-XXXXXX、<C> は dev-flow-codex-cwd-XXXXXX の、`.` / `..` の要素を持たない
-#      [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字。パスの実体（空・symlink・cwd の配下か）は各 script が確かめる
+#      [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字。prep / result のパスの実体は各 script が確かめる。
+#      codex の形は hook がパスの実体も確かめる: <C> は空の実ディレクトリ、<D> は prompt.md・schema.json を実ファイルとして持ち
+#      result.json を持たない実ディレクトリ（symlink の result.json を通じて保存先の外へ書かせない・先に置かれた result.json を
+#      codex の結果として読ませない）で、どちらも入力の cwd（PR の worktree）の配下でない
 #   4. それ以外の dev-flow の agent → 引用符とバックスラッシュを外した command に codex の語（前後が英数字・`_` `.` `-` でない
 #      `codex`）か保存先・作業ディレクトリの名前（dev-flow-security-review- / dev-flow-codex-cwd-）があれば deny。それ以外は通す。
 #      この agent たちは任意の Bash を持つので、ここは誤って codex や保存先を触ることを止める多層防御であり保証ではない —
@@ -40,7 +46,7 @@ D_RE="(${SEG})*/dev-flow-security-review-[A-Za-z0-9]{6}"
 C_RE="(${SEG})*/dev-flow-codex-cwd-[A-Za-z0-9]{6}"
 SHA_RE='[0-9a-fA-F]{40}'
 PREP_RE="^security-review-codex-prep ${D_RE} ${SHA_RE} [0-9]+( --verify-from ${D_RE})?$"
-RUN_RE="^security-review-codex-run ${D_RE} ${C_RE}$"
+CODEX_PROMPT='Run the security review described in your instructions and reply only with the JSON object defined by the output schema.'
 RESULT_RE="^security-review-codex-result ${D_RE} ${SHA_RE}( --issues)?$"
 CODEX_WORD_RE='(^|[^A-Za-z0-9_.-])codex([^A-Za-z0-9_.-]|$)'
 DIR_NAME_RE='dev-flow-security-review-|dev-flow-codex-cwd-'
@@ -62,6 +68,46 @@ on_exit() {
 pass_through() {
   DECIDED=1
   exit 0
+}
+
+# 中継の codex の起動が固定形と完全に一致し、パスの実体が条件を満たすか。満たさなければ deny する
+check_codex() {
+  local c d p s cwd cwd_real a expected
+  [[ $CMD =~ \ -C\ ([^ ]+)\  ]] || emit_deny "codex の起動形が固定形と一致しない"
+  c="${BASH_REMATCH[1]}"
+  [[ $CMD =~ \ -c\ model_instructions_file=([^ ]+)/prompt\.md\  ]] || emit_deny "codex の起動形が固定形と一致しない"
+  d="${BASH_REMATCH[1]}"
+  [[ $c =~ ^${C_RE}$ && $d =~ ^${D_RE}$ ]] || emit_deny "codex の作業ディレクトリ・保存先が mkdtemp の形でない"
+  expected="codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C ${c} -c web_search=\"disabled\" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=${d}/prompt.md --output-schema ${d}/schema.json -o ${d}/result.json \"${CODEX_PROMPT}\""
+  [[ $CMD == "$expected" ]] || emit_deny "codex の起動形が固定形と一致しない（フラグの過不足・schema / 出力が保存先の外）"
+  for p in "$c" "$d"; do
+    IFS='/' read -r -a SEGS <<<"${p#/}"
+    for s in "${SEGS[@]}"; do
+      [[ $s == "." || $s == ".." ]] && emit_deny "security-codex-relay のパスに . / .. の要素がある"
+    done
+  done
+  [[ -d $c && ! -L $c ]] || emit_deny "codex の作業ディレクトリが実ディレクトリでない"
+  shopt -s nullglob dotglob
+  local entries=("$c"/*)
+  shopt -u nullglob dotglob
+  ((${#entries[@]} == 0)) || emit_deny "codex の作業ディレクトリが空でない"
+  [[ -d $d && ! -L $d ]] || emit_deny "保存先が実ディレクトリでない"
+  [[ -f "$d/prompt.md" && ! -L "$d/prompt.md" ]] || emit_deny "保存先に prompt.md が無い"
+  [[ -f "$d/schema.json" && ! -L "$d/schema.json" ]] || emit_deny "保存先に schema.json が無い"
+  [[ ! -e "$d/result.json" && ! -L "$d/result.json" ]] || emit_deny "保存先に result.json が既にある"
+  cwd=$(jq -r '.cwd | if type == "string" then . else "" end' 2>/dev/null <<<"$INPUT") || emit_deny "cwd を読めない"
+  [[ $cwd == /* ]] || emit_deny "cwd が絶対パスでない"
+  cwd_real=$(realpath -- "$cwd" 2>/dev/null) || emit_deny "cwd の realpath を取れない"
+  # 自身かその祖先のどれかが cwd と同じディレクトリか（dev+inode で比べる — firmlink・大文字小文字の別表記に依らない）
+  for p in "$c" "$d"; do
+    a=$(realpath -- "$p" 2>/dev/null) || emit_deny "codex の作業ディレクトリ・保存先の realpath を取れない"
+    while :; do
+      [[ $a -ef $cwd_real ]] && emit_deny "codex の作業ディレクトリ・保存先が cwd の配下"
+      [[ -z $a || $a == / ]] && break
+      a="${a%/*}"
+      [[ -n $a ]] || a=/
+    done
+  done
 }
 
 INPUT=$(cat) || INPUT=""
@@ -91,7 +137,11 @@ CMD=$(jq -r '.tool_input.command' 2>/dev/null <<<"$INPUT") || emit_deny "command
 
 if [[ $AGENT_TYPE == "$RELAY_AGENT" ]]; then
   [[ $HAS_NL == "false" ]] || emit_deny "security-codex-relay は prompt のコマンド行を 1 行の単文でだけ実行できる"
-  if [[ $CMD =~ $PREP_RE || $CMD =~ $RUN_RE || $CMD =~ $RESULT_RE ]]; then
+  if [[ $CMD == "codex "* ]]; then
+    check_codex
+    pass_through
+  fi
+  if [[ $CMD =~ $PREP_RE || $CMD =~ $RESULT_RE ]]; then
     # 正規表現は `.` / `..` の要素を弾けないので、パスの要素を別に確かめる
     for tok in $CMD; do
       [[ $tok == /* ]] || continue
@@ -102,14 +152,14 @@ if [[ $AGENT_TYPE == "$RELAY_AGENT" ]]; then
     done
     pass_through
   fi
-  emit_deny "security-codex-relay は security-review-codex-prep / security-review-codex-run / security-review-codex-result の固定形でだけ Bash を使える。prompt のコマンド行を一字一句そのまま実行せよ"
+  emit_deny "security-codex-relay は security-review-codex-prep / codex exec / security-review-codex-result の固定形でだけ Bash を使える。prompt のコマンド行を一字一句そのまま実行せよ"
 fi
 
 NORM=${CMD//\'/}
 NORM=${NORM//\"/}
 NORM=${NORM//\\/}
 if [[ $NORM =~ $CODEX_WORD_RE ]]; then
-  emit_deny "dev-flow の agent は codex を直接起動できない（Codex 経路の security review は security-review-codex-run が起動する）。文字列の検索は Grep tool を使う"
+  emit_deny "dev-flow の agent は codex を起動できない（Codex 経路の security review は security-codex-relay が固定形で起動する）。文字列の検索は Grep tool を使う"
 fi
 if [[ $NORM =~ $DIR_NAME_RE ]]; then
   emit_deny "dev-flow の agent は security review の保存先・作業ディレクトリを Bash で触れない（security-codex-relay の固定形だけが扱う）。文字列の検索は Grep tool を使う"
