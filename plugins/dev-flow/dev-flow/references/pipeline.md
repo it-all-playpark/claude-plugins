@@ -111,7 +111,9 @@ merge base 名は `args.nested.base_ref`（dev-flow は Setup の base、wrapper
 Merge tier を pr-iterate の後に置くのは、fix 適用後の最終 tree に対して danger-grep 再実行・danger 再
 reconcile を行い、merge 判定を最新の PR 内容に基づかせるため。pr-iterate が fix を適用した run では
 Final reconcile phase が worktree を PR 最終 HEAD へ同期し test suite を一発再実行する（red / 再検証
-不能は merge tier HOLD。fixes_applied=0 は agent 呼び出しゼロで skip）。再検証不能時は PR head sha に
+不能は merge tier HOLD。fixes_applied=0 は agent 呼び出しゼロで skip し、PR tree のテスト状態は Validate の結果の
+まま — Validate が GREEN_MAX 後も `tests:'failed'` / `green:false` で PR へ進んだ run は `validate_test_red` で HOLD。
+`tests:'error'`（起動失敗）は積まない）。再検証不能時は PR head sha に
 pin した CI check の決定論判定で代替し、成立しなければ HOLD を維持する。test suite の実行は Validate と
 同じ exec-proxy `run-tests <WT>`（haiku は stdout の JSON 1 行を転写するだけ）で、実行可能な `tests/run-*.sh` を
 全本実行し、全本 exit 0 のときだけ green とする（判定は exit code 由来。詳細は exec-proxy.md の validate-test 行）。
