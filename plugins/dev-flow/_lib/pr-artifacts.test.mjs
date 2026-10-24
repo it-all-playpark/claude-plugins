@@ -27,6 +27,7 @@ import {
   PR_SECTION_HEADING_MAX,
   PR_BODY_PLAN_KEYS,
   prSectionsTrimFeedback,
+  prBodyLanguageFeedback,
   prBodyEvidenceInstr,
   planWithoutPrBodyMaterial,
   prPushLogPath,
@@ -390,6 +391,42 @@ test('[pr-artifacts] prSectionsTrimFeedback: pr_sections の合計が上限以�
   });
   assert.ok(fb[0].instruction.includes('コード・テストは変更しない'), fb[0].instruction);
   assert.ok(fb[0].instruction.includes(`${PR_SECTIONS_MAX_CHARS} 字以内`), fb[0].instruction);
+});
+
+test('[pr-artifacts] prBodyLanguageFeedback: 日本語を含まない 1 行要約欄だけを列挙して 1 件返し、日本語だけなら null', () => {
+  const ja = plan({
+    behavior_changes: ['`adoptImplPrNotes` が `pr_notes[].text` を取り込むようになる'],
+    review_points: ['PR_SECTIONS_MAX_CHARS=3000 の値で足りるか'],
+    out_of_scope: ['dotfiles の settings.json 変更（worktree 外）'],
+    architecture_decisions: [{ decision: 'JSON で返す', rationale: '' }, { decision: 'Unicode の Script で判定', rationale: '`\\p{Script=Han}` を使う' }],
+    pr_notes: [{ section: 'verification', text: 'node --test: 12 pass / 0 fail を確認' }],
+    pr_sections: [{ heading: 'Mapping', markdown: '| a | b |\n|---|---|\n| x | y |' }],
+  });
+  assert.equal(prBodyLanguageFeedback(ja), null, '識別子が混ざった日本語文と pr_sections の英語は差し戻さない');
+  assert.equal(prBodyLanguageFeedback(plan()), null);
+
+  const en = {
+    ...ja,
+    behavior_changes: ['Builder now rejects English items', '日本語の項目'],
+    review_points: ['Check the regex `\\p{Script=Han}`'],
+    out_of_scope: ['日本語', 'Dotfiles change (outside worktree)'],
+    architecture_decisions: [{ decision: 'Use Unicode scripts', rationale: 'Avoids false positives' }, { decision: '日本語の判断', rationale: 'Short reason' }],
+    pr_notes: [{ section: 'measurement', text: 'RSS 380Mi -> 120Mi' }],
+  };
+  const fb = prBodyLanguageFeedback(en);
+  assert.equal(fb.length, 1);
+  assert.deepEqual(fb[0].pr_body_not_japanese.items, [
+    { field: 'behavior_changes[0]', text: 'Builder now rejects English items' },
+    { field: 'review_points[0]', text: 'Check the regex `\\p{Script=Han}`' },
+    { field: 'out_of_scope[1]', text: 'Dotfiles change (outside worktree)' },
+    { field: 'design_decisions[0].title', text: 'Use Unicode scripts' },
+    { field: 'design_decisions[0].rationale', text: 'Avoids false positives' },
+    { field: 'design_decisions[1].rationale', text: 'Short reason' },
+    { field: 'pr_notes[0].text', text: 'RSS 380Mi -> 120Mi' },
+  ]);
+  assert.ok(fb[0].instruction.includes('コード・テストは変更しない'), fb[0].instruction);
+  assert.ok(fb[0].instruction.includes('日本語で書き直し'), fb[0].instruction);
+  assert.ok(fb[0].instruction.includes('behavior_changes / review_points / design_decisions / pr_notes / out_of_scope / pr_sections を全件返せ'), fb[0].instruction);
 });
 
 test('[pr-artifacts] prBodyEvidenceInstr / planWithoutPrBodyMaterial: evaluator には本文テキストを渡し、plan の本文材料は外す', () => {
@@ -925,4 +962,20 @@ test('[pr-artifacts] agents/dev-implementer.md: 1 行要約欄の字数・件数
   assert.ok(example.includes(`1 項目 1 文・${IMPL_MAX.outOfScope} 字以内）`), example);
   assert.ok(example.includes(`${IMPL_MAX.behaviorChange} 字以内・最大 ${IMPL_MAX.behaviorChanges} 項目）`), example);
   assert.ok(example.includes(`${IMPL_MAX.reviewPoint} 字以内・最大 ${IMPL_MAX.reviewPoints} 項目）`), example);
+});
+
+test('[pr-artifacts] agents/dev-implementer.md: 言語の規則が返り値の自然文フィールドすべてを日本語と定め、識別子等は原文のまま', () => {
+  const md = readFileSync(join(here, '..', 'agents', 'dev-implementer.md'), 'utf8');
+  const start = md.indexOf('## 返却 JSON の言語');
+  assert.ok(start >= 0, '言語の節が無い');
+  const end = md.indexOf('\n## ', start + 1);
+  const section = md.slice(start, end < 0 ? undefined : end);
+  assert.ok(section.includes('すべて日本語'), section);
+  for (const f of ['summary', 'concerns', 'blocking_reason.detail', 'missing_context', 'behavior_changes', 'review_points',
+    'design_decisions', 'title', 'rationale', 'pr_notes[].text', 'out_of_scope', 'pr_sections', 'heading', 'markdown']) {
+    assert.ok(section.includes(`\`${f}\``), `${f} が言語の規則に無い`);
+  }
+  assert.ok(section.includes('識別子・パス・コマンド・エラー引用は訳さず原文のまま'), section);
+  const fb = prBodyLanguageFeedback(plan({ behavior_changes: ['English only'] }));
+  assert.ok(section.includes(`\`${Object.keys(fb[0])[0]}\``), '差し戻しの key が規則に書かれていない');
 });
