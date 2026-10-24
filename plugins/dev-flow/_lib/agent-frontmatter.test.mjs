@@ -81,6 +81,11 @@ const AGENTS = [
     name: 'security-reviewer', model: 'opus', effort: 'high', maxTurns: 'finite',
     tools: { exact: ['Read', 'Grep', 'Glob'], exclude: ['Bash', 'Write', 'Edit', 'Skill', 'TodoWrite'] },
   },
+  // security-codex-relay は Bash だけ（Read を持つと result.json の description 等の自由文を読める。Bash は hook が固定形に限る）
+  {
+    name: 'security-codex-relay', model: 'haiku', effort: ADOPTED_EFFORT, maxTurns: 'finite',
+    tools: { exact: ['Bash'], exclude: ['Read', 'Write', 'Edit', 'Skill', 'TodoWrite', 'Glob', 'Grep'] },
+  },
   { name: 'dev-implementer', effort: 'high' },
 ];
 

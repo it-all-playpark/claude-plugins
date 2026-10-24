@@ -55,8 +55,9 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - PR の base branch で直近に成功した CI の所要時間から CI 待ちの上限（秒）を決め、`ci_wait_ceiling_seconds` に載せる
      （dev-flow の nested 起動と同じ求め方。読み取りに失敗したら 300）
    - PR 全体（`origin/<base>...<PR head>`）の diff が敵対的 security review の対象かを決定論の許可リストで判定し、
-     `security_review`（`{target, reasons, reviewer_context_changed}`）に載せる。判定できないときは `target:true`・
-     `reviewer_context_changed:true`
+     `security_review`（`{target, reasons, reviewer_context_changed, reviewer}`）に載せる。判定できないときは `target:true`・
+     `reviewer_context_changed:true`。`reviewer` は review を回す CLI の opt-in（`"dev-flow".security_reviewer`。base branch の
+     `skill-config.json` か user 設定から読み、PR head の設定は読まない。無ければ `"claude"`）
 
    結果に応じて分岐する:
 
@@ -86,7 +87,9 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 
    - `security_review` を省くと workflow は対象として扱う（fail-closed）。対象の PR は、LGTM の前に PR 全 diff を
      敵対的 security review（security-reviewer）が読み、critical / major が 0 件になるまで LGTM にしない。
-     終端サマリーには指摘の件数だけが載る
+     終端サマリーには指摘の件数だけが載る。`reviewer:"codex"` なら Codex CLI が review する（Codex を起動できなければ
+     security-reviewer の判定に戻る）。指示ファイルを変える PR はどちらの経路でも自動の review で clear にせず止める
+     （`security-review-isolated` で人が確かめる）
 
    - `prior_devflow` が HOLD の dev-flow サマリーなら、終端サマリーは HOLD 理由の code ごとの回収状況を出し、
      未解消が残れば見出しを「🎉 LGTM」にしない（このレポートが PR の最後のコメント＝最新の結論になるため）。
