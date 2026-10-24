@@ -35,7 +35,9 @@
 #     head_mismatch は head_sha が今の PR head（headRefOid）と違うか、head_sha が null のとき true。終端サマリーが無ければ null
 #   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。PR の base branch の CI 所要時間から決める
 #     （ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
-#   security_review: 敵対的 security review の起動時の判定 {target, reasons, reviewer_context_changed}。origin/<base>...<PR head> の diff を
+#   security_review: 敵対的 security review の起動時の判定 {target, reasons, reviewer_context_changed, reviewer}。reviewer は review を回す
+#     CLI の opt-in（"dev-flow".security_reviewer。base branch の skill-config.json か user 設定から読み、PR head の設定は読まない。
+#     無ければ "claude"。ok:false の早期終端では載せない — workflow は省略を "claude" として扱う）。origin/<base>...<PR head> の diff を
 #     security-review-scope.sh で判定し、全ファイルが許可リストに当たるときだけ target:false。判定できない（ok:false の
 #     早期終端・base 不明・node 不在・取得失敗）ときは target:true。reviewer_context_changed は diff が reviewer の指示ファイル
 #     （CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変えるか — 判定できたうえで false のときだけ false（workflow は
@@ -398,5 +400,37 @@ if [[ -n "$base_ref" ]]; then
         security_review='{"target":true,"reasons":["scope_unreadable"],"reviewer_context_changed":true}'
     fi
 fi
+
+# security review を回す CLI の opt-in（"dev-flow".security_reviewer。issue #1087）。base branch（origin/<base>）の
+# skill-config.json / .claude/skill-config.json（前者優先）を先に、無ければ user 設定（$SKILL_CONFIG_PATH /
+# ~/.config/skills/config.json / ~/.claude/skill-config.json の順）を読む。PR head（worktree）の設定ファイルは読まない —
+# PR が gate の判定者を自分で選べないようにする。どこにも無ければ "claude"。値の検証は workflow（parseSecurityReviewArg）が
+# 行い、out-of-enum は明示 error にする。JSON として読めないファイルは未設定として扱う。
+reviewer_of() {
+    jq -c 'if type == "object" and (.["dev-flow"] | type) == "object" then .["dev-flow"].security_reviewer else null end' 2>/dev/null
+}
+security_reviewer='"claude"'
+reviewer_found=false
+if [[ -n "$base_ref" ]]; then
+    for rel in skill-config.json .claude/skill-config.json; do
+        v="$(git -C "$ROOT" show "refs/remotes/origin/${base_ref}:${rel}" 2>/dev/null | reviewer_of)" || v=''
+        if [[ -n "$v" && "$v" != 'null' ]]; then
+            security_reviewer="$v"
+            reviewer_found=true
+            break
+        fi
+    done
+fi
+if [[ "$reviewer_found" == false ]]; then
+    for cfg in "${SKILL_CONFIG_PATH:-}" "${HOME}/.config/skills/config.json" "${HOME}/.claude/skill-config.json"; do
+        [[ -n "$cfg" && -f "$cfg" ]] || continue
+        v="$(reviewer_of <"$cfg")" || v=''
+        if [[ -n "$v" && "$v" != 'null' ]]; then
+            security_reviewer="$v"
+            break
+        fi
+    done
+fi
+security_review="$(printf '%s' "$security_review" | jq -c --argjson r "$security_reviewer" '. + {reviewer: $r}')"
 
 emit true

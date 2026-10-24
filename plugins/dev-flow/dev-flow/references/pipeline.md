@@ -322,6 +322,35 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
   `reviewer_context_changed` の run は終端サマリーで「指示ファイルを変える PR なので自動 review をしていない」と出し分ける
   （HOLD は変えない。変わったファイルのパスは PR が決めた文字列なので載せず、固定の確認コマンドに PR 番号だけを差し込む）
 
+**Codex 経路**（opt-in。`"dev-flow".security_reviewer = "codex"`）:
+
+```
+/pr-iterate     → pr-iterate-prerun が base branch（origin/<base>）の skill-config.json / .claude/skill-config.json、無ければ user 設定
+                  （$SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）から読み、
+                  args.security_review.reviewer で渡す（PR head の設定ファイルは読まない。無ければ "claude"）
+pr-iterate      → security-scope#i の前提チェックを通った round で（reviewer_context_changed でも止めない）:
+                  security-codex-prep#i（dev-runner-haiku-ro）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`
+                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）
+                  security-review-codex#i（dev-runner-haiku-ro）: 固定の `codex exec ...` → `security-review-codex-result <保存先> <head>`
+                    → script と workflow の両方が securityReviewVerdict と同じ規則で clear のときだけ LGTM（以降は Claude 経路と同じ）
+                    → Codex で判定できない（prep の失敗・codex が無い・hook の拒否・result.json が読めない）→ その round は Claude 経路の判定
+                      （reviewer_context_changed なら security_unresolved、そうでなければ security-review#i）
+```
+
+- 起動形は `codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C <空の mkdtemp>
+  -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use
+  -c model_instructions_file=<保存先>/prompt.md --output-schema <保存先>/schema.json -o <保存先>/result.json "<固定文>"` だけ
+  （`_lib/security-review.mjs` の `codexSecurityReviewCommand`）。空の `-C` で cwd の AGENTS.md を読ませず、shell 等を外して
+  diff の外を読む手段を無くす。PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`。`agent_type` が `dev-flow:` の
+  Bash で `codex` を起動する command だけ判定）がこの形との完全一致を強制し、フラグの過不足・`-C` が空の mkdtemp でない・
+  指示ファイル / schema / 出力が保存先の外・保存先に result.json が既にある起動を拒否する
+- codex は exec-proxy スクリプトの中で起動しない（subagent の bare 単文。dev-flow の `bin/` は excludedCommands に足さない）
+- `--output-schema` は OpenAI の strict 形（全 object が `additionalProperties:false`・全 property が required・`maxLength` 無し）
+  でないと 400 になる。result.json の schema 適合は `security-review-codex-result` が判定し、適合しない結果は clear にしない
+- Codex 用の脅威モデルは攻撃者の入力を PR の内容と外部データ（ファイル名・API 応答・取り込む文書）に限り、利用者自身が設定する
+  環境変数を含めない。業務ロジックの正しさは critical / major にしない
+- 返り値 `rounds` は Claude の security-reviewer と、結果を読めた Codex の review の合計
+
 - **`agent()` へ渡す agentType は plugin namespace 必須** — subagent の実体は plugin 配下
   (`plugins/dev-flow/agents/`) にあり、harness は `dev-flow:<name>` の namespaced id でしか解決しない
   (bare 名は `agent type '<name>' not found` で run 全体が起動直後に abort する)。workflow 本体・

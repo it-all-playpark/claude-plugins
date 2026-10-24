@@ -32,3 +32,9 @@
   echo "$output"
   [ "$status" -eq 0 ]
 }
+
+@test "pretool-codex-invocation-guard.test.sh は exit 0 で完走する" {
+  run bash "$BATS_TEST_DIRNAME/pretool-codex-invocation-guard.test.sh"
+  echo "$output"
+  [ "$status" -eq 0 ]
+}
