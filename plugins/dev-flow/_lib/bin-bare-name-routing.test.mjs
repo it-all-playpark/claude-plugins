@@ -55,6 +55,7 @@ const BARE = [
   'security-review-scope',
   'security-review-codex-prep',
   'security-review-codex-result',
+  'security-review-codex-run',
 ];
 
 function listFiles(dir, ext) {

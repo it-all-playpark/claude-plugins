@@ -328,26 +328,29 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 /pr-iterate     → pr-iterate-prerun が base branch（origin/<base>）の skill-config.json / .claude/skill-config.json、無ければ user 設定
                   （$SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）から読み、
                   args.security_review.reviewer で渡す（PR head の設定ファイルは読まない。無ければ "claude"）
-pr-iterate      → security-scope#i の前提チェックを通った round で（reviewer_context_changed でも止めない）:
-                  security-codex-prep#i（dev-runner-haiku-ro）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`
+pr-iterate      → security-scope#i の前提チェックを通り、reviewer_context_changed でない round で（指示ファイルを変える PR は
+                  Codex 経路でも security_unresolved で止める — 中継は PR の worktree を cwd に起動し、PR の指示文で返り値を偽れる）:
+                  security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`
                     → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）
-                  security-review-codex#i（dev-runner-haiku-ro）: 固定の `codex exec ...` を実行するだけ（出力は返させない）
-                  security-codex-verdict#i（dev-runner-haiku-ro）: `security-review-codex-result <保存先> <head>`（自由文を出さない判定）
+                  security-review-codex#i（security-codex-relay）: `security-review-codex-run <保存先> <作業ディレクトリ>`
+                    → script が固定の argv で codex exec を起動し、codex の stdout / stderr を捨てて {done} だけを出す
+                  security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head>`（自由文を出さない判定）
                     → clear でなければ security-codex-issues#i: `security-review-codex-result <保存先> <head> --issues`（指摘の本文）
                     → script と workflow の両方が securityReviewVerdict と同じ規則で clear のときだけ LGTM（以降は Claude 経路と同じ）
-                    → clear を決める中継に自由文（codex の stdout・指摘の本文）を読ませない — 引用された PR の文で偽の clear を作らせない
-                    → Codex で判定できない（prep の失敗・codex が無い・hook の拒否・result.json が読めない）→ その round は Claude 経路の判定
-                      （reviewer_context_changed なら security_unresolved、そうでなければ security-review#i）
+                    → 起動と clear を決める中継に自由文（codex の出力・指摘の本文）を読ませない — 引用された PR の文で偽の clear を作らせない
+                    → Codex で判定できない（prep の失敗・codex が無い・hook の拒否・result.json が読めない）→ その round は security-review#i
 ```
 
-- 起動形は `codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C <空の mkdtemp>
-  -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use
-  -c model_instructions_file=<保存先>/prompt.md --output-schema <保存先>/schema.json -o <保存先>/result.json "<固定文>"` だけ
-  （`_lib/security-review.mjs` の `codexSecurityReviewCommand`）。空の `-C` で cwd の AGENTS.md を読ませず、shell 等を外して
-  diff の外を読む手段を無くす。PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`。`agent_type` が `dev-flow:` の
-  Bash で `codex` を起動する command だけ判定）がこの形との完全一致を強制し、フラグの過不足・`-C` が空の mkdtemp でない・
-  指示ファイル / schema / 出力が保存先の外・保存先に result.json が既にある起動を拒否する
-- codex は exec-proxy スクリプトの中で起動しない（subagent の bare 単文。dev-flow の `bin/` は excludedCommands に足さない）
+- codex の argv は `_shared/scripts/security-review-codex-run.sh` が固定で持つ: `codex exec -s read-only --ephemeral --ignore-user-config
+  --ignore-rules --skip-git-repo-check -C <空の mkdtemp> -c web_search="disabled" --disable shell_tool --disable unified_exec
+  --disable apps --disable browser_use --disable computer_use -c model_instructions_file=<保存先>/prompt.md
+  --output-schema <保存先>/schema.json -o <保存先>/result.json "<固定文>"`。空の `-C` で cwd の AGENTS.md を読ませず、shell 等を外して
+  diff の外を読む手段を無くす。script は起動の前に、保存先・作業ディレクトリが mkdtemp の形の実ディレクトリで cwd の配下でないこと、
+  `-C` が空であること、保存先に prompt.md・schema.json があり result.json（symlink を含む）が無いことを確かめる
+- PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`）は `security-codex-relay` の Bash を
+  `security-review-codex-prep` / `security-review-codex-run` / `security-review-codex-result` の固定形の allowlist に限る
+  （語を探す判定は引用の分割・`$` 展開で組み立てた語をすり抜けるので使わない）。他の dev-flow の agent には、引用符と
+  バックスラッシュを外した command に `codex` の語か保存先・作業ディレクトリの名前があれば拒否する（任意の Bash を持つ agent への多層防御）
 - `--output-schema` は OpenAI の strict 形（全 object が `additionalProperties:false`・全 property が required・`maxLength` 無し）
   でないと 400 になる。result.json の schema 適合は `security-review-codex-result` が判定し、適合しない結果は clear にしない
 - Codex 用の脅威モデルは攻撃者の入力を PR の内容と外部データ（ファイル名・API 応答・取り込む文書）に限り、利用者自身が設定する
@@ -361,7 +364,7 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
   namespace は `agent()` を呼ぶ直前の `nsAgentOpts()` (canonical `_lib/agent-namespace.mjs`。dev-flow.js /
   pr-iterate.js へ inline 生成) でのみ付与する。dev-flow-canary.js は inline bridge 非依存
   (self-contained) を保つため例外で、namespaced id を直接書く。新しい call site はこの経路に乗せる。
-- **判断系 leaf は subagent** (`.claude/agents/{dev-implementer,evaluator,pr-reviewer,security-reviewer,dev-runner,dev-runner-haiku,dev-runner-haiku-ro,dev-runner-haiku-wo}.md`)。
+- **判断系 leaf は subagent** (`.claude/agents/{dev-implementer,evaluator,pr-reviewer,security-reviewer,security-codex-relay,dev-runner,dev-runner-haiku,dev-runner-haiku-ro,dev-runner-haiku-wo}.md`)。
   effort は原則 subagent frontmatter で決める。`agent()` の `opts.effort` は frontmatter より優先して実効値に反映される
   （transcript で確認済み。dev-flow-canary の `agent_opts_effort_accepted` probe は受理の有無だけを見る）が、
   opts で effort を渡すのは pr-iterate の fix（`fix#i` / `fix#i-retry`、`FIX_EFFORT = 'medium'`）のみ

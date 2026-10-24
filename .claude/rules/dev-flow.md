@@ -59,10 +59,10 @@ dev-flow 本体・dev-flow-health（frontmatter の paths）を触るときだ�
 - 起動元 repo の `.git/config` を書く git / gh（`push -u`・`--track`・`gh pr checkout`）を使わない（sandbox 内で書けない）
 - plugin の `bin/` PATH はセッション起動時に version 込みで焼かれる — update 後は新セッションで `command -v` 確認（素のシェルでは常に失敗）
 
-> exec-proxy スクリプトは認証付き network I/O（gh・git push）を内部に持ってはならない（例外は 2 つ:
+> exec-proxy スクリプトは認証付き network I/O（gh・git push）を内部に持ってはならない（例外は 3 つ:
 > `analyze-issue` は issue 取得の bare `gh issue view` を内蔵し stdout を in-process で受ける。呼び出し元は
 > subagent ではなく prerun（`dev-flow-prerun` → `prerun-analyze.sh`）で、Jev もそこから呼ぶ。
-> `pr-push` は PR phase の push 1 回を内蔵し全文を log に残して末尾だけ返す — 長い hook 出力の末尾を落とさない）。GitHub I/O は subagent の Bash で「先頭トークンが gh または git の bare 単文」（gh は --repo、
+> `pr-push` は PR phase の push 1 回を内蔵し全文を log に残して末尾だけ返す — 長い hook 出力の末尾を落とさない。`security-review-codex-run` は `codex exec` 1 回で出力を捨てる）。GitHub I/O は subagent の Bash で「先頭トークンが gh または git の bare 単文」（gh は --repo、
 > cd &&・bash・env 前置禁止）として実行し、出力を $TMPDIR の file に落とすか、呼び出し側 agent が
 > stdout/stderr を argv でスクリプトへ verbatim 転写して、スクリプトは file または argv 入力の
 > 純変換とする。prompt に sandbox / excludedCommands / 特定パス起動の理由を書いてはならない —

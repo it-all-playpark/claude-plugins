@@ -87,8 +87,8 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 
    - `security_review` を省くと workflow は対象として扱う（fail-closed）。対象の PR は、LGTM の前に PR 全 diff を
      敵対的 security review（security-reviewer）が読み、critical / major が 0 件になるまで LGTM にしない。
-     終端サマリーには指摘の件数だけが載る。`reviewer:"codex"` なら Codex CLI が review し、指示ファイルを変える PR も
-     自動 review で clear にできる（Codex を起動できなければ security-reviewer の判定に戻る）
+     終端サマリーには指摘の件数だけが載る。`reviewer:"codex"` なら Codex CLI が review する（Codex を起動できなければ
+     security-reviewer の判定に戻る）。指示ファイルを変える PR はどちらの経路でも自動 review で clear にしない
 
    - `prior_devflow` が HOLD の dev-flow サマリーなら、終端サマリーは HOLD 理由の code ごとの回収状況を出し、
      未解消が残れば見出しを「🎉 LGTM」にしない（このレポートが PR の最後のコメント＝最新の結論になるため）。

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export GIT_OPTIONAL_LOCKS=0
+exec bash "$(dirname "$0")/../_shared/scripts/security-review-codex-run.sh" "$@"
