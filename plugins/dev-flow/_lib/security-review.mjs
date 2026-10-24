@@ -123,8 +123,9 @@ export function securityReviewVerdict(review, headSha) {
 // + diff）と strict 形の schema.json を書き、workflow が組み立てた固定の `codex exec` を中継が先頭トークン codex の単文で起動し
 // （sandbox の外で通信できるのは先頭が codex の単文だけ — exec-proxy script の中から起動すると通信が拒否される）、result.json を
 // security-review-codex-result が読む。3 つの起動は security-codex-relay に写させ、その Bash は hooks/pretool-codex-invocation-guard.sh
-// が固定形の allowlist で限る（codex の形はパスの実体も確かめる）。指示ファイルを変える PR も Codex 経路では止めず Codex の review で
-// clear にできる — clear は自由文を読まない判定の中継と allowlist で守る。
+// が固定形の allowlist で限る（codex の形はパスの実体も確かめる）。指示ファイルを変える PR は Codex 経路でも Codex の agent を spawn
+// せずに止める — 中継も PR の worktree で起動し、compaction 後に PR の CLAUDE.md を受け取って clear の JSON を捏造し得る（hook は
+// Bash の形を縛れても返り値の捏造は止められない）。
 // Codex で判定できない（codex が無い・hook が拒否した・結果を読めない）round は Claude 経路の判定に倒す（Codex の失敗で clear にしない）。
 
 // --output-schema は OpenAI の strict 形（全 object が additionalProperties:false・全 property が required・maxLength を持たない）
@@ -198,6 +199,8 @@ export function codexSecurityReviewPrompt({ pr, headSha, verifyItems = [], diff 
 export const CODEX_PATH_RE = /^(\/[A-Za-z0-9._-]+)+$/;
 export const CODEX_CWD_NAME_RE = /^dev-flow-codex-cwd-[A-Za-z0-9]{6}$/;
 export const SECURITY_REVIEW_DIR_NAME_RE = /^dev-flow-security-review-[A-Za-z0-9]{6}$/;
+// prep が保存先に書く prep 時刻（epoch ms）のファイル名。result script はこれより前の mtime の result.json を clear にしない
+export const CODEX_PREPARED_AT_FILE = 'prepared_at';
 
 // codex exec の起動形（security-codex-relay が一字一句写し、hooks/pretool-codex-invocation-guard.sh が完全一致で検査する —
 // 起動形を変えるときは hook の固定形も同時に変える）。末尾の prompt は固定文で、review の中身は prompt.md にだけ置く。

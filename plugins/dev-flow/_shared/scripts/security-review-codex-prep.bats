@@ -109,6 +109,44 @@ write_result() {
     [ ! -e "$D/prompt.md" ]
 }
 
+@test "保存先・-C の親（TMPDIR）の祖先に .git / AGENTS.md / AGENTS.override.md / CLAUDE.md があれば作業場所を作らず ok:false" {
+    for name in .git AGENTS.md AGENTS.override.md CLAUDE.md; do
+        # 保存先の祖先（TMPDIR の外の親）
+        P="$BATS_TEST_TMPDIR/rv-$name"
+        mkdir -p "$P/sub"
+        RP="$(cd "$P" && pwd -P)"
+        R="$RP/sub/dev-flow-security-review-Tnt001"
+        mkdir -p "$R"
+        printf 'diff\n' >"$R/pr.diff"
+        if [ "$name" = .git ]; then mkdir "$RP/.git"; else : >"$RP/$name"; fi
+        run bash "$BIN" "$R" "$HEAD_SHA" 5
+        [ "$status" -eq 0 ]
+        echo "$output" | jq -e '.ok == false and .error == "workspace_tainted" and .cwd_dir == null'
+        [ ! -e "$R/prompt.md" ] && [ ! -e "$R/schema.json" ] && [ ! -e "$R/prepared_at" ]
+
+        # -C を作る TMPDIR 自身（-C の親）
+        if [ "$name" = .git ]; then mkdir "$TMPDIR/.git"; else : >"$TMPDIR/$name"; fi
+        run bash "$BIN" "$D" "$HEAD_SHA" 5
+        echo "$output" | jq -e '.ok == false and .error == "workspace_tainted"'
+        [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
+        [ ! -e "$D/prompt.md" ]
+        rm -rf "${TMPDIR:?}/$name"
+    done
+    # dangling symlink も「ある」とみなす
+    ln -s /nonexistent "$TMPDIR/CLAUDE.md"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5
+    echo "$output" | jq -e '.ok == false and .error == "workspace_tainted"'
+}
+
+@test "prep 時刻（epoch ms）を保存先の prepared_at に書く" {
+    before="$(($(date +%s) * 1000))"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5
+    echo "$output" | jq -e '.ok == true'
+    at="$(cat "$D/prepared_at")"
+    [[ "$at" =~ ^[1-9][0-9]*$ ]]
+    [ "$at" -ge "$before" ]
+}
+
 @test "引数不正は exit 2" {
     run bash "$BIN" "$D" "$HEAD_SHA"
     [ "$status" -eq 2 ]

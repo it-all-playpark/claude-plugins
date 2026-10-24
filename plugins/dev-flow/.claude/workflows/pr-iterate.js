@@ -1417,6 +1417,7 @@ function codexSecurityReviewPrompt({ pr, headSha, verifyItems = [], diff }) {
 const CODEX_PATH_RE = /^(\/[A-Za-z0-9._-]+)+$/;
 const CODEX_CWD_NAME_RE = /^dev-flow-codex-cwd-[A-Za-z0-9]{6}$/;
 const SECURITY_REVIEW_DIR_NAME_RE = /^dev-flow-security-review-[A-Za-z0-9]{6}$/;
+const CODEX_PREPARED_AT_FILE = 'prepared_at';
 
 const CODEX_REVIEW_PROMPT = 'Run the security review described in your instructions and reply only with the JSON object defined by the output schema.';
 
@@ -2208,6 +2209,10 @@ async function securityGate(iteration, round) {
   if (!plainAbs(reviewDir) || !/^dev-flow-security-review-[A-Za-z0-9]{6}$/.test(dirName) || diffPath !== `${reviewDir}/pr.diff`
     || !isOutsideWorktree(reviewDir.toLowerCase(), String(isoWt).toLowerCase())) return stop('diff の保存先が PR の worktree の外の絶対パスでない', 'review_dir_invalid')
   reviewerContextChanged = reviewerContextChanged || isReviewerContextChanged(scope)
+  // workflow の agent 起動は cwd を受け付けず、security-reviewer も Codex の prep・起動・判定の中継も PR の worktree を cwd に起動する。
+  // PR が session に自動で読み込まれる指示ファイルを変えると、攻撃者の文がその agent に届き clear の根拠や JSON を偽れるので、
+  // 経路を問わず自動の review で clear にしない（Codex の agent も spawn しない。人間が security-review-isolated で確かめる）
+  if (reviewerContextChanged) return stop('PR が security review の判定者に読み込まれる指示ファイル（CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変える', 'reviewer_context_changed')
   let review = null
   // Codex 経路で結果を読めた round の script の判定（null は Claude 経路で review した round）
   let codexCleared = null
@@ -2227,10 +2232,6 @@ async function securityGate(iteration, round) {
   }
   if (codexCleared === null) {
     securityCodexPrevDir = null
-    // workflow の agent 起動は cwd を受け付けず、security-reviewer は PR の worktree を cwd に起動する。PR が session に自動で
-    // 読み込まれる指示ファイルを変えると、攻撃者の文が判定者に届き clear の根拠を偽れるので、Claude 経路では自動の review で
-    // clear にしない（人間が確かめる）。Codex 経路は空の mkdtemp を cwd にした codex が判定し、clear は自由文を読まない判定の中継が返す
-    if (reviewerContextChanged) return stop('PR が security review の判定者に読み込まれる指示ファイル（CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変える', 'reviewer_context_changed')
     securityRounds += 1
     try {
       review = await trackedAgent(

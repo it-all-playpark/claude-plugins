@@ -7,17 +7,18 @@
 //     review_dir: security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX。pr.diff を持つ）
 //     --verify-from: 前回の Codex の review の保存先。その result.json の critical/major を verify_items にする
 //
-// 書くもの: <review_dir>/prompt.md（codexSecurityReviewPrompt + diff）・<review_dir>/schema.json（strict 形）と、
-//   codex の -C に渡す新しい空の mkdtemp（os.tmpdir() 配下の dev-flow-codex-cwd-XXXXXX）。prompt.md・schema.json・result.json が
-//   既にあれば書かない（前の結果を今の review と取り違えない）。
+// 書くもの: <review_dir>/prompt.md（codexSecurityReviewPrompt + diff）・<review_dir>/schema.json（strict 形）・
+//   <review_dir>/prepared_at（prep 時刻の epoch ms）と、codex の -C に渡す新しい空の mkdtemp（os.tmpdir() 配下の
+//   dev-flow-codex-cwd-XXXXXX）。これらか result.json が既にあれば書かない（前の結果を今の review と取り違えない）。
+//   保存先と os.tmpdir() の祖先（自身を含む）に .git・AGENTS.md・AGENTS.override.md・CLAUDE.md があれば何も作らない（workspace_tainted）。
 // stdout: JSON 1 行 {ok, review_dir, cwd_dir, error?}。error は固定の code だけ（stdout を写す agent へ PR 由来の文字列を渡さない）。
 //   usage error だけ exit 2、それ以外は exit 0。
 import { mkdtempSync, readFileSync, writeFileSync, lstatSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
 import {
   codexSecurityReviewPrompt, codexResultVerdict, isCodexArgPath, CODEX_CWD_NAME_RE, CODEX_SECURITY_REVIEW_SCHEMA,
-  SECURITY_REVIEW_DIR_NAME_RE,
+  SECURITY_REVIEW_DIR_NAME_RE, CODEX_PREPARED_AT_FILE,
 } from '../security-review.mjs'
 
 const emit = (obj, code = 0) => {
@@ -46,7 +47,21 @@ const isRealFile = (p) => {
 }
 if (!isCodexArgPath(reviewDir, SECURITY_REVIEW_DIR_NAME_RE) || !isRealDir(reviewDir)) fail('review_dir_invalid')
 if (!isRealFile(join(reviewDir, 'pr.diff'))) fail('diff_unavailable')
-if (['prompt.md', 'schema.json', 'result.json'].some((f) => existsSync(join(reviewDir, f)))) fail('review_dir_not_fresh')
+if (['prompt.md', 'schema.json', 'result.json', CODEX_PREPARED_AT_FILE].some((f) => existsSync(join(reviewDir, f)))) fail('review_dir_not_fresh')
+
+// codex は作業ディレクトリから上へ .git・AGENTS.md 等を探して読む。-C の空ディレクトリ（tmpdir の配下）と保存先の祖先に
+// 細工されたファイルがあれば、空の -C で指示ファイルを読ませない前提が崩れるので作業場所を作らない（run は Claude 経路に倒れる）
+const TAINT_NAMES = ['.git', 'AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md']
+const existsNoFollow = (p) => {
+  try { lstatSync(p); return true } catch { return false }
+}
+const taintedAncestor = (start) => {
+  for (let d = resolve(start); ; d = dirname(d)) {
+    if (TAINT_NAMES.some((n) => existsNoFollow(join(d, n)))) return true
+    if (dirname(d) === d) return false
+  }
+}
+if (taintedAncestor(reviewDir) || taintedAncestor(tmpdir())) fail('workspace_tainted')
 
 let verifyItems = []
 if (verifyFrom != null) {
@@ -66,6 +81,7 @@ if (verifyFrom != null) {
 let cwdDir = null
 try {
   const diff = readFileSync(join(reviewDir, 'pr.diff'), 'utf8')
+  writeFileSync(join(reviewDir, CODEX_PREPARED_AT_FILE), `${Date.now()}\n`, { flag: 'wx' })
   writeFileSync(join(reviewDir, 'schema.json'), `${JSON.stringify(CODEX_SECURITY_REVIEW_SCHEMA)}\n`, { flag: 'wx' })
   writeFileSync(join(reviewDir, 'prompt.md'), codexSecurityReviewPrompt({ pr, headSha, verifyItems, diff }), { flag: 'wx' })
   cwdDir = mkdtempSync(join(tmpdir(), 'dev-flow-codex-cwd-'))

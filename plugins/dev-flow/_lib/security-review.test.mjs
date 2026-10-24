@@ -164,6 +164,8 @@ function runResultCli(args) {
 test('[security-review][4] security-review-codex-result は保存先の result.json を読んで判定し、読めなければ ok:false・cleared:false', () => {
   const root = mkdtempSync(join(tmpdir(), 'codex-result-'));
   const dir = mkdtempSync(join(root, 'dev-flow-security-review-'));
+  // prep が書く prep 時刻（mtime の判定は security-review-codex-result.bats が確かめる）
+  writeFileSync(join(dir, 'prepared_at'), `${Date.now() - 60000}\n`);
   // result.json が無い（codex が無い・hook が起動を拒否した）
   let r = runResultCli([dir, HEAD]);
   assert.equal(r.status, 0);

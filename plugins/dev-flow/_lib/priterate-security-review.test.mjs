@@ -376,19 +376,19 @@ const codexRound = (i, issues = [], { cleared, reviewedSha } = {}) => {
 };
 const contextScope = ({ prompt }) => securityScopeResponse({ head: securityScopeHeadOf(prompt), contextChanged: true });
 
-test('[security-review][F] Codex 経路は reviewer_context_changed でも止めず、Codex の review で clear にする（Claude の security-reviewer は spawn しない・clear なら指摘の本文を取らない）', async () => {
-  // 起動時の決定論の値・run 中の判定のどちらで立っても Codex の review に進む
+test('[security-review][F] Codex 経路も reviewer_context_changed なら Codex の prep・起動・判定の中継も security-reviewer も spawn せずに止める', async () => {
+  // 起動時の決定論の値・run 中の判定のどちらで立っても、Codex が clear を返す設定でも止める
   for (const [name, opts] of [
     ['起動時の決定論の値', { args: codexArgs(true), overrides: {} }],
     ['run 中の判定', { args: codexArgs(false), overrides: { 'security-scope#1': contextScope } }],
   ]) {
     const { result, calls } = await run({
       args: opts.args,
-      overrides: { ...opts.overrides, 'security-codex-prep#1': codexPrep(), ...codexRound(1, [finding('hardening', 'minor')]) },
+      overrides: { ...opts.overrides, 'security-codex-prep#1': codexPrep(), ...codexRound(1, []) },
     });
-    assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1', 'security-codex-prep#1', 'security-review-codex#1', 'security-codex-verdict#1'], name);
-    assert.equal(result.status, 'lgtm', name);
-    assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 1 }, name);
+    assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1'], name);
+    assert.equal(result.status, 'security_unresolved', name);
+    assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0, major: 0, minor: 0 }, name);
   }
 });
 
@@ -421,18 +421,6 @@ test('[security-review][F] Codex 経路は固定の codex exec・判定・指摘
   assert.ok(lines.includes(expected), `固定の codex exec の行が無い: ${r.prompt}`);
   assert.equal(lines.filter((l) => l.startsWith('codex ')).length, 1, 'codex の起動は 1 行だけ');
   for (const banned of ['danger-full-access', 'workspace-write', '--dangerously', '--add-dir']) assert.ok(!r.prompt.includes(banned), banned);
-});
-
-test('[security-review][F] 指示ファイルを変える PR で Codex を判定できなければ、Claude 経路と同じく security-reviewer を spawn せずに止める', async () => {
-  for (const [name, overrides] of [
-    ['prep が null', { 'security-codex-prep#1': null }],
-    ['判定の中継が null', { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': null }],
-  ]) {
-    const { result, calls } = await run({ args: codexArgs(true), overrides: { 'security-scope#1': contextScope, ...overrides } });
-    assert.equal(result.status, 'security_unresolved', name);
-    assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0, major: 0, minor: 0 }, name);
-    assert.ok(!calls.some((c) => c.label.startsWith('security-review#')), `${name}: 指示ファイルを変える PR で Claude の security-reviewer を spawn した`);
-  }
 });
 
 test('[security-review][F] Codex を起動できない（prep / 起動 / 結果の読み取りの失敗）なら、Claude 経路の判定に倒し Codex の失敗で clear にしない', async () => {

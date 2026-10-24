@@ -328,8 +328,8 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 /pr-iterate     → pr-iterate-prerun が base branch（origin/<base>）の skill-config.json / .claude/skill-config.json、無ければ user 設定
                   （$SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）から読み、
                   args.security_review.reviewer で渡す（PR head の設定ファイルは読まない。無ければ "claude"）
-pr-iterate      → security-scope#i の前提チェックを通った round で（指示ファイルを変える PR も reviewer_context_changed で止めず Codex の
-                  review に進む。Codex で判定できなかった round だけ Claude 経路と同じく security_unresolved で止める）:
+pr-iterate      → security-scope#i の前提チェックを通った round で（指示ファイルを変える PR は Codex の agent を spawn せず、Claude 経路と
+                  同じ reviewer_context_changed で止める — 中継も PR の worktree で起動し、PR の CLAUDE.md を受け取れば clear の JSON を捏造できる）:
                   security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`
                     → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）
                   security-review-codex#i（security-codex-relay）: 固定形の `codex exec ...`（先頭トークン codex の単文。返り値は使わない）
