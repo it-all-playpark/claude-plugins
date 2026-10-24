@@ -12,6 +12,7 @@
 // 限り、判定材料（受入条件・設計判断・検証・pr_sections）は `<details>` に畳む（issue #928）。evaluator は `<details>` の
 // 中も本文として読むので、畳んでも判定材料は減らない。builder は本文を切らない — 長さは IMPL schema の maxLength で
 // 書き手（dev-implementer）に要約させ、pr_sections の合計だけは prSectionsTrimFeedback で差し戻す。
+// 日本語で書かれていない 1 行要約欄も builder は訳さず、prBodyLanguageFeedback で書き手に差し戻す。
 // 本文構造の検証（hasClosesLine / verifyPrBody）と、`gh pr edit --body-file` の exec-proxy prompt
 // （prBodyEditPrompt）もここに置き、判定は本ファイルの純関数のみが行う（agent は verbatim 転写・bare 単文実行のみ）。
 // 作成後の PR に Closes 行が残っているかの検証と再投入は Merge tier（_lib/merge-tier-facts.mjs）が持つ。
@@ -283,6 +284,38 @@ export function prSectionsTrimFeedback(plan) {
       + 'コード・テストは変更しない。AC の根拠に要る行だけを残し、pr_sections 全件を合計 '
       + `${PR_SECTIONS_MAX_CHARS} 字以内に書き直して返せ（返した pr_sections が前回分を置き換える）。`
       + 'behavior_changes / review_points / design_decisions / pr_notes / out_of_scope も前回どおり全件返せ',
+  }];
+}
+
+// ひらがな・カタカナ・漢字を 1 文字も含まない文を日本語でないとみなす。識別子・パス・コマンドが混ざった
+// 日本語文は通し、英語だけの文を拾う。
+const JAPANESE_CHAR_RE = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
+
+// PR 本文の 1 行要約欄（behavior_changes / review_points / out_of_scope / 設計判断 / pr_notes）のうち日本語を含まない
+// 項目があるときに dev-implementer へ渡す fix_feedback（1 件の配列）。無ければ null。field は implementer の返却名で示す。
+// builder は翻訳も削除もしない — 書き直しは書き手に返す（prSectionsTrimFeedback と同じ方針）。
+// pr_sections の markdown は表・識別子が多く誤検出しやすく、concerns は plan に入らないので対象にしない。
+export function prBodyLanguageFeedback(plan) {
+  const items = [];
+  const check = (field, v) => {
+    const text = collapseWhitespace(v);
+    if (text && !JAPANESE_CHAR_RE.test(text)) items.push({ field, text });
+  };
+  for (const key of ['behavior_changes', 'review_points', 'out_of_scope']) {
+    arr(plan?.[key]).forEach((v, i) => check(`${key}[${i}]`, v));
+  }
+  arr(plan?.architecture_decisions).forEach((d, i) => {
+    check(`design_decisions[${i}].title`, d?.decision);
+    check(`design_decisions[${i}].rationale`, d?.rationale);
+  });
+  arr(plan?.pr_notes).forEach((n, i) => check(`pr_notes[${i}].text`, n?.text));
+  if (items.length === 0) return null;
+  return [{
+    pr_body_not_japanese: { items },
+    instruction: `PR 本文に載る項目のうち ${items.length} 件が日本語で書かれていない。`
+      + 'コード・テストは変更しない。該当項目を日本語で書き直し（識別子・パス・コマンド・エラー引用は原文のまま）、'
+      + 'behavior_changes / review_points / design_decisions / pr_notes / out_of_scope / pr_sections を全件返せ'
+      + '（返した項目が前回分を置き換える）',
   }];
 }
 

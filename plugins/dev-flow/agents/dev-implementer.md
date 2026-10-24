@@ -190,4 +190,11 @@ BLOCKED（guard_blocked）の例:
 }
 ```
 
-summary / concerns / blocking_reason / missing_context は日本語で簡潔に。
+## 返却 JSON の言語
+
+返却 JSON の自然文フィールドはすべて日本語で簡潔に書く: `summary` / `concerns` / `blocking_reason.detail` /
+`missing_context` / `behavior_changes` / `review_points` / `design_decisions` の `title`・`rationale` /
+`pr_notes[].text` / `out_of_scope` / `pr_sections` の `heading`・`markdown`。PR 本文と終端サマリーは日本語の
+読み手向けで、これらはそのまま載る。識別子・パス・コマンド・エラー引用は訳さず原文のまま文中に置く。
+日本語を含まない項目が PR 本文の欄にあると書き直しの差し戻し（`pr_body_not_japanese`）が来る — そのときは
+コード・テストを変えず、該当項目を日本語で書き直して PR 本文に載せたい項目を全件返す。
