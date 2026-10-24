@@ -361,39 +361,51 @@ const CODEX_CWD = '/tmp/dev-flow-codex-cwd-Cwd001';
 const codexArgs = (contextChanged) => ({ pr: '5', security_review: { target: true, reasons: [], reviewer_context_changed: contextChanged, reviewer: 'codex' } });
 const codexPrep = ({ cwdDir = CODEX_CWD } = {}) => ({ prompt }) => ({ ok: true, review_dir: prompt.match(/security-review-codex-prep (\S+) /)[1], cwd_dir: cwdDir });
 const codexHeadOf = (prompt) => prompt.match(/security-review-codex-result \S+ ([0-9a-f]{40})/)[1];
-// security-review-codex-result の stdout と同形の応答（reviewed_sha は既定で prompt の head を写す）
-const codexResult = (issues = [], { cleared, reviewedSha } = {}) => ({ prompt }) => {
+// security-review-codex-result（判定）と security-review-codex-result --issues（指摘）の stdout と同形の応答を、round i の
+// security-codex-verdict#i / security-codex-issues#i に置く（reviewed_sha は既定で prompt の head を写す）
+const codexRound = (i, issues = [], { cleared, reviewedSha } = {}) => {
   const blocking = issues.filter((x) => x.severity !== 'minor');
   return {
-    ok: true, cleared: cleared ?? blocking.length === 0, reason: blocking.length > 0 ? 'blocking' : null,
-    reviewed_sha: reviewedSha ?? codexHeadOf(prompt),
-    counts: { critical: issues.filter((x) => x.severity === 'critical').length, major: issues.filter((x) => x.severity === 'major').length, minor: issues.filter((x) => x.severity === 'minor').length },
-    issues,
+    [`security-codex-verdict#${i}`]: ({ prompt }) => ({
+      ok: true, cleared: cleared ?? blocking.length === 0, reason: blocking.length > 0 ? 'blocking' : null,
+      reviewed_sha: reviewedSha ?? codexHeadOf(prompt),
+      counts: { critical: issues.filter((x) => x.severity === 'critical').length, major: blocking.length - issues.filter((x) => x.severity === 'critical').length, minor: issues.length - blocking.length },
+    }),
+    [`security-codex-issues#${i}`]: { ok: true, issues },
   };
 };
 const contextScope = ({ prompt }) => securityScopeResponse({ head: securityScopeHeadOf(prompt), contextChanged: true });
 
-test('[security-review][F] Codex 経路は reviewer_context_changed でも止めず、Codex の review で clear にする（Claude の security-reviewer は spawn しない）', async () => {
+test('[security-review][F] Codex 経路は reviewer_context_changed でも止めず、Codex の review で clear にする（Claude の security-reviewer は spawn しない・clear なら指摘の本文を取らない）', async () => {
   const { result, calls } = await run({
     args: codexArgs(true),
-    overrides: { 'security-scope#1': contextScope, 'security-codex-prep#1': codexPrep(), 'security-review-codex#1': codexResult() },
+    overrides: { 'security-scope#1': contextScope, 'security-codex-prep#1': codexPrep(), ...codexRound(1, [finding('hardening', 'minor')]) },
   });
-  assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1', 'security-codex-prep#1', 'security-review-codex#1']);
+  assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1', 'security-codex-prep#1', 'security-review-codex#1', 'security-codex-verdict#1']);
   assert.equal(result.status, 'lgtm');
-  assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0 });
+  assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 1 });
 });
 
-test('[security-review][F] Codex 経路は保存先を指す固定の codex exec を dev-runner-haiku-ro に写させ、result.json の判定を返させる', async () => {
+test('[security-review][F] Codex 経路は固定の codex exec・判定・指摘の取得を別の dev-runner-haiku-ro に写させ、clear を決める中継は自由文を読まない', async () => {
   const { calls } = await run({
-    args: codexArgs(false),
-    overrides: { 'security-codex-prep#1': codexPrep(), 'security-review-codex#1': codexResult() },
+    args: { ...codexArgs(false), max_iterations: 1 },
+    overrides: { 'security-codex-prep#1': codexPrep(), ...codexRound(1, [finding('hardlink-write')]) },
   });
   const prep = calls.find((c) => c.label === 'security-codex-prep#1');
   assert.equal(prep.agentType, 'dev-flow:dev-runner-haiku-ro');
   assert.ok(prep.prompt.endsWith(`\nsecurity-review-codex-prep ${SECURITY_REVIEW_DIR} ${SECURITY_SCOPE_DEFAULT_HEAD} 5`), prep.prompt);
   const r = calls.find((c) => c.label === 'security-review-codex#1');
-  assert.equal(r.agentType, 'dev-flow:dev-runner-haiku-ro');
-  assert.equal(r.model, null, '品質ゲートの判定に model override を渡さない');
+  const v = calls.find((c) => c.label === 'security-codex-verdict#1');
+  const iss = calls.find((c) => c.label === 'security-codex-issues#1');
+  for (const c of [r, v, iss]) {
+    assert.equal(c.agentType, 'dev-flow:dev-runner-haiku-ro', c.label);
+    assert.equal(c.model, null, `${c.label}: 品質ゲートの判定に model override を渡さない`);
+  }
+  assert.ok(calls.indexOf(r) < calls.indexOf(v) && calls.indexOf(v) < calls.indexOf(iss), '起動 → 判定 → 指摘の順');
+  assert.ok(!r.prompt.includes('security-review-codex-result'), 'codex の出力を読んだ agent に判定を返させない');
+  assert.ok(v.prompt.endsWith(`\nsecurity-review-codex-result ${SECURITY_REVIEW_DIR} ${SECURITY_SCOPE_DEFAULT_HEAD}`), v.prompt);
+  assert.ok(!v.prompt.includes('codex exec'), '判定の中継に codex を起動させない');
+  assert.ok(iss.prompt.endsWith(`\nsecurity-review-codex-result ${SECURITY_REVIEW_DIR} ${SECURITY_SCOPE_DEFAULT_HEAD} --issues`), iss.prompt);
   const expected = 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check'
     + ` -C ${CODEX_CWD} -c web_search="disabled"`
     + ' --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use'
@@ -402,7 +414,6 @@ test('[security-review][F] Codex 経路は保存先を指す固定の codex exec
   const lines = r.prompt.split('\n');
   assert.ok(lines.includes(expected), `固定の codex exec の行が無い: ${r.prompt}`);
   assert.equal(lines.filter((l) => l.startsWith('codex ')).length, 1, 'codex の起動は 1 行だけ');
-  assert.ok(r.prompt.endsWith(`\nsecurity-review-codex-result ${SECURITY_REVIEW_DIR} ${SECURITY_SCOPE_DEFAULT_HEAD}`), r.prompt);
   for (const banned of ['danger-full-access', 'workspace-write', '--dangerously', '--add-dir']) assert.ok(!r.prompt.includes(banned), banned);
 });
 
@@ -414,10 +425,10 @@ test('[security-review][F] Codex を起動できない（prep / 起動 / 結果�
     ['prep の作業ディレクトリが PR の worktree の中', { 'security-codex-prep#1': codexPrep({ cwdDir: '/tmp/wt/dev-flow-codex-cwd-Cwd001' }) }],
     ['prep の作業ディレクトリが mkdtemp の形でない', { 'security-codex-prep#1': codexPrep({ cwdDir: '/tmp/codex-cwd' }) }],
     ['prep の保存先が別', { 'security-codex-prep#1': { ok: true, review_dir: '/tmp/dev-flow-security-review-Other1', cwd_dir: CODEX_CWD } }],
-    ['codex が無い・hook が拒否した（result.json が無い）', { 'security-codex-prep#1': codexPrep(), 'security-review-codex#1': { ok: false, cleared: false, reason: null, reviewed_sha: null, counts: { critical: 0, major: 0, minor: 0 }, issues: [], error: 'result_unreadable' } }],
-    ['result.json が schema に適合しない', { 'security-codex-prep#1': codexPrep(), 'security-review-codex#1': { ok: false, cleared: false, error: 'schema_mismatch' } }],
-    ['結果の中継が null', { 'security-codex-prep#1': codexPrep(), 'security-review-codex#1': null }],
-    ['結果の中継が throw', { 'security-codex-prep#1': codexPrep(), 'security-review-codex#1': () => { throw new Error('StructuredOutput 未返却'); } }],
+    ['codex が無い・hook が拒否した（result.json が無い）', { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': { ok: false, cleared: false, reason: null, reviewed_sha: null, counts: { critical: 0, major: 0, minor: 0 }, error: 'result_unreadable' } }],
+    ['result.json が schema に適合しない', { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': { ok: false, cleared: false, error: 'schema_mismatch' } }],
+    ['判定の中継が null', { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': null }],
+    ['判定の中継が throw', { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': () => { throw new Error('StructuredOutput 未返却'); } }],
   ]) {
     const { result, calls } = await run({ args: codexArgs(true), overrides: { 'security-scope#1': contextScope, ...overrides } });
     assert.equal(result.status, 'security_unresolved', name);
@@ -434,7 +445,7 @@ test('[security-review][F] Codex を起動できず指示ファイルも変え�
 
   const blocked = await run({
     args: codexArgs(false),
-    overrides: { 'security-codex-prep#1': codexPrep(), 'security-review-codex#1': null, 'security-review#1': { reviewed_sha: 'f'.repeat(40), issues: [], summary: 'x' } },
+    overrides: { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': null, 'security-review#1': { reviewed_sha: 'f'.repeat(40), issues: [], summary: 'x' } },
   });
   assert.equal(blocked.result.status, 'security_unresolved', 'Claude 経路の判定（reviewed_sha の不一致）で clear にしない');
 });
@@ -447,11 +458,11 @@ test('[security-review][F] Codex の critical/major は fix に回し、次の r
     overrides: {
       'security-scope#1': () => securityScopeResponse({ head: SHA_A, reviewDir: dir1, contextChanged: true }),
       'security-codex-prep#1': codexPrep(),
-      'security-review-codex#1': codexResult([finding('hardlink-write'), finding('hardening', 'minor')]),
+      ...codexRound(1, [finding('hardlink-write'), finding('hardening', 'minor')]),
       'commit-ensure#1': { dirty: false, committed: false, pushed: false, head_sha: SHA_B },
       'security-scope#2': () => securityScopeResponse({ head: SHA_B, reviewDir: dir2, contextChanged: true }),
       'security-codex-prep#2': codexPrep({ cwdDir: '/tmp/dev-flow-codex-cwd-Cwd002' }),
-      'security-review-codex#2': codexResult(),
+      ...codexRound(2),
     },
   });
   const [p1, p2] = calls.filter((c) => c.label.startsWith('security-codex-prep#'));
@@ -464,18 +475,20 @@ test('[security-review][F] Codex の critical/major は fix に回し、次の r
   assert.ok(!body.includes('ATTACK-PATH') && !body.includes('hardlink-write'), 'Codex の指摘の本文を公開コメントに載せない');
 });
 
-test('[security-review][F] Codex の結果は reviewed_sha の不一致・script と workflow の判定の食い違いで clear にしない', async () => {
-  for (const [name, res] of [
-    ['reviewed_sha が今の head と違う', codexResult([], { reviewedSha: SHA_B, cleared: false })],
-    ['script が clear と言わない', codexResult([], { cleared: false })],
-    ['script が clear と言うが critical がある', codexResult([finding('cmd-injection')], { cleared: true })],
+test('[security-review][F] Codex の結果は reviewed_sha の不一致・判定と指摘の食い違い・指摘を取れないときに clear にしない（Claude 経路にも倒さない）', async () => {
+  for (const [name, overrides] of [
+    ['reviewed_sha が今の head と違う', codexRound(1, [], { reviewedSha: SHA_B, cleared: false })],
+    ['判定が clear と言わないのに指摘が空', codexRound(1, [], { cleared: false })],
+    ['判定が clear と言わず指摘の中継が null', { ...codexRound(1, [finding('cmd-injection')]), 'security-codex-issues#1': null }],
+    ['判定が clear と言わず指摘の中継が ok:false', { ...codexRound(1, [finding('cmd-injection')]), 'security-codex-issues#1': { ok: false, issues: [], error: 'relay_failed' } }],
   ]) {
-    const { result } = await run({
-      args: { ...codexArgs(true), max_iterations: 1 },
-      overrides: { 'security-scope#1': contextScope, 'security-codex-prep#1': codexPrep(), 'security-review-codex#1': res },
+    const { result, calls } = await run({
+      args: { ...codexArgs(false), max_iterations: 1 },
+      overrides: { 'security-codex-prep#1': codexPrep(), ...overrides },
     });
     assert.notEqual(result.status, 'lgtm', name);
     assert.equal(result.security_review.status, 'unresolved', name);
+    assert.ok(!calls.some((c) => c.label.startsWith('security-review#')), `${name}: Codex が clear と言わなかった round を Claude 経路の判定に倒した`);
   }
 });
 

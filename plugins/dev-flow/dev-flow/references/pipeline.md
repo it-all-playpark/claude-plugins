@@ -331,8 +331,11 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 pr-iterate      → security-scope#i の前提チェックを通った round で（reviewer_context_changed でも止めない）:
                   security-codex-prep#i（dev-runner-haiku-ro）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`
                     → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）
-                  security-review-codex#i（dev-runner-haiku-ro）: 固定の `codex exec ...` → `security-review-codex-result <保存先> <head>`
+                  security-review-codex#i（dev-runner-haiku-ro）: 固定の `codex exec ...` を実行するだけ（出力は返させない）
+                  security-codex-verdict#i（dev-runner-haiku-ro）: `security-review-codex-result <保存先> <head>`（自由文を出さない判定）
+                    → clear でなければ security-codex-issues#i: `security-review-codex-result <保存先> <head> --issues`（指摘の本文）
                     → script と workflow の両方が securityReviewVerdict と同じ規則で clear のときだけ LGTM（以降は Claude 経路と同じ）
+                    → clear を決める中継に自由文（codex の stdout・指摘の本文）を読ませない — 引用された PR の文で偽の clear を作らせない
                     → Codex で判定できない（prep の失敗・codex が無い・hook の拒否・result.json が読めない）→ その round は Claude 経路の判定
                       （reviewer_context_changed なら security_unresolved、そうでなければ security-review#i）
 ```
