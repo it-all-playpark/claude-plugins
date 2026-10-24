@@ -10,7 +10,7 @@
 //   (a) sha 一致 + 全 success → テスト欄 '✅ green (CI)'
 //   (b) sha 不一致 / check failure / 取得失敗 / throw → テスト欄 '⚠️ 未実行（環境）・未検証' + 結論行で CI 確認
 //   (c) (a)(b) で merge_tier / merge_tier_reasons / hold reasons / final_reconcile が同一（表示のみ）
-//   (d) Validate が tests:'failed'（本物の red）→ ci-test-display 不発 + テスト欄 '❌ red'
+//   (d) Validate が tests:'failed'（本物の red）→ ci-test-display 不発 + テスト欄 '❌ red' + merge tier HOLD（validate_test_red、issue #1086）
 //   (e) fixes_applied>0（Final reconcile 実行）→ ci-test-display 不発
 //   (f) PR head sha が取れていない → ci-test-display 不発 + 未検証表示
 //   (g) merge-tier.mjs は表示用入力（validateTests / ciTestVerified / ci-test-display）を参照しない
@@ -106,6 +106,10 @@ test("[summary-test-cell] (d) Validate tests:'failed'（本物の red）→ ci-t
   assert.equal(result?.validate_tests, 'failed');
   assert.equal(result?.ci_test_verified, null, 'CI 表示確認を起動しない run は null');
   assert.equal(result?.test_green, false);
+  // テスト欄 ❌ red の run は merge tier も HOLD（validate_test_red。Final reconcile skipped で Validate の red が残る。issue #1086）
+  assert.equal(result?.final_reconcile, 'skipped');
+  assert.equal(result?.merge_tier, 'HOLD');
+  assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'validate_test_red'), JSON.stringify(result?.merge_tier_hold_reasons));
 });
 
 test('[summary-test-cell] (e) fixes_applied>0（Final reconcile 実行）→ ci-test-display 不発', async () => {

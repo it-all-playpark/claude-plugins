@@ -1278,13 +1278,13 @@ test('classifyMergeTier: evalStaleness:undefined/null → throw しない(従来
 
 // ---- issue #658: HOLD_REASON_CODES + holdReasons[].code + disclosures ----
 
-test('HOLD_REASON_CODES は 19 の閉じた enum と一致', () => {
+test('HOLD_REASON_CODES は 20 の閉じた enum と一致', () => {
   assert.deepEqual(HOLD_REASON_CODES, [
     'ledger_unconverged', 'danger_unresolved', 'breaking_structured', 'escalate',
     'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
     'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
     'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
-    'security_review_unresolved',
+    'security_review_unresolved', 'validate_test_red',
   ]);
 });
 
@@ -1628,6 +1628,72 @@ test('classifyMergeTier: finalTestFlaky の契約外形状・red のままの fl
   assert.throws(() => classifyMergeTier(baseCleanInput({ ...green, finalTestFlaky: { files: [], logs: [] } })), /invalid finalTestFlaky/);
   assert.throws(() => classifyMergeTier(baseCleanInput({ ...green, finalTestFlaky: { files: ['a.bats'] } })), /invalid finalTestFlaky/);
   assert.throws(() => classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: false, finalTestFlaky: FLAKY })), /requires finalTestGreen===true/);
+});
+
+// ---- validateResult（Final reconcile skipped の run の Validate red、issue #1086）----
+
+const VALIDATE_RED = { tests: 'failed', green: false, summary: 'assert mismatch', failed_files: ['a.bats'] };
+const codesOf = (r) => r.holdReasons.map((x) => x.code);
+
+test('classifyMergeTier: finalReconcile skipped + Validate red（tests:failed / green:false）→ HOLD 理由 validate_test_red（human_judgment）', () => {
+  for (const base of [baseCleanInput({}), { ...autoBase(), iterateStatus: 'lgtm', evalStaleness: 'none' }]) {
+    const r = classifyMergeTier({ ...base, finalReconcile: 'skipped', validateResult: VALIDATE_RED });
+    assert.equal(r.tier, 'HOLD', JSON.stringify(r));
+    assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['validate_test_red', 'human_judgment']]);
+    assert.equal(r.holdKind, 'human_judgment');
+    assert.ok(r.reasons[0].startsWith('Validate test red'), r.reasons[0]);
+  }
+  // 他の HOLD 理由と並んでも積まれる
+  const both = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_RED, iterateStatus: 'stuck' }));
+  assert.deepEqual(codesOf(both), ['validate_test_red', 'iterate_non_lgtm']);
+});
+
+test('classifyMergeTier: finalReconcile skipped で Validate が green / tests:error / no_tests なら validate_test_red を出さず、未指定時と完全一致', () => {
+  const cases = [
+    ['REVIEW', baseCleanInput({ finalReconcile: 'skipped' })],
+    ['AUTO', { ...autoBase(), iterateStatus: 'lgtm', evalStaleness: 'none', finalReconcile: 'skipped' }],
+    ['HOLD（既存理由）', baseCleanInput({ finalReconcile: 'skipped', iterateStatus: 'stuck', unsatisfiedHumanAc: true })],
+  ];
+  const validates = [
+    { tests: 'passed', green: true },
+    // base でも落ちる既存失敗だけの red は Validate が green:true にして抜ける
+    { tests: 'failed', green: true },
+    { tests: 'error', green: false, summary: 'command not found' },
+    { tests: 'no_tests', green: false },
+  ];
+  for (const [name, input] of cases) {
+    const baseline = classifyMergeTier(input);
+    for (const v of validates) {
+      const r = classifyMergeTier({ ...input, validateResult: v });
+      assert.deepEqual(r, baseline, `${name} / ${JSON.stringify(v)}`);
+      assert.ok(!codesOf(r).includes('validate_test_red'));
+    }
+  }
+  assert.equal(classifyMergeTier(cases[0][1]).tier, 'REVIEW');
+  assert.equal(classifyMergeTier(cases[1][1]).tier, 'AUTO');
+  assert.deepEqual(codesOf(classifyMergeTier(cases[2][1])), ['ac_human_pending', 'iterate_non_lgtm']);
+});
+
+test('classifyMergeTier: finalReconcile が reverified / ci_verified / unavailable なら Validate red でも validate_test_red を出さない（最終 tree の判定に任せる）', () => {
+  const finalCi = { verified: true, reason: 'ok', kind: null, checkNames: ['test'], headRefOid: 'a'.repeat(40) };
+  const cases = [
+    [{ finalReconcile: 'reverified', finalTestGreen: true }, []],
+    [{ finalReconcile: 'reverified', finalTestGreen: false }, ['final_test_red']],
+    [{ finalReconcile: 'ci_verified', finalCi }, []],
+    [{ finalReconcile: 'unavailable' }, ['final_reconcile_unavailable']],
+  ];
+  for (const [fr, wantCodes] of cases) {
+    const baseline = classifyMergeTier(baseCleanInput(fr));
+    const r = classifyMergeTier(baseCleanInput({ ...fr, validateResult: VALIDATE_RED }));
+    assert.deepEqual(r, baseline, JSON.stringify(fr));
+    assert.deepEqual(codesOf(r), wantCodes, JSON.stringify(fr));
+  }
+});
+
+test('classifyMergeTier: validateResult の契約外形状は明示 error', () => {
+  for (const v of ['failed', { tests: 'failed' }, { tests: 'red', green: false }, { tests: 'failed', green: 'false' }]) {
+    assert.throws(() => classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: v })), /invalid validateResult/, JSON.stringify(v));
+  }
 });
 
 // ---- finalAcReconcile（Final AC reconcile phase, issue #331/F2）----
