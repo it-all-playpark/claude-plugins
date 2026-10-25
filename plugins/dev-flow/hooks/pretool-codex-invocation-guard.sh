@@ -7,8 +7,8 @@
 #   起動し、指摘の本文（Codex が diff を引用した文）を読む round もあるので、誘導されて別のコマンド（result.json の上書き・
 #   フラグを足した codex の起動）を実行し得る。文字列の一致で「危ないコマンド」を探すやり方は、引用の分割（cod''ex）・
 #   バックスラッシュ・$ 展開・glob で語を組み立てられるので止められない。中継の agent には allowlist（先頭トークンが固定の bare 名で、
-#   引数が mkdtemp の形のパスと sha だけ）を当て、それ以外は語を見ずに全部拒否する。codex は中継が先頭トークン codex の固定形の単文で
-#   起動する（sandbox の外で通信できるのは先頭が codex の単文だけで、script の中から起動すると通信が拒否される）。
+#   引数が mkdtemp の形のパスと sha だけ）を当て、それ以外は語を見ずに全部拒否する。codex は中継が先頭トークン codex_bin（user 設定の
+#   絶対パス）の固定形の単文で起動する（sandbox の外で通信できるのは先頭が codex の単文だけで、script の中から起動すると通信が拒否される）。
 #   分類: incentive-structural（中継が攻撃者の文を読める限り誘導を否定できない。sunset しない）。
 #
 # 判定フロー:
@@ -17,8 +17,8 @@
 #      tool が Bash でない → 無出力 exit 0
 #   3. agent_type が dev-flow:security-codex-relay → command が次の 4 形のどれかと完全に一致するときだけ通す（改行・余分な空白・
 #      引用符・shell の記号を含む形は一致しない）:
-#        security-review-codex-prep <D> <sha> <pr> <H> <O>[ --verify-from <N> <B>]
-#        codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check
+#        security-review-codex-prep <D> <sha> <pr> <H> <O> <X>[ --verify-from <N> <B>]
+#        <X> exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check
 #          -C <O>/dev-flow-codex-cwd-<N>-<B> -c dev_flow_review_dir="<D>" -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use
 #          --disable computer_use -c model_instructions_file=<O>/dev-flow-codex-prompt-<N>-<B>.md
 #          --output-schema <O>/dev-flow-codex-schema-<N>-<B>.json -o <O>/dev-flow-codex-result-<N>-<B>.json "<固定文> <N>"
@@ -26,13 +26,15 @@
 #        security-review-codex-result <D> <sha> <N> <B> <P> <S> <O>[ --issues]
 #        security-review-diff-check <D> <H> <ino> <ctime_ns> <dir_ino> <dir_ctime_ns>（Claude 経路でも、clear の前に保存先の pr.diff を
 #          security-review-scope の sha256・ino・ctime と、<D> 自身を dir の ino・ctime と照合する。ino / ctime_ns は 1〜30 桁の数字）
-#      <D> は basename が dev-flow-security-review-XXXXXX の、<O> は人が用意した出力先の、
+#      <D> は basename が dev-flow-security-review-XXXXXX の、<O> は人が用意した出力先の、<X> は codex_bin の、
 #      `.` / `..` の要素を持たない [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字、<N> は prep が返した nonce
 #      （32 桁の小文字 hex）、<B> は prep が返した binding、<P> / <S> は prep が返した prompt.md・schema.json の sha256、<H> は
 #      security-review-scope が返した diff の sha256（どれも 64 桁の小文字 hex）。
 #      prep・codex・result の 3 形は <O> が user 設定の "dev-flow".codex_output_dir（pr-iterate-prerun と同じ順: $SKILL_CONFIG_PATH →
 #      ~/.config/skills/config.json → ~/.claude/skill-config.json）と完全に一致するときだけ通し、値が無ければ deny する —
 #      prep が書き込み不可を確かめた出力先以外（sandbox から書ける別の場所）を -o にした codex を中継が起動できないようにする。
+#      prep・codex の 2 形は <X> も同じ探索順の "dev-flow".codex_bin と完全に一致するときだけ通し、値が無い・文字列でなければ deny する
+#      — prep が書き込み不可を確かめた codex_bin 以外のファイルを中継が sandbox の外で起動できないようにする。
 #      prep / result のパスの実体は各 script が確かめる。
 #      prep・result・diff の照合の 3 形は、hook の PATH の後ろに hook 自身の plugin の bin/ を足した列（hook の PATH には plugin の
 #      bin/ が載らず、Bash tool の PATH には載る。Bash tool と同じ並び）で先頭の bare 名が解決されるファイル（先頭から見て最初の実行
@@ -54,13 +56,19 @@
 #      （sha256("<D>\n<sha256(prompt)>\n<sha256(schema)>\n")。_lib/scripts/security-review-codex-binding.mjs と同じ式）が <B> と
 #      一致したときだけ通す。prep が書いた後に <D> を書き換えられた・別の保存先を指した起動は、一致しないか、prep が返した <B> と
 #      違う名前に結果を書く（result script は prep の <B> の名前だけを読む）。
-#      中継は PR の worktree を cwd に bare 名の codex を起動し、codex は sandbox の外で動く。PATH 上で codex が解決されるファイル
-#      （先頭から見て最初の実行できる通常ファイル）が、解決できない・PATH の相対パスか空の要素（cwd 基準）から解決される・realpath が
-#      cwd・$TMPDIR・/tmp・/private/tmp の配下なら deny する（PR のコードが置いた codex を sandbox の外で走らせない）。
+#      中継は PR の worktree を cwd に絶対パスの codex_bin を起動し、codex は sandbox の外で動く。PATH は使わない（hook と中継の PATH が
+#      ずれても、PATH の前方の書ける場所に codex を置かれても解決先が変わらない）。codex_bin が symlink でない実ファイルで realpath が
+#      自身と一致し、cwd・$TMPDIR・/tmp・/private/tmp の配下でないときだけ通す（PR のコードが置いた codex を sandbox の外で走らせない）。
+#      codex_bin と祖先に sandbox の中から書けないことは prep が確かめる。書き込み試験・link 数は確かめた時点の状態しか見ない
+#      （先に書ける場所へ hard link を張って中身を書き換え、link を消せばどちらも通る）ので、hook は起動の直前に codex_bin の
+#      sha256 が user 設定の "dev-flow".codex_bin_sha256（64 桁の小文字 hex）と一致することも確かめ、無い・違えば deny する。
+#      照合は hook の中の 1 回なので、hook と exec の間の書き換えは DAC で塞ぐ: codex_bin と全祖先が現在の uid の所有でなく
+#      group / other に書き込み権限が無いとき（`sudo install -o root -m 555` で置いたもの）だけ通す（prep も同じことを確かめる）。
 #      hook の確認は起動の直前の 1 回なので、codex の後の入力の書き換えは result script が再照合する
 #   4. それ以外の dev-flow の agent → 引用符とバックスラッシュを外した command を `;` `&` `|` `(` `)` `{` `}` と改行で単文に分け、
 #      各単文の先頭から予約語（then / do / ! 等）・前置コマンド（env / exec / command / nohup / timeout 等）とその option・
-#      `NAME=value` の代入を読み飛ばした最初のトークンが `codex` か `*/codex` なら deny。保存先・作業ディレクトリ・結果ファイルの名前
+#      `NAME=value` の代入を読み飛ばした最初のトークンが `codex` か `*/codex`、または user 設定の codex_bin と同じ文字列か
+#      絶対パスで同じファイル（hard link を含む。basename が codex でない codex_bin も止める）なら deny。保存先・作業ディレクトリ・結果ファイルの名前
 #      （dev-flow-security-review- / dev-flow-codex-cwd- / dev-flow-codex-result- / -prompt- / -schema-）を含む command も deny。それ以外は通す。引数の中の codex の語（`grep codex`・
 #      `gh pr create --title "… codex …"`）では止めない。
 #      この agent たちは任意の Bash を持つので、ここは誤って codex や保存先を触ることを止める多層防御であり保証ではない —
@@ -82,7 +90,7 @@ SHA_RE='[0-9a-fA-F]{40}'
 NONCE_RE='[0-9a-f]{32}'
 BINDING_RE='[0-9a-f]{64}'
 SHA256_RE='[0-9a-f]{64}'
-PREP_RE="^security-review-codex-prep ${D_RE} ${SHA_RE} [0-9]+ ${SHA256_RE} ${O_RE}( --verify-from ${NONCE_RE} ${BINDING_RE})?$"
+PREP_RE="^security-review-codex-prep ${D_RE} ${SHA_RE} [0-9]+ ${SHA256_RE} ${O_RE} ${O_RE}( --verify-from ${NONCE_RE} ${BINDING_RE})?$"
 CODEX_PROMPT='Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to'
 RESULT_RE="^security-review-codex-result ${D_RE} ${SHA_RE} ${NONCE_RE} ${BINDING_RE} ${SHA256_RE} ${SHA256_RE} ${O_RE}( --issues)?$"
 DIFF_CHECK_RE="^security-review-diff-check ${D_RE} ${SHA256_RE} [0-9]{1,30} [0-9]{1,30} [0-9]{1,30} [0-9]{1,30}$"
@@ -107,26 +115,37 @@ pass_through() {
   exit 0
 }
 
-# user 設定の "dev-flow".codex_output_dir（pr-iterate-prerun と同じ探索順: $SKILL_CONFIG_PATH → ~/.config/skills/config.json →
-# ~/.claude/skill-config.json。最初に null でない値を持つファイルの値）を CONFIGURED_OUTPUT_DIR に入れる。無い・文字列でなければ deny。
-# 中継が nonce を自分で選んだ codex を、prep が書き込み不可を確かめていない別の場所を出力先にして起動できないよう、<O> をこの値に縛る
-load_configured_output_dir() {
+# user 設定の "dev-flow".<$1>（pr-iterate-prerun と同じ探索順: $SKILL_CONFIG_PATH → ~/.config/skills/config.json →
+# ~/.claude/skill-config.json。最初に null でない値を持つファイルの値）を CONFIGURED に入れる。無い・文字列でなければ deny。
+# $2 が optional なら deny せず、無い・文字列でないときは CONFIGURED を空にして返す（判定 4 が codex_bin を読むとき。
+# 文字列でない codex_bin では中継が codex を起動できないので、守るものが無い）
+load_configured() {
   local cfg v
   for cfg in "${SKILL_CONFIG_PATH:-}" "${HOME:-}/.config/skills/config.json" "${HOME:-}/.claude/skill-config.json"; do
     [[ -n $cfg && -f $cfg ]] || continue
-    v=$(jq -c 'if type == "object" and (.["dev-flow"] | type) == "object" then .["dev-flow"].codex_output_dir else null end' 2>/dev/null <"$cfg") || v=''
+    v=$(jq -c --arg k "$1" 'if type == "object" and (.["dev-flow"] | type) == "object" then .["dev-flow"][$k] else null end' 2>/dev/null <"$cfg") || v=''
     [[ -n $v && $v != 'null' ]] || continue
-    CONFIGURED_OUTPUT_DIR=$(jq -r 'if type == "string" then . else "" end' 2>/dev/null <<<"$v") || CONFIGURED_OUTPUT_DIR=''
-    [[ -n $CONFIGURED_OUTPUT_DIR ]] || emit_deny "user 設定の dev-flow.codex_output_dir が文字列でない"
+    CONFIGURED=$(jq -r 'if type == "string" then . else "" end' 2>/dev/null <<<"$v") || CONFIGURED=''
+    [[ -n $CONFIGURED || ${2-} == optional ]] || emit_deny "user 設定の dev-flow.${1} が文字列でない"
     return 0
   done
-  emit_deny "user 設定に dev-flow.codex_output_dir が無い"
+  CONFIGURED=''
+  [[ ${2-} == optional ]] && return 0
+  emit_deny "user 設定に dev-flow.${1} が無い"
 }
 
-# 出力先が user 設定の codex_output_dir と完全に一致するか。一致しなければ deny する
+# 出力先が user 設定の codex_output_dir と完全に一致するか。一致しなければ deny する。
+# 中継が nonce を自分で選んだ codex を、prep が書き込み不可を確かめていない別の場所を出力先にして起動できないよう、<O> をこの値に縛る
 require_configured_output_dir() {
-  load_configured_output_dir
-  [[ $1 == "$CONFIGURED_OUTPUT_DIR" ]] || emit_deny "出力先が user 設定の dev-flow.codex_output_dir と一致しない"
+  load_configured codex_output_dir
+  [[ $1 == "$CONFIGURED" ]] || emit_deny "出力先が user 設定の dev-flow.codex_output_dir と一致しない"
+}
+
+# prep の codex_bin が user 設定の codex_bin と完全に一致するか。一致しなければ deny する（prep が書き込み不可を確かめた codex_bin と
+# 中継が起動する codex を同じファイルに縛る）
+require_configured_codex_bin() {
+  load_configured codex_bin
+  [[ $1 == "$CONFIGURED" ]] || emit_deny "codex_bin が user 設定の dev-flow.codex_bin と一致しない"
 }
 
 # 中継の codex の起動が固定形と完全に一致し、パスの実体が条件を満たすか。満たさなければ deny する
@@ -182,13 +201,45 @@ resolve_on_path() {
   emit_deny "${name} が PATH 上に見つからない"
 }
 
-# codex は sandbox の外で動くので、PR のコードが置ける場所に解決されるなら通さない: resolve_on_path の条件に加えて、実体（realpath）が
-# cwd・$TMPDIR・/tmp・/private/tmp の配下。$1 は入力の cwd、$2 はその realpath
+# codex は sandbox の外で動くので、PATH を使わず起動形の先頭トークン（user 設定の codex_bin。$1）のファイルそのものを確かめる:
+# `.` / `..` の要素を持たない絶対パスで、symlink でない実ファイルで、realpath が自身と一致し（祖先にも symlink が無い）、
+# cwd・$TMPDIR・/tmp・/private/tmp の配下でない。満たさなければ deny する。祖先の書き込み不可は prep が確かめる。$2 は入力の cwd の realpath
 check_codex_binary() {
+  local bin="$1" s
   local -a forbid=("$2" /tmp /private/tmp)
   [[ -n ${TMPDIR:-} ]] && forbid+=("$TMPDIR")
-  resolve_on_path codex "$1"
-  under_any "$RESOLVED_REAL" "${forbid[@]}" && emit_deny "codex の実体が cwd（PR の worktree）・\$TMPDIR・/tmp の配下にある"
+  [[ $bin =~ ^${O_RE}$ ]] || emit_deny "user 設定の dev-flow.codex_bin が絶対パスの形でない"
+  IFS='/' read -r -a SEGS <<<"${bin#/}"
+  for s in "${SEGS[@]}"; do
+    [[ $s == "." || $s == ".." ]] && emit_deny "user 設定の dev-flow.codex_bin に . / .. の要素がある"
+  done
+  [[ -f $bin && ! -L $bin ]] || emit_deny "codex_bin が symlink でない実ファイルでない"
+  [[ $(realpath -- "$bin" 2>/dev/null) == "$bin" ]] || emit_deny "codex_bin の realpath が自身と一致しない（祖先に symlink がある）"
+  under_any "$bin" "${forbid[@]}" && emit_deny "codex_bin が cwd（PR の worktree）・\$TMPDIR・/tmp の配下にある"
+  # 別名の hard link があると、書ける場所に張った link から中身を書き換えられる（prep の書き込み試験はこのパスにしか効かない）。
+  # 起動の直前に link 数が 1 であることを確かめる（GNU は stat -c %h、BSD は stat -f %l）
+  local links
+  links=$(stat -c %h -- "$bin" 2>/dev/null) || links=$(stat -f %l -- "$bin" 2>/dev/null) || emit_deny "codex_bin の link 数を取れない"
+  [[ $links == 1 ]] || emit_deny "codex_bin に別名の hard link がある（link 数が 1 でない）"
+  # `#!` の script は sandbox の外で interpreter を PATH で解決する（PATH 前方の書ける場所の node 等が走る）。ネイティブ実行ファイルだけ通す
+  local magic=""
+  LC_ALL=C IFS= read -r -n 2 -d '' magic <"$bin" 2>/dev/null || [[ -n $magic ]] || emit_deny "codex_bin を読めない"
+  [[ $magic == '#!' ]] && emit_deny "codex_bin が #! で始まる script（interpreter を PATH で解決する）。ネイティブ実行ファイルの実体を設定する"
+  # sha256 の照合は hook の中の 1 回だけで、hook が終わってから中継が exec するまでの間に、張っておいた別名の link から中身を
+  # 書き換えられる（パス単位の sandbox は user 所有の通常ファイルへの書き込みを止めない）。codex_bin と全祖先が現在の uid の所有でなく
+  # （所有者は chmod で書き込み権限を戻せる）、group / other に書き込み権限が無いときだけ通す — どの link から開いても DAC で書けない。
+  # 祖先に symlink が無いことは上の realpath で確かめてあるので、stat は lstat と同じ（GNU は stat -c、BSD は stat -f）
+  local p="$bin" st owner mode
+  while :; do
+    st=$(stat -c '%u %a' -- "$p" 2>/dev/null) || st=$(stat -f '%u %Lp' -- "$p" 2>/dev/null) || emit_deny "codex_bin か祖先の所有者・権限を取れない"
+    read -r owner mode <<<"$st"
+    [[ $owner =~ ^[0-9]+$ && $mode =~ ^[0-7]+$ ]] || emit_deny "codex_bin か祖先の所有者・権限を読めない"
+    ((owner != EUID)) || emit_deny "codex_bin か祖先を現在の uid が所有している（sudo install -o root -m 555 で root 所有の場所に置く）"
+    ((8#$mode & 8#022)) && emit_deny "codex_bin か祖先に group / other の書き込み権限がある"
+    [[ $p == / ]] && break
+    p="${p%/*}"
+    [[ -n $p ]] || p=/
+  done
   return 0
 }
 
@@ -209,8 +260,10 @@ check_plugin_bin() {
 }
 
 check_codex() {
-  local c d n o on b f pc sc p s cwd cwd_real a expected got
+  local bin c d n o on b f pc sc p s cwd cwd_real a expected got
   local -a forbid
+  load_configured codex_bin
+  bin="$CONFIGURED"
   [[ $CMD =~ \ -o\ ([^ ]+)/dev-flow-codex-result-([0-9a-f]{32})-([0-9a-f]{64})\.json\  ]] || emit_deny "codex の -o が出力先の dev-flow-codex-result-<nonce>-<binding>.json の形でない"
   o="${BASH_REMATCH[1]}"
   on="${BASH_REMATCH[2]}"
@@ -227,8 +280,8 @@ check_codex() {
   f="${o}/dev-flow-codex-result-${n}-${b}.json"
   pc="${o}/dev-flow-codex-prompt-${n}-${b}.md"
   sc="${o}/dev-flow-codex-schema-${n}-${b}.json"
-  expected="codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C ${c} -c dev_flow_review_dir=\"${d}\" -c web_search=\"disabled\" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=${pc} --output-schema ${sc} -o ${f} \"${CODEX_PROMPT} ${n}\""
-  [[ $CMD == "$expected" ]] || emit_deny "codex の起動形が固定形と一致しない（フラグの過不足・作業ディレクトリ・指示ファイル・schema が出力先の round の名前でない）"
+  expected="${bin} exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C ${c} -c dev_flow_review_dir=\"${d}\" -c web_search=\"disabled\" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=${pc} --output-schema ${sc} -o ${f} \"${CODEX_PROMPT} ${n}\""
+  [[ $CMD == "$expected" ]] || emit_deny "codex の起動形が固定形と一致しない（先頭トークンが user 設定の dev-flow.codex_bin でない・フラグの過不足・作業ディレクトリ・指示ファイル・schema が出力先の round の名前でない）"
   for p in "$d" "$o"; do
     IFS='/' read -r -a SEGS <<<"${p#/}"
     for s in "${SEGS[@]}"; do
@@ -247,7 +300,7 @@ check_codex() {
   cwd=$(jq -r '.cwd | if type == "string" then . else "" end' 2>/dev/null <<<"$INPUT") || emit_deny "cwd を読めない"
   [[ $cwd == /* ]] || emit_deny "cwd が絶対パスでない"
   cwd_real=$(realpath -- "$cwd" 2>/dev/null) || emit_deny "cwd の realpath を取れない"
-  check_codex_binary "$cwd" "$cwd_real"
+  check_codex_binary "$bin" "$cwd_real"
   # 保存先は cwd の配下でなく、出力先は sandbox の中から書ける一時領域（$TMPDIR・/tmp・/private/tmp）の配下でもない
   for p in "$d" "$o"; do
     forbid=("$cwd_real")
@@ -270,6 +323,13 @@ check_codex() {
   sbody="${sbody%x}"
   got=$(codex_binding "$d" "$pbody" "$sbody") || emit_deny "保存先の binding を計算できない"
   [[ $got == "$b" ]] || emit_deny "保存先から計算した binding が起動形の binding と一致しない（prep の後に保存先が変わった・別の保存先）"
+  # codex_bin の中身が user 設定の codex_bin_sha256 と一致するときだけ通す。link 数・書き込み試験は確かめた時点の状態しか見ないので、
+  # その前に書ける場所へ hard link を張って中身を書き換え、link を消して link 数を 1 に戻した codex_bin を sandbox の外で走らせない。
+  # 照合は起動の直前（他の確認の後）に 1 回だけ行う
+  load_configured codex_bin_sha256
+  [[ $CONFIGURED =~ ^${SHA256_RE}$ ]] || emit_deny "user 設定の dev-flow.codex_bin_sha256 が 64 桁の小文字 hex でない"
+  got=$(sha256_hex <"$bin") || emit_deny "codex_bin の sha256 を計算できない"
+  [[ $got == "$CONFIGURED" ]] || emit_deny "codex_bin の sha256 が user 設定の dev-flow.codex_bin_sha256 と一致しない（codex を更新したら設定の値も更新する）"
   (set -C && printf '%s' "$pbody" >"$pc") 2>/dev/null || emit_deny "prompt.md を出力先へ複製できない"
   (set -C && printf '%s' "$sbody" >"$sc") 2>/dev/null || emit_deny "schema.json を出力先へ複製できない"
   # 作業ディレクトリは照合の後に新しく作る（既にあれば mkdir が失敗して拒否 — 先に置かれた中身を codex に読ませない）
@@ -303,7 +363,8 @@ CMD=$(jq -r '.tool_input.command' 2>/dev/null <<<"$INPUT") || emit_deny "command
 
 if [[ $AGENT_TYPE == "$RELAY_AGENT" ]]; then
   [[ $HAS_NL == "false" ]] || emit_deny "security-codex-relay は prompt のコマンド行を 1 行の単文でだけ実行できる"
-  if [[ $CMD == "codex "* ]]; then
+  # codex は先頭トークンが絶対パス（user 設定の codex_bin）の形だけ。bare 名の codex は PATH の解決先に頼るので通さない
+  if [[ $CMD == /* ]]; then
     check_codex
     pass_through
   fi
@@ -316,10 +377,11 @@ if [[ $AGENT_TYPE == "$RELAY_AGENT" ]]; then
         [[ $s == "." || $s == ".." ]] && emit_deny "security-codex-relay のパスに . / .. の要素がある"
       done
     done
-    # 出力先は prep の 6 番目・result の 8 番目のトークン。diff の照合は出力先を使わない（Claude 経路でも走る）
+    # 出力先は prep の 6 番目・result の 8 番目、codex_bin は prep の 7 番目のトークン。diff の照合は出力先を使わない（Claude 経路でも走る）
     read -r -a TOKS <<<"$CMD"
     if [[ $CMD == security-review-codex-prep\ * ]]; then
       require_configured_output_dir "${TOKS[5]}"
+      require_configured_codex_bin "${TOKS[6]}"
     elif [[ $CMD == security-review-codex-result\ * ]]; then
       require_configured_output_dir "${TOKS[7]}"
     fi
@@ -336,6 +398,10 @@ NORM=${NORM//\\/}
 # 先頭の予約語・前置コマンド（env / exec 等）・その option・`NAME=value` の代入は読み飛ばす
 SEP_GLOB='[;&|(){}]'
 SIMPLE=${NORM//$SEP_GLOB/$'\n'}
+# user 設定の codex_bin は basename が codex とは限らないので、先頭トークンが codex_bin と同じ文字列か、絶対パスで同じファイル
+# （hard link を含む）なら deny する。未設定なら codex / */codex の判定だけ
+load_configured codex_bin optional
+CODEX_BIN_CFG="$CONFIGURED"
 while read -r -a words; do
   after_prefix=0
   for w in "${words[@]}"; do
@@ -347,7 +413,7 @@ while read -r -a words; do
     esac
     [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && continue
     [[ $after_prefix -eq 1 && ( $w == -* || $w =~ ^[0-9.]+[smhd]?$ ) ]] && continue
-    if [[ $w == "codex" || $w == */codex ]]; then
+    if [[ $w == "codex" || $w == */codex || ( -n $CODEX_BIN_CFG && ( $w == "$CODEX_BIN_CFG" || ( $w == /* && $w -ef $CODEX_BIN_CFG ) ) ) ]]; then
       emit_deny "dev-flow の agent は codex を起動できない（Codex 経路の security review は security-codex-relay が固定形で起動する）"
     fi
     break

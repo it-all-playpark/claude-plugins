@@ -35,10 +35,11 @@
 #     head_mismatch は head_sha が今の PR head（headRefOid）と違うか、head_sha が null のとき true。終端サマリーが無ければ null
 #   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。PR の base branch の CI 所要時間から決める
 #     （ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
-#   security_review: 敵対的 security review の起動時の判定 {target, reasons, reviewer_context_changed, reviewer, codex_output_dir}。reviewer は review を回す
+#   security_review: 敵対的 security review の起動時の判定 {target, reasons, reviewer_context_changed, reviewer, codex_output_dir, codex_bin}。reviewer は review を回す
 #     CLI の opt-in（"dev-flow".security_reviewer。base branch の skill-config.json か user 設定から読み、PR head の設定は読まない。
 #     無ければ "claude"。ok:false の早期終端では載せない — workflow は省略を "claude" として扱う）。codex_output_dir は Codex 経路の
-#     codex の -o の出力先（"dev-flow".codex_output_dir。user 設定からだけ読む。無ければ null。早期終端では載せない）。origin/<base>...<PR head> の diff を
+#     codex の -o の出力先（"dev-flow".codex_output_dir。user 設定からだけ読む。無ければ null。早期終端では載せない）。codex_bin は
+#     中継が起動する codex の絶対パス（"dev-flow".codex_bin。同じく user 設定からだけ読み、無い・文字列でなければ null）。origin/<base>...<PR head> の diff を
 #     security-review-scope.sh で判定し、全ファイルが許可リストに当たるときだけ target:false。判定できない（ok:false の
 #     早期終端・base 不明・node 不在・取得失敗）ときは target:true。reviewer_context_changed は diff が reviewer の指示ファイル
 #     （CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変えるか — 判定できたうえで false のときだけ false（workflow は
@@ -448,6 +449,21 @@ for cfg in "${USER_CONFIGS[@]}"; do
         break
     fi
 done
-security_review="$(printf '%s' "$security_review" | jq -c --argjson r "$security_reviewer" --argjson o "$codex_output_dir" '. + {reviewer: $r, codex_output_dir: $o}')"
+# Codex 経路で中継が起動する codex の絶対パス（"dev-flow".codex_bin。issue #1104）。codex_output_dir と同じく user 設定からだけ読む —
+# codex は sandbox の外で動くので、起動形の先頭トークンを PATH の解決先や repo の内容で決めさせない。最初に null でない値を持つ
+# ファイルの値が文字列でなければ null（workflow は Codex 経路に入らない）。パスの検証は workflow・prep・hook が行う。
+codex_bin_of() {
+    jq -c 'if type == "object" and (.["dev-flow"] | type) == "object" then .["dev-flow"].codex_bin else null end' 2>/dev/null
+}
+codex_bin='null'
+for cfg in "${USER_CONFIGS[@]}"; do
+    [[ -n "$cfg" && -f "$cfg" ]] || continue
+    v="$(codex_bin_of <"$cfg")" || v=''
+    if [[ -n "$v" && "$v" != 'null' ]]; then
+        codex_bin="$(printf '%s' "$v" | jq -c 'if type == "string" then . else null end')"
+        break
+    fi
+done
+security_review="$(printf '%s' "$security_review" | jq -c --argjson r "$security_reviewer" --argjson o "$codex_output_dir" --argjson b "$codex_bin" '. + {reviewer: $r, codex_output_dir: $o, codex_bin: $b}')"
 
 emit true
