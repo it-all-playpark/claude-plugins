@@ -352,7 +352,12 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
     配下なら起動させない（sandbox の外で PR のコードが置いた codex を走らせない）
   - 残る経路（この gate では塞がない）: pr.diff・保存先ディレクトリの ctime を元の値に戻す（system の時計を戻せる権限が要る。同じ uid の常駐プロセスは utimes でも ctime を戻せない）。
     codex の出力後に結果ファイル（`result.json`）を nonce ごと写して `issues:[]` で上書きする（出力先は sandbox の中から書けない
-    場所に置く前提で、hook と prep はその前提を確かめるが、書けてしまう設定ではこの上書きを検出しない）。常駐プロセスは同じ権限で
+    場所に置く前提で、hook と prep はその前提を確かめるが、書けてしまう設定ではこの上書きを検出しない）。
+    保存先の祖先（`$TMPDIR` 側の親）を rename で退避し、良性の保存先を持つ同名の親を置いて review の後に戻す（照合するのは pr.diff と
+    保存先自身の ino・ctime だけで、保存先自身は移動しないので見分けられない）。hook の `codex` の解決先の確認は拒否リストなので、
+    PATH 上で本物より前にある sandbox から書ける他の場所（`PNPM_HOME`・`~/.local/bin` 等）に置いた `codex` は通る。また hook は
+    自分の PATH で解決し、中継の Bash の PATH とずれると確認が実際の起動と一致しない。`security-review-diff-check` も bare 名で
+    起動するので、PATH 上で plugin の `bin/` より前の書ける場所に置いた同名の実行ファイルは照合を素通りできる。常駐プロセスは同じ権限で
     書けるので完全には防げない — plugin の script / hook はプロセスの一覧・kill をしない（状態を変えない）
 
 **Codex 経路**（opt-in。`"dev-flow".security_reviewer = "codex"`）:
