@@ -356,15 +356,19 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
     `.git`・`AGENTS.md`・`AGENTS.override.md`・`CLAUDE.md` が無いことを確かめる。当たれば判定できない（ok:false）として
     Codex を起動できないときと同じく Claude 経路の判定に倒す。hook は中継が起動する `codex` の PATH 上の解決先を確かめ、
     解決できない・相対パスか空の PATH 要素から解決される・実体が cwd（PR の worktree）・`$TMPDIR`・`/tmp`・`/private/tmp` の
-    配下なら起動させない（sandbox の外で PR のコードが置いた codex を走らせない）
+    配下なら起動させない（sandbox の外で PR のコードが置いた codex を走らせない）。中継が bare 名で起動する
+    `security-review-codex-prep`・`security-review-codex-result`・`security-review-diff-check` は、PATH 上の解決先の realpath が
+    hook 自身の plugin の `bin/` の同名ファイルの realpath と一致するときだけ通す（解決できない・相対パスか空の PATH 要素から
+    解決される・一致しないなら deny）。PATH の前方の書ける場所に置いた同名の実行ファイルに照合や判定の結果を偽らせない —
+    `security-review-diff-check` は Claude 経路でも clear の前に走るので、Codex を opt-in していない利用者にも効く
   - 残る経路（この gate では塞がない）: pr.diff・保存先ディレクトリの ctime を元の値に戻す（system の時計を戻せる権限が要る。同じ uid の常駐プロセスは utimes でも ctime を戻せない）。
     codex の出力後に結果ファイル（`result.json`）を nonce ごと写して `issues:[]` で上書きする（出力先は sandbox の中から書けない
     場所に置く前提で、hook と prep はその前提を確かめるが、書けてしまう設定ではこの上書きを検出しない）。
     保存先の祖先（`$TMPDIR` 側の親）を rename で退避し、良性の保存先を持つ同名の親を置いて review の後に戻す（照合するのは pr.diff と
     保存先自身の ino・ctime だけで、保存先自身は移動しないので見分けられない）。hook の `codex` の解決先の確認は拒否リストなので、
     PATH 上で本物より前にある sandbox から書ける他の場所（`PNPM_HOME`・`~/.local/bin` 等）に置いた `codex` は通る。また hook は
-    自分の PATH で解決し、中継の Bash の PATH とずれると確認が実際の起動と一致しない。`security-review-diff-check` も bare 名で
-    起動するので、PATH 上で plugin の `bin/` より前の書ける場所に置いた同名の実行ファイルは照合を素通りできる。常駐プロセスは同じ権限で
+    `codex` も prep・result・diff の照合の 3 つも自分の PATH で解決するので、hook の PATH と中継の Bash の PATH がずれると
+    解決先の確認が実際の起動と一致しない（hook が plugin の `bin/` に解決されると見ても、中継の Bash は別のファイルを起動し得る）。常駐プロセスは同じ権限で
     書けるので完全には防げない — plugin の script / hook はプロセスの一覧・kill をしない（状態を変えない）
 
 **Codex 経路**（opt-in。`"dev-flow".security_reviewer = "codex"`）:

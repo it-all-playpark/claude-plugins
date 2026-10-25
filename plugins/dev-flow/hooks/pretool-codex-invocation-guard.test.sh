@@ -81,6 +81,8 @@ done
 # PR の worktree の代わり（入力の cwd にする実ディレクトリ）
 PRWT="${OUT_ROOT}/pr-wt"
 mkdir -p "$PRWT"
+# hook は中継の prep・result・diff の照合の bare 名が PATH 上で hook 自身の plugin の bin/ に解決されることを確かめる
+PLUGIN_BIN="${PLUGIN_ROOT}/bin"
 # codex_cmd <D> [<nonce>] [<出力先>] [<-o の nonce>] [<binding>] [<-C>] — _lib/security-review.mjs の codexSecurityReviewCommand と同じ固定形
 #   -C の既定は <出力先>/dev-flow-codex-cwd-<nonce>-<binding>
 codex_cmd() {
@@ -101,7 +103,8 @@ FAILURES=()
 
 # run_raw <name> <expected: deny|silent> <raw stdin>
 #   silent: 無出力で exit 0 / deny: permissionDecision=deny の JSON を出して exit 0
-#   HOOK_TMPDIR が設定されていれば hook の $TMPDIR をそれにする。hook の PATH は HOOK_PATH（既定は代わりの codex を先頭に置いた PATH）
+#   HOOK_TMPDIR が設定されていれば hook の $TMPDIR をそれにする。hook の PATH は HOOK_PATH（既定は代わりの codex と plugin の bin/ を
+#   先頭に置いた PATH）
 #   $SKILL_CONFIG_PATH の codex_output_dir は HOOK_OUT（既定 $RO。none はキー無し）、~/.config/skills/config.json の値は
 #   HOOK_HOME_OUT（未設定ならファイル無し）
 run_raw() {
@@ -116,7 +119,7 @@ run_raw() {
   if [[ -n ${HOOK_HOME_OUT-} ]]; then
     jq -cn --arg o "$HOOK_HOME_OUT" '{"dev-flow":{codex_output_dir:$o}}' >"${HOOK_HOME}/.config/skills/config.json"
   fi
-  output=$(printf '%s' "$input" | HOME="$HOOK_HOME" SKILL_CONFIG_PATH="$HOOK_CFG" TMPDIR="${HOOK_TMPDIR-${TMPDIR:-}}" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" PATH="${HOOK_PATH-${FAKE_BIN}:${PATH}}" "$BASH" -c "$HOOK_CMD" 2>/dev/null) || status=$?
+  output=$(printf '%s' "$input" | HOME="$HOOK_HOME" SKILL_CONFIG_PATH="$HOOK_CFG" TMPDIR="${HOOK_TMPDIR-${TMPDIR:-}}" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" PATH="${HOOK_PATH-${FAKE_BIN}:${PLUGIN_BIN}:${PATH}}" "$BASH" -c "$HOOK_CMD" 2>/dev/null) || status=$?
   [[ ${KEEP_COPIES-} == 1 ]] || clean_copies
 
   local got
@@ -188,6 +191,44 @@ run_bash "diff の照合の保存先ディレクトリの ctime が数字でな�
 run_bash "prep に diff の sha256 が無い（旧形）" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O}"
 run_bash "diff の照合に余分な引数" deny "$RELAY" "security-review-diff-check ${D} ${H} ${DS} --extra"
 run_bash "diff の照合の後ろに連結" deny "$RELAY" "security-review-diff-check ${D} ${H} ${DS}; printf x > ${D}/pr.diff"
+
+echo "[security-codex-relay — prep・result・diff の照合は PATH 上で hook の plugin の bin/ に解決されるときだけ通す]"
+# fake_script <dir> <name> — 照合や判定の結果を偽る同名の実行ファイル（PATH の前方の書ける場所に置かれたもの）
+fake_script() {
+  mkdir -p "$1"
+  printf '#!/bin/sh\necho %s\n' "'{\"ok\":true,\"matched\":true}'" >"$1/$2"
+  chmod +x "$1/$2"
+}
+# run_relay_cwd <name> <expected> <cwd> <command> — 入力の cwd（PR の worktree）を変えて中継の固定形を判定する
+run_relay_cwd() {
+  run_raw "$1" "$2" "$(jq -cn --arg a "$RELAY" --arg c "$4" --arg cwd "$3" '{agent_type:$a, cwd:$cwd, tool_name:"Bash", tool_input:{command:$c}}')"
+}
+for cmd in "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O}" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O}" "security-review-diff-check ${D} ${H} ${DS}"; do
+  name="${cmd%% *}"
+  HOOK_PATH="${PLUGIN_BIN}:${TOOLS_BIN}" run_relay_cwd "${name} が plugin の bin/ に解決される" silent "$PRWT" "$cmd"
+  fake_script "${OUT_ROOT}/evil-bin" "$name"
+  HOOK_PATH="${OUT_ROOT}/evil-bin:${PLUGIN_BIN}:${TOOLS_BIN}" run_relay_cwd "${name} の同名の実行ファイルが PATH の前方にある" deny "$PRWT" "$cmd"
+  HOOK_PATH="${PLUGIN_BIN}:${OUT_ROOT}/evil-bin:${TOOLS_BIN}" run_relay_cwd "${name} の同名の実行ファイルが plugin の bin/ より後ろにだけある" silent "$PRWT" "$cmd"
+  # 実行できない同名のファイルは解決先にならない（bash の PATH の探索と同じ）
+  chmod -x "${OUT_ROOT}/evil-bin/${name}"
+  HOOK_PATH="${OUT_ROOT}/evil-bin:${PLUGIN_BIN}:${TOOLS_BIN}" run_relay_cwd "${name} の前方の同名のファイルが実行できない" silent "$PRWT" "$cmd"
+  # 相対パスの PATH 要素は Bash の cwd（PR の worktree）基準で解決される。cwd の外を指す相対パスでも通さない
+  fake_script "${OUT_ROOT}/rel-bin" "$name"
+  HOOK_PATH="../rel-bin:${PLUGIN_BIN}:${TOOLS_BIN}" run_relay_cwd "${name} が PATH の相対パスの要素から解決される" deny "$PRWT" "$cmd"
+  HOOK_PATH="missing-rel:${PLUGIN_BIN}:${TOOLS_BIN}" run_relay_cwd "${name} の相対パスの要素に無ければ次の要素で解決する" silent "$PRWT" "$cmd"
+  fake_script "$PRWT" "$name"
+  HOOK_PATH=":${PLUGIN_BIN}:${TOOLS_BIN}" run_relay_cwd "${name} が PATH の空の要素（cwd）から解決される" deny "$PRWT" "$cmd"
+  HOOK_PATH="${PLUGIN_BIN}:${TOOLS_BIN}:" run_relay_cwd "${name} が末尾の空の要素より前の plugin の bin/ で解決される" silent "$PRWT" "$cmd"
+  rm -f "${PRWT}/${name}"
+  HOOK_PATH="$TOOLS_BIN" run_relay_cwd "${name} が PATH 上に無い（解決できない）" deny "$PRWT" "$cmd"
+  # 別の場所の symlink でも実体（realpath）が plugin の bin/ の同名ファイルなら通し、別の名前の plugin の script を指すなら通さない
+  mkdir -p "${OUT_ROOT}/plugin-link"
+  ln -sf "${PLUGIN_BIN}/${name}" "${OUT_ROOT}/plugin-link/${name}"
+  HOOK_PATH="${OUT_ROOT}/plugin-link:${TOOLS_BIN}" run_relay_cwd "${name} が plugin の bin/ の同名ファイルを指す symlink" silent "$PRWT" "$cmd"
+  ln -sf "${PLUGIN_BIN}/security-review-scope" "${OUT_ROOT}/plugin-link/${name}"
+  HOOK_PATH="${OUT_ROOT}/plugin-link:${TOOLS_BIN}" run_relay_cwd "${name} が plugin の bin/ の別の script を指す symlink" deny "$PRWT" "$cmd"
+done
+run_raw "diff の照合の cwd が絶対パスでない" deny "$(jq -cn --arg a "$RELAY" --arg c "security-review-diff-check ${D} ${H} ${DS}" '{agent_type:$a, cwd:"wt", tool_name:"Bash", tool_input:{command:$c}}')"
 
 echo "[security-codex-relay — codex は PATH 上で PR のコードが置けない場所に解決されるときだけ通す]"
 HOOK_PATH="${FAKE_BIN}:${TOOLS_BIN}" run_bash "codex が cwd・\$TMPDIR・/tmp の外の絶対パスの PATH 要素から解決される" silent "$RELAY" "$CODEX_CMD"

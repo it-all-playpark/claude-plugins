@@ -34,6 +34,10 @@
 #      ~/.config/skills/config.json → ~/.claude/skill-config.json）と完全に一致するときだけ通し、値が無ければ deny する —
 #      prep が書き込み不可を確かめた出力先以外（sandbox から書ける別の場所）を -o にした codex を中継が起動できないようにする。
 #      prep / result のパスの実体は各 script が確かめる。
+#      prep・result・diff の照合の 3 形は、先頭の bare 名が PATH 上で解決されるファイル（先頭から見て最初の実行できる通常ファイル）の
+#      realpath が hook 自身の plugin の bin/ の同名ファイルの realpath と一致するときだけ通す。解決できない・PATH の相対パスか空の
+#      要素（cwd 基準）から解決される・一致しないなら deny する — PATH の前方の書ける場所に置いた同名の実行ファイルに照合や判定の
+#      結果（ok・issues:[]）を偽らせて clear にさせない（diff の照合は Claude 経路でも clear の前に走る）。
 #      codex の形は hook がパスの実体も確かめる: dev_flow_review_dir の <D>（codex は使わない設定キー。hook が複製元を知るためだけに
 #      置く）は prompt.md・schema.json を実ファイルとして持つ実ディレクトリで、入力の cwd（PR の worktree）の配下でない。4 つの名前の
 #      nonce は prompt の nonce と同じで、<O> は symlink でない実ディレクトリで realpath が自身と一致する（祖先にも symlink が無い）・
@@ -159,24 +163,44 @@ under_any() {
   done
 }
 
-# 中継の Bash が先頭トークン codex を解決する先（PATH の先頭から見て最初の、実行できる通常ファイル）を確かめる。codex は sandbox の
-# 外で動くので、PR のコードが置ける場所に解決されるなら通さない: 解決できない・PATH の相対パスか空の要素（Bash の cwd = PR の
-# worktree 基準）から解決される・実体（realpath）が cwd・$TMPDIR・/tmp・/private/tmp の配下。$1 は入力の cwd、$2 はその realpath
-check_codex_binary() {
-  local rest="${PATH-}:" e cand real
-  local -a forbid=("$2" /tmp /private/tmp)
-  [[ -n ${TMPDIR:-} ]] && forbid+=("$TMPDIR")
+# 中継の Bash が先頭トークン $1（hook が固定の名前から選ぶ）を解決する先（PATH の先頭から見て最初の、実行できる通常ファイル）の
+# realpath を RESOLVED_REAL に入れる。解決できない・PATH の相対パスか空の要素（Bash の cwd = PR の worktree 基準）から解決される・
+# realpath を取れないなら deny する。$2 は入力の cwd
+resolve_on_path() {
+  local name="$1" rest="${PATH-}:" e cand
   while [[ -n $rest ]]; do
     e="${rest%%:*}"
     rest="${rest#*:}"
-    if [[ $e == /* ]]; then cand="${e%/}/codex"; else cand="$1/${e:+$e/}codex"; fi
+    if [[ $e == /* ]]; then cand="${e%/}/${name}"; else cand="$2/${e:+$e/}${name}"; fi
     [[ -f $cand && -x $cand ]] || continue
-    [[ $e == /* ]] || emit_deny "codex が PATH の相対パスか空の要素（cwd 基準）から解決される"
-    real=$(realpath -- "$cand" 2>/dev/null) || emit_deny "codex の実体の realpath を取れない"
-    under_any "$real" "${forbid[@]}" && emit_deny "codex の実体が cwd（PR の worktree）・\$TMPDIR・/tmp の配下にある"
+    [[ $e == /* ]] || emit_deny "${name} が PATH の相対パスか空の要素（cwd 基準）から解決される"
+    RESOLVED_REAL=$(realpath -- "$cand" 2>/dev/null) || emit_deny "${name} の実体の realpath を取れない"
     return 0
   done
-  emit_deny "codex が PATH 上に見つからない"
+  emit_deny "${name} が PATH 上に見つからない"
+}
+
+# codex は sandbox の外で動くので、PR のコードが置ける場所に解決されるなら通さない: resolve_on_path の条件に加えて、実体（realpath）が
+# cwd・$TMPDIR・/tmp・/private/tmp の配下。$1 は入力の cwd、$2 はその realpath
+check_codex_binary() {
+  local -a forbid=("$2" /tmp /private/tmp)
+  [[ -n ${TMPDIR:-} ]] && forbid+=("$TMPDIR")
+  resolve_on_path codex "$1"
+  under_any "$RESOLVED_REAL" "${forbid[@]}" && emit_deny "codex の実体が cwd（PR の worktree）・\$TMPDIR・/tmp の配下にある"
+  return 0
+}
+
+# 中継の prep・result・diff の照合の script（$1 は固定の 3 つの名前のどれか）が PATH 上で hook 自身の plugin の bin/ の同名ファイルに
+# 解決されるか。bin/ は hook のパス（${CLAUDE_PLUGIN_ROOT}/hooks/<この file>）から決める — 環境変数で差し替えさせない
+check_plugin_bin() {
+  local src="${BASH_SOURCE[0]}" dir expected cwd
+  [[ $src == */* ]] && dir="${src%/*}" || dir=.
+  expected=$(realpath -- "${dir}/../bin/$1" 2>/dev/null) || emit_deny "hook の plugin の bin/ に ${1} が無い"
+  cwd=$(jq -r '.cwd | if type == "string" then . else "" end' 2>/dev/null <<<"$INPUT") || emit_deny "cwd を読めない"
+  [[ $cwd == /* ]] || emit_deny "cwd が絶対パスでない"
+  resolve_on_path "$1" "$cwd"
+  [[ $RESOLVED_REAL == "$expected" ]] || emit_deny "${1} が PATH 上で hook の plugin の bin/ 以外に解決される"
+  return 0
 }
 
 check_codex() {
@@ -294,6 +318,7 @@ if [[ $AGENT_TYPE == "$RELAY_AGENT" ]]; then
     elif [[ $CMD == security-review-codex-result\ * ]]; then
       require_configured_output_dir "${TOKS[7]}"
     fi
+    check_plugin_bin "${TOKS[0]}"
     pass_through
   fi
   emit_deny "security-codex-relay は security-review-codex-prep / codex exec / security-review-codex-result / security-review-diff-check の固定形でだけ Bash を使える。prompt のコマンド行を一字一句そのまま実行せよ"
