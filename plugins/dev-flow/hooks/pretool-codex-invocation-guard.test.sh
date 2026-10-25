@@ -59,6 +59,28 @@ binding_of() {
 }
 B="$(binding_of "$RD")"
 B2="$(printf '%064d' 0)"
+# prep が返す prompt.md・schema.json の sha256 と、security-review-scope が返す diff の sha256（形だけ見る）
+PS="$(printf '%064d' 1)"
+SS="$(printf '%064d' 2)"
+H="$(printf '%064d' 3)"
+# hook は PATH 上の codex の実体を確かめる。既定の PATH の先頭に、cwd・$TMPDIR・/tmp の外（repo の .devflow-tmp/）の代わりの codex を置く
+fake_codex() {
+  mkdir -p "$1"
+  printf '#!/bin/sh\nexit 0\n' >"$1/codex"
+  chmod +x "$1/codex"
+}
+FAKE_BIN="${OUT_ROOT}/bin"
+fake_codex "$FAKE_BIN"
+# codex を含まない PATH（hook が使うコマンドだけ）
+TOOLS_BIN="${TMP_ROOT}/tools"
+mkdir -p "$TOOLS_BIN"
+for t in bash jq realpath cat mkdir grep sha256sum shasum; do
+  p="$(command -v "$t" 2>/dev/null)" || continue
+  ln -s "$p" "${TOOLS_BIN}/${t}"
+done
+# PR の worktree の代わり（入力の cwd にする実ディレクトリ）
+PRWT="${OUT_ROOT}/pr-wt"
+mkdir -p "$PRWT"
 # codex_cmd <D> [<nonce>] [<出力先>] [<-o の nonce>] [<binding>] [<-C>] — _lib/security-review.mjs の codexSecurityReviewCommand と同じ固定形
 #   -C の既定は <出力先>/dev-flow-codex-cwd-<nonce>-<binding>
 codex_cmd() {
@@ -79,7 +101,7 @@ FAILURES=()
 
 # run_raw <name> <expected: deny|silent> <raw stdin>
 #   silent: 無出力で exit 0 / deny: permissionDecision=deny の JSON を出して exit 0
-#   HOOK_TMPDIR が設定されていれば hook の $TMPDIR をそれにする
+#   HOOK_TMPDIR が設定されていれば hook の $TMPDIR をそれにする。hook の PATH は HOOK_PATH（既定は代わりの codex を先頭に置いた PATH）
 #   $SKILL_CONFIG_PATH の codex_output_dir は HOOK_OUT（既定 $RO。none はキー無し）、~/.config/skills/config.json の値は
 #   HOOK_HOME_OUT（未設定ならファイル無し）
 run_raw() {
@@ -94,7 +116,7 @@ run_raw() {
   if [[ -n ${HOOK_HOME_OUT-} ]]; then
     jq -cn --arg o "$HOOK_HOME_OUT" '{"dev-flow":{codex_output_dir:$o}}' >"${HOOK_HOME}/.config/skills/config.json"
   fi
-  output=$(printf '%s' "$input" | HOME="$HOOK_HOME" SKILL_CONFIG_PATH="$HOOK_CFG" TMPDIR="${HOOK_TMPDIR-${TMPDIR:-}}" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash -c "$HOOK_CMD" 2>/dev/null) || status=$?
+  output=$(printf '%s' "$input" | HOME="$HOOK_HOME" SKILL_CONFIG_PATH="$HOOK_CFG" TMPDIR="${HOOK_TMPDIR-${TMPDIR:-}}" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" PATH="${HOOK_PATH-${FAKE_BIN}:${PATH}}" "$BASH" -c "$HOOK_CMD" 2>/dev/null) || status=$?
   [[ ${KEEP_COPIES-} == 1 ]] || clean_copies
 
   local got
@@ -134,7 +156,7 @@ run_bash "メイン session（agent_type 無し）の codex は対象外" silent
 run_bash "他 plugin の agent の codex は対象外" silent "other:agent" "codex exec --dangerously-bypass-approvals-and-sandbox hi"
 run_bash "dev-flow の agent でも Bash 以外の tool は対象外" silent "$RELAY" "codex" "Read"
 
-echo "[security-codex-relay — 固定の 3 形だけ通す]"
+echo "[security-codex-relay — 固定の 4 形だけ通す]"
 run_bash "prep" silent "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O}"
 run_bash "prep --verify-from" silent "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O} --verify-from ${N2} ${B2}"
 KEEP_COPIES=1 run_bash "codex exec の固定形" silent "$RELAY" "$CODEX_CMD"
@@ -151,8 +173,52 @@ else
   FAIL=$((FAIL + 1)); FAILURES+=("通した起動は出力先に空の作業ディレクトリを作る"); printf "  \033[31mFAIL\033[0m %s\n" "通した起動は出力先に空の作業ディレクトリを作る"
 fi
 run_bash "複製が既にある（同じ nonce・binding で 2 回目の起動）" deny "$RELAY" "$CODEX_CMD"
-run_bash "result" silent "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O}"
-run_bash "result --issues" silent "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O} --issues"
+run_bash "result" silent "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O}"
+run_bash "result --issues" silent "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O} --issues"
+# pr.diff の照合は Claude 経路でも走るので、出力先の設定に縛らない
+HOOK_OUT=none run_bash "diff の照合（出力先の設定が無くても通す）" silent "$RELAY" "security-review-diff-check ${D} ${H}"
+run_bash "diff の照合の sha256 が 64 桁の小文字 hex でない" deny "$RELAY" "security-review-diff-check ${D} ${H:0:63}"
+run_bash "diff の照合の保存先が mkdtemp の形でない" deny "$RELAY" "security-review-diff-check /tmp/x/not-a-review-dir ${H}"
+run_bash "diff の照合の保存先が .. を含む" deny "$RELAY" "security-review-diff-check /tmp/../tmp/dev-flow-security-review-Ab12Cd ${H}"
+run_bash "diff の照合に余分な引数" deny "$RELAY" "security-review-diff-check ${D} ${H} --extra"
+run_bash "diff の照合の後ろに連結" deny "$RELAY" "security-review-diff-check ${D} ${H}; printf x > ${D}/pr.diff"
+
+echo "[security-codex-relay — codex は PATH 上で PR のコードが置けない場所に解決されるときだけ通す]"
+HOOK_PATH="${FAKE_BIN}:${TOOLS_BIN}" run_bash "codex が cwd・\$TMPDIR・/tmp の外の絶対パスの PATH 要素から解決される" silent "$RELAY" "$CODEX_CMD"
+HOOK_PATH="$TOOLS_BIN" run_bash "codex が PATH 上に無い（解決できない）" deny "$RELAY" "$CODEX_CMD"
+# run_cwd <name> <expected> <cwd> — 入力の cwd（PR の worktree）を変えて codex の固定形を判定する
+run_cwd() {
+  run_raw "$1" "$2" "$(jq -cn --arg a "$RELAY" --arg c "$CODEX_CMD" --arg cwd "$3" '{agent_type:$a, cwd:$cwd, tool_name:"Bash", tool_input:{command:$c}}')"
+}
+# 相対パスの PATH 要素は Bash の cwd（PR の worktree）基準で解決される。cwd の外を指す相対パスでも通さない
+fake_codex "${OUT_ROOT}/pr-bin"
+HOOK_PATH="../pr-bin:${FAKE_BIN}:${TOOLS_BIN}" run_cwd "codex が PATH の相対パスの要素から解決される" deny "$PRWT"
+HOOK_PATH="missing-rel:${FAKE_BIN}:${TOOLS_BIN}" run_cwd "相対パスの要素に codex が無ければ次の要素で解決する" silent "$PRWT"
+fake_codex "$PRWT"
+HOOK_PATH=":${FAKE_BIN}:${TOOLS_BIN}" run_cwd "codex が PATH の空の要素（cwd）から解決される" deny "$PRWT"
+HOOK_PATH="${FAKE_BIN}:${TOOLS_BIN}:" run_cwd "末尾の空の要素より前で解決できれば通す" silent "$PRWT"
+rm -f "${PRWT}/codex"
+HOOK_PATH="${FAKE_BIN}:${TOOLS_BIN}:" run_cwd "末尾の空の要素（cwd）に codex が無ければ前の要素の解決だけを見る" silent "$PRWT"
+# 絶対パスの要素でも、実体（realpath）が cwd の配下なら通さない（symlink で外に見せても実体を見る）
+fake_codex "${PRWT}/node_modules/.bin"
+HOOK_PATH="${PRWT}/node_modules/.bin:${FAKE_BIN}:${TOOLS_BIN}" run_cwd "codex の実体が cwd の配下" deny "$PRWT"
+mkdir -p "${OUT_ROOT}/link-bin"
+ln -s "${PRWT}/node_modules/.bin/codex" "${OUT_ROOT}/link-bin/codex"
+HOOK_PATH="${OUT_ROOT}/link-bin:${FAKE_BIN}:${TOOLS_BIN}" run_cwd "codex が cwd の配下の実体を指す symlink" deny "$PRWT"
+# 実体が $TMPDIR・/tmp の配下（sandbox の中から書ける）
+fake_codex "${TMP_ROOT}/bin"
+HOOK_TMPDIR="$TMP_ROOT" HOOK_PATH="${TMP_ROOT}/bin:${FAKE_BIN}:${TOOLS_BIN}" run_bash "codex の実体が \$TMPDIR の配下" deny "$RELAY" "$CODEX_CMD"
+fake_codex "${TMP_UNDER}/bin"
+HOOK_TMPDIR="$PRWT" HOOK_PATH="${TMP_UNDER}/bin:${FAKE_BIN}:${TOOLS_BIN}" run_bash "codex の実体が /tmp の配下" deny "$RELAY" "$CODEX_CMD"
+mkdir -p "${OUT_ROOT}/link-tmp"
+ln -s "${TMP_UNDER}/bin/codex" "${OUT_ROOT}/link-tmp/codex"
+HOOK_TMPDIR="$PRWT" HOOK_PATH="${OUT_ROOT}/link-tmp:${FAKE_BIN}:${TOOLS_BIN}" run_bash "codex が /tmp の配下の実体を指す symlink" deny "$RELAY" "$CODEX_CMD"
+# 拒否した起動は出力先に複製・作業ディレクトリを作らない
+if [[ -e $RC ]]; then
+  FAIL=$((FAIL + 1)); FAILURES+=("codex の解決先で拒否した起動は作業ディレクトリを作らない"); printf "  \033[31mFAIL\033[0m %s\n" "codex の解決先で拒否した起動は作業ディレクトリを作らない"
+else
+  PASS=$((PASS + 1)); printf "  \033[32mPASS\033[0m %s\n" "codex の解決先で拒否した起動は作業ディレクトリを作らない"
+fi
 
 echo "[security-codex-relay — codex は prep の後に変わっていない保存先の複製だけを読む]"
 # prep の後に保存先の prompt.md を書き換えた（常駐プロセス）: 起動形の binding（prep が返した値）と一致しないので通さず、複製も作らない
@@ -240,10 +306,10 @@ HOOK_OUT="${OUT_ROOT}/real/out" run_bash "設定と同じ出力先の codex は�
 HOOK_OUT="${RO}/" run_bash "設定の末尾 / も一致とみなさない" deny "$RELAY" "$CODEX_CMD"
 HOOK_OUT=none run_bash "設定に codex_output_dir が無い codex" deny "$RELAY" "$CODEX_CMD"
 HOOK_OUT=none run_bash "設定に codex_output_dir が無い prep" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O}"
-HOOK_OUT=none run_bash "設定に codex_output_dir が無い result" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O}"
+HOOK_OUT=none run_bash "設定に codex_output_dir が無い result" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O}"
 HOOK_OUT="${OUT_ROOT}/real/out" run_bash "prep の出力先が設定と違う" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O}"
 HOOK_OUT="${OUT_ROOT}/real/out" run_bash "prep --verify-from の出力先が設定と違う" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O} --verify-from ${N2} ${B2}"
-HOOK_OUT="${OUT_ROOT}/real/out" run_bash "result の出力先が設定と違う" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O} --issues"
+HOOK_OUT="${OUT_ROOT}/real/out" run_bash "result の出力先が設定と違う" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O} --issues"
 HOOK_OUT=none HOOK_HOME_OUT="$RO" run_bash "\$SKILL_CONFIG_PATH に値が無ければ ~/.config/skills/config.json を読む" silent "$RELAY" "$CODEX_CMD"
 HOOK_OUT="${OUT_ROOT}/real/out" HOOK_HOME_OUT="$RO" run_bash "\$SKILL_CONFIG_PATH の値が ~/.config/skills/config.json より優先" deny "$RELAY" "$CODEX_CMD"
 run_raw "出力先が cwd の配下" deny "$(jq -cn --arg a "$RELAY" --arg c "$CODEX_CMD" --arg cwd "$OUT_ROOT" '{agent_type:$a, cwd:$cwd, tool_name:"Bash", tool_input:{command:$c}}')"
@@ -261,29 +327,31 @@ run_bash "prep に出力先が無い（旧形）" deny "$RELAY" "security-review
 run_bash "prep の --verify-from が保存先（旧形）" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O} --verify-from ${D}"
 run_bash "prep の --verify-from に binding が無い（旧形）" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O} --verify-from ${N2}"
 run_bash "prep の出力先が相対パス" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 codex-out"
-run_bash "result に出力先が無い（旧形）" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B}"
+run_bash "result に出力先が無い（旧形）" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS}"
 run_bash "result に binding が無い（旧形）" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${O}"
-run_bash "result の出力先が .. を含む" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} /Users/x/../tmp"
+run_bash "result に prompt.md・schema.json の sha256 が無い（旧形）" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O}"
+run_bash "result の sha256 が 64 桁の小文字 hex でない" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS:0:63} ${SS} ${O}"
+run_bash "result の出力先が .. を含む" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} /Users/x/../tmp"
 run_bash "引用で分割した codex" deny "$RELAY" "cod''ex exec -s danger-full-access --dangerously-bypass-approvals-and-sandbox -C ${WT} hi"
 run_bash "バックスラッシュで分割した codex" deny "$RELAY" "c\\odex exec -s danger-full-access hi"
 run_bash "変数で組み立てた codex" deny "$RELAY" "X=cod; \${X}ex exec hi"
-run_bash "固定形の後ろに連結" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O}; rm -f ${D}/prepared_at"
-run_bash "固定形の後ろにリダイレクト" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O} > ${D}/prepared_at"
+run_bash "固定形の後ろに連結" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O}; rm -f ${D}/prepared_at"
+run_bash "固定形の後ろにリダイレクト" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O} > ${D}/prepared_at"
 run_bash "固定形に改行で続ける" deny "$RELAY" "${CODEX_CMD}"$'\n'"touch ${RO}/dev-flow-codex-result-${N}-${B}.json"
-run_bash "result に余分な引数" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O} --extra"
+run_bash "result に余分な引数" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O} --extra"
 run_bash "codex の -C が保存先そのもの" deny "$RELAY" "$(codex_cmd "$RD" "$N" "$RO" "$N" "$B" "$RD")"
-run_bash "保存先の名前が mkdtemp の形でない" deny "$RELAY" "security-review-codex-result /tmp/x/dev-flow-security-review-abc12 ${SHA} ${N} ${B} ${O}"
-run_bash "保存先が相対パス" deny "$RELAY" "security-review-codex-result dev-flow-security-review-Ab12Cd ${SHA} ${N} ${B} ${O}"
-run_bash "保存先が .. を含む" deny "$RELAY" "security-review-codex-result /tmp/../tmp/dev-flow-security-review-Ab12Cd ${SHA} ${N} ${B} ${O}"
-run_bash "result に nonce が無い" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${B} ${O}"
-run_bash "result の nonce が 32 桁の小文字 hex でない" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N^^} ${B} ${O}"
-run_bash "result の binding が 64 桁の小文字 hex でない" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B:0:63} ${O}"
+run_bash "保存先の名前が mkdtemp の形でない" deny "$RELAY" "security-review-codex-result /tmp/x/dev-flow-security-review-abc12 ${SHA} ${N} ${B} ${PS} ${SS} ${O}"
+run_bash "保存先が相対パス" deny "$RELAY" "security-review-codex-result dev-flow-security-review-Ab12Cd ${SHA} ${N} ${B} ${PS} ${SS} ${O}"
+run_bash "保存先が .. を含む" deny "$RELAY" "security-review-codex-result /tmp/../tmp/dev-flow-security-review-Ab12Cd ${SHA} ${N} ${B} ${PS} ${SS} ${O}"
+run_bash "result に nonce が無い" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${B} ${PS} ${SS} ${O}"
+run_bash "result の nonce が 32 桁の小文字 hex でない" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N^^} ${B} ${PS} ${SS} ${O}"
+run_bash "result の binding が 64 桁の小文字 hex でない" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B:0:63} ${PS} ${SS} ${O}"
 run_bash "codex の prompt の nonce が 32 桁の小文字 hex でない" deny "$RELAY" "$(codex_cmd "$RD" "abc")"
 run_bash "codex の prompt に nonce が無い" deny "$RELAY" "${CODEX_CMD/ ${N}\"/\"}"
-run_bash "sha が 40 桁でない" deny "$RELAY" "security-review-codex-result ${D} abc ${N} ${B} ${O}"
+run_bash "sha が 40 桁でない" deny "$RELAY" "security-review-codex-result ${D} abc ${N} ${B} ${PS} ${SS} ${O}"
 run_bash "cd 前置" deny "$RELAY" "cd ${WT} && ${CODEX_CMD}"
 run_bash "環境変数前置" deny "$RELAY" "PATH=/tmp/evil ${CODEX_CMD}"
-run_bash "bash 前置" deny "$RELAY" "bash security-review-codex-result ${D} ${SHA} ${N} ${B} ${O}"
+run_bash "bash 前置" deny "$RELAY" "bash security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O}"
 run_bash "他の bare 名" deny "$RELAY" "git status"
 
 echo "[他の dev-flow の agent — codex と保存先だけ deny]"

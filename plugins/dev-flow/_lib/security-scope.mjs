@@ -17,13 +17,15 @@ export const SECURITY_SCOPE_SCHEMA = {
     reviewer_context_changed: { type: 'boolean' },
     review_dir: { type: ['string', 'null'] },
     diff_path: { type: ['string', 'null'] },
+    diff_sha256: { type: ['string', 'null'] },
     error: { type: 'string' },
   },
 };
 
 // head が null なら作業ツリー（未コミット・untracked を含む）と merge-base の diff（dev-flow の Security floor —
 // implementer は commit しない）、head があれば `<base>...<head>` の diff。saveDiff は diff 全文を worktree の外の
-// 新しい一時ディレクトリに書かせる（pr-iterate の security-reviewer が読む）。
+// 新しい一時ディレクトリに書かせ、その sha256 を diff_sha256 で返させる（pr-iterate の security-reviewer が読み、review の後に
+// security-review-diff-check が同じ値と照合する）。
 export function securityScopePrompt({ worktree, base, head = null, saveDiff = false }) {
   const tail = head == null ? '--working-tree' : `${head}${saveDiff ? ' --save-diff' : ''}`;
   return '次のコマンドを 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ（判定・要約・脚色をしない。'

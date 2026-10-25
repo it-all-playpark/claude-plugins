@@ -17,7 +17,9 @@
 //   （前の結果を今の review と取り違えない）。codex の -C（<output_dir>/dev-flow-codex-cwd-<nonce>-<binding>）は hook が binding の
 //   照合の後に作る — 保存先（sandbox の中から書ける）の配下に置くと、常駐プロセスが .git・AGENTS.md を置いて codex に指示として
 //   読ませられる。出力先の祖先（自身を含む）に .git・AGENTS.md・AGENTS.override.md・CLAUDE.md があれば何も作らない（workspace_tainted）。
-// stdout: JSON 1 行 {ok, review_dir, nonce, binding, error?}。error は固定の code だけ（stdout を写す agent へ PR 由来の文字列を渡さない）。
+// stdout: JSON 1 行 {ok, review_dir, nonce, binding, prompt_sha256, schema_sha256, error?}。error は固定の code だけ（stdout を写す agent へ
+//   PR 由来の文字列を渡さない）。prompt_sha256 / schema_sha256 は書いた prompt.md・schema.json の sha256 で、security-review-codex-result が
+//   引数で受け取り、codex の後に出力先の複製と保存先の 2 つを再照合する（hook の照合は起動の直前の 1 回だけ）。
 //   nonce は round ごとの乱数（CODEX_NONCE_RE）。保存先には書かない（sandbox の中から読める場所に置くと、先回りした結果ファイルに
 //   写せる）— workflow が codex の起動形の末尾の prompt と security-review-codex-result の引数にだけ渡す。
 //   binding は保存先のパスと書いた prompt.md・schema.json の中身の sha256（codexBinding）。hook は出力先へ複製した 2 つから同じ値を
@@ -26,18 +28,19 @@
 //   usage error だけ exit 2、それ以外は exit 0。
 import { readFileSync, writeFileSync, lstatSync, existsSync, rmSync, realpathSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
-import { join, dirname, resolve } from 'node:path'
+import { join, dirname } from 'node:path'
 import {
   codexSecurityReviewPrompt, codexResultVerdict, codexResultPath, isCodexArgPath, CODEX_SECURITY_REVIEW_SCHEMA,
   SECURITY_REVIEW_DIR_NAME_RE, CODEX_PREPARED_AT_FILE, CODEX_NONCE_RE, CODEX_BINDING_RE,
 } from '../security-review.mjs'
-import { codexBinding } from './security-review-codex-binding.mjs'
+import { codexBinding, sha256Hex } from './security-review-codex-binding.mjs'
+import { taintedAncestor } from './security-review-codex-workspace.mjs'
 
 const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
   process.exit(code)
 }
-const fail = (error, code = 0) => emit({ ok: false, review_dir: null, nonce: null, binding: null, error }, code)
+const fail = (error, code = 0) => emit({ ok: false, review_dir: null, nonce: null, binding: null, prompt_sha256: null, schema_sha256: null, error }, code)
 
 const argv = process.argv.slice(2)
 let verifyFrom = null
@@ -88,16 +91,6 @@ for (let d = outputDir; ; d = dirname(d)) {
 
 // codex は作業ディレクトリから上へ .git・AGENTS.md 等を探して読む。-C の空ディレクトリ（出力先の直下）の祖先に
 // これらがあれば、空の -C で指示ファイルを読ませない前提が崩れるので入力を作らない（run は Claude 経路に倒れる）
-const TAINT_NAMES = ['.git', 'AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md']
-const existsNoFollow = (p) => {
-  try { lstatSync(p); return true } catch { return false }
-}
-const taintedAncestor = (start) => {
-  for (let d = resolve(start); ; d = dirname(d)) {
-    if (TAINT_NAMES.some((n) => existsNoFollow(join(d, n)))) return true
-    if (dirname(d) === d) return false
-  }
-}
 if (taintedAncestor(outputDir)) fail('workspace_tainted')
 
 let verifyItems = []
@@ -119,6 +112,8 @@ if (verifyFrom != null) {
 }
 
 let binding = null
+let promptSha256 = null
+let schemaSha256 = null
 try {
   const diff = readFileSync(join(reviewDir, 'pr.diff'), 'utf8')
   const schema = `${JSON.stringify(CODEX_SECURITY_REVIEW_SCHEMA)}\n`
@@ -126,9 +121,13 @@ try {
   writeFileSync(join(reviewDir, CODEX_PREPARED_AT_FILE), `${Date.now()}\n`, { flag: 'wx' })
   writeFileSync(join(reviewDir, 'schema.json'), schema, { flag: 'wx' })
   writeFileSync(join(reviewDir, 'prompt.md'), prompt, { flag: 'wx' })
-  // binding は書いた後のファイルではなく、書いた値から作る（書いた直後に差し替えられた中身を binding に入れない）
-  binding = codexBinding(reviewDir, Buffer.from(prompt, 'utf8'), Buffer.from(schema, 'utf8'))
+  // binding と sha256 は書いた後のファイルではなく、書いた値から作る（書いた直後に差し替えられた中身を照合の基準にしない）
+  const promptBuf = Buffer.from(prompt, 'utf8')
+  const schemaBuf = Buffer.from(schema, 'utf8')
+  binding = codexBinding(reviewDir, promptBuf, schemaBuf)
+  promptSha256 = sha256Hex(promptBuf)
+  schemaSha256 = sha256Hex(schemaBuf)
 } catch {
   fail('write_failed')
 }
-emit({ ok: true, review_dir: reviewDir, nonce: randomBytes(16).toString('hex'), binding })
+emit({ ok: true, review_dir: reviewDir, nonce: randomBytes(16).toString('hex'), binding, prompt_sha256: promptSha256, schema_sha256: schemaSha256 })

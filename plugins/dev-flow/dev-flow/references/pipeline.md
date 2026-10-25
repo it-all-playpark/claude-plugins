@@ -290,9 +290,12 @@ Security floor  → security-scope（dev-runner-haiku-ro）: `security-review-sc
 pr-iterate      → CI gate を通り conflict も無い round（LGTM の候補）で:
                   security-scope#i: `security-review-scope <wt> origin/<base> <shaNow|HEAD> --save-diff`
                     → 起動時・run 中のどれか 1 回でも対象なら run の終わりまで対象（args.security_review が無い run も対象）
+                    → 保存先に書いた pr.diff の sha256 を diff_sha256 で返す（無ければ review せず diff_unavailable）
                   対象なら security-review#i（security-reviewer を毎回新しく spawn。PR 全 diff の file と head sha と
                     前回の未解消 critical/major を DATA として渡す）
-                    → critical/major 0 件かつ reviewed_sha が今の head → LGTM
+                    → critical/major 0 件かつ reviewed_sha が今の head → security-diff-check#i（security-codex-relay）:
+                      `security-review-diff-check <保存先> <diff_sha256>` → matched:true → LGTM
+                      （一致しない・照合できない → security_unresolved。Codex 経路で clear の round も同じ）
                     → critical/major あり → fix#i（dev-runner）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
                       上限まで残れば max_reached）
                     → worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致・
@@ -328,6 +331,21 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
   `head_mismatch` / `review_dir_invalid` / `reviewer_context_changed`）。review を実行した・止めていない run は null。
   `reviewer_context_changed` の run は終端サマリーで「指示ファイルを変える PR なので自動 review をしていない」と出し分ける
   （HOLD は変えない。変わったファイルのパスは PR が決めた文字列なので載せず、固定の確認コマンドに PR 番号だけを差し込む）
+- **review 中の入力の書き換え**（issue #1095）: 保存先（`os.tmpdir()` 配下の `dev-flow-security-review-*`）は sandbox の中から
+  書けるので、fix agent や Validate のテストが走らせた PR のコードが常駐プロセスとして残ると、review の作業場所を書き換えて
+  clear を偽れる。sha256 の照合は決定論の script が行い、中継（LLM）は argv を写すだけ。
+  - 検出できる範囲: review の後まで書き換えたまま残った入力。Claude 経路は security-reviewer の返却後に
+    `security-review-diff-check` が pr.diff を `security-review-scope` の diff_sha256 と照合し、一致しない・照合できない round を
+    clear にしない（stop_reason は null）。Codex 経路は `security-review-codex-result` が codex の後に、出力先の複製と保存先の
+    prompt.md・schema.json を prep の返した sha256 と照合し、`-C` が空の実ディレクトリであること、`-C` と保存先の祖先（自身を含む）に
+    `.git`・`AGENTS.md`・`AGENTS.override.md`・`CLAUDE.md` が無いことを確かめる。当たれば判定できない（ok:false）として
+    Codex を起動できないときと同じく Claude 経路の判定に倒す。hook は中継が起動する `codex` の PATH 上の解決先を確かめ、
+    解決できない・相対パスか空の PATH 要素から解決される・実体が cwd（PR の worktree）・`$TMPDIR`・`/tmp`・`/private/tmp` の
+    配下なら起動させない（sandbox の外で PR のコードが置いた codex を走らせない）
+  - 残る経路（この gate では塞がない）: 書き換えて review の後に戻す（照合は review の後の 1 回で、読んだ時点の中身は見ない）。
+    codex の出力後に結果ファイル（`result.json`）を nonce ごと写して `issues:[]` で上書きする（出力先は sandbox の中から書けない
+    場所に置く前提で、hook と prep はその前提を確かめるが、書けてしまう設定ではこの上書きを検出しない）。常駐プロセスは同じ権限で
+    書けるので完全には防げない — plugin の script / hook はプロセスの一覧・kill をしない（状態を変えない）
 
 **Codex 経路**（opt-in。`"dev-flow".security_reviewer = "codex"`）:
 
@@ -345,15 +363,18 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
                       ファイルを作れないときだけ進む（作れる祖先があると、hook の確認後に出力先を symlink へ差し替えられる）
                       （作れてしまったら消してから ok:false）
                     → 保存先に prompt.md（prompt + diff）・strict 形の schema.json（作業ディレクトリは作らない）。
-                      round の nonce と binding（sha256("<保存先>\n<sha256(prompt.md)>\n<sha256(schema.json)>\n")）はファイルに書かず stdout で返す
+                      round の nonce と binding（sha256("<保存先>\n<sha256(prompt.md)>\n<sha256(schema.json)>\n")）、prompt.md・schema.json の
+                      sha256 はファイルに書かず stdout で返す
                   security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... -o <出力先>/dev-flow-codex-result-<nonce>-<binding>.json "<固定文> <nonce>"`
                     （先頭トークン codex の単文。返り値は使わない）
                     → hook が保存先の prompt.md・schema.json を出力先の dev-flow-codex-{prompt,schema}-<nonce>-<binding> へ複製し、複製と保存先から
                       計算した binding が起動形の binding と一致したときだけ通す。codex は複製を読む（保存先は sandbox の中から書けるので読ませない）。
                       -C は照合の後に hook が出力先に新しく作る空の dev-flow-codex-cwd-<nonce>-<binding>（既にあれば拒否。sandbox の中から
                       書ける場所に置くと .git・AGENTS.md を置かれて指示として読まれる）。保存先は `-c dev_flow_review_dir="<保存先>"` で渡す
-                  security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head> <nonce> <binding> <出力先>`（自由文を出さない判定）
-                    → clear でなければ security-codex-issues#i: `security-review-codex-result <保存先> <head> <nonce> <binding> <出力先> --issues`（指摘の本文）
+                  security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head> <nonce> <binding> <prompt の sha256> <schema の sha256> <出力先>`（自由文を出さない判定）
+                    → clear でなければ security-codex-issues#i: 同じ引数に ` --issues`（指摘の本文）
+                    → codex の後に入力を再照合し、複製・保存先の 2 つが prep の sha256 と違う・-C が空でない・-C と保存先の祖先に
+                      指示ファイルがあれば判定できない（下の「review 中の入力の書き換え」）
                     → 結果ファイルの nonce が一致しなければ判定できない — 先回り・上書きした JSON で clear にしない
                     → 引数の保存先と出力先の複製から計算した binding が prep の binding と一致しなければ読まない — 別の保存先・prep の後に
                       書き換えた prompt.md で起動した codex の結果で clear にしない
@@ -381,7 +402,7 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
   出力先が symlink でない実ディレクトリ・cwd / `$TMPDIR` / `/tmp` / `/private/tmp` の配下でない・結果ファイルと複製（symlink を含む）がまだ無いことを確かめ、
   保存先の 2 つの中身と保存先のパスから計算した binding が起動形の binding と一致したときだけ、その中身を出力先へ複製して通す
 - PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`）は `security-codex-relay` の Bash を
-  `security-review-codex-prep` / `codex exec`（上の固定形）/ `security-review-codex-result` の固定形の allowlist に限る
+  `security-review-codex-prep` / `codex exec`（上の固定形）/ `security-review-codex-result` / `security-review-diff-check` の固定形の allowlist に限る
   （語を探す判定は引用の分割・`$` 展開で組み立てた語をすり抜けるので使わない）。他の dev-flow の agent には、引用符と
   バックスラッシュを外した command を単文に分け、予約語・前置コマンド（env / exec 等）・代入を読み飛ばした先頭トークンが `codex` / `*/codex` か、保存先・作業ディレクトリ・結果ファイルの名前を含めば
   拒否する（任意の Bash を持つ agent への多層防御で保証ではない。引数の `codex` の語 — `grep codex`・PR タイトル — では止めない）

@@ -426,16 +426,19 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
 export const SECURITY_SCOPE_DEFAULT_HEAD = 'c'.repeat(40);
 /** security-scope 応答の review_dir / diff_path の既定（PR の worktree '/tmp/wt' の外）。 */
 export const SECURITY_REVIEW_DIR = '/tmp/dev-flow-security-review-Stub01';
+/** security-scope 応答の diff_sha256 の既定（64 桁の hex）。 */
+export const SECURITY_DIFF_SHA256 = 'd'.repeat(64);
 
 /**
  * security-review-scope の stdout と同形の応答を返す。
  *
- * @param {{target?: boolean, ok?: boolean, head?: string|null, reasons?: string[], reviewDir?: string, diffPath?: string, contextChanged?: boolean}} [o]
+ * @param {{target?: boolean, ok?: boolean, head?: string|null, reasons?: string[], reviewDir?: string, diffPath?: string, diffSha256?: string|null, contextChanged?: boolean}} [o]
  */
-export function securityScopeResponse({ target = true, ok = true, head = SECURITY_SCOPE_DEFAULT_HEAD, reasons, reviewDir = SECURITY_REVIEW_DIR, diffPath, contextChanged = false } = {}) {
+export function securityScopeResponse({ target = true, ok = true, head = SECURITY_SCOPE_DEFAULT_HEAD, reasons, reviewDir = SECURITY_REVIEW_DIR, diffPath, diffSha256 = SECURITY_DIFF_SHA256, contextChanged = false } = {}) {
   return {
     ok, target, reasons: reasons ?? (target ? ['not_allowlisted:1'] : []), file_count: 1,
     head_sha: head, reviewer_context_changed: contextChanged, review_dir: reviewDir, diff_path: diffPath ?? `${reviewDir}/pr.diff`,
+    diff_sha256: diffSha256,
   };
 }
 
@@ -487,6 +490,8 @@ export function prIterateResponder(overrides = {}, rounds = null) {
     // security-scope#i（今の head の diff）→ security-review#i が走る。既定は対象・clear（head は prompt の値を写す）
     if (label.startsWith('security-scope#')) return securityScopeResponse({ target: true, head: securityScopeHeadOf(callCtx.prompt) });
     if (agentType === 'dev-flow:security-reviewer') return { reviewed_sha: securityReviewHeadOf(callCtx.prompt), issues: [], summary: 'ok' };
+    // clear の前の保存先の pr.diff の照合（issue #1095）。既定は書き換えられていない
+    if (label.startsWith('security-diff-check#')) return { ok: true, matched: true };
     if (label.startsWith('fix#')) return { applied: true, files: [], summary: 'fixed' };
     if (label.startsWith('commit-ensure#')) return { committed: true, pushed: true, dirty: false };
     if (label.startsWith('ci-check')) return { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [] };

@@ -56,6 +56,9 @@ write_prev_result() {
     binding="$(echo "$output" | jq -r '.binding')"
     expected="$(printf '%s\n%s\n%s\n' "$D" "$(sha256_of <"$D/prompt.md")" "$(sha256_of <"$D/schema.json")" | sha256_of)"
     [ "$binding" = "$expected" ]
+    # prompt_sha256 / schema_sha256: 書いた 2 つの sha256（security-review-codex-result が codex の後に再照合する）
+    [ "$(echo "$output" | jq -r '.prompt_sha256')" = "$(sha256_of <"$D/prompt.md")" ]
+    [ "$(echo "$output" | jq -r '.schema_sha256')" = "$(sha256_of <"$D/schema.json")" ]
     # codex の -C は hook が出力先に作る — sandbox の中から書ける保存先の配下には作らない
     [ -z "$(find "$D" -mindepth 1 -type d)" ]
     # nonce: round ごとの 32 桁 hex。sandbox の中から読める保存先のどのファイルにも書かない
@@ -79,7 +82,7 @@ write_prev_result() {
 @test "出力先が未設定・相対パス・起動形に入れられない・実在しない・symlink・ディレクトリでないなら ok:false で何も作らない" {
     run bash "$BIN" "$D" "$HEAD_SHA" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == false and .error == "output_dir_unset" and .nonce == null'
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_unset" and .nonce == null and .prompt_sha256 == null and .schema_sha256 == null'
 
     run bash "$BIN" "$D" "$HEAD_SHA" 5 codex-out
     echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid"'

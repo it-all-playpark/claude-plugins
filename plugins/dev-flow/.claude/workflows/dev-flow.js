@@ -5198,6 +5198,7 @@ const SECURITY_SCOPE_SCHEMA = {
     reviewer_context_changed: { type: 'boolean' },
     review_dir: { type: ['string', 'null'] },
     diff_path: { type: ['string', 'null'] },
+    diff_sha256: { type: ['string', 'null'] },
     error: { type: 'string' },
   },
 };

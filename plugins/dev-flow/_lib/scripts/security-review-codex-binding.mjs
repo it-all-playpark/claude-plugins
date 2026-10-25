@@ -3,7 +3,8 @@
 // は同じ式を shell で計算する — 式を変えるときは 3 か所を同時に変える。
 import { createHash } from 'node:crypto'
 
-const sha256Hex = (data) => createHash('sha256').update(data).digest('hex')
+// sha256 の小文字 hex（data は Buffer か文字列）。prep が返し result script が再照合する prompt.md・schema.json の sha256 も同じ関数で作る
+export const sha256Hex = (data) => createHash('sha256').update(data).digest('hex')
 
 // `${保存先}\n${sha256(prompt.md)}\n${sha256(schema.json)}\n` の sha256（prompt / schema は Buffer か文字列）
 export function codexBinding(reviewDir, prompt, schema) {
