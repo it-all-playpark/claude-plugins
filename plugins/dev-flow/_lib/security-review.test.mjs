@@ -27,6 +27,7 @@ import { statDigest } from './scripts/security-review-workspace.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const RESULT_CLI = join(here, 'scripts', 'security-review-codex-result.mjs');
 const PREP_CLI = join(here, 'scripts', 'security-review-codex-prep.mjs');
+const DIFF_CHECK_CLI = join(here, 'scripts', 'security-review-diff-check.mjs');
 const HOOK = join(here, '..', 'hooks', 'pretool-codex-invocation-guard.sh');
 
 const HEAD = 'a'.repeat(40);
@@ -130,6 +131,10 @@ test('[security-review][3] prep が用意した保存先と作業ディレクト
   writeFileSync(join(out.review_dir, out.out_name, 'result.json'), JSON.stringify({ ...resultOf(), nonce: out.nonce }));
   const r = spawnSync('node', [RESULT_CLI, out.review_dir, HEAD, out.nonce, out.cwd_dir, out.out_name, out.prompt_sha256, out.schema_sha256, out.stat_sha256], { env: { ...process.env, TMPDIR: base }, encoding: 'utf8' });
   assert.deepEqual(JSON.parse(r.stdout), { ok: true, cleared: true, reason: null, reviewed_sha: HEAD, counts: { critical: 0, major: 0, minor: 0 } });
+  // Codex から Claude 経路に倒れた round: prep が書いた保存先は scope の値（書く前）と一致せず、prep が書いた後の値と一致する
+  const diffCheck = (stat) => JSON.parse(execFileSync('node', [DIFF_CHECK_CLI, out.review_dir, out.diff_sha256, stat], { encoding: 'utf8' }));
+  assert.deepEqual(diffCheck(out.fallback_diff_stat_sha256), { ok: true, matched: true });
+  assert.deepEqual(diffCheck(out.diff_stat_sha256), { ok: true, matched: false });
 });
 
 // ---- (4) result の判定 ----

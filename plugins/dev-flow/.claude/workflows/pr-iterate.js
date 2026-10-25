@@ -1471,6 +1471,7 @@ const SECURITY_CODEX_PREP_SCHEMA = {
     nonce: { type: ['string', 'null'] },
     diff_sha256: { type: ['string', 'null'] },
     diff_stat_sha256: { type: ['string', 'null'] },
+    fallback_diff_stat_sha256: { type: ['string', 'null'] },
     prompt_sha256: { type: ['string', 'null'] },
     schema_sha256: { type: ['string', 'null'] },
     stat_sha256: { type: ['string', 'null'] },
@@ -2158,8 +2159,10 @@ let securityCodexPrevDir = null
 // 用意し、codex exec の起動と result.json の判定を security-codex-relay に写させる。返り値は { review, cleared }（review は
 // securityReviewVerdict に渡す形、cleared は script の判定）。Codex で判定できない（prep の失敗・作業ディレクトリが起動形の形でない・
 // prep が読んだ pr.diff が scope の書いたものでない・codex が無い・hook が起動を拒否した・codex の後に入力が変わっていた・
-// result.json を読めない）ときは null — 呼び出し側が Claude 経路の判定に倒す
-async function codexSecurityReview(iteration, { reviewDir, headSha, diffSha256, diffStatSha256 }) {
+// result.json を読めない）ときは null — 呼び出し側が Claude 経路の判定に倒す。prep は保存先に書くので保存先の statDigest が変わる。
+// prep が ok:true を返した round は prep が書いた後の保存先・pr.diff の statDigest を fallback.diffStatSha256 に入れ、倒れた先の
+// security-diff-check はその値で照合する（prep が書いたかどうか分からない round は scope の値のまま — 一致しなければ clear にしない）
+async function codexSecurityReview(iteration, { reviewDir, headSha, diffSha256, diffStatSha256, fallback }) {
   if (!isCodexArgPath(reviewDir, SECURITY_REVIEW_DIR_NAME_RE)) {
     log(`⚠️ iteration ${iteration}: diff の保存先が codex の起動形に入れられる形でない`)
     return null
@@ -2178,6 +2181,8 @@ async function codexSecurityReview(iteration, { reviewDir, headSha, diffSha256, 
   const schemaSha256 = shaOf('schema_sha256')
   const statSha256 = shaOf('stat_sha256')
   const outName = shaOf('out_name')
+  const fallbackDiffStat = shaOf('fallback_diff_stat_sha256')
+  if (prep?.ok === true && SHA256_HEX_RE.test(fallbackDiffStat)) fallback.diffStatSha256 = fallbackDiffStat
   if (prep?.ok !== true || prep.review_dir !== reviewDir || !isCodexArgPath(cwdDir, CODEX_CWD_NAME_RE)
     || !isOutsideWorktree(cwdDir.toLowerCase(), String(isoWt).toLowerCase()) || !CODEX_NONCE_RE.test(nonce)
     || !CODEX_OUT_NAME_RE.test(outName) || ![promptSha256, schemaSha256, statSha256].every((h) => SHA256_HEX_RE.test(h))) {
@@ -2244,8 +2249,9 @@ async function securityGate(iteration, round) {
   const headSha = typeof scope?.head_sha === 'string' ? scope.head_sha.trim() : ''
   const reviewDir = typeof scope?.review_dir === 'string' ? scope.review_dir.trim() : ''
   const diffPath = typeof scope?.diff_path === 'string' ? scope.diff_path.trim() : ''
-  // scope が書いた pr.diff の sha256 と書いた直後の statDigest（dev・ino・ctime・nlink）。review の後に決定論で取り直して照合する
-  // （保存先は sandbox の中から書ける。ctime は戻せないので、差し替えて review の後に戻した pr.diff も当たる）
+  // scope が書いた pr.diff の sha256 と書いた直後の保存先・pr.diff の statDigest（dev・ino・ctime・nlink）。review の後に決定論で
+  // 取り直して照合する（保存先は sandbox の中から書ける。ctime は戻せないので、差し替えて review の後に戻した pr.diff・保存先ごと
+  // 入れ替えて戻した round も当たる）
   const diffSha256 = typeof scope?.diff_sha256 === 'string' ? scope.diff_sha256.trim() : ''
   const diffStatSha256 = typeof scope?.diff_stat_sha256 === 'string' ? scope.diff_stat_sha256.trim() : ''
   if (scope?.ok !== true || !SHA256_HEX_RE.test(diffSha256) || !SHA256_HEX_RE.test(diffStatSha256)) return stop('PR の diff を取得できない', 'diff_unavailable')
@@ -2271,8 +2277,10 @@ async function securityGate(iteration, round) {
   let codexCounts = null
   // Claude 経路の round で pr.diff の照合が通らなかった理由（null は照合を通った・照合していない）
   let diffChanged = null
+  // security-diff-check に渡す保存先・pr.diff の statDigest（Codex から倒れた round は prep が書いた後の値に替わる）
+  const diffCheckStat = { diffStatSha256 }
   if (SECURITY_REVIEWER === 'codex') {
-    const codex = await codexSecurityReview(iteration, { reviewDir, headSha, diffSha256, diffStatSha256 })
+    const codex = await codexSecurityReview(iteration, { reviewDir, headSha, diffSha256, diffStatSha256, fallback: diffCheckStat })
     if (codex != null) {
       securityRounds += 1
       review = codex.review
@@ -2298,7 +2306,7 @@ async function securityGate(iteration, round) {
     // 照合できない round は clear にしない（読む前に良性の diff へ差し替えた round を、review の後に戻されても通さない）
     if (review != null) {
       const check = await failOpenAgent(
-        securityDiffCheckPrompt({ reviewDir, diffSha256, diffStatSha256 }),
+        securityDiffCheckPrompt({ reviewDir, diffSha256, diffStatSha256: diffCheckStat.diffStatSha256 }),
         { agentType: 'security-codex-relay', schema: SECURITY_DIFF_CHECK_SCHEMA, label: `security-diff-check#${iteration}`, phase: 'Iterate' },
       )
       if (!isDiffUnchanged(check)) diffChanged = check == null ? '取得失敗' : (check.ok === true ? '書き換えられた' : '照合できない')

@@ -36,6 +36,13 @@ export function statDigest(paths) {
   }
 }
 
+// 保存先と pr.diff の statDigest（diff_stat_sha256）。pr.diff だけでは、保存先ごと rename で退避して良性の pr.diff を持つ同名の
+// ディレクトリを review の間だけ置き、後で戻す入れ替えを検出できない（親の rename では子の ctime・ino は変わらない）。保存先自身の
+// ino・ctime も含めれば、入れ替え（ino が変わる）も戻し（rename で保存先の ctime が変わる）も当たる
+export function diffStatDigest(reviewDir) {
+  return statDigest([reviewDir, join(reviewDir, 'pr.diff')])
+}
+
 // codex は作業ディレクトリから上へ .git・AGENTS.md 等を探して読む。-C の空ディレクトリと保存先の祖先（自身を含む）に
 // これらがあれば、空の -C で指示ファイルを読ませない前提が崩れる。dangling symlink も「ある」とみなす
 const TAINT_NAMES = ['.git', 'AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md']

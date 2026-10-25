@@ -415,10 +415,12 @@ const PROMPT_SHA = 'e'.repeat(64);
 const SCHEMA_SHA = 'f'.repeat(64);
 const OUT_NAME = '89abcdef01234567'.repeat(2);
 const STAT_SHA = '1'.repeat(64);
+const FALLBACK_DIFF_STAT_SHA = '2'.repeat(64);
 // prep の stdout と同形の応答（diff_sha256 / diff_stat_sha256 は既定で security-scope 応答の既定と同じ — scope が書いた pr.diff を読んだ）
-const codexPrep = ({ cwdDir = CODEX_CWD, nonce = CODEX_NONCE, outName = OUT_NAME, diffSha256 = SECURITY_DIFF_SHA256, diffStatSha256 = SECURITY_DIFF_STAT_SHA256, promptSha256 = PROMPT_SHA, schemaSha256 = SCHEMA_SHA, statSha256 = STAT_SHA } = {}) => ({ prompt }) => ({
+const codexPrep = ({ cwdDir = CODEX_CWD, nonce = CODEX_NONCE, outName = OUT_NAME, diffSha256 = SECURITY_DIFF_SHA256, diffStatSha256 = SECURITY_DIFF_STAT_SHA256, fallbackDiffStatSha256 = FALLBACK_DIFF_STAT_SHA, promptSha256 = PROMPT_SHA, schemaSha256 = SCHEMA_SHA, statSha256 = STAT_SHA } = {}) => ({ prompt }) => ({
   ok: true, review_dir: prompt.match(/security-review-codex-prep (\S+) /)[1], cwd_dir: cwdDir, out_name: outName, nonce,
-  diff_sha256: diffSha256, diff_stat_sha256: diffStatSha256, prompt_sha256: promptSha256, schema_sha256: schemaSha256, stat_sha256: statSha256,
+  diff_sha256: diffSha256, diff_stat_sha256: diffStatSha256, fallback_diff_stat_sha256: fallbackDiffStatSha256,
+  prompt_sha256: promptSha256, schema_sha256: schemaSha256, stat_sha256: statSha256,
 });
 const CODEX_RESULT_TAIL = `${CODEX_NONCE} ${CODEX_CWD} ${OUT_NAME} ${PROMPT_SHA} ${SCHEMA_SHA} ${STAT_SHA}`;
 const codexHeadOf = (prompt) => prompt.match(/security-review-codex-result \S+ ([0-9a-f]{40})/)[1];
@@ -535,6 +537,21 @@ test('[security-review][F] Codex を起動できず指示ファイルも変え�
     overrides: { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': null, 'security-review#1': { reviewed_sha: 'f'.repeat(40), issues: [], summary: 'x' } },
   });
   assert.equal(blocked.result.status, 'security_unresolved', 'Claude 経路の判定（reviewed_sha の不一致）で clear にしない');
+});
+
+test('[security-review][F] Codex から倒れた round の security-diff-check は、prep が保存先に書いた後の statDigest で照合する', async () => {
+  const diffCheckTail = async (overrides) => {
+    const { calls } = await run({ args: codexArgs(false), overrides });
+    return calls.find((c) => c.label === 'security-diff-check#1').prompt.split('\n').pop();
+  };
+  // prep が ok:true を返した round（prep は prompt.md 等を書いて保存先の ctime を変える）
+  assert.equal(await diffCheckTail({ 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': null }),
+    `security-review-diff-check ${SECURITY_REVIEW_DIR} ${SECURITY_DIFF_SHA256} ${FALLBACK_DIFF_STAT_SHA}`);
+  // prep が値を返さない・ok:true でない round は scope の値のまま（prep が書いていれば一致せず clear にしない）
+  for (const prep of [null, codexPrep({ fallbackDiffStatSha256: null })]) {
+    assert.equal(await diffCheckTail({ 'security-codex-prep#1': prep, 'security-codex-verdict#1': null }),
+      `security-review-diff-check ${SECURITY_REVIEW_DIR} ${SECURITY_DIFF_SHA256} ${SECURITY_DIFF_STAT_SHA256}`);
+  }
 });
 
 test('[security-review][F] Codex の critical/major は fix に回し、次の round の prep は前回の置き場（保存先/out_name）の result.json を verify_items にする', async () => {

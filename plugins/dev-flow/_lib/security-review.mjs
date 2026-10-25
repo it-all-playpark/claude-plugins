@@ -120,7 +120,8 @@ export function securityReviewVerdict(review, headSha) {
 // Claude 経路の review の後に、保存先の pr.diff が security-review-scope --save-diff の書いたものかを照合させる exec-proxy の
 // prompt（issue #1095）。保存先（$TMPDIR 配下）は sandbox の中の PR のコード（fix・test で走らせて残った常駐プロセス）からも
 // 書けるので、reviewer が読む前に良性の diff へ差し替えた round を clear にしない。内容の sha256 に加えて scope が書いた直後の
-// statDigest（ctime を含む）も照合するので、差し替えて review の後に元へ戻した round も当たる。照合は script（security-review-diff-check）
+// 保存先・pr.diff の statDigest（ctime を含む。Codex から倒れた round は prep が書いた後の値）も照合するので、差し替えて review の
+// 後に元へ戻した pr.diff・保存先ごと入れ替えて戻した round も当たる。照合は script（security-review-diff-check）
 // が行い、中継は stdout を写すだけ。保存先の名前を含む command は security-codex-relay の hook の allowlist だけが通す。
 export function securityDiffCheckPrompt({ reviewDir, diffSha256, diffStatSha256 }) {
   return '次のコマンドを 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ（判定・要約・脚色をしない。exit 非0・stdout 空・'
@@ -278,6 +279,7 @@ export const SECURITY_CODEX_PREP_SCHEMA = {
     nonce: { type: ['string', 'null'] },
     diff_sha256: { type: ['string', 'null'] },
     diff_stat_sha256: { type: ['string', 'null'] },
+    fallback_diff_stat_sha256: { type: ['string', 'null'] },
     prompt_sha256: { type: ['string', 'null'] },
     schema_sha256: { type: ['string', 'null'] },
     stat_sha256: { type: ['string', 'null'] },

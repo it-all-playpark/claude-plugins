@@ -13,12 +13,14 @@
 //   （前の結果を今の review と取り違えない）。書いた後に保存先を mode 0300 にする（一覧を取れない — out_name を知らない者は
 //   result.json の場所が分からない。chmod で戻すと保存先の ctime が変わり stat_sha256 で検出する）。
 //   保存先と os.tmpdir() の祖先（自身を含む）に .git・AGENTS.md・AGENTS.override.md・CLAUDE.md があれば何も作らない（workspace_tainted）。
-// stdout: JSON 1 行 {ok, review_dir, cwd_dir, out_name, nonce, diff_sha256, diff_stat_sha256, prompt_sha256, schema_sha256, stat_sha256, error?}。
+// stdout: JSON 1 行 {ok, review_dir, cwd_dir, out_name, nonce, diff_sha256, diff_stat_sha256, fallback_diff_stat_sha256, prompt_sha256, schema_sha256, stat_sha256, error?}。
 //   error は固定の code だけ（stdout を写す agent へ PR 由来の文字列を渡さない）。
 //   nonce・out_name は round ごとの乱数（CODEX_NONCE_RE / CODEX_OUT_NAME_RE）。nonce は保存先に書かず、out_name は一覧を取れない
 //   保存先にだけ置く（sandbox の中から読める場所に置くと、result.json を見つけて nonce を写した JSON で上書きできる）—
 //   workflow が codex の起動形と security-review-codex-result の引数にだけ渡す。
-//   diff_sha256 / diff_stat_sha256 は読んだ pr.diff の sha256 と書く前の statDigest、prompt_sha256 / schema_sha256 は書いた内容の
+//   diff_sha256 / diff_stat_sha256 は読んだ pr.diff の sha256 と書く前の保存先・pr.diff の statDigest、fallback_diff_stat_sha256 は
+//   書いた後の保存先・pr.diff の statDigest（prep が保存先を書き換えるので、Codex から Claude 経路に倒れた round の
+//   security-review-diff-check にはこの値を渡す）、prompt_sha256 / schema_sha256 は書いた内容の
 //   sha256、stat_sha256 は書いた後の保存先・pr.diff・prompt.md・schema.json・prepared_at・-C の statDigest（dev・ino・ctime・nlink）。
 //   workflow は diff_sha256 / diff_stat_sha256 を security-review-scope の値と照合し、prompt_sha256 / schema_sha256 / stat_sha256 を
 //   security-review-codex-result に渡して codex の後に照合させる（保存先は sandbox の中から書けるので、codex が読む前に差し替えた
@@ -32,7 +34,7 @@ import {
   codexSecurityReviewPrompt, codexResultVerdict, isCodexArgPath, CODEX_CWD_NAME_RE, CODEX_SECURITY_REVIEW_SCHEMA,
   SECURITY_REVIEW_DIR_NAME_RE, CODEX_PREPARED_AT_FILE, CODEX_OUT_NAME_RE,
 } from '../security-review.mjs'
-import { sha256Hex, statDigest, taintedAncestor } from './security-review-workspace.mjs'
+import { diffStatDigest, sha256Hex, statDigest, taintedAncestor } from './security-review-workspace.mjs'
 
 const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
@@ -40,7 +42,7 @@ const emit = (obj, code = 0) => {
 }
 const fail = (error, code = 0) => emit({
   ok: false, review_dir: null, cwd_dir: null, out_name: null, nonce: null, diff_sha256: null, diff_stat_sha256: null,
-  prompt_sha256: null, schema_sha256: null, stat_sha256: null, error,
+  fallback_diff_stat_sha256: null, prompt_sha256: null, schema_sha256: null, stat_sha256: null, error,
 }, code)
 
 const argv = process.argv.slice(2)
@@ -97,7 +99,7 @@ if (verifyFrom != null) {
 let cwdDir = null
 let out
 try {
-  const diffStatSha256 = statDigest([diffPath])
+  const diffStatSha256 = diffStatDigest(reviewDir)
   const diffBuf = readFileSync(diffPath)
   const schema = `${JSON.stringify(CODEX_SECURITY_REVIEW_SCHEMA)}\n`
   const prompt = codexSecurityReviewPrompt({ pr, headSha, verifyItems, diff: diffBuf.toString('utf8') })
@@ -111,9 +113,11 @@ try {
   chmodSync(join(reviewDir, outName), 0o300)
   cwdDir = mkdtempSync(join(tmpdir(), 'dev-flow-codex-cwd-'))
   const statSha256 = statDigest([reviewDir, diffPath, join(reviewDir, 'prompt.md'), join(reviewDir, 'schema.json'), join(reviewDir, CODEX_PREPARED_AT_FILE), cwdDir])
-  if (diffStatSha256 == null || statSha256 == null) throw new Error('stat')
+  const fallbackDiffStatSha256 = diffStatDigest(reviewDir)
+  if (diffStatSha256 == null || statSha256 == null || fallbackDiffStatSha256 == null) throw new Error('stat')
   out = {
     out_name: outName, diff_sha256: sha256Hex(diffBuf), diff_stat_sha256: diffStatSha256,
+    fallback_diff_stat_sha256: fallbackDiffStatSha256,
     prompt_sha256: sha256Hex(prompt), schema_sha256: sha256Hex(schema), stat_sha256: statSha256,
   }
 } catch {

@@ -4,7 +4,7 @@ bats_require_minimum_version 1.5.0
 # Tests for bin/security-review-diff-check（_shared/scripts/security-review-diff-check.sh → _lib/scripts/security-review-diff-check.mjs。issue #1095）
 #
 # Claude 経路の security review の入力（pr.diff）の照合: security-review-scope --save-diff が書いた pr.diff の sha256 と
-# statDigest（dev・ino・ctime・nlink）を返し、review の後に security-review-diff-check がその値と保存先の pr.diff を照合する。
+# 保存先・pr.diff の statDigest（dev・ino・ctime・nlink）を返し、review の後に security-review-diff-check がその値と保存先の pr.diff を照合する。
 # 差し替えた（元の内容へ戻したものを含む）・照合できない pr.diff は
 # matched:true にしない（workflow はその round を clear にしない — _lib/priterate-security-review.test.mjs）。
 
@@ -70,6 +70,21 @@ save_diff() {
     cp "$D/pr.diff" "$TMP_P/same.diff"
     mv "$TMP_P/same.diff" "$D/pr.diff"
     run bash "$BIN" "$D" "$DIFF_SHA" "$DIFF_STAT"
+    echo "$output" | jq -e '.ok == true and .matched == false'
+}
+
+@test "保存先ごと rename で退避し、良性の pr.diff を持つ同名のディレクトリと入れ替えて戻したなら matched:false" {
+    save_diff
+    sleep 0.01
+    # 退避した保存先の pr.diff は ino・ctime・nlink・内容のどれも変わらない（親の rename では子の stat は変わらない）
+    mv "$D" "$TMP_P/stash"
+    mkdir "$D"
+    printf 'diff --git a/README.md b/README.md\n+docs\n' >"$D/pr.diff"
+    rm -r "$D"
+    mv "$TMP_P/stash" "$D"
+    [ "$(sha256_of "$D/pr.diff")" = "$DIFF_SHA" ]
+    run bash "$BIN" "$D" "$DIFF_SHA" "$DIFF_STAT"
+    [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .matched == false'
 }
 

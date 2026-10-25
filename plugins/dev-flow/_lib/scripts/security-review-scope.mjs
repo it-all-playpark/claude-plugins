@@ -9,8 +9,8 @@
 //     → merge-base(<base-ref>, HEAD) と作業ツリー（未コミット・untracked を含む。一時 index で tree を作り、
 //       実 index は触らない）の diff を判定する（dev-flow の Security floor。implementer は commit しない）
 //   --save-diff: diff 全文を worktree の外の新しい一時ディレクトリ（os.tmpdir() 配下）の pr.diff に書き、
-//     review_dir / diff_path と、書いた内容の sha256（diff_sha256）・書いた直後の pr.diff の statDigest（diff_stat_sha256。
-//     dev・ino・ctime・nlink — 差し替えて戻した pr.diff を検出する）を返す（pr-iterate の security-reviewer が読む。
+//     review_dir / diff_path と、書いた内容の sha256（diff_sha256）・書いた直後の保存先と pr.diff の statDigest（diff_stat_sha256。
+//     dev・ino・ctime・nlink — 差し替えて戻した pr.diff・入れ替えて戻した保存先を検出する）を返す（pr-iterate の security-reviewer が読む。
 //     保存先は sandbox の中から書けるので、workflow は review の後に security-review-diff-check でこの値と照合する）
 //
 // stdout: JSON 1 行 {ok, target, reasons, file_count, head_sha, reviewer_context_changed, review_dir, diff_path, diff_sha256, diff_stat_sha256, error?}
@@ -27,7 +27,7 @@ import { join } from 'node:path'
 import {
   isReviewerContextPath, reviewerImportClosure, securityReviewScope, SECURITY_SCOPE_DIFF_ARGS, SECURITY_SCOPE_GIT_CONFIG,
 } from '../security-review-scope.mjs'
-import { sha256Hex, statDigest } from './security-review-workspace.mjs'
+import { diffStatDigest, sha256Hex } from './security-review-workspace.mjs'
 
 const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
@@ -120,7 +120,7 @@ try {
     diffPath = join(reviewDir, 'pr.diff')
     writeFileSync(diffPath, patchBuf)
     diffSha256 = sha256Hex(patchBuf)
-    diffStatSha256 = statDigest([diffPath])
+    diffStatSha256 = diffStatDigest(reviewDir)
   }
   result = { ok: true, target: scope.target, reasons: scope.codes, file_count: names.length, head_sha: headSha, reviewer_context_changed: scope.reviewer_context_changed, review_dir: reviewDir, diff_path: diffPath, diff_sha256: diffSha256, diff_stat_sha256: diffStatSha256 }
 } catch {

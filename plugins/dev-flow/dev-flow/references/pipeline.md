@@ -293,6 +293,7 @@ pr-iterate      → CI gate を通り conflict も無い round（LGTM の候補�
                   対象なら security-review#i（security-reviewer を毎回新しく spawn。PR 全 diff の file と head sha と
                     前回の未解消 critical/major を DATA として渡す）
                   security-diff-check#i（security-codex-relay）: `security-review-diff-check <保存先> <scope の diff_sha256> <scope の diff_stat_sha256>`
+                    （diff_stat_sha256 は保存先と pr.diff の statDigest。Codex から倒れた round は prep の fallback_diff_stat_sha256）
                     → pr.diff が scope の書いたものと一致しない・照合できない → status: security_unresolved（fix に回さない）
                     → critical/major 0 件かつ reviewed_sha が今の head → LGTM
                     → critical/major あり → fix#i（dev-runner）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
@@ -342,7 +343,8 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
                   security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>/<前回の out_name>]`
                     → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、codex の -o の置き場 <保存先>/<out_name>（乱数名・mode 0300）、
                       新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）。書いた後に保存先を mode 0300（一覧を取れない）にする。
-                      round の nonce と out_name はファイルに書かず stdout で返す。読んだ pr.diff の sha256・statDigest、書いた prompt.md・
+                      round の nonce と out_name はファイルに書かず stdout で返す。読んだ pr.diff の sha256・書く前と書いた後の保存先・
+                      pr.diff の statDigest（書いた後の値は倒れた先の security-diff-check#i に渡す）、書いた prompt.md・
                       schema.json の sha256、書いた後の保存先・pr.diff・prompt.md・schema.json・prepared_at・-C の statDigest も返す
                       （pr.diff の sha256・statDigest が scope の値と違えば Codex を起動せず security-review#i に倒す）
                   security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... -o <保存先>/<out_name>/result.json "<固定文> <nonce>"`（先頭トークン codex の単文。返り値は使わない）
@@ -386,8 +388,9 @@ sandbox の中の PR のコード — fix や Validate のテストで走らせ�
 
 - 検出できる: review の前と後で中身が違う入力と、間に書き換えて元へ戻した入力。書いた直後に内容の sha256 と statDigest
   （lstat の dev・ino・ctime の ns・nlink の sha256。ctime は利用者が戻せず、読むだけでは変わらない）を返し、review の後に取り直して
-  完全一致を求める。Claude 経路は scope が返した `pr.diff` の値を security-reviewer の返却後に `security-review-diff-check` が取り直し、
-  一致しなければ clear にしない。Codex 経路は prep が読んだ `pr.diff` の値を workflow が scope の値と照合し、`security-review-codex-result` が
+  完全一致を求める。Claude 経路は scope が返した保存先と `pr.diff` の値を security-reviewer の返却後に `security-review-diff-check` が
+  取り直し、一致しなければ clear にしない（保存先自身も含めるのは、保存先ごと rename で退避して良性の `pr.diff` を持つ同名の
+  ディレクトリと入れ替えて戻すと `pr.diff` の stat は変わらないため。Codex から倒れた round は prep が書いた後の値で照合する）。Codex 経路は prep が読んだ `pr.diff` の値を workflow が scope の値と照合し、`security-review-codex-result` が
   codex の後に `prompt.md`・`schema.json` の sha256、保存先・入力・`-C` の statDigest、`-C` が空であること・`-C` と保存先の祖先の
   指示ファイルの有無を確かめる（当たれば Claude 経路の判定に倒す。`-C` に AGENTS.md を置いて消す・保存先を chmod して一覧を取るのも
   ctime で当たる）。照合は決定論 script が行い、中継は argv と stdout を写すだけ（sha256 を LLM に判定させない）。result.json の
