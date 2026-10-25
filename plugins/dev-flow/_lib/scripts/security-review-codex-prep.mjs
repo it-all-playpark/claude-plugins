@@ -14,7 +14,7 @@
 //       結果ファイルの名前に symlink を置き、作れる祖先では出力先を symlink に差し替えて、sandbox の外で動く codex に任意のファイルを
 //       上書きさせられる。作れてしまったら消してから output_dir_writable。出力先を作る・片付けるのは人で、この script はしない
 //     codex_bin: 中継が起動形の先頭トークンにする codex の絶対パス（user 設定の "dev-flow".codex_bin）。省略は未設定（codex_bin_unset）。
-//       realpath が自身と一致する実ファイルで、自身と全祖先のどこにもここ（sandbox の中）から書けないこと（出力先と同じ書き込み試験。
+//       realpath が自身と一致し link 数が 1 の、`#!` で始まらないネイティブ実行ファイル（Mach-O / ELF）で、自身と全祖先のどこにもここ（sandbox の中）から書けないこと（出力先と同じ書き込み試験。
 //       書けたら codex_bin_writable。中身は変えない）。どれかに当たれば何も書かない（workflow は Claude 経路の判定に倒す）
 //     --verify-from: 前回の Codex の review の nonce と binding。出力先のその結果ファイルの critical/major を verify_items にする
 //
@@ -34,7 +34,7 @@
 //   計算できたときだけ codex を通し、結果ファイルの名前にも入る（書いた後に保存先の 2 つを書き換えられても、その中身の review は
 //   workflow が渡す binding の名前の結果にならない）。
 //   usage error だけ exit 2、それ以外は exit 0。
-import { readFileSync, writeFileSync, lstatSync, existsSync, rmSync, realpathSync, openSync, fstatSync, closeSync, constants } from 'node:fs'
+import { readFileSync, writeFileSync, lstatSync, existsSync, rmSync, realpathSync, openSync, readSync, fstatSync, closeSync, constants } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import {
@@ -109,6 +109,27 @@ if (!isCodexArgPath(codexBin) || !isRealFile(codexBin)) fail('codex_bin_invalid'
 let codexBinReal = null
 try { codexBinReal = realpathSync(codexBin) } catch { /* 下で拒否 */ }
 if (codexBinReal !== codexBin) fail('codex_bin_invalid')
+// hard link が他にあると、書き込み試験はこのパスにしか効かず、別名のパス（書ける場所に張られた link）から中身を書き換えられる。
+// link 数が 1 のときだけ通す（hook も起動の直前に同じことを確かめる）
+let codexBinStat = null
+try { codexBinStat = lstatSync(codexBin) } catch { /* 下で拒否 */ }
+if (codexBinStat == null || !codexBinStat.isFile() || codexBinStat.nlink !== 1) fail('codex_bin_invalid')
+// `#!` で始まる script は sandbox の外で起動すると interpreter（`#!/usr/bin/env node` 等）を PATH で解決し、PATH 前方の書ける場所に
+// 置いた interpreter が sandbox の外で走る。ネイティブ実行ファイル（Mach-O / ELF）だけを受け付ける
+const startsWithShebang = (p) => {
+  let fd
+  try {
+    fd = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW)
+    const buf = Buffer.alloc(2)
+    const n = readSync(fd, buf, 0, 2, 0)
+    return n === 2 && buf[0] === 0x23 && buf[1] === 0x21
+  } catch {
+    return true
+  } finally {
+    if (fd != null) closeSync(fd)
+  }
+}
+if (startsWithShebang(codexBin)) fail('codex_bin_invalid')
 // 自身は空の書き込み（中身・mtime を変えない r+ の open）で試す
 const writableFile = (p) => {
   try {

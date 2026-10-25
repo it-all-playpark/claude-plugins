@@ -34,11 +34,12 @@ setup() {
     O="$BATS_P/codex-out"
     mkdir -p "$O"
     chmod a-w "$O"
-    # codex_bin: 人が入れた、prep からは書けない codex の実ファイル（自身とディレクトリの書き込み権限を外す）
+    # codex_bin: 人が入れた、prep からは書けない codex のネイティブ実行ファイル（true の実体の複製。自身とディレクトリの書き込み権限を外す）
+    NATIVE_BIN="$(type -P true)"
     CB_DIR="$BATS_P/tools/codex-bin"
     CB="$CB_DIR/codex"
     mkdir -p "$CB_DIR"
-    printf '#!/bin/sh\nexit 0\n' >"$CB"
+    cp "$NATIVE_BIN" "$CB"
     chmod a-w "$CB" "$CB_DIR"
     # 出力先の祖先（$BATS_TEST_TMPDIR・/tmp 等）はテスト環境では書けてしまうので、sandbox の書き込み拒否を真似る:
     # FAKE_SANDBOX_WRITABLE の配下でないディレクトリへの prep の writeFileSync は EPERM になる
@@ -191,7 +192,7 @@ write_prev_result() {
     echo "$output" | jq -e '.ok == false and .error == "codex_bin_writable" and .nonce == null and .binding == null'
     [ "$(ls -A "$CB_DIR")" = codex ]
     # codex_bin の中身は変えない
-    [ "$(cat "$CB")" = "$(printf '#!/bin/sh\nexit 0')" ]
+    cmp -s "$CB" "$NATIVE_BIN"
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
 }
 
@@ -220,7 +221,28 @@ EOF
     NODE_OPTIONS="--import $BATS_TEST_TMPDIR/file-writable.mjs" run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$CB"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .error == "codex_bin_writable"'
-    [ "$(cat "$CB")" = "$(printf '#!/bin/sh\nexit 0')" ]
+    cmp -s "$CB" "$NATIVE_BIN"
+    [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
+}
+
+@test "codex_bin が #! で始まる script（interpreter を PATH で解決する）なら ok:false で何も書かない" {
+    SB_DIR="$BATS_P/tools/script-bin"
+    mkdir -p "$SB_DIR"
+    printf '#!/usr/bin/env node\n' >"$SB_DIR/codex"
+    chmod a-w "$SB_DIR/codex" "$SB_DIR"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$SB_DIR/codex"
+    chmod u+w "$SB_DIR" "$SB_DIR/codex"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .error == "codex_bin_invalid" and .nonce == null and .binding == null'
+    [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
+}
+
+@test "codex_bin に別名の hard link がある（link 数が 1 でない）なら ok:false で何も書かない" {
+    # sandbox の中から書ける場所（$TMPDIR）に張った link からは、codex_bin のパスの書き込み試験に掛からず中身を書き換えられる
+    ln "$CB" "$TMP_P/codex-alias"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$CB"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .error == "codex_bin_invalid" and .nonce == null and .binding == null'
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
 }
 

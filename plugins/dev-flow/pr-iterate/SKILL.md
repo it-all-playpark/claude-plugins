@@ -97,9 +97,12 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      - 中継は codex を PATH で探さず、user 設定の `"dev-flow".codex_bin` の絶対パスを先頭トークンにした単文
        （`<codex_bin> exec ...`）で起動する。codex はこの絶対パスの起動形で sandbox の外で動くことを前提にするので、`excludedCommands` には
        bare 名の `codex` ではなくこの絶対パスを入れる
-     - `codex_bin` には symlink を辿った先の実ファイル（例: `realpath "$(command -v codex)"` の出力）を絶対パスで書く。hook は先頭トークンが
-       `codex_bin` と完全に一致し、realpath が自身と一致する（自身も祖先も symlink でない）実ファイルで、PR の worktree・`$TMPDIR`・`/tmp`
-       の配下でないときだけ起動を通す。`codex_bin` とその祖先は sandbox の書き込み許可に入れない（書けると prep が `codex_bin_writable` で
+     - `codex_bin` には codex のネイティブ実行ファイル（Mach-O / ELF）の実体を、symlink を辿った先の絶対パスで書く。`#!` で始まる script
+       （npm 版の `bin/codex.js` は `#!/usr/bin/env node`）は sandbox の外で interpreter を PATH で解決するので受け付けない — npm 版なら
+       パッケージ内の `vendor/<target-triple>/codex/codex` を `realpath` し、`file <path>` が Mach-O / ELF を返すことを確かめて書く。
+       hook は先頭トークンが `codex_bin` と完全に一致し、realpath が自身と一致する（自身も祖先も symlink でない）実ファイルで、`#!` で
+       始まらず、link 数が 1（別名の hard link が無い）で、PR の worktree・`$TMPDIR`・`/tmp` の配下でないときだけ起動を通す（prep も
+       `#!`・link 数を確かめ、当たれば `codex_bin_invalid`）。`codex_bin` とその祖先は sandbox の書き込み許可に入れない（書けると prep が `codex_bin_writable` で
        拒否し、security-reviewer の判定に戻る）。plugin は `codex_bin` を作らず変えない
      - codex を `excludedCommands` に入れると codex は sandbox の外で動き、`-o` の結果ファイルの書き込みも sandbox の外になる。
        出力先が sandbox の中から書ける場所だと、PR のプロセスが結果ファイルの名前に symlink を置いて任意のファイルを上書きさせられる

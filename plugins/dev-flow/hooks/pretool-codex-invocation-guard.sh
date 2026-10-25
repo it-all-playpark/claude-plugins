@@ -207,6 +207,15 @@ check_codex_binary() {
   [[ -f $bin && ! -L $bin ]] || emit_deny "codex_bin が symlink でない実ファイルでない"
   [[ $(realpath -- "$bin" 2>/dev/null) == "$bin" ]] || emit_deny "codex_bin の realpath が自身と一致しない（祖先に symlink がある）"
   under_any "$bin" "${forbid[@]}" && emit_deny "codex_bin が cwd（PR の worktree）・\$TMPDIR・/tmp の配下にある"
+  # 別名の hard link があると、書ける場所に張った link から中身を書き換えられる（prep の書き込み試験はこのパスにしか効かない）。
+  # 起動の直前に link 数が 1 であることを確かめる（GNU は stat -c %h、BSD は stat -f %l）
+  local links
+  links=$(stat -c %h -- "$bin" 2>/dev/null) || links=$(stat -f %l -- "$bin" 2>/dev/null) || emit_deny "codex_bin の link 数を取れない"
+  [[ $links == 1 ]] || emit_deny "codex_bin に別名の hard link がある（link 数が 1 でない）"
+  # `#!` の script は sandbox の外で interpreter を PATH で解決する（PATH 前方の書ける場所の node 等が走る）。ネイティブ実行ファイルだけ通す
+  local magic=""
+  LC_ALL=C IFS= read -r -n 2 -d '' magic <"$bin" 2>/dev/null || [[ -n $magic ]] || emit_deny "codex_bin を読めない"
+  [[ $magic == '#!' ]] && emit_deny "codex_bin が #! で始まる script（interpreter を PATH で解決する）。ネイティブ実行ファイルの実体を設定する"
   return 0
 }
 

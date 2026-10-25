@@ -64,10 +64,12 @@ PS="$(printf '%064d' 1)"
 SS="$(printf '%064d' 2)"
 H="$(printf '%064d' 3)"
 # hook は起動形の先頭トークンが user 設定の codex_bin と一致し、その実体が条件を満たすことを確かめる。cwd・$TMPDIR・/tmp の外
-# （repo の .devflow-tmp/）に代わりの codex を置き、既定の codex_bin にする
+# （repo の .devflow-tmp/）に代わりの codex を置き、既定の codex_bin にする。hook は #! の script を通さないので、
+# ネイティブ実行ファイル（true の実体）を複製する
+NATIVE_BIN="$(type -P true)"
 fake_codex() {
   mkdir -p "$1"
-  printf '#!/bin/sh\nexit 0\n' >"$1/codex"
+  cp "$NATIVE_BIN" "$1/codex"
   chmod +x "$1/codex"
 }
 FAKE_BIN="${OUT_ROOT}/bin"
@@ -76,7 +78,7 @@ CB="${FAKE_BIN}/codex"
 # codex を含まない PATH（hook が使うコマンドだけ）
 TOOLS_BIN="${TMP_ROOT}/tools"
 mkdir -p "$TOOLS_BIN"
-for t in bash jq realpath cat mkdir grep sha256sum shasum; do
+for t in bash jq realpath cat mkdir grep sha256sum shasum stat; do
   p="$(command -v "$t" 2>/dev/null)" || continue
   ln -s "$p" "${TOOLS_BIN}/${t}"
 done
@@ -274,6 +276,15 @@ HOOK_BIN="${OUT_ROOT}/missing/codex" run_bash "codex_bin が無い" deny "$RELAY
 mkdir -p "${OUT_ROOT}/dir-bin/codex"
 HOOK_BIN="${OUT_ROOT}/dir-bin/codex" run_bash "codex_bin がディレクトリ" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/dir-bin/codex")"
 HOOK_BIN="${FAKE_BIN}/../bin/codex" run_bash "codex_bin が . / .. の要素を持つ" deny "$RELAY" "$(bin_cmd "${FAKE_BIN}/../bin/codex")"
+# codex_bin が #! の script（npm 版の codex.js のように interpreter を PATH で解決する）
+mkdir -p "${OUT_ROOT}/script-bin"
+printf '#!/usr/bin/env node\n' >"${OUT_ROOT}/script-bin/codex"
+chmod +x "${OUT_ROOT}/script-bin/codex"
+HOOK_BIN="${OUT_ROOT}/script-bin/codex" run_bash "codex_bin が #! の script" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/script-bin/codex")"
+# codex_bin に別名の hard link がある（link 数が 1 でない）
+fake_codex "${OUT_ROOT}/hardlink-bin"
+ln "${OUT_ROOT}/hardlink-bin/codex" "${OUT_ROOT}/hardlink-bin/codex-alias"
+HOOK_BIN="${OUT_ROOT}/hardlink-bin/codex" run_bash "codex_bin に別名の hard link がある" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/hardlink-bin/codex")"
 # codex_bin が cwd（PR の worktree）・$TMPDIR・/tmp の配下（sandbox の中から書ける）
 fake_codex "${PRWT}/node_modules/.bin"
 HOOK_BIN="${PRWT}/node_modules/.bin/codex" run_cwd "codex_bin が cwd の配下" deny "$PRWT" "$(bin_cmd "${PRWT}/node_modules/.bin/codex")"

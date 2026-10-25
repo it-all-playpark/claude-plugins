@@ -364,7 +364,8 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
     `.git`・`AGENTS.md`・`AGENTS.override.md`・`CLAUDE.md` が無いことを確かめる。当たれば判定できない（ok:false）として
     Codex を起動できないときと同じく Claude 経路の判定に倒す。中継は codex を PATH で探さず、user 設定の `"dev-flow".codex_bin`
     （絶対パス）を先頭トークンにして起動する。hook は PATH を使わず、先頭トークンが設定の `codex_bin` と完全に一致し、realpath が
-    自身と一致する実ファイルで、cwd（PR の worktree）・`$TMPDIR`・`/tmp`・`/private/tmp` の配下でないときだけ起動させ、prep は
+    自身と一致し、link 数が 1 の、`#!` で始まらないネイティブ実行ファイル（`#!` の script は sandbox の外で interpreter を PATH で
+    解決する。hard link があると別名のパスから書き換えられる）で、cwd（PR の worktree）・`$TMPDIR`・`/tmp`・`/private/tmp` の配下でないときだけ起動させ、prep は
     `codex_bin` とその全祖先に sandbox の中から書けないことを確かめる（sandbox の外で PR のコードが置いた・書き換えた codex を走らせない）。中継が bare 名で起動する
     `security-review-codex-prep`・`security-review-codex-result`・`security-review-diff-check` は、hook の PATH の後ろに hook 自身の
     plugin の `bin/` を足した列（hook の PATH には plugin の `bin/` が載らない。Bash tool の PATH と同じ並び）での解決先の realpath が
@@ -400,7 +401,8 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
                     → 出力先が realpath が自身と一致する実ディレクトリの絶対パスで、出力先と全祖先のどこにも prep（sandbox の中）から
                       ファイルを作れないときだけ進む（作れる祖先があると、hook の確認後に出力先を symlink へ差し替えられる）
                       （作れてしまったら消してから ok:false）
-                    → codex_bin が realpath が自身と一致する実ファイルの絶対パスで、自身と全祖先のどこにも prep から書けないときだけ進む
+                    → codex_bin が realpath が自身と一致し link 数が 1 の、`#!` で始まらない実ファイルの絶対パスで（外れたら codex_bin_invalid）、
+                      自身と全祖先のどこにも prep から書けないときだけ進む
                       （書けると hook の確認後に codex_bin を書き換えるか祖先を差し替えて、別のファイルを sandbox の外で走らせられる。codex_bin_writable）
                     → 保存先に prompt.md（prompt + diff）・strict 形の schema.json（作業ディレクトリは作らない）。
                       round の nonce と binding（sha256("<保存先>\n<sha256(prompt.md)>\n<sha256(schema.json)>\n")）、prompt.md・schema.json の
@@ -430,7 +432,8 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
   - 出力先は人が一度作り（例: `mkdir ~/.local/state/dev-flow-codex-out`）、user 設定の `"dev-flow".codex_output_dir` に絶対パスで書く。
     sandbox の書き込み許可（`allowWrite`・`additionalDirectories` 等）には入れない — 入れると prep が `output_dir_writable` で拒否し、
     run は Claude 経路の判定に倒れる
-  - codex は user 設定の `"dev-flow".codex_bin` に書いた絶対パス（symlink を辿った先の実ファイル）で起動し、`excludedCommands` にはその
+  - codex は user 設定の `"dev-flow".codex_bin` に書いた絶対パス（symlink を辿った先の、ネイティブ実行ファイルの実体。npm 版は
+    `#!/usr/bin/env node` の `bin/codex.js` ではなくパッケージ内の `vendor/<target-triple>/codex/codex`）で起動し、`excludedCommands` にはその
     絶対パスを入れる。`codex_bin` とその祖先は sandbox の書き込み許可に入れない — 入れると prep が `codex_bin_writable` で拒否する
   - 結果ファイル（`dev-flow-codex-result-<nonce>-<binding>.json`）と hook が作る複製（`dev-flow-codex-{prompt,schema}-<nonce>-<binding>`）は round ごとに出力先へ溜まる。sandbox の中からは消せないので、古いものは人が片付ける
 - codex の起動形は `_lib/security-review.mjs` の `codexSecurityReviewCommand` が固定で持つ（中継が先頭トークン codex_bin の単文で実行する —
