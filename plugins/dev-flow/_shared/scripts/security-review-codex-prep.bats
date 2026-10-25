@@ -34,13 +34,15 @@ setup() {
     O="$BATS_P/codex-out"
     mkdir -p "$O"
     chmod a-w "$O"
-    # codex_bin: 人が入れた、prep からは書けない codex のネイティブ実行ファイル（true の実体の複製。自身とディレクトリの書き込み権限を外す）
+    # codex_bin: 人が root 所有で入れた codex の代わりに、OS の /usr/bin/true（自身と全祖先が root 所有で group / other に書けない）
+    CB="/usr/bin/true"
+    # 条件を外れる codex_bin: true の実体の複製（現在の uid の所有。自身とディレクトリの書き込み権限を外す）
     NATIVE_BIN="$(type -P true)"
     CB_DIR="$BATS_P/tools/codex-bin"
-    CB="$CB_DIR/codex"
+    OWN_CB="$CB_DIR/codex"
     mkdir -p "$CB_DIR"
-    cp "$NATIVE_BIN" "$CB"
-    chmod a-w "$CB" "$CB_DIR"
+    cp "$NATIVE_BIN" "$OWN_CB"
+    chmod a-w "$OWN_CB" "$CB_DIR"
     # 出力先の祖先（$BATS_TEST_TMPDIR・/tmp 等）はテスト環境では書けてしまうので、sandbox の書き込み拒否を真似る:
     # FAKE_SANDBOX_WRITABLE の配下でないディレクトリへの prep の writeFileSync は EPERM になる
     export NODE_OPTIONS="--import $(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/security-review-codex-prep.fake-sandbox.mjs"
@@ -48,7 +50,7 @@ setup() {
 }
 
 teardown() {
-    chmod u+w "$O" "$CB_DIR" "$CB" 2>/dev/null || true
+    chmod u+w "$O" "$CB_DIR" "$OWN_CB" 2>/dev/null || true
 }
 
 # 出力先に前回の round の結果ファイル（第 1 引数の issues）を置く（人の操作の代わりに一時的に書き込み権限を戻す）
@@ -187,18 +189,18 @@ write_prev_result() {
 @test "codex_bin のディレクトリに prep からファイルを作れる（sandbox の中から書ける）なら、作ったファイルを消してから ok:false で何も書かない" {
     chmod u+w "$CB_DIR"
     export FAKE_SANDBOX_WRITABLE="$TMP_P:$CB_DIR"
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$CB"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$OWN_CB"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .error == "codex_bin_writable" and .nonce == null and .binding == null'
     [ "$(ls -A "$CB_DIR")" = codex ]
     # codex_bin の中身は変えない
-    cmp -s "$CB" "$NATIVE_BIN"
+    cmp -s "$OWN_CB" "$NATIVE_BIN"
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
 }
 
 @test "codex_bin の祖先に prep からファイルを作れる（codex_bin のディレクトリを差し替えられる）なら、作ったファイルを消してから ok:false で何も書かない" {
     export FAKE_SANDBOX_WRITABLE="$TMP_P:$BATS_P/tools"
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$CB"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$OWN_CB"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .error == "codex_bin_writable" and .nonce == null'
     [ "$(ls -A "$BATS_P/tools")" = codex-bin ]
@@ -207,21 +209,21 @@ write_prev_result() {
 
 @test "codex_bin 自身に prep から書ける（中身を書き換えられる）なら、中身を変えずに ok:false で何も書かない" {
     # codex_bin だけ書ける sandbox を真似る（ディレクトリ・出力先・保存先への書き込みは EPERM）
-    chmod u+w "$CB"
+    chmod u+w "$OWN_CB"
     cat >"$BATS_TEST_TMPDIR/file-writable.mjs" <<EOF
 import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 const original = fs.writeFileSync
 fs.writeFileSync = function writeFileSync(p, ...rest) {
-  if (p === '$CB') return original.call(this, p, ...rest)
+  if (p === '$OWN_CB') return original.call(this, p, ...rest)
   const e = new Error('EPERM'); e.code = 'EPERM'; throw e
 }
 syncBuiltinESMExports()
 EOF
-    NODE_OPTIONS="--import $BATS_TEST_TMPDIR/file-writable.mjs" run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$CB"
+    NODE_OPTIONS="--import $BATS_TEST_TMPDIR/file-writable.mjs" run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$OWN_CB"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .error == "codex_bin_writable"'
-    cmp -s "$CB" "$NATIVE_BIN"
+    cmp -s "$OWN_CB" "$NATIVE_BIN"
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
 }
 
@@ -239,10 +241,18 @@ EOF
 
 @test "codex_bin に別名の hard link がある（link 数が 1 でない）なら ok:false で何も書かない" {
     # sandbox の中から書ける場所（$TMPDIR）に張った link からは、codex_bin のパスの書き込み試験に掛からず中身を書き換えられる
-    ln "$CB" "$TMP_P/codex-alias"
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$CB"
+    ln "$OWN_CB" "$TMP_P/codex-alias"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$OWN_CB"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .error == "codex_bin_invalid" and .nonce == null and .binding == null'
+    [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
+}
+
+@test "codex_bin を現在の uid が所有している（どこからも書き込み試験は通らない）なら ok:false で何も書かない" {
+    # 所有者は chmod で書き込み権限を戻せ、hook の sha256 照合の後・exec の前に、先に張った別名の link から中身を書き換えられる
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" "$O" "$OWN_CB"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .error == "codex_bin_writable" and .nonce == null and .binding == null'
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
 }
 

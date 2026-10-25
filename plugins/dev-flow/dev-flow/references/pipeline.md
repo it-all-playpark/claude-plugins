@@ -405,6 +405,8 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
                     → codex_bin が realpath が自身と一致し link 数が 1 の、`#!` で始まらない実ファイルの絶対パスで（外れたら codex_bin_invalid）、
                       自身と全祖先のどこにも prep から書けないときだけ進む
                       （書けると hook の確認後に codex_bin を書き換えるか祖先を差し替えて、別のファイルを sandbox の外で走らせられる。codex_bin_writable）
+                    → codex_bin と全祖先が現在の uid の所有でなく、group / other に書き込み権限が無いときだけ進む（外れたら codex_bin_writable。
+                      hook も起動の直前に同じことを確かめる — 所有者はどの link からでも書き換えられ、hook の sha256 照合と exec の間を塞げない）
                     → 保存先に prompt.md（prompt + diff）・strict 形の schema.json（作業ディレクトリは作らない）。
                       round の nonce と binding（sha256("<保存先>\n<sha256(prompt.md)>\n<sha256(schema.json)>\n")）、prompt.md・schema.json の
                       sha256 はファイルに書かず stdout で返す
@@ -439,6 +441,9 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
   - `"dev-flow".codex_bin_sha256` に `codex_bin` の sha256（`shasum -a 256 <codex_bin>` の 64 桁の小文字 hex）を書く。hook は起動の直前に
     照合し、無い・違えば codex を起動させない（書き込み試験・link 数は確かめた時点の状態しか見ず、先に書ける場所へ hard link を張って
     中身を書き換え link を消すと両方通るため）。codex を更新したら値も書き直す
+  - `codex_bin` は root 所有で置く（例: `sudo install -o root -m 555 <codex の実体> /usr/local/libexec/dev-flow-codex/codex`）。自身と全祖先が
+    現在の uid の所有でなく group / other に書き込み権限が無いことを prep と hook が確かめる — sha256 の照合は hook の中の 1 回なので、
+    user 所有のファイルは照合の後・exec の前に先に張った別名の link から書き換えられ、パス単位の sandbox はそれを止めない
   - 結果ファイル（`dev-flow-codex-result-<nonce>-<binding>.json`）と hook が作る複製（`dev-flow-codex-{prompt,schema}-<nonce>-<binding>`）は round ごとに出力先へ溜まる。sandbox の中からは消せないので、古いものは人が片付ける
 - codex の起動形は `_lib/security-review.mjs` の `codexSecurityReviewCommand` が固定で持つ（中継が先頭トークン codex_bin の単文で実行する —
   sandbox の外で通信できるのは先頭が codex の単文だけで、exec-proxy script の中から起動すると通信が拒否される）: `<codex_bin> exec -s read-only --ephemeral --ignore-user-config

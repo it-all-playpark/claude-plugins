@@ -15,7 +15,8 @@
 //       上書きさせられる。作れてしまったら消してから output_dir_writable。出力先を作る・片付けるのは人で、この script はしない
 //     codex_bin: 中継が起動形の先頭トークンにする codex の絶対パス（user 設定の "dev-flow".codex_bin）。省略は未設定（codex_bin_unset）。
 //       realpath が自身と一致し link 数が 1 の、`#!` で始まらないネイティブ実行ファイル（Mach-O / ELF）で、自身と全祖先のどこにもここ（sandbox の中）から書けないこと（出力先と同じ書き込み試験。
-//       書けたら codex_bin_writable。中身は変えない）。どれかに当たれば何も書かない（workflow は Claude 経路の判定に倒す）
+//       書けたら codex_bin_writable。中身は変えない）。自身と全祖先が現在の uid の所有でなく group / other に書き込み権限が無いこと
+//       （`sudo install -o root -m 555` で置いたもの。満たさなければ codex_bin_writable）。どれかに当たれば何も書かない（workflow は Claude 経路の判定に倒す）
 //     --verify-from: 前回の Codex の review の nonce と binding。出力先のその結果ファイルの critical/major を verify_items にする
 //
 // 書くもの: <review_dir>/prompt.md（codexSecurityReviewPrompt + diff）・<review_dir>/schema.json（strict 形）・
@@ -143,6 +144,17 @@ if (writableFile(codexBin)) fail('codex_bin_writable')
 for (let d = dirname(codexBin); ; d = dirname(d)) {
   if (writableDir(d)) fail('codex_bin_writable')
   if (dirname(d) === d) break
+}
+// 書き込み試験・link 数・hook の sha256 照合は確かめた時点の状態しか見ない。user が所有する通常ファイルはパス単位の sandbox では
+// 止まらず、先に張った別名の link から hook と exec の間に書き換えられる。codex_bin と全祖先が現在の uid の所有でなく（所有者は
+// chmod で書き込み権限を戻せる）、group / other に書き込み権限が無いときだけ通す — どの link から開いても DAC で書けない
+// （`sudo install -o root -m 555` で置く。hook も起動の直前に同じことを確かめる）
+const uid = process.getuid()
+for (let p = codexBin; ; p = dirname(p)) {
+  let st = null
+  try { st = lstatSync(p) } catch { /* 下で拒否 */ }
+  if (st == null || st.uid === uid || (st.mode & 0o022) !== 0) fail('codex_bin_writable')
+  if (dirname(p) === p) break
 }
 
 let verifyItems = []

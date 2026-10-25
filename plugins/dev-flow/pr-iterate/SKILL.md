@@ -107,6 +107,9 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      - `"dev-flow".codex_bin_sha256` に `codex_bin` の sha256（`shasum -a 256 <codex_bin>` の 64 桁の小文字 hex）を書く。hook は起動の直前に
        照合し、無い・違えば起動させない（書ける場所に張った hard link から中身を書き換えて link を消すと、link 数と書き込み試験は通るため）。
        codex を更新したら値も書き直す。他の dev-flow の agent は先頭トークンが `codex_bin`（同じファイルの hard link を含む）の単文も拒否される
+     - `codex_bin` は root 所有で置く: `sudo install -o root -m 555 <codex の実体> /usr/local/libexec/dev-flow-codex/codex` のように、自身と
+       全祖先が現在の uid の所有でなく group / other に書き込み権限が無い場所に置く（sha256 の照合は hook の中の 1 回なので、user 所有の
+       ファイルは照合の後・起動の前に別名の link から書き換えられる）。hook・prep はこれを満たさない `codex_bin` を拒否する（prep は `codex_bin_writable`）
      - codex を `excludedCommands` に入れると codex は sandbox の外で動き、`-o` の結果ファイルの書き込みも sandbox の外になる。
        出力先が sandbox の中から書ける場所だと、PR のプロセスが結果ファイルの名前に symlink を置いて任意のファイルを上書きさせられる
      - 出力先は人が一度作り（例: `mkdir ~/.local/state/dev-flow-codex-out`）、user 設定の `"dev-flow".codex_output_dir` に絶対パスで書く。

@@ -137,13 +137,9 @@ test('[security-review][3] prep が用意した保存先と binding で組み立
   mkdirSync(prepOut);
   chmodSync(prepOut, 0o555);
   try {
-    // codex_bin: hook は起動形の先頭トークンが user 設定の codex_bin と一致し、実体が cwd・$TMPDIR・/tmp の配下でないことを確かめるので、
-    // 出力先と同じ repo の .devflow-tmp/ に代わりの codex を置く（実際には起動しない）。PATH には置かない（hook は PATH を使わない）
-    const fakeBin = join(out.root, 'bin');
-    mkdirSync(fakeBin);
-    const codexBin = join(fakeBin, 'codex');
-    // prep・hook は `#!` の script を拒否する（interpreter を PATH で解決させない）ので、ネイティブ実行ファイルの先頭を真似る
-    writeFileSync(codexBin, Buffer.from([0x7f, 0x45, 0x4c, 0x46]), { mode: 0o755 });
+    // codex_bin: prep・hook は自身と全祖先が現在の uid の所有でなく group / other に書けないネイティブ実行ファイルだけを通すので、
+    // root が置いた codex の代わりに OS の /usr/bin/true を使う（実際には起動しない）
+    const codexBin = '/usr/bin/true';
     // 出力先・codex_bin の祖先はテスト環境では書けるので、sandbox の書き込み拒否を真似て prep を動かす（base の配下だけ書ける）
     const prep = JSON.parse(execFileSync('node', ['--import', PREP_FAKE_SANDBOX, PREP_CLI, reviewDir, HEAD, '5', sha256Hex('diff --git a/x b/x\n'), prepOut, codexBin], { env: { ...process.env, TMPDIR: base, FAKE_SANDBOX_WRITABLE: base }, encoding: 'utf8' }));
     assert.equal(prep.ok, true, JSON.stringify(prep));

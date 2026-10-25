@@ -62,6 +62,8 @@
 #      codex_bin と祖先に sandbox の中から書けないことは prep が確かめる。書き込み試験・link 数は確かめた時点の状態しか見ない
 #      （先に書ける場所へ hard link を張って中身を書き換え、link を消せばどちらも通る）ので、hook は起動の直前に codex_bin の
 #      sha256 が user 設定の "dev-flow".codex_bin_sha256（64 桁の小文字 hex）と一致することも確かめ、無い・違えば deny する。
+#      照合は hook の中の 1 回なので、hook と exec の間の書き換えは DAC で塞ぐ: codex_bin と全祖先が現在の uid の所有でなく
+#      group / other に書き込み権限が無いとき（`sudo install -o root -m 555` で置いたもの）だけ通す（prep も同じことを確かめる）。
 #      hook の確認は起動の直前の 1 回なので、codex の後の入力の書き換えは result script が再照合する
 #   4. それ以外の dev-flow の agent → 引用符とバックスラッシュを外した command を `;` `&` `|` `(` `)` `{` `}` と改行で単文に分け、
 #      各単文の先頭から予約語（then / do / ! 等）・前置コマンド（env / exec / command / nohup / timeout 等）とその option・
@@ -223,6 +225,21 @@ check_codex_binary() {
   local magic=""
   LC_ALL=C IFS= read -r -n 2 -d '' magic <"$bin" 2>/dev/null || [[ -n $magic ]] || emit_deny "codex_bin を読めない"
   [[ $magic == '#!' ]] && emit_deny "codex_bin が #! で始まる script（interpreter を PATH で解決する）。ネイティブ実行ファイルの実体を設定する"
+  # sha256 の照合は hook の中の 1 回だけで、hook が終わってから中継が exec するまでの間に、張っておいた別名の link から中身を
+  # 書き換えられる（パス単位の sandbox は user 所有の通常ファイルへの書き込みを止めない）。codex_bin と全祖先が現在の uid の所有でなく
+  # （所有者は chmod で書き込み権限を戻せる）、group / other に書き込み権限が無いときだけ通す — どの link から開いても DAC で書けない。
+  # 祖先に symlink が無いことは上の realpath で確かめてあるので、stat は lstat と同じ（GNU は stat -c、BSD は stat -f）
+  local p="$bin" st owner mode
+  while :; do
+    st=$(stat -c '%u %a' -- "$p" 2>/dev/null) || st=$(stat -f '%u %Lp' -- "$p" 2>/dev/null) || emit_deny "codex_bin か祖先の所有者・権限を取れない"
+    read -r owner mode <<<"$st"
+    [[ $owner =~ ^[0-9]+$ && $mode =~ ^[0-7]+$ ]] || emit_deny "codex_bin か祖先の所有者・権限を読めない"
+    ((owner != EUID)) || emit_deny "codex_bin か祖先を現在の uid が所有している（sudo install -o root -m 555 で root 所有の場所に置く）"
+    ((8#$mode & 8#022)) && emit_deny "codex_bin か祖先に group / other の書き込み権限がある"
+    [[ $p == / ]] && break
+    p="${p%/*}"
+    [[ -n $p ]] || p=/
+  done
   return 0
 }
 

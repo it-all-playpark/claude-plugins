@@ -63,9 +63,9 @@ B2="$(printf '%064d' 0)"
 PS="$(printf '%064d' 1)"
 SS="$(printf '%064d' 2)"
 H="$(printf '%064d' 3)"
-# hook は起動形の先頭トークンが user 設定の codex_bin と一致し、その実体が条件を満たすことを確かめる。cwd・$TMPDIR・/tmp の外
-# （repo の .devflow-tmp/）に代わりの codex を置き、既定の codex_bin にする。hook は #! の script を通さないので、
-# ネイティブ実行ファイル（true の実体）を複製する
+# hook は起動形の先頭トークンが user 設定の codex_bin と一致し、その実体が条件を満たすことを確かめる。codex_bin と全祖先は
+# 現在の uid の所有でないこと（root が置いたもの）も要るので、既定の codex_bin は OS の /usr/bin/true（root 所有のネイティブ実行ファイル）にする。
+# 条件を外れる codex は repo の .devflow-tmp/ に true の実体を複製して作る（現在の uid の所有）
 NATIVE_BIN="$(type -P true)"
 fake_codex() {
   mkdir -p "$1"
@@ -74,7 +74,7 @@ fake_codex() {
 }
 FAKE_BIN="${OUT_ROOT}/bin"
 fake_codex "$FAKE_BIN"
-CB="${FAKE_BIN}/codex"
+CB="/usr/bin/true"
 # hook は codex_bin の sha256 を user 設定の codex_bin_sha256 と照合する。fake_codex の複製はどれも同じ中身なので既定値で通る
 CB_SHA="$(sha256_of <"$CB")"
 # codex を含まない PATH（hook が使うコマンドだけ）
@@ -261,7 +261,7 @@ HOOK_PATH="$TOOLS_BIN" run_bash "PATH に codex が無くても codex_bin の起
 fake_codex "${OUT_ROOT}/evil-path"
 HOOK_PATH="${OUT_ROOT}/evil-path:${TOOLS_BIN}" run_bash "PATH の前方に別の codex があっても codex_bin の起動形を通す（PATH の解決先を見ない）" silent "$RELAY" "$CODEX_CMD"
 HOOK_PATH="${FAKE_BIN}:${TOOLS_BIN}" run_bash "bare 名の codex（PATH の解決先に頼る形）" deny "$RELAY" "$(bin_cmd codex)"
-run_bash "先頭トークンが codex_bin と違う実ファイル（条件は全部満たす）" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/evil-path/codex")"
+run_bash "先頭トークンが codex_bin と違う実ファイル（条件は全部満たす）" deny "$RELAY" "$(bin_cmd /usr/bin/false)"
 HOOK_BIN="${OUT_ROOT}/evil-path/codex" run_bash "設定の codex_bin が先頭トークンと違う" deny "$RELAY" "$CODEX_CMD"
 HOOK_BIN="${CB}/" run_bash "設定の末尾 / も一致とみなさない" deny "$RELAY" "$CODEX_CMD"
 HOOK_BIN=none run_bash "設定に codex_bin が無い" deny "$RELAY" "$CODEX_CMD"
@@ -292,18 +292,17 @@ HOOK_BIN="${OUT_ROOT}/hardlink-bin/codex" run_bash "codex_bin に別名の hard 
 HOOK_BIN_SHA=none run_bash "設定に codex_bin_sha256 が無い" deny "$RELAY" "$CODEX_CMD"
 HOOK_BIN_SHA="$(printf '%064d' 0)" run_bash "codex_bin の sha256 が設定と違う" deny "$RELAY" "$CODEX_CMD"
 HOOK_BIN_SHA="$(printf '%s' "$CB_SHA" | tr 'a-f' 'A-F')" run_bash "設定の codex_bin_sha256 が大文字" deny "$RELAY" "$CODEX_CMD"
-# 書ける場所に hard link を張って中身を書き換え、link を消して link 数を 1 に戻した codex_bin（link 数・#! の確認は通る）
-fake_codex "${OUT_ROOT}/relinked-bin"
-ln "${OUT_ROOT}/relinked-bin/codex" "${OUT_ROOT}/relinked-alias"
-chmod u+w "${OUT_ROOT}/relinked-alias"
-printf 'x' >>"${OUT_ROOT}/relinked-alias"
-rm -f "${OUT_ROOT}/relinked-alias"
-HOOK_BIN="${OUT_ROOT}/relinked-bin/codex" run_bash "hard link 経由で中身を書き換えた後に link を消した codex_bin" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/relinked-bin/codex")"
-HOOK_BIN="${OUT_ROOT}/relinked-bin/codex" HOOK_BIN_SHA="$(sha256_of <"${OUT_ROOT}/relinked-bin/codex")" run_bash "書き換えた後の中身に設定の sha256 を合わせれば通す" silent "$RELAY" "$(bin_cmd "${OUT_ROOT}/relinked-bin/codex")"
+# 現在の uid が所有する codex_bin（書き込み権限を外しても chmod で戻せ、hook の sha256 照合の後・exec の前に別名の link から書き換えられる）。
+# 中身・link 数・#! の条件と sha256 は満たす
+fake_codex "${OUT_ROOT}/owned-bin"
+chmod a-w "${OUT_ROOT}/owned-bin/codex" "${OUT_ROOT}/owned-bin"
+HOOK_BIN="${OUT_ROOT}/owned-bin/codex" HOOK_BIN_SHA="$(sha256_of <"${OUT_ROOT}/owned-bin/codex")" run_bash "codex_bin を現在の uid が所有している（書き込み権限は無い）" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/owned-bin/codex")"
+chmod u+w "${OUT_ROOT}/owned-bin"
 # codex_bin が cwd（PR の worktree）・$TMPDIR・/tmp の配下（sandbox の中から書ける）
 fake_codex "${PRWT}/node_modules/.bin"
 HOOK_BIN="${PRWT}/node_modules/.bin/codex" run_cwd "codex_bin が cwd の配下" deny "$PRWT" "$(bin_cmd "${PRWT}/node_modules/.bin/codex")"
-HOOK_BIN="${PRWT}/node_modules/.bin/codex" run_cwd "cwd が別なら同じ codex_bin を通す" silent "${TMP_ROOT}/wt" "$(bin_cmd "${PRWT}/node_modules/.bin/codex")"
+run_cwd "root 所有の codex_bin でも cwd の配下なら通さない" deny "${CB%/*}"
+run_cwd "cwd が別なら同じ codex_bin を通す" silent "${TMP_ROOT}/wt"
 fake_codex "${TMP_ROOT}/bin"
 HOOK_TMPDIR="$TMP_ROOT" HOOK_BIN="${TMP_ROOT}/bin/codex" run_bash "codex_bin が \$TMPDIR の配下" deny "$RELAY" "$(bin_cmd "${TMP_ROOT}/bin/codex")"
 fake_codex "${TMP_UNDER}/bin"
