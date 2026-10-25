@@ -341,7 +341,8 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
                   同じ reviewer_context_changed で止める — 中継も PR の worktree で起動し、PR の CLAUDE.md を受け取れば clear の JSON を捏造できる）:
                   出力先が未設定・起動形に入れられない・PR の worktree の中 → Codex の agent を spawn せず security-review#i
                   security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR> <出力先>[ --verify-from <前回の nonce>]`
-                    → 出力先が symlink でない実ディレクトリの絶対パスで、prep（sandbox の中）からファイルを作れないときだけ進む
+                    → 出力先が realpath が自身と一致する実ディレクトリの絶対パスで、出力先と全祖先のどこにも prep（sandbox の中）から
+                      ファイルを作れないときだけ進む（作れる祖先があると、hook の確認後に出力先を symlink へ差し替えられる）
                       （作れてしまったら消してから ok:false）
                     → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）。
                       round の nonce はファイルに書かず stdout で返す

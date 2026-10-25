@@ -5,7 +5,8 @@ bats_require_minimum_version 1.5.0
 #
 # Codex 経路の security review の入力を、security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX）に
 # 用意する: prompt.md（prompt + diff）・schema.json（strict 形）と、codex の -C に渡す新しい空の mkdtemp。
-# codex が -o で書く出力先は、symlink でない実ディレクトリの絶対パスで、prep（sandbox の中）からファイルを作れないものだけを受け付ける。
+# codex が -o で書く出力先は、realpath が自身と一致する実ディレクトリの絶対パスで、出力先と全祖先のどこにも prep（sandbox の中）から
+# ファイルを作れないものだけを受け付ける。
 # 起動形そのもの（codexSecurityReviewCommand）と hook の一致は _lib/security-review.test.mjs が確かめる。
 
 BIN="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/bin/security-review-codex-prep"
@@ -20,9 +21,14 @@ setup() {
     mkdir -p "$D"
     printf 'diff --git a/run.sh b/run.sh\n+echo "$1" | sh\n' >"$D/pr.diff"
     # 出力先: 人が用意した、prep からは書けないディレクトリ（sandbox の外の場所の代わりに書き込み権限を外す）
-    O="$(cd "$BATS_TEST_TMPDIR" && pwd -P)/codex-out"
+    BATS_P="$(cd "$BATS_TEST_TMPDIR" && pwd -P)"
+    O="$BATS_P/codex-out"
     mkdir -p "$O"
     chmod a-w "$O"
+    # 出力先の祖先（$BATS_TEST_TMPDIR・/tmp 等）はテスト環境では書けてしまうので、sandbox の書き込み拒否を真似る:
+    # FAKE_SANDBOX_WRITABLE の配下でないディレクトリへの prep の writeFileSync は EPERM になる
+    export NODE_OPTIONS="--import $(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/security-review-codex-prep.fake-sandbox.mjs"
+    export FAKE_SANDBOX_WRITABLE="$TMP_P"
 }
 
 teardown() {
@@ -94,8 +100,30 @@ write_prev_result() {
     [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
 }
 
+@test "出力先の祖先に symlink がある（realpath が自身と一致しない）なら ok:false" {
+    mkdir -p "$BATS_P/real/codex-out"
+    chmod a-w "$BATS_P/real/codex-out"
+    ln -s "$BATS_P/real" "$BATS_P/alias"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$BATS_P/alias/codex-out"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid" and .cwd_dir == null'
+    [ ! -e "$D/prompt.md" ]
+    chmod u+w "$BATS_P/real/codex-out"
+}
+
+@test "出力先の祖先に prep からファイルを作れる（出力先を symlink に差し替えられる）なら、作ったファイルを消してから ok:false" {
+    export FAKE_SANDBOX_WRITABLE="$TMP_P:$BATS_P"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_writable" and .cwd_dir == null and .nonce == null'
+    [ -z "$(find "$BATS_P" -maxdepth 1 -name '.dev-flow-codex-write-probe-*')" ]
+    [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
+    [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
+}
+
 @test "出力先に prep からファイルを作れる（sandbox の中から書ける）なら、作ったファイルを消してから ok:false" {
     chmod u+w "$O"
+    export FAKE_SANDBOX_WRITABLE="$TMP_P:$O"
     run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .error == "output_dir_writable" and .cwd_dir == null and .nonce == null'

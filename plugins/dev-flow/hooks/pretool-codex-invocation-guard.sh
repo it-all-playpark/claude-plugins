@@ -29,7 +29,7 @@
 #      prep / result のパスの実体は各 script が確かめる。
 #      codex の形は hook がパスの実体も確かめる: <C> は空の実ディレクトリ、<D> は prompt.md・schema.json を実ファイルとして持つ
 #      実ディレクトリで、どちらも入力の cwd（PR の worktree）の配下でない。-o の basename の nonce は prompt の nonce と同じで、<O> は
-#      symlink でない実ディレクトリ・cwd / $TMPDIR / /tmp / /private/tmp の配下でない・結果ファイル（symlink を含む）がまだ無い。
+#      symlink でない実ディレクトリで realpath が自身と一致する（祖先にも symlink が無い）・cwd / $TMPDIR / /tmp / /private/tmp の配下でない・結果ファイル（symlink を含む）がまだ無い。
 #      codex を excludedCommands に入れると -o は sandbox の外で codex CLI 自身が書くので、sandbox の中から書ける場所を出力先にすると
 #      常駐プロセスが結果ファイルの名前に symlink を置いて任意のファイルを上書きさせられる（sandbox の中から書けないことは prep が確かめる）
 #   4. それ以外の dev-flow の agent → 引用符とバックスラッシュを外した command を `;` `&` `|` `(` `)` `{` `}` と改行で単文に分け、
@@ -113,6 +113,8 @@ check_codex() {
   [[ -f "$d/prompt.md" && ! -L "$d/prompt.md" ]] || emit_deny "保存先に prompt.md が無い"
   [[ -f "$d/schema.json" && ! -L "$d/schema.json" ]] || emit_deny "保存先に schema.json が無い"
   [[ -d $o && ! -L $o ]] || emit_deny "codex の出力先が symlink でない実ディレクトリでない"
+  # 祖先の symlink も許さない（realpath が自身と一致する出力先だけ。祖先の書き込み不可は prep が確かめる）
+  [[ $(realpath -- "$o" 2>/dev/null) == "$o" ]] || emit_deny "codex の出力先の realpath が自身と一致しない（祖先に symlink がある）"
   [[ ! -e $f && ! -L $f ]] || emit_deny "codex の出力先に結果ファイルが既にある"
   cwd=$(jq -r '.cwd | if type == "string" then . else "" end' 2>/dev/null <<<"$INPUT") || emit_deny "cwd を読めない"
   [[ $cwd == /* ]] || emit_deny "cwd が絶対パスでない"

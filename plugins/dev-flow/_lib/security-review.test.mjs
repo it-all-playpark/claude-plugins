@@ -26,6 +26,7 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const RESULT_CLI = join(here, 'scripts', 'security-review-codex-result.mjs');
 const PREP_CLI = join(here, 'scripts', 'security-review-codex-prep.mjs');
+const PREP_FAKE_SANDBOX = join(here, '..', '_shared', 'scripts', 'security-review-codex-prep.fake-sandbox.mjs');
 const HOOK = join(here, '..', 'hooks', 'pretool-codex-invocation-guard.sh');
 
 const HEAD = 'a'.repeat(40);
@@ -115,7 +116,8 @@ test('[security-review][3] prep が用意した保存先・作業ディレクト
   writeFileSync(join(reviewDir, 'pr.diff'), 'diff --git a/x b/x\n');
   const out = makeOutputDir();
   try {
-    const prep = JSON.parse(execFileSync('node', [PREP_CLI, reviewDir, HEAD, '5', out.outputDir], { env: { ...process.env, TMPDIR: base }, encoding: 'utf8' }));
+    // 出力先の祖先（repo の作業ツリー）はテスト環境では書けるので、sandbox の書き込み拒否を真似て prep を動かす（base の配下だけ書ける）
+    const prep = JSON.parse(execFileSync('node', ['--import', PREP_FAKE_SANDBOX, PREP_CLI, reviewDir, HEAD, '5', out.outputDir], { env: { ...process.env, TMPDIR: base, FAKE_SANDBOX_WRITABLE: base }, encoding: 'utf8' }));
     assert.equal(prep.ok, true, JSON.stringify(prep));
     const cmd = codexSecurityReviewCommand({ reviewDir: prep.review_dir, cwdDir: prep.cwd_dir, outputDir: out.outputDir, nonce: prep.nonce });
     assert.equal(hookDecision(cmd, wt), 'allow');

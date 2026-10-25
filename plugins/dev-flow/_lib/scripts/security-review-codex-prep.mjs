@@ -6,8 +6,9 @@
 //   node security-review-codex-prep.mjs <review_dir> <head_sha> <pr> <output_dir> [--verify-from <prev_nonce>]
 //     review_dir: security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX。pr.diff を持つ）
 //     output_dir: codex が -o で結果ファイル（dev-flow-codex-result-<nonce>.json）を書く出力先（user 設定の "dev-flow".codex_output_dir）。
-//       省略は未設定（output_dir_unset）。symlink でない実ディレクトリの絶対パスで、ここ（sandbox の中）からファイルを作れないこと —
-//       作れる出力先では、sandbox の中の常駐プロセスが結果ファイルの名前に symlink を置き、sandbox の外で動く codex に任意のファイルを
+//       省略は未設定（output_dir_unset）。realpath が自身と一致する（祖先にも symlink を含まない）実ディレクトリの絶対パスで、
+//       出力先と全祖先のどこにも、ここ（sandbox の中）からファイルを作れないこと — 作れる出力先では、sandbox の中の常駐プロセスが
+//       結果ファイルの名前に symlink を置き、作れる祖先では出力先を symlink に差し替えて、sandbox の外で動く codex に任意のファイルを
 //       上書きさせられる。作れてしまったら消してから output_dir_writable。出力先を作る・片付けるのは人で、この script はしない
 //     --verify-from: 前回の Codex の review の nonce。出力先のその結果ファイルの critical/major を verify_items にする
 //
@@ -19,7 +20,7 @@
 //   nonce は round ごとの乱数（CODEX_NONCE_RE）。保存先には書かない（sandbox の中から読める場所に置くと、先回りした result.json に
 //   写せる）— workflow が codex の起動形の末尾の prompt と security-review-codex-result の引数にだけ渡す。
 //   usage error だけ exit 2、それ以外は exit 0。
-import { mkdtempSync, readFileSync, writeFileSync, lstatSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, lstatSync, existsSync, rmSync, realpathSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
@@ -56,20 +57,27 @@ if (!isCodexArgPath(reviewDir, SECURITY_REVIEW_DIR_NAME_RE) || !isRealDir(review
 if (!isRealFile(join(reviewDir, 'pr.diff'))) fail('diff_unavailable')
 if (['prompt.md', 'schema.json', 'result.json', CODEX_PREPARED_AT_FILE].some((f) => existsSync(join(reviewDir, f)))) fail('review_dir_not_fresh')
 
-// 出力先は人が用意した、sandbox の中から書けない実ディレクトリだけ（ファイルを作れてしまったら消してから拒否する）
+// 出力先は人が用意した、sandbox の中から書けない実ディレクトリだけ。codex は終了時に -o を書くので、hook が確かめた後に
+// 出力先かその祖先を rename して symlink に差し替えられると、結果ファイルは差し替え先に書かれる。祖先に symlink を含まない
+// （realpath が自身と一致する）ことと、出力先と全祖先のどこにもファイルを作れないことを確かめる（作れたら消してから拒否する）
 if (outputDir == null) fail('output_dir_unset')
 if (!isCodexArgPath(outputDir) || !isRealDir(outputDir)) fail('output_dir_invalid')
-const probe = join(outputDir, `.dev-flow-codex-write-probe-${randomBytes(8).toString('hex')}`)
-let writable = false
-try {
-  writeFileSync(probe, '', { flag: 'wx' })
-  writable = true
-} catch {
-  // 作れない（sandbox の中から書けない）出力先だけを使う
-}
-if (writable) {
+let outputReal = null
+try { outputReal = realpathSync(outputDir) } catch { /* 下で拒否 */ }
+if (outputReal !== outputDir) fail('output_dir_invalid')
+const writableDir = (dir) => {
+  const probe = join(dir, `.dev-flow-codex-write-probe-${randomBytes(8).toString('hex')}`)
+  try {
+    writeFileSync(probe, '', { flag: 'wx' })
+  } catch {
+    return false
+  }
   rmSync(probe, { force: true })
-  fail('output_dir_writable')
+  return true
+}
+for (let d = outputDir; ; d = dirname(d)) {
+  if (writableDir(d)) fail('output_dir_writable')
+  if (dirname(d) === d) break
 }
 
 // codex は作業ディレクトリから上へ .git・AGENTS.md 等を探して読む。-C の空ディレクトリ（tmpdir の配下）と保存先の祖先に
