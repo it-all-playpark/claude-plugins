@@ -10,6 +10,10 @@ bats_require_minimum_version 1.5.0
 BIN="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/bin/security-review-codex-prep"
 HEAD_SHA="$(printf 'a%.0s' {1..40})"
 
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1
+}
+
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR/tmp"
     mkdir -p "$TMPDIR"
@@ -47,6 +51,9 @@ write_result() {
     jq -e '[.. | objects | select(.type == "object")] | length == 2 and all(.additionalProperties == false and ((.required | sort) == (.properties | keys)))' "$D/schema.json"
     jq -e '[.. | objects | has("maxLength")] | any | not' "$D/schema.json"
     [ ! -e "$D/result.json" ]
+    # 読んだ pr.diff・書いた prompt.md・schema.json の sha256（workflow が scope の値と照合し、result が codex の後に照合する）
+    echo "$output" | jq -e --arg d "$(sha256_of "$D/pr.diff")" --arg p "$(sha256_of "$D/prompt.md")" --arg s "$(sha256_of "$D/schema.json")" \
+        '.diff_sha256 == $d and .prompt_sha256 == $p and .schema_sha256 == $s'
 }
 
 @test "--verify-from: 前回の保存先の result.json の critical/major だけを verify_items にする" {
@@ -64,7 +71,7 @@ write_result() {
     PREV="$TMP_P/dev-flow-security-review-Prev02"
     mkdir -p "$PREV"
     run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV"
-    echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable" and .cwd_dir == null'
+    echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable" and .cwd_dir == null and .prompt_sha256 == null and .schema_sha256 == null'
     jq -n '{reviewed_sha: "x", issues: [], summary: "s", approved: true}' >"$PREV/result.json"
     run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV"
     echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable"'

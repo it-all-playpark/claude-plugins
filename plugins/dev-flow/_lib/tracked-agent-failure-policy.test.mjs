@@ -492,6 +492,9 @@ const EXPECTED_PR_ITERATE = {
   'security-scope#2': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは対象として扱い、diffが無いのでreviewできずsecurity_unresolvedで終端（LGTMにしない）' },
   'security-review#1': { config: PR_B1, policy: 'continue', reason: 'securityGate内try/catchで吸収し結果なし（no_result）としてsecurity_unresolvedで終端（LGTMにしない）' },
   'security-review#2': { config: PR_B2, policy: 'continue', reason: 'securityGate内try/catchで吸収し結果なし（no_result）としてsecurity_unresolvedで終端（LGTMにしない）' },
+  // ── issue #1095: security-reviewer の返却後の pr.diff の照合 ──
+  'security-diff-check#1': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはpr.diffを照合できないとしてsecurity_unresolvedで終端（LGTMにしない）' },
+  'security-diff-check#2': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはpr.diffを照合できないとしてsecurity_unresolvedで終端（LGTMにしない）' },
 };
 
 for (const [label, spec] of Object.entries(EXPECTED_PR_ITERATE)) {

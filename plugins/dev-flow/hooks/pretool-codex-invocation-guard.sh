@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# PreToolUse(Bash) hook: Codex 経路の security review の中継（dev-flow:security-codex-relay）の Bash を固定の 3 形に限り、
-# 他の dev-flow の agent には codex と review の保存先を触らせない（issue #1087）
+# PreToolUse(Bash) hook: security review の中継（dev-flow:security-codex-relay）の Bash を固定の 4 形に限り、
+# 他の dev-flow の agent には codex と review の保存先を触らせない（issue #1087 / #1095）
 #
 # 目的:
 #   pr-iterate の Codex 経路は、prep・codex の起動・result.json の判定を security-codex-relay に写させる。中継は PR の worktree を cwd に
@@ -22,12 +22,18 @@
 #          -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use
 #          --disable computer_use -c model_instructions_file=<D>/prompt.md --output-schema <D>/schema.json -o <D>/result.json "<固定文> <N>"
 #        （codex は実際は 1 行。_lib/security-review.mjs の codexSecurityReviewCommand と同じ — 起動形を変えるときは両方を同時に変える）
-#        security-review-codex-result <D> <sha> <N>[ --issues]
+#        security-review-codex-result <D> <sha> <N> <C> <h> <h>[ --issues]
+#        security-review-diff-check <D> <h>（Claude 経路の review の後の pr.diff の照合）
 #      <D> は basename が dev-flow-security-review-XXXXXX、<C> は dev-flow-codex-cwd-XXXXXX の、`.` / `..` の要素を持たない
-#      [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字、<N> は prep が返した nonce（32 桁の小文字 hex）。prep / result のパスの実体は各 script が確かめる。
+#      [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字、<N> は prep が返した nonce（32 桁の小文字 hex）、
+#      <h> は prep / scope が返した sha256（64 桁の小文字 hex）。prep / result / diff-check のパスの実体は各 script が確かめる。
 #      codex の形は hook がパスの実体も確かめる: <C> は空の実ディレクトリ、<D> は prompt.md・schema.json を実ファイルとして持ち
 #      result.json を持たない実ディレクトリ（symlink の result.json を通じて保存先の外へ書かせない・先に置かれた result.json を
-#      codex の結果として読ませない）で、どちらも入力の cwd（PR の worktree）の配下でない
+#      codex の結果として読ませない）で、どちらも入力の cwd（PR の worktree）の配下でない。
+#      起動される codex の実体も確かめる: bash と同じ順で PATH をたどって最初に見つかる実行可能な通常ファイルの realpath が、
+#      解決できない・PATH の相対パスか空の要素から解決された・入力の cwd・$TMPDIR・/tmp・/private/tmp の配下なら deny
+#      （中継の codex は sandbox の外で動くので、PR のコードが sandbox の中から置いた codex を起動させない。PATH は hook の
+#      環境のもの）
 #   4. それ以外の dev-flow の agent → 引用符とバックスラッシュを外した command を `;` `&` `|` `(` `)` `{` `}` と改行で単文に分け、
 #      各単文の先頭から予約語（then / do / ! 等）・前置コマンド（env / exec / command / nohup / timeout 等）とその option・
 #      `NAME=value` の代入を読み飛ばした最初のトークンが `codex` か `*/codex` なら deny。保存先・作業ディレクトリの名前（dev-flow-security-review- /
@@ -51,7 +57,9 @@ SHA_RE='[0-9a-fA-F]{40}'
 PREP_RE="^security-review-codex-prep ${D_RE} ${SHA_RE} [0-9]+( --verify-from ${D_RE})?$"
 NONCE_RE='[0-9a-f]{32}'
 CODEX_PROMPT='Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to'
-RESULT_RE="^security-review-codex-result ${D_RE} ${SHA_RE} ${NONCE_RE}( --issues)?$"
+SHA256_RE='[0-9a-f]{64}'
+RESULT_RE="^security-review-codex-result ${D_RE} ${SHA_RE} ${NONCE_RE} ${C_RE} ${SHA256_RE} ${SHA256_RE}( --issues)?$"
+DIFF_CHECK_RE="^security-review-diff-check ${D_RE} ${SHA256_RE}$"
 DIR_NAME_RE='dev-flow-security-review-|dev-flow-codex-cwd-'
 
 emit_deny() {
@@ -114,6 +122,48 @@ check_codex() {
       [[ -n $a ]] || a=/
     done
   done
+  check_codex_binary "$cwd" "$cwd_real"
+}
+
+# 絶対パス $1 が、実在するディレクトリ $2 自身かその配下か（祖先を dev+inode で比べる）
+is_under() {
+  local a="$1" root="$2"
+  [[ -n $root && -d $root ]] || return 1
+  while :; do
+    [[ $a -ef $root ]] && return 0
+    [[ -z $a || $a == / ]] && return 1
+    a="${a%/*}"
+    [[ -n $a ]] || a=/
+  done
+}
+
+# 中継が bare 名で起動する codex の実体（sandbox の外で動く）が、PR のコードの置ける場所に解決されないか。
+# bash の検索と同じく PATH の要素を先頭から見て、最初に見つかる実行可能な通常ファイルを起動される codex とする。
+# 相対パス・空の要素は Bash tool の cwd（入力の cwd = PR の worktree）から解決される
+check_codex_binary() {
+  local cwd="$1" cwd_real="$2" rest="${PATH-}:" seg f="" from_relative=0 real root
+  while [[ -n $rest ]]; do
+    seg="${rest%%:*}"
+    rest="${rest#*:}"
+    if [[ $seg == /* ]]; then
+      f="$seg/codex"
+    else
+      f="$cwd/${seg:+$seg/}codex"
+    fi
+    if [[ -f $f && -x $f ]]; then
+      [[ $seg == /* ]] || from_relative=1
+      break
+    fi
+    f=""
+  done
+  [[ -n $f ]] || emit_deny "codex を PATH 上で解決できない"
+  ((from_relative == 0)) || emit_deny "codex が PATH の相対パス・空の要素から解決される"
+  real=$(realpath -- "$f" 2>/dev/null) || emit_deny "codex の実体の realpath を取れない"
+  is_under "$real" "$cwd_real" && emit_deny "codex の実体が cwd の配下"
+  for root in "${TMPDIR-}" /tmp /private/tmp; do
+    is_under "$real" "$root" && emit_deny "codex の実体が一時ディレクトリの配下"
+  done
+  return 0
 }
 
 INPUT=$(cat) || INPUT=""
@@ -147,7 +197,7 @@ if [[ $AGENT_TYPE == "$RELAY_AGENT" ]]; then
     check_codex
     pass_through
   fi
-  if [[ $CMD =~ $PREP_RE || $CMD =~ $RESULT_RE ]]; then
+  if [[ $CMD =~ $PREP_RE || $CMD =~ $RESULT_RE || $CMD =~ $DIFF_CHECK_RE ]]; then
     # 正規表現は `.` / `..` の要素を弾けないので、パスの要素を別に確かめる
     for tok in $CMD; do
       [[ $tok == /* ]] || continue
@@ -158,7 +208,7 @@ if [[ $AGENT_TYPE == "$RELAY_AGENT" ]]; then
     done
     pass_through
   fi
-  emit_deny "security-codex-relay は security-review-codex-prep / codex exec / security-review-codex-result の固定形でだけ Bash を使える。prompt のコマンド行を一字一句そのまま実行せよ"
+  emit_deny "security-codex-relay は security-review-codex-prep / codex exec / security-review-codex-result / security-review-diff-check の固定形でだけ Bash を使える。prompt のコマンド行を一字一句そのまま実行せよ"
 fi
 
 NORM=${CMD//\'/}

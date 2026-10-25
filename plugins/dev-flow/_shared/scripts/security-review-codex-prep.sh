@@ -6,7 +6,7 @@
 # node を起動するだけ。node が無いときは ok:false を出す（workflow は Claude 経路の判定に倒す）。
 #
 # Usage: security-review-codex-prep <review_dir> <head_sha> <pr> [--verify-from <prev_review_dir>]
-# Output (stdout, JSON 1 行): {ok, review_dir, cwd_dir, error?}
+# Output (stdout, JSON 1 行): {ok, review_dir, cwd_dir, nonce, diff_sha256, prompt_sha256, schema_sha256, error?}
 
 set -uo pipefail
 
