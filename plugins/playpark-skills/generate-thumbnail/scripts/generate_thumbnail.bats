@@ -72,10 +72,10 @@ model_arg() {
     awk 'prev == "-m" { print; exit } { prev = $0 }' "$CALLS_LOG"
 }
 
-@test "default codex model is gpt-5.5 when codex_model is unset" {
+@test "default codex model is gpt-6-luna when codex_model is unset" {
     run bash "$SCRIPT" "$MDX"
     [ "$status" -eq 0 ]
-    [ "$(model_arg)" = "gpt-5.5" ]
+    [ "$(model_arg)" = "gpt-6-luna" ]
     [ -f "$PROJECT/public/blog/2026-09-15-example.png" ]
 }
 
@@ -90,8 +90,8 @@ model_arg() {
     export CODEX_STUB_MODE=model_unsupported
     run bash "$SCRIPT" "$MDX"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"codex model 'gpt-5.5' is not available for this account."* ]]
-    [[ "$output" == *"script の既定モデル (gpt-5.5) が提供終了している可能性"* ]]
+    [[ "$output" == *"codex model 'gpt-6-luna' is not available for this account."* ]]
+    [[ "$output" == *"script の既定モデル (gpt-6-luna) が提供終了している可能性"* ]]
     [[ "$output" == *"models_cache.json"* ]]
 }
 
@@ -126,5 +126,5 @@ model_arg() {
     [ "$status" -ne 0 ]
     run env PATH="$newpath" bash "$SCRIPT" "$MDX"
     [ "$status" -eq 0 ]
-    [ "$(model_arg)" = "gpt-5.5" ]
+    [ "$(model_arg)" = "gpt-6-luna" ]
 }

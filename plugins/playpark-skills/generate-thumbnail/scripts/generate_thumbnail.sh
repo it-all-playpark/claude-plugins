@@ -23,7 +23,7 @@ CONFIG=$(load_skill_config "generate-thumbnail")
 OUTPUT_DIR=$(echo "$CONFIG" | jq -r '.output_dir // "public/blog"')
 ASPECT_RATIO=$(echo "$CONFIG" | jq -r '.aspect_ratio // "16:9"')
 BRAND_PROMPT_PATH=$(echo "$CONFIG" | jq -r '.brand_prompt_path // ""')
-CODEX_MODEL=$(echo "$CONFIG" | jq -r '.codex_model // "gpt-5.5"')
+CODEX_MODEL=$(echo "$CONFIG" | jq -r '.codex_model // "gpt-6-luna"')
 CODEX_EFFORT=$(echo "$CONFIG" | jq -r '.codex_reasoning_effort // "low"')
 
 # NOTE: requires codex >= 0.147.0 (--approve-for-me = auto-approve while KEEPING the
