@@ -5198,11 +5198,6 @@ const SECURITY_SCOPE_SCHEMA = {
     reviewer_context_changed: { type: 'boolean' },
     review_dir: { type: ['string', 'null'] },
     diff_path: { type: ['string', 'null'] },
-    diff_sha256: { type: ['string', 'null'] },
-    diff_ino: { type: ['string', 'null'] },
-    diff_ctime_ns: { type: ['string', 'null'] },
-    dir_ino: { type: ['string', 'null'] },
-    dir_ctime_ns: { type: ['string', 'null'] },
     error: { type: 'string' },
   },
 };

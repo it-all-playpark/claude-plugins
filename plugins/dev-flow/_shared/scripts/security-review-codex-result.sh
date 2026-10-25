@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# security-review-codex-result.sh - Codex 経路の security review（issue #1087）の結果ファイル（出力先の dev-flow-codex-result-<nonce>.json）を読んで判定する。
+# security-review-codex-result.sh - Codex 経路の security review（issue #1087）の結果ファイル（保存先の result.json）を読んで判定する。
 #
 # 判定は _lib/scripts/security-review-codex-result.mjs（規則は _lib/security-review.mjs の codexResultVerdict）が持ち、
 # このスクリプトは node を起動するだけ。node が無いときは ok:false・cleared:false を出す（判定できない入力は clear にしない）。
 #
-# Usage: security-review-codex-result <review_dir> <head_sha> <nonce> <binding> <prompt_sha256> <schema_sha256> <output_dir> [--issues]
+# Usage: security-review-codex-result <review_dir> <head_sha> [--issues]
 # Output (stdout, JSON 1 行): {ok, cleared, reason, reviewed_sha, counts, issues, error?}
 
 set -uo pipefail

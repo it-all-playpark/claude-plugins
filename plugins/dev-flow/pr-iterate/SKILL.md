@@ -55,11 +55,9 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - PR の base branch で直近に成功した CI の所要時間から CI 待ちの上限（秒）を決め、`ci_wait_ceiling_seconds` に載せる
      （dev-flow の nested 起動と同じ求め方。読み取りに失敗したら 300）
    - PR 全体（`origin/<base>...<PR head>`）の diff が敵対的 security review の対象かを決定論の許可リストで判定し、
-     `security_review`（`{target, reasons, reviewer_context_changed, reviewer, codex_output_dir, codex_bin}`）に載せる。判定できないときは `target:true`・
+     `security_review`（`{target, reasons, reviewer_context_changed, reviewer}`）に載せる。判定できないときは `target:true`・
      `reviewer_context_changed:true`。`reviewer` は review を回す CLI の opt-in（`"dev-flow".security_reviewer`。base branch の
-     `skill-config.json` か user 設定から読み、PR head の設定は読まない。無ければ `"claude"`）。`codex_output_dir` は Codex 経路で
-     codex が結果を書く出力先（`"dev-flow".codex_output_dir`。user 設定からだけ読み、repo の設定は読まない。無ければ null）。
-     `codex_bin` は Codex 経路で起動する codex の絶対パス（`"dev-flow".codex_bin`。user 設定からだけ読み、無い・文字列でなければ null）
+     `skill-config.json` か user 設定から読み、PR head の設定は読まない。無ければ `"claude"`）
 
    結果に応じて分岐する:
 
@@ -93,29 +91,15 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      security-reviewer の判定に戻る）。指示ファイルを変える PR はどちらの経路でも自動の review で clear にせず止める
      （`security-review-isolated` で人が確かめる）
 
-   - Codex 経路の前提（`codex_output_dir` か `codex_bin` が null なら Codex 経路に入らず security-reviewer の判定のまま）:
-     - 中継は codex を PATH で探さず、user 設定の `"dev-flow".codex_bin` の絶対パスを先頭トークンにした単文
-       （`<codex_bin> exec ...`）で起動する。codex はこの絶対パスの起動形で sandbox の外で動くことを前提にするので、`excludedCommands` には
-       bare 名の `codex` ではなくこの絶対パスを入れる
-     - `codex_bin` には codex のネイティブ実行ファイル（Mach-O / ELF）の実体を、symlink を辿った先の絶対パスで書く。`#!` で始まる script
-       （npm 版の `bin/codex.js` は `#!/usr/bin/env node`）は sandbox の外で interpreter を PATH で解決するので受け付けない — npm 版なら
-       パッケージ内の `vendor/<target-triple>/codex/codex` を `realpath` し、`file <path>` が Mach-O / ELF を返すことを確かめて書く。
-       hook は先頭トークンが `codex_bin` と完全に一致し、realpath が自身と一致する（自身も祖先も symlink でない）実ファイルで、`#!` で
-       始まらず、link 数が 1（別名の hard link が無い）で、PR の worktree・`$TMPDIR`・`/tmp` の配下でないときだけ起動を通す（prep も
-       `#!`・link 数を確かめ、当たれば `codex_bin_invalid`）。`codex_bin` とその祖先は sandbox の書き込み許可に入れない（書けると prep が `codex_bin_writable` で
-       拒否し、security-reviewer の判定に戻る）。plugin は `codex_bin` を作らず変えない
-     - `"dev-flow".codex_bin_sha256` に `codex_bin` の sha256（`shasum -a 256 <codex_bin>` の 64 桁の小文字 hex）を書く。hook は起動の直前に
-       照合し、無い・違えば起動させない（書ける場所に張った hard link から中身を書き換えて link を消すと、link 数と書き込み試験は通るため）。
-       codex を更新したら値も書き直す。他の dev-flow の agent は先頭トークンが `codex_bin`（同じファイルの hard link を含む）の単文も拒否される
-     - `codex_bin` は root 所有で置く: `sudo install -o root -m 555 <codex の実体> /usr/local/libexec/dev-flow-codex/codex` のように、自身と
-       全祖先が現在の uid の所有でなく group / other に書き込み権限が無い場所に置く（sha256 の照合は hook の中の 1 回なので、user 所有の
-       ファイルは照合の後・起動の前に別名の link から書き換えられる）。hook・prep はこれを満たさない `codex_bin` を拒否する（prep は `codex_bin_writable`）
-     - codex を `excludedCommands` に入れると codex は sandbox の外で動き、`-o` の結果ファイルの書き込みも sandbox の外になる。
-       出力先が sandbox の中から書ける場所だと、PR のプロセスが結果ファイルの名前に symlink を置いて任意のファイルを上書きさせられる
-     - 出力先は人が一度作り（例: `mkdir ~/.local/state/dev-flow-codex-out`）、user 設定の `"dev-flow".codex_output_dir` に絶対パスで書く。
-       sandbox の書き込み許可には入れない（書ける出力先は prep が拒否し、security-reviewer の判定に戻る）。plugin は出力先を作らず消さない
-     - 結果ファイル（`dev-flow-codex-result-<nonce>-<binding>.json`）と、hook が codex に読ませるために作る指示ファイル・schema の
-       複製（`dev-flow-codex-{prompt,schema}-<nonce>-<binding>`）は round ごとに溜まる。sandbox の中からは消せないので、古いものは人が片付ける
+   - Codex 経路の前提: codex は Claude Code の sandbox の中で動かす（PR に制御される入力を sandbox の外で実行しない —
+     `dev-flow/references/pipeline.md` の「守る要件と境界」の R3）。Claude Code の設定（settings.json）で:
+     - `codex` を `sandbox.excludedCommands` に入れない
+     - `sandbox.network.allowedDomains` に codex が通信するホスト（`chatgpt.com`・`api.openai.com`）を足す
+     - `env.CODEX_HOME` を sandbox から書ける専用のディレクトリ（例: `~/.local/state/codex-sandbox`）にし、そのディレクトリを
+       sandbox の書き込み許可に足す。`~/.codex` 自体は書き込み許可に入れない（sandbox の外で使う codex の設定を、sandbox の中の
+       プロセスに書き換えさせない）。そのディレクトリで 1 回ログインする（`CODEX_HOME=<dir> codex login`）
+     - 入出力（prompt.md・schema.json・cwd/・result.json）はすべて保存先（`$TMPDIR` 配下の `dev-flow-security-review-XXXXXX`）に置くので、
+       ほかの設定は要らない。codex を起動できない（未設定・通信の拒否）round は security-reviewer の判定に戻る
 
    - `prior_devflow` が HOLD の dev-flow サマリーなら、終端サマリーは HOLD 理由の code ごとの回収状況を出し、
      未解消が残れば見出しを「🎉 LGTM」にしない（このレポートが PR の最後のコメント＝最新の結論になるため）。

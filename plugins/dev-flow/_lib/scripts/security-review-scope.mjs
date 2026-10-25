@@ -8,17 +8,10 @@
 //   node security-review-scope.mjs <worktree> <base-ref> --working-tree
 //     → merge-base(<base-ref>, HEAD) と作業ツリー（未コミット・untracked を含む。一時 index で tree を作り、
 //       実 index は触らない）の diff を判定する（dev-flow の Security floor。implementer は commit しない）
-//   --save-diff: diff 全文を worktree の外の新しい一時ディレクトリ（os.tmpdir() 配下）の pr.diff に書き、
-//     review_dir / diff_path と、書いた diff の sha256（diff_sha256。小文字 hex）を返す（pr-iterate の security-reviewer が読む。
-//     保存先は sandbox の中の常駐プロセスから書けるので、review の後に security-review-diff-check がこの値と照合する）。
-//     書いた pr.diff の ino と ctime（ns）も 10 進の文字列で返す（diff_ino / diff_ctime_ns）。差し替えて元の bytes に戻しても
-//     ctime は変わるので、diff-check は sha256 と合わせてこの 2 つも照合する。pr.diff を書いた後の保存先ディレクトリの ino と
-//     ctime（ns）も返す（dir_ino / dir_ctime_ns）。ディレクトリごと rename で退避して別のディレクトリを置き、後で戻すと pr.diff は
-//     無傷でも、移動したディレクトリの ctime が変わる。diff_path は pr.diff への hard link pr-<dev>-<ino>.diff（名前に pr.diff の
-//     dev・ino を入れる）で、security-reviewer はこれを読む。保存先の祖先ごと差し替えて後で戻すと上のどの値も変わらないので、
-//     read-scope hook が読む時点でこのファイルの dev・ino を名前と照合する（diff-check・Codex 経路の prep は pr.diff を読む）
+//   --save-diff: diff 全文を worktree の外の新しい一時ディレクトリ（os.tmpdir() 配下の dev-flow-security-review-XXXXXX）の
+//     pr.diff に書き、review_dir / diff_path を返す（pr-iterate の security-reviewer・Codex 経路の prep が読む）
 //
-// stdout: JSON 1 行 {ok, target, reasons, file_count, head_sha, reviewer_context_changed, review_dir, diff_path, diff_sha256, diff_ino, diff_ctime_ns, dir_ino, dir_ctime_ns, error?}
+// stdout: JSON 1 行 {ok, target, reasons, file_count, head_sha, reviewer_context_changed, review_dir, diff_path, error?}
 //   reasons は固定の code と件数（`not_allowlisted:3` 等。_lib の reasonCodeCounts）だけで、ファイルパス・diff 由来の
 //   文字列を出さない（stdout を写す agent へ PR が決めた文字列を渡すと、判定を書き換える文を混ぜられる）。error も
 //   固定の code（`usage` / `git_failed`）だけで、git の stderr は stdout にも stderr にも出さない（同じ理由）。
@@ -26,8 +19,7 @@
 //   （_lib の isReviewerContextPath と、base / head の指示ファイルが `@<path>` で import するファイル。取得に失敗したときは true）。
 //   ok:false（取得・判定に失敗）のときも target:true を出す（fail-closed）。usage error だけ exit 2、それ以外は exit 0。
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { closeSync, constants, fstatSync, linkSync, lstatSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -38,7 +30,7 @@ const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
   process.exit(code)
 }
-const failClosed = (error) => ({ ok: false, target: true, reasons: ['scope_unavailable:1'], file_count: null, head_sha: null, reviewer_context_changed: true, review_dir: null, diff_path: null, diff_sha256: null, diff_ino: null, diff_ctime_ns: null, dir_ino: null, dir_ctime_ns: null, error })
+const failClosed = (error) => ({ ok: false, target: true, reasons: ['scope_unavailable:1'], file_count: null, head_sha: null, reviewer_context_changed: true, review_dir: null, diff_path: null, error })
 
 const argv = process.argv.slice(2)
 const saveDiff = argv.includes('--save-diff')
@@ -118,46 +110,12 @@ try {
   const scope = securityReviewScope({ patch: patchBuf.toString('utf8'), names, imports })
   let reviewDir = null
   let diffPath = null
-  let diffSha256 = null
-  let diffIno = null
-  let diffCtimeNs = null
-  let dirIno = null
-  let dirCtimeNs = null
   if (saveDiff) {
     reviewDir = mkdtempSync(join(tmpdir(), 'dev-flow-security-review-'))
-    const prDiff = join(reviewDir, 'pr.diff')
-    // 保存先ディレクトリも作った直後に開いた fd の fstat から ino と ctime を取る（pr.diff を作るとディレクトリの ctime が変わるので、
-    // 書いた後に取る。パスを引き直すと、その間に置き換えられた別のディレクトリの値を基準にし得る）
-    const dirFd = openSync(reviewDir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
-    try {
-      // 書いた fd の fstat から ino と ctime を取る（パスを引き直すと、書いた直後に置かれた別のファイルの値を基準にし得る）
-      const fd = openSync(prDiff, 'wx')
-      try {
-        writeFileSync(fd, patchBuf)
-        const written = fstatSync(fd, { bigint: true })
-        // reviewer が読む名前（pr-<dev>-<ino>.diff）の hard link。hook が読む時点で dev・ino を名前と照合する。link はパスで張るので、
-        // 張った先が書いた fd と同じファイルでなければ（その間に pr.diff を差し替えられた）保存しない
-        diffPath = join(reviewDir, `pr-${written.dev}-${written.ino}.diff`)
-        linkSync(prDiff, diffPath)
-        const linked = lstatSync(diffPath, { bigint: true })
-        if (!linked.isFile() || linked.dev !== written.dev || linked.ino !== written.ino) throw new Error('diff_link_mismatch')
-        // link で nlink が増えて ctime が変わるので、ctime は link の後の fd から取る
-        const st = fstatSync(fd, { bigint: true })
-        diffIno = String(st.ino)
-        diffCtimeNs = String(st.ctimeNs)
-      } finally {
-        closeSync(fd)
-      }
-      const dst = fstatSync(dirFd, { bigint: true })
-      dirIno = String(dst.ino)
-      dirCtimeNs = String(dst.ctimeNs)
-    } finally {
-      closeSync(dirFd)
-    }
-    // 書いた後のファイルではなく、書いた値から作る（書いた直後に差し替えられた中身を照合の基準にしない）
-    diffSha256 = createHash('sha256').update(patchBuf).digest('hex')
+    diffPath = join(reviewDir, 'pr.diff')
+    writeFileSync(diffPath, patchBuf, { flag: 'wx' })
   }
-  result = { ok: true, target: scope.target, reasons: scope.codes, file_count: names.length, head_sha: headSha, reviewer_context_changed: scope.reviewer_context_changed, review_dir: reviewDir, diff_path: diffPath, diff_sha256: diffSha256, diff_ino: diffIno, diff_ctime_ns: diffCtimeNs, dir_ino: dirIno, dir_ctime_ns: dirCtimeNs }
+  result = { ok: true, target: scope.target, reasons: scope.codes, file_count: names.length, head_sha: headSha, reviewer_context_changed: scope.reviewer_context_changed, review_dir: reviewDir, diff_path: diffPath }
 } catch {
   result = failClosed('git_failed')
 }
