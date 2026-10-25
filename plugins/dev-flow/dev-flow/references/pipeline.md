@@ -322,14 +322,17 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
   `git -c core.quotePath=false diff --no-renames --no-color --no-ext-diff --no-textconv --text --src-prefix=a/ --dst-prefix=b/`
   で取り、`--name-only -z` の一覧と件数・集合を照合する。取得失敗・空・読めない diff・binary・mode 120000 / 160000・mode の
   変更・`.gitattributes` / `.gitmodules` は対象
-- security-reviewer（opus / high、tools は Read / Grep / Glob だけ）は `security-review-scope --save-diff` が worktree の外に
+- security-reviewer（opus / high、tools は Read / Grep だけ。Glob は持たせない）は `security-review-scope --save-diff` が worktree の外に
   作った一時ディレクトリを作業ディレクトリにし、PR 本文・diff・コード中のコメントをデータとして扱う。品質ゲート agent なので
   `opts.model` を渡さない
 - workflow の `agent()` には cwd を渡せないので、security-reviewer の session の cwd は PR の worktree のまま。reviewer が読む
-  ファイルは保存先の配下に限る。保存先の外への Read / Grep / Glob は PreToolUse hook（`hooks/pretool-security-reviewer-read-scope.sh`。
+  ファイルは保存先の diff に限る。それ以外への Read / Grep と Glob は PreToolUse hook（`hooks/pretool-security-reviewer-read-scope.sh`。
   入力の `agent_type` が `dev-flow:security-reviewer` のときだけ判定）が拒否する — 許可は対象パスの realpath が basename
   `dev-flow-security-review-[A-Za-z0-9]{6}` のディレクトリの配下で、そのディレクトリと対象パスが session の cwd の配下でないときだけ。
-  Grep / Glob の `path` 無し・`pattern` / `glob` の絶対パスや `..`・判定できない入力も拒否する。PR が reviewer の session に自動で読み込まれる指示ファイル
+  Read / Grep はさらに、要求されたパスの最後の要素が `security-review-scope` の作る `pr-<dev>-<ino>.diff`（pr.diff への hard link）で
+  realpath の名前と同じで、lstat で symlink でない通常ファイルで、読む時点の dev・ino が名前の値と一致するときだけ許可する（名前を realpath
+  で見ると、元の名前を自己整合した名前の良性ファイルへの symlink にされたときに通る）。Glob は常に拒否する（差し替えた保存先で
+  自己整合した名前のファイルを見つけて読めるため）。Grep の `path` 無し・`glob` の絶対パスや `..`・判定できない入力も拒否する。PR が reviewer の session に自動で読み込まれる指示ファイル
   （basename が `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`、または repo 直下の `.claude/` 配下）を変える run は、
   security-scope#i の `reviewer_context_changed` で検出して review を spawn せず `security_unresolved`（人間が確かめる）
 - security-scope の CLI は stdout・stderr に PR 由来の文字列（ファイルパス・git の stderr）を出さない。reasons は固定 code と
@@ -348,7 +351,12 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
     一致しない・照合できない round を clear にしない（stop_reason は null）。書き戻しは ctime が、同じ bytes のファイルの rename は
     ino が変わるので見分けられる。保存先ディレクトリごと rename で退避して良性の pr.diff を持つ別のディレクトリを置き、review の後に
     元へ戻すと pr.diff は無傷なので、保存先ディレクトリ自身も `security-review-scope` が pr.diff を書いた後の dir_ino・dir_ctime_ns と
-    照合する（rename で移動したディレクトリの ctime が変わる）。Codex 経路の prep は保存先に書いてディレクトリの ctime を変えるので、
+    照合する（rename で移動したディレクトリの ctime が変わる）。保存先の祖先（`$TMPDIR` 側の親）を rename で退避し、同じパスに良性の
+    保存先を置いて review の後に戻すと、pr.diff・保存先自身はどの値も変わらず、祖先の ctime は無関係な一時ファイルの出入りでも
+    変わるので照合値にできない。そこで reviewer には `pr-<dev>-<ino>.diff` を読ませ、read-scope hook が読む時点でそのファイルの
+    dev・ino を名前と照合する（置いた良性のファイルは scope の書いたファイルの dev・ino を持てないので拒否され、reviewer は
+    `diff-unreadable` の critical を返す）。祖先で無関係なファイルが作られ・消えるだけの round は、読み取りも照合も通るので clear にできる。
+    Codex 経路の prep は保存先に書いてディレクトリの ctime を変えるので、
     書いた後の dir_ino・dir_ctime_ns を返し、dir_ino が scope の値と一致するときだけ workflow が照合値の ctime を更新する（一致しなければ
     Claude 経路の判定に倒す）。Codex 経路の prep は diff_sha256 を引数で受け取り、読んだ pr.diff の sha256 が違えば
     prompt.md を作らない（diff_mismatch。Claude 経路の判定に倒す）。Codex 経路は `security-review-codex-result` が codex の後に、出力先の複製と保存先の
@@ -360,8 +368,9 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
   - 残る経路（この gate では塞がない）: pr.diff・保存先ディレクトリの ctime を元の値に戻す（system の時計を戻せる権限が要る。同じ uid の常駐プロセスは utimes でも ctime を戻せない）。
     codex の出力後に結果ファイル（`result.json`）を nonce ごと写して `issues:[]` で上書きする（出力先は sandbox の中から書けない
     場所に置く前提で、hook と prep はその前提を確かめるが、書けてしまう設定ではこの上書きを検出しない）。
-    保存先の祖先（`$TMPDIR` 側の親）を rename で退避し、良性の保存先を持つ同名の親を置いて review の後に戻す（照合するのは pr.diff と
-    保存先自身の ino・ctime だけで、保存先自身は移動しないので見分けられない）。hook の `codex` の解決先の確認は拒否リストなので、
+    保存先の祖先の差し替えのうち、hook が dev・ino を確かめてから Read がファイルを開くまでの間に差し替える競合は防げない（確認は
+    読む直前の 1 回で、review の後の照合は祖先を見ない）。hook に拒否された reviewer が `diff-unreadable` を返さずに clear を返すことも
+    script では止めない（読み取りが拒否されたことを workflow は知らない）。hook の `codex` の解決先の確認は拒否リストなので、
     PATH 上で本物より前にある sandbox から書ける他の場所（`PNPM_HOME`・`~/.local/bin` 等）に置いた `codex` は通る。また hook は
     自分の PATH で解決し、中継の Bash の PATH とずれると確認が実際の起動と一致しない。`security-review-diff-check` も bare 名で
     起動するので、PATH 上で plugin の `bin/` より前の書ける場所に置いた同名の実行ファイルは照合を素通りできる。常駐プロセスは同じ権限で

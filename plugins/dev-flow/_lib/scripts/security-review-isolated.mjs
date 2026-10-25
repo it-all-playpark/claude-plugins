@@ -21,9 +21,9 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { SECURITY_REVIEW_SCHEMA, securityReviewPrompt, securityReviewVerdict } from '../security-review.mjs'
+import { SECURITY_REVIEW_DIFF_NAME_RE, SECURITY_REVIEW_SCHEMA, securityReviewPrompt, securityReviewVerdict } from '../security-review.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const SCOPE_BIN = join(here, '..', '..', 'bin', 'security-review-scope')
@@ -138,7 +138,9 @@ try {
 } catch {
   undetermined('security-review-scope が失敗した')
 }
-if (scope?.ok !== true || typeof scope.diff_path !== 'string' || typeof scope.review_dir !== 'string' || String(scope.head_sha).toLowerCase() !== headSha) {
+// reviewer が読む diff は保存先の直下の pr-<dev>-<ino>.diff（read-scope hook はこの名前のファイルだけを読ませる）
+if (scope?.ok !== true || typeof scope.diff_path !== 'string' || typeof scope.review_dir !== 'string' || String(scope.head_sha).toLowerCase() !== headSha
+  || dirname(scope.diff_path) !== scope.review_dir || !SECURITY_REVIEW_DIFF_NAME_RE.test(basename(scope.diff_path))) {
   if (typeof scope?.review_dir === 'string') rmSync(scope.review_dir, { recursive: true, force: true })
   undetermined('PR の diff を保存できない')
 }
@@ -160,14 +162,14 @@ if (inside(cwd, checkout) || inside(reviewDir, cwd) || inside(reviewDir, checkou
 }
 
 // 4. security-reviewer を別プロセスで起動する（prompt は stdin で渡す）
-// 読み取りは prompt の文と read-scope hook に加えて起動引数でも保存先の配下に限る: tool は Read / Grep / Glob だけ、
-// 許可は保存先の配下の Read（Grep / Glob も Read の rule に従う）だけ、それ以外は聞かずに拒否する（dontAsk）。
+// 読み取りは prompt の文と read-scope hook に加えて起動引数でも保存先の配下に限る: tool は Read / Grep だけ
+// （Glob は持たせない。diff_path は prompt で渡す）、許可は保存先の配下の Read（Grep も Read の rule に従う）だけ、それ以外は聞かずに拒否する（dontAsk）。
 // project / local の設定は読まない（user 設定は plugin の有効化に要る）
-const prompt = securityReviewPrompt({ pr, reviewDir, diffPath: join(reviewDir, 'pr.diff'), headSha, base, worktree: checkout })
+const prompt = securityReviewPrompt({ pr, reviewDir, diffPath: join(reviewDir, basename(scope.diff_path)), headSha, base, worktree: checkout })
 out(`security-review-isolated: PR #${pr}（head ${headSha}）を ${AGENT} で review する`)
 const res = spawnSync('claude', [
   '-p', '--agent', AGENT, '--output-format', 'json', '--json-schema', JSON.stringify(SECURITY_REVIEW_SCHEMA), '--add-dir', reviewDir,
-  '--tools', 'Read,Grep,Glob', '--allowedTools', `Read(/${reviewDir}/**)`, '--permission-mode', 'dontAsk', '--setting-sources', 'user',
+  '--tools', 'Read,Grep', '--allowedTools', `Read(/${reviewDir}/**)`, '--permission-mode', 'dontAsk', '--setting-sources', 'user',
 ], { cwd, input: prompt, maxBuffer: 512 * 1024 * 1024, stdio: ['pipe', 'pipe', 'inherit'] })
 cleanup()
 if (res.error || res.status !== 0) undetermined(`claude が失敗した（exit ${res.status ?? 'なし'}）`)

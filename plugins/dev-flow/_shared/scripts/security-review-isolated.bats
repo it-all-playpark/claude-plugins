@@ -95,8 +95,8 @@ MAJOR_ISSUE='[{"severity":"major","topic":"hook-injection","file":"CLAUDE.md","l
     # argv: -p と --agent dev-flow:security-reviewer
     grep -qxF -- '-p' "$CLAUDE_STUB_DIR/argv"
     [ "$(grep -xF -A1 -- '--agent' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)" = "dev-flow:security-reviewer" ]
-    # argv: tool は Read / Grep / Glob だけ、許可は保存先の配下の Read だけ、他は拒否、project / local 設定を読まない
-    [ "$(grep -xF -A1 -- '--tools' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)" = "Read,Grep,Glob" ]
+    # argv: tool は Read / Grep だけ（Glob は持たせない）、許可は保存先の配下の Read だけ、他は拒否、project / local 設定を読まない
+    [ "$(grep -xF -A1 -- '--tools' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)" = "Read,Grep" ]
     [ "$(grep -xF -A1 -- '--permission-mode' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)" = "dontAsk" ]
     [ "$(grep -xF -A1 -- '--setting-sources' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)" = "user" ]
     allowed="$(grep -xF -A1 -- '--allowedTools' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)"
@@ -107,7 +107,8 @@ MAJOR_ISSUE='[{"severity":"major","topic":"hook-injection","file":"CLAUDE.md","l
     diff_path="$(sed -n 's/^diff_path: //p' "$CLAUDE_STUB_DIR/prompt")"
     review_dir="$(dirname "$diff_path")"
     [[ "$(basename "$review_dir")" =~ ^dev-flow-security-review-[A-Za-z0-9]{6}$ ]]
-    [ "$(basename "$diff_path")" = "pr.diff" ]
+    # read-scope hook が読ませる名前（pr.diff への hard link pr-<dev>-<ino>.diff）
+    [[ "$(basename "$diff_path")" =~ ^pr-[0-9]+-[0-9]+\.diff$ ]]
     [[ "$review_dir" != "$ROOT_P"/* ]]
     [[ "$review_dir" != "$cwd"/* ]]
     [ "$allowed" = "Read(/${review_dir}/**)" ]
