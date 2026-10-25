@@ -3,7 +3,7 @@
 // prompt・schema・起動形の規則は _lib/security-review.mjs の 1 か所に置き、ここは書き出すだけ。
 //
 // Usage:
-//   node security-review-codex-prep.mjs <review_dir> <head_sha> <pr> <diff_sha256> <output_dir> [--verify-from <prev_nonce> <prev_binding>]
+//   node security-review-codex-prep.mjs <review_dir> <head_sha> <pr> <diff_sha256> <output_dir> <codex_bin> [--verify-from <prev_nonce> <prev_binding>]
 //     review_dir: security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX。pr.diff を持つ）
 //     diff_sha256: security-review-scope が返した diff_sha256。読んだ pr.diff の sha256 が違えば何も書かず diff_mismatch
 //       （保存先は sandbox の中から書けるので、prep の時だけ差し替えて後で戻した pr.diff から prompt.md を作らない — 作ると binding も
@@ -13,6 +13,9 @@
 //       出力先と全祖先のどこにも、ここ（sandbox の中）からファイルを作れないこと — 作れる出力先では、sandbox の中の常駐プロセスが
 //       結果ファイルの名前に symlink を置き、作れる祖先では出力先を symlink に差し替えて、sandbox の外で動く codex に任意のファイルを
 //       上書きさせられる。作れてしまったら消してから output_dir_writable。出力先を作る・片付けるのは人で、この script はしない
+//     codex_bin: 中継が起動形の先頭トークンにする codex の絶対パス（user 設定の "dev-flow".codex_bin）。省略は未設定（codex_bin_unset）。
+//       realpath が自身と一致する実ファイルで、自身と全祖先のどこにもここ（sandbox の中）から書けないこと（出力先と同じ書き込み試験。
+//       書けたら codex_bin_writable。中身は変えない）。どれかに当たれば何も書かない（workflow は Claude 経路の判定に倒す）
 //     --verify-from: 前回の Codex の review の nonce と binding。出力先のその結果ファイルの critical/major を verify_items にする
 //
 // 書くもの: <review_dir>/prompt.md（codexSecurityReviewPrompt + diff）・<review_dir>/schema.json（strict 形）・
@@ -56,8 +59,8 @@ for (let i = 0; i < argv.length; i++) {
     i += 2
   } else positional.push(argv[i])
 }
-if (positional.length < 4 || positional.length > 5 || positional.some((a) => a.startsWith('-'))) fail('usage', 2)
-const [reviewDir, headSha, pr, diffSha256, outputDir = null] = positional
+if (positional.length < 4 || positional.length > 6 || positional.some((a) => a.startsWith('-'))) fail('usage', 2)
+const [reviewDir, headSha, pr, diffSha256, outputDir = null, codexBin = null] = positional
 if (!/^[0-9a-f]{40}$/i.test(headSha) || !/^[1-9][0-9]*$/.test(pr) || !SHA256_RE.test(diffSha256)) fail('usage', 2)
 
 // 保存先は実在するディレクトリ（symlink でない）で、起動形に入れられる形のパス
@@ -97,6 +100,29 @@ for (let d = outputDir; ; d = dirname(d)) {
 // codex は作業ディレクトリから上へ .git・AGENTS.md 等を探して読む。-C の空ディレクトリ（出力先の直下）の祖先に
 // これらがあれば、空の -C で指示ファイルを読ませない前提が崩れるので入力を作らない（run は Claude 経路に倒れる）
 if (taintedAncestor(outputDir)) fail('workspace_tainted')
+
+// codex は中継が codex_bin（user 設定の絶対パス）を先頭トークンにして sandbox の外で起動する。codex_bin かその祖先を sandbox の中から
+// 書けると、常駐プロセスが hook の確認の後に codex_bin を書き換えるか、祖先を差し替えて別のファイルを sandbox の外で走らせられる。
+// realpath が自身と一致する（自身も祖先も symlink でない）実ファイルで、自身と全祖先のどこにも書けないことを出力先と同じ試験で確かめる
+if (codexBin == null) fail('codex_bin_unset')
+if (!isCodexArgPath(codexBin) || !isRealFile(codexBin)) fail('codex_bin_invalid')
+let codexBinReal = null
+try { codexBinReal = realpathSync(codexBin) } catch { /* 下で拒否 */ }
+if (codexBinReal !== codexBin) fail('codex_bin_invalid')
+// 自身は空の書き込み（中身・mtime を変えない r+ の open）で試す
+const writableFile = (p) => {
+  try {
+    writeFileSync(p, '', { flag: 'r+' })
+  } catch {
+    return false
+  }
+  return true
+}
+if (writableFile(codexBin)) fail('codex_bin_writable')
+for (let d = dirname(codexBin); ; d = dirname(d)) {
+  if (writableDir(d)) fail('codex_bin_writable')
+  if (dirname(d) === d) break
+}
 
 let verifyItems = []
 if (verifyFrom != null) {

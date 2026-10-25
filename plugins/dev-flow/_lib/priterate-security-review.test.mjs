@@ -378,7 +378,8 @@ test('[security-review][E] 終端サマリー（公開の PR コメント）と�
 // ---- (F) Codex 経路（args.security_review.reviewer === 'codex'。issue #1087）----
 
 const CODEX_OUT = '/Users/x/codex-out';
-const codexArgs = (contextChanged, outputDir = CODEX_OUT) => ({ pr: '5', security_review: { target: true, reasons: [], reviewer_context_changed: contextChanged, reviewer: 'codex', codex_output_dir: outputDir } });
+const CODEX_BIN = '/Users/x/bin/codex';
+const codexArgs = (contextChanged, outputDir = CODEX_OUT, codexBin = CODEX_BIN) => ({ pr: '5', security_review: { target: true, reasons: [], reviewer_context_changed: contextChanged, reviewer: 'codex', codex_output_dir: outputDir, codex_bin: codexBin } });
 const CODEX_NONCE = '0123456789abcdef'.repeat(2);
 const CODEX_BINDING = '0123456789abcdef'.repeat(4);
 const PROMPT_SHA = '1'.repeat(64);
@@ -428,7 +429,7 @@ test('[security-review][F] Codex 経路は固定の codex exec・判定・指摘
   });
   const prep = calls.find((c) => c.label === 'security-codex-prep#1');
   assert.equal(prep.agentType, 'dev-flow:security-codex-relay');
-  assert.ok(prep.prompt.endsWith(`\nsecurity-review-codex-prep ${SECURITY_REVIEW_DIR} ${SECURITY_SCOPE_DEFAULT_HEAD} 5 ${SECURITY_DIFF_SHA256} ${CODEX_OUT}`), prep.prompt);
+  assert.ok(prep.prompt.endsWith(`\nsecurity-review-codex-prep ${SECURITY_REVIEW_DIR} ${SECURITY_SCOPE_DEFAULT_HEAD} 5 ${SECURITY_DIFF_SHA256} ${CODEX_OUT} ${CODEX_BIN}`), prep.prompt);
   const r = calls.find((c) => c.label === 'security-review-codex#1');
   const v = calls.find((c) => c.label === 'security-codex-verdict#1');
   const iss = calls.find((c) => c.label === 'security-codex-issues#1');
@@ -444,9 +445,9 @@ test('[security-review][F] Codex 経路は固定の codex exec・判定・指摘
   assert.ok(v.prompt.endsWith(`\nsecurity-review-codex-result ${SECURITY_REVIEW_DIR} ${SECURITY_SCOPE_DEFAULT_HEAD} ${CODEX_NONCE} ${CODEX_BINDING} ${PROMPT_SHA} ${SCHEMA_SHA} ${CODEX_OUT}`), v.prompt);
   assert.ok(!v.prompt.includes('codex exec'), '判定の中継に codex を起動させない');
   assert.ok(iss.prompt.endsWith(`\nsecurity-review-codex-result ${SECURITY_REVIEW_DIR} ${SECURITY_SCOPE_DEFAULT_HEAD} ${CODEX_NONCE} ${CODEX_BINDING} ${PROMPT_SHA} ${SCHEMA_SHA} ${CODEX_OUT} --issues`), iss.prompt);
-  // -C・指示ファイル・schema・-o は user 設定の出力先の nonce と binding の名前（sandbox の中から書ける保存先は codex に読ませず、
-  // -C にもしない）。保存先は hook が複製元にするために dev_flow_review_dir で渡す
-  const expected = 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check'
+  // 先頭トークンは user 設定の codex_bin（PATH の解決先に頼らない）。-C・指示ファイル・schema・-o は user 設定の出力先の nonce と
+  // binding の名前（sandbox の中から書ける保存先は codex に読ませず、-C にもしない）。保存先は hook が複製元にするために dev_flow_review_dir で渡す
+  const expected = `${CODEX_BIN} exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check`
     + ` -C ${CODEX_OUT}/dev-flow-codex-cwd-${CODEX_NONCE}-${CODEX_BINDING} -c dev_flow_review_dir="${SECURITY_REVIEW_DIR}" -c web_search="disabled"`
     + ' --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use'
     + ` -c model_instructions_file=${CODEX_OUT}/dev-flow-codex-prompt-${CODEX_NONCE}-${CODEX_BINDING}.md`
@@ -454,7 +455,8 @@ test('[security-review][F] Codex 経路は固定の codex exec・判定・指摘
     + ` "Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to ${CODEX_NONCE}"`;
   const lines = r.prompt.split('\n');
   assert.ok(lines.includes(expected), `固定の codex exec の行が無い: ${r.prompt}`);
-  assert.equal(lines.filter((l) => l.startsWith('codex ')).length, 1, 'codex の起動は 1 行だけ');
+  assert.equal(lines.filter((l) => l.startsWith(`${CODEX_BIN} `)).length, 1, 'codex の起動は 1 行だけ');
+  assert.ok(!lines.some((l) => l.startsWith('codex ')), 'bare 名の codex（PATH の解決先に頼る形）を起動させない');
   for (const banned of ['danger-full-access', 'workspace-write', '--dangerously', '--add-dir']) assert.ok(!r.prompt.includes(banned), banned);
 });
 
@@ -504,6 +506,21 @@ test('[security-review][F] Codex の出力先が未設定・起動形に入れ�
   assert.equal(calls.length, 0);
 });
 
+test('[security-review][F] codex_bin が未設定・起動形に入れられない・PR の worktree の中なら、Codex の agent を spawn せず Claude 経路の判定のまま', async () => {
+  for (const codexBin of [null, undefined, '', 'codex', '/Users/x/../bin/codex', '/Users/x/my bin/codex', '/tmp/wt/node_modules/.bin/codex', '/TMP/WT/bin/codex']) {
+    const args = codexArgs(false, CODEX_OUT, codexBin);
+    if (codexBin === undefined) delete args.security_review.codex_bin;
+    const { result, calls } = await run({ args, overrides: { 'security-codex-prep#1': codexPrep(), ...codexRound(1, []) } });
+    assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1', 'security-review#1', 'security-diff-check#1'], String(codexBin));
+    assert.equal(result.status, 'lgtm', String(codexBin));
+  }
+  // 文字列・null 以外は不正形として agent 起動前に明示 throw（pr-iterate-prerun は user 設定の文字列でない値を null にして渡す）
+  const { ctx, calls } = makePrIterateSandbox({ args: codexArgs(false, CODEX_OUT, ['/Users/x/bin/codex']) });
+  const { error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
+  assert.ok(error && /args\.security_review が不正形/.test(error.message), error?.message);
+  assert.equal(calls.length, 0);
+});
+
 test('[security-review][F] Codex を起動できず指示ファイルも変えていない PR は、Claude 経路の security-reviewer の判定に倒す', async () => {
   const fallback = await run({ args: codexArgs(false), overrides: { 'security-codex-prep#1': null } });
   assert.deepEqual(labelsOf(fallback.calls, 'security-'), ['security-scope#1', 'security-codex-prep#1', 'security-review#1', 'security-diff-check#1']);
@@ -535,8 +552,8 @@ test('[security-review][F] Codex の critical/major は fix に回し、次の r
     },
   });
   const [p1, p2] = calls.filter((c) => c.label.startsWith('security-codex-prep#'));
-  assert.ok(p1.prompt.endsWith(`\nsecurity-review-codex-prep ${dir1} ${SHA_A} 5 ${SECURITY_DIFF_SHA256} ${CODEX_OUT}`), p1.prompt);
-  assert.ok(p2.prompt.endsWith(`\nsecurity-review-codex-prep ${dir2} ${SHA_B} 5 ${SECURITY_DIFF_SHA256} ${CODEX_OUT} --verify-from ${CODEX_NONCE} ${CODEX_BINDING}`), p2.prompt);
+  assert.ok(p1.prompt.endsWith(`\nsecurity-review-codex-prep ${dir1} ${SHA_A} 5 ${SECURITY_DIFF_SHA256} ${CODEX_OUT} ${CODEX_BIN}`), p1.prompt);
+  assert.ok(p2.prompt.endsWith(`\nsecurity-review-codex-prep ${dir2} ${SHA_B} 5 ${SECURITY_DIFF_SHA256} ${CODEX_OUT} ${CODEX_BIN} --verify-from ${CODEX_NONCE} ${CODEX_BINDING}`), p2.prompt);
   assert.ok(calls.find((c) => c.label === 'security-review-codex#2').prompt.includes(`-o ${CODEX_OUT}/dev-flow-codex-result-${nonce2}-${binding2}.json "`), 'round ごとに nonce と binding の名前の結果ファイルに書かせる');
   assert.ok(calls.find((c) => c.label === 'fix#1').prompt.includes('hardlink-write'), 'Codex の指摘を fix に渡す');
   assert.equal(result.status, 'lgtm');

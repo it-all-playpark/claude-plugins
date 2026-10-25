@@ -63,7 +63,8 @@ B2="$(printf '%064d' 0)"
 PS="$(printf '%064d' 1)"
 SS="$(printf '%064d' 2)"
 H="$(printf '%064d' 3)"
-# hook は PATH 上の codex の実体を確かめる。既定の PATH の先頭に、cwd・$TMPDIR・/tmp の外（repo の .devflow-tmp/）の代わりの codex を置く
+# hook は起動形の先頭トークンが user 設定の codex_bin と一致し、その実体が条件を満たすことを確かめる。cwd・$TMPDIR・/tmp の外
+# （repo の .devflow-tmp/）に代わりの codex を置き、既定の codex_bin にする
 fake_codex() {
   mkdir -p "$1"
   printf '#!/bin/sh\nexit 0\n' >"$1/codex"
@@ -71,6 +72,7 @@ fake_codex() {
 }
 FAKE_BIN="${OUT_ROOT}/bin"
 fake_codex "$FAKE_BIN"
+CB="${FAKE_BIN}/codex"
 # codex を含まない PATH（hook が使うコマンドだけ）
 TOOLS_BIN="${TMP_ROOT}/tools"
 mkdir -p "$TOOLS_BIN"
@@ -84,11 +86,11 @@ mkdir -p "$PRWT"
 # hook は中継の prep・result・diff の照合の bare 名が PATH 上で hook 自身の plugin の bin/ に解決されることを確かめる
 PLUGIN_BIN="${PLUGIN_ROOT}/bin"
 # codex_cmd <D> [<nonce>] [<出力先>] [<-o の nonce>] [<binding>] [<-C>] — _lib/security-review.mjs の codexSecurityReviewCommand と同じ固定形
-#   -C の既定は <出力先>/dev-flow-codex-cwd-<nonce>-<binding>
+#   -C の既定は <出力先>/dev-flow-codex-cwd-<nonce>-<binding>。先頭トークンは CMD_BIN（既定は codex_bin の $CB）
 codex_cmd() {
   local o="${3:-$RO}" n="${2:-$N}" b="${5:-$B}"
   local c="${6:-${o}/dev-flow-codex-cwd-${n}-${b}}"
-  printf 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C %s -c dev_flow_review_dir="%s" -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=%s/dev-flow-codex-prompt-%s-%s.md --output-schema %s/dev-flow-codex-schema-%s-%s.json -o %s/dev-flow-codex-result-%s-%s.json "%s %s"' "$c" "$1" "$o" "$n" "$b" "$o" "$n" "$b" "$o" "${4:-$n}" "$b" "$CODEX_PROMPT" "$n"
+  printf '%s exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C %s -c dev_flow_review_dir="%s" -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=%s/dev-flow-codex-prompt-%s-%s.md --output-schema %s/dev-flow-codex-schema-%s-%s.json -o %s/dev-flow-codex-result-%s-%s.json "%s %s"' "${CMD_BIN:-$CB}" "$c" "$1" "$o" "$n" "$b" "$o" "$n" "$b" "$o" "${4:-$n}" "$b" "$CODEX_PROMPT" "$n"
 }
 CODEX_CMD="$(codex_cmd "$RD")"
 RC="${RO}/dev-flow-codex-cwd-${N}-${B}"
@@ -105,19 +107,23 @@ FAILURES=()
 #   silent: 無出力で exit 0 / deny: permissionDecision=deny の JSON を出して exit 0
 #   HOOK_TMPDIR が設定されていれば hook の $TMPDIR をそれにする。hook の PATH は HOOK_PATH（既定は代わりの codex と hook が使う
 #   コマンドだけの PATH。本番の hook の PATH と同じく plugin の bin/ を含まない）
-#   $SKILL_CONFIG_PATH の codex_output_dir は HOOK_OUT（既定 $RO。none はキー無し）、~/.config/skills/config.json の値は
-#   HOOK_HOME_OUT（未設定ならファイル無し）
+#   $SKILL_CONFIG_PATH の codex_output_dir は HOOK_OUT（既定 $RO。none はキー無し）、codex_bin は HOOK_BIN（既定 $CB。none はキー無し。
+#   HOOK_BIN_JSON があればその JSON の値）、~/.config/skills/config.json の値は HOOK_HOME_OUT・HOOK_HOME_BIN（どちらも未設定ならファイル無し）
 run_raw() {
   local name="$1" expected="$2" input="$3"
-  local output status=0
-  if [[ ${HOOK_OUT-$RO} == none ]]; then
-    printf '{"dev-flow":{}}' >"$HOOK_CFG"
-  else
-    jq -cn --arg o "${HOOK_OUT-$RO}" '{"dev-flow":{codex_output_dir:$o}}' >"$HOOK_CFG"
+  local output status=0 cfg='{}' home='{}'
+  [[ ${HOOK_OUT-$RO} == none ]] || cfg=$(jq -c --arg o "${HOOK_OUT-$RO}" '. + {codex_output_dir:$o}' <<<"$cfg")
+  if [[ -n ${HOOK_BIN_JSON-} ]]; then
+    cfg=$(jq -c --argjson b "$HOOK_BIN_JSON" '. + {codex_bin:$b}' <<<"$cfg")
+  elif [[ ${HOOK_BIN-$CB} != none ]]; then
+    cfg=$(jq -c --arg b "${HOOK_BIN-$CB}" '. + {codex_bin:$b}' <<<"$cfg")
   fi
+  jq -cn --argjson c "$cfg" '{"dev-flow":$c}' >"$HOOK_CFG"
   rm -f "${HOOK_HOME}/.config/skills/config.json"
-  if [[ -n ${HOOK_HOME_OUT-} ]]; then
-    jq -cn --arg o "$HOOK_HOME_OUT" '{"dev-flow":{codex_output_dir:$o}}' >"${HOOK_HOME}/.config/skills/config.json"
+  [[ -z ${HOOK_HOME_OUT-} ]] || home=$(jq -c --arg o "$HOOK_HOME_OUT" '. + {codex_output_dir:$o}' <<<"$home")
+  [[ -z ${HOOK_HOME_BIN-} ]] || home=$(jq -c --arg b "$HOOK_HOME_BIN" '. + {codex_bin:$b}' <<<"$home")
+  if [[ $home != '{}' ]]; then
+    jq -cn --argjson c "$home" '{"dev-flow":$c}' >"${HOOK_HOME}/.config/skills/config.json"
   fi
   output=$(printf '%s' "$input" | HOME="$HOOK_HOME" SKILL_CONFIG_PATH="$HOOK_CFG" TMPDIR="${HOOK_TMPDIR-${TMPDIR:-}}" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" PATH="${HOOK_PATH-${FAKE_BIN}:${TOOLS_BIN}}" "$BASH" -c "$HOOK_CMD" 2>/dev/null) || status=$?
   [[ ${KEEP_COPIES-} == 1 ]] || clean_copies
@@ -160,8 +166,8 @@ run_bash "他 plugin の agent の codex は対象外" silent "other:agent" "cod
 run_bash "dev-flow の agent でも Bash 以外の tool は対象外" silent "$RELAY" "codex" "Read"
 
 echo "[security-codex-relay — 固定の 4 形だけ通す]"
-run_bash "prep" silent "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O}"
-run_bash "prep --verify-from" silent "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} --verify-from ${N2} ${B2}"
+run_bash "prep" silent "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} ${CB}"
+run_bash "prep --verify-from" silent "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} ${CB} --verify-from ${N2} ${B2}"
 KEEP_COPIES=1 run_bash "codex exec の固定形" silent "$RELAY" "$CODEX_CMD"
 # 通した起動は保存先の prompt.md・schema.json を出力先の nonce と binding の名前に複製する（codex はその複製を読む）
 if cmp -s "$RD/prompt.md" "$RO/dev-flow-codex-prompt-${N}-${B}.md" && cmp -s "$RD/schema.json" "$RO/dev-flow-codex-schema-${N}-${B}.json"; then
@@ -203,7 +209,7 @@ fake_script() {
 run_relay_cwd() {
   run_raw "$1" "$2" "$(jq -cn --arg a "$RELAY" --arg c "$4" --arg cwd "$3" '{agent_type:$a, cwd:$cwd, tool_name:"Bash", tool_input:{command:$c}}')"
 }
-for cmd in "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O}" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O}" "security-review-diff-check ${D} ${H} ${DS}"; do
+for cmd in "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} ${CB}" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O}" "security-review-diff-check ${D} ${H} ${DS}"; do
   name="${cmd%% *}"
   HOOK_PATH="${PLUGIN_BIN}:${TOOLS_BIN}" run_relay_cwd "${name} が plugin の bin/ に解決される" silent "$PRWT" "$cmd"
   fake_script "${OUT_ROOT}/evil-bin" "$name"
@@ -237,41 +243,51 @@ for cmd in "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O}" "security-review
 done
 run_raw "diff の照合の cwd が絶対パスでない" deny "$(jq -cn --arg a "$RELAY" --arg c "security-review-diff-check ${D} ${H} ${DS}" '{agent_type:$a, cwd:"wt", tool_name:"Bash", tool_input:{command:$c}}')"
 
-echo "[security-codex-relay — codex は PATH 上で PR のコードが置けない場所に解決されるときだけ通す]"
-HOOK_PATH="${FAKE_BIN}:${TOOLS_BIN}" run_bash "codex が cwd・\$TMPDIR・/tmp の外の絶対パスの PATH 要素から解決される" silent "$RELAY" "$CODEX_CMD"
-HOOK_PATH="$TOOLS_BIN" run_bash "codex が PATH 上に無い（解決できない）" deny "$RELAY" "$CODEX_CMD"
-# run_cwd <name> <expected> <cwd> — 入力の cwd（PR の worktree）を変えて codex の固定形を判定する
+echo "[security-codex-relay — codex は先頭トークンが user 設定の codex_bin と一致し、PR のコードが置けない実ファイルのときだけ通す（PATH を使わない）]"
+# run_cwd <name> <expected> <cwd> [<command>] — 入力の cwd（PR の worktree）を変えて codex の固定形を判定する
 run_cwd() {
-  run_raw "$1" "$2" "$(jq -cn --arg a "$RELAY" --arg c "$CODEX_CMD" --arg cwd "$3" '{agent_type:$a, cwd:$cwd, tool_name:"Bash", tool_input:{command:$c}}')"
+  run_raw "$1" "$2" "$(jq -cn --arg a "$RELAY" --arg c "${4:-$CODEX_CMD}" --arg cwd "$3" '{agent_type:$a, cwd:$cwd, tool_name:"Bash", tool_input:{command:$c}}')"
 }
-# 相対パスの PATH 要素は Bash の cwd（PR の worktree）基準で解決される。cwd の外を指す相対パスでも通さない
-fake_codex "${OUT_ROOT}/pr-bin"
-HOOK_PATH="../pr-bin:${FAKE_BIN}:${TOOLS_BIN}" run_cwd "codex が PATH の相対パスの要素から解決される" deny "$PRWT"
-HOOK_PATH="missing-rel:${FAKE_BIN}:${TOOLS_BIN}" run_cwd "相対パスの要素に codex が無ければ次の要素で解決する" silent "$PRWT"
-fake_codex "$PRWT"
-HOOK_PATH=":${FAKE_BIN}:${TOOLS_BIN}" run_cwd "codex が PATH の空の要素（cwd）から解決される" deny "$PRWT"
-HOOK_PATH="${FAKE_BIN}:${TOOLS_BIN}:" run_cwd "末尾の空の要素より前で解決できれば通す" silent "$PRWT"
-rm -f "${PRWT}/codex"
-HOOK_PATH="${FAKE_BIN}:${TOOLS_BIN}:" run_cwd "末尾の空の要素（cwd）に codex が無ければ前の要素の解決だけを見る" silent "$PRWT"
-# 絶対パスの要素でも、実体（realpath）が cwd の配下なら通さない（symlink で外に見せても実体を見る）
-fake_codex "${PRWT}/node_modules/.bin"
-HOOK_PATH="${PRWT}/node_modules/.bin:${FAKE_BIN}:${TOOLS_BIN}" run_cwd "codex の実体が cwd の配下" deny "$PRWT"
+# bin_cmd <codex_bin> — 先頭トークンを <codex_bin> にした固定形（設定の codex_bin も同じ値にして実体の条件だけを見る）
+bin_cmd() {
+  CMD_BIN="$1" codex_cmd "$RD"
+}
+HOOK_PATH="$TOOLS_BIN" run_bash "PATH に codex が無くても codex_bin の起動形は通す" silent "$RELAY" "$CODEX_CMD"
+fake_codex "${OUT_ROOT}/evil-path"
+HOOK_PATH="${OUT_ROOT}/evil-path:${TOOLS_BIN}" run_bash "PATH の前方に別の codex があっても codex_bin の起動形を通す（PATH の解決先を見ない）" silent "$RELAY" "$CODEX_CMD"
+HOOK_PATH="${FAKE_BIN}:${TOOLS_BIN}" run_bash "bare 名の codex（PATH の解決先に頼る形）" deny "$RELAY" "$(bin_cmd codex)"
+run_bash "先頭トークンが codex_bin と違う実ファイル（条件は全部満たす）" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/evil-path/codex")"
+HOOK_BIN="${OUT_ROOT}/evil-path/codex" run_bash "設定の codex_bin が先頭トークンと違う" deny "$RELAY" "$CODEX_CMD"
+HOOK_BIN="${CB}/" run_bash "設定の末尾 / も一致とみなさない" deny "$RELAY" "$CODEX_CMD"
+HOOK_BIN=none run_bash "設定に codex_bin が無い" deny "$RELAY" "$CODEX_CMD"
+HOOK_BIN_JSON=1 run_bash "設定の codex_bin が数値" deny "$RELAY" "$CODEX_CMD"
+HOOK_BIN_JSON="$(jq -cn --arg b "$CB" '[$b]')" run_bash "設定の codex_bin が配列" deny "$RELAY" "$CODEX_CMD"
+HOOK_BIN=none HOOK_HOME_BIN="$CB" run_bash "\$SKILL_CONFIG_PATH に codex_bin が無ければ ~/.config/skills/config.json を読む" silent "$RELAY" "$CODEX_CMD"
+HOOK_BIN="${OUT_ROOT}/evil-path/codex" HOOK_HOME_BIN="$CB" run_bash "\$SKILL_CONFIG_PATH の codex_bin が ~/.config/skills/config.json より優先" deny "$RELAY" "$CODEX_CMD"
+# codex_bin が symlink・祖先が symlink（realpath が自身と一致しない）・無い・ディレクトリ・. / .. の要素を持つ
 mkdir -p "${OUT_ROOT}/link-bin"
-ln -s "${PRWT}/node_modules/.bin/codex" "${OUT_ROOT}/link-bin/codex"
-HOOK_PATH="${OUT_ROOT}/link-bin:${FAKE_BIN}:${TOOLS_BIN}" run_cwd "codex が cwd の配下の実体を指す symlink" deny "$PRWT"
-# 実体が $TMPDIR・/tmp の配下（sandbox の中から書ける）
+ln -s "$CB" "${OUT_ROOT}/link-bin/codex"
+HOOK_BIN="${OUT_ROOT}/link-bin/codex" run_bash "codex_bin が実ファイルを指す symlink" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/link-bin/codex")"
+ln -s "$FAKE_BIN" "${OUT_ROOT}/bin-alias"
+HOOK_BIN="${OUT_ROOT}/bin-alias/codex" run_bash "codex_bin の祖先が symlink" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/bin-alias/codex")"
+HOOK_BIN="${OUT_ROOT}/missing/codex" run_bash "codex_bin が無い" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/missing/codex")"
+mkdir -p "${OUT_ROOT}/dir-bin/codex"
+HOOK_BIN="${OUT_ROOT}/dir-bin/codex" run_bash "codex_bin がディレクトリ" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/dir-bin/codex")"
+HOOK_BIN="${FAKE_BIN}/../bin/codex" run_bash "codex_bin が . / .. の要素を持つ" deny "$RELAY" "$(bin_cmd "${FAKE_BIN}/../bin/codex")"
+# codex_bin が cwd（PR の worktree）・$TMPDIR・/tmp の配下（sandbox の中から書ける）
+fake_codex "${PRWT}/node_modules/.bin"
+HOOK_BIN="${PRWT}/node_modules/.bin/codex" run_cwd "codex_bin が cwd の配下" deny "$PRWT" "$(bin_cmd "${PRWT}/node_modules/.bin/codex")"
+HOOK_BIN="${PRWT}/node_modules/.bin/codex" run_cwd "cwd が別なら同じ codex_bin を通す" silent "${TMP_ROOT}/wt" "$(bin_cmd "${PRWT}/node_modules/.bin/codex")"
 fake_codex "${TMP_ROOT}/bin"
-HOOK_TMPDIR="$TMP_ROOT" HOOK_PATH="${TMP_ROOT}/bin:${FAKE_BIN}:${TOOLS_BIN}" run_bash "codex の実体が \$TMPDIR の配下" deny "$RELAY" "$CODEX_CMD"
+HOOK_TMPDIR="$TMP_ROOT" HOOK_BIN="${TMP_ROOT}/bin/codex" run_bash "codex_bin が \$TMPDIR の配下" deny "$RELAY" "$(bin_cmd "${TMP_ROOT}/bin/codex")"
 fake_codex "${TMP_UNDER}/bin"
-HOOK_TMPDIR="$PRWT" HOOK_PATH="${TMP_UNDER}/bin:${FAKE_BIN}:${TOOLS_BIN}" run_bash "codex の実体が /tmp の配下" deny "$RELAY" "$CODEX_CMD"
-mkdir -p "${OUT_ROOT}/link-tmp"
-ln -s "${TMP_UNDER}/bin/codex" "${OUT_ROOT}/link-tmp/codex"
-HOOK_TMPDIR="$PRWT" HOOK_PATH="${OUT_ROOT}/link-tmp:${FAKE_BIN}:${TOOLS_BIN}" run_bash "codex が /tmp の配下の実体を指す symlink" deny "$RELAY" "$CODEX_CMD"
+TMP_UNDER_BIN="$(cd "${TMP_UNDER}/bin" && pwd -P)/codex"
+HOOK_TMPDIR="$PRWT" HOOK_BIN="$TMP_UNDER_BIN" run_bash "codex_bin が /tmp の配下" deny "$RELAY" "$(bin_cmd "$TMP_UNDER_BIN")"
 # 拒否した起動は出力先に複製・作業ディレクトリを作らない
 if [[ -e $RC ]]; then
-  FAIL=$((FAIL + 1)); FAILURES+=("codex の解決先で拒否した起動は作業ディレクトリを作らない"); printf "  \033[31mFAIL\033[0m %s\n" "codex の解決先で拒否した起動は作業ディレクトリを作らない"
+  FAIL=$((FAIL + 1)); FAILURES+=("codex_bin で拒否した起動は作業ディレクトリを作らない"); printf "  \033[31mFAIL\033[0m %s\n" "codex_bin で拒否した起動は作業ディレクトリを作らない"
 else
-  PASS=$((PASS + 1)); printf "  \033[32mPASS\033[0m %s\n" "codex の解決先で拒否した起動は作業ディレクトリを作らない"
+  PASS=$((PASS + 1)); printf "  \033[32mPASS\033[0m %s\n" "codex_bin で拒否した起動は作業ディレクトリを作らない"
 fi
 
 echo "[security-codex-relay — codex は prep の後に変わっていない保存先の複製だけを読む]"
@@ -359,10 +375,10 @@ HOOK_OUT="${OUT_ROOT}/real/out" run_bash "codex の -o が設定と違う実デ�
 HOOK_OUT="${OUT_ROOT}/real/out" run_bash "設定と同じ出力先の codex は通す" silent "$RELAY" "$(codex_cmd "$RD" "$N" "${OUT_ROOT}/real/out")"
 HOOK_OUT="${RO}/" run_bash "設定の末尾 / も一致とみなさない" deny "$RELAY" "$CODEX_CMD"
 HOOK_OUT=none run_bash "設定に codex_output_dir が無い codex" deny "$RELAY" "$CODEX_CMD"
-HOOK_OUT=none run_bash "設定に codex_output_dir が無い prep" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O}"
+HOOK_OUT=none run_bash "設定に codex_output_dir が無い prep" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} ${CB}"
 HOOK_OUT=none run_bash "設定に codex_output_dir が無い result" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O}"
-HOOK_OUT="${OUT_ROOT}/real/out" run_bash "prep の出力先が設定と違う" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O}"
-HOOK_OUT="${OUT_ROOT}/real/out" run_bash "prep --verify-from の出力先が設定と違う" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} --verify-from ${N2} ${B2}"
+HOOK_OUT="${OUT_ROOT}/real/out" run_bash "prep の出力先が設定と違う" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} ${CB}"
+HOOK_OUT="${OUT_ROOT}/real/out" run_bash "prep --verify-from の出力先が設定と違う" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} ${CB} --verify-from ${N2} ${B2}"
 HOOK_OUT="${OUT_ROOT}/real/out" run_bash "result の出力先が設定と違う" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O} --issues"
 HOOK_OUT=none HOOK_HOME_OUT="$RO" run_bash "\$SKILL_CONFIG_PATH に値が無ければ ~/.config/skills/config.json を読む" silent "$RELAY" "$CODEX_CMD"
 HOOK_OUT="${OUT_ROOT}/real/out" HOOK_HOME_OUT="$RO" run_bash "\$SKILL_CONFIG_PATH の値が ~/.config/skills/config.json より優先" deny "$RELAY" "$CODEX_CMD"
@@ -378,9 +394,15 @@ KEEP_COPIES=1 run_bash "出力先に複製の名前の dangling symlink があ�
 rm -f "$RO/dev-flow-codex-prompt-${N}-${B}.md"
 run_bash "片付けた後は通す" silent "$RELAY" "$CODEX_CMD"
 run_bash "prep に出力先が無い（旧形）" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H}"
-run_bash "prep の --verify-from が保存先（旧形）" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} --verify-from ${D}"
-run_bash "prep の --verify-from に binding が無い（旧形）" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} --verify-from ${N2}"
-run_bash "prep の出力先が相対パス" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} codex-out"
+run_bash "prep の --verify-from が保存先（旧形）" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} ${CB} --verify-from ${D}"
+run_bash "prep の --verify-from に binding が無い（旧形）" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} ${CB} --verify-from ${N2}"
+run_bash "prep の出力先が相対パス" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} codex-out ${CB}"
+run_bash "prep に codex_bin が無い（旧形）" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O}"
+run_bash "prep の codex_bin が相対パス" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} codex"
+HOOK_BIN="${OUT_ROOT}/evil-path/codex" run_bash "prep の codex_bin が設定と違う" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} ${CB}"
+HOOK_BIN=none run_bash "設定に codex_bin が無い prep" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} ${CB}"
+HOOK_BIN_JSON=1 run_bash "設定の codex_bin が文字列でない prep" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O} ${CB}"
+HOOK_BIN=none run_bash "result は codex_bin の設定に縛らない" silent "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS} ${O}"
 run_bash "result に出力先が無い（旧形）" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${PS} ${SS}"
 run_bash "result に binding が無い（旧形）" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${O}"
 run_bash "result に prompt.md・schema.json の sha256 が無い（旧形）" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O}"

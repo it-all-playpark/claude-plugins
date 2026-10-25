@@ -558,7 +558,7 @@ comment_json() {
     cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review == {target: false, reasons: [], reviewer_context_changed: false, reviewer: "claude", codex_output_dir: null}'
+    echo "$output" | jq -e '.ok == true and .security_review == {target: false, reasons: [], reviewer_context_changed: false, reviewer: "claude", codex_output_dir: null, codex_bin: null}'
 }
 
 @test "(7d) PR が reviewer に読み込まれる指示ファイル（CLAUDE.md）を変えれば security_review.reviewer_context_changed は true" {
@@ -716,6 +716,49 @@ comment_json() {
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.security_review.codex_output_dir == "/Users/x/codex-out"'
+}
+
+@test "(8h) codex の絶対パス（\"dev-flow\".codex_bin）は user 設定から同じ探索順で読み、無い・文字列でなければ null、repo の設定からは読まない" {
+    git -C "$SEED" checkout -q main
+    jq -n '{"dev-flow": {security_reviewer: "codex", codex_bin: "/tmp/base/codex"}}' > "$SEED/skill-config.json"
+    git -C "$SEED" add skill-config.json
+    git -C "$SEED" commit -q -m "base codex_bin"
+    git -C "$SEED" push -q origin main
+    git -C "$SEED" checkout -q feature/x
+    jq -n '{"dev-flow": {codex_bin: "/tmp/head/codex"}}' > "$SEED/skill-config.json"
+    git -C "$SEED" add skill-config.json
+    git -C "$SEED" commit -q -m "head codex_bin"
+    git -C "$SEED" push -q origin feature/x
+    write_pr_fixture "$(git -C "$SEED" rev-parse feature/x)"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "codex" and .security_review.codex_bin == null'
+
+    mkdir -p "$HOME/.claude"
+    jq -n '{"dev-flow": {codex_bin: "/Users/x/bin/codex-claude"}}' > "$HOME/.claude/skill-config.json"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.security_review.codex_bin == "/Users/x/bin/codex-claude"'
+
+    mkdir -p "$HOME/.config/skills"
+    jq -n '{"dev-flow": {codex_bin: "/Users/x/bin/codex-skills"}}' > "$HOME/.config/skills/config.json"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.security_review.codex_bin == "/Users/x/bin/codex-skills"'
+
+    jq -n '{"dev-flow": {codex_bin: "/Users/x/bin/codex-explicit"}}' > "$BATS_TEST_TMPDIR/explicit.json"
+    SKILL_CONFIG_PATH="$BATS_TEST_TMPDIR/explicit.json" run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.security_review.codex_bin == "/Users/x/bin/codex-explicit"'
+
+    # 最初に値を持つファイルの値が文字列でなければ null（後ろのファイルの文字列に落ちない）
+    for bad in 1 true '["/Users/x/bin/codex"]' '{"path":"/Users/x/bin/codex"}'; do
+        jq -n --argjson b "$bad" '{"dev-flow": {codex_bin: $b}}' > "$BATS_TEST_TMPDIR/explicit.json"
+        SKILL_CONFIG_PATH="$BATS_TEST_TMPDIR/explicit.json" run bash "$SCRIPT" 5
+        [ "$status" -eq 0 ]
+        echo "$output" | jq -e '.ok == true and .security_review.codex_bin == null'
+    done
 }
 
 @test "(8e) opt-in の値は検証せずそのまま渡す（out-of-enum は workflow が明示 error にする）" {

@@ -21,7 +21,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   CODEX_SECURITY_REVIEW_SCHEMA, codexCwdPath, codexPromptCopyPath, codexResultPath, codexResultVerdict, codexSchemaCopyPath, codexSecurityReviewCommand,
-  codexSecurityReviewPrompt, securityReviewPrompt, securityReviewVerdict,
+  codexSecurityReviewPrompt, parseSecurityReviewArg, securityReviewPrompt, securityReviewVerdict,
 } from './security-review.mjs';
 import { codexBinding, sha256Hex } from './scripts/security-review-codex-binding.mjs';
 
@@ -80,15 +80,25 @@ test('[security-review][2] diff と前回の未解消の指摘はファイルの
 
 // ---- (3) 起動形と hook ----
 
-test('[security-review][3] codexSecurityReviewCommand は先頭トークン codex の固定形で、-C・指示ファイル・schema・-o は出力先の nonce と binding の名前、保存先は dev_flow_review_dir で渡し、それ以外のフラグを含まない', () => {
-  const cmd = codexSecurityReviewCommand({ reviewDir: '/tmp/dev-flow-security-review-Ab12Cd', outputDir: '/Users/x/codex-out', nonce: NONCE, binding: BINDING });
-  assert.equal(cmd, 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check'
+test('[security-review][3] codexSecurityReviewCommand は先頭トークンが codex_bin（絶対パス）の固定形で、-C・指示ファイル・schema・-o は出力先の nonce と binding の名前、保存先は dev_flow_review_dir で渡し、それ以外のフラグを含まない', () => {
+  const cmd = codexSecurityReviewCommand({ codexBin: '/Users/x/bin/codex', reviewDir: '/tmp/dev-flow-security-review-Ab12Cd', outputDir: '/Users/x/codex-out', nonce: NONCE, binding: BINDING });
+  assert.equal(cmd, '/Users/x/bin/codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check'
     + ` -C /Users/x/codex-out/dev-flow-codex-cwd-${NONCE}-${BINDING} -c dev_flow_review_dir="/tmp/dev-flow-security-review-Ab12Cd" -c web_search="disabled"`
     + ' --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use'
     + ` -c model_instructions_file=/Users/x/codex-out/dev-flow-codex-prompt-${NONCE}-${BINDING}.md`
     + ` --output-schema /Users/x/codex-out/dev-flow-codex-schema-${NONCE}-${BINDING}.json -o /Users/x/codex-out/dev-flow-codex-result-${NONCE}-${BINDING}.json`
     + ' "Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to ' + NONCE + '"');
   assert.equal(codexResultPath('/Users/x/codex-out', NONCE, BINDING), `/Users/x/codex-out/dev-flow-codex-result-${NONCE}-${BINDING}.json`);
+});
+
+test('[security-review][3] parseSecurityReviewArg は codex_bin を文字列か null で受け、省略・null は null（Codex 経路に入らない）、それ以外の型は明示 throw', () => {
+  const base = { target: true, reasons: [], reviewer_context_changed: false, reviewer: 'codex', codex_output_dir: '/Users/x/codex-out' };
+  assert.equal(parseSecurityReviewArg(base).codex_bin, null);
+  assert.equal(parseSecurityReviewArg({ ...base, codex_bin: null }).codex_bin, null);
+  assert.equal(parseSecurityReviewArg({ ...base, codex_bin: '/Users/x/bin/codex' }).codex_bin, '/Users/x/bin/codex');
+  for (const bad of [1, true, ['/Users/x/bin/codex'], { path: '/Users/x/bin/codex' }]) {
+    assert.throws(() => parseSecurityReviewArg({ ...base, codex_bin: bad }), /args\.security_review が不正形/, JSON.stringify(bad));
+  }
 });
 
 // prep CLI で保存先を用意し、そこから組み立てた起動形を hook に通す（prep・起動形・hook の 3 つの形が揃っていること）
@@ -127,8 +137,14 @@ test('[security-review][3] prep が用意した保存先と binding で組み立
   mkdirSync(prepOut);
   chmodSync(prepOut, 0o555);
   try {
-    // 出力先の祖先はテスト環境では書けるので、sandbox の書き込み拒否を真似て prep を動かす（base の配下だけ書ける）
-    const prep = JSON.parse(execFileSync('node', ['--import', PREP_FAKE_SANDBOX, PREP_CLI, reviewDir, HEAD, '5', sha256Hex('diff --git a/x b/x\n'), prepOut], { env: { ...process.env, TMPDIR: base, FAKE_SANDBOX_WRITABLE: base }, encoding: 'utf8' }));
+    // codex_bin: hook は起動形の先頭トークンが user 設定の codex_bin と一致し、実体が cwd・$TMPDIR・/tmp の配下でないことを確かめるので、
+    // 出力先と同じ repo の .devflow-tmp/ に代わりの codex を置く（実際には起動しない）。PATH には置かない（hook は PATH を使わない）
+    const fakeBin = join(out.root, 'bin');
+    mkdirSync(fakeBin);
+    const codexBin = join(fakeBin, 'codex');
+    writeFileSync(codexBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    // 出力先・codex_bin の祖先はテスト環境では書けるので、sandbox の書き込み拒否を真似て prep を動かす（base の配下だけ書ける）
+    const prep = JSON.parse(execFileSync('node', ['--import', PREP_FAKE_SANDBOX, PREP_CLI, reviewDir, HEAD, '5', sha256Hex('diff --git a/x b/x\n'), prepOut, codexBin], { env: { ...process.env, TMPDIR: base, FAKE_SANDBOX_WRITABLE: base }, encoding: 'utf8' }));
     assert.equal(prep.ok, true, JSON.stringify(prep));
     assert.ok(!('cwd_dir' in prep), 'prep は作業ディレクトリを作らない');
     // binding は保存先のパスと prep が書いた 2 つの中身から計算した値
@@ -136,17 +152,14 @@ test('[security-review][3] prep が用意した保存先と binding で組み立
     // hook は sandbox の外で動き出力先に複製を書くので、prep の後は出力先の書き込み権限を戻す
     chmodSync(out.outputDir, 0o755);
     const cfg = join(base, 'skill-config.json');
-    // hook は PATH 上の codex の実体が cwd・$TMPDIR・/tmp の配下でないことを確かめるので、出力先と同じ repo の .devflow-tmp/ に置いた
-    // 代わりの codex を PATH の先頭に置く（実際には起動しない）
-    const fakeBin = join(out.root, 'bin');
-    mkdirSync(fakeBin);
-    writeFileSync(join(fakeBin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    const env = { SKILL_CONFIG_PATH: cfg, HOME: join(base, 'home'), PATH: `${fakeBin}:${process.env.PATH}` };
-    writeFileSync(cfg, JSON.stringify({ 'dev-flow': { codex_output_dir: out.outputDir } }));
+    const env = { SKILL_CONFIG_PATH: cfg, HOME: join(base, 'home') };
+    const config = { codex_output_dir: out.outputDir, codex_bin: codexBin };
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': config }));
     const clean = () => { for (const f of readdirSync(out.outputDir)) rmSync(join(out.outputDir, f), { recursive: true, force: true }); };
     const decide = (c, cwd) => { const d = hookDecision(c, cwd, env); clean(); return d; };
-    const cmdOf = (o = {}) => codexSecurityReviewCommand({ reviewDir: prep.review_dir, outputDir: out.outputDir, nonce: prep.nonce, binding: prep.binding, ...o });
+    const cmdOf = (o = {}) => codexSecurityReviewCommand({ codexBin, reviewDir: prep.review_dir, outputDir: out.outputDir, nonce: prep.nonce, binding: prep.binding, ...o });
     const cmd = cmdOf();
+    assert.ok(cmd.startsWith(`${codexBin} exec `), cmd);
     assert.equal(hookDecision(cmd, wt, env), 'allow');
     // 通した起動は保存先の 2 つを出力先の nonce と binding の名前へ複製し（codex はこれを読む）、-C の作業ディレクトリを出力先に空で作る
     assert.equal(readFileSync(codexPromptCopyPath(out.outputDir, prep.nonce, prep.binding), 'utf8'), readFileSync(join(reviewDir, 'prompt.md'), 'utf8'));
@@ -178,11 +191,25 @@ test('[security-review][3] prep が用意した保存先と binding で組み立
     assert.equal(decide(cmdOf({ outputDir: join(out.root, 'out-link') }), wt), 'deny');
     assert.equal(decide(cmd, out.root), 'deny');
     // 出力先が user 設定の codex_output_dir と違う・設定に値が無い
-    writeFileSync(cfg, JSON.stringify({ 'dev-flow': { codex_output_dir: join(out.root, 'other') } }));
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': { ...config, codex_output_dir: join(out.root, 'other') } }));
     assert.equal(decide(cmd, wt), 'deny');
-    writeFileSync(cfg, JSON.stringify({ 'dev-flow': {} }));
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': { codex_bin: codexBin } }));
+    assert.equal(decide(cmd, wt), 'deny');
+    // 先頭トークンが bare 名の codex（PATH の解決先に頼る形）・設定の codex_bin と違う・設定に codex_bin が無い・文字列でない
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': config }));
+    assert.equal(decide(cmdOf({ codexBin: 'codex' }), wt), 'deny');
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': { ...config, codex_bin: join(out.root, 'other', 'codex') } }));
     assert.equal(decide(cmd, wt), 'deny');
     writeFileSync(cfg, JSON.stringify({ 'dev-flow': { codex_output_dir: out.outputDir } }));
+    assert.equal(decide(cmd, wt), 'deny');
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': { ...config, codex_bin: [codexBin] } }));
+    assert.equal(decide(cmd, wt), 'deny');
+    // prep の起動形も codex_bin を設定の値に縛る（prep が書き込み不可を確かめたファイルと起動する codex を揃える）
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': config }));
+    const prepCmd = (bin) => `security-review-codex-prep ${reviewDir} ${HEAD} 5 ${sha256Hex('x')} ${out.outputDir} ${bin}`;
+    const binPath = { ...env, PATH: `${join(here, '..', 'bin')}:${process.env.PATH}` };
+    assert.equal(hookDecision(prepCmd(codexBin), wt, binPath), 'allow');
+    assert.equal(hookDecision(prepCmd(join(out.root, 'other', 'codex')), wt, binPath), 'deny');
     assert.equal(decide(cmd, wt), 'allow');
     writeFileSync(codexResultPath(out.outputDir, prep.nonce, prep.binding), '{}');
     assert.equal(decide(cmd, wt), 'deny');

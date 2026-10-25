@@ -55,10 +55,11 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - PR の base branch で直近に成功した CI の所要時間から CI 待ちの上限（秒）を決め、`ci_wait_ceiling_seconds` に載せる
      （dev-flow の nested 起動と同じ求め方。読み取りに失敗したら 300）
    - PR 全体（`origin/<base>...<PR head>`）の diff が敵対的 security review の対象かを決定論の許可リストで判定し、
-     `security_review`（`{target, reasons, reviewer_context_changed, reviewer, codex_output_dir}`）に載せる。判定できないときは `target:true`・
+     `security_review`（`{target, reasons, reviewer_context_changed, reviewer, codex_output_dir, codex_bin}`）に載せる。判定できないときは `target:true`・
      `reviewer_context_changed:true`。`reviewer` は review を回す CLI の opt-in（`"dev-flow".security_reviewer`。base branch の
      `skill-config.json` か user 設定から読み、PR head の設定は読まない。無ければ `"claude"`）。`codex_output_dir` は Codex 経路で
-     codex が結果を書く出力先（`"dev-flow".codex_output_dir`。user 設定からだけ読み、repo の設定は読まない。無ければ null）
+     codex が結果を書く出力先（`"dev-flow".codex_output_dir`。user 設定からだけ読み、repo の設定は読まない。無ければ null）。
+     `codex_bin` は Codex 経路で起動する codex の絶対パス（`"dev-flow".codex_bin`。user 設定からだけ読み、無い・文字列でなければ null）
 
    結果に応じて分岐する:
 
@@ -92,7 +93,14 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      security-reviewer の判定に戻る）。指示ファイルを変える PR はどちらの経路でも自動の review で clear にせず止める
      （`security-review-isolated` で人が確かめる）
 
-   - Codex 経路の前提（`codex_output_dir` が null なら Codex 経路に入らず security-reviewer の判定のまま）:
+   - Codex 経路の前提（`codex_output_dir` か `codex_bin` が null なら Codex 経路に入らず security-reviewer の判定のまま）:
+     - 中継は codex を PATH で探さず、user 設定の `"dev-flow".codex_bin` の絶対パスを先頭トークンにした単文
+       （`<codex_bin> exec ...`）で起動する。codex はこの絶対パスの起動形で sandbox の外で動くことを前提にするので、`excludedCommands` には
+       bare 名の `codex` ではなくこの絶対パスを入れる
+     - `codex_bin` には symlink を辿った先の実ファイル（例: `realpath "$(command -v codex)"` の出力）を絶対パスで書く。hook は先頭トークンが
+       `codex_bin` と完全に一致し、realpath が自身と一致する（自身も祖先も symlink でない）実ファイルで、PR の worktree・`$TMPDIR`・`/tmp`
+       の配下でないときだけ起動を通す。`codex_bin` とその祖先は sandbox の書き込み許可に入れない（書けると prep が `codex_bin_writable` で
+       拒否し、security-reviewer の判定に戻る）。plugin は `codex_bin` を作らず変えない
      - codex を `excludedCommands` に入れると codex は sandbox の外で動き、`-o` の結果ファイルの書き込みも sandbox の外になる。
        出力先が sandbox の中から書ける場所だと、PR のプロセスが結果ファイルの名前に symlink を置いて任意のファイルを上書きさせられる
      - 出力先は人が一度作り（例: `mkdir ~/.local/state/dev-flow-codex-out`）、user 設定の `"dev-flow".codex_output_dir` に絶対パスで書く。
