@@ -112,8 +112,8 @@ PLUGIN_NAMES=(dev-flow playpark-core)
 
 # --- 4. dev-flow: 参照集合・event/matcher 配線 ------------------------------
 
-@test "dev-flow の参照 rel 集合が計画どおり 5 hook に完全一致する" {
-    expected=$'hooks/pretool-bash-inline-commit-gate.sh\nhooks/pretool-bash-issue-create-guard.sh\nhooks/pretool-inline-edit-guard.sh\nhooks/pretool-security-reviewer-read-scope.sh\nhooks/stop-devflow-telemetry.sh'
+@test "dev-flow の参照 rel 集合が計画どおり 6 hook に完全一致する" {
+    expected=$'hooks/pretool-bash-inline-commit-gate.sh\nhooks/pretool-bash-issue-create-guard.sh\nhooks/pretool-codex-invocation-guard.sh\nhooks/pretool-inline-edit-guard.sh\nhooks/pretool-security-reviewer-read-scope.sh\nhooks/stop-devflow-telemetry.sh'
     actual="$(plugin_root_refs dev-flow)"
     [ "$actual" = "$expected" ]
 }

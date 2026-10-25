@@ -59,6 +59,30 @@ STUB
     export GH_STUB_FIXTURE="$BATS_TEST_TMPDIR/pr.json"
     unset GH_STUB_FAIL GH_RUN_STUB_FIXTURE
     write_pr_fixture "$HEAD_SHA"
+    # user 設定（"dev-flow".security_reviewer の読み先）を実行者の環境から切り離す
+    export HOME="$BATS_TEST_TMPDIR/home"
+    mkdir -p "$HOME"
+    unset SKILL_CONFIG_PATH
+}
+
+# 第 1 引数の branch（main / feature/x）に第 2 引数のパスで "dev-flow".security_reviewer = 第 3 引数 の skill-config.json を commit して push する
+commit_reviewer_config() {
+    git -C "$SEED" checkout -q "$1"
+    mkdir -p "$(dirname "$SEED/$2")"
+    jq -n --arg r "$3" '{"dev-flow": {security_reviewer: $r}}' > "$SEED/$2"
+    git -C "$SEED" add "$2"
+    git -C "$SEED" commit -q -m "reviewer config"
+    git -C "$SEED" push -q origin "$1"
+    if [[ "$1" == "feature/x" ]]; then
+        HEAD_SHA="$(git -C "$SEED" rev-parse feature/x)"
+        write_pr_fixture "$HEAD_SHA"
+    fi
+}
+
+# 第 1 引数のパス（HOME 相対）に "dev-flow".security_reviewer = 第 2 引数 の user 設定を書く
+write_user_reviewer_config() {
+    mkdir -p "$(dirname "$HOME/$1")"
+    jq -n --arg r "$2" '{"dev-flow": {security_reviewer: $r}}' > "$HOME/$1"
 }
 
 # 第 2 引数: PR コメント（gh pr view --json comments の配列）。省略時は []
@@ -534,7 +558,7 @@ comment_json() {
     cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review == {target: false, reasons: [], reviewer_context_changed: false}'
+    echo "$output" | jq -e '.ok == true and .security_review == {target: false, reasons: [], reviewer_context_changed: false, reviewer: "claude"}'
 }
 
 @test "(7d) PR が reviewer に読み込まれる指示ファイル（CLAUDE.md）を変えれば security_review.reviewer_context_changed は true" {
@@ -572,6 +596,83 @@ comment_json() {
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .security_review.target == true and .security_review.reviewer_context_changed == true'
+}
+
+# ---- (8) security review を回す CLI の opt-in（"dev-flow".security_reviewer。issue #1087）----
+
+@test "(8a) base branch にも user 設定にも opt-in が無ければ security_review.reviewer は claude" {
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "claude"'
+}
+
+@test "(8b) base branch の skill-config.json / .claude/skill-config.json の opt-in を読む" {
+    commit_reviewer_config main skill-config.json codex
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "codex"'
+
+    git -C "$SEED" checkout -q main
+    git -C "$SEED" rm -q skill-config.json
+    git -C "$SEED" commit -q -m "drop root config"
+    git -C "$SEED" push -q origin main
+    commit_reviewer_config main .claude/skill-config.json codex
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "codex"'
+}
+
+@test "(8c) PR head の設定ファイルに書かれた opt-in は読まない（base の値・既定のまま）" {
+    commit_reviewer_config feature/x skill-config.json codex
+    commit_reviewer_config feature/x .claude/skill-config.json codex
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "claude"'
+    # worktree（PR head）には codex と書いてある
+    wt="$(echo "$output" | jq -r '.worktree')"
+    jq -e '."dev-flow".security_reviewer == "codex"' "$wt/skill-config.json"
+
+    # base が codex なら、PR head が claude に書き換えても codex のまま
+    commit_reviewer_config main skill-config.json codex
+    commit_reviewer_config feature/x skill-config.json claude
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "codex"'
+}
+
+@test "(8d) base branch に無ければ user 設定（SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）を読み、base の値を優先する" {
+    cd "$ROOT"
+    write_user_reviewer_config .claude/skill-config.json codex
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "codex"'
+
+    write_user_reviewer_config .config/skills/config.json claude
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.security_review.reviewer == "claude"'
+
+    jq -n '{"dev-flow": {security_reviewer: "codex"}}' > "$BATS_TEST_TMPDIR/explicit.json"
+    SKILL_CONFIG_PATH="$BATS_TEST_TMPDIR/explicit.json" run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.security_review.reviewer == "codex"'
+
+    # repo（base branch）の宣言は user 設定より優先する
+    commit_reviewer_config main skill-config.json claude
+    SKILL_CONFIG_PATH="$BATS_TEST_TMPDIR/explicit.json" run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.security_review.reviewer == "claude"'
+}
+
+@test "(8e) opt-in の値は検証せずそのまま渡す（out-of-enum は workflow が明示 error にする）" {
+    commit_reviewer_config main skill-config.json gemini
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "gemini"'
 }
 
 # ---- (6) 静的 pin ----
