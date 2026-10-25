@@ -89,9 +89,10 @@ test('[security-review][3] codexSecurityReviewCommand は先頭トークン code
 });
 
 // prep CLI で保存先を用意し、そこから組み立てた起動形を hook に通す（prep・起動形・hook の 3 つの形が揃っていること）
-function hookDecision(command, cwd) {
+// hook は出力先を user 設定の "dev-flow".codex_output_dir に縛るので、$SKILL_CONFIG_PATH と $HOME をテスト用の設定に差し替える
+function hookDecision(command, cwd, env) {
   const input = JSON.stringify({ session_id: 's', hook_event_name: 'PreToolUse', cwd, agent_type: 'dev-flow:security-codex-relay', tool_name: 'Bash', tool_input: { command } });
-  const r = spawnSync('bash', [HOOK], { input, encoding: 'utf8' });
+  const r = spawnSync('bash', [HOOK], { input, encoding: 'utf8', env: { ...process.env, ...env } });
   assert.equal(r.status, 0, r.stderr);
   return r.stdout.trim() === '' ? 'allow' : JSON.parse(r.stdout).hookSpecificOutput.permissionDecision;
 }
@@ -119,27 +120,38 @@ test('[security-review][3] prep が用意した保存先・作業ディレクト
     // 出力先の祖先（repo の作業ツリー）はテスト環境では書けるので、sandbox の書き込み拒否を真似て prep を動かす（base の配下だけ書ける）
     const prep = JSON.parse(execFileSync('node', ['--import', PREP_FAKE_SANDBOX, PREP_CLI, reviewDir, HEAD, '5', out.outputDir], { env: { ...process.env, TMPDIR: base, FAKE_SANDBOX_WRITABLE: base }, encoding: 'utf8' }));
     assert.equal(prep.ok, true, JSON.stringify(prep));
-    const cmd = codexSecurityReviewCommand({ reviewDir: prep.review_dir, cwdDir: prep.cwd_dir, outputDir: out.outputDir, nonce: prep.nonce });
-    assert.equal(hookDecision(cmd, wt), 'allow');
-    assert.equal(hookDecision(cmd.replace(` ${prep.nonce}"`, ' x"'), wt), 'deny');
-    assert.equal(hookDecision(cmd.replace('-s read-only', '-s workspace-write'), wt), 'deny');
-    assert.equal(hookDecision(`${cmd} --dangerously-bypass-approvals-and-sandbox`, wt), 'deny');
-    assert.equal(hookDecision(`codex exec -s read-only -C ${prep.cwd_dir} hi`, wt), 'deny');
+    const cfg = join(base, 'skill-config.json');
+    const env = { SKILL_CONFIG_PATH: cfg, HOME: join(base, 'home') };
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': { codex_output_dir: out.outputDir } }));
+    const decide = (c, cwd) => hookDecision(c, cwd, env);
+    const cmd =codexSecurityReviewCommand({ reviewDir: prep.review_dir, cwdDir: prep.cwd_dir, outputDir: out.outputDir, nonce: prep.nonce });
+    assert.equal(decide(cmd, wt), 'allow');
+    assert.equal(decide(cmd.replace(` ${prep.nonce}"`, ' x"'), wt), 'deny');
+    assert.equal(decide(cmd.replace('-s read-only', '-s workspace-write'), wt), 'deny');
+    assert.equal(decide(`${cmd} --dangerously-bypass-approvals-and-sandbox`, wt), 'deny');
+    assert.equal(decide(`codex exec -s read-only -C ${prep.cwd_dir} hi`, wt), 'deny');
     // -o の nonce が prompt の nonce と違う・-o が出力先の結果ファイルの形でない・-o を sandbox の中から書ける保存先や $TMPDIR に置く
     const other = codexSecurityReviewCommand({ reviewDir: prep.review_dir, cwdDir: prep.cwd_dir, outputDir: out.outputDir, nonce: 'f'.repeat(32) });
-    assert.equal(hookDecision(cmd.replace(`dev-flow-codex-result-${prep.nonce}.json`, `dev-flow-codex-result-${'f'.repeat(32)}.json`), wt), 'deny');
-    assert.equal(hookDecision(other.replace(` ${'f'.repeat(32)}"`, ` ${prep.nonce}"`), wt), 'deny');
-    assert.equal(hookDecision(cmd.replace(`dev-flow-codex-result-${prep.nonce}.json`, 'result.json'), wt), 'deny');
-    assert.equal(hookDecision(codexSecurityReviewCommand({ reviewDir: prep.review_dir, cwdDir: prep.cwd_dir, outputDir: prep.review_dir, nonce: prep.nonce }), wt), 'deny');
+    assert.equal(decide(cmd.replace(`dev-flow-codex-result-${prep.nonce}.json`, `dev-flow-codex-result-${'f'.repeat(32)}.json`), wt), 'deny');
+    assert.equal(decide(other.replace(` ${'f'.repeat(32)}"`, ` ${prep.nonce}"`), wt), 'deny');
+    assert.equal(decide(cmd.replace(`dev-flow-codex-result-${prep.nonce}.json`, 'result.json'), wt), 'deny');
+    assert.equal(decide(codexSecurityReviewCommand({ reviewDir: prep.review_dir, cwdDir: prep.cwd_dir, outputDir: prep.review_dir, nonce: prep.nonce }), wt), 'deny');
     mkdirSync(join(base, 'out'));
-    assert.equal(hookDecision(codexSecurityReviewCommand({ reviewDir: prep.review_dir, cwdDir: prep.cwd_dir, outputDir: join(base, 'out'), nonce: prep.nonce }), wt), 'deny');
+    assert.equal(decide(codexSecurityReviewCommand({ reviewDir: prep.review_dir, cwdDir: prep.cwd_dir, outputDir: join(base, 'out'), nonce: prep.nonce }), wt), 'deny');
     // 出力先が symlink・cwd の配下・結果ファイルが既にある
     symlinkSync(out.outputDir, join(out.root, 'out-link'));
-    assert.equal(hookDecision(codexSecurityReviewCommand({ reviewDir: prep.review_dir, cwdDir: prep.cwd_dir, outputDir: join(out.root, 'out-link'), nonce: prep.nonce }), wt), 'deny');
-    assert.equal(hookDecision(cmd, out.root), 'deny');
+    assert.equal(decide(codexSecurityReviewCommand({ reviewDir: prep.review_dir, cwdDir: prep.cwd_dir, outputDir: join(out.root, 'out-link'), nonce: prep.nonce }), wt), 'deny');
+    assert.equal(decide(cmd, out.root), 'deny');
+    // 出力先が user 設定の codex_output_dir と違う・設定に値が無い
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': { codex_output_dir: join(out.root, 'other') } }));
+    assert.equal(decide(cmd, wt), 'deny');
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': {} }));
+    assert.equal(decide(cmd, wt), 'deny');
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': { codex_output_dir: out.outputDir } }));
+    assert.equal(decide(cmd, wt), 'allow');
     chmodSync(out.outputDir, 0o755);
     writeFileSync(codexResultPath(out.outputDir, prep.nonce), '{}');
-    assert.equal(hookDecision(cmd, wt), 'deny');
+    assert.equal(decide(cmd, wt), 'deny');
   } finally {
     out.cleanup();
   }

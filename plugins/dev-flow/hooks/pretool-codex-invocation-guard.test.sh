@@ -26,7 +26,6 @@ OTHER="dev-flow:dev-runner-haiku-ro"
 WT="/tmp/wt"
 D="/tmp/x/dev-flow-security-review-Ab12Cd"
 C="/tmp/x/dev-flow-codex-cwd-Qw12Er"
-O="/Users/x/codex-out"
 SHA="$(printf 'a%.0s' {1..40})"
 
 # codex の形は hook がパスの実体を確かめるので、実在する保存先・作業ディレクトリ・出力先を作る。
@@ -42,7 +41,11 @@ OUT_ROOT="$(cd "$OUT_ROOT" && pwd -P)"
 RD="${TMP_ROOT}/dev-flow-security-review-Ab12Cd"
 RC="${TMP_ROOT}/dev-flow-codex-cwd-Qw12Er"
 RO="${OUT_ROOT}/out"
-mkdir -p "$RD" "$RC" "${TMP_ROOT}/wt" "$RO" "${TMP_ROOT}/out" "${TMP_UNDER}/out"
+O="$RO"
+mkdir -p "$RD" "$RC" "${TMP_ROOT}/wt" "$RO" "${TMP_ROOT}/out" "${TMP_UNDER}/out" "${TMP_ROOT}/home/.config/skills"
+# hook は user 設定の "dev-flow".codex_output_dir を読むので、$SKILL_CONFIG_PATH と $HOME をテスト用に差し替える
+HOOK_CFG="${TMP_ROOT}/skill-config.json"
+HOOK_HOME="${TMP_ROOT}/home"
 printf 'p' >"$RD/prompt.md"
 printf '{}' >"$RD/schema.json"
 N="0123456789abcdef0123456789abcdef"
@@ -61,10 +64,21 @@ FAILURES=()
 # run_raw <name> <expected: deny|silent> <raw stdin>
 #   silent: 無出力で exit 0 / deny: permissionDecision=deny の JSON を出して exit 0
 #   HOOK_TMPDIR が設定されていれば hook の $TMPDIR をそれにする
+#   $SKILL_CONFIG_PATH の codex_output_dir は HOOK_OUT（既定 $RO。none はキー無し）、~/.config/skills/config.json の値は
+#   HOOK_HOME_OUT（未設定ならファイル無し）
 run_raw() {
   local name="$1" expected="$2" input="$3"
   local output status=0
-  output=$(printf '%s' "$input" | TMPDIR="${HOOK_TMPDIR-${TMPDIR:-}}" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash -c "$HOOK_CMD" 2>/dev/null) || status=$?
+  if [[ ${HOOK_OUT-$RO} == none ]]; then
+    printf '{"dev-flow":{}}' >"$HOOK_CFG"
+  else
+    jq -cn --arg o "${HOOK_OUT-$RO}" '{"dev-flow":{codex_output_dir:$o}}' >"$HOOK_CFG"
+  fi
+  rm -f "${HOOK_HOME}/.config/skills/config.json"
+  if [[ -n ${HOOK_HOME_OUT-} ]]; then
+    jq -cn --arg o "$HOOK_HOME_OUT" '{"dev-flow":{codex_output_dir:$o}}' >"${HOOK_HOME}/.config/skills/config.json"
+  fi
+  output=$(printf '%s' "$input" | HOME="$HOOK_HOME" SKILL_CONFIG_PATH="$HOOK_CFG" TMPDIR="${HOOK_TMPDIR-${TMPDIR:-}}" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash -c "$HOOK_CMD" 2>/dev/null) || status=$?
 
   local got
   if [[ $status -ne 0 ]]; then
@@ -128,17 +142,31 @@ echo "[security-codex-relay — codex の -o は sandbox の中から書けな�
 run_bash "-o を保存先の result.json にする（旧形）" deny "$RELAY" "${CODEX_CMD/-o ${RO}\/dev-flow-codex-result-${N}.json/-o ${RD}/result.json}"
 run_bash "-o の basename が結果ファイルの形でない" deny "$RELAY" "${CODEX_CMD/dev-flow-codex-result-${N}.json/result.json}"
 run_bash "-o の nonce が prompt の nonce と違う" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "$RO" "$N2")"
-run_bash "出力先が実在しない" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "${OUT_ROOT}/missing")"
+HOOK_OUT="${OUT_ROOT}/missing" run_bash "出力先が実在しない" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "${OUT_ROOT}/missing")"
 ln -s "$RO" "${OUT_ROOT}/out-link"
-run_bash "出力先が実ディレクトリを指す symlink" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "${OUT_ROOT}/out-link")"
+HOOK_OUT="${OUT_ROOT}/out-link" run_bash "出力先が実ディレクトリを指す symlink" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "${OUT_ROOT}/out-link")"
 mkdir -p "${OUT_ROOT}/real/out"
 ln -s "${OUT_ROOT}/real" "${OUT_ROOT}/alias"
-run_bash "出力先の祖先が symlink（realpath が自身と一致しない）" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "${OUT_ROOT}/alias/out")"
-run_bash "出力先が . / .. の要素を持つ" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "${OUT_ROOT}/x/../out")"
+HOOK_OUT="${OUT_ROOT}/alias/out" run_bash "出力先の祖先が symlink（realpath が自身と一致しない）" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "${OUT_ROOT}/alias/out")"
+HOOK_OUT="${OUT_ROOT}/x/../out" run_bash "出力先が . / .. の要素を持つ" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "${OUT_ROOT}/x/../out")"
 HOOK_TMPDIR="$OUT_ROOT" run_bash "出力先が \$TMPDIR の配下" deny "$RELAY" "$CODEX_CMD"
 HOOK_TMPDIR="$OUT_ROOT/" run_bash "出力先が \$TMPDIR（末尾 /）の配下" deny "$RELAY" "$CODEX_CMD"
-HOOK_TMPDIR="$OUT_ROOT" run_bash "出力先が /tmp の配下" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "$(cd "${TMP_UNDER}/out" && pwd -P)")"
-run_bash "出力先が mktemp -d（\$TMPDIR か /tmp）の配下" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "${TMP_ROOT}/out")"
+TMP_UNDER_OUT="$(cd "${TMP_UNDER}/out" && pwd -P)"
+HOOK_OUT="$TMP_UNDER_OUT" HOOK_TMPDIR="$OUT_ROOT" run_bash "出力先が /tmp の配下" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "$TMP_UNDER_OUT")"
+HOOK_OUT="${TMP_ROOT}/out" run_bash "出力先が mktemp -d（\$TMPDIR か /tmp）の配下" deny "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "${TMP_ROOT}/out")"
+
+echo "[security-codex-relay — 出力先は user 設定の codex_output_dir と完全に一致するものだけ]"
+HOOK_OUT="${OUT_ROOT}/real/out" run_bash "codex の -o が設定と違う実ディレクトリ（条件は全部満たす）" deny "$RELAY" "$CODEX_CMD"
+HOOK_OUT="${OUT_ROOT}/real/out" run_bash "設定と同じ出力先の codex は通す" silent "$RELAY" "$(codex_cmd "$RC" "$RD" "$N" "${OUT_ROOT}/real/out")"
+HOOK_OUT="${RO}/" run_bash "設定の末尾 / も一致とみなさない" deny "$RELAY" "$CODEX_CMD"
+HOOK_OUT=none run_bash "設定に codex_output_dir が無い codex" deny "$RELAY" "$CODEX_CMD"
+HOOK_OUT=none run_bash "設定に codex_output_dir が無い prep" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O}"
+HOOK_OUT=none run_bash "設定に codex_output_dir が無い result" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${O}"
+HOOK_OUT="${OUT_ROOT}/real/out" run_bash "prep の出力先が設定と違う" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O}"
+HOOK_OUT="${OUT_ROOT}/real/out" run_bash "prep --verify-from の出力先が設定と違う" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O} --verify-from ${N2}"
+HOOK_OUT="${OUT_ROOT}/real/out" run_bash "result の出力先が設定と違う" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${O} --issues"
+HOOK_OUT=none HOOK_HOME_OUT="$RO" run_bash "\$SKILL_CONFIG_PATH に値が無ければ ~/.config/skills/config.json を読む" silent "$RELAY" "$CODEX_CMD"
+HOOK_OUT="${OUT_ROOT}/real/out" HOOK_HOME_OUT="$RO" run_bash "\$SKILL_CONFIG_PATH の値が ~/.config/skills/config.json より優先" deny "$RELAY" "$CODEX_CMD"
 run_raw "出力先が cwd の配下" deny "$(jq -cn --arg a "$RELAY" --arg c "$CODEX_CMD" --arg cwd "$OUT_ROOT" '{agent_type:$a, cwd:$cwd, tool_name:"Bash", tool_input:{command:$c}}')"
 touch "$RO/dev-flow-codex-result-${N}.json"
 run_bash "出力先に結果ファイルが既にある" deny "$RELAY" "$CODEX_CMD"

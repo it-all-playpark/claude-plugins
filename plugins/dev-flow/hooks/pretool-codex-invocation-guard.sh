@@ -26,6 +26,9 @@
 #        security-review-codex-result <D> <sha> <N> <O>[ --issues]
 #      <D> は basename が dev-flow-security-review-XXXXXX、<C> は dev-flow-codex-cwd-XXXXXX の、<O> は人が用意した出力先の、`.` / `..` の
 #      要素を持たない [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字、<N> は prep が返した nonce（32 桁の小文字 hex）。
+#      3 形とも <O> は user 設定の "dev-flow".codex_output_dir（pr-iterate-prerun と同じ順: $SKILL_CONFIG_PATH →
+#      ~/.config/skills/config.json → ~/.claude/skill-config.json）と完全に一致するときだけ通し、値が無ければ deny する —
+#      prep が書き込み不可を確かめた出力先以外（sandbox から書ける別の場所）を -o にした codex を中継が起動できないようにする。
 #      prep / result のパスの実体は各 script が確かめる。
 #      codex の形は hook がパスの実体も確かめる: <C> は空の実ディレクトリ、<D> は prompt.md・schema.json を実ファイルとして持つ
 #      実ディレクトリで、どちらも入力の cwd（PR の worktree）の配下でない。-o の basename の nonce は prompt の nonce と同じで、<O> は
@@ -76,6 +79,28 @@ on_exit() {
 pass_through() {
   DECIDED=1
   exit 0
+}
+
+# user 設定の "dev-flow".codex_output_dir（pr-iterate-prerun と同じ探索順: $SKILL_CONFIG_PATH → ~/.config/skills/config.json →
+# ~/.claude/skill-config.json。最初に null でない値を持つファイルの値）を CONFIGURED_OUTPUT_DIR に入れる。無い・文字列でなければ deny。
+# 中継が nonce を自分で選んだ codex を、prep が書き込み不可を確かめていない別の場所を出力先にして起動できないよう、<O> をこの値に縛る
+load_configured_output_dir() {
+  local cfg v
+  for cfg in "${SKILL_CONFIG_PATH:-}" "${HOME:-}/.config/skills/config.json" "${HOME:-}/.claude/skill-config.json"; do
+    [[ -n $cfg && -f $cfg ]] || continue
+    v=$(jq -c 'if type == "object" and (.["dev-flow"] | type) == "object" then .["dev-flow"].codex_output_dir else null end' 2>/dev/null <"$cfg") || v=''
+    [[ -n $v && $v != 'null' ]] || continue
+    CONFIGURED_OUTPUT_DIR=$(jq -r 'if type == "string" then . else "" end' 2>/dev/null <<<"$v") || CONFIGURED_OUTPUT_DIR=''
+    [[ -n $CONFIGURED_OUTPUT_DIR ]] || emit_deny "user 設定の dev-flow.codex_output_dir が文字列でない"
+    return 0
+  done
+  emit_deny "user 設定に dev-flow.codex_output_dir が無い"
+}
+
+# 出力先が user 設定の codex_output_dir と完全に一致するか。一致しなければ deny する
+require_configured_output_dir() {
+  load_configured_output_dir
+  [[ $1 == "$CONFIGURED_OUTPUT_DIR" ]] || emit_deny "出力先が user 設定の dev-flow.codex_output_dir と一致しない"
 }
 
 # 中継の codex の起動が固定形と完全に一致し、パスの実体が条件を満たすか。満たさなければ deny する
@@ -137,6 +162,7 @@ check_codex() {
       [[ -n $a ]] || a=/
     done
   done
+  require_configured_output_dir "$o"
 }
 
 INPUT=$(cat) || INPUT=""
@@ -179,6 +205,9 @@ if [[ $AGENT_TYPE == "$RELAY_AGENT" ]]; then
         [[ $s == "." || $s == ".." ]] && emit_deny "security-codex-relay のパスに . / .. の要素がある"
       done
     done
+    # prep・result の 5 番目のトークンが出力先
+    read -r -a TOKS <<<"$CMD"
+    require_configured_output_dir "${TOKS[4]}"
     pass_through
   fi
   emit_deny "security-codex-relay は security-review-codex-prep / codex exec / security-review-codex-result の固定形でだけ Bash を使える。prompt のコマンド行を一字一句そのまま実行せよ"
