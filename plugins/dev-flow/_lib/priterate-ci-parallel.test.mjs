@@ -62,7 +62,8 @@ async function run(overrides, { headKnown = true } = {}) {
 test('[AC-1][AC-4] review#1 と ci-check#1 は同じ parallel() で起動され、一致した passed を CI gate の 1 回目の poll に使って lgtm（直列の再起動なし、ci_poll_attempts=1）', async () => {
   const { result, groups, labels } = await run({ 'ci-check#1': ci('passed', HEAD1) });
 
-  assert.deepEqual(groups, [['review#1', 'ci-check#1']], `parallel() の起動 group が想定と異なる: ${JSON.stringify(groups)}`);
+  // security review の対象の run（args.security_review の無い単体起動）なので security-scope#1 も同じ group で起動する
+  assert.deepEqual(groups, [['review#1', 'ci-check#1', 'security-scope#1']], `parallel() の起動 group が想定と異なる: ${JSON.stringify(groups)}`);
   assert.equal(result?.status, 'lgtm');
   assert.ok(!labels.includes('ci-check#1-serial'), `採用できたのに直列で起動し直している: ${JSON.stringify(labels)}`);
   assert.equal(labels.filter((l) => l.startsWith('ci-check#')).length, 1, `ci-check は 1 本だけであるべき: ${JSON.stringify(labels)}`);
@@ -152,7 +153,8 @@ for (const [name, response] of [
 test('[AC-2][AC-6] review 開始時の head sha が不明な round は parallel() を使わず、review の後に直列の ci-check#1 を 1 本だけ起動する', async () => {
   const { result, groups, labels } = await run({ 'ci-check#1': ci('passed') }, { headKnown: false });
 
-  assert.deepEqual(groups, [], `照合できない round で並列 ci-check を起動している: ${JSON.stringify(groups)}`);
+  // 並列の group は review#1 と security review（対象の run）だけで、ci-check は入らない
+  assert.deepEqual(groups, [['review#1', 'security-scope#1']], `照合できない round で並列 ci-check を起動している: ${JSON.stringify(groups)}`);
   assert.deepEqual(labels.filter((l) => l.startsWith('review#') || l.startsWith('ci-check#')), ['review#1', 'ci-check#1']);
   assert.equal(result?.status, 'lgtm');
   assert.equal(result?.ci_poll_attempts, 1);
