@@ -322,16 +322,17 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
   `git -c core.quotePath=false diff --no-renames --no-color --no-ext-diff --no-textconv --text --src-prefix=a/ --dst-prefix=b/`
   で取り、`--name-only -z` の一覧と件数・集合を照合する。取得失敗・空・読めない diff・binary・mode 120000 / 160000・mode の
   変更・`.gitattributes` / `.gitmodules` は対象
-- security-reviewer（opus / high、tools は Read / Grep / Glob だけ）は `security-review-scope --save-diff` が worktree の外に
+- security-reviewer（opus / high、tools は Read / Grep だけ。Glob は持たせない）は `security-review-scope --save-diff` が worktree の外に
   作った一時ディレクトリを作業ディレクトリにし、PR 本文・diff・コード中のコメントをデータとして扱う。品質ゲート agent なので
   `opts.model` を渡さない
 - workflow の `agent()` には cwd を渡せないので、security-reviewer の session の cwd は PR の worktree のまま。reviewer が読む
-  ファイルは保存先の配下に限る。保存先の外への Read / Grep / Glob は PreToolUse hook（`hooks/pretool-security-reviewer-read-scope.sh`。
+  ファイルは保存先の diff に限る。それ以外への Read / Grep と Glob は PreToolUse hook（`hooks/pretool-security-reviewer-read-scope.sh`。
   入力の `agent_type` が `dev-flow:security-reviewer` のときだけ判定）が拒否する — 許可は対象パスの realpath が basename
   `dev-flow-security-review-[A-Za-z0-9]{6}` のディレクトリの配下で、そのディレクトリと対象パスが session の cwd の配下でないときだけ。
-  中身を読む Read / Grep はさらに、対象が `security-review-scope` の作る `pr-<dev>-<ino>.diff`（pr.diff への hard link）で、読む時点の
-  dev・ino が名前の値と一致するときだけ許可する（Glob はファイル名の一覧だけなので保存先の配下なら許可）。
-  Grep / Glob の `path` 無し・`pattern` / `glob` の絶対パスや `..`・判定できない入力も拒否する。PR が reviewer の session に自動で読み込まれる指示ファイル
+  Read / Grep はさらに、要求されたパスの最後の要素が `security-review-scope` の作る `pr-<dev>-<ino>.diff`（pr.diff への hard link）で
+  realpath の名前と同じで、lstat で symlink でない通常ファイルで、読む時点の dev・ino が名前の値と一致するときだけ許可する（名前を realpath
+  で見ると、元の名前を自己整合した名前の良性ファイルへの symlink にされたときに通る）。Glob は常に拒否する（差し替えた保存先で
+  自己整合した名前のファイルを見つけて読めるため）。Grep の `path` 無し・`glob` の絶対パスや `..`・判定できない入力も拒否する。PR が reviewer の session に自動で読み込まれる指示ファイル
   （basename が `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`、または repo 直下の `.claude/` 配下）を変える run は、
   security-scope#i の `reviewer_context_changed` で検出して review を spawn せず `security_unresolved`（人間が確かめる）
 - security-scope の CLI は stdout・stderr に PR 由来の文字列（ファイルパス・git の stderr）を出さない。reasons は固定 code と
@@ -369,7 +370,7 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
     場所に置く前提で、hook と prep はその前提を確かめるが、書けてしまう設定ではこの上書きを検出しない）。
     保存先の祖先の差し替えのうち、hook が dev・ino を確かめてから Read がファイルを開くまでの間に差し替える競合は防げない（確認は
     読む直前の 1 回で、review の後の照合は祖先を見ない）。hook に拒否された reviewer が `diff-unreadable` を返さずに clear を返すことも
-    script では止めない（読み取りが拒否されたことを workflow は知らない）。Glob は差し替えた保存先のファイル名の一覧を返し得る。hook の `codex` の解決先の確認は拒否リストなので、
+    script では止めない（読み取りが拒否されたことを workflow は知らない）。hook の `codex` の解決先の確認は拒否リストなので、
     PATH 上で本物より前にある sandbox から書ける他の場所（`PNPM_HOME`・`~/.local/bin` 等）に置いた `codex` は通る。また hook は
     自分の PATH で解決し、中継の Bash の PATH とずれると確認が実際の起動と一致しない。`security-review-diff-check` も bare 名で
     起動するので、PATH 上で plugin の `bin/` より前の書ける場所に置いた同名の実行ファイルは照合を素通りできる。常駐プロセスは同じ権限で

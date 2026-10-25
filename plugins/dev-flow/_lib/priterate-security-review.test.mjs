@@ -290,13 +290,13 @@ test('[security-review][D] security-reviewer は PR の worktree の外を作業
 test('[security-review][D] security-reviewer の読み取りは diff の保存先の配下だけで、PR の worktree のファイルを読ませない', async () => {
   const { calls } = await run();
   const r = calls.find((c) => c.label === 'security-review#1');
-  assert.ok(r.prompt.includes(`Read / Grep / Glob はこのディレクトリの配下だけに使う。PR の worktree（/tmp/wt）の中のファイルは読まない`), r.prompt);
-  assert.ok(r.prompt.includes(`使用可: Read, Grep, Glob（読み取りのみ・${SECURITY_REVIEW_DIR} の配下だけ）`), r.prompt);
+  assert.ok(r.prompt.includes(`Read / Grep はこのディレクトリの配下だけに使う。PR の worktree（/tmp/wt）の中のファイルは読まない`), r.prompt);
+  assert.ok(r.prompt.includes('使用可: Read, Grep（読み取りのみ・diff_path だけ）。Glob・コマンド実行'), r.prompt);
   assert.ok(r.prompt.includes(`${SECURITY_REVIEW_DIR} の外（PR の worktree を含む）のファイルを読まない`), r.prompt);
   assert.ok(!r.prompt.includes('worktree のファイルを Read で読む'), 'worktree の Read を許す文が残っている');
   // hook が diff の読み取りを拒否した（保存先の祖先ごと差し替えられた）round を、読めた範囲で clear にさせない
   assert.ok(r.prompt.includes('diff_path を最後まで読めない（hook が拒否した・読み取りが失敗した）ときは、読めた範囲で clear にせず、topic `diff-unreadable` の critical を issues に入れる'), r.prompt);
-  assert.ok(agentMd.includes('Read / Grep / Glob はその作業ディレクトリの\n配下だけに使い、PR の worktree のファイルは読まない。'));
+  assert.ok(agentMd.includes('Read / Grep はその作業ディレクトリの\n配下だけに使い、PR の worktree のファイルは読まない。'));
   assert.ok(!agentMd.includes('worktree の\nファイルを Read で読む'), 'agent 定義に worktree の Read を許す文が残っている');
 });
 

@@ -76,10 +76,11 @@ const AGENTS = [
   },
   { name: 'evaluator', effort: 'medium' },
   { name: 'pr-reviewer', effort: 'high' },
-  // security-reviewer は読み取りだけ（PR の内容を攻撃者が書ける — コマンド実行・書き込みの tool を持たせない）
+  // security-reviewer は読み取りだけ（PR の内容を攻撃者が書ける — コマンド実行・書き込みの tool を持たせない）。
+  // Glob も持たせない（差し替えた保存先で自己整合した名前のファイルを見つけて読めるため。diff_path は prompt で渡す）
   {
     name: 'security-reviewer', model: 'opus', effort: 'high', maxTurns: 'finite',
-    tools: { exact: ['Read', 'Grep', 'Glob'], exclude: ['Bash', 'Write', 'Edit', 'Skill', 'TodoWrite'] },
+    tools: { exact: ['Read', 'Grep'], exclude: ['Bash', 'Write', 'Edit', 'Skill', 'TodoWrite', 'Glob'] },
   },
   // security-codex-relay は Bash だけ（Read を持つと result.json の description 等の自由文を読める。Bash は hook が固定形に限る）
   {

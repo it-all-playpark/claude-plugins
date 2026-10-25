@@ -139,10 +139,8 @@ run_raw "agent_type 無しの JSON でない入力" silent 'not json'
 
 echo "[保存先の配下 — 許可（無出力 exit 0）]"
 run_tool "保存先の diff（pr-<dev>-<ino>.diff）を Read" silent "$AGENT" Read "$(read_input "${D}/${PRN}")"
-run_tool "保存先の中で diff を指す symlink を Read" silent "$AGENT" Read "$(read_input "${D}/inner-link")"
 run_tool "親を symlink 経由で書いた保存先の diff" silent "$AGENT" Read "$(read_input "${WORKDIR}/alias/dev-flow-security-review-Ab12Cd/${PRN}")"
 run_tool "保存先の中の .. を含む表記" silent "$AGENT" Read "$(read_input "${D}/../dev-flow-security-review-Ab12Cd/${PRN}")"
-run_tool "Glob: path が保存先自身" silent "$AGENT" Glob "$(jq -cn --arg p "$D" '{pattern:"*.diff", path:$p}')"
 run_tool "Grep: path が保存先の diff・glob が相対" silent "$AGENT" Grep "$(jq -cn --arg p "${D}/${PRN}" '{pattern:"x", path:$p, glob:"**/*.diff"}')"
 
 echo "[保存先の配下でも scope の書いた diff でない — Read / Grep は deny]"
@@ -150,6 +148,18 @@ run_tool "名前に dev・ino の無い pr.diff を Read" deny "$AGENT" Read "$(
 run_tool "名前の dev・ino がファイルと違う diff を Read" deny "$AGENT" Read "$(read_input "${D}/pr-1-2.diff")"
 run_tool "Grep: path が保存先自身（中の全ファイルを読む）" deny "$AGENT" Grep "$(jq -cn --arg p "$D" '{pattern:"x", path:$p}')"
 run_tool "Grep: path が名前に dev・ino の無い pr.diff" deny "$AGENT" Grep "$(jq -cn --arg p "${D}/pr.diff" '{pattern:"x", path:$p}')"
+run_tool "保存先の中で diff を指す symlink を Read" deny "$AGENT" Read "$(read_input "${D}/inner-link")"
+run_tool "Glob: path が保存先自身でも Glob は使えない" deny "$AGENT" Glob "$(jq -cn --arg p "$D" '{pattern:"*.diff", path:$p}')"
+# 差し替えた保存先: 良性の diff を自分の dev・ino で名付け（pr-<bd>-<bi>.diff）、元の diff の名前をそれへの symlink にする。
+# realpath 先の名前と dev・ino は自己整合するので、要求されたパスの最後の要素で判定しないと通る
+SWAP_D="${WORKDIR}/swap/dev-flow-security-review-Zz99Yy"
+mkdir -p "$SWAP_D"
+printf 'benign\n' >"${SWAP_D}/benign"
+BENIGN_N="pr-$(file_id "${SWAP_D}/benign").diff"
+ln "${SWAP_D}/benign" "${SWAP_D}/${BENIGN_N}"
+ln -s "${SWAP_D}/${BENIGN_N}" "${SWAP_D}/${PRN}"
+run_tool "元の diff の名前が自己整合した良性 diff への symlink" deny "$AGENT" Read "$(read_input "${SWAP_D}/${PRN}")"
+run_tool "Grep: path が自己整合した良性 diff への symlink" deny "$AGENT" Grep "$(jq -cn --arg p "${SWAP_D}/${PRN}" '{pattern:"x", path:$p}')"
 STUB_STAT="${WORKDIR}/stub-stat"
 mkdir -p "$STUB_STAT"
 printf '#!/bin/sh\nexit 1\n' >"${STUB_STAT}/stat"
