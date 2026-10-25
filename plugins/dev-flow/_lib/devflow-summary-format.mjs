@@ -409,7 +409,7 @@ export function buildDevflowSummaryBody({
   // 他の指標が空でも修正必須と判定する（PR #662 レビュー: mergeable_conflicting 単独 HOLD で
   // 結論行「修正作業は不要です」と HOLD 理由テーブルの対応列「conflict を解消して push する」が
   // 自己矛盾していた。pr_closes_missing も同型 — issue #661）。
-  const FIX_REQUIRED_HOLD_CODES = ['mergeable_conflicting', 'final_test_red', 'iterate_non_lgtm', 'pr_closes_missing', 'ci_checks_failed'];
+  const FIX_REQUIRED_HOLD_CODES = ['mergeable_conflicting', 'final_test_red', 'validate_test_red', 'iterate_non_lgtm', 'pr_closes_missing', 'ci_checks_failed'];
   const testsurfUncleared = testsurfClearance.some(tc => !tc.cleared);
   const fixRequiredHold = Array.isArray(holdReasons) && holdReasons.some(hr => FIX_REQUIRED_HOLD_CODES.includes(hr && hr.code));
   const fixRequired = uncheckedBlocking.length > 0
@@ -1163,6 +1163,8 @@ function holdReasonDisplay(code, kind, ctx) {
         : { current: '最終 tree のテスト状態が未確認', action: '最終 tree でテストを手動実行する' };
     case 'final_test_red':
       return { current: 'fix 後の最終 tree でテスト失敗', action: '修正が必要' };
+    case 'validate_test_red':
+      return { current: 'Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', action: '修正が必要（落ちたテストを直して push する）' };
     case 'final_ac_unavailable':
       return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
     case 'iterate_non_lgtm':

@@ -748,7 +748,7 @@ const HOLD_REASON_CODES = [
   'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
   'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
   'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
-  'security_review_unresolved',
+  'security_review_unresolved', 'validate_test_red',
 ];
 
 function classifyCiChecks(ciChecks) {
@@ -845,6 +845,11 @@ function classifyMergeTier(s) {
   if (s.finalTestFlaky != null && s.finalTestGreen !== true) {
     throw new Error('classifyMergeTier: finalTestFlaky requires finalTestGreen===true');
   }
+  if (s.validateResult != null && (typeof s.validateResult !== 'object'
+    || !['passed', 'failed', 'no_tests', 'error'].includes(s.validateResult.tests)
+    || typeof s.validateResult.green !== 'boolean')) {
+    throw new Error('classifyMergeTier: invalid validateResult');
+  }
   const ci =s.ciChecks != null ? classifyCiChecks(s.ciChecks) : null;
   const blockingReasons = [];
   const pushBlocking = (code, reason, kind) => blockingReasons.push({ code, reason, kind });
@@ -885,6 +890,9 @@ function classifyMergeTier(s) {
     }
   }
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
+  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false) {
+    pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
+  }
   if (s.finalAcReconcile === 'unavailable') pushBlocking('final_ac_unavailable', 'Final AC reconcile 判定不能（最終 PR tree に対する AC 再検証結果を取得できず — agent null / schema 不一致 / index 欠落・重複・範囲外 / evidence 不足）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   if (s.securityReviewUnresolved === true) pushBlocking('security_review_unresolved', '敵対的 security review が今の PR head で clear になっていない（信頼境界をまたぎうる変更を含む PR で、pr-iterate が critical/major 0 件の review を通さずに終端）— 指摘の本文は公開しない。merge 前に人が diff を確認する（gate_policy に依らず不変）', 'human_judgment');
   if (s.iterateStatus !== 'lgtm') pushBlocking('iterate_non_lgtm', `pr-iterate 非LGTM終端（status=${s.iterateStatus ?? 'null'}）— review⇄fix loop が LGTM 未到達のため人間確認必須（gate_policy に依らず不変）`, 'human_judgment');
@@ -2434,7 +2442,7 @@ function buildDevflowSummaryBody({
 
   const uncleared = securityClearance.filter(sc => sc.cleared !== true);
 
-  const FIX_REQUIRED_HOLD_CODES = ['mergeable_conflicting', 'final_test_red', 'iterate_non_lgtm', 'pr_closes_missing', 'ci_checks_failed'];
+  const FIX_REQUIRED_HOLD_CODES = ['mergeable_conflicting', 'final_test_red', 'validate_test_red', 'iterate_non_lgtm', 'pr_closes_missing', 'ci_checks_failed'];
   const testsurfUncleared = testsurfClearance.some(tc => !tc.cleared);
   const fixRequiredHold = Array.isArray(holdReasons) && holdReasons.some(hr => FIX_REQUIRED_HOLD_CODES.includes(hr && hr.code));
   const fixRequired = uncheckedBlocking.length > 0
@@ -3091,6 +3099,8 @@ function holdReasonDisplay(code, kind, ctx) {
         : { current: '最終 tree のテスト状態が未確認', action: '最終 tree でテストを手動実行する' };
     case 'final_test_red':
       return { current: 'fix 後の最終 tree でテスト失敗', action: '修正が必要' };
+    case 'validate_test_red':
+      return { current: 'Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', action: '修正が必要（落ちたテストを直して push する）' };
     case 'final_ac_unavailable':
       return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
     case 'iterate_non_lgtm':
@@ -7693,6 +7703,9 @@ const mergeTier = classifyMergeTier({
   finalReconcile,
   finalTestGreen,
   finalTestFlaky,
+  // Validate の最新の test 結果。Final reconcile が skipped の run では PR tree のテスト状態そのもので、
+  // red（tests:'failed'）のまま PR へ進んだら validate_test_red で HOLD
+  validateResult: state.val,
   iterateStatus: iterate?.status ?? null,
   securityReviewUnresolved,
   evalStaleness,

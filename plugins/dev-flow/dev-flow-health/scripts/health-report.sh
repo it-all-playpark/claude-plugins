@@ -60,7 +60,7 @@ CANDIDATE_PATH="plugins/dev-flow/"
 
 # 異常とする HOLD 理由（dev-flow 自身や実行環境の不具合で出るもの）。一覧はここだけに持ち、health-report.bats と
 # skill-docs.bats がこの 2 行を読んで参照する。iterate_non_lgtm と ac_human_pending は条件付き（上の 1.）
-HOLD_SIGNATURE_CODES='["final_reconcile_unavailable","final_ac_unavailable","pr_closes_missing","merge_facts_dropped","danger_fail_closed","ac_agent_unsatisfied","final_test_red"]'
+HOLD_SIGNATURE_CODES='["final_reconcile_unavailable","final_ac_unavailable","pr_closes_missing","merge_facts_dropped","danger_fail_closed","ac_agent_unsatisfied","final_test_red","validate_test_red"]'
 HOLD_SIGNATURE_ITERATE_STATUSES='["ci_pending","ci_error","review_contract_error"]'
 
 die_json() {

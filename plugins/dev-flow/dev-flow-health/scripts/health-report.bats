@@ -169,9 +169,20 @@ hold_sig_count() {
     [ "$(hold_sig_count pr_closes_missing)" = "1" ]
     [ "$(sig_field final_test_red '.recent_runs[0].issue')" = "38" ]
     [ "$(sig_field pr_closes_missing '.recent_runs[0].issue')" = "38" ]
-    # fixture 全体: final_reconcile_unavailable / ci_pending / ac_human_pending / final_test_red / pr_closes_missing の 5 つ
-    [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.category == "hold")] | length')" = "5" ]
-    [ "$(printf '%s' "$output" | jq -c '.summary')" = '{"new":5,"regressed":0,"ongoing":0,"resolved":0}' ]
+    # fixture 全体: final_reconcile_unavailable / ci_pending / ac_human_pending / final_test_red / pr_closes_missing /
+    # validate_test_red の 6 つ
+    [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.category == "hold")] | length')" = "6" ]
+    [ "$(printf '%s' "$output" | jq -c '.summary')" = '{"new":6,"regressed":0,"ongoing":0,"resolved":0}' ]
+}
+
+@test "HOLD: Final reconcile skip の run の Validate red（validate_test_red）は signature になる" {
+    load_fixture hold.jsonl
+    run report --repo "$BATS_TEST_TMPDIR/no-repo"
+    [ "$status" -eq 0 ]
+    [ "$(hold_sig_count validate_test_red)" = "1" ]
+    [ "$(sig_field validate_test_red .signature)" = "dev-flow | hold | Merge tier | validate_test_red" ]
+    [ "$(sig_field validate_test_red .status)" = "new" ]
+    [ "$(sig_field validate_test_red '.recent_runs[0] | "\(.issue) \(.pr_number) \(.repo) \(.message)"')" = "39 439 acme/target-app validate_test_red" ]
 }
 
 @test "HOLD: hold_reason_codes を持たない既存形式の entry は signature にならず、エラーにもならない" {

@@ -431,6 +431,7 @@ flowchart TD
 | `danger_fail_closed` | danger-grep 実行不能 | fail-closed |
 | `final_reconcile_unavailable` | Final reconcile 再検証不能（CI 委譲も不成立） | |
 | `final_test_red` | final test red | 落ちたファイルだけの 1 回の再実行で green なら flake として HOLD にしない |
+| `validate_test_red` | Validate test red のまま PR へ進行し、pr-iterate の fix が 0 件で Final reconcile が skip された | PR tree のテスト状態は Validate の結果のまま。gate_policy に依らず人間確認 |
 | `final_ac_unavailable` | Final AC reconcile 判定不能 | |
 | `iterate_non_lgtm` | pr-iterate が `lgtm` 以外で終端 | |
 | `hash_mismatch` | `eval_staleness = hash_mismatch` | 評価済み tree と merge 対象 tree の乖離 |

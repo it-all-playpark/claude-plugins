@@ -141,7 +141,7 @@ export const HOLD_REASON_CODES = [
   'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
   'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
   'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
-  'security_review_unresolved',
+  'security_review_unresolved', 'validate_test_red',
 ];
 
 // merge-tier-facts の checks サブ結果（parseChecks の返り値 {ok:true, checks} | {ok:false, error}）を
@@ -237,6 +237,14 @@ export function classifyMergeableState(meta) {
 //   （後方互換 scaffolding 禁止規約）。未指定(undefined/null) = reason 追加なし。
 // s.finalTestGreen (optional true|false|null): Final reconcile での最終 tree test 再実行結果。
 //   false のとき専用 HOLD reason を追記する。true/null(未実行 or no_tests)は reason 追加なし。
+// s.validateResult (optional { tests: 'passed'|'failed'|'no_tests'|'error', green: boolean }): Validate の最新の
+//   test 結果（workflow の state.val。issue #1086）。finalReconcile === 'skipped'（fixes_applied=0 で最終 tree を
+//   再検証していない）かつ tests:'failed' + green:false のとき 'validate_test_red'（human_judgment）で HOLD —
+//   GREEN_MAX 到達で red のまま PR へ進んだ run で、この Validate の結果が PR tree のテスト状態そのもの
+//   （base でも落ちる既存失敗は Validate が green:true にして抜けるので、ここに来る red は diff 起因）。
+//   tests:'error'（起動失敗）は CI 委譲の扱いのまま積まない。finalReconcile が skipped 以外のときは最終 tree の
+//   判定（final_test_red / final_reconcile_unavailable / ci_verified）が持つので見ない。未指定 = reason 追加なし。
+//   object でない / tests が enum 外 / green が boolean でないものは明示 error。
 // s.breakingStructured / s.breakingKeyword: breaking 検出は analyze 構造化判定
 //   (breakingStructured = breaking_change===true) と issue title/body keyword scan
 //   (breakingKeyword) の 2 入力を持つ（issue #278）。ただし breakingKeyword は単独では
@@ -396,6 +404,11 @@ export function classifyMergeTier(s) {
   if (s.finalTestFlaky != null && s.finalTestGreen !== true) {
     throw new Error('classifyMergeTier: finalTestFlaky requires finalTestGreen===true');
   }
+  if (s.validateResult != null && (typeof s.validateResult !== 'object'
+    || !['passed', 'failed', 'no_tests', 'error'].includes(s.validateResult.tests)
+    || typeof s.validateResult.green !== 'boolean')) {
+    throw new Error('classifyMergeTier: invalid validateResult');
+  }
   const ci =s.ciChecks != null ? classifyCiChecks(s.ciChecks) : null;
   // blocking 文言のみ（可視化行は含めない）。HOLD 判定・holdReasons/holdKind の入力に使う。
   const blockingReasons = [];
@@ -437,6 +450,9 @@ export function classifyMergeTier(s) {
     }
   }
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
+  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false) {
+    pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
+  }
   if (s.finalAcReconcile === 'unavailable') pushBlocking('final_ac_unavailable', 'Final AC reconcile 判定不能（最終 PR tree に対する AC 再検証結果を取得できず — agent null / schema 不一致 / index 欠落・重複・範囲外 / evidence 不足）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   if (s.securityReviewUnresolved === true) pushBlocking('security_review_unresolved', '敵対的 security review が今の PR head で clear になっていない（信頼境界をまたぎうる変更を含む PR で、pr-iterate が critical/major 0 件の review を通さずに終端）— 指摘の本文は公開しない。merge 前に人が diff を確認する（gate_policy に依らず不変）', 'human_judgment');
   if (s.iterateStatus !== 'lgtm') pushBlocking('iterate_non_lgtm', `pr-iterate 非LGTM終端（status=${s.iterateStatus ?? 'null'}）— review⇄fix loop が LGTM 未到達のため人間確認必須（gate_policy に依らず不変）`, 'human_judgment');

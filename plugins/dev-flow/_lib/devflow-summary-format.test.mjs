@@ -2392,6 +2392,20 @@ test('issue #834: ci_checks_failed 単独 HOLD で現状/対応に CI 失敗と 
   assert.ok(body.includes('修正作業が必要です'), '結論行は修正作業が必要');
 });
 
+test('issue #1086: validate_test_red 単独 HOLD は final_test_red と同じく修正が必要な HOLD で、現状/対応に Validate red の説明と対処が出る', () => {
+  const REASON = 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行）';
+  const body = buildDevflowSummaryBody({
+    ...BASE_INPUT,
+    mergeTier: 'HOLD',
+    mergeTierReasons: [REASON],
+    holdReasons: [{ code: 'validate_test_red', reason: REASON, kind: 'human_judgment' }],
+    holdKind: 'human_judgment',
+  });
+  assert.ok(body.includes(`| ${REASON} | Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし） | 修正が必要（落ちたテストを直して push する） |`), body);
+  assert.ok(body.includes('修正作業が必要です'), '結論行は修正作業が必要');
+  assert.ok(!body.includes('修正作業は不要'), '結論行は「修正作業は不要」ではない');
+});
+
 test('issue #1082: security_review_unresolved は stop_reason=reviewer_context_changed なら「自動 review をしていない」と変わった指示ファイルを一覧する固定コマンド、それ以外は従来の文面', () => {
   const REASON = '敵対的 security review が今の PR head で clear になっていない';
   const rowOf = (securityReview) => buildDevflowSummaryBody({
