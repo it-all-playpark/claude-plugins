@@ -43,7 +43,7 @@ Requires: `codex` CLI（ログイン済み）, `python3`, `jq`. `--optimize` 使
   "output_dir": "public/blog",
   "aspect_ratio": "16:9",
   "brand_prompt_path": "",
-  "codex_model": "gpt-5.5",
+  "codex_model": "gpt-6-luna",
   "codex_reasoning_effort": "low"
 }
 ```
@@ -53,7 +53,7 @@ Requires: `codex` CLI（ログイン済み）, `python3`, `jq`. `--optimize` 使
 | `output_dir` | 画像出力先（git root 相対） | `public/blog` |
 | `aspect_ratio` | アスペクト比（プロンプトに渡す） | `16:9` |
 | `brand_prompt_path` | ブランドプロンプトファイル（git root 相対） | `""`（デフォルト使用） |
-| `codex_model` | Codex agent model | `gpt-5.5` |
+| `codex_model` | Codex agent model | `gpt-6-luna` |
 | `codex_reasoning_effort` | Codex 推論深度（`low`/`medium`/`high`） | `low` |
 
 画像モデル自体は Codex 内部で `gpt-image-2` 固定（agent モデル選択とは独立）。
