@@ -292,7 +292,7 @@ pr-iterate      → CI gate を通り conflict も無い round（LGTM の候補�
                     → 起動時・run 中のどれか 1 回でも対象なら run の終わりまで対象（args.security_review が無い run も対象）
                   対象なら security-review#i（security-reviewer を毎回新しく spawn。PR 全 diff の file と head sha と
                     前回の未解消 critical/major を DATA として渡す）
-                  security-diff-check#i（security-codex-relay）: `security-review-diff-check <保存先> <scope の diff_sha256>`
+                  security-diff-check#i（security-codex-relay）: `security-review-diff-check <保存先> <scope の diff_sha256> <scope の diff_stat_sha256>`
                     → pr.diff が scope の書いたものと一致しない・照合できない → status: security_unresolved（fix に回さない）
                     → critical/major 0 件かつ reviewed_sha が今の head → LGTM
                     → critical/major あり → fix#i（dev-runner）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
@@ -339,18 +339,21 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
                   args.security_review.reviewer で渡す（PR head の設定ファイルは読まない。無ければ "claude"）
 pr-iterate      → security-scope#i の前提チェックを通った round で（指示ファイルを変える PR は Codex の agent を spawn せず、Claude 経路と
                   同じ reviewer_context_changed で止める — 中継も PR の worktree で起動し、PR の CLAUDE.md を受け取れば clear の JSON を捏造できる）:
-                  security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`
-                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）。
-                      round の nonce はファイルに書かず stdout で返す。読んだ pr.diff・書いた prompt.md・schema.json の sha256 も返す
-                      （pr.diff の sha256 が scope の diff_sha256 と違えば Codex を起動せず security-review#i に倒す）
-                  security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... "<固定文> <nonce>"`（先頭トークン codex の単文。返り値は使わない）
-                  security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head> <nonce> <-C> <prompt の sha256> <schema の sha256>`
+                  security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>/<前回の out_name>]`
+                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、codex の -o の置き場 <保存先>/<out_name>（乱数名・mode 0300）、
+                      新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）。書いた後に保存先を mode 0300（一覧を取れない）にする。
+                      round の nonce と out_name はファイルに書かず stdout で返す。読んだ pr.diff の sha256・statDigest、書いた prompt.md・
+                      schema.json の sha256、書いた後の保存先・pr.diff・prompt.md・schema.json・prepared_at・-C の statDigest も返す
+                      （pr.diff の sha256・statDigest が scope の値と違えば Codex を起動せず security-review#i に倒す）
+                  security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... -o <保存先>/<out_name>/result.json "<固定文> <nonce>"`（先頭トークン codex の単文。返り値は使わない）
+                  security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head> <nonce> <-C> <out_name> <prompt の sha256> <schema の sha256> <statDigest>`
                     （自由文を出さない判定）
                     → clear でなければ security-codex-issues#i: 同じ引数 + `--issues`（指摘の本文）
-                    → codex の後に prompt.md・schema.json の sha256 が prep の値と違う・-C が空でない・-C と保存先の祖先に
+                    → codex の後に prompt.md・schema.json の sha256 か statDigest が prep の値と違う・-C が空でない・-C と保存先の祖先に
                       .git / AGENTS.md / AGENTS.override.md / CLAUDE.md がある → 判定できない（security-review#i に倒す）
                     → result.json の nonce が一致しなければ判定できない — 保存先（$TMPDIR 配下）は PR のコードが残した常駐プロセスからも
-                      書けるので、先回り・上書きした JSON で clear にしない
+                      書けるので、先回り・上書きした JSON で clear にしない。result.json は out_name の置き場にだけ書かせ、置き場の名前を
+                      知らない者に codex が書いた nonce を読ませない
                     → script と workflow の両方が securityReviewVerdict と同じ規則で clear のときだけ LGTM（以降は Claude 経路と同じ）
                     → clear を決める中継に自由文（codex の出力・指摘の本文）を読ませない — 引用された PR の文で偽の clear を作らせない
                     → Codex で判定できない（prep の失敗・codex が無い・hook の拒否・result.json が読めない）→ その round は security-review#i
@@ -360,9 +363,9 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
   sandbox の外で通信できるのは先頭が codex の単文だけで、exec-proxy script の中から起動すると通信が拒否される）: `codex exec -s read-only --ephemeral --ignore-user-config
   --ignore-rules --skip-git-repo-check -C <空の mkdtemp> -c web_search="disabled" --disable shell_tool --disable unified_exec
   --disable apps --disable browser_use --disable computer_use -c model_instructions_file=<保存先>/prompt.md
-  --output-schema <保存先>/schema.json -o <保存先>/result.json "<固定文> <nonce>"`。空の `-C` で cwd の AGENTS.md を読ませず、shell 等を外して
+  --output-schema <保存先>/schema.json -o <保存先>/<out_name>/result.json "<固定文> <nonce>"`。空の `-C` で cwd の AGENTS.md を読ませず、shell 等を外して
   diff の外を読む手段を無くす。hook は起動の前に、保存先・作業ディレクトリが mkdtemp の形の実ディレクトリで cwd の配下でないこと、
-  `-C` が空であること、保存先に prompt.md・schema.json があり result.json（symlink を含む）が無いことを確かめる。
+  `-C` が空であること、保存先に prompt.md・schema.json と実ディレクトリの置き場があり、置き場に result.json（symlink を含む）が無いことを確かめる。
   起動される `codex` の実体も確かめる: hook の PATH を bash と同じ順でたどって最初に見つかる実行可能な通常ファイルの realpath が、
   解決できない・PATH の相対パスか空の要素から解決された・入力の cwd（PR の worktree）・`$TMPDIR`・`/tmp`・`/private/tmp` の配下なら
   拒否する（中継の codex は sandbox の外で動くので、PR のコードが sandbox の中から置いた `codex` を起動させない）
@@ -381,14 +384,15 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
 sandbox の中の PR のコード — fix や Validate のテストで走らせて残った常駐プロセス — も同じ権限で書ける。常駐プロセスは
 止めない・一覧を取らない — plugin の script / hook は状態を変えない）:
 
-- 検出できる: review の前と後で中身が違う入力。Claude 経路は scope が返した `pr.diff` の sha256 を security-reviewer の返却後に
-  `security-review-diff-check` が取り直し、一致しなければ clear にしない。Codex 経路は prep が読んだ `pr.diff` の sha256 を
-  workflow が scope の値と照合し、`security-review-codex-result` が codex の後に `prompt.md`・`schema.json` の sha256・`-C` が空であること・
-  `-C` と保存先の祖先の指示ファイルの有無を確かめる（当たれば Claude 経路の判定に倒す）。照合は決定論 script が行い、中継は
-  argv と stdout を写すだけ（sha256 を LLM に判定させない）。result.json の先回り・上書きは nonce で弾く
-- 残る経路（この gate では塞がない）: 読まれる間だけ書き換えて、照合の前に元へ戻す（hook の検査も result script の照合も
-  その時点の 1 回だけ）。codex の出力後に、`result.json` を nonce ごと写して `issues:[]` で上書きする（codex が書いた result.json に
-  nonce が入るので、nonce の照合では防げない）。`codex` の実体の検査は hook の PATH で行い、Bash tool の shell の PATH・alias・関数は見ない
+- 検出できる: review の前と後で中身が違う入力と、間に書き換えて元へ戻した入力。書いた直後に内容の sha256 と statDigest
+  （lstat の dev・ino・ctime の ns・nlink の sha256。ctime は利用者が戻せず、読むだけでは変わらない）を返し、review の後に取り直して
+  完全一致を求める。Claude 経路は scope が返した `pr.diff` の値を security-reviewer の返却後に `security-review-diff-check` が取り直し、
+  一致しなければ clear にしない。Codex 経路は prep が読んだ `pr.diff` の値を workflow が scope の値と照合し、`security-review-codex-result` が
+  codex の後に `prompt.md`・`schema.json` の sha256、保存先・入力・`-C` の statDigest、`-C` が空であること・`-C` と保存先の祖先の
+  指示ファイルの有無を確かめる（当たれば Claude 経路の判定に倒す。`-C` に AGENTS.md を置いて消す・保存先を chmod して一覧を取るのも
+  ctime で当たる）。照合は決定論 script が行い、中継は argv と stdout を写すだけ（sha256 を LLM に判定させない）。result.json の
+  先回り・上書きは nonce で弾き、codex が書いた result.json は一覧を取れない保存先の中の乱数名の置き場に置かせて nonce を写させない
+- 残る経路（この gate では塞がない）: `codex` の実体の検査は hook の PATH で行い、Bash tool の shell の PATH・alias・関数は見ない
 
 - **`agent()` へ渡す agentType は plugin namespace 必須** — subagent の実体は plugin 配下
   (`plugins/dev-flow/agents/`) にあり、harness は `dev-flow:<name>` の namespaced id でしか解決しない

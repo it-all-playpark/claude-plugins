@@ -3,17 +3,18 @@
 // （_shared/scripts/security-review-diff-check.sh 経由）から呼ぶ。
 //
 // 保存先（os.tmpdir() 配下）は sandbox の中の PR のコード（fix・test で走らせて残った常駐プロセス）からも書けるので、
-// security-reviewer が読む前に pr.diff を良性の diff に差し替えられる。workflow は scope が返した sha256 をここへ argv で渡し、
-// 照合は script が行う（中継は stdout を写すだけ）。差し替えて review の後に戻す経路は検出できない。
+// security-reviewer が読む前に pr.diff を良性の diff に差し替えられる。workflow は scope が返した sha256 と statDigest
+// （dev・ino・ctime の ns・nlink）をここへ argv で渡し、照合は script が行う（中継は stdout を写すだけ）。内容の sha256 だけでは
+// 差し替えて review の後に元へ戻した pr.diff を見分けられないので、利用者が戻せない ctime を含む statDigest の一致も求める。
 //
-// Usage: node security-review-diff-check.mjs <review_dir> <diff_sha256>
+// Usage: node security-review-diff-check.mjs <review_dir> <diff_sha256> <diff_stat_sha256>
 // stdout: JSON 1 行 {ok, matched, error?}。matched は pr.diff（保存先の直下の通常ファイル。symlink でない）の sha256 が
-//   diff_sha256 と一致したときだけ true。ok:false（保存先の形でない・symlink・pr.diff が通常ファイルでない）は照合できない —
-//   matched は常に false。error は固定の code だけ。usage error だけ exit 2、それ以外は exit 0。
+//   diff_sha256 と、statDigest が diff_stat_sha256 と一致したときだけ true。ok:false（保存先の形でない・symlink・pr.diff が
+//   通常ファイルでない）は照合できない — matched は常に false。error は固定の code だけ。usage error だけ exit 2、それ以外は exit 0。
 import { lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { isCodexArgPath, SECURITY_REVIEW_DIR_NAME_RE, SHA256_HEX_RE } from '../security-review.mjs'
-import { sha256OfRegularFile } from './security-review-workspace.mjs'
+import { sha256OfRegularFile, statDigest } from './security-review-workspace.mjs'
 
 const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
@@ -22,14 +23,15 @@ const emit = (obj, code = 0) => {
 const fail = (error, code = 0) => emit({ ok: false, matched: false, error }, code)
 
 const argv = process.argv.slice(2)
-if (argv.length !== 2 || !SHA256_HEX_RE.test(argv[1])) fail('usage', 2)
-const [reviewDir, expected] = argv
+if (argv.length !== 3 || !SHA256_HEX_RE.test(argv[1]) || !SHA256_HEX_RE.test(argv[2])) fail('usage', 2)
+const [reviewDir, expected, expectedStat] = argv
 if (!isCodexArgPath(reviewDir, SECURITY_REVIEW_DIR_NAME_RE)) fail('review_dir_invalid')
 try {
   if (!lstatSync(reviewDir).isDirectory()) fail('review_dir_invalid')
 } catch {
   fail('review_dir_invalid')
 }
-const actual = sha256OfRegularFile(join(reviewDir, 'pr.diff'))
+const diffPath = join(reviewDir, 'pr.diff')
+const actual = sha256OfRegularFile(diffPath)
 if (actual == null) fail('diff_unavailable')
-emit({ ok: true, matched: actual === expected })
+emit({ ok: true, matched: actual === expected && statDigest([diffPath]) === expectedStat })

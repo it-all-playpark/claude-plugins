@@ -6,12 +6,24 @@ bats_require_minimum_version 1.5.0
 # result.json の判定規則そのもの（schema 適合・件数・reviewed_sha）は _lib/security-review.test.mjs の codexResultVerdict が確かめる。
 # ここは作業場所への細工で clear にならないこと: result.json が symlink・通常ファイルでない・保存先の外を指す・
 # prep が記録した時刻（prepared_at）より前の mtime・nonce が prep の nonce と違う、
-# codex の後に prompt.md・schema.json の sha256 が prep の値と違う・-C が空でない・-C と保存先の祖先に指示ファイルがある
+# codex の後に prompt.md・schema.json の sha256 か保存先・入力・-C の statDigest（dev・ino・ctime・nlink）が prep の値と違う・
+# -C が空でない・-C と保存先の祖先に指示ファイルがある・result.json が prep の作った置き場（out_name）の中にない
 # なら ok:false・cleared:false（workflow は Claude 経路の判定に倒す）。
 
-BIN="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/bin/security-review-codex-result"
+PLUGIN_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
+BIN="$PLUGIN_ROOT/bin/security-review-codex-result"
 HEAD_SHA="$(printf 'a%.0s' {1..40})"
 NONCE="$(printf '0123456789abcdef%.0s' 1 2)"
+
+# prep と同じ statDigest（_lib/scripts/security-review-workspace.mjs）を引数のパスで取る
+stat_digest() {
+    node --input-type=module -e "import { statDigest } from '$PLUGIN_ROOT/_lib/scripts/security-review-workspace.mjs'; process.stdout.write(String(statDigest(process.argv.slice(1))))" "$@"
+}
+
+# prep が書いた後の保存先・pr.diff・prompt.md・schema.json・prepared_at・-C の statDigest
+take_stat() {
+    STAT="$(stat_digest "$D" "$D/pr.diff" "$D/prompt.md" "$D/schema.json" "$D/prepared_at" "$C")"
+}
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1
@@ -21,13 +33,19 @@ setup() {
     TMP_P="$(cd "$BATS_TEST_TMPDIR" && pwd -P)"
     D="$TMP_P/rv/dev-flow-security-review-Ab12Cd"
     C="$TMP_P/cw/dev-flow-codex-cwd-Qw12Er"
+    O="fedcba9876543210fedcba9876543210"
     mkdir -p "$D" "$C"
+    printf 'diff --git a/run.sh b/run.sh\n+echo "$1" | sh\n' >"$D/pr.diff"
     # prep 時刻は今（epoch ms）
     printf '%s\n' "$(($(date +%s) * 1000))" >"$D/prepared_at"
     printf '# Security review\n<<<SECURITY_REVIEW_DATA_BEGIN>>>\ndiff:\n+echo "$1" | sh\n' >"$D/prompt.md"
     printf '{"type":"object","properties":{"issues":{"type":"array"}}}\n' >"$D/schema.json"
     PSHA="$(sha256_of "$D/prompt.md")"
     SSHA="$(sha256_of "$D/schema.json")"
+    # codex の -o の置き場（prep が保存先の中に作る乱数名のディレクトリ）
+    mkdir "$D/$O"
+    R="$D/$O/result.json"
+    take_stat
 }
 
 # 第 1 引数のパスに clear の result.json を書く（第 2 引数で nonce を変えられる）
@@ -35,9 +53,9 @@ write_clear() {
     jq -n --arg sha "$HEAD_SHA" --arg n "${2:-$NONCE}" '{nonce: $n, reviewed_sha: $sha, issues: [], summary: "s"}' >"$1"
 }
 
-# prep が返した値（保存先・head・nonce・-C・prompt.md / schema.json の sha256）で判定する
+# prep が返した値（保存先・head・nonce・-C・置き場・prompt.md / schema.json の sha256・statDigest）で判定する
 run_result() {
-    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$C" "$PSHA" "$SSHA" "$@"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$C" "$O" "$PSHA" "$SSHA" "$STAT" "$@"
 }
 
 assert_not_cleared() {
@@ -45,39 +63,92 @@ assert_not_cleared() {
 }
 
 @test "prep の後に書かれた通常ファイルの clear の result.json は clear" {
-    write_clear "$D/result.json"
+    write_clear "$R"
     run_result
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg sha "$HEAD_SHA" '.ok == true and .cleared == true and .reviewed_sha == $sha'
 }
 
 @test "prep の後に書かれた result.json でも nonce が prep の nonce と違えば clear にしない（保存先へ先回り・上書きした JSON）" {
-    write_clear "$D/result.json" "$(printf 'f%.0s' {1..32})"
+    write_clear "$R" "$(printf 'f%.0s' {1..32})"
     run_result
     assert_not_cleared nonce_mismatch
-    jq -n --arg sha "$HEAD_SHA" '{reviewed_sha: $sha, issues: [], summary: "s"}' >"$D/result.json"
+    jq -n --arg sha "$HEAD_SHA" '{reviewed_sha: $sha, issues: [], summary: "s"}' >"$R"
     run_result
     assert_not_cleared schema_mismatch
 }
 
-@test "nonce・-C・sha256 の引数が無い・形が違うなら usage error" {
-    write_clear "$D/result.json"
+@test "nonce・-C・置き場・sha256・statDigest の引数が無い・形が違うなら usage error" {
+    write_clear "$R"
     run bash "$BIN" "$D" "$HEAD_SHA"
     [ "$status" -eq 2 ]
-    run bash "$BIN" "$D" "$HEAD_SHA" "${NONCE^^}" "$C" "$PSHA" "$SSHA"
+    run bash "$BIN" "$D" "$HEAD_SHA" "${NONCE^^}" "$C" "$O" "$PSHA" "$SSHA" "$STAT"
     [ "$status" -eq 2 ]
     run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE"
     [ "$status" -eq 2 ]
-    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$C" "$PSHA"
+    # 置き場・statDigest の無い旧形
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$C" "$PSHA" "$SSHA"
     [ "$status" -eq 2 ]
-    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$C" "${PSHA:0:40}" "$SSHA"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$C" "$O" "$PSHA" "$SSHA"
     [ "$status" -eq 2 ]
-    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$C" "$PSHA" "${SSHA^^}"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$C" "${O^^}" "$PSHA" "$SSHA" "$STAT"
+    [ "$status" -eq 2 ]
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$C" "$O" "${PSHA:0:40}" "$SSHA" "$STAT"
+    [ "$status" -eq 2 ]
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$C" "$O" "$PSHA" "${SSHA^^}" "$STAT"
+    [ "$status" -eq 2 ]
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$C" "$O" "$PSHA" "$SSHA" "${STAT:0:40}"
     [ "$status" -eq 2 ]
 }
 
-@test "codex の後に prompt.md が prep の書いたものと違えば clear にしない（diff を空にする差し替え・symlink への置き換え）" {
+@test "codex の前に差し替えて後で元の内容へ戻した入力（prompt.md・schema.json・pr.diff・-C）は clear にしない" {
+    write_clear "$R"
+    for f in prompt.md schema.json pr.diff; do
+        cp "$D/$f" "$TMP_P/orig"
+        sleep 0.01
+        printf 'benign\n' >"$D/$f"
+        cat "$TMP_P/orig" >"$D/$f"
+        run_result
+        assert_not_cleared input_changed
+        take_stat
+    done
+    # -C に AGENTS.md を置いて消す
+    sleep 0.01
+    : >"$C/AGENTS.md"
+    rm "$C/AGENTS.md"
+    run_result
+    assert_not_cleared input_changed
+    take_stat
+    run_result
+    echo "$output" | jq -e '.ok == true and .cleared == true'
+}
+
+@test "保存先の mode を戻して一覧を取った round は clear にしない" {
+    write_clear "$R"
+    chmod 300 "$D"
+    take_stat
+    sleep 0.01
+    chmod 700 "$D"
+    ls "$D" >/dev/null
+    chmod 300 "$D"
+    run_result
+    assert_not_cleared input_changed
+    chmod 700 "$D"
+}
+
+@test "result.json が置き場（out_name）の中にない・置き場が無いなら clear にしない" {
+    # 旧形の固定名（保存先の直下）に置かれた result.json は読まない
     write_clear "$D/result.json"
+    take_stat
+    run_result
+    assert_not_cleared result_unreadable
+    rmdir "$D/$O"
+    run_result
+    assert_not_cleared input_changed
+}
+
+@test "codex の後に prompt.md が prep の書いたものと違えば clear にしない（diff を空にする差し替え・symlink への置き換え）" {
+    write_clear "$R"
     printf '# Security review\n<<<SECURITY_REVIEW_DATA_BEGIN>>>\ndiff:\n' >"$D/prompt.md"
     run_result
     assert_not_cleared input_changed
@@ -96,26 +167,28 @@ assert_not_cleared() {
 }
 
 @test "codex の後に schema.json が prep の書いたものと違えば clear にしない（issues を maxItems:0 にする差し替え）" {
-    write_clear "$D/result.json"
+    write_clear "$R"
     printf '{"type":"object","properties":{"issues":{"type":"array","maxItems":0}}}\n' >"$D/schema.json"
     run_result
     assert_not_cleared input_changed
 }
 
 @test "-C が空でない（AGENTS.md 等を置いた）なら clear にしない" {
-    write_clear "$D/result.json"
+    write_clear "$R"
     for name in AGENTS.md .git x; do
         if [ "$name" = .git ]; then mkdir "$C/.git"; else : >"$C/$name"; fi
         run_result
         assert_not_cleared cwd_not_empty
         rm -rf "${C:?}/$name"
     done
+    # 置いて消した -C は ctime が変わる（prep の後の値として取り直すと clear）
+    take_stat
     run_result
     echo "$output" | jq -e '.ok == true and .cleared == true'
 }
 
 @test "-C と保存先の祖先に .git / AGENTS.md / AGENTS.override.md / CLAUDE.md があれば clear にしない" {
-    write_clear "$D/result.json"
+    write_clear "$R"
     for parent in "$TMP_P/cw" "$TMP_P/rv"; do
         for name in .git AGENTS.md AGENTS.override.md CLAUDE.md; do
             if [ "$name" = .git ]; then mkdir "$parent/.git"; else : >"$parent/$name"; fi
@@ -131,20 +204,20 @@ assert_not_cleared() {
 }
 
 @test "-C が作業ディレクトリの形でない・実在しない・symlink なら clear にしない" {
-    write_clear "$D/result.json"
-    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$TMP_P/cw" "$PSHA" "$SSHA"
+    write_clear "$R"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$TMP_P/cw" "$O" "$PSHA" "$SSHA" "$STAT"
     assert_not_cleared cwd_dir_invalid
-    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$TMP_P/cw/dev-flow-codex-cwd-None01" "$PSHA" "$SSHA"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$TMP_P/cw/dev-flow-codex-cwd-None01" "$O" "$PSHA" "$SSHA" "$STAT"
     assert_not_cleared cwd_dir_invalid
     mkdir -p "$TMP_P/other"
     ln -s "$TMP_P/other" "$TMP_P/cw/dev-flow-codex-cwd-Lnk001"
-    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$TMP_P/cw/dev-flow-codex-cwd-Lnk001" "$PSHA" "$SSHA"
+    run bash "$BIN" "$D" "$HEAD_SHA" "$NONCE" "$TMP_P/cw/dev-flow-codex-cwd-Lnk001" "$O" "$PSHA" "$SSHA" "$STAT"
     assert_not_cleared cwd_dir_invalid
 }
 
 @test "result.json が prepared_at より前の mtime なら clear にしない" {
-    write_clear "$D/result.json"
-    touch -t 200001010000 "$D/result.json"
+    write_clear "$R"
+    touch -t 200001010000 "$R"
     run_result
     assert_not_cleared result_stale
     run_result --issues
@@ -152,7 +225,7 @@ assert_not_cleared() {
 }
 
 @test "prepared_at が無い・数字でないなら clear にしない" {
-    write_clear "$D/result.json"
+    write_clear "$R"
     rm "$D/prepared_at"
     run_result
     assert_not_cleared prepared_at_unreadable
@@ -163,24 +236,24 @@ assert_not_cleared() {
 
 @test "result.json が保存先の外を指す symlink なら clear にしない" {
     write_clear "$TMP_P/outside.json"
-    ln -s "$TMP_P/outside.json" "$D/result.json"
+    ln -s "$TMP_P/outside.json" "$R"
     run_result
     assert_not_cleared result_unreadable
 }
 
 @test "result.json が通常ファイルでない（ディレクトリ・FIFO）なら clear にしない" {
-    mkdir "$D/result.json"
+    mkdir "$R"
     run_result
     assert_not_cleared result_unreadable
-    rmdir "$D/result.json"
-    mkfifo "$D/result.json"
+    rmdir "$R"
+    mkfifo "$R"
     run_result
     assert_not_cleared result_unreadable
 }
 
 @test "保存先が symlink なら clear にしない" {
-    write_clear "$D/result.json"
+    write_clear "$R"
     ln -s "$D" "$TMP_P/rv/dev-flow-security-review-Lnk001"
-    run bash "$BIN" "$TMP_P/rv/dev-flow-security-review-Lnk001" "$HEAD_SHA" "$NONCE" "$C" "$PSHA" "$SSHA"
+    run bash "$BIN" "$TMP_P/rv/dev-flow-security-review-Lnk001" "$HEAD_SHA" "$NONCE" "$C" "$O" "$PSHA" "$SSHA" "$STAT"
     assert_not_cleared review_dir_invalid
 }

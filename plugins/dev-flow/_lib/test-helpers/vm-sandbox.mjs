@@ -428,17 +428,19 @@ export const SECURITY_SCOPE_DEFAULT_HEAD = 'c'.repeat(40);
 export const SECURITY_REVIEW_DIR = '/tmp/dev-flow-security-review-Stub01';
 /** security-scope 応答の diff_sha256 の既定（64 桁）。 */
 export const SECURITY_DIFF_SHA256 = 'd'.repeat(64);
+/** security-scope 応答の diff_stat_sha256 の既定（64 桁）。 */
+export const SECURITY_DIFF_STAT_SHA256 = '7'.repeat(64);
 
 /**
  * security-review-scope の stdout と同形の応答を返す。
  *
- * @param {{target?: boolean, ok?: boolean, head?: string|null, reasons?: string[], reviewDir?: string, diffPath?: string, diffSha256?: string|null, contextChanged?: boolean}} [o]
+ * @param {{target?: boolean, ok?: boolean, head?: string|null, reasons?: string[], reviewDir?: string, diffPath?: string, diffSha256?: string|null, diffStatSha256?: string|null, contextChanged?: boolean}} [o]
  */
-export function securityScopeResponse({ target = true, ok = true, head = SECURITY_SCOPE_DEFAULT_HEAD, reasons, reviewDir = SECURITY_REVIEW_DIR, diffPath, diffSha256 = SECURITY_DIFF_SHA256, contextChanged = false } = {}) {
+export function securityScopeResponse({ target = true, ok = true, head = SECURITY_SCOPE_DEFAULT_HEAD, reasons, reviewDir = SECURITY_REVIEW_DIR, diffPath, diffSha256 = SECURITY_DIFF_SHA256, diffStatSha256 = SECURITY_DIFF_STAT_SHA256, contextChanged = false } = {}) {
   return {
     ok, target, reasons: reasons ?? (target ? ['not_allowlisted:1'] : []), file_count: 1,
     head_sha: head, reviewer_context_changed: contextChanged, review_dir: reviewDir, diff_path: diffPath ?? `${reviewDir}/pr.diff`,
-    diff_sha256: diffSha256,
+    diff_sha256: diffSha256, diff_stat_sha256: diffStatSha256,
   };
 }
 

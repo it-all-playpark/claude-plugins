@@ -9,10 +9,11 @@
 //     → merge-base(<base-ref>, HEAD) と作業ツリー（未コミット・untracked を含む。一時 index で tree を作り、
 //       実 index は触らない）の diff を判定する（dev-flow の Security floor。implementer は commit しない）
 //   --save-diff: diff 全文を worktree の外の新しい一時ディレクトリ（os.tmpdir() 配下）の pr.diff に書き、
-//     review_dir / diff_path と、書いた内容の sha256（diff_sha256）を返す（pr-iterate の security-reviewer が読む。
+//     review_dir / diff_path と、書いた内容の sha256（diff_sha256）・書いた直後の pr.diff の statDigest（diff_stat_sha256。
+//     dev・ino・ctime・nlink — 差し替えて戻した pr.diff を検出する）を返す（pr-iterate の security-reviewer が読む。
 //     保存先は sandbox の中から書けるので、workflow は review の後に security-review-diff-check でこの値と照合する）
 //
-// stdout: JSON 1 行 {ok, target, reasons, file_count, head_sha, reviewer_context_changed, review_dir, diff_path, diff_sha256, error?}
+// stdout: JSON 1 行 {ok, target, reasons, file_count, head_sha, reviewer_context_changed, review_dir, diff_path, diff_sha256, diff_stat_sha256, error?}
 //   reasons は固定の code と件数（`not_allowlisted:3` 等。_lib の reasonCodeCounts）だけで、ファイルパス・diff 由来の
 //   文字列を出さない（stdout を写す agent へ PR が決めた文字列を渡すと、判定を書き換える文を混ぜられる）。error も
 //   固定の code（`usage` / `git_failed`）だけで、git の stderr は stdout にも stderr にも出さない（同じ理由）。
@@ -26,13 +27,13 @@ import { join } from 'node:path'
 import {
   isReviewerContextPath, reviewerImportClosure, securityReviewScope, SECURITY_SCOPE_DIFF_ARGS, SECURITY_SCOPE_GIT_CONFIG,
 } from '../security-review-scope.mjs'
-import { sha256Hex } from './security-review-workspace.mjs'
+import { sha256Hex, statDigest } from './security-review-workspace.mjs'
 
 const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
   process.exit(code)
 }
-const failClosed = (error) => ({ ok: false, target: true, reasons: ['scope_unavailable:1'], file_count: null, head_sha: null, reviewer_context_changed: true, review_dir: null, diff_path: null, diff_sha256: null, error })
+const failClosed = (error) => ({ ok: false, target: true, reasons: ['scope_unavailable:1'], file_count: null, head_sha: null, reviewer_context_changed: true, review_dir: null, diff_path: null, diff_sha256: null, diff_stat_sha256: null, error })
 
 const argv = process.argv.slice(2)
 const saveDiff = argv.includes('--save-diff')
@@ -113,13 +114,15 @@ try {
   let reviewDir = null
   let diffPath = null
   let diffSha256 = null
+  let diffStatSha256 = null
   if (saveDiff) {
     reviewDir = mkdtempSync(join(tmpdir(), 'dev-flow-security-review-'))
     diffPath = join(reviewDir, 'pr.diff')
     writeFileSync(diffPath, patchBuf)
     diffSha256 = sha256Hex(patchBuf)
+    diffStatSha256 = statDigest([diffPath])
   }
-  result = { ok: true, target: scope.target, reasons: scope.codes, file_count: names.length, head_sha: headSha, reviewer_context_changed: scope.reviewer_context_changed, review_dir: reviewDir, diff_path: diffPath, diff_sha256: diffSha256 }
+  result = { ok: true, target: scope.target, reasons: scope.codes, file_count: names.length, head_sha: headSha, reviewer_context_changed: scope.reviewer_context_changed, review_dir: reviewDir, diff_path: diffPath, diff_sha256: diffSha256, diff_stat_sha256: diffStatSha256 }
 } catch {
   result = failClosed('git_failed')
 }

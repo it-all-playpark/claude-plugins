@@ -18,6 +18,7 @@ export const SECURITY_SCOPE_SCHEMA = {
     review_dir: { type: ['string', 'null'] },
     diff_path: { type: ['string', 'null'] },
     diff_sha256: { type: ['string', 'null'] },
+    diff_stat_sha256: { type: ['string', 'null'] },
     error: { type: 'string' },
   },
 };

@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
   makePrIterateSandbox, runWorkflowCapture, assertNoCrash, securityScopeResponse, securityScopeHeadOf, securityReviewHeadOf,
-  SECURITY_REVIEW_DIR, SECURITY_SCOPE_DEFAULT_HEAD, SECURITY_DIFF_SHA256,
+  SECURITY_REVIEW_DIR, SECURITY_SCOPE_DEFAULT_HEAD, SECURITY_DIFF_SHA256, SECURITY_DIFF_STAT_SHA256,
 } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -219,9 +219,18 @@ test('[security-review][B] security-reviewer の返却後に security-diff-check
   assert.ok(calls.indexOf(review) < calls.indexOf(check), 'reviewer の返却の後に照合する');
   assert.equal(check.agentType, 'dev-flow:security-codex-relay', '保存先の名前を含む command は hook の allowlist を持つ中継だけが実行できる');
   assert.equal(check.model, null);
-  // sha256 は scope の stdout の値を argv で渡すだけで、中継に照合させない
-  assert.ok(check.prompt.endsWith(`\nsecurity-review-diff-check ${SECURITY_REVIEW_DIR} ${SECURITY_DIFF_SHA256}`), check.prompt);
+  // sha256・statDigest は scope の stdout の値を argv で渡すだけで、中継に照合させない
+  assert.ok(check.prompt.endsWith(`\nsecurity-review-diff-check ${SECURITY_REVIEW_DIR} ${SECURITY_DIFF_SHA256} ${SECURITY_DIFF_STAT_SHA256}`), check.prompt);
   assert.equal(result.status, 'lgtm');
+});
+
+test('[security-review][B] security-scope が diff_stat_sha256 を返さない・形の外なら review せず clear にしない', async () => {
+  for (const diffStatSha256 of [null, 'x y']) {
+    const { result, calls } = await run({ overrides: { 'security-scope#1': ({ prompt }) => securityScopeResponse({ head: securityScopeHeadOf(prompt), diffStatSha256 }) } });
+    assert.equal(result.status, 'security_unresolved', String(diffStatSha256));
+    assert.equal(result.security_review.stop_reason, 'diff_unavailable', String(diffStatSha256));
+    assert.ok(!calls.some((c) => c.label.startsWith('security-review#')), String(diffStatSha256));
+  }
 });
 
 test('[security-review][B] review の後の pr.diff が scope の書いたものと一致しない・照合できない round は clear にせず、fix にも回さない', async () => {
@@ -404,12 +413,14 @@ const codexArgs = (contextChanged) => ({ pr: '5', security_review: { target: tru
 const CODEX_NONCE = '0123456789abcdef'.repeat(2);
 const PROMPT_SHA = 'e'.repeat(64);
 const SCHEMA_SHA = 'f'.repeat(64);
-// prep の stdout と同形の応答（diff_sha256 は既定で security-scope 応答の既定と同じ — scope が書いた pr.diff を読んだ）
-const codexPrep = ({ cwdDir = CODEX_CWD, nonce = CODEX_NONCE, diffSha256 = SECURITY_DIFF_SHA256, promptSha256 = PROMPT_SHA, schemaSha256 = SCHEMA_SHA } = {}) => ({ prompt }) => ({
-  ok: true, review_dir: prompt.match(/security-review-codex-prep (\S+) /)[1], cwd_dir: cwdDir, nonce,
-  diff_sha256: diffSha256, prompt_sha256: promptSha256, schema_sha256: schemaSha256,
+const OUT_NAME = '89abcdef01234567'.repeat(2);
+const STAT_SHA = '1'.repeat(64);
+// prep の stdout と同形の応答（diff_sha256 / diff_stat_sha256 は既定で security-scope 応答の既定と同じ — scope が書いた pr.diff を読んだ）
+const codexPrep = ({ cwdDir = CODEX_CWD, nonce = CODEX_NONCE, outName = OUT_NAME, diffSha256 = SECURITY_DIFF_SHA256, diffStatSha256 = SECURITY_DIFF_STAT_SHA256, promptSha256 = PROMPT_SHA, schemaSha256 = SCHEMA_SHA, statSha256 = STAT_SHA } = {}) => ({ prompt }) => ({
+  ok: true, review_dir: prompt.match(/security-review-codex-prep (\S+) /)[1], cwd_dir: cwdDir, out_name: outName, nonce,
+  diff_sha256: diffSha256, diff_stat_sha256: diffStatSha256, prompt_sha256: promptSha256, schema_sha256: schemaSha256, stat_sha256: statSha256,
 });
-const CODEX_RESULT_TAIL = `${CODEX_NONCE} ${CODEX_CWD} ${PROMPT_SHA} ${SCHEMA_SHA}`;
+const CODEX_RESULT_TAIL = `${CODEX_NONCE} ${CODEX_CWD} ${OUT_NAME} ${PROMPT_SHA} ${SCHEMA_SHA} ${STAT_SHA}`;
 const codexHeadOf = (prompt) => prompt.match(/security-review-codex-result \S+ ([0-9a-f]{40})/)[1];
 // security-review-codex-result（判定）と security-review-codex-result --issues（指摘）の stdout と同形の応答を、round i の
 // security-codex-verdict#i / security-codex-issues#i に置く（reviewed_sha は既定で prompt の head を写す）
@@ -468,7 +479,7 @@ test('[security-review][F] Codex 経路は固定の codex exec・判定・指摘
   const expected = 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check'
     + ` -C ${CODEX_CWD} -c web_search="disabled"`
     + ' --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use'
-    + ` -c model_instructions_file=${SECURITY_REVIEW_DIR}/prompt.md --output-schema ${SECURITY_REVIEW_DIR}/schema.json -o ${SECURITY_REVIEW_DIR}/result.json`
+    + ` -c model_instructions_file=${SECURITY_REVIEW_DIR}/prompt.md --output-schema ${SECURITY_REVIEW_DIR}/schema.json -o ${SECURITY_REVIEW_DIR}/${OUT_NAME}/result.json`
     + ` "Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to ${CODEX_NONCE}"`;
   const lines = r.prompt.split('\n');
   assert.ok(lines.includes(expected), `固定の codex exec の行が無い: ${r.prompt}`);
@@ -491,6 +502,11 @@ test('[security-review][F] Codex を起動できない（prep / 起動 / 結果�
     ['prep の diff_sha256 が無い', { 'security-codex-prep#1': codexPrep({ diffSha256: null }) }],
     ['prep の prompt_sha256 が無い', { 'security-codex-prep#1': codexPrep({ promptSha256: null }) }],
     ['prep の schema_sha256 が形の外', { 'security-codex-prep#1': codexPrep({ schemaSha256: 'x y' }) }],
+    // 差し替えて戻した pr.diff（内容は同じで statDigest が違う）・result script に渡す statDigest・置き場が無い
+    ['prep が読んだ pr.diff の statDigest が scope と違う', { 'security-codex-prep#1': codexPrep({ diffStatSha256: 'a'.repeat(64) }) }],
+    ['prep の stat_sha256 が無い', { 'security-codex-prep#1': codexPrep({ statSha256: null }) }],
+    ['prep の out_name が無い', { 'security-codex-prep#1': codexPrep({ outName: null }) }],
+    ['prep の out_name が形の外', { 'security-codex-prep#1': codexPrep({ outName: '../x' }) }],
     // issue #1095: codex の後に prompt.md・schema.json が変わった・-C が空でない・祖先に指示ファイルがある（result script の判定）
     ...['input_changed', 'cwd_not_empty', 'workspace_tainted'].map((error) => [`result が ${error}`, { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': { ok: false, cleared: false, reason: null, reviewed_sha: null, counts: { critical: 0, major: 0, minor: 0 }, error } }]),
     ['codex が無い・hook が拒否した（result.json が無い）', { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': { ok: false, cleared: false, reason: null, reviewed_sha: null, counts: { critical: 0, major: 0, minor: 0 }, error: 'result_unreadable' } }],
@@ -521,7 +537,7 @@ test('[security-review][F] Codex を起動できず指示ファイルも変え�
   assert.equal(blocked.result.status, 'security_unresolved', 'Claude 経路の判定（reviewed_sha の不一致）で clear にしない');
 });
 
-test('[security-review][F] Codex の critical/major は fix に回し、次の round の prep は前回の保存先の result.json を verify_items にする', async () => {
+test('[security-review][F] Codex の critical/major は fix に回し、次の round の prep は前回の置き場（保存先/out_name）の result.json を verify_items にする', async () => {
   const dir1 = '/tmp/dev-flow-security-review-aaaaa1';
   const dir2 = '/tmp/dev-flow-security-review-aaaaa2';
   const { result, calls } = await run({
@@ -538,7 +554,7 @@ test('[security-review][F] Codex の critical/major は fix に回し、次の r
   });
   const [p1, p2] = calls.filter((c) => c.label.startsWith('security-codex-prep#'));
   assert.ok(p1.prompt.endsWith(`\nsecurity-review-codex-prep ${dir1} ${SHA_A} 5`), p1.prompt);
-  assert.ok(p2.prompt.endsWith(`\nsecurity-review-codex-prep ${dir2} ${SHA_B} 5 --verify-from ${dir1}`), p2.prompt);
+  assert.ok(p2.prompt.endsWith(`\nsecurity-review-codex-prep ${dir2} ${SHA_B} 5 --verify-from ${dir1}/${OUT_NAME}`), p2.prompt);
   assert.ok(calls.find((c) => c.label === 'fix#1').prompt.includes('hardlink-write'), 'Codex の指摘を fix に渡す');
   assert.equal(result.status, 'lgtm');
   assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 2, critical: 0, major: 0, minor: 0 });
