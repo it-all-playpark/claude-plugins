@@ -75,6 +75,8 @@ fake_codex() {
 FAKE_BIN="${OUT_ROOT}/bin"
 fake_codex "$FAKE_BIN"
 CB="${FAKE_BIN}/codex"
+# hook は codex_bin の sha256 を user 設定の codex_bin_sha256 と照合する。fake_codex の複製はどれも同じ中身なので既定値で通る
+CB_SHA="$(sha256_of <"$CB")"
 # codex を含まない PATH（hook が使うコマンドだけ）
 TOOLS_BIN="${TMP_ROOT}/tools"
 mkdir -p "$TOOLS_BIN"
@@ -110,7 +112,7 @@ FAILURES=()
 #   HOOK_TMPDIR が設定されていれば hook の $TMPDIR をそれにする。hook の PATH は HOOK_PATH（既定は代わりの codex と hook が使う
 #   コマンドだけの PATH。本番の hook の PATH と同じく plugin の bin/ を含まない）
 #   $SKILL_CONFIG_PATH の codex_output_dir は HOOK_OUT（既定 $RO。none はキー無し）、codex_bin は HOOK_BIN（既定 $CB。none はキー無し。
-#   HOOK_BIN_JSON があればその JSON の値）、~/.config/skills/config.json の値は HOOK_HOME_OUT・HOOK_HOME_BIN（どちらも未設定ならファイル無し）
+#   HOOK_BIN_JSON があればその JSON の値）、codex_bin_sha256 は HOOK_BIN_SHA（既定は $CB の sha256。none はキー無し）、~/.config/skills/config.json の値は HOOK_HOME_OUT・HOOK_HOME_BIN（どちらも未設定ならファイル無し）
 run_raw() {
   local name="$1" expected="$2" input="$3"
   local output status=0 cfg='{}' home='{}'
@@ -120,6 +122,7 @@ run_raw() {
   elif [[ ${HOOK_BIN-$CB} != none ]]; then
     cfg=$(jq -c --arg b "${HOOK_BIN-$CB}" '. + {codex_bin:$b}' <<<"$cfg")
   fi
+  [[ ${HOOK_BIN_SHA-$CB_SHA} == none ]] || cfg=$(jq -c --arg s "${HOOK_BIN_SHA-$CB_SHA}" '. + {codex_bin_sha256:$s}' <<<"$cfg")
   jq -cn --argjson c "$cfg" '{"dev-flow":$c}' >"$HOOK_CFG"
   rm -f "${HOOK_HOME}/.config/skills/config.json"
   [[ -z ${HOOK_HOME_OUT-} ]] || home=$(jq -c --arg o "$HOOK_HOME_OUT" '. + {codex_output_dir:$o}' <<<"$home")
@@ -285,6 +288,18 @@ HOOK_BIN="${OUT_ROOT}/script-bin/codex" run_bash "codex_bin が #! の script" d
 fake_codex "${OUT_ROOT}/hardlink-bin"
 ln "${OUT_ROOT}/hardlink-bin/codex" "${OUT_ROOT}/hardlink-bin/codex-alias"
 HOOK_BIN="${OUT_ROOT}/hardlink-bin/codex" run_bash "codex_bin に別名の hard link がある" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/hardlink-bin/codex")"
+# codex_bin の sha256 が user 設定の codex_bin_sha256 と一致しない・設定が無い・形が違う
+HOOK_BIN_SHA=none run_bash "設定に codex_bin_sha256 が無い" deny "$RELAY" "$CODEX_CMD"
+HOOK_BIN_SHA="$(printf '%064d' 0)" run_bash "codex_bin の sha256 が設定と違う" deny "$RELAY" "$CODEX_CMD"
+HOOK_BIN_SHA="$(printf '%s' "$CB_SHA" | tr 'a-f' 'A-F')" run_bash "設定の codex_bin_sha256 が大文字" deny "$RELAY" "$CODEX_CMD"
+# 書ける場所に hard link を張って中身を書き換え、link を消して link 数を 1 に戻した codex_bin（link 数・#! の確認は通る）
+fake_codex "${OUT_ROOT}/relinked-bin"
+ln "${OUT_ROOT}/relinked-bin/codex" "${OUT_ROOT}/relinked-alias"
+chmod u+w "${OUT_ROOT}/relinked-alias"
+printf 'x' >>"${OUT_ROOT}/relinked-alias"
+rm -f "${OUT_ROOT}/relinked-alias"
+HOOK_BIN="${OUT_ROOT}/relinked-bin/codex" run_bash "hard link 経由で中身を書き換えた後に link を消した codex_bin" deny "$RELAY" "$(bin_cmd "${OUT_ROOT}/relinked-bin/codex")"
+HOOK_BIN="${OUT_ROOT}/relinked-bin/codex" HOOK_BIN_SHA="$(sha256_of <"${OUT_ROOT}/relinked-bin/codex")" run_bash "書き換えた後の中身に設定の sha256 を合わせれば通す" silent "$RELAY" "$(bin_cmd "${OUT_ROOT}/relinked-bin/codex")"
 # codex_bin が cwd（PR の worktree）・$TMPDIR・/tmp の配下（sandbox の中から書ける）
 fake_codex "${PRWT}/node_modules/.bin"
 HOOK_BIN="${PRWT}/node_modules/.bin/codex" run_cwd "codex_bin が cwd の配下" deny "$PRWT" "$(bin_cmd "${PRWT}/node_modules/.bin/codex")"
@@ -464,6 +479,18 @@ run_bash "引用で分割した codex" deny "$OTHER" "cod''ex exec hi"
 run_bash "二重引用で分割した codex" deny "$OTHER" "c\"o\"dex exec hi"
 run_bash "バックスラッシュで分割した codex" deny "$OTHER" "c\\odex exec hi"
 run_bash "固定形の codex も relay 以外は通さない" deny "$OTHER" "$CODEX_CMD"
+# basename が codex でない codex_bin（user 設定）も先頭トークンなら止める。未設定なら従来どおり codex / */codex だけ
+mkdir -p "${OUT_ROOT}/renamed-bin"
+cp "$NATIVE_BIN" "${OUT_ROOT}/renamed-bin/cx"
+RENAMED="${OUT_ROOT}/renamed-bin/cx"
+HOOK_BIN="$RENAMED" run_bash "basename が codex でない codex_bin の直接起動" deny "$OTHER" "${RENAMED} exec --dangerously-bypass-approvals-and-sandbox hi"
+HOOK_BIN="$RENAMED" run_bash "env 前置の basename が codex でない codex_bin" deny "$OTHER" "env -i ${RENAMED} exec hi"
+HOOK_BIN="$RENAMED" run_bash "連結の後ろの basename が codex でない codex_bin" deny "$OTHER" "git status && ${RENAMED} exec hi"
+ln "$RENAMED" "${OUT_ROOT}/renamed-bin/cx-alias"
+HOOK_BIN="$RENAMED" run_bash "codex_bin の hard link（別名）の起動" deny "$OTHER" "${OUT_ROOT}/renamed-bin/cx-alias exec hi"
+HOOK_BIN="$RENAMED" run_bash "codex_bin の語が引数にあるだけなら通す" silent "$OTHER" "ls -l ${RENAMED}"
+HOOK_BIN=none run_bash "codex_bin が未設定なら basename が codex でないものは通す（従来どおり）" silent "$OTHER" "${RENAMED} exec hi"
+HOOK_BIN_JSON=1 run_bash "codex_bin が文字列でなければ未設定と同じ" silent "$OTHER" "${RENAMED} exec hi"
 run_bash "保存先を触る" deny "$OTHER" "printf x > ${D}/result.json"
 run_bash "作業ディレクトリを触る" deny "$OTHER" "touch ${C}/AGENTS.md"
 run_bash "出力先の結果ファイルを触る" deny "$OTHER" "printf x > ${O}/dev-flow-codex-result-${N}-${B}.json"

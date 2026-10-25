@@ -59,11 +59,14 @@
 #      中継は PR の worktree を cwd に絶対パスの codex_bin を起動し、codex は sandbox の外で動く。PATH は使わない（hook と中継の PATH が
 #      ずれても、PATH の前方の書ける場所に codex を置かれても解決先が変わらない）。codex_bin が symlink でない実ファイルで realpath が
 #      自身と一致し、cwd・$TMPDIR・/tmp・/private/tmp の配下でないときだけ通す（PR のコードが置いた codex を sandbox の外で走らせない）。
-#      codex_bin と祖先に sandbox の中から書けないことは prep が確かめる。
+#      codex_bin と祖先に sandbox の中から書けないことは prep が確かめる。書き込み試験・link 数は確かめた時点の状態しか見ない
+#      （先に書ける場所へ hard link を張って中身を書き換え、link を消せばどちらも通る）ので、hook は起動の直前に codex_bin の
+#      sha256 が user 設定の "dev-flow".codex_bin_sha256（64 桁の小文字 hex）と一致することも確かめ、無い・違えば deny する。
 #      hook の確認は起動の直前の 1 回なので、codex の後の入力の書き換えは result script が再照合する
 #   4. それ以外の dev-flow の agent → 引用符とバックスラッシュを外した command を `;` `&` `|` `(` `)` `{` `}` と改行で単文に分け、
 #      各単文の先頭から予約語（then / do / ! 等）・前置コマンド（env / exec / command / nohup / timeout 等）とその option・
-#      `NAME=value` の代入を読み飛ばした最初のトークンが `codex` か `*/codex` なら deny。保存先・作業ディレクトリ・結果ファイルの名前
+#      `NAME=value` の代入を読み飛ばした最初のトークンが `codex` か `*/codex`、または user 設定の codex_bin と同じ文字列か
+#      絶対パスで同じファイル（hard link を含む。basename が codex でない codex_bin も止める）なら deny。保存先・作業ディレクトリ・結果ファイルの名前
 #      （dev-flow-security-review- / dev-flow-codex-cwd- / dev-flow-codex-result- / -prompt- / -schema-）を含む command も deny。それ以外は通す。引数の中の codex の語（`grep codex`・
 #      `gh pr create --title "… codex …"`）では止めない。
 #      この agent たちは任意の Bash を持つので、ここは誤って codex や保存先を触ることを止める多層防御であり保証ではない —
@@ -112,6 +115,8 @@ pass_through() {
 
 # user 設定の "dev-flow".<$1>（pr-iterate-prerun と同じ探索順: $SKILL_CONFIG_PATH → ~/.config/skills/config.json →
 # ~/.claude/skill-config.json。最初に null でない値を持つファイルの値）を CONFIGURED に入れる。無い・文字列でなければ deny。
+# $2 が optional なら deny せず、無い・文字列でないときは CONFIGURED を空にして返す（判定 4 が codex_bin を読むとき。
+# 文字列でない codex_bin では中継が codex を起動できないので、守るものが無い）
 load_configured() {
   local cfg v
   for cfg in "${SKILL_CONFIG_PATH:-}" "${HOME:-}/.config/skills/config.json" "${HOME:-}/.claude/skill-config.json"; do
@@ -119,9 +124,11 @@ load_configured() {
     v=$(jq -c --arg k "$1" 'if type == "object" and (.["dev-flow"] | type) == "object" then .["dev-flow"][$k] else null end' 2>/dev/null <"$cfg") || v=''
     [[ -n $v && $v != 'null' ]] || continue
     CONFIGURED=$(jq -r 'if type == "string" then . else "" end' 2>/dev/null <<<"$v") || CONFIGURED=''
-    [[ -n $CONFIGURED ]] || emit_deny "user 設定の dev-flow.${1} が文字列でない"
+    [[ -n $CONFIGURED || ${2-} == optional ]] || emit_deny "user 設定の dev-flow.${1} が文字列でない"
     return 0
   done
+  CONFIGURED=''
+  [[ ${2-} == optional ]] && return 0
   emit_deny "user 設定に dev-flow.${1} が無い"
 }
 
@@ -299,6 +306,13 @@ check_codex() {
   sbody="${sbody%x}"
   got=$(codex_binding "$d" "$pbody" "$sbody") || emit_deny "保存先の binding を計算できない"
   [[ $got == "$b" ]] || emit_deny "保存先から計算した binding が起動形の binding と一致しない（prep の後に保存先が変わった・別の保存先）"
+  # codex_bin の中身が user 設定の codex_bin_sha256 と一致するときだけ通す。link 数・書き込み試験は確かめた時点の状態しか見ないので、
+  # その前に書ける場所へ hard link を張って中身を書き換え、link を消して link 数を 1 に戻した codex_bin を sandbox の外で走らせない。
+  # 照合は起動の直前（他の確認の後）に 1 回だけ行う
+  load_configured codex_bin_sha256
+  [[ $CONFIGURED =~ ^${SHA256_RE}$ ]] || emit_deny "user 設定の dev-flow.codex_bin_sha256 が 64 桁の小文字 hex でない"
+  got=$(sha256_hex <"$bin") || emit_deny "codex_bin の sha256 を計算できない"
+  [[ $got == "$CONFIGURED" ]] || emit_deny "codex_bin の sha256 が user 設定の dev-flow.codex_bin_sha256 と一致しない（codex を更新したら設定の値も更新する）"
   (set -C && printf '%s' "$pbody" >"$pc") 2>/dev/null || emit_deny "prompt.md を出力先へ複製できない"
   (set -C && printf '%s' "$sbody" >"$sc") 2>/dev/null || emit_deny "schema.json を出力先へ複製できない"
   # 作業ディレクトリは照合の後に新しく作る（既にあれば mkdir が失敗して拒否 — 先に置かれた中身を codex に読ませない）
@@ -367,6 +381,10 @@ NORM=${NORM//\\/}
 # 先頭の予約語・前置コマンド（env / exec 等）・その option・`NAME=value` の代入は読み飛ばす
 SEP_GLOB='[;&|(){}]'
 SIMPLE=${NORM//$SEP_GLOB/$'\n'}
+# user 設定の codex_bin は basename が codex とは限らないので、先頭トークンが codex_bin と同じ文字列か、絶対パスで同じファイル
+# （hard link を含む）なら deny する。未設定なら codex / */codex の判定だけ
+load_configured codex_bin optional
+CODEX_BIN_CFG="$CONFIGURED"
 while read -r -a words; do
   after_prefix=0
   for w in "${words[@]}"; do
@@ -378,7 +396,7 @@ while read -r -a words; do
     esac
     [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && continue
     [[ $after_prefix -eq 1 && ( $w == -* || $w =~ ^[0-9.]+[smhd]?$ ) ]] && continue
-    if [[ $w == "codex" || $w == */codex ]]; then
+    if [[ $w == "codex" || $w == */codex || ( -n $CODEX_BIN_CFG && ( $w == "$CODEX_BIN_CFG" || ( $w == /* && $w -ef $CODEX_BIN_CFG ) ) ) ]]; then
       emit_deny "dev-flow の agent は codex を起動できない（Codex 経路の security review は security-codex-relay が固定形で起動する）"
     fi
     break

@@ -154,7 +154,8 @@ test('[security-review][3] prep が用意した保存先と binding で組み立
     chmodSync(out.outputDir, 0o755);
     const cfg = join(base, 'skill-config.json');
     const env = { SKILL_CONFIG_PATH: cfg, HOME: join(base, 'home') };
-    const config = { codex_output_dir: out.outputDir, codex_bin: codexBin };
+    // hook は起動の直前に codex_bin の sha256 を user 設定の codex_bin_sha256 と照合する
+    const config = { codex_output_dir: out.outputDir, codex_bin: codexBin, codex_bin_sha256: sha256Hex(readFileSync(codexBin)) };
     writeFileSync(cfg, JSON.stringify({ 'dev-flow': config }));
     const clean = () => { for (const f of readdirSync(out.outputDir)) rmSync(join(out.outputDir, f), { recursive: true, force: true }); };
     const decide = (c, cwd) => { const d = hookDecision(c, cwd, env); clean(); return d; };
@@ -204,6 +205,11 @@ test('[security-review][3] prep が用意した保存先と binding で組み立
     writeFileSync(cfg, JSON.stringify({ 'dev-flow': { codex_output_dir: out.outputDir } }));
     assert.equal(decide(cmd, wt), 'deny');
     writeFileSync(cfg, JSON.stringify({ 'dev-flow': { ...config, codex_bin: [codexBin] } }));
+    assert.equal(decide(cmd, wt), 'deny');
+    // codex_bin の sha256 が設定の codex_bin_sha256 と違う・設定に codex_bin_sha256 が無い
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': { ...config, codex_bin_sha256: '0'.repeat(64) } }));
+    assert.equal(decide(cmd, wt), 'deny');
+    writeFileSync(cfg, JSON.stringify({ 'dev-flow': { codex_output_dir: out.outputDir, codex_bin: codexBin } }));
     assert.equal(decide(cmd, wt), 'deny');
     // prep の起動形も codex_bin を設定の値に縛る（prep が書き込み不可を確かめたファイルと起動する codex を揃える）
     writeFileSync(cfg, JSON.stringify({ 'dev-flow': config }));

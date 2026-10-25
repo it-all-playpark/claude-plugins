@@ -365,7 +365,8 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
     Codex を起動できないときと同じく Claude 経路の判定に倒す。中継は codex を PATH で探さず、user 設定の `"dev-flow".codex_bin`
     （絶対パス）を先頭トークンにして起動する。hook は PATH を使わず、先頭トークンが設定の `codex_bin` と完全に一致し、realpath が
     自身と一致し、link 数が 1 の、`#!` で始まらないネイティブ実行ファイル（`#!` の script は sandbox の外で interpreter を PATH で
-    解決する。hard link があると別名のパスから書き換えられる）で、cwd（PR の worktree）・`$TMPDIR`・`/tmp`・`/private/tmp` の配下でないときだけ起動させ、prep は
+    解決する。hard link があると別名のパスから書き換えられる）で、cwd（PR の worktree）・`$TMPDIR`・`/tmp`・`/private/tmp` の配下でなく、
+    sha256 が user 設定の `codex_bin_sha256` と一致するときだけ起動させ、prep は
     `codex_bin` とその全祖先に sandbox の中から書けないことを確かめる（sandbox の外で PR のコードが置いた・書き換えた codex を走らせない）。中継が bare 名で起動する
     `security-review-codex-prep`・`security-review-codex-result`・`security-review-diff-check` は、hook の PATH の後ろに hook 自身の
     plugin の `bin/` を足した列（hook の PATH には plugin の `bin/` が載らない。Bash tool の PATH と同じ並び）での解決先の realpath が
@@ -435,6 +436,9 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
   - codex は user 設定の `"dev-flow".codex_bin` に書いた絶対パス（symlink を辿った先の、ネイティブ実行ファイルの実体。npm 版は
     `#!/usr/bin/env node` の `bin/codex.js` ではなくパッケージ内の `vendor/<target-triple>/codex/codex`）で起動し、`excludedCommands` にはその
     絶対パスを入れる。`codex_bin` とその祖先は sandbox の書き込み許可に入れない — 入れると prep が `codex_bin_writable` で拒否する
+  - `"dev-flow".codex_bin_sha256` に `codex_bin` の sha256（`shasum -a 256 <codex_bin>` の 64 桁の小文字 hex）を書く。hook は起動の直前に
+    照合し、無い・違えば codex を起動させない（書き込み試験・link 数は確かめた時点の状態しか見ず、先に書ける場所へ hard link を張って
+    中身を書き換え link を消すと両方通るため）。codex を更新したら値も書き直す
   - 結果ファイル（`dev-flow-codex-result-<nonce>-<binding>.json`）と hook が作る複製（`dev-flow-codex-{prompt,schema}-<nonce>-<binding>`）は round ごとに出力先へ溜まる。sandbox の中からは消せないので、古いものは人が片付ける
 - codex の起動形は `_lib/security-review.mjs` の `codexSecurityReviewCommand` が固定で持つ（中継が先頭トークン codex_bin の単文で実行する —
   sandbox の外で通信できるのは先頭が codex の単文だけで、exec-proxy script の中から起動すると通信が拒否される）: `<codex_bin> exec -s read-only --ephemeral --ignore-user-config
