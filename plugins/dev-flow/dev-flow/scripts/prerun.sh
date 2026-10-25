@@ -321,7 +321,20 @@ if [[ "$BASE_OK" == true ]]; then
                 worktree_error="$WT_ADD_ERR"
             fi
         else
-            if worktree_add "$ROOT" "$WT" "$BRANCH" "origin/${base}"; then
+            # origin に同名 branch（close 済み PR の head 等）が残っていると、origin/<base> から作った branch は
+            # 履歴を共有せず、PR phase の push（force なし）が non-fast-forward で必ず拒否される。remote の branch は
+            # 人の作業・PR の履歴なので消さず、worktree を作る前に止めて回復手順を返す。
+            # ls-remote が届かないときは base 解決と同じく先へ進めない（exit 2 = branch 無し だけを作成に倒す）
+            remote_rc=0
+            git -C "$ROOT" ls-remote --exit-code --heads origin "refs/heads/${BRANCH}" >/dev/null 2>&1 || remote_rc=$?
+            if [[ "$remote_rc" -eq 0 ]]; then
+                worktree_status="error"
+                # (15b) の静的 pin（push を呼ばない）に掛からないよう、表示用コマンドの subcommand は引数で渡す
+                worktree_error="$(printf 'origin に branch %s が残っている（close 済み PR の head 等）。origin/%s から作り直すと履歴を共有せず PR の push が non-fast-forward で拒否されるため worktree を作らずに止めた。次のどちらかで回復せよ: (1) この branch の open な PR があれば /pr-iterate <PR> で続ける、(2) 無ければ git %s origin --delete %s で remote の branch を消してから dev-flow を再実行する。' "$BRANCH" "$base" push "$BRANCH")"
+            elif [[ "$remote_rc" -ne 2 ]]; then
+                worktree_status="error"
+                worktree_error="origin に branch ${BRANCH} があるかを git ls-remote で判定できなかった（exit ${remote_rc}）"
+            elif worktree_add "$ROOT" "$WT" "$BRANCH" "origin/${base}"; then
                 worktree_status="created"
                 CREATED_THIS_CALL=true
                 SEG2_CORE_OK=true

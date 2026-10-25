@@ -160,6 +160,41 @@ make_issue_fixture() {
     echo "$output" | jq -e '.base_source == "origin/HEAD"'
 }
 
+# ---- (2b) origin に feature/issue-N が残っている（close 済み PR の head 等。issue #1101）----
+# origin/<base> から作った branch は remote の branch と履歴を共有せず PR phase の push が non-fast-forward で
+# 拒否される。worktree を作る前に止め、remote の branch は消さずに回復手順を返す
+
+@test "(2b) origin に feature/issue-N があり local branch も worktree も無い -> 作らずに ok:false、worktree_error に branch 名と回復手順" {
+    git -C "$SEED" checkout -q -b feature/issue-1 main
+    echo "closed pr" >> "$SEED/README.md"
+    git -C "$SEED" commit -q -am "closed pr commit"
+    git -C "$SEED" push -q origin feature/issue-1
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | contains("feature/issue-1")'
+    echo "$output" | jq -e '.worktree_error | contains("/pr-iterate <PR>")'
+    echo "$output" | jq -e '.worktree_error | contains("git push origin --delete feature/issue-1")'
+    [ ! -e "$WT" ]
+    run git -C "$ROOT" show-ref --verify --quiet refs/heads/feature/issue-1
+    [ "$status" -ne 0 ]
+    # remote の branch は消さない
+    git -C "$ORIGIN" show-ref --verify --quiet refs/heads/feature/issue-1
+}
+
+@test "(2c) origin の feature/issue-N の有無を git ls-remote で判定できない -> 作らずに ok:false" {
+    REAL_GIT="$(command -v git)"
+    printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ "$a" == refs/heads/feature/issue-1 ]] && exit 128; done\nexec "%s" "$@"\n' "$REAL_GIT" >"$STUB_DIR/git"
+    chmod +x "$STUB_DIR/git"
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | test("ls-remote")'
+    [ ! -e "$WT" ]
+}
+
 # ---- (3) --base に origin に存在しない ref ----
 
 @test "(3) --base release (origin に無い) -> ok:false, worktree skipped" {
