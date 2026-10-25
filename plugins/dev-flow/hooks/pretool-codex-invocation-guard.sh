@@ -34,10 +34,12 @@
 #      ~/.config/skills/config.json → ~/.claude/skill-config.json）と完全に一致するときだけ通し、値が無ければ deny する —
 #      prep が書き込み不可を確かめた出力先以外（sandbox から書ける別の場所）を -o にした codex を中継が起動できないようにする。
 #      prep / result のパスの実体は各 script が確かめる。
-#      prep・result・diff の照合の 3 形は、先頭の bare 名が PATH 上で解決されるファイル（先頭から見て最初の実行できる通常ファイル）の
-#      realpath が hook 自身の plugin の bin/ の同名ファイルの realpath と一致するときだけ通す。解決できない・PATH の相対パスか空の
-#      要素（cwd 基準）から解決される・一致しないなら deny する — PATH の前方の書ける場所に置いた同名の実行ファイルに照合や判定の
-#      結果（ok・issues:[]）を偽らせて clear にさせない（diff の照合は Claude 経路でも clear の前に走る）。
+#      prep・result・diff の照合の 3 形は、hook の PATH の後ろに hook 自身の plugin の bin/ を足した列（hook の PATH には plugin の
+#      bin/ が載らず、Bash tool の PATH には載る。Bash tool と同じ並び）で先頭の bare 名が解決されるファイル（先頭から見て最初の実行
+#      できる通常ファイル）の realpath が plugin の bin/ の同名ファイルの realpath と一致するときだけ通す。bin/ より前の要素に同名の
+#      実行ファイルがある・PATH の相対パスか空の要素（cwd 基準）から解決されるなら deny する — PATH の前方の書ける場所に置いた同名の
+#      実行ファイルに照合や判定の結果（ok・issues:[]）を偽らせて clear にさせない（diff の照合は Claude 経路でも clear の前に走る）。
+#      3 つの script が中で bare 名で起動するもの（bash・node・jq 等）の解決先は確かめない（pipeline.md の残る経路）。
 #      codex の形は hook がパスの実体も確かめる: dev_flow_review_dir の <D>（codex は使わない設定キー。hook が複製元を知るためだけに
 #      置く）は prompt.md・schema.json を実ファイルとして持つ実ディレクトリで、入力の cwd（PR の worktree）の配下でない。4 つの名前の
 #      nonce は prompt の nonce と同じで、<O> は symlink でない実ディレクトリで realpath が自身と一致する（祖先にも symlink が無い）・
@@ -165,9 +167,9 @@ under_any() {
 
 # 中継の Bash が先頭トークン $1（hook が固定の名前から選ぶ）を解決する先（PATH の先頭から見て最初の、実行できる通常ファイル）の
 # realpath を RESOLVED_REAL に入れる。解決できない・PATH の相対パスか空の要素（Bash の cwd = PR の worktree 基準）から解決される・
-# realpath を取れないなら deny する。$2 は入力の cwd
+# realpath を取れないなら deny する。$2 は入力の cwd、$3 は探す PATH の列（省略時は hook の PATH）
 resolve_on_path() {
-  local name="$1" rest="${PATH-}:" e cand
+  local name="$1" rest="${3-${PATH-}}:" e cand
   while [[ -n $rest ]]; do
     e="${rest%%:*}"
     rest="${rest#*:}"
@@ -190,16 +192,19 @@ check_codex_binary() {
   return 0
 }
 
-# 中継の prep・result・diff の照合の script（$1 は固定の 3 つの名前のどれか）が PATH 上で hook 自身の plugin の bin/ の同名ファイルに
-# 解決されるか。bin/ は hook のパス（${CLAUDE_PLUGIN_ROOT}/hooks/<この file>）から決める — 環境変数で差し替えさせない
+# 中継の prep・result・diff の照合の script（$1 は固定の 3 つの名前のどれか）が、hook の PATH の後ろに hook 自身の plugin の bin/ を
+# 足した列（Bash tool の PATH と同じ並び。hook の PATH には bin/ が載らない）で bin/ の同名ファイルに解決されるか。bin/ より前の要素に
+# 同名の実行ファイルがあれば deny する。bin/ は hook のパス（${CLAUDE_PLUGIN_ROOT}/hooks/<この file>）から決める — 環境変数で差し替えさせない
 check_plugin_bin() {
-  local src="${BASH_SOURCE[0]}" dir expected cwd
+  local src="${BASH_SOURCE[0]}" dir bindir expected cwd list
   [[ $src == */* ]] && dir="${src%/*}" || dir=.
-  expected=$(realpath -- "${dir}/../bin/$1" 2>/dev/null) || emit_deny "hook の plugin の bin/ に ${1} が無い"
+  bindir=$(realpath -- "${dir}/../bin" 2>/dev/null) || emit_deny "hook の plugin の bin/ が無い"
+  expected=$(realpath -- "${bindir}/$1" 2>/dev/null) || emit_deny "hook の plugin の bin/ に ${1} が無い"
   cwd=$(jq -r '.cwd | if type == "string" then . else "" end' 2>/dev/null <<<"$INPUT") || emit_deny "cwd を読めない"
   [[ $cwd == /* ]] || emit_deny "cwd が絶対パスでない"
-  resolve_on_path "$1" "$cwd"
-  [[ $RESOLVED_REAL == "$expected" ]] || emit_deny "${1} が PATH 上で hook の plugin の bin/ 以外に解決される"
+  if [[ -n ${PATH-} ]]; then list="${PATH}:${bindir}"; else list="$bindir"; fi
+  resolve_on_path "$1" "$cwd" "$list"
+  [[ $RESOLVED_REAL == "$expected" ]] || emit_deny "${1} が PATH 上で hook の plugin の bin/ より前の同名ファイルに解決される"
   return 0
 }
 

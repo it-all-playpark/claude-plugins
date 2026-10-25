@@ -103,8 +103,8 @@ FAILURES=()
 
 # run_raw <name> <expected: deny|silent> <raw stdin>
 #   silent: 無出力で exit 0 / deny: permissionDecision=deny の JSON を出して exit 0
-#   HOOK_TMPDIR が設定されていれば hook の $TMPDIR をそれにする。hook の PATH は HOOK_PATH（既定は代わりの codex と plugin の bin/ を
-#   先頭に置いた PATH）
+#   HOOK_TMPDIR が設定されていれば hook の $TMPDIR をそれにする。hook の PATH は HOOK_PATH（既定は代わりの codex と hook が使う
+#   コマンドだけの PATH。本番の hook の PATH と同じく plugin の bin/ を含まない）
 #   $SKILL_CONFIG_PATH の codex_output_dir は HOOK_OUT（既定 $RO。none はキー無し）、~/.config/skills/config.json の値は
 #   HOOK_HOME_OUT（未設定ならファイル無し）
 run_raw() {
@@ -119,7 +119,7 @@ run_raw() {
   if [[ -n ${HOOK_HOME_OUT-} ]]; then
     jq -cn --arg o "$HOOK_HOME_OUT" '{"dev-flow":{codex_output_dir:$o}}' >"${HOOK_HOME}/.config/skills/config.json"
   fi
-  output=$(printf '%s' "$input" | HOME="$HOOK_HOME" SKILL_CONFIG_PATH="$HOOK_CFG" TMPDIR="${HOOK_TMPDIR-${TMPDIR:-}}" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" PATH="${HOOK_PATH-${FAKE_BIN}:${PLUGIN_BIN}:${PATH}}" "$BASH" -c "$HOOK_CMD" 2>/dev/null) || status=$?
+  output=$(printf '%s' "$input" | HOME="$HOOK_HOME" SKILL_CONFIG_PATH="$HOOK_CFG" TMPDIR="${HOOK_TMPDIR-${TMPDIR:-}}" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" PATH="${HOOK_PATH-${FAKE_BIN}:${TOOLS_BIN}}" "$BASH" -c "$HOOK_CMD" 2>/dev/null) || status=$?
   [[ ${KEEP_COPIES-} == 1 ]] || clean_copies
 
   local got
@@ -220,7 +220,14 @@ for cmd in "security-review-codex-prep ${D} ${SHA} 5 ${H} ${O}" "security-review
   HOOK_PATH=":${PLUGIN_BIN}:${TOOLS_BIN}" run_relay_cwd "${name} が PATH の空の要素（cwd）から解決される" deny "$PRWT" "$cmd"
   HOOK_PATH="${PLUGIN_BIN}:${TOOLS_BIN}:" run_relay_cwd "${name} が末尾の空の要素より前の plugin の bin/ で解決される" silent "$PRWT" "$cmd"
   rm -f "${PRWT}/${name}"
-  HOOK_PATH="$TOOLS_BIN" run_relay_cwd "${name} が PATH 上に無い（解決できない）" deny "$PRWT" "$cmd"
+  # 本番の hook の PATH には plugin の bin/ が載らない。hook は PATH の後ろに bin/ を足した列（Bash tool と同じ並び）で探す
+  HOOK_PATH="$TOOLS_BIN" run_relay_cwd "${name} が hook の PATH に無く後ろに足した plugin の bin/ で解決される" silent "$PRWT" "$cmd"
+  chmod +x "${OUT_ROOT}/evil-bin/${name}"
+  HOOK_PATH="${OUT_ROOT}/evil-bin:${TOOLS_BIN}" run_relay_cwd "${name} の同名の実行ファイルが plugin の bin/ を含まない hook の PATH にある" deny "$PRWT" "$cmd"
+  HOOK_PATH="${TOOLS_BIN}:" run_relay_cwd "${name} が hook の PATH の末尾の空の要素（cwd）に無ければ後ろに足した bin/ で解決される" silent "$PRWT" "$cmd"
+  fake_script "$PRWT" "$name"
+  HOOK_PATH="${TOOLS_BIN}:" run_relay_cwd "${name} が後ろに足した bin/ より前の空の要素（cwd）から解決される" deny "$PRWT" "$cmd"
+  rm -f "${PRWT}/${name}"
   # 別の場所の symlink でも実体（realpath）が plugin の bin/ の同名ファイルなら通し、別の名前の plugin の script を指すなら通さない
   mkdir -p "${OUT_ROOT}/plugin-link"
   ln -sf "${PLUGIN_BIN}/${name}" "${OUT_ROOT}/plugin-link/${name}"
