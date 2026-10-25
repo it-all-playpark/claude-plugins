@@ -129,10 +129,12 @@ export function securityReviewVerdict(review, headSha) {
 // 差し替えて review の後に元の bytes へ戻すと sha256 は一致するので、scope が書いた fd の ino・ctime（ns。diff_ino / diff_ctime_ns）も
 // 照合する（書き戻しで ctime が変わる）。Codex 経路の prep も diff_sha256 を受け取り、読んだ pr.diff の sha256 が違えば prompt.md を作らない。
 // 保存先のディレクトリごと rename で退避して良性の pr.diff を持つ別のディレクトリを置き、review の後に元へ戻すと pr.diff の inode は
-// 無傷で sha256・ino・ctime が全部一致するので、この照合では検出できない（残る経路。pipeline.md の security review の節）。
+// 無傷なので、scope が pr.diff を書いた後の保存先ディレクトリの ino・ctime（ns。dir_ino / dir_ctime_ns）も照合する（rename で移動した
+// ディレクトリの ctime が変わる）。Codex 経路の prep は保存先に prompt.md 等を書いてディレクトリの ctime を変えるので、書いた後の
+// ディレクトリの ino・ctime を返し、ino が scope の値と一致するときだけ workflow が照合値の ctime をその値に更新する。
 // sha256 の hex（diff・prompt.md・schema.json の照合値）
 export const SHA256_RE = /^[0-9a-f]{64}$/;
-// pr.diff の ino・ctime（ns）の 10 進表記（security-review-scope が文字列で返す。ns は Number の精度を超えるので数値にしない）
+// pr.diff・保存先ディレクトリの ino・ctime（ns）の 10 進表記（security-review-scope / prep が文字列で返す。ns は Number の精度を超えるので数値にしない）
 export const DIFF_STAT_NUM_RE = /^[0-9]{1,30}$/;
 
 export const SECURITY_DIFF_CHECK_SCHEMA = {
@@ -144,12 +146,13 @@ export const SECURITY_DIFF_CHECK_SCHEMA = {
   },
 };
 
-// 保存先の pr.diff を security-review-scope が返した sha256・ino・ctime（ns）と照合させる exec-proxy の prompt
-export function securityDiffCheckPrompt({ reviewDir, diffSha256, diffIno, diffCtimeNs }) {
+// 保存先の pr.diff を security-review-scope が返した sha256・ino・ctime（ns）と、保存先ディレクトリを dir の ino・ctime（ns）と
+// 照合させる exec-proxy の prompt
+export function securityDiffCheckPrompt({ reviewDir, diffSha256, diffIno, diffCtimeNs, dirIno, dirCtimeNs }) {
   return '次のコマンドを 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ（判定・要約・脚色をしない。exit 非0・stdout 空・'
     + 'JSON 不正なら {"ok":false,"matched":false,"error":"relay_failed"} で返せ。失敗時に ok:true・matched:true を生成してはならない）。'
     + '先頭トークンが bare 名の単文で実行し、cd 前置・`bash` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは付けない:\n'
-    + `security-review-diff-check ${reviewDir} ${diffSha256} ${diffIno} ${diffCtimeNs}`;
+    + `security-review-diff-check ${reviewDir} ${diffSha256} ${diffIno} ${diffCtimeNs} ${dirIno} ${dirCtimeNs}`;
 }
 
 // 照合の応答（security-review-diff-check の stdout）が「書き換えられていない」と言えるか。ok:true かつ matched:true のときだけ true
@@ -328,6 +331,8 @@ export const SECURITY_CODEX_PREP_SCHEMA = {
     binding: { type: ['string', 'null'] },
     prompt_sha256: { type: ['string', 'null'] },
     schema_sha256: { type: ['string', 'null'] },
+    dir_ino: { type: ['string', 'null'] },
+    dir_ctime_ns: { type: ['string', 'null'] },
     error: { type: 'string' },
   },
 };

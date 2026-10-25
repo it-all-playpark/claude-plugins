@@ -5,7 +5,7 @@
 # 照合は _lib/scripts/security-review-diff-check.mjs が持ち、このスクリプトは node を起動するだけ。node が無いときは
 # ok:false・matched:false を出す（照合できない入力で clear にしない）。
 #
-# Usage: security-review-diff-check <review_dir> <diff_sha256> <diff_ino> <diff_ctime_ns>
+# Usage: security-review-diff-check <review_dir> <diff_sha256> <diff_ino> <diff_ctime_ns> <dir_ino> <dir_ctime_ns>
 # Output (stdout, JSON 1 行): {ok, matched, error?}
 
 set -uo pipefail

@@ -24,8 +24,8 @@
 #          --output-schema <O>/dev-flow-codex-schema-<N>-<B>.json -o <O>/dev-flow-codex-result-<N>-<B>.json "<固定文> <N>"
 #        （codex は実際は 1 行。_lib/security-review.mjs の codexSecurityReviewCommand と同じ — 起動形を変えるときは両方を同時に変える）
 #        security-review-codex-result <D> <sha> <N> <B> <P> <S> <O>[ --issues]
-#        security-review-diff-check <D> <H> <ino> <ctime_ns>（Claude 経路でも、clear の前に保存先の pr.diff を security-review-scope の
-#          sha256・ino・ctime と照合する。<ino> / <ctime_ns> は 1〜30 桁の数字）
+#        security-review-diff-check <D> <H> <ino> <ctime_ns> <dir_ino> <dir_ctime_ns>（Claude 経路でも、clear の前に保存先の pr.diff を
+#          security-review-scope の sha256・ino・ctime と、<D> 自身を dir の ino・ctime と照合する。ino / ctime_ns は 1〜30 桁の数字）
 #      <D> は basename が dev-flow-security-review-XXXXXX の、<O> は人が用意した出力先の、
 #      `.` / `..` の要素を持たない [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字、<N> は prep が返した nonce
 #      （32 桁の小文字 hex）、<B> は prep が返した binding、<P> / <S> は prep が返した prompt.md・schema.json の sha256、<H> は
@@ -79,7 +79,7 @@ SHA256_RE='[0-9a-f]{64}'
 PREP_RE="^security-review-codex-prep ${D_RE} ${SHA_RE} [0-9]+ ${SHA256_RE} ${O_RE}( --verify-from ${NONCE_RE} ${BINDING_RE})?$"
 CODEX_PROMPT='Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to'
 RESULT_RE="^security-review-codex-result ${D_RE} ${SHA_RE} ${NONCE_RE} ${BINDING_RE} ${SHA256_RE} ${SHA256_RE} ${O_RE}( --issues)?$"
-DIFF_CHECK_RE="^security-review-diff-check ${D_RE} ${SHA256_RE} [0-9]{1,30} [0-9]{1,30}$"
+DIFF_CHECK_RE="^security-review-diff-check ${D_RE} ${SHA256_RE} [0-9]{1,30} [0-9]{1,30} [0-9]{1,30} [0-9]{1,30}$"
 DIR_NAME_RE='dev-flow-security-review-|dev-flow-codex-cwd-|dev-flow-codex-result-|dev-flow-codex-prompt-|dev-flow-codex-schema-'
 
 emit_deny() {

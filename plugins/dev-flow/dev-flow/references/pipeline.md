@@ -290,12 +290,13 @@ Security floor  → security-scope（dev-runner-haiku-ro）: `security-review-sc
 pr-iterate      → CI gate を通り conflict も無い round（LGTM の候補）で:
                   security-scope#i: `security-review-scope <wt> origin/<base> <shaNow|HEAD> --save-diff`
                     → 起動時・run 中のどれか 1 回でも対象なら run の終わりまで対象（args.security_review が無い run も対象）
-                    → 保存先に書いた pr.diff の sha256・ino・ctime（ns）を diff_sha256・diff_ino・diff_ctime_ns で返す
+                    → 保存先に書いた pr.diff の sha256・ino・ctime（ns）を diff_sha256・diff_ino・diff_ctime_ns で、
+                      書いた後の保存先ディレクトリの ino・ctime（ns）を dir_ino・dir_ctime_ns で返す
                       （どれかが無ければ review せず diff_unavailable）
                   対象なら security-review#i（security-reviewer を毎回新しく spawn。PR 全 diff の file と head sha と
                     前回の未解消 critical/major を DATA として渡す）
                     → critical/major 0 件かつ reviewed_sha が今の head → security-diff-check#i（security-codex-relay）:
-                      `security-review-diff-check <保存先> <diff_sha256> <diff_ino> <diff_ctime_ns>` → matched:true → LGTM
+                      `security-review-diff-check <保存先> <diff_sha256> <diff_ino> <diff_ctime_ns> <dir_ino> <dir_ctime_ns>` → matched:true → LGTM
                       （一致しない・照合できない → security_unresolved。Codex 経路で clear の round も同じ）
                     → critical/major あり → fix#i（dev-runner）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
                       上限まで残れば max_reached）
@@ -338,16 +339,18 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
   - 検出できる範囲: review の間に pr.diff のファイルを書き換えた・別のファイルに差し替えた入力（後で元の bytes に戻したものを含む）。Claude 経路は security-reviewer の返却後に
     `security-review-diff-check` が pr.diff を `security-review-scope` の diff_sha256・diff_ino・diff_ctime_ns と照合し、
     一致しない・照合できない round を clear にしない（stop_reason は null）。書き戻しは ctime が、同じ bytes のファイルの rename は
-    ino が変わるので見分けられる。Codex 経路の prep は diff_sha256 を引数で受け取り、読んだ pr.diff の sha256 が違えば
+    ino が変わるので見分けられる。保存先ディレクトリごと rename で退避して良性の pr.diff を持つ別のディレクトリを置き、review の後に
+    元へ戻すと pr.diff は無傷なので、保存先ディレクトリ自身も `security-review-scope` が pr.diff を書いた後の dir_ino・dir_ctime_ns と
+    照合する（rename で移動したディレクトリの ctime が変わる）。Codex 経路の prep は保存先に書いてディレクトリの ctime を変えるので、
+    書いた後の dir_ino・dir_ctime_ns を返し、dir_ino が scope の値と一致するときだけ workflow が照合値の ctime を更新する（一致しなければ
+    Claude 経路の判定に倒す）。Codex 経路の prep は diff_sha256 を引数で受け取り、読んだ pr.diff の sha256 が違えば
     prompt.md を作らない（diff_mismatch。Claude 経路の判定に倒す）。Codex 経路は `security-review-codex-result` が codex の後に、出力先の複製と保存先の
     prompt.md・schema.json を prep の返した sha256 と照合し、`-C` が空の実ディレクトリであること、`-C` と保存先の祖先（自身を含む）に
     `.git`・`AGENTS.md`・`AGENTS.override.md`・`CLAUDE.md` が無いことを確かめる。当たれば判定できない（ok:false）として
     Codex を起動できないときと同じく Claude 経路の判定に倒す。hook は中継が起動する `codex` の PATH 上の解決先を確かめ、
     解決できない・相対パスか空の PATH 要素から解決される・実体が cwd（PR の worktree）・`$TMPDIR`・`/tmp`・`/private/tmp` の
     配下なら起動させない（sandbox の外で PR のコードが置いた codex を走らせない）
-  - 残る経路（この gate では塞がない）: 保存先ディレクトリごと差し替えて review の後に戻す（保存先を rename で退避して良性の pr.diff を
-    持つ別のディレクトリを同じ名前で置き、review の後に元へ戻すと、元の pr.diff の inode は無傷で sha256・ino・ctime が全部一致する）。
-    pr.diff の ctime を元の値に戻す（system の時計を戻せる権限が要る。同じ uid の常駐プロセスは utimes でも ctime を戻せない）。
+  - 残る経路（この gate では塞がない）: pr.diff・保存先ディレクトリの ctime を元の値に戻す（system の時計を戻せる権限が要る。同じ uid の常駐プロセスは utimes でも ctime を戻せない）。
     codex の出力後に結果ファイル（`result.json`）を nonce ごと写して `issues:[]` で上書きする（出力先は sandbox の中から書けない
     場所に置く前提で、hook と prep はその前提を確かめるが、書けてしまう設定ではこの上書きを検出しない）。常駐プロセスは同じ権限で
     書けるので完全には防げない — plugin の script / hook はプロセスの一覧・kill をしない（状態を変えない）

@@ -20,7 +20,9 @@
 //   （前の結果を今の review と取り違えない）。codex の -C（<output_dir>/dev-flow-codex-cwd-<nonce>-<binding>）は hook が binding の
 //   照合の後に作る — 保存先（sandbox の中から書ける）の配下に置くと、常駐プロセスが .git・AGENTS.md を置いて codex に指示として
 //   読ませられる。出力先の祖先（自身を含む）に .git・AGENTS.md・AGENTS.override.md・CLAUDE.md があれば何も作らない（workspace_tainted）。
-// stdout: JSON 1 行 {ok, review_dir, nonce, binding, prompt_sha256, schema_sha256, error?}。error は固定の code だけ（stdout を写す agent へ
+// stdout: JSON 1 行 {ok, review_dir, nonce, binding, prompt_sha256, schema_sha256, dir_ino, dir_ctime_ns, error?}。
+//   dir_ino / dir_ctime_ns は書いた後の保存先ディレクトリの ino・ctime（ns）の 10 進表記（書くとディレクトリの ctime が変わるので、
+//   workflow は ino が security-review-scope の dir_ino と一致するときだけ diff-check の照合値の ctime をこの値に更新する）。error は固定の code だけ（stdout を写す agent へ
 //   PR 由来の文字列を渡さない）。prompt_sha256 / schema_sha256 は書いた prompt.md・schema.json の sha256 で、security-review-codex-result が
 //   引数で受け取り、codex の後に出力先の複製と保存先の 2 つを再照合する（hook の照合は起動の直前の 1 回だけ）。
 //   nonce は round ごとの乱数（CODEX_NONCE_RE）。保存先には書かない（sandbox の中から読める場所に置くと、先回りした結果ファイルに
@@ -29,7 +31,7 @@
 //   計算できたときだけ codex を通し、結果ファイルの名前にも入る（書いた後に保存先の 2 つを書き換えられても、その中身の review は
 //   workflow が渡す binding の名前の結果にならない）。
 //   usage error だけ exit 2、それ以外は exit 0。
-import { readFileSync, writeFileSync, lstatSync, existsSync, rmSync, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, lstatSync, existsSync, rmSync, realpathSync, openSync, fstatSync, closeSync, constants } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import {
@@ -43,7 +45,7 @@ const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
   process.exit(code)
 }
-const fail = (error, code = 0) => emit({ ok: false, review_dir: null, nonce: null, binding: null, prompt_sha256: null, schema_sha256: null, error }, code)
+const fail = (error, code = 0) => emit({ ok: false, review_dir: null, nonce: null, binding: null, prompt_sha256: null, schema_sha256: null, dir_ino: null, dir_ctime_ns: null, error }, code)
 
 const argv = process.argv.slice(2)
 let verifyFrom = null
@@ -125,6 +127,16 @@ if (sha256Hex(diffBuf) !== diffSha256) fail('diff_mismatch')
 let binding = null
 let promptSha256 = null
 let schemaSha256 = null
+let dirIno = null
+let dirCtimeNs = null
+// 書く前に保存先ディレクトリを開き、書いた後の fstat から ino・ctime を取る（書くとディレクトリの ctime が変わるので、
+// diff-check の照合値をこの値に更新する。パスを引き直すと、その間に置き換えられた別のディレクトリの値を返し得る）
+let dirFd
+try {
+  dirFd = openSync(reviewDir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+} catch {
+  fail('review_dir_invalid')
+}
 try {
   const diff = diffBuf.toString('utf8')
   const schema = `${JSON.stringify(CODEX_SECURITY_REVIEW_SCHEMA)}\n`
@@ -138,7 +150,12 @@ try {
   binding = codexBinding(reviewDir, promptBuf, schemaBuf)
   promptSha256 = sha256Hex(promptBuf)
   schemaSha256 = sha256Hex(schemaBuf)
+  const dst = fstatSync(dirFd, { bigint: true })
+  dirIno = String(dst.ino)
+  dirCtimeNs = String(dst.ctimeNs)
 } catch {
   fail('write_failed')
+} finally {
+  closeSync(dirFd)
 }
-emit({ ok: true, review_dir: reviewDir, nonce: randomBytes(16).toString('hex'), binding, prompt_sha256: promptSha256, schema_sha256: schemaSha256 })
+emit({ ok: true, review_dir: reviewDir, nonce: randomBytes(16).toString('hex'), binding, prompt_sha256: promptSha256, schema_sha256: schemaSha256, dir_ino: dirIno, dir_ctime_ns: dirCtimeNs })

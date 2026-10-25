@@ -6,14 +6,14 @@
 # node を起動するだけ。node が無いときは ok:false を出す（workflow は Claude 経路の判定に倒す）。
 #
 # Usage: security-review-codex-prep <review_dir> <head_sha> <pr> <diff_sha256> <output_dir> [--verify-from <prev_nonce> <prev_binding>]
-# Output (stdout, JSON 1 行): {ok, review_dir, nonce, binding, prompt_sha256, schema_sha256, error?}
+# Output (stdout, JSON 1 行): {ok, review_dir, nonce, binding, prompt_sha256, schema_sha256, dir_ino, dir_ctime_ns, error?}
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if ! command -v node >/dev/null 2>&1; then
-    printf '%s\n' '{"ok":false,"review_dir":null,"nonce":null,"binding":null,"prompt_sha256":null,"schema_sha256":null,"error":"node_unavailable"}'
+    printf '%s\n' '{"ok":false,"review_dir":null,"nonce":null,"binding":null,"prompt_sha256":null,"schema_sha256":null,"dir_ino":null,"dir_ctime_ns":null,"error":"node_unavailable"}'
     exit 0
 fi
 

@@ -61,6 +61,9 @@ write_prev_result() {
     # prompt_sha256 / schema_sha256: 書いた 2 つの sha256（security-review-codex-result が codex の後に再照合する）
     [ "$(echo "$output" | jq -r '.prompt_sha256')" = "$(sha256_of <"$D/prompt.md")" ]
     [ "$(echo "$output" | jq -r '.schema_sha256')" = "$(sha256_of <"$D/schema.json")" ]
+    # dir_ino / dir_ctime_ns: 書いた後の保存先ディレクトリの ino・ctime（ns）（diff-check の照合値をこの値に更新する）
+    got="$(echo "$output" | jq -r '"\(.dir_ino) \(.dir_ctime_ns)"')"
+    [ "$got" = "$(node -e 'const s = require("fs").lstatSync(process.argv[1], { bigint: true }); console.log(`${s.ino} ${s.ctimeNs}`)' "$D")" ]
     # codex の -C は hook が出力先に作る — sandbox の中から書ける保存先の配下には作らない
     [ -z "$(find "$D" -mindepth 1 -type d)" ]
     # nonce: round ごとの 32 桁 hex。sandbox の中から読める保存先のどのファイルにも書かない
@@ -84,7 +87,7 @@ write_prev_result() {
 @test "出力先が未設定・相対パス・起動形に入れられない・実在しない・symlink・ディレクトリでないなら ok:false で何も作らない" {
     run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == false and .error == "output_dir_unset" and .nonce == null and .prompt_sha256 == null and .schema_sha256 == null'
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_unset" and .nonce == null and .prompt_sha256 == null and .schema_sha256 == null and .dir_ino == null and .dir_ctime_ns == null'
 
     run bash "$BIN" "$D" "$HEAD_SHA" 5 "$DH" codex-out
     echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid"'

@@ -431,17 +431,20 @@ export const SECURITY_DIFF_SHA256 = 'd'.repeat(64);
 /** security-scope 応答の diff_ino / diff_ctime_ns の既定（10 進の文字列）。 */
 export const SECURITY_DIFF_INO = '4242';
 export const SECURITY_DIFF_CTIME_NS = '1761360000123456789';
+/** security-scope 応答の dir_ino / dir_ctime_ns の既定（10 進の文字列）。 */
+export const SECURITY_DIR_INO = '4141';
+export const SECURITY_DIR_CTIME_NS = '1761360000123456790';
 
 /**
  * security-review-scope の stdout と同形の応答を返す。
  *
- * @param {{target?: boolean, ok?: boolean, head?: string|null, reasons?: string[], reviewDir?: string, diffPath?: string, diffSha256?: string|null, diffIno?: string|null, diffCtimeNs?: string|null, contextChanged?: boolean}} [o]
+ * @param {{target?: boolean, ok?: boolean, head?: string|null, reasons?: string[], reviewDir?: string, diffPath?: string, diffSha256?: string|null, diffIno?: string|null, diffCtimeNs?: string|null, dirIno?: string|null, dirCtimeNs?: string|null, contextChanged?: boolean}} [o]
  */
-export function securityScopeResponse({ target = true, ok = true, head = SECURITY_SCOPE_DEFAULT_HEAD, reasons, reviewDir = SECURITY_REVIEW_DIR, diffPath, diffSha256 = SECURITY_DIFF_SHA256, diffIno = SECURITY_DIFF_INO, diffCtimeNs = SECURITY_DIFF_CTIME_NS, contextChanged = false } = {}) {
+export function securityScopeResponse({ target = true, ok = true, head = SECURITY_SCOPE_DEFAULT_HEAD, reasons, reviewDir = SECURITY_REVIEW_DIR, diffPath, diffSha256 = SECURITY_DIFF_SHA256, diffIno = SECURITY_DIFF_INO, diffCtimeNs = SECURITY_DIFF_CTIME_NS, dirIno = SECURITY_DIR_INO, dirCtimeNs = SECURITY_DIR_CTIME_NS, contextChanged = false } = {}) {
   return {
     ok, target, reasons: reasons ?? (target ? ['not_allowlisted:1'] : []), file_count: 1,
     head_sha: head, reviewer_context_changed: contextChanged, review_dir: reviewDir, diff_path: diffPath ?? `${reviewDir}/pr.diff`,
-    diff_sha256: diffSha256, diff_ino: diffIno, diff_ctime_ns: diffCtimeNs,
+    diff_sha256: diffSha256, diff_ino: diffIno, diff_ctime_ns: diffCtimeNs, dir_ino: dirIno, dir_ctime_ns: dirCtimeNs,
   };
 }
 
