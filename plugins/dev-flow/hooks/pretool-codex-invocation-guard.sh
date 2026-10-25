@@ -28,8 +28,10 @@
 #      codex の形は hook がパスの実体も確かめる: <C> は空の実ディレクトリ、<D> は prompt.md・schema.json を実ファイルとして持ち
 #      result.json を持たない実ディレクトリ（symlink の result.json を通じて保存先の外へ書かせない・先に置かれた result.json を
 #      codex の結果として読ませない）で、どちらも入力の cwd（PR の worktree）の配下でない
-#   4. それ以外の dev-flow の agent → 引用符とバックスラッシュを外した command に codex の語（前後が英数字・`_` `.` `-` でない
-#      `codex`）か保存先・作業ディレクトリの名前（dev-flow-security-review- / dev-flow-codex-cwd-）があれば deny。それ以外は通す。
+#   4. それ以外の dev-flow の agent → 引用符とバックスラッシュを外した command を `;` `&` `|` `(` `)` と改行で単文に分け、
+#      どれかの単文の先頭トークンが `codex` か `*/codex` なら deny。保存先・作業ディレクトリの名前（dev-flow-security-review- /
+#      dev-flow-codex-cwd-）を含む command も deny。それ以外は通す。引数の中の codex の語（`grep codex`・
+#      `gh pr create --title "… codex …"`）では止めない。
 #      この agent たちは任意の Bash を持つので、ここは誤って codex や保存先を触ることを止める多層防御であり保証ではない —
 #      Codex の review の完全性は 3 の allowlist と、round の間に他の agent を起動しない workflow の順序で持つ
 #
@@ -49,7 +51,6 @@ PREP_RE="^security-review-codex-prep ${D_RE} ${SHA_RE} [0-9]+( --verify-from ${D
 NONCE_RE='[0-9a-f]{32}'
 CODEX_PROMPT='Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to'
 RESULT_RE="^security-review-codex-result ${D_RE} ${SHA_RE} ${NONCE_RE}( --issues)?$"
-CODEX_WORD_RE='(^|[^A-Za-z0-9_.-])codex([^A-Za-z0-9_.-]|$)'
 DIR_NAME_RE='dev-flow-security-review-|dev-flow-codex-cwd-'
 
 emit_deny() {
@@ -162,9 +163,13 @@ fi
 NORM=${CMD//\'/}
 NORM=${NORM//\"/}
 NORM=${NORM//\\/}
-if [[ $NORM =~ $CODEX_WORD_RE ]]; then
-  emit_deny "dev-flow の agent は codex を起動できない（Codex 経路の security review は security-codex-relay が固定形で起動する）。文字列の検索は Grep tool を使う"
-fi
+# 単文の区切りで分け、各単文の先頭トークンだけを見る（引数・タイトル文字列の中の codex の語では止めない）
+SIMPLE=${NORM//[;&|()]/$'\n'}
+while read -r first _; do
+  if [[ $first == "codex" || $first == */codex ]]; then
+    emit_deny "dev-flow の agent は codex を起動できない（Codex 経路の security review は security-codex-relay が固定形で起動する）"
+  fi
+done <<<"$SIMPLE"
 if [[ $NORM =~ $DIR_NAME_RE ]]; then
   emit_deny "dev-flow の agent は security review の保存先・作業ディレクトリを Bash で触れない（security-codex-relay の固定形だけが扱う）。文字列の検索は Grep tool を使う"
 fi
