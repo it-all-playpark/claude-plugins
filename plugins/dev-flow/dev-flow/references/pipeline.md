@@ -334,36 +334,59 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 ```
 /pr-iterate     → pr-iterate-prerun が base branch（origin/<base>）の skill-config.json / .claude/skill-config.json、無ければ user 設定
                   （$SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）から読み、
-                  args.security_review.reviewer で渡す（PR head の設定ファイルは読まない。無ければ "claude"）
+                  args.security_review.reviewer で渡す（PR head の設定ファイルは読まない。無ければ "claude"）。
+                  codex の -o の出力先 `"dev-flow".codex_output_dir` は同じ探索順の user 設定からだけ読み（base branch・PR head の
+                  設定ファイルは読まない）、args.security_review.codex_output_dir で渡す（無ければ null — Codex 経路に入らない）
 pr-iterate      → security-scope#i の前提チェックを通った round で（指示ファイルを変える PR は Codex の agent を spawn せず、Claude 経路と
                   同じ reviewer_context_changed で止める — 中継も PR の worktree で起動し、PR の CLAUDE.md を受け取れば clear の JSON を捏造できる）:
-                  security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`
-                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）。
-                      round の nonce はファイルに書かず stdout で返す
-                  security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... "<固定文> <nonce>"`（先頭トークン codex の単文。返り値は使わない）
-                  security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head> <nonce>`（自由文を出さない判定）
-                    → clear でなければ security-codex-issues#i: `security-review-codex-result <保存先> <head> <nonce> --issues`（指摘の本文）
-                    → result.json の nonce が一致しなければ判定できない — 保存先（$TMPDIR 配下）は PR のコードが残した常駐プロセスからも
-                      書けるので、先回り・上書きした JSON で clear にしない
+                  出力先が未設定・起動形に入れられない・PR の worktree の中 → Codex の agent を spawn せず security-review#i
+                  security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR> <出力先>[ --verify-from <前回の nonce> <前回の binding>]`
+                    → 出力先が realpath が自身と一致する実ディレクトリの絶対パスで、出力先と全祖先のどこにも prep（sandbox の中）から
+                      ファイルを作れないときだけ進む（作れる祖先があると、hook の確認後に出力先を symlink へ差し替えられる）
+                      （作れてしまったら消してから ok:false）
+                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json（作業ディレクトリは作らない）。
+                      round の nonce と binding（sha256("<保存先>\n<sha256(prompt.md)>\n<sha256(schema.json)>\n")）はファイルに書かず stdout で返す
+                  security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... -o <出力先>/dev-flow-codex-result-<nonce>-<binding>.json "<固定文> <nonce>"`
+                    （先頭トークン codex の単文。返り値は使わない）
+                    → hook が保存先の prompt.md・schema.json を出力先の dev-flow-codex-{prompt,schema}-<nonce>-<binding> へ複製し、複製と保存先から
+                      計算した binding が起動形の binding と一致したときだけ通す。codex は複製を読む（保存先は sandbox の中から書けるので読ませない）。
+                      -C は照合の後に hook が出力先に新しく作る空の dev-flow-codex-cwd-<nonce>-<binding>（既にあれば拒否。sandbox の中から
+                      書ける場所に置くと .git・AGENTS.md を置かれて指示として読まれる）。保存先は `-c dev_flow_review_dir="<保存先>"` で渡す
+                  security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head> <nonce> <binding> <出力先>`（自由文を出さない判定）
+                    → clear でなければ security-codex-issues#i: `security-review-codex-result <保存先> <head> <nonce> <binding> <出力先> --issues`（指摘の本文）
+                    → 結果ファイルの nonce が一致しなければ判定できない — 先回り・上書きした JSON で clear にしない
+                    → 引数の保存先と出力先の複製から計算した binding が prep の binding と一致しなければ読まない — 別の保存先・prep の後に
+                      書き換えた prompt.md で起動した codex の結果で clear にしない
                     → script と workflow の両方が securityReviewVerdict と同じ規則で clear のときだけ LGTM（以降は Claude 経路と同じ）
                     → clear を決める中継に自由文（codex の出力・指摘の本文）を読ませない — 引用された PR の文で偽の clear を作らせない
-                    → Codex で判定できない（prep の失敗・codex が無い・hook の拒否・result.json が読めない）→ その round は security-review#i
+                    → Codex で判定できない（prep の失敗・codex が無い・hook の拒否・結果ファイルが読めない）→ その round は security-review#i
 ```
 
+- Codex 経路の前提（出力先。plugin は出力先を作らず消さない — hook が round の複製を新しく作る以外、sandbox の外の場所を plugin から変えない）:
+  - codex を `excludedCommands` に入れると codex は sandbox の外で動き、`-o` の書き込みは model の tool ではなく codex CLI 自身が
+    sandbox の外で行う。出力先を sandbox の中から書ける場所（`$TMPDIR`・`/tmp`・worktree）に置くと、sandbox に居座った PR の
+    プロセスが結果ファイルの名前に symlink を置き、codex に任意のファイル（`~/.zshenv` 等）を上書きさせられる
+  - 出力先は人が一度作り（例: `mkdir ~/.local/state/dev-flow-codex-out`）、user 設定の `"dev-flow".codex_output_dir` に絶対パスで書く。
+    sandbox の書き込み許可（`allowWrite`・`additionalDirectories` 等）には入れない — 入れると prep が `output_dir_writable` で拒否し、
+    run は Claude 経路の判定に倒れる
+  - 結果ファイル（`dev-flow-codex-result-<nonce>-<binding>.json`）と hook が作る複製（`dev-flow-codex-{prompt,schema}-<nonce>-<binding>`）は round ごとに出力先へ溜まる。sandbox の中からは消せないので、古いものは人が片付ける
 - codex の起動形は `_lib/security-review.mjs` の `codexSecurityReviewCommand` が固定で持つ（中継が先頭トークン codex の単文で実行する —
   sandbox の外で通信できるのは先頭が codex の単文だけで、exec-proxy script の中から起動すると通信が拒否される）: `codex exec -s read-only --ephemeral --ignore-user-config
-  --ignore-rules --skip-git-repo-check -C <空の mkdtemp> -c web_search="disabled" --disable shell_tool --disable unified_exec
-  --disable apps --disable browser_use --disable computer_use -c model_instructions_file=<保存先>/prompt.md
-  --output-schema <保存先>/schema.json -o <保存先>/result.json "<固定文> <nonce>"`。空の `-C` で cwd の AGENTS.md を読ませず、shell 等を外して
-  diff の外を読む手段を無くす。hook は起動の前に、保存先・作業ディレクトリが mkdtemp の形の実ディレクトリで cwd の配下でないこと、
-  `-C` が空であること、保存先に prompt.md・schema.json があり result.json（symlink を含む）が無いことを確かめる
+  --ignore-rules --skip-git-repo-check -C <保存先>/<空の mkdtemp> -c web_search="disabled" --disable shell_tool --disable unified_exec
+  --disable apps --disable browser_use --disable computer_use -c model_instructions_file=<出力先>/dev-flow-codex-prompt-<nonce>-<binding>.md
+  --output-schema <出力先>/dev-flow-codex-schema-<nonce>-<binding>.json -o <出力先>/dev-flow-codex-result-<nonce>-<binding>.json "<固定文> <nonce>"`。
+  可変部は作業ディレクトリ・出力先のパスと nonce・binding だけ（sandbox 側の許可が同じ形を完全一致で通すので、形を増やさない）。保存先は `-C` の親から取る。
+  空の `-C` で cwd の AGENTS.md を読ませず、shell 等を外して diff の外を読む手段を無くす。hook は起動の前に、保存先・作業ディレクトリが mkdtemp の形の
+  実ディレクトリで cwd の配下でないこと、`-C` が空であること、保存先に prompt.md・schema.json があること、3 つの名前の nonce が prompt の nonce と同じで、
+  出力先が symlink でない実ディレクトリ・cwd / `$TMPDIR` / `/tmp` / `/private/tmp` の配下でない・結果ファイルと複製（symlink を含む）がまだ無いことを確かめ、
+  保存先の 2 つの中身と保存先のパスから計算した binding が起動形の binding と一致したときだけ、その中身を出力先へ複製して通す
 - PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`）は `security-codex-relay` の Bash を
   `security-review-codex-prep` / `codex exec`（上の固定形）/ `security-review-codex-result` の固定形の allowlist に限る
   （語を探す判定は引用の分割・`$` 展開で組み立てた語をすり抜けるので使わない）。他の dev-flow の agent には、引用符と
-  バックスラッシュを外した command を単文に分け、予約語・前置コマンド（env / exec 等）・代入を読み飛ばした先頭トークンが `codex` / `*/codex` か、保存先・作業ディレクトリの名前を含めば
+  バックスラッシュを外した command を単文に分け、予約語・前置コマンド（env / exec 等）・代入を読み飛ばした先頭トークンが `codex` / `*/codex` か、保存先・作業ディレクトリ・結果ファイルの名前を含めば
   拒否する（任意の Bash を持つ agent への多層防御で保証ではない。引数の `codex` の語 — `grep codex`・PR タイトル — では止めない）
 - `--output-schema` は OpenAI の strict 形（全 object が `additionalProperties:false`・全 property が required・`maxLength` 無し）
-  でないと 400 になる。result.json の schema 適合は `security-review-codex-result` が判定し、適合しない結果は clear にしない
+  でないと 400 になる。結果ファイルの schema 適合は `security-review-codex-result` が判定し、適合しない結果は clear にしない
 - Codex 用の脅威モデルは攻撃者の入力を PR の内容と外部データ（ファイル名・API 応答・取り込む文書）に限り、利用者自身が設定する
   環境変数を含めない。業務ロジックの正しさは critical / major にしない
 - 返り値 `rounds` は Claude の security-reviewer と、結果を読めた Codex の review の合計

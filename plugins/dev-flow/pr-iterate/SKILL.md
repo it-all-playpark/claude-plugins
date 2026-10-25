@@ -55,9 +55,10 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - PR の base branch で直近に成功した CI の所要時間から CI 待ちの上限（秒）を決め、`ci_wait_ceiling_seconds` に載せる
      （dev-flow の nested 起動と同じ求め方。読み取りに失敗したら 300）
    - PR 全体（`origin/<base>...<PR head>`）の diff が敵対的 security review の対象かを決定論の許可リストで判定し、
-     `security_review`（`{target, reasons, reviewer_context_changed, reviewer}`）に載せる。判定できないときは `target:true`・
+     `security_review`（`{target, reasons, reviewer_context_changed, reviewer, codex_output_dir}`）に載せる。判定できないときは `target:true`・
      `reviewer_context_changed:true`。`reviewer` は review を回す CLI の opt-in（`"dev-flow".security_reviewer`。base branch の
-     `skill-config.json` か user 設定から読み、PR head の設定は読まない。無ければ `"claude"`）
+     `skill-config.json` か user 設定から読み、PR head の設定は読まない。無ければ `"claude"`）。`codex_output_dir` は Codex 経路で
+     codex が結果を書く出力先（`"dev-flow".codex_output_dir`。user 設定からだけ読み、repo の設定は読まない。無ければ null）
 
    結果に応じて分岐する:
 
@@ -90,6 +91,14 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      終端サマリーには指摘の件数だけが載る。`reviewer:"codex"` なら Codex CLI が review する（Codex を起動できなければ
      security-reviewer の判定に戻る）。指示ファイルを変える PR はどちらの経路でも自動の review で clear にせず止める
      （`security-review-isolated` で人が確かめる）
+
+   - Codex 経路の前提（`codex_output_dir` が null なら Codex 経路に入らず security-reviewer の判定のまま）:
+     - codex を `excludedCommands` に入れると codex は sandbox の外で動き、`-o` の結果ファイルの書き込みも sandbox の外になる。
+       出力先が sandbox の中から書ける場所だと、PR のプロセスが結果ファイルの名前に symlink を置いて任意のファイルを上書きさせられる
+     - 出力先は人が一度作り（例: `mkdir ~/.local/state/dev-flow-codex-out`）、user 設定の `"dev-flow".codex_output_dir` に絶対パスで書く。
+       sandbox の書き込み許可には入れない（書ける出力先は prep が拒否し、security-reviewer の判定に戻る）。plugin は出力先を作らず消さない
+     - 結果ファイル（`dev-flow-codex-result-<nonce>-<binding>.json`）と、hook が codex に読ませるために作る指示ファイル・schema の
+       複製（`dev-flow-codex-{prompt,schema}-<nonce>-<binding>`）は round ごとに溜まる。sandbox の中からは消せないので、古いものは人が片付ける
 
    - `prior_devflow` が HOLD の dev-flow サマリーなら、終端サマリーは HOLD 理由の code ごとの回収状況を出し、
      未解消が残れば見出しを「🎉 LGTM」にしない（このレポートが PR の最後のコメント＝最新の結論になるため）。
