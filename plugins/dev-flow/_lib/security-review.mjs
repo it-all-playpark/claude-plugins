@@ -126,9 +126,12 @@ export function securityReviewVerdict(review, headSha) {
 // security-reviewer が読む前に pr.diff を良性の diff に差し替えられる。security-review-scope --save-diff が書いた値の sha256
 // （diff_sha256）を workflow が持ち、clear になりそうな round では review の後に security-review-diff-check がファイルの sha256 を
 // 計算し直して照合する（照合は script が行い、中継は argv を写して stdout を返すだけ）。一致しない・照合できない round は clear にしない。
-// 書き換えて review の後に戻す経路は検出できない（同じ権限の常駐プロセスは完全には防げない。pipeline.md に明記）。
+// 差し替えて review の後に元の bytes へ戻すと sha256 は一致するので、scope が書いた fd の ino・ctime（ns。diff_ino / diff_ctime_ns）も
+// 照合する（書き戻しで ctime が変わる）。Codex 経路の prep も diff_sha256 を受け取り、読んだ pr.diff の sha256 が違えば prompt.md を作らない。
 // sha256 の hex（diff・prompt.md・schema.json の照合値）
 export const SHA256_RE = /^[0-9a-f]{64}$/;
+// pr.diff の ino・ctime（ns）の 10 進表記（security-review-scope が文字列で返す。ns は Number の精度を超えるので数値にしない）
+export const DIFF_STAT_NUM_RE = /^[0-9]{1,30}$/;
 
 export const SECURITY_DIFF_CHECK_SCHEMA = {
   type: 'object', required: ['ok', 'matched'],
@@ -139,12 +142,12 @@ export const SECURITY_DIFF_CHECK_SCHEMA = {
   },
 };
 
-// 保存先の pr.diff を security-review-scope が返した sha256 と照合させる exec-proxy の prompt
-export function securityDiffCheckPrompt({ reviewDir, diffSha256 }) {
+// 保存先の pr.diff を security-review-scope が返した sha256・ino・ctime（ns）と照合させる exec-proxy の prompt
+export function securityDiffCheckPrompt({ reviewDir, diffSha256, diffIno, diffCtimeNs }) {
   return '次のコマンドを 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ（判定・要約・脚色をしない。exit 非0・stdout 空・'
     + 'JSON 不正なら {"ok":false,"matched":false,"error":"relay_failed"} で返せ。失敗時に ok:true・matched:true を生成してはならない）。'
     + '先頭トークンが bare 名の単文で実行し、cd 前置・`bash` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは付けない:\n'
-    + `security-review-diff-check ${reviewDir} ${diffSha256}`;
+    + `security-review-diff-check ${reviewDir} ${diffSha256} ${diffIno} ${diffCtimeNs}`;
 }
 
 // 照合の応答（security-review-diff-check の stdout）が「書き換えられていない」と言えるか。ok:true かつ matched:true のときだけ true
@@ -359,12 +362,12 @@ export const SECURITY_CODEX_ISSUES_SCHEMA = {
 
 // 保存先に prompt.md・schema.json を用意させる exec-proxy の prompt。outputDir は codex が -o で書く出力先
 // （prep が sandbox の中から書けないことを確かめる）。verify は前回の Codex の review の { nonce, binding }（出力先のその結果ファイルの
-// critical/major を verify_items にする）。
-export function codexPrepPrompt({ reviewDir, headSha, pr, outputDir, verify = null }) {
+// critical/major を verify_items にする）。diffSha256 は security-review-scope が返した diff_sha256（prep は読んだ pr.diff と照合する）。
+export function codexPrepPrompt({ reviewDir, headSha, pr, diffSha256, outputDir, verify = null }) {
   return '次のコマンドを 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ（判定・要約・脚色をしない。'
     + 'exit 非0・stdout 空・JSON 不正なら {"ok":false,"error":"relay_failed"} で返せ）。先頭トークンが bare 名の単文で実行し、cd 前置・`bash` 前置・'
     + '環境変数代入前置・&& 連結・パイプ・リダイレクトは付けない:\n'
-    + `security-review-codex-prep ${reviewDir} ${headSha} ${pr} ${outputDir}` + (verify ? ` --verify-from ${verify.nonce} ${verify.binding}` : '');
+    + `security-review-codex-prep ${reviewDir} ${headSha} ${pr} ${diffSha256} ${outputDir}` + (verify ? ` --verify-from ${verify.nonce} ${verify.binding}` : '');
 }
 
 // codex exec を写して実行させるだけの exec-proxy の prompt（codex の出力は返させない — 判定の中継に渡さない）。

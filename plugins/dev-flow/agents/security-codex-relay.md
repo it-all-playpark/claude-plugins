@@ -23,10 +23,10 @@ pr-iterate の security review（Codex 経路と、clear の前の保存先の p
 
 この agent の Bash は `hooks/pretool-codex-invocation-guard.sh` が次の固定形だけに限る（それ以外は拒否される）:
 
-- `security-review-codex-prep <保存先> <sha> <pr> <出力先>[ --verify-from <前回の nonce> <前回の binding>]`
+- `security-review-codex-prep <保存先> <sha> <pr> <diff の sha256> <出力先>[ --verify-from <前回の nonce> <前回の binding>]`
 - `codex exec -s read-only ... -C <出力先>/<作業ディレクトリ> ... -o <出力先>/dev-flow-codex-result-<nonce>-<binding>.json "<固定文> <nonce>"`（workflow が組み立てた固定形）
 - `security-review-codex-result <保存先> <sha> <nonce> <binding> <prompt.md の sha256> <schema.json の sha256> <出力先>[ --issues]`
-- `security-review-diff-check <保存先> <diff の sha256>`
+- `security-review-diff-check <保存先> <diff の sha256> <diff の ino> <diff の ctime（ns）>`
 
 ## 規約
 

@@ -29,19 +29,22 @@ setup() {
     git -C "$REPO" -c user.name=t -c user.email=t@example.com commit -q -am change
 }
 
-# security-review-scope --save-diff の保存先と diff_sha256 を D / H に入れる
+# security-review-scope --save-diff の保存先・diff_sha256・diff_ino・diff_ctime_ns を D / H / I / C に入れる
 save_diff() {
     run bash "$SCOPE" "$REPO" main HEAD --save-diff
     [ "$status" -eq 0 ]
     D="$(echo "$output" | jq -r '.review_dir')"
     H="$(echo "$output" | jq -r '.diff_sha256')"
+    I="$(echo "$output" | jq -r '.diff_ino')"
+    C="$(echo "$output" | jq -r '.diff_ctime_ns')"
 }
 
 @test "security-review-scope --save-diff は保存先に書いた pr.diff の sha256 を diff_sha256 で返し、照合は matched:true" {
     save_diff
     [[ "$H" =~ ^[0-9a-f]{64}$ ]]
     [ "$H" = "$(sha256_of <"$D/pr.diff")" ]
-    run bash "$BIN" "$D" "$H"
+    [[ "$I" =~ ^[0-9]+$ ]] && [[ "$C" =~ ^[0-9]+$ ]]
+    run bash "$BIN" "$D" "$H" "$I" "$C"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '. == {ok: true, matched: true}'
 }
@@ -49,18 +52,35 @@ save_diff() {
 @test "--save-diff を付けない判定は diff_sha256 を返さない（null）" {
     run bash "$SCOPE" "$REPO" main HEAD
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .review_dir == null and .diff_sha256 == null'
+    echo "$output" | jq -e '.ok == true and .review_dir == null and .diff_sha256 == null and .diff_ino == null and .diff_ctime_ns == null'
 }
 
 @test "review の間に pr.diff を差し替えられたら matched:false" {
     save_diff
     printf 'diff --git a/README.md b/README.md\n+benign\n' >"$D/pr.diff"
-    run bash "$BIN" "$D" "$H"
+    run bash "$BIN" "$D" "$H" "$I" "$C"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .matched == false'
     # 空にした diff も一致しない
     : >"$D/pr.diff"
-    run bash "$BIN" "$D" "$H"
+    run bash "$BIN" "$D" "$H" "$I" "$C"
+    echo "$output" | jq -e '.ok == true and .matched == false'
+}
+
+@test "差し替えて元の bytes に書き戻した pr.diff（sha256 は一致）も matched:false" {
+    save_diff
+    cp "$D/pr.diff" "$BATS_TEST_TMPDIR/orig.diff"
+    printf 'diff --git a/README.md b/README.md\n+benign\n' >"$D/pr.diff"
+    sleep 0.01
+    cat "$BATS_TEST_TMPDIR/orig.diff" >"$D/pr.diff"
+    [ "$H" = "$(sha256_of <"$D/pr.diff")" ]
+    run bash "$BIN" "$D" "$H" "$I" "$C"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .matched == false'
+    # 同じ bytes の別のファイルを rename で置いても（ino が変わる）一致しない
+    cp "$BATS_TEST_TMPDIR/orig.diff" "$D/pr.diff.new"
+    mv "$D/pr.diff.new" "$D/pr.diff"
+    run bash "$BIN" "$D" "$H" "$I" "$C"
     echo "$output" | jq -e '.ok == true and .matched == false'
 }
 
@@ -68,15 +88,15 @@ save_diff() {
     save_diff
     cp "$D/pr.diff" "$BATS_TEST_TMPDIR/outside.diff"
     rm "$D/pr.diff"
-    run bash "$BIN" "$D" "$H"
+    run bash "$BIN" "$D" "$H" "$I" "$C"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '. == {ok: false, matched: false, error: "diff_unavailable"}'
     ln -s "$BATS_TEST_TMPDIR/outside.diff" "$D/pr.diff"
-    run bash "$BIN" "$D" "$H"
+    run bash "$BIN" "$D" "$H" "$I" "$C"
     echo "$output" | jq -e '.ok == false and .matched == false and .error == "diff_unavailable"'
     rm "$D/pr.diff"
     mkdir "$D/pr.diff"
-    run bash "$BIN" "$D" "$H"
+    run bash "$BIN" "$D" "$H" "$I" "$C"
     echo "$output" | jq -e '.ok == false and .error == "diff_unavailable"'
 }
 
@@ -84,26 +104,30 @@ save_diff() {
     save_diff
     mkdir -p "$TMPDIR/not-a-review-dir"
     cp "$D/pr.diff" "$TMPDIR/not-a-review-dir/pr.diff"
-    run bash "$BIN" "$TMPDIR/not-a-review-dir" "$H"
+    run bash "$BIN" "$TMPDIR/not-a-review-dir" "$H" "$I" "$C"
     echo "$output" | jq -e '.ok == false and .matched == false and .error == "review_dir_invalid"'
     ln -s "$D" "$TMPDIR/dev-flow-security-review-Lnk001"
-    run bash "$BIN" "$TMPDIR/dev-flow-security-review-Lnk001" "$H"
+    run bash "$BIN" "$TMPDIR/dev-flow-security-review-Lnk001" "$H" "$I" "$C"
     echo "$output" | jq -e '.ok == false and .error == "review_dir_invalid"'
-    run bash "$BIN" "$TMPDIR/x/../$(basename "$D")" "$H"
+    run bash "$BIN" "$TMPDIR/x/../$(basename "$D")" "$H" "$I" "$C"
     echo "$output" | jq -e '.ok == false and .error == "review_dir_invalid"'
-    run bash "$BIN" "$TMPDIR/dev-flow-security-review-None01" "$H"
+    run bash "$BIN" "$TMPDIR/dev-flow-security-review-None01" "$H" "$I" "$C"
     echo "$output" | jq -e '.ok == false and .error == "review_dir_invalid"'
 }
 
-@test "引数不正（sha256 が無い・64 桁の小文字 hex でない・余分な引数）は exit 2" {
+@test "引数不正（sha256・ino・ctime が無い・64 桁の小文字 hex や数字でない・余分な引数）は exit 2" {
     save_diff
     run bash "$BIN" "$D"
     [ "$status" -eq 2 ]
+    run bash "$BIN" "$D" "$H"
+    [ "$status" -eq 2 ]
+    run bash "$BIN" "$D" "$H" "$I" -1
+    [ "$status" -eq 2 ]
     echo "$output" | jq -e '.ok == false and .matched == false and .error == "usage"'
-    run bash "$BIN" "$D" "${H:0:63}"
+    run bash "$BIN" "$D" "${H:0:63}" "$I" "$C"
     [ "$status" -eq 2 ]
-    run bash "$BIN" "$D" "${H^^}"
+    run bash "$BIN" "$D" "${H^^}" "$I" "$C"
     [ "$status" -eq 2 ]
-    run bash "$BIN" "$D" "$H" extra
+    run bash "$BIN" "$D" "$H" "$I" "$C" extra
     [ "$status" -eq 2 ]
 }

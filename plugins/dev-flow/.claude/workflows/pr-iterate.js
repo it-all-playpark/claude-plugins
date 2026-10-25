@@ -1358,6 +1358,7 @@ function securityReviewVerdict(review, headSha) {
 }
 
 const SHA256_RE = /^[0-9a-f]{64}$/;
+const DIFF_STAT_NUM_RE = /^[0-9]{1,30}$/;
 
 const SECURITY_DIFF_CHECK_SCHEMA = {
   type: 'object', required: ['ok', 'matched'],
@@ -1368,11 +1369,11 @@ const SECURITY_DIFF_CHECK_SCHEMA = {
   },
 };
 
-function securityDiffCheckPrompt({ reviewDir, diffSha256 }) {
+function securityDiffCheckPrompt({ reviewDir, diffSha256, diffIno, diffCtimeNs }) {
   return '次のコマンドを 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ（判定・要約・脚色をしない。exit 非0・stdout 空・'
     + 'JSON 不正なら {"ok":false,"matched":false,"error":"relay_failed"} で返せ。失敗時に ok:true・matched:true を生成してはならない）。'
     + '先頭トークンが bare 名の単文で実行し、cd 前置・`bash` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは付けない:\n'
-    + `security-review-diff-check ${reviewDir} ${diffSha256}`;
+    + `security-review-diff-check ${reviewDir} ${diffSha256} ${diffIno} ${diffCtimeNs}`;
 }
 
 function isSecurityDiffUnchanged(res) {
@@ -1525,11 +1526,11 @@ const SECURITY_CODEX_ISSUES_SCHEMA = {
   },
 };
 
-function codexPrepPrompt({ reviewDir, headSha, pr, outputDir, verify = null }) {
+function codexPrepPrompt({ reviewDir, headSha, pr, diffSha256, outputDir, verify = null }) {
   return '次のコマンドを 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ（判定・要約・脚色をしない。'
     + 'exit 非0・stdout 空・JSON 不正なら {"ok":false,"error":"relay_failed"} で返せ）。先頭トークンが bare 名の単文で実行し、cd 前置・`bash` 前置・'
     + '環境変数代入前置・&& 連結・パイプ・リダイレクトは付けない:\n'
-    + `security-review-codex-prep ${reviewDir} ${headSha} ${pr} ${outputDir}` + (verify ? ` --verify-from ${verify.nonce} ${verify.binding}` : '');
+    + `security-review-codex-prep ${reviewDir} ${headSha} ${pr} ${diffSha256} ${outputDir}` + (verify ? ` --verify-from ${verify.nonce} ${verify.binding}` : '');
 }
 
 function codexRunPrompt({ reviewDir, outputDir, nonce, binding }) {
@@ -1616,6 +1617,8 @@ const SECURITY_SCOPE_SCHEMA = {
     review_dir: { type: ['string', 'null'] },
     diff_path: { type: ['string', 'null'] },
     diff_sha256: { type: ['string', 'null'] },
+    diff_ino: { type: ['string', 'null'] },
+    diff_ctime_ns: { type: ['string', 'null'] },
     error: { type: 'string' },
   },
 };
@@ -2178,7 +2181,7 @@ let securityCodexPrev = null
 // 用意し、codex exec の起動と結果ファイルの判定を security-codex-relay に写させる。返り値は { review, cleared, counts, nonce, binding }（review は
 // securityReviewVerdict に渡す形、cleared は script の判定）。Codex で判定できない（出力先が未設定・prep の失敗・nonce・binding が
 // 起動形の形でない・codex が無い・hook が起動を拒否した・結果ファイルを読めない）ときは null — 呼び出し側が Claude 経路の判定に倒す
-async function codexSecurityReview(iteration, { reviewDir, headSha }) {
+async function codexSecurityReview(iteration, { reviewDir, headSha, diffSha256 }) {
   const outputDir = SECURITY_CODEX_OUTPUT_DIR
   if (outputDir == null) {
     log(`⚠️ iteration ${iteration}: Codex の出力先（user 設定の "dev-flow".codex_output_dir）が未設定`)
@@ -2193,7 +2196,7 @@ async function codexSecurityReview(iteration, { reviewDir, headSha }) {
     return null
   }
   const prep = await failOpenAgent(
-    codexPrepPrompt({ reviewDir, headSha, pr: PR, outputDir, verify: securityCodexPrev }),
+    codexPrepPrompt({ reviewDir, headSha, pr: PR, diffSha256, outputDir, verify: securityCodexPrev }),
     { agentType: 'security-codex-relay', schema: SECURITY_CODEX_PREP_SCHEMA, label: `security-codex-prep#${iteration}`, phase: 'Iterate' },
   )
   // nonce は保存先に無く、codex の起動形の prompt と result script の引数にだけ渡す（結果ファイルの先回り・上書きで clear にしない）。
@@ -2274,9 +2277,12 @@ async function securityGate(iteration, round) {
   const dirName = reviewDir.split('/').pop()
   if (!plainAbs(reviewDir) || !/^dev-flow-security-review-[A-Za-z0-9]{6}$/.test(dirName) || diffPath !== `${reviewDir}/pr.diff`
     || !isOutsideWorktree(reviewDir.toLowerCase(), String(isoWt).toLowerCase())) return stop('diff の保存先が PR の worktree の外の絶対パスでない', 'review_dir_invalid')
-  // 保存先に書いた diff の sha256（review の後に security-review-diff-check が pr.diff と照合する）。無ければ照合できないので review しない
+  // 保存先に書いた diff の sha256・ino・ctime（ns）（review の後に security-review-diff-check が pr.diff と照合する。ino・ctime は
+  // 差し替えて元の bytes に戻した pr.diff を見分ける）。無ければ照合できないので review しない
   const diffSha256 = typeof scope?.diff_sha256 === 'string' ? scope.diff_sha256.trim() : ''
-  if (!SHA256_RE.test(diffSha256)) return stop('保存した diff の sha256 が分からない', 'diff_unavailable')
+  const diffIno = typeof scope?.diff_ino === 'string' ? scope.diff_ino.trim() : ''
+  const diffCtimeNs = typeof scope?.diff_ctime_ns === 'string' ? scope.diff_ctime_ns.trim() : ''
+  if (!SHA256_RE.test(diffSha256) || !DIFF_STAT_NUM_RE.test(diffIno) || !DIFF_STAT_NUM_RE.test(diffCtimeNs)) return stop('保存した diff の sha256・ino・ctime が分からない', 'diff_unavailable')
   reviewerContextChanged = reviewerContextChanged || isReviewerContextChanged(scope)
   // workflow の agent 起動は cwd を受け付けず、security-reviewer も Codex の prep・起動・判定の中継も PR の worktree を cwd に起動する。
   // PR が session に自動で読み込まれる指示ファイルを変えると、攻撃者の文がその agent に届き clear の根拠や JSON を偽れるので、
@@ -2288,7 +2294,7 @@ async function securityGate(iteration, round) {
   // Codex の round の件数（clear の round は指摘の本文を取らないので minor の件数は script の判定から取る）
   let codexCounts = null
   if (SECURITY_REVIEWER === 'codex') {
-    const codex = await codexSecurityReview(iteration, { reviewDir, headSha })
+    const codex = await codexSecurityReview(iteration, { reviewDir, headSha, diffSha256 })
     if (codex != null) {
       securityRounds += 1
       review = codex.review
@@ -2321,7 +2327,7 @@ async function securityGate(iteration, round) {
     // 決定論の script に照合させる（中継は argv を写すだけ）。一致しない・照合できない round は clear にしない（経路を問わない —
     // Codex 経路の prep も pr.diff を読む）
     const diffCheck = await failOpenAgent(
-      securityDiffCheckPrompt({ reviewDir, diffSha256 }),
+      securityDiffCheckPrompt({ reviewDir, diffSha256, diffIno, diffCtimeNs }),
       { agentType: 'security-codex-relay', schema: SECURITY_DIFF_CHECK_SCHEMA, label: `security-diff-check#${iteration}`, phase: 'Iterate' },
     )
     if (!isSecurityDiffUnchanged(diffCheck)) {

@@ -3,8 +3,11 @@
 // prompt・schema・起動形の規則は _lib/security-review.mjs の 1 か所に置き、ここは書き出すだけ。
 //
 // Usage:
-//   node security-review-codex-prep.mjs <review_dir> <head_sha> <pr> <output_dir> [--verify-from <prev_nonce> <prev_binding>]
+//   node security-review-codex-prep.mjs <review_dir> <head_sha> <pr> <diff_sha256> <output_dir> [--verify-from <prev_nonce> <prev_binding>]
 //     review_dir: security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX。pr.diff を持つ）
+//     diff_sha256: security-review-scope が返した diff_sha256。読んだ pr.diff の sha256 が違えば何も書かず diff_mismatch
+//       （保存先は sandbox の中から書けるので、prep の時だけ差し替えて後で戻した pr.diff から prompt.md を作らない — 作ると binding も
+//       差し替え後の中身になり、result 側の再照合では見分けられない）
 //     output_dir: codex が -o で結果ファイル（dev-flow-codex-result-<nonce>-<binding>.json）を書く出力先（user 設定の "dev-flow".codex_output_dir）。
 //       省略は未設定（output_dir_unset）。realpath が自身と一致する（祖先にも symlink を含まない）実ディレクトリの絶対パスで、
 //       出力先と全祖先のどこにも、ここ（sandbox の中）からファイルを作れないこと — 作れる出力先では、sandbox の中の常駐プロセスが
@@ -31,7 +34,7 @@ import { randomBytes } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import {
   codexSecurityReviewPrompt, codexResultVerdict, codexResultPath, isCodexArgPath, CODEX_SECURITY_REVIEW_SCHEMA,
-  SECURITY_REVIEW_DIR_NAME_RE, CODEX_PREPARED_AT_FILE, CODEX_NONCE_RE, CODEX_BINDING_RE,
+  SECURITY_REVIEW_DIR_NAME_RE, CODEX_PREPARED_AT_FILE, CODEX_NONCE_RE, CODEX_BINDING_RE, SHA256_RE,
 } from '../security-review.mjs'
 import { codexBinding, sha256Hex } from './security-review-codex-binding.mjs'
 import { taintedAncestor } from './security-review-codex-workspace.mjs'
@@ -51,9 +54,9 @@ for (let i = 0; i < argv.length; i++) {
     i += 2
   } else positional.push(argv[i])
 }
-if (positional.length < 3 || positional.length > 4 || positional.some((a) => a.startsWith('-'))) fail('usage', 2)
-const [reviewDir, headSha, pr, outputDir = null] = positional
-if (!/^[0-9a-f]{40}$/i.test(headSha) || !/^[1-9][0-9]*$/.test(pr)) fail('usage', 2)
+if (positional.length < 4 || positional.length > 5 || positional.some((a) => a.startsWith('-'))) fail('usage', 2)
+const [reviewDir, headSha, pr, diffSha256, outputDir = null] = positional
+if (!/^[0-9a-f]{40}$/i.test(headSha) || !/^[1-9][0-9]*$/.test(pr) || !SHA256_RE.test(diffSha256)) fail('usage', 2)
 
 // 保存先は実在するディレクトリ（symlink でない）で、起動形に入れられる形のパス
 const isRealDir = (p) => {
@@ -111,11 +114,19 @@ if (verifyFrom != null) {
   verifyItems = v.issues.filter((x) => x.severity === 'critical' || x.severity === 'major')
 }
 
+let diffBuf
+try {
+  diffBuf = readFileSync(join(reviewDir, 'pr.diff'))
+} catch {
+  fail('diff_unavailable')
+}
+if (sha256Hex(diffBuf) !== diffSha256) fail('diff_mismatch')
+
 let binding = null
 let promptSha256 = null
 let schemaSha256 = null
 try {
-  const diff = readFileSync(join(reviewDir, 'pr.diff'), 'utf8')
+  const diff = diffBuf.toString('utf8')
   const schema = `${JSON.stringify(CODEX_SECURITY_REVIEW_SCHEMA)}\n`
   const prompt = codexSecurityReviewPrompt({ pr, headSha, verifyItems, diff })
   writeFileSync(join(reviewDir, CODEX_PREPARED_AT_FILE), `${Date.now()}\n`, { flag: 'wx' })

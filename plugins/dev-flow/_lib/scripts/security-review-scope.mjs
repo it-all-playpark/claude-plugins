@@ -10,9 +10,11 @@
 //       実 index は触らない）の diff を判定する（dev-flow の Security floor。implementer は commit しない）
 //   --save-diff: diff 全文を worktree の外の新しい一時ディレクトリ（os.tmpdir() 配下）の pr.diff に書き、
 //     review_dir / diff_path と、書いた diff の sha256（diff_sha256。小文字 hex）を返す（pr-iterate の security-reviewer が読む。
-//     保存先は sandbox の中の常駐プロセスから書けるので、review の後に security-review-diff-check がこの値と照合する）
+//     保存先は sandbox の中の常駐プロセスから書けるので、review の後に security-review-diff-check がこの値と照合する）。
+//     書いた pr.diff の ino と ctime（ns）も 10 進の文字列で返す（diff_ino / diff_ctime_ns）。差し替えて元の bytes に戻しても
+//     ctime は変わるので、diff-check は sha256 と合わせてこの 2 つも照合する
 //
-// stdout: JSON 1 行 {ok, target, reasons, file_count, head_sha, reviewer_context_changed, review_dir, diff_path, diff_sha256, error?}
+// stdout: JSON 1 行 {ok, target, reasons, file_count, head_sha, reviewer_context_changed, review_dir, diff_path, diff_sha256, diff_ino, diff_ctime_ns, error?}
 //   reasons は固定の code と件数（`not_allowlisted:3` 等。_lib の reasonCodeCounts）だけで、ファイルパス・diff 由来の
 //   文字列を出さない（stdout を写す agent へ PR が決めた文字列を渡すと、判定を書き換える文を混ぜられる）。error も
 //   固定の code（`usage` / `git_failed`）だけで、git の stderr は stdout にも stderr にも出さない（同じ理由）。
@@ -21,7 +23,7 @@
 //   ok:false（取得・判定に失敗）のときも target:true を出す（fail-closed）。usage error だけ exit 2、それ以外は exit 0。
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { closeSync, fstatSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -32,7 +34,7 @@ const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
   process.exit(code)
 }
-const failClosed = (error) => ({ ok: false, target: true, reasons: ['scope_unavailable:1'], file_count: null, head_sha: null, reviewer_context_changed: true, review_dir: null, diff_path: null, diff_sha256: null, error })
+const failClosed = (error) => ({ ok: false, target: true, reasons: ['scope_unavailable:1'], file_count: null, head_sha: null, reviewer_context_changed: true, review_dir: null, diff_path: null, diff_sha256: null, diff_ino: null, diff_ctime_ns: null, error })
 
 const argv = process.argv.slice(2)
 const saveDiff = argv.includes('--save-diff')
@@ -113,14 +115,25 @@ try {
   let reviewDir = null
   let diffPath = null
   let diffSha256 = null
+  let diffIno = null
+  let diffCtimeNs = null
   if (saveDiff) {
     reviewDir = mkdtempSync(join(tmpdir(), 'dev-flow-security-review-'))
     diffPath = join(reviewDir, 'pr.diff')
-    writeFileSync(diffPath, patchBuf)
+    // 書いた fd の fstat から ino と ctime を取る（パスを引き直すと、書いた直後に置かれた別のファイルの値を基準にし得る）
+    const fd = openSync(diffPath, 'wx')
+    try {
+      writeFileSync(fd, patchBuf)
+      const st = fstatSync(fd, { bigint: true })
+      diffIno = String(st.ino)
+      diffCtimeNs = String(st.ctimeNs)
+    } finally {
+      closeSync(fd)
+    }
     // 書いた後のファイルではなく、書いた値から作る（書いた直後に差し替えられた中身を照合の基準にしない）
     diffSha256 = createHash('sha256').update(patchBuf).digest('hex')
   }
-  result = { ok: true, target: scope.target, reasons: scope.codes, file_count: names.length, head_sha: headSha, reviewer_context_changed: scope.reviewer_context_changed, review_dir: reviewDir, diff_path: diffPath, diff_sha256: diffSha256 }
+  result = { ok: true, target: scope.target, reasons: scope.codes, file_count: names.length, head_sha: headSha, reviewer_context_changed: scope.reviewer_context_changed, review_dir: reviewDir, diff_path: diffPath, diff_sha256: diffSha256, diff_ino: diffIno, diff_ctime_ns: diffCtimeNs }
 } catch {
   result = failClosed('git_failed')
 }

@@ -3,17 +3,21 @@
 //
 // 保存先（os.tmpdir() 配下）は sandbox の中に残った PR のプロセスからも書けるので、security-reviewer が読む前に pr.diff を良性の diff に
 // 差し替えられる。pr-iterate は clear になりそうな round で review の後にこの CLI を走らせ、matched:true でなければ clear にしない。
+// sha256 だけでは、差し替えて review の後に元の bytes へ戻した pr.diff を見分けられない。書き戻しでも ctime は変わり、別のファイルを
+// rename で置けば ino が変わるので、scope が書いた fd から取った ino・ctime（ns）とも照合する。
 // 照合はここで行い、中継（LLM）は argv を写して stdout を返すだけ（sha256 の一致を中継に判定させない）。
 //
-// Usage: node security-review-diff-check.mjs <review_dir> <diff_sha256>
+// Usage: node security-review-diff-check.mjs <review_dir> <diff_sha256> <diff_ino> <diff_ctime_ns>
 //   review_dir: security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX）
 //   diff_sha256: security-review-scope が返した diff_sha256（64 桁の小文字 hex）
-// stdout: JSON 1 行 {ok, matched, error?}。matched は <review_dir>/pr.diff（symlink でない通常ファイル）の sha256 が引数と一致したとき
-//   だけ true。保存先・pr.diff を読めなければ ok:false（error は固定の code だけ）。usage error だけ exit 2、それ以外は exit 0。
+//   diff_ino / diff_ctime_ns: security-review-scope が返した diff_ino / diff_ctime_ns（10 進の数字）
+// stdout: JSON 1 行 {ok, matched, error?}。matched は <review_dir>/pr.diff（symlink でない通常ファイル）の sha256・ino・ctime（ns）が
+//   引数と全部一致したときだけ true。保存先・pr.diff を読めなければ ok:false（error は固定の code だけ）。usage error だけ exit 2、
+//   それ以外は exit 0。
 import { createHash } from 'node:crypto'
-import { lstatSync, readFileSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { isCodexArgPath, SECURITY_REVIEW_DIR_NAME_RE, SHA256_RE } from '../security-review.mjs'
+import { isCodexArgPath, SECURITY_REVIEW_DIR_NAME_RE, SHA256_RE, DIFF_STAT_NUM_RE } from '../security-review.mjs'
 
 const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
@@ -22,8 +26,8 @@ const emit = (obj, code = 0) => {
 const fail = (error, code = 0) => emit({ ok: false, matched: false, error }, code)
 
 const argv = process.argv.slice(2)
-if (argv.length !== 2 || !SHA256_RE.test(argv[1])) fail('usage', 2)
-const [reviewDir, expected] = argv
+if (argv.length !== 4 || !SHA256_RE.test(argv[1]) || !DIFF_STAT_NUM_RE.test(argv[2]) || !DIFF_STAT_NUM_RE.test(argv[3])) fail('usage', 2)
+const [reviewDir, expected, expectedIno, expectedCtimeNs] = argv
 if (!isCodexArgPath(reviewDir, SECURITY_REVIEW_DIR_NAME_RE)) fail('review_dir_invalid')
 try {
   if (!lstatSync(reviewDir).isDirectory()) fail('review_dir_invalid')
@@ -31,11 +35,22 @@ try {
   fail('review_dir_invalid')
 }
 let diff
+let st
 try {
-  const p = join(reviewDir, 'pr.diff')
-  if (!lstatSync(p).isFile()) fail('diff_unavailable')
-  diff = readFileSync(p)
+  // symlink は開かない（O_NOFOLLOW）。読んだ後の fstat を使う — 読んでいる間に書き換えられても ctime が変わる
+  const fd = openSync(join(reviewDir, 'pr.diff'), constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    if (!fstatSync(fd).isFile()) fail('diff_unavailable')
+    diff = readFileSync(fd)
+    st = fstatSync(fd, { bigint: true })
+  } finally {
+    closeSync(fd)
+  }
 } catch {
   fail('diff_unavailable')
 }
-emit({ ok: true, matched: createHash('sha256').update(diff).digest('hex') === expected })
+emit({
+  ok: true,
+  matched: createHash('sha256').update(diff).digest('hex') === expected
+    && String(st.ino) === expectedIno && String(st.ctimeNs) === expectedCtimeNs,
+})

@@ -128,7 +128,7 @@ test('[security-review][3] prep が用意した保存先と binding で組み立
   chmodSync(prepOut, 0o555);
   try {
     // 出力先の祖先はテスト環境では書けるので、sandbox の書き込み拒否を真似て prep を動かす（base の配下だけ書ける）
-    const prep = JSON.parse(execFileSync('node', ['--import', PREP_FAKE_SANDBOX, PREP_CLI, reviewDir, HEAD, '5', prepOut], { env: { ...process.env, TMPDIR: base, FAKE_SANDBOX_WRITABLE: base }, encoding: 'utf8' }));
+    const prep = JSON.parse(execFileSync('node', ['--import', PREP_FAKE_SANDBOX, PREP_CLI, reviewDir, HEAD, '5', sha256Hex('diff --git a/x b/x\n'), prepOut], { env: { ...process.env, TMPDIR: base, FAKE_SANDBOX_WRITABLE: base }, encoding: 'utf8' }));
     assert.equal(prep.ok, true, JSON.stringify(prep));
     assert.ok(!('cwd_dir' in prep), 'prep は作業ディレクトリを作らない');
     // binding は保存先のパスと prep が書いた 2 つの中身から計算した値

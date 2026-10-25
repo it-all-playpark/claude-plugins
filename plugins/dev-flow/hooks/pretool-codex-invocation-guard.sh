@@ -17,14 +17,15 @@
 #      tool が Bash でない → 無出力 exit 0
 #   3. agent_type が dev-flow:security-codex-relay → command が次の 4 形のどれかと完全に一致するときだけ通す（改行・余分な空白・
 #      引用符・shell の記号を含む形は一致しない）:
-#        security-review-codex-prep <D> <sha> <pr> <O>[ --verify-from <N> <B>]
+#        security-review-codex-prep <D> <sha> <pr> <H> <O>[ --verify-from <N> <B>]
 #        codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check
 #          -C <O>/dev-flow-codex-cwd-<N>-<B> -c dev_flow_review_dir="<D>" -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use
 #          --disable computer_use -c model_instructions_file=<O>/dev-flow-codex-prompt-<N>-<B>.md
 #          --output-schema <O>/dev-flow-codex-schema-<N>-<B>.json -o <O>/dev-flow-codex-result-<N>-<B>.json "<固定文> <N>"
 #        （codex は実際は 1 行。_lib/security-review.mjs の codexSecurityReviewCommand と同じ — 起動形を変えるときは両方を同時に変える）
 #        security-review-codex-result <D> <sha> <N> <B> <P> <S> <O>[ --issues]
-#        security-review-diff-check <D> <H>（Claude 経路でも、clear の前に保存先の pr.diff を security-review-scope の sha256 と照合する）
+#        security-review-diff-check <D> <H> <ino> <ctime_ns>（Claude 経路でも、clear の前に保存先の pr.diff を security-review-scope の
+#          sha256・ino・ctime と照合する。<ino> / <ctime_ns> は 1〜30 桁の数字）
 #      <D> は basename が dev-flow-security-review-XXXXXX の、<O> は人が用意した出力先の、
 #      `.` / `..` の要素を持たない [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字、<N> は prep が返した nonce
 #      （32 桁の小文字 hex）、<B> は prep が返した binding、<P> / <S> は prep が返した prompt.md・schema.json の sha256、<H> は
@@ -75,10 +76,10 @@ SHA_RE='[0-9a-fA-F]{40}'
 NONCE_RE='[0-9a-f]{32}'
 BINDING_RE='[0-9a-f]{64}'
 SHA256_RE='[0-9a-f]{64}'
-PREP_RE="^security-review-codex-prep ${D_RE} ${SHA_RE} [0-9]+ ${O_RE}( --verify-from ${NONCE_RE} ${BINDING_RE})?$"
+PREP_RE="^security-review-codex-prep ${D_RE} ${SHA_RE} [0-9]+ ${SHA256_RE} ${O_RE}( --verify-from ${NONCE_RE} ${BINDING_RE})?$"
 CODEX_PROMPT='Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to'
 RESULT_RE="^security-review-codex-result ${D_RE} ${SHA_RE} ${NONCE_RE} ${BINDING_RE} ${SHA256_RE} ${SHA256_RE} ${O_RE}( --issues)?$"
-DIFF_CHECK_RE="^security-review-diff-check ${D_RE} ${SHA256_RE}$"
+DIFF_CHECK_RE="^security-review-diff-check ${D_RE} ${SHA256_RE} [0-9]{1,30} [0-9]{1,30}$"
 DIR_NAME_RE='dev-flow-security-review-|dev-flow-codex-cwd-|dev-flow-codex-result-|dev-flow-codex-prompt-|dev-flow-codex-schema-'
 
 emit_deny() {
@@ -286,10 +287,10 @@ if [[ $AGENT_TYPE == "$RELAY_AGENT" ]]; then
         [[ $s == "." || $s == ".." ]] && emit_deny "security-codex-relay のパスに . / .. の要素がある"
       done
     done
-    # 出力先は prep の 5 番目・result の 8 番目のトークン。diff の照合は出力先を使わない（Claude 経路でも走る）
+    # 出力先は prep の 6 番目・result の 8 番目のトークン。diff の照合は出力先を使わない（Claude 経路でも走る）
     read -r -a TOKS <<<"$CMD"
     if [[ $CMD == security-review-codex-prep\ * ]]; then
-      require_configured_output_dir "${TOKS[4]}"
+      require_configured_output_dir "${TOKS[5]}"
     elif [[ $CMD == security-review-codex-result\ * ]]; then
       require_configured_output_dir "${TOKS[7]}"
     fi

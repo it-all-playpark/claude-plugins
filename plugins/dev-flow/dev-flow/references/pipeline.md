@@ -290,11 +290,12 @@ Security floor  → security-scope（dev-runner-haiku-ro）: `security-review-sc
 pr-iterate      → CI gate を通り conflict も無い round（LGTM の候補）で:
                   security-scope#i: `security-review-scope <wt> origin/<base> <shaNow|HEAD> --save-diff`
                     → 起動時・run 中のどれか 1 回でも対象なら run の終わりまで対象（args.security_review が無い run も対象）
-                    → 保存先に書いた pr.diff の sha256 を diff_sha256 で返す（無ければ review せず diff_unavailable）
+                    → 保存先に書いた pr.diff の sha256・ino・ctime（ns）を diff_sha256・diff_ino・diff_ctime_ns で返す
+                      （どれかが無ければ review せず diff_unavailable）
                   対象なら security-review#i（security-reviewer を毎回新しく spawn。PR 全 diff の file と head sha と
                     前回の未解消 critical/major を DATA として渡す）
                     → critical/major 0 件かつ reviewed_sha が今の head → security-diff-check#i（security-codex-relay）:
-                      `security-review-diff-check <保存先> <diff_sha256>` → matched:true → LGTM
+                      `security-review-diff-check <保存先> <diff_sha256> <diff_ino> <diff_ctime_ns>` → matched:true → LGTM
                       （一致しない・照合できない → security_unresolved。Codex 経路で clear の round も同じ）
                     → critical/major あり → fix#i（dev-runner）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
                       上限まで残れば max_reached）
@@ -334,15 +335,17 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 - **review 中の入力の書き換え**（issue #1095）: 保存先（`os.tmpdir()` 配下の `dev-flow-security-review-*`）は sandbox の中から
   書けるので、fix agent や Validate のテストが走らせた PR のコードが常駐プロセスとして残ると、review の作業場所を書き換えて
   clear を偽れる。sha256 の照合は決定論の script が行い、中継（LLM）は argv を写すだけ。
-  - 検出できる範囲: review の後まで書き換えたまま残った入力。Claude 経路は security-reviewer の返却後に
-    `security-review-diff-check` が pr.diff を `security-review-scope` の diff_sha256 と照合し、一致しない・照合できない round を
-    clear にしない（stop_reason は null）。Codex 経路は `security-review-codex-result` が codex の後に、出力先の複製と保存先の
+  - 検出できる範囲: review の間に書き換えた入力（後で元の bytes に戻したものを含む）。Claude 経路は security-reviewer の返却後に
+    `security-review-diff-check` が pr.diff を `security-review-scope` の diff_sha256・diff_ino・diff_ctime_ns と照合し、
+    一致しない・照合できない round を clear にしない（stop_reason は null）。書き戻しは ctime が、同じ bytes のファイルの rename は
+    ino が変わるので見分けられる。Codex 経路の prep は diff_sha256 を引数で受け取り、読んだ pr.diff の sha256 が違えば
+    prompt.md を作らない（diff_mismatch。Claude 経路の判定に倒す）。Codex 経路は `security-review-codex-result` が codex の後に、出力先の複製と保存先の
     prompt.md・schema.json を prep の返した sha256 と照合し、`-C` が空の実ディレクトリであること、`-C` と保存先の祖先（自身を含む）に
     `.git`・`AGENTS.md`・`AGENTS.override.md`・`CLAUDE.md` が無いことを確かめる。当たれば判定できない（ok:false）として
     Codex を起動できないときと同じく Claude 経路の判定に倒す。hook は中継が起動する `codex` の PATH 上の解決先を確かめ、
     解決できない・相対パスか空の PATH 要素から解決される・実体が cwd（PR の worktree）・`$TMPDIR`・`/tmp`・`/private/tmp` の
     配下なら起動させない（sandbox の外で PR のコードが置いた codex を走らせない）
-  - 残る経路（この gate では塞がない）: 書き換えて review の後に戻す（照合は review の後の 1 回で、読んだ時点の中身は見ない）。
+  - 残る経路（この gate では塞がない）: pr.diff の ctime を元の値に戻す（system の時計を戻せる権限が要る。同じ uid の常駐プロセスは utimes でも ctime を戻せない）。
     codex の出力後に結果ファイル（`result.json`）を nonce ごと写して `issues:[]` で上書きする（出力先は sandbox の中から書けない
     場所に置く前提で、hook と prep はその前提を確かめるが、書けてしまう設定ではこの上書きを検出しない）。常駐プロセスは同じ権限で
     書けるので完全には防げない — plugin の script / hook はプロセスの一覧・kill をしない（状態を変えない）
@@ -358,7 +361,7 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 pr-iterate      → security-scope#i の前提チェックを通った round で（指示ファイルを変える PR は Codex の agent を spawn せず、Claude 経路と
                   同じ reviewer_context_changed で止める — 中継も PR の worktree で起動し、PR の CLAUDE.md を受け取れば clear の JSON を捏造できる）:
                   出力先が未設定・起動形に入れられない・PR の worktree の中 → Codex の agent を spawn せず security-review#i
-                  security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR> <出力先>[ --verify-from <前回の nonce> <前回の binding>]`
+                  security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR> <diff_sha256> <出力先>[ --verify-from <前回の nonce> <前回の binding>]`
                     → 出力先が realpath が自身と一致する実ディレクトリの絶対パスで、出力先と全祖先のどこにも prep（sandbox の中）から
                       ファイルを作れないときだけ進む（作れる祖先があると、hook の確認後に出力先を symlink へ差し替えられる）
                       （作れてしまったら消してから ok:false）

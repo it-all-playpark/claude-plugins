@@ -5,7 +5,7 @@
 # 処理は _lib/scripts/security-review-codex-prep.mjs（prompt・schema は _lib/security-review.mjs）が持ち、このスクリプトは
 # node を起動するだけ。node が無いときは ok:false を出す（workflow は Claude 経路の判定に倒す）。
 #
-# Usage: security-review-codex-prep <review_dir> <head_sha> <pr> <output_dir> [--verify-from <prev_nonce> <prev_binding>]
+# Usage: security-review-codex-prep <review_dir> <head_sha> <pr> <diff_sha256> <output_dir> [--verify-from <prev_nonce> <prev_binding>]
 # Output (stdout, JSON 1 行): {ok, review_dir, nonce, binding, prompt_sha256, schema_sha256, error?}
 
 set -uo pipefail
