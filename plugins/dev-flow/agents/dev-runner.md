@@ -2,12 +2,10 @@
 name: dev-runner
 description: |
   Runs dev-flow steps that wrap existing scripts or gh commands
-  (analyze-clarify questions, PR fix), classifies observational ACs from AC
-  text only (ac-observational), and returns a structured result. Default model
-  is sonnet; pr-iterate spawns PR fix with model opus.
+  (analyze-clarify questions), classifies observational ACs from AC
+  text only (ac-observational), and returns a structured result.
   Use when: the dev-flow analyze gate needs missing_context questions by
-  running analyze-issue directly or an observational verdict for ACs prerun left null, or
-  pr-iterate needs review fixes applied.
+  running analyze-issue directly or an observational verdict for ACs prerun left null.
 model: sonnet
 effort: high
 tools:
@@ -23,13 +21,13 @@ maxTurns: 50
 
 # dev-runner
 
-dev-flow / pr-iterate workflow の「決定論寄りステップ」を実行する汎用 runner。
+dev-flow workflow の「決定論寄りステップ」を実行する汎用 runner。
 analyze ゲートが引いたときの質問文起こし（exec-proxy `analyze-issue` を直接実行して issue を読む）・
-pr-iterate の PR fix を担い、結果を呼び出し側 schema に合わせた
+観測型 AC の分類を担い、結果を呼び出し側 schema に合わせた
 JSON で返す。通常経路の issue 分析は prerun の決定論スクリプト（`analyze-issue --contract`）、
 テスト実行と PR phase の commit + PR 作成は dev-runner-haiku（verbatim 転写）が担う。
 
-判断系（計画+実装・評価・レビュー）は別 agent（dev-implementer / evaluator / pr-reviewer）が
+判断系（計画+実装・評価・レビュー・pr-iterate の PR fix）は別 agent（dev-implementer / evaluator / pr-reviewer / pr-fixer）が
 担うため、このagentは**指示された Skill/コマンドを実行し結果を正確に構造化する**ことに徹する。
 
 ## 入力
@@ -51,7 +49,6 @@ spawn prompt に「実行する Skill / コマンド」「作業 worktree の絶
 |------|------|------|
 | analyze-clarify（dev-flow Setup） | `analyze-issue <n> [--repo R] --depth comprehensive --dump-body <path>` を直接実行して issue を読み（`body_dump_path` が null でなければそのファイルを Read）、ゲート理由ごとに質問文を起こす | `{missing_context}` |
 | ac-observational（dev-flow Setup） | ツールを使わず、prompt の issue タイトルと AC の文面だけで観測型かを判定する（判定できない AC は null） | `{results}` |
-| PR fix（pr-iterate、call site が `model: 'opus'` を渡す） | PR head を checkout 済みの worktree で指摘修正 → commit → `git push origin HEAD` | `{applied, files, summary}` |
 
 ## Boundary
 

@@ -86,12 +86,11 @@ test('journal.sh: prune の既定 keep 一覧は dev-flow plugin に実在する
   }
 });
 
-test("dev-runner.md: 役割記述が agentType: 'dev-runner' の実呼び出し（analyze-clarify / PR fix）に合う", () => {
+test("dev-runner.md: 役割記述が agentType: 'dev-runner' の実呼び出し（analyze-clarify）に合う", () => {
   const md = readFileSync(join(pluginRoot, 'agents/dev-runner.md'), 'utf8');
   const description = md.slice(md.indexOf('description:'), md.indexOf('model:'));
   assert.ok(!/test-green|issue analysis/.test(description), `description にテスト実行 / issue 分析が残っている:\n${description}`);
   assert.match(description, /analyze-clarify/);
-  assert.match(description, /PR fix/);
   // analyze-clarify は clarifyPrompt（dev-flow.js）と同じく exec-proxy analyze-issue を直接実行する
   assert.match(description, /analyze-issue/, `description が analyze-issue の直接実行を指していない:\n${description}`);
   const clarifyRow = md.split('\n').find((l) => l.startsWith('| analyze-clarify'));
@@ -100,17 +99,11 @@ test("dev-runner.md: 役割記述が agentType: 'dev-runner' の実呼び出し�
   assert.ok(!/dev-improve/.test(md), 'dev-runner.md に撤去した dev-improve の役割が残っている');
   assert.ok(!md.includes('| test green 確認 |'), 'テスト実行は dev-runner-haiku が担う');
   assert.ok(!md.includes('| issue 分析 |'), '通常経路の issue 分析は prerun の script が担う');
-  const labels = [
-    ['.claude/workflows/dev-flow.js', 'analyze-clarify#'],
-    ['.claude/workflows/pr-iterate.js', 'fix#'],
-  ];
-  for (const [rel, label] of labels) {
-    const src = readFileSync(join(pluginRoot, rel), 'utf8');
-    assert.ok(
-      new RegExp(`agentType: 'dev-runner', schema: \\w+, label: \`${label}`).test(src),
-      `${rel} の dev-runner 呼び出し（${label}）が見つからない — dev-runner.md の役割記述を見直す`,
-    );
-  }
+  const src = readFileSync(join(pluginRoot, '.claude/workflows/dev-flow.js'), 'utf8');
+  assert.ok(
+    /agentType: 'dev-runner', schema: \w+, label: `analyze-clarify#/.test(src),
+    '.claude/workflows/dev-flow.js の dev-runner 呼び出し（analyze-clarify#）が見つからない — dev-runner.md の役割記述を見直す',
+  );
 });
 
 test('references/analyze-issue.md: analyze-issue.sh が出す全キー・切断上限とマーカー・override 判定の fail-closed を載せる', () => {

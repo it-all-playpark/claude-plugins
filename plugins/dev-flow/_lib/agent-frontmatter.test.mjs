@@ -5,7 +5,9 @@
 //     dev-runner-haiku-ro: read-only 決定論 proxy 専任。tools は [Bash, Read] のみ（least privilege）
 //     dev-runner-haiku:    write/Skill 系 proxy 専任。tools は [Bash, Read, Write, Skill] のみ。Write は
 //                          post-comment 系 proxy（post-review#i / post-summary）の一時ファイル保存に必要（issue #372）
-//     dev-runner:          判断寄り（fix / analyze-clarify）の sonnet agent。tools から TodoWrite のみ除去
+//     dev-runner:          判断寄り（analyze-clarify / ac-observational）の sonnet agent。tools から TodoWrite のみ除去
+// - pr-iterate の fix（fix#i / fix#i-retry）は専用の pr-fixer（opus / medium / maxTurns 100。tools は dev-runner と同じ）。
+//   maxTurns は agent() の opts で変えられないので frontmatter で持つ。dev-runner（maxTurns 50）は fix と分けて据え置く
 //   mechanical exec-proxy の effort は A/B 実測（issue #323）の
 //   adopted_effort（low）。maxTurns は全 exec-proxy に有限値（runtime が honor するかは frontmatter からは
 //   検証できないため有限性のみを見る）
@@ -54,9 +56,11 @@ function extractToolsList(frontmatter) {
 
 /**
  * name: agent 名（.claude/agents/<name>.md）
- * model / maxTurns: 指定した行だけ検査する（maxTurns: 'finite' は有限の正の整数）
+ * model / maxTurns: 指定した行だけ検査する（maxTurns: 'finite' は有限の正の整数、数値はその値と一致）
  * tools.exact: 集合として完全一致 / tools.include: 必ず含む / tools.exclude: 含まない
  */
+// dev-runner と pr-fixer の tools（pr-fixer は dev-runner から fix を切り出した agent なので同じ集合）
+const RUNNER_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill'];
 const AGENTS = [
   {
     name: 'dev-runner-haiku-ro', model: 'haiku', effort: ADOPTED_EFFORT, maxTurns: 'finite',
@@ -67,8 +71,12 @@ const AGENTS = [
     tools: { exact: ['Bash', 'Read', 'Skill', 'Write'], exclude: ['Edit', 'TodoWrite', 'Glob', 'Grep'] },
   },
   {
-    name: 'dev-runner', model: 'sonnet', effort: 'high', maxTurns: 'finite',
-    tools: { include: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill'], exclude: ['TodoWrite'] },
+    name: 'dev-runner', model: 'sonnet', effort: 'high', maxTurns: 50,
+    tools: { exact: RUNNER_TOOLS, exclude: ['TodoWrite'] },
+  },
+  {
+    name: 'pr-fixer', model: 'opus', effort: 'medium', maxTurns: 100,
+    tools: { exact: RUNNER_TOOLS, exclude: ['TodoWrite'] },
   },
   {
     name: 'dev-runner-haiku-wo', effort: ADOPTED_EFFORT,
@@ -113,6 +121,8 @@ for (const spec of AGENTS) {
     assert.equal(frontmatterField(fm, 'effort'), spec.effort, `${spec.name}.md frontmatter should declare effort:${spec.effort}, but found:\n${fm}`);
     if (spec.maxTurns === 'finite') {
       assert.match(fm, /^maxTurns:\s*[1-9]\d*\s*$/m, `${spec.name}.md frontmatter should declare a finite positive maxTurns, but found:\n${fm}`);
+    } else if (typeof spec.maxTurns === 'number') {
+      assert.equal(frontmatterField(fm, 'maxTurns'), String(spec.maxTurns), `${spec.name}.md frontmatter should declare maxTurns:${spec.maxTurns}, but found:\n${fm}`);
     }
     if (spec.tools) {
       const tools = extractToolsList(fm);
@@ -129,23 +139,25 @@ for (const spec of AGENTS) {
   });
 }
 
-// Static pin (issue #725): the only agent() call sites that override effort via opts are pr-iterate's
-// fix#i / fix#i-retry (FIX_EFFORT = 'medium'). Every other agent keeps its frontmatter effort, so no
-// other non-comment line in dev-flow.js / pr-iterate.js may pass `effort:`.
-test('[agent-frontmatter][opts-pin] only pr-iterate fix#i / fix#i-retry pass effort (FIX_EFFORT = medium) via agent opts', () => {
+// Static pin: effort は frontmatter で決める（pr-iterate の fix も pr-fixer の frontmatter で medium）。
+// dev-flow.js / pr-iterate.js のコメント以外の行は `effort:` を渡さない。
+test('[agent-frontmatter][opts-pin] dev-flow.js / pr-iterate.js の agent() call site は opts で effort を渡さない', () => {
   const workflowsDir = join(repoRoot, '.claude', 'workflows');
   const effortLines = (file) =>
     readFileSync(join(workflowsDir, file), 'utf8')
       .split('\n')
       .filter((l) => !l.trim().startsWith('//') && /\beffort:/.test(l));
   assert.deepEqual(effortLines('dev-flow.js'), [], 'dev-flow.js の agent() call site は effort を渡さない');
+  assert.deepEqual(effortLines('pr-iterate.js'), [], 'pr-iterate.js の agent() call site は effort を渡さない');
+});
 
-  const prIterateSrc = readFileSync(join(workflowsDir, 'pr-iterate.js'), 'utf8');
-  assert.match(prIterateSrc, /^const FIX_EFFORT = 'medium'$/m, "pr-iterate.js の FIX_EFFORT は 'medium'");
-  const prLines = effortLines('pr-iterate.js');
-  assert.equal(prLines.length, 2, `pr-iterate.js で effort を渡すのは fix#i / fix#i-retry の 2 箇所のみ: ${JSON.stringify(prLines)}`);
-  assert.ok(prLines[0].includes('label: `fix#${i}`,') && prLines[0].includes('effort: FIX_EFFORT'), `fix#i が FIX_EFFORT を渡していない: ${prLines[0]}`);
-  assert.ok(prLines[1].includes('label: `fix#${i}-retry`') && prLines[1].includes('effort: FIX_EFFORT'), `fix#i-retry が FIX_EFFORT を渡していない: ${prLines[1]}`);
+// fix は pr-fixer が担う。dev-runner の description（harness が agent 選択に使う）に PR fix の役割を残さない
+test('[agent-frontmatter][description] dev-runner の description は PR fix を挙げず、pr-fixer の description が fix#i を挙げる', () => {
+  const description = (fm) => fm.slice(fm.indexOf('description:'), fm.indexOf('\nmodel:'));
+  const runner = description(loadFrontmatter('dev-runner'));
+  assert.ok(!/\bfix/i.test(runner), `dev-runner の description に fix の記述が残っている:\n${runner}`);
+  assert.match(runner, /analyze-clarify/);
+  assert.match(description(loadFrontmatter('pr-fixer')), /fix#i/);
 });
 
 // 抽出器が inert（常に null / 固定値）だと表の検査が素通りするので、合成入力で抽出結果を pin する。

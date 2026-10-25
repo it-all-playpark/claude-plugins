@@ -8,7 +8,7 @@
 //     - dev-runner-haiku: write/Skill 系 proxy 専任 (worktree 作成 / test 実行 /
 //       redgreen / journal / PR コメント投稿 (post-summary。issue #392 で
 //       per-round post-review#i 投稿は終端 post-summary へ統合済み) など)
-//     - dev-runner: 判断寄り (fix / analyze)
+//     - dev-runner: 判断寄り (analyze)。pr-iterate の fix は pr-fixer
 //
 //   検証は dev-flow.js / pr-iterate.js を VM で実行し、agent() に実際に渡った
 //   {label, agentType} を EXPECTED（label → agentType）と突合する。各 label に到達する
@@ -102,7 +102,8 @@ const EXPECTED_PR_ITERATE = {
   'commit-ensure#*': RW,
   'journal-log': RW,
   'post-summary': RW,
-  'fix#*': RUNNER,
+  // pr-iterate の fix は専用 agent（maxTurns 100）
+  'fix#*': 'dev-flow:pr-fixer',
 };
 
 function expectedFor(table, label) {

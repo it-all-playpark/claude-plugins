@@ -4,7 +4,8 @@
 //     （issue #347 null / #520 throw。callReviewAgent と対称）
 //   - fix.applied===false（agent の明示判断）は retry せず即時 fix_failed。throw の retry が applied:false を返しても再 retry しない
 //   - fixes_applied は fix.applied===true の累積回数（dev-flow が stale-eval 警告の判定に使う。issue #233）
-//   - fix#i / fix#i-retry は dev-runner frontmatter（sonnet / high）を上書きして model:'opus' / effort:'medium' で起動する
+//   - fix#i / fix#i-retry は専用 agent pr-fixer で起動し、opts で model / effort を渡さない（frontmatter の
+//     opus / medium / maxTurns 100 で決める。frontmatter は agent-frontmatter.test.mjs が pin）
 //
 // harness は test-helpers/vm-sandbox.mjs の makePrIterateSandbox / prIterateRounds / runWorkflowCapture。
 
@@ -35,13 +36,13 @@ const THROW = () => { throw new Error('agent finished without calling Structured
 const APPLIED = { applied: true, summary: 'fixed' };
 const NOT_APPLIED = { applied: false, summary: 'no' };
 const EXPECTED_FIX_OPTS = [
-  { label: 'fix#1', agentType: 'dev-flow:dev-runner', model: 'opus', effort: 'medium' },
-  { label: 'fix#1-retry', agentType: 'dev-flow:dev-runner', model: 'opus', effort: 'medium' },
+  { label: 'fix#1', agentType: 'dev-flow:pr-fixer', hasModel: false, hasEffort: false },
+  { label: 'fix#1-retry', agentType: 'dev-flow:pr-fixer', hasModel: false, hasEffort: false },
 ];
 
 // name, reviewer, ci（省略時は常に passed）, fixSequence, 期待値
 //   fixCalls: fix agent の label 列 / fixes / retries: fixes_applied / fix_null_retries / iterations /
-//   retried: history の iteration 1 の fix_retried / fixOpts: fix agent の opts（label / agentType / model / effort）
+//   retried: history の iteration 1 の fix_retried / fixOpts: fix agent の opts（label / agentType / model・effort キーの有無）
 const CASES = [
   { name: '(A) round 1 approve → fix なし', reviewer: 'approve', fix: [],
     want: { status: 'lgtm', iterations: 1, fixes: 0, fixCalls: [] } },
@@ -89,14 +90,7 @@ test.each(CASES)('[fix-retry] $name', async ({ reviewer, ci, fix, want }) => {
     assert.equal(iter1?.fix_retried, want.retried, `iteration 1 の history エントリの fix_retried は ${want.retried} であるべきだが ${iter1?.fix_retried} だった`);
   }
   if ('fixOpts' in want) {
-    const fixOpts = fixCallsMade.map((c) => ({ label: c.label, agentType: c.agentType, model: c.opts.model, effort: c.opts.effort }));
+    const fixOpts = fixCallsMade.map((c) => ({ label: c.label, agentType: c.agentType, hasModel: 'model' in c.opts, hasEffort: 'effort' in c.opts }));
     assert.deepEqual(fixOpts, want.fixOpts, `fix agent の opts が想定と違う: ${JSON.stringify(fixOpts)}`);
   }
-});
-
-// fix の model / effort は opts で上書きし、dev-runner の frontmatter（analyze-clarify と共用）は sonnet / high のまま据え置く
-test('[fix-retry] (model) dev-runner frontmatter は sonnet / high のまま（fix#i の opus / medium は opts 上書き）', () => {
-  const frontmatter = readFileSync(join(repoRoot, 'agents/dev-runner.md'), 'utf8').split('\n---')[0];
-  assert.match(frontmatter, /^model: sonnet$/m, 'dev-runner の frontmatter 既定 model は sonnet のまま据え置く');
-  assert.match(frontmatter, /^effort: high$/m, 'dev-runner の frontmatter 既定 effort は high のまま据え置く');
 });

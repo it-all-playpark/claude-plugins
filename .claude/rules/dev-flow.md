@@ -29,7 +29,7 @@ dev-flow 本体・dev-flow-health（frontmatter の paths）を触るときだ�
 - `meta.name` は `dev-flow-run` でも telemetry handoff の `skill` は `'dev-flow'` 固定（集計連続性）
 - `agent()` の agentType は `nsAgentOpts()` でのみ namespace 付与（bare 名は起動直後 abort）。routing test は論理名（bare）を保持。dev-flow-canary.js のみ namespaced id 直書き
 - 1 issue = 1 PR。Implement は全 shape で `dev-implementer`（plan+impl 統合）を単一 worktree に 1 spawn（Plan phase・planner ⇄ reviewer ループ・parallel fan-out は持たない）。BLOCKED 再実装・green-fix（`model: 'sonnet'`）・Evaluate 差し戻しも同じ agent。複数 issue 分割は使わない
-- model 既定は frontmatter。override は green-fix（`'sonnet'`）と pr-iterate の fix（`dev-runner` に `'opus'`）のみ。品質ゲート agent には渡さない — gate の判定モデルを credit で黙って変えない
+- model 既定は frontmatter。override は green-fix（`'sonnet'`）のみ（pr-iterate の fix は `pr-fixer` の frontmatter）。品質ゲート agent には渡さない — gate の判定モデルを credit で黙って変えない
 - merge は常に人間（全 tier）
 - 後方互換 scaffolding を作らない — out-of-enum は明示 error
 - worktree の後片付けは `worktree-teardown`
