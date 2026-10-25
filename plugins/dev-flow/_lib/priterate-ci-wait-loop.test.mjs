@@ -10,13 +10,15 @@
 //   1 spawn（dev-runner-haiku-ro）で行い、独立した ci-wait spawn は無い。
 // - ci-wait-check の slept !== true（slept:false / null / throw）は積算せず、同じ応答の status も採らずに
 //   ci_pending で終端する。
+// - review が request-changes の round・security review が critical/major を返した round は ci-wait-check を起動せず fix へ進む
+//   （issue #1100）。
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
+import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash, securityReviewHeadOf } from './test-helpers/vm-sandbox.mjs';
 import { CI_WAIT_CHECK, ciWaitCheckPrompt } from './ci-check.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -174,6 +176,29 @@ test('[ci-wait-loop] failed は待たずに即 fix loop へ（ci-wait-check 0 �
   assert.equal(result?.ci_wait_seconds, 0, `ci_wait_seconds は 0 であるべきだが ${result?.ci_wait_seconds} だった`);
   assert.equal(result?.ci_poll_attempts, 2, `ci_poll_attempts は 2 であるべきだが ${result?.ci_poll_attempts} だった`);
 });
+
+// review が request-changes の round・security review が critical/major を返した round は CI を待たずに fix へ進む（issue #1100）。
+// args.security_review の無い単体起動は security review の対象なので、security-review#1 は review#1 と並列に走る
+const SECURITY_MAJOR = { severity: 'major', topic: 'cmd-injection', file: 'scripts/x.sh', line: 3, description: 'argv を eval に渡している', suggestion: 'eval を外す' };
+for (const [name, overrides, fixText] of [
+  ['review が request-changes', { 'review#1': { decision: 'request-changes', issues: [{ severity: 'major', topic: 't', file: 'src/a.js', line: 1, description: 'null を握りつぶしている', suggestion: '' }], summary: 'ng' } }, 'null を握りつぶしている'],
+  ['review は approve で security review が major', { 'security-review#1': ({ prompt }) => ({ reviewed_sha: securityReviewHeadOf(prompt), issues: [SECURITY_MAJOR], summary: 'ng' }) }, 'argv を eval に渡している'],
+]) {
+  test(`[ci-wait-loop] ${name}の round は CI が pending でも ci-wait-check を起動せずに fix#1 へ進む`, async () => {
+    const { result, error, calls } = await run({
+      ...overrides,
+      'ci-check#1': { status: 'pending', passed: 0, failed: 0, pending: 1, skipped: 0, failed_checks: [] },
+    });
+
+    assert.equal(error, null, `run が throw した: ${error?.message}`);
+    assert.equal(calls.filter((c) => c.label.startsWith('ci-wait-check#')).length, 0, 'CI を待たずに fix へ進むべき');
+    const fix1 = calls.find((c) => c.label === 'fix#1');
+    assert.ok(fix1?.prompt.includes(fixText), `fix#1 に指摘が無い: ${fix1?.prompt}`);
+    assert.ok(calls.indexOf(fix1) < calls.findIndex((c) => c.label === 'review#2'), 'round 1 のうちに fix へ進むべき');
+    assert.equal(result?.status, 'lgtm', 'round 2 は CI passed・security clear で lgtm');
+    assert.equal(result?.ci_wait_seconds, 0);
+  });
+}
 
 test('[ci-wait-loop] agent 報告値 waited_seconds/poll_attempts は積算に使われない（script 側積算）', async () => {
   const { result, error } = await run({

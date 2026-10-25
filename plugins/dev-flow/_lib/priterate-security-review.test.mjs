@@ -14,6 +14,9 @@
 //   (G) clear になりそうな round は review の後に security-review-diff-check（security-codex-relay）で保存先の pr.diff を
 //       security-scope が返した sha256・ino・ctime と照合し、一致しない・照合できない round は clear にしない（issue #1095）。
 //       Codex 経路の prep には diff_sha256 を渡し、prep は読んだ pr.diff と照合する
+//   (H) 対象の run は各 round で security-scope#i → security-review#i を review#i と同じ parallel() で同じ head に対して起動し、
+//       review の blocking と security の critical/major を 1 回の fix#i にまとめる。LGTM は同じ head の review approve・CI・
+//       security clear がそろった round だけ（issue #1100）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -249,18 +252,25 @@ test('[security-review][C] 同じ指摘が続けば stuck、worktree の外を�
   assert.deepEqual(plain(outside.result.human_followups), [], 'security の指摘を human_followups（公開コメント）に載せない');
 });
 
-test('[security-review][C] 対象の run が LGTM の前の review に届かず ci_pending / ci_error / fix_failed で終われば、status は lgtm 以外で未完了を表示', async () => {
-  const blocking = { decision: 'request-changes', issues: [{ severity: 'major', topic: 't', file: 'a.js', description: 'd', suggestion: 's' }], summary: 'ng' };
+test('[security-review][C] 対象の run が ci_pending / ci_error で終われば、同じ head の security review が clear でも status は lgtm 以外', async () => {
   for (const [want, overrides] of [
     ['ci_pending', { 'ci-check#1': { status: 'pending', passed: 0, failed: 0, pending: 1, skipped: 0, failed_checks: [] }, 'ci-wait-check#1.2': null }],
     ['ci_error', { 'ci-check#1': null, 'ci-check#1-serial': null }],
-    ['fix_failed', { 'review#1': blocking, 'fix#1': { applied: false, summary: 'できない' } }],
   ]) {
     const { result, calls } = await run({ overrides });
     assert.equal(result.status, want);
-    assert.deepEqual(plain(result.security_review), { target: true, status: 'not_run', stop_reason: null, rounds: 0, critical: 0, major: 0, minor: 0 }, want);
-    assert.ok(summaryOf(calls).includes('**Security review**: ❌ 未完了（LGTM の前の review に到達していない）'), want);
+    // security review は review#1 と並列に同じ head で走り、head は変わっていないので clear のまま返す
+    assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0 }, want);
+    assert.ok(summaryOf(calls).includes('**Security review**: ✅ clear（敵対的 review 1 回・最終 critical 0 / major 0 / minor 0）'), want);
   }
+});
+
+test('[security-review][C] clear の後に fix へ進んで fix_failed で終われば、clear を返さず未完了を表示', async () => {
+  const blocking = { decision: 'request-changes', issues: [{ severity: 'major', topic: 't', file: 'a.js', description: 'd', suggestion: 's' }], summary: 'ng' };
+  const { result, calls } = await run({ overrides: { 'review#1': blocking, 'fix#1': { applied: false, summary: 'できない' } } });
+  assert.equal(result.status, 'fix_failed');
+  assert.deepEqual(plain(result.security_review), { target: true, status: 'not_run', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0 });
+  assert.ok(summaryOf(calls).includes('**Security review**: ❌ 未完了（LGTM の前の review に到達していない）'));
 });
 
 // ---- (D) worktree の外・DATA・agent 定義 ----
@@ -624,4 +634,126 @@ test('[security-review][G] Codex 経路で clear の round も pr.diff を照合
   });
   assert.equal(tampered.result.status, 'security_unresolved');
   assert.equal(tampered.result.security_review.status, 'unresolved');
+});
+
+// ---- (H) 各 round で review と並列・指摘を 1 回の fix にまとめる（issue #1100）----
+
+const NESTED_A = { caller: 'standalone', cwd: '/tmp/wt', head_ref: 'feature/x', head_sha: SHA_A, base_ref: 'main' };
+const REVIEW_DESC = 'null を返す経路で例外を握りつぶしている';
+const reviewRequestChanges = { decision: 'request-changes', issues: [{ severity: 'major', topic: 'swallow', file: 'src/a.js', line: 12, description: REVIEW_DESC, suggestion: 'throw に戻す' }], summary: 'ng' };
+const pushedTo = (head) => ({ dirty: false, committed: false, pushed: false, head_sha: head });
+// parallel() 呼び出しごとに、その呼び出しで起動された agent の label を記録する（agent stub は呼び出し開始時に同期で
+// calls へ push するので、thunk を全部起動した直後の calls 差分が同じ parallel() で同時に起動された spawn になる）
+async function runWithGroups({ overrides = {}, args = '5' } = {}) {
+  const { ctx, calls } = makePrIterateSandbox({ overrides, args });
+  const groups = [];
+  ctx.parallel = async (fns) => {
+    const start = calls.length;
+    const pending = (fns || []).map((f) => f());
+    groups.push(calls.slice(start).map((c) => c.label));
+    return Promise.all(pending);
+  };
+  const { result, error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
+  assertNoCrash(error, 'security-review');
+  assert.equal(error, null, `run が throw した: ${error?.message}`);
+  return { result, calls, groups };
+}
+
+test('[security-review][H] 対象の run は review#i が request-changes の round でも、security-scope#i → security-review#i を review#i と同じ parallel() で同じ head に対して起動する', async () => {
+  const { result, calls, groups } = await runWithGroups({
+    args: { pr: '5', nested: NESTED_A },
+    overrides: { 'review#1': reviewRequestChanges, 'commit-ensure#1': pushedTo(SHA_B) },
+  });
+  assert.deepEqual(groups, [['review#1', 'ci-check#1', 'security-scope#1'], ['review#2', 'ci-check#2', 'security-scope#2']], JSON.stringify(groups));
+  const at = (label) => calls.find((c) => c.label === label);
+  assert.ok(at('security-scope#1').prompt.endsWith(`\nsecurity-review-scope /tmp/wt origin/main ${SHA_A} --save-diff`), at('security-scope#1').prompt);
+  assert.ok(at('security-review#1'), 'review が request-changes の round で security-reviewer を spawn していない');
+  assert.equal(securityReviewHeadOf(at('security-review#1').prompt), SHA_A, 'review#1 と同じ head を review する');
+  assert.ok(calls.indexOf(at('security-review#1')) < calls.indexOf(at('fix#1')), 'security review は fix の前に終わる');
+  assert.ok(at('security-scope#2').prompt.endsWith(`\nsecurity-review-scope /tmp/wt origin/main ${SHA_B} --save-diff`), '次の round は fix 後の head');
+  assert.equal(securityReviewHeadOf(at('security-review#2').prompt), SHA_B);
+  assert.equal(result.status, 'lgtm');
+  assert.equal(result.security_review.rounds, 2);
+
+  // 対象でない run は並列に起動せず、LGTM の候補の round でだけ対象判定を取り直す（security review は起動しない）
+  const exemptRun = await runWithGroups({
+    args: { pr: '5', nested: NESTED_A, security_review: { target: false, reasons: [], reviewer_context_changed: false } },
+    overrides: { 'security-scope#1': exempt },
+  });
+  assert.deepEqual(exemptRun.groups, [['review#1', 'ci-check#1']], JSON.stringify(exemptRun.groups));
+  assert.deepEqual(labelsOf(exemptRun.calls, 'security-'), ['security-scope#1']);
+  assert.equal(exemptRun.result.status, 'lgtm');
+});
+
+test('[security-review][H] review の blocking と security review の critical/major を 1 回の fix#i にまとめ、security の指摘は history の blocking に載せない', async () => {
+  const { result, calls } = await run({
+    args: { pr: '5', nested: NESTED_A },
+    overrides: {
+      'review#1': reviewRequestChanges,
+      'security-review#1': reviewWith([finding('hardlink-write'), finding('hardening', 'minor')]),
+      'commit-ensure#1': pushedTo(SHA_B),
+    },
+  });
+  assert.deepEqual(labelsOf(calls, 'fix#'), ['fix#1'], 'round 1 の fix は 1 回だけ');
+  const fix1 = calls.find((c) => c.label === 'fix#1').prompt;
+  assert.ok(fix1.includes(REVIEW_DESC), 'fix#1 に review の blocking が無い');
+  assert.ok(fix1.includes('hardlink-write'), 'fix#1 に security review の critical が無い');
+  assert.ok(!fix1.includes('hardening'), 'security review の minor を fix に渡した');
+  assert.match(fix1, /PR #5 のレビュー指摘と security review の指摘を修正/);
+  assert.deepEqual(plain(result.history[0].blocking.map((f) => f.topic)), ['swallow'], 'history の blocking は review の指摘だけ');
+  for (const secret of ['ATTACK-PATH', 'hardlink-write']) assert.ok(!JSON.stringify(result.history).includes(secret), `history に security の指摘（${secret}）が載っている`);
+  assert.equal(result.status, 'lgtm');
+  assert.equal(result.fixes_applied, 1);
+  assert.equal(result.iterations, 2);
+
+  // review が approve でも security の critical/major があれば同じ round の fix#i に security の指摘だけを渡す
+  const approve = await run({
+    args: { pr: '5', nested: NESTED_A },
+    overrides: { 'security-review#1': reviewWith([finding('hardlink-write', 'major')]), 'commit-ensure#1': pushedTo(SHA_B) },
+  });
+  const fixA = approve.calls.find((c) => c.label === 'fix#1').prompt;
+  assert.match(fixA, /PR #5 の security review の指摘を修正/);
+  assert.ok(fixA.includes('hardlink-write'));
+  assert.deepEqual(plain(approve.result.history[0].blocking), []);
+  assert.equal(approve.result.status, 'lgtm');
+});
+
+test('[security-review][H] LGTM は同じ head の review approve・CI・security clear がそろった round だけ — fix で head が変わったら前の head の clear を使わない', async () => {
+  // round 1 は SHA_A で security clear・review request-changes → fix で SHA_B。round 2 は review approve・CI passed だが、
+  // security review が前の head（SHA_A）の結果を返す → clear にしない
+  const stale = await run({
+    args: { pr: '5', nested: NESTED_A, max_iterations: 2 },
+    overrides: {
+      'review#1': reviewRequestChanges,
+      'commit-ensure#1': pushedTo(SHA_B),
+      'security-review#2': { reviewed_sha: SHA_A, issues: [], summary: '前の head を review した' },
+    },
+  });
+  const r2 = stale.calls.find((c) => c.label === 'security-review#2');
+  assert.ok(r2, 'fix 後の head で security review を取り直していない');
+  assert.equal(securityReviewHeadOf(r2.prompt), SHA_B);
+  assert.equal(stale.result.status, 'security_unresolved');
+  assert.equal(stale.result.security_review.status, 'unresolved');
+
+  // round 2 の security review が critical を返せば、review approve・CI passed でも LGTM にせず fix して round 3 の clear で LGTM
+  const blocked = await run({
+    args: { pr: '5', nested: NESTED_A },
+    overrides: {
+      'review#1': reviewRequestChanges,
+      'commit-ensure#1': pushedTo(SHA_B),
+      'security-review#2': reviewWith([finding('hardlink-write')]),
+      'commit-ensure#2': pushedTo('c'.repeat(40)),
+    },
+  });
+  assert.equal(blocked.result.status, 'lgtm');
+  assert.equal(blocked.result.iterations, 3);
+  assert.deepEqual(labelsOf(blocked.calls, 'security-review#'), ['security-review#1', 'security-review#2', 'security-review#3']);
+
+  // round 1 の clear の後に fix で終われば（上限到達）、返り値の security review を clear にしない
+  const maxed = await run({
+    args: { pr: '5', nested: NESTED_A, max_iterations: 1 },
+    overrides: { 'review#1': reviewRequestChanges, 'commit-ensure#1': pushedTo(SHA_B) },
+  });
+  assert.equal(maxed.result.status, 'max_reached');
+  assert.equal(maxed.result.security_review.status, 'not_run');
 });

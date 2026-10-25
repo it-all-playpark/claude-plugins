@@ -2008,6 +2008,7 @@ async function autoResolveConflict(iteration) {
   )
   const rec = conflictAutoresolveRecord(res, iteration)
   conflictAttempts.push(rec)
+  if (rec.status === 'resolved' || rec.status === 'push_failed') securityHeadMayChange()
   const fileList = rec.files.map((f) => `${f.path}（${f.type}）`).join(' / ') || '—'
   if (rec.status === 'resolved') {
     fixesApplied++
@@ -2067,6 +2068,7 @@ const FIX_MODEL = 'opus'
 // paired replay で medium は high と完走率・品質同等のまま所要・コストが下がった（frontmatter は共用なので変えない）。
 const FIX_EFFORT = 'medium'
 async function callFixAgent(prompt, i) {
+  securityHeadMayChange()
   let fix = null
   try {
     fix = await trackedAgent(prompt, { agentType: 'dev-runner', schema: FIX, label: `fix#${i}`, phase: 'Iterate', model: FIX_MODEL, effort: FIX_EFFORT })
@@ -2159,17 +2161,19 @@ async function ensureFixCommitted(i, shaPrev) {
 
 // ---- 敵対的 security review ----
 // 信頼境界をまたぎうる変更を含む PR は、LGTM を確定する前に security-reviewer の review を通す。対象かどうかは起動時の
-// 判定（args.security_review）と、LGTM の候補になった round ごとに今の PR head の `<base>...<head>` の diff で取り直す
-// 判定（security-scope#i）のどれか 1 回でも対象なら、run の終わりまで対象のまま（後の判定で対象外に戻さない — diff を
-// 書き換えて判定だけをすり抜ける経路を残さない）。対象外にできるのは決定論の許可リスト（_lib/security-review-scope.mjs）
-// に全ファイルが当たる diff だけ。security review の結果は件数だけを返り値・終端サマリーに出し、指摘の本文（攻撃経路）は
-// 公開コメントにも history にも載せない（fix の prompt にだけ渡す）。
+// 判定（args.security_review）と、今の PR head の `<base>...<head>` の diff で取り直す判定（security-scope#i）のどれか
+// 1 回でも対象なら、run の終わりまで対象のまま（後の判定で対象外に戻さない — diff を書き換えて判定だけをすり抜ける経路を
+// 残さない）。対象外にできるのは決定論の許可リスト（_lib/security-review-scope.mjs）に全ファイルが当たる diff だけ。
+// round の開始時に対象の run は各 round で review#i と並列に security review を回し、review の blocking と security の
+// critical/major を 1 回の fix#i にまとめる（major が 1 件ずつ見つかるたびに「fix → 再 review → CI 待ち → security review」の
+// cycle を足さない）。対象でない run は LGTM の候補の round でだけ判定を取り直す。security review の結果は件数だけを
+// 返り値・終端サマリーに出し、指摘の本文（攻撃経路）は公開コメントにも history にも載せない（fix の prompt にだけ渡す）。
 let securityTarget = SECURITY_REVIEW_ARG == null ? true : SECURITY_REVIEW_ARG.target
 if (SECURITY_REVIEW_ARG == null) log('security review: args.security_review が無い — 対象として扱う（fail-closed）')
 // diff が reviewer の指示ファイルを変えるか。起動時の決定論の値（args）と run 中の判定のどれか 1 回でも true なら run の終わりまで
 // true（run 中の判定は PR の worktree を cwd に起動する中継の返り値で、PR が書いた指示文で false に偽れるため、後の判定で戻さない）
 let reviewerContextChanged = SECURITY_REVIEW_ARG?.reviewer_context_changed === true
-let securityStatus = null   // 'cleared' | 'unresolved'（null は LGTM の前の review に到達していない）
+let securityStatus = null   // 'cleared' | 'unresolved'（null は今の head の review に到達していない。cleared は fix の前に null に戻す）
 let securityRounds = 0      // review の回数（security-reviewer の spawn と、結果を読めた Codex の review の合計）
 // review の前提チェックで clear にできずに止めた理由（閉じた enum の固定 code。PR 由来の文字列は載せない）:
 // 'diff_unavailable' / 'head_unknown' / 'head_mismatch' / 'review_dir_invalid' / 'reviewer_context_changed'。
@@ -2251,9 +2255,17 @@ async function codexSecurityReview(iteration, { reviewDir, headSha, diffSha256, 
   if (issues == null) log(`⚠️ iteration ${iteration}: security-codex-issues#${iteration} が Codex の指摘を返さない`)
   return { review: issues == null ? null : { reviewed_sha: verdict.reviewed_sha, issues }, cleared: false, counts: verdict.counts, nonce, binding }
 }
-// LGTM の候補になった round で呼ぶ。返り値 'clear'（対象外・clear。LGTM へ）/ 'fix'（critical/major を fix して push した。
-// 次 iteration へ）/ 'stop'（terminal を立てた。LGTM にしない）。
-async function securityGate(iteration, round) {
+// head を変えうる操作（fix・conflict の自動解消）の前に呼ぶ。clear は review した head についての結果なので、head が
+// 変わりうる時点で返り値の status を cleared のまま残さない（LGTM はその round の review と同じ head の clear でだけ確定する）
+function securityHeadMayChange() {
+  if (securityStatus === 'cleared') securityStatus = null
+}
+// security review の 1 回（今の PR head の security-scope#i → 対象なら security-review#i → clear なら security-diff-check#i）。
+// 対象の run では review#i と並列に、round の開始時に対象でなかった run では LGTM の候補の round で呼ぶ。fix と terminal は
+// 呼び出し側が決める（並列の round では review の decision を待たずに走るので、ここでは run の行き先を変えない）。返り値:
+//   { kind: 'not_target' }（対象外）/ { kind: 'clear' } / { kind: 'blocking', blocking, stuck }（worktree の中の critical/major。
+//   stuck は同じ指摘が REVIEW_STUCK 回続いた）/ { kind: 'stop', why }（clear にできない。LGTM の候補の round で security_unresolved）
+async function securityRound(iteration) {
   const base = prMeta?.base_ref || ''
   const headArg = isFullCommitSha(shaNow) ? shaNow : 'HEAD'
   const scope = base
@@ -2268,14 +2280,15 @@ async function securityGate(iteration, round) {
   securityTarget = securityTarget || !exempt
   if (!securityTarget) {
     log(`iteration ${iteration}: security review 対象外（変更が許可リストだけ）`)
-    return 'clear'
+    return { kind: 'not_target' }
   }
+  // stop_reason は最後の review の前提チェックの結果（前の round で止めた理由をこの round の結果に持ち越さない）
+  securityStopReason = null
   const stop = (why, reason = null) => {
     securityStatus = 'unresolved'
     securityStopReason = reason
-    terminal = 'security_unresolved'
-    log(`⚠️ iteration ${iteration}: security review を clear にできない（${why}）— LGTM にせず人間へエスカレーション`)
-    return 'stop'
+    log(`⚠️ iteration ${iteration}: security review を clear にできない（${why}）`)
+    return { kind: 'stop', why }
   }
   const headSha = typeof scope?.head_sha === 'string' ? scope.head_sha.trim() : ''
   const reviewDir = typeof scope?.review_dir === 'string' ? scope.review_dir.trim() : ''
@@ -2355,7 +2368,7 @@ async function securityGate(iteration, round) {
     }
     securityStatus = 'cleared'
     securityOpen = []
-    return 'clear'
+    return { kind: 'clear' }
   }
   if (verdict.reason === 'no_result') return stop('security-reviewer が結果を返さない')
   if (verdict.reason === 'sha_mismatch') return stop('review した head が今の PR head と一致しない')
@@ -2364,16 +2377,30 @@ async function securityGate(iteration, round) {
   const outside = verdict.blocking.filter((f) => isOutsideWorktree(f?.file, isoWt))
   if (outside.length > 0) return stop(`worktree の外を指す critical/major ${outside.length} 件 — 自動修正の対象外`)
   for (const x of verdict.blocking) securitySeen.register(x)
-  if (securitySeen.stuckTopics().length > 0) {
+  return { kind: 'blocking', blocking: verdict.blocking, stuck: securitySeen.stuckTopics().length > 0 }
+}
+const SECURITY_STUCK_LOG = `⚠️ security review の同じ指摘が ${REVIEW_STUCK} 回続いた — relax せず人間へエスカレーション`
+// LGTM の候補になった round（review approve・CI passed / no_checks・conflict なし）で呼ぶ。sec はこの round の review#i と
+// 並列に取った同じ head の結果（round の開始時に対象でなかった run は null — ここで取る）。返り値 'clear'（対象外・clear。
+// LGTM へ）/ 'fix'（critical/major を fix して push した。次 iteration へ）/ 'stop'（terminal を立てた。LGTM にしない）。
+async function securityGate(iteration, round, sec) {
+  const res = sec ?? await securityRound(iteration)
+  if (res.kind === 'not_target' || res.kind === 'clear') return 'clear'
+  if (res.kind === 'stop') {
+    terminal = 'security_unresolved'
+    log(`⚠️ iteration ${iteration}: security review を clear にできない（${res.why}）— LGTM にせず人間へエスカレーション`)
+    return 'stop'
+  }
+  if (res.stuck) {
     terminal = 'stuck'
-    log(`⚠️ security review の同じ指摘が ${REVIEW_STUCK} 回続いた — relax せず人間へエスカレーション`)
+    log(SECURITY_STUCK_LOG)
     return 'stop'
   }
   const fixed = await applyCiFix({
     round,
     objective: `PR #${PR} の security review の指摘を修正し、PR ブランチへ commit・push する。`,
     issuesHeading: ' security review の指摘',
-    issuesText: buildFixIssuesText(verdict.blocking),
+    issuesText: buildFixIssuesText(res.blocking),
     guidance: '',
   })
   return fixed ? 'fix' : 'stop'
@@ -2430,22 +2457,31 @@ for (i = 1; i <= MAX; i++) {
     + priorFindingsBlock({ prior, reason: reviewScope.reason })
   remergeSha = null
   // review#i と ci-check#i を parallel() で同時に起動する。ci-check は review の結果に依存しないので、
-  // review の待ち時間に隠す（1 round の spawn は review + ci-check の 2 本のまま）。両 thunk は throw
+  // review の待ち時間に隠す（ci-check の spawn は round に 1 本のまま）。各 thunk は throw
   // しない（callReviewAgent / failOpenAgent が null に落とす）ので、片方の失敗でもう片方の結果を失わない。
   // 並列 ci-check は応答の head_sha が review 開始時の head（shaNow）と一致するときだけ採る
   // （ciHeadRejectReason）。不採用なら CI 判定が要る時点で firstCiCheck が review の後に直列で起動し直す。
   // review 開始時の head が 40 桁 sha で分からない round は照合できないので並列 ci-check を起動せず、
   // CI 判定は review の後に直列の ci-check#i 1 本で取る（起動しても必ず不採用になり spawn が 1 本増える）。
   const ciParallelLaunched = isFullCommitSha(shaNow)
-  const [review, ciParallel] = ciParallelLaunched
-    ? await parallel([
-        () => callReviewAgent(reviewPrompt, `review#${i}`),
-        () => failOpenAgent(
-          ciCheckPrompt({ pr: PR, repo: REPO, exclude: CI_EXCLUDE }),
-          { agentType: 'dev-runner-haiku-ro', schema: CI_STATUS, label: `ci-check#${i}`, phase: 'Iterate' },
-        ),
-      ])
-    : [await callReviewAgent(reviewPrompt, `review#${i}`), null]
+  // round の開始時に security review の対象なら、security-scope#i → security-review#i も同じ parallel() で review#i と
+  // 同じ head（shaNow）に対して起動し、review の decision を待たない（securityRound も throw しない）。結果は LGTM の
+  // 候補の round では securityGate に、critical/major があれば下の fix#i に渡す
+  const secParallel = securityTarget
+  const thunks = [() => callReviewAgent(reviewPrompt, `review#${i}`)]
+  if (ciParallelLaunched) {
+    thunks.push(() => failOpenAgent(
+      ciCheckPrompt({ pr: PR, repo: REPO, exclude: CI_EXCLUDE }),
+      { agentType: 'dev-runner-haiku-ro', schema: CI_STATUS, label: `ci-check#${i}`, phase: 'Iterate' },
+    ))
+  }
+  if (secParallel) thunks.push(() => securityRound(i))
+  const launched = thunks.length > 1 ? await parallel(thunks) : [await thunks[0]()]
+  const review = launched[0]
+  const ciParallel = ciParallelLaunched ? launched[1] : null
+  const secPre = secParallel ? launched[launched.length - 1] : null
+  // critical/major を fix に回す security の結果（review が approve でも CI を待たずに fix へ進む）
+  const secBlocking = secPre?.kind === 'blocking' ? secPre : null
   const ciRejectReason = ciHeadRejectReason({ ci: ciParallel, expectedSha: shaNow })
   if (ciRejectReason) {
     log(ciParallelLaunched
@@ -2506,7 +2542,8 @@ for (i = 1; i <= MAX; i++) {
   // full review の critical（fix の対象にしたもの）で次 round の scope を決める。delta / remerge round は値を変えない。
   criticalPending = nextCriticalPending({ pending: criticalPending, scope: roundScope, blocking: outcome.blocking })
 
-  if (outcome.route === 'ci_gate') {
+  // security review が critical/major を返した round は review が approve でも CI gate（待機）に入らず fix へ進む
+  if (outcome.route === 'ci_gate' && secBlocking == null) {
     // CI gate — restores the gate lost in eb8aa7e。blocking 0 件の comment/request-changes も
     // ここへ合流する。lgtm 確定時の投稿のみ decision で分岐する（approve でなければ捏造しない）。
     // pr-reviewer may LGTM the code but CI must also be green before we declare lgtm.
@@ -2617,10 +2654,11 @@ for (i = 1; i <= MAX; i++) {
         history.push({ iteration: i, decision: effReview.decision, summary: effReview.summary, blocking: [], minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines })
         continue
       }
-      // 敵対的 security review: 今の PR head の diff で対象判定を取り直し、対象なら clear になるまで LGTM にしない。
+      // 敵対的 security review: この round の review と同じ head の結果（並列で取った secPre。round の開始時に対象でなかった
+      // run はここで対象判定を取り直す）が clear のときだけ LGTM にする。
       // security の指摘は history の blocking に載せない（終端サマリーに本文が出るため。件数は security_review に載る）
       const secRound = { iteration: i, decision: effReview.decision, summary: effReview.summary, blocking: [], minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines }
-      const sec = await securityGate(i, secRound)
+      const sec = await securityGate(i, secRound, secPre)
       if (sec !== 'clear') {
         history.push(secRound)
         if (sec === 'fix') continue
@@ -2681,7 +2719,8 @@ for (i = 1; i <= MAX; i++) {
       continue
     }
   } else {
-    // outcome.route === 'fix_loop'（blocking あり、decision は request-changes/comment。approve はここへ来ない）
+    // outcome.route === 'fix_loop'（review の blocking あり、decision は request-changes/comment）か、
+    // security review が critical/major を返した round（review は approve でもよい — reviewBlocking は空）
     const reviewBlocking = outcome.blocking
 
     // blocking round でも CI を 1 回だけ判定する。review が毎 round blocking を出す PR では
@@ -2710,9 +2749,11 @@ for (i = 1; i <= MAX; i++) {
     for (const x of blocking) reviewSeen.register(x)
     const stuckTopics = reviewSeen.stuckTopics()
     log(`iteration ${i}: ${effReview.decision} — blocking ${reviewBlocking.length} 件${ciFindings.length ? ` + CI ${ciFindings.length} 件` : ''}`
+      + `${secBlocking ? ` + security review の critical/major ${secBlocking.blocking.length} 件` : ''}`
       + `${stuckTopics.length ? ` [REVIEW_STUCK: ${stuckTopics.join(' / ')}]` : ''}`)
 
-    // history に記録（blocking findings と minor を含む。CI finding は blocking に合流済み）
+    // history に記録（blocking findings と minor を含む。CI finding は blocking に合流済み。
+    // security の指摘は載せない — 終端サマリーに本文が出るため。件数は security_review に載る）
     const round = { iteration: i, decision: effReview.decision, summary: effReview.summary, blocking, minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines }
     history.push(round)
 
@@ -2723,18 +2764,34 @@ for (i = 1; i <= MAX; i++) {
         + `relax せず人間レビューへエスカレーション（critical/major のゲートは後退させない）`)
       break
     }
+    if (secBlocking?.stuck) {
+      terminal = 'stuck'
+      log(SECURITY_STUCK_LOG)
+      break
+    }
 
     // minor は fix loop の対象外 — issuesText / fix agent プロンプトに一切含めない。
     // description/suggestion はメタ指示・迂回手順の verbatim 伝播遮断のため buildFixIssuesText で
     // スクラブしてから埋め込む（canonical は _lib/review-finding-scrub.mjs）。
     // CI finding（ci::<name>）は synthetic な決定論テキストなのでスクラブ対象外 — review 指摘の後ろに合流させる。
-    const issuesText = buildFixIssuesText(reviewBlocking)
+    // security review の critical/major も同じ fix#i にまとめる（review の指摘が無い round は security の指摘だけ）。
+    const reviewIssuesText = buildFixIssuesText(reviewBlocking)
       + (ciFindings.length ? `\n${buildCiIssuesText(ciFindings)}` : '')
+    const reviewPart = reviewBlocking.length > 0 || ciFindings.length > 0
+    const issuesText = !secBlocking
+      ? reviewIssuesText
+      : reviewPart
+        ? `${reviewIssuesText}\n\nsecurity review の指摘:\n${buildFixIssuesText(secBlocking.blocking)}`
+        : buildFixIssuesText(secBlocking.blocking)
 
     // fix は dev-runner agent に直接指示する（専用の pr-fix skill は持たない）。
     const reviewFixPrompt = fixPrompt({
-      objective: `PR #${PR} のレビュー指摘を修正し、PR ブランチへ commit・push する。`,
-      issuesHeading: '指摘',
+      objective: !secBlocking
+        ? `PR #${PR} のレビュー指摘を修正し、PR ブランチへ commit・push する。`
+        : reviewPart
+          ? `PR #${PR} のレビュー指摘と security review の指摘を修正し、PR ブランチへ commit・push する。`
+          : `PR #${PR} の security review の指摘を修正し、PR ブランチへ commit・push する。`,
+      issuesHeading: secBlocking && !reviewPart ? ' security review の指摘' : '指摘',
       issuesText,
       guidance: ciFindings.length
         ? `上記のうち \`ci::<name>\` は CI の失敗 check である（review 指摘と併せて同じ commit で解消してよい）。\n`
@@ -2769,7 +2826,7 @@ for (i = 1; i <= MAX; i++) {
 const status = lgtm ? 'lgtm' : (terminal ?? 'max_reached')
 log(`pr-iterate 終端: status=${status}（iterations=${Math.min(i, MAX)}）`)
 // 敵対的 security review の結果（件数だけ。指摘の本文は載せない）。status: 'not_target' / 'cleared' / 'unresolved' /
-// 'not_run'（対象だが LGTM の前の review に到達しなかった）。stop_reason: review の前提チェックで止めた理由（securityStopReason）。
+// 'not_run'（対象だが最後の head の review に到達しなかった — clear の後の fix で head が変わりうる run を含む）。stop_reason: review の前提チェックで止めた理由（securityStopReason）。
 // dev-flow は target かつ status が cleared でない run を Merge tier の security_review_unresolved で HOLD にする。
 const securityReview = {
   target: securityTarget,

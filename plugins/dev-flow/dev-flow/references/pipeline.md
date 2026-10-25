@@ -287,7 +287,9 @@ hit で `runEval=true` になったケースは lite ゲート条件を満たさ
 Security floor  → security-scope（dev-runner-haiku-ro）: `security-review-scope <WT> origin/<base> --working-tree`
                   （merge-base と作業ツリーの diff）→ state.securityReview.target → LITE の条件・nested args.security_review
 /pr-iterate     → pr-iterate-prerun が `<base>...<PR head>` の diff を判定 → wrapper が args.security_review で渡す
-pr-iterate      → CI gate を通り conflict も無い round（LGTM の候補）で:
+pr-iterate      → round の開始時に対象の run は各 round で、review#i（・ci-check#i）と同じ parallel() で review と同じ head に対して
+                  security-scope#i → security-review#i を起動する（review の decision を待たない）。対象でない run は
+                  CI gate を通り conflict も無い round（LGTM の候補）でだけ security-scope#i を取り直す:
                   security-scope#i: `security-review-scope <wt> origin/<base> <shaNow|HEAD> --save-diff`
                     → 起動時・run 中のどれか 1 回でも対象なら run の終わりまで対象（args.security_review が無い run も対象）
                     → 保存先に書いた pr.diff の sha256・ino・ctime（ns）を diff_sha256・diff_ino・diff_ctime_ns で、
@@ -296,13 +298,18 @@ pr-iterate      → CI gate を通り conflict も無い round（LGTM の候補�
                   対象なら security-review#i（security-reviewer を毎回新しく spawn。PR 全 diff の file と head sha と
                     前回の未解消 critical/major を DATA として渡す）
                     → critical/major 0 件かつ reviewed_sha が今の head → security-diff-check#i（security-codex-relay）:
-                      `security-review-diff-check <保存先> <diff_sha256> <diff_ino> <diff_ctime_ns> <dir_ino> <dir_ctime_ns>` → matched:true → LGTM
-                      （一致しない・照合できない → security_unresolved。Codex 経路で clear の round も同じ）
-                    → critical/major あり → fix#i（dev-runner）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
-                      上限まで残れば max_reached）
+                      `security-review-diff-check <保存先> <diff_sha256> <diff_ino> <diff_ctime_ns> <dir_ino> <dir_ctime_ns>` → matched:true
+                      → 同じ round の review approve・CI passed / no_checks がそろえば LGTM
+                      （一致しない・照合できない → LGTM の候補の round で security_unresolved。Codex 経路で clear の round も同じ）
+                    → critical/major あり → review の blocking（と CI failed）と 1 回の fix#i（dev-runner）にまとめる。review が
+                      approve でも CI を待たない（ci-wait-check なし）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
+                      上限まで残れば max_reached）。security の指摘は history の blocking に載せない
                     → worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致・
                       reviewer_context_changed が false でない（起動時の args.security_review の決定論の値と run 中の判定の
-                      どれか 1 回でも true なら run の終わりまで true）→ status: security_unresolved
+                      どれか 1 回でも true なら run の終わりまで true）→ LGTM の候補の round で status: security_unresolved
+                      （review が request-changes の round はその fix へ進み、次の round で取り直す）
+                  clear はその round の head についての結果。fix・conflict の自動解消で head が変わりうる時点で返り値の
+                  status を cleared のまま残さず、次の round の security review が新しい head で取り直す
 Merge tier      → 対象（Security floor か pr-iterate のどちらか）かつ pr-iterate が lgtm + security_review.status 'cleared'
                   でなければ HOLD（security_review_unresolved）
 ```
