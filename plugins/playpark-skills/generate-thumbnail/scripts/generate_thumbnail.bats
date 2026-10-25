@@ -39,6 +39,7 @@ EOF
     cat > "$STUB" << 'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >> "$CALLS_LOG"
+printf '%s\n' "${CODEX_HOME-<unset>}" > "$CALLS_LOG.codex_home"
 prompt="${@: -1}"
 case "$CODEX_STUB_MODE" in
     ok)
@@ -77,6 +78,12 @@ model_arg() {
     [ "$status" -eq 0 ]
     [ "$(model_arg)" = "gpt-6-luna" ]
     [ -f "$PROJECT/public/blog/2026-09-15-example.png" ]
+}
+
+@test "CODEX_HOME from the environment (the sandbox-only home) is not passed to codex" {
+    CODEX_HOME="$BATS_TEST_TMPDIR/sandbox-home" run bash "$SCRIPT" "$MDX"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$CALLS_LOG.codex_home")" = "<unset>" ]
 }
 
 @test "project skill-config codex_model overrides the default" {
