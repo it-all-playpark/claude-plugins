@@ -5,6 +5,8 @@
 // 差し替えられる。pr-iterate は clear になりそうな round で review の後にこの CLI を走らせ、matched:true でなければ clear にしない。
 // sha256 だけでは、差し替えて review の後に元の bytes へ戻した pr.diff を見分けられない。書き戻しでも ctime は変わり、別のファイルを
 // rename で置けば ino が変わるので、scope が書いた fd から取った ino・ctime（ns）とも照合する。
+// 保存先のディレクトリごと rename で退避して良性の pr.diff を持つ別のディレクトリを置き、review の後に元へ戻したものは、pr.diff の
+// inode が無傷で sha256・ino・ctime が全部一致するので見分けられない（この CLI では塞がない残る経路）。
 // 照合はここで行い、中継（LLM）は argv を写して stdout を返すだけ（sha256 の一致を中継に判定させない）。
 //
 // Usage: node security-review-diff-check.mjs <review_dir> <diff_sha256> <diff_ino> <diff_ctime_ns>

@@ -128,6 +128,8 @@ export function securityReviewVerdict(review, headSha) {
 // 計算し直して照合する（照合は script が行い、中継は argv を写して stdout を返すだけ）。一致しない・照合できない round は clear にしない。
 // 差し替えて review の後に元の bytes へ戻すと sha256 は一致するので、scope が書いた fd の ino・ctime（ns。diff_ino / diff_ctime_ns）も
 // 照合する（書き戻しで ctime が変わる）。Codex 経路の prep も diff_sha256 を受け取り、読んだ pr.diff の sha256 が違えば prompt.md を作らない。
+// 保存先のディレクトリごと rename で退避して良性の pr.diff を持つ別のディレクトリを置き、review の後に元へ戻すと pr.diff の inode は
+// 無傷で sha256・ino・ctime が全部一致するので、この照合では検出できない（残る経路。pipeline.md の security review の節）。
 // sha256 の hex（diff・prompt.md・schema.json の照合値）
 export const SHA256_RE = /^[0-9a-f]{64}$/;
 // pr.diff の ino・ctime（ns）の 10 進表記（security-review-scope が文字列で返す。ns は Number の精度を超えるので数値にしない）

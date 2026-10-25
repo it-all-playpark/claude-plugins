@@ -335,7 +335,7 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 - **review 中の入力の書き換え**（issue #1095）: 保存先（`os.tmpdir()` 配下の `dev-flow-security-review-*`）は sandbox の中から
   書けるので、fix agent や Validate のテストが走らせた PR のコードが常駐プロセスとして残ると、review の作業場所を書き換えて
   clear を偽れる。sha256 の照合は決定論の script が行い、中継（LLM）は argv を写すだけ。
-  - 検出できる範囲: review の間に書き換えた入力（後で元の bytes に戻したものを含む）。Claude 経路は security-reviewer の返却後に
+  - 検出できる範囲: review の間に pr.diff のファイルを書き換えた・別のファイルに差し替えた入力（後で元の bytes に戻したものを含む）。Claude 経路は security-reviewer の返却後に
     `security-review-diff-check` が pr.diff を `security-review-scope` の diff_sha256・diff_ino・diff_ctime_ns と照合し、
     一致しない・照合できない round を clear にしない（stop_reason は null）。書き戻しは ctime が、同じ bytes のファイルの rename は
     ino が変わるので見分けられる。Codex 経路の prep は diff_sha256 を引数で受け取り、読んだ pr.diff の sha256 が違えば
@@ -345,7 +345,9 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
     Codex を起動できないときと同じく Claude 経路の判定に倒す。hook は中継が起動する `codex` の PATH 上の解決先を確かめ、
     解決できない・相対パスか空の PATH 要素から解決される・実体が cwd（PR の worktree）・`$TMPDIR`・`/tmp`・`/private/tmp` の
     配下なら起動させない（sandbox の外で PR のコードが置いた codex を走らせない）
-  - 残る経路（この gate では塞がない）: pr.diff の ctime を元の値に戻す（system の時計を戻せる権限が要る。同じ uid の常駐プロセスは utimes でも ctime を戻せない）。
+  - 残る経路（この gate では塞がない）: 保存先ディレクトリごと差し替えて review の後に戻す（保存先を rename で退避して良性の pr.diff を
+    持つ別のディレクトリを同じ名前で置き、review の後に元へ戻すと、元の pr.diff の inode は無傷で sha256・ino・ctime が全部一致する）。
+    pr.diff の ctime を元の値に戻す（system の時計を戻せる権限が要る。同じ uid の常駐プロセスは utimes でも ctime を戻せない）。
     codex の出力後に結果ファイル（`result.json`）を nonce ごと写して `issues:[]` で上書きする（出力先は sandbox の中から書けない
     場所に置く前提で、hook と prep はその前提を確かめるが、書けてしまう設定ではこの上書きを検出しない）。常駐プロセスは同じ権限で
     書けるので完全には防げない — plugin の script / hook はプロセスの一覧・kill をしない（状態を変えない）
