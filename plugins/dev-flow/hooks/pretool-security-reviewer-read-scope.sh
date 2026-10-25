@@ -17,10 +17,14 @@
 #   5. 許可は、対象パスの realpath T が、basename が `dev-flow-security-review-[A-Za-z0-9]{6}` のディレクトリ D
 #      （T 自身かその祖先。T が realpath なので D も realpath）の配下で、D と T が入力の cwd の realpath の配下でないときだけ。
 #      cwd の配下かは、パスとその各祖先が cwd と同じ inode か（[[ -ef ]]）で判定する（firmlink・大文字小文字の別表記に依らない）
+#   6. Read / Grep（中身を読む）は、さらに T の basename が `pr-<dev>-<ino>.diff`（security-review-scope が pr.diff への hard link
+#      として作る）で、T が symlink でない通常ファイルで、その dev・ino が名前の値と一致するときだけ許可する（Glob は 5 まで）。
+#      保存先の祖先を rename で退避して同じパスに良性の保存先を置くと、置いたファイルは scope の書いたファイルの dev・ino を持てない。
+#      確認は読む直前の 1 回なので、確認と Read の間の差し替え（競合）は防げない
 #
 # fail-closed: exit 2 以外の非 0 終了は tool を通すので、security-reviewer の判定中に想定外で終わったら
 # EXIT trap が deny を出して exit 0 にする。timeout で kill された場合は防げないので、外部コマンドは
-# jq / realpath / grep だけに絞る。
+# jq / realpath / grep / stat だけに絞る（stat は 1 ファイルの metadata だけを読む。中身の hash は取らない）。
 # hook は deny を出力するだけで、ファイルの変更・プロセス操作・外部送信をしない。抜け道（環境変数・フラグ）は作らない。
 # deny の理由に入力のパスを埋め込まない（reviewer の session に入力由来の文字列を返さない）。
 
@@ -29,6 +33,9 @@ export LC_ALL=C
 DECIDED=0
 REVIEWER_AGENT="dev-flow:security-reviewer"
 SAVE_DIR_RE='^dev-flow-security-review-[A-Za-z0-9]{6}$'
+# security-review-scope が pr.diff への hard link として作る、reviewer が読む diff の名前（_lib/security-review.mjs の
+# SECURITY_REVIEW_DIFF_NAME_RE と同じ形）。数字は pr.diff の dev と ino
+DIFF_NAME_RE='^pr-([0-9]{1,30})-([0-9]{1,30})\.diff$'
 
 emit_deny() {
   DECIDED=1
@@ -135,14 +142,37 @@ under_cwd() {
 
 under_cwd "$TARGET_REAL" && emit_deny "対象パスが cwd の配下"
 
-# T 自身から祖先へ上り、保存先の名前のディレクトリ D のうち cwd の配下でないものがあれば許可
+# T 自身から祖先へ上り、保存先の名前のディレクトリ D のうち cwd の配下でないものを探す
+in_save_dir=0
 d="$TARGET_REAL"
 while [[ -n $d && $d != / ]]; do
   if [[ ${d##*/} =~ $SAVE_DIR_RE && -d $d ]] && ! under_cwd "$d"; then
-    DECIDED=1
-    exit 0
+    in_save_dir=1
+    break
   fi
   d="${d%/*}"
 done
+[[ $in_save_dir -eq 1 ]] || emit_deny "対象パスが保存先の配下でない"
 
-emit_deny "対象パスが保存先の配下でない"
+# Glob はファイル名の一覧だけを返すので、保存先の配下なら許可
+[[ $TOOL == Glob ]] && pass_through
+
+# $1 の dev と ino（symlink は辿らない）を "<dev> <ino>" で返す。GNU（-c）と BSD（-f）の stat のどちらでも取る
+file_id() {
+  local out
+  out=$(stat -c '%d %i' -- "$1" 2>/dev/null) || out=$(stat -f '%d %i' -- "$1" 2>/dev/null) || return 1
+  [[ $out =~ ^[0-9]+\ [0-9]+$ ]] || return 1
+  printf '%s' "$out"
+}
+
+# Read / Grep は中身を読むので、security-review-scope が書いた diff（pr-<dev>-<ino>.diff）が今その名前の dev・ino のファイルの
+# ときだけ許可する。保存先の祖先を退避して同じパスに良性の保存先を置くと、置いたファイルは scope の書いたファイルと同じ dev・ino を
+# 持てない（祖先の ctime は無関係な一時ファイルでも変わるので、review の後の照合では見分けられない）
+[[ ${TARGET_REAL##*/} =~ $DIFF_NAME_RE ]] || emit_deny "対象が保存先の diff（pr-<dev>-<ino>.diff）でない"
+EXPECTED_ID="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+[[ -f $TARGET_REAL && ! -L $TARGET_REAL ]] || emit_deny "保存先の diff が通常ファイルでない"
+ACTUAL_ID=$(file_id "$TARGET_REAL") || emit_deny "保存先の diff の dev・ino を取れない"
+[[ $ACTUAL_ID == "$EXPECTED_ID" ]] || emit_deny "保存先の diff が security-review-scope の書いたファイルでない"
+
+DECIDED=1
+exit 0

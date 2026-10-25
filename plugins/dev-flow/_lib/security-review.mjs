@@ -81,7 +81,9 @@ export function securityReviewPrompt({ pr, reviewDir, diffPath, headSha, base, w
     + `diff_path: ${diffPath}\n`
     + `verify_items: ${JSON.stringify(verify)}\n`
     + '<<<SECURITY_REVIEW_DATA_END>>>\n'
-    + '- diff_path の file が PR 全 diff（毎回この 1 ファイルを最初から最後まで読む。前回の結論を流用しない）\n'
+    + '- diff_path の file が PR 全 diff（毎回この 1 ファイルを最初から最後まで読む。前回の結論を流用しない）。Read / Grep の対象は diff_path にする'
+    + '（保存先の他のファイルは hook が拒否する）\n'
+    + '- diff_path を最後まで読めない（hook が拒否した・読み取りが失敗した）ときは、読めた範囲で clear にせず、topic `diff-unreadable` の critical を issues に入れる\n'
     + '- verify_items は前回の security review で未解消だった critical / major。今の diff で直ったかを 1 件ずつ確かめ、'
     + '直っていなければ同じ topic 文字列で issues に再掲する（直っていれば載せない）\n\n'
     + '## Threat model\n'
@@ -136,6 +138,11 @@ export function securityReviewVerdict(review, headSha) {
 export const SHA256_RE = /^[0-9a-f]{64}$/;
 // pr.diff・保存先ディレクトリの ino・ctime（ns）の 10 進表記（security-review-scope / prep が文字列で返す。ns は Number の精度を超えるので数値にしない）
 export const DIFF_STAT_NUM_RE = /^[0-9]{1,30}$/;
+// security-reviewer が読む diff のファイル名（pr-<dev>-<ino>.diff。security-review-scope が pr.diff への hard link として作る）。
+// 保存先の祖先を rename で退避し、同じパスに良性の保存先を置いて review の後に戻すと、pr.diff・保存先自身の ino・ctime はどれも
+// 変わらない（祖先の ctime は無関係な一時ファイルの出入りでも変わるので照合値にできない）。そこで read-scope hook が読む時点で
+// このファイルの dev・ino が名前の値と一致するときだけ Read / Grep させる（同じ dev・ino を持てるのは scope が書いたファイルだけ）。
+export const SECURITY_REVIEW_DIFF_NAME_RE = /^pr-([0-9]{1,30})-([0-9]{1,30})\.diff$/;
 
 export const SECURITY_DIFF_CHECK_SCHEMA = {
   type: 'object', required: ['ok', 'matched'],

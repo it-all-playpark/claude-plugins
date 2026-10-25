@@ -43,21 +43,29 @@ printf 'attacker rule\n' >"${WT}/.claude/rules/dev-flow.md"
 D="${WORKDIR}/dev-flow-security-review-Ab12Cd"
 mkdir -p "$D"
 printf 'diff --git a/x b/x\n' >"${D}/pr.diff"
+# reviewer が読む名前（pr.diff への hard link pr-<dev>-<ino>.diff。security-review-scope と同じ形）
+file_id() {
+  stat -c '%d-%i' -- "$1" 2>/dev/null || stat -f '%d-%i' -- "$1"
+}
+PRN="pr-$(file_id "${D}/pr.diff").diff"
+ln "${D}/pr.diff" "${D}/${PRN}"
+# 名前の dev・ino が違う diff（中身は同じ）
+cp "${D}/pr.diff" "${D}/pr-1-2.diff"
 printf 'outside\n' >"${WORKDIR}/outside.txt"
 ln -s "${WT}/CLAUDE.md" "${D}/escape-to-cwd"
 ln -s "${WORKDIR}/outside.txt" "${D}/escape-to-outside"
-ln -s "${D}/pr.diff" "${D}/inner-link"
+ln -s "${D}/${PRN}" "${D}/inner-link"
 ln -s "${WORKDIR}/missing-target" "${D}/dangling"
 
-# cwd の配下に同じ名前のディレクトリ
+# cwd の配下に同じ名前のディレクトリ（diff は保存先の diff への hard link — dev・ino は一致するので、拒否はパスの判定から来る）
 FAKE_D="${WT}/dev-flow-security-review-Ab12Cd"
 mkdir -p "$FAKE_D"
-printf 'fake\n' >"${FAKE_D}/pr.diff"
+ln "${D}/pr.diff" "${FAKE_D}/${PRN}"
 
-# 名前が mkdtemp の形でないディレクトリ
+# 名前が mkdtemp の形でないディレクトリ（同上）
 mkdir -p "${WORKDIR}/dev-flow-security-review-abc12" "${WORKDIR}/dev-flow-security-review-abc12!"
-printf 'x\n' >"${WORKDIR}/dev-flow-security-review-abc12/pr.diff"
-printf 'x\n' >"${WORKDIR}/dev-flow-security-review-abc12!/pr.diff"
+ln "${D}/pr.diff" "${WORKDIR}/dev-flow-security-review-abc12/${PRN}"
+ln "${D}/pr.diff" "${WORKDIR}/dev-flow-security-review-abc12!/${PRN}"
 
 # 親ディレクトリを symlink 経由で書いた表記
 ln -s "$WORKDIR" "${WORKDIR}/alias"
@@ -130,23 +138,33 @@ run_tool "他の agent の path 無し Grep" silent "dev-flow:evaluator" Grep '{
 run_raw "agent_type 無しの JSON でない入力" silent 'not json'
 
 echo "[保存先の配下 — 許可（無出力 exit 0）]"
-run_tool "保存先の pr.diff を Read" silent "$AGENT" Read "$(read_input "${D}/pr.diff")"
-run_tool "保存先の中で中を指す symlink を Read" silent "$AGENT" Read "$(read_input "${D}/inner-link")"
-run_tool "親を symlink 経由で書いた保存先の pr.diff" silent "$AGENT" Read "$(read_input "${WORKDIR}/alias/dev-flow-security-review-Ab12Cd/pr.diff")"
-run_tool "保存先の中の .. を含む表記" silent "$AGENT" Read "$(read_input "${D}/../dev-flow-security-review-Ab12Cd/pr.diff")"
+run_tool "保存先の diff（pr-<dev>-<ino>.diff）を Read" silent "$AGENT" Read "$(read_input "${D}/${PRN}")"
+run_tool "保存先の中で diff を指す symlink を Read" silent "$AGENT" Read "$(read_input "${D}/inner-link")"
+run_tool "親を symlink 経由で書いた保存先の diff" silent "$AGENT" Read "$(read_input "${WORKDIR}/alias/dev-flow-security-review-Ab12Cd/${PRN}")"
+run_tool "保存先の中の .. を含む表記" silent "$AGENT" Read "$(read_input "${D}/../dev-flow-security-review-Ab12Cd/${PRN}")"
 run_tool "Glob: path が保存先自身" silent "$AGENT" Glob "$(jq -cn --arg p "$D" '{pattern:"*.diff", path:$p}')"
-run_tool "Grep: path が保存先自身・glob 無し" silent "$AGENT" Grep "$(jq -cn --arg p "$D" '{pattern:"x", path:$p}')"
-run_tool "Grep: path が pr.diff・glob が相対" silent "$AGENT" Grep "$(jq -cn --arg p "${D}/pr.diff" '{pattern:"x", path:$p, glob:"**/*.diff"}')"
+run_tool "Grep: path が保存先の diff・glob が相対" silent "$AGENT" Grep "$(jq -cn --arg p "${D}/${PRN}" '{pattern:"x", path:$p, glob:"**/*.diff"}')"
+
+echo "[保存先の配下でも scope の書いた diff でない — Read / Grep は deny]"
+run_tool "名前に dev・ino の無い pr.diff を Read" deny "$AGENT" Read "$(read_input "${D}/pr.diff")"
+run_tool "名前の dev・ino がファイルと違う diff を Read" deny "$AGENT" Read "$(read_input "${D}/pr-1-2.diff")"
+run_tool "Grep: path が保存先自身（中の全ファイルを読む）" deny "$AGENT" Grep "$(jq -cn --arg p "$D" '{pattern:"x", path:$p}')"
+run_tool "Grep: path が名前に dev・ino の無い pr.diff" deny "$AGENT" Grep "$(jq -cn --arg p "${D}/pr.diff" '{pattern:"x", path:$p}')"
+STUB_STAT="${WORKDIR}/stub-stat"
+mkdir -p "$STUB_STAT"
+printf '#!/bin/sh\nexit 1\n' >"${STUB_STAT}/stat"
+chmod +x "${STUB_STAT}/stat"
+run_raw "stat コマンドが失敗する" deny "$(jq -cn --arg a "$AGENT" --arg cwd "$WT" --arg p "${D}/${PRN}" '{agent_type:$a, cwd:$cwd, tool_name:"Read", tool_input:{file_path:$p}}')" "$STUB_STAT"
 
 # /tmp と /private/tmp（macOS の /tmp -> private/tmp）の表記の違い
 D_REAL=$(realpath "$D")
 if [[ $D_REAL == /private/* && -e "/${D_REAL#/private/}" ]]; then
   SHORT="/${D_REAL#/private/}"
-  run_tool "/private/ 付きの realpath 表記で Read" silent "$AGENT" Read "$(read_input "${D_REAL}/pr.diff")"
-  run_tool "/private/ を外した表記（/tmp 等）で Read" silent "$AGENT" Read "$(read_input "${SHORT}/pr.diff")"
+  run_tool "/private/ 付きの realpath 表記で Read" silent "$AGENT" Read "$(read_input "${D_REAL}/${PRN}")"
+  run_tool "/private/ を外した表記（/tmp 等）で Read" silent "$AGENT" Read "$(read_input "${SHORT}/${PRN}")"
   WT_REAL=$(realpath "$WT")
   run_tool "cwd と表記が違う（/private/ 付き）cwd 配下の CLAUDE.md" deny "$AGENT" Read "$(read_input "${WT_REAL}/CLAUDE.md")" "/${WT_REAL#/private/}"
-  run_tool "cwd と表記が違う（/private/ 付き）cwd 配下の同じ名前のディレクトリ" deny "$AGENT" Read "$(read_input "${WT_REAL}/dev-flow-security-review-Ab12Cd/pr.diff")" "/${WT_REAL#/private/}"
+  run_tool "cwd と表記が違う（/private/ 付き）cwd 配下の同じ名前のディレクトリ" deny "$AGENT" Read "$(read_input "${WT_REAL}/dev-flow-security-review-Ab12Cd/${PRN}")" "/${WT_REAL#/private/}"
 else
   echo "  SKIP /tmp と /private/tmp の表記（TMPDIR の realpath が /private/ 配下でない環境）"
 fi
@@ -156,9 +174,9 @@ WT_REAL=$(realpath "$WT")
 FIRM_WT="/System/Volumes/Data${WT_REAL}"
 if [[ -d $FIRM_WT && $FIRM_WT -ef $WT_REAL ]]; then
   run_tool "/System/Volumes/Data 経由の cwd 配下の CLAUDE.md" deny "$AGENT" Read "$(read_input "${FIRM_WT}/CLAUDE.md")"
-  run_tool "/System/Volumes/Data 経由の cwd 配下の同じ名前のディレクトリ" deny "$AGENT" Read "$(read_input "${FIRM_WT}/dev-flow-security-review-Ab12Cd/pr.diff")"
+  run_tool "/System/Volumes/Data 経由の cwd 配下の同じ名前のディレクトリ" deny "$AGENT" Read "$(read_input "${FIRM_WT}/dev-flow-security-review-Ab12Cd/${PRN}")"
   run_tool "/System/Volumes/Data 経由の cwd 配下の同じ名前のディレクトリを Glob" deny "$AGENT" Glob "$(jq -cn --arg p "${FIRM_WT}/dev-flow-security-review-Ab12Cd" '{pattern:"*", path:$p}')"
-  run_tool "/System/Volumes/Data 経由の保存先の pr.diff は許可" silent "$AGENT" Read "$(read_input "/System/Volumes/Data$(realpath "$D")/pr.diff")"
+  run_tool "/System/Volumes/Data 経由の保存先の diff は許可" silent "$AGENT" Read "$(read_input "/System/Volumes/Data$(realpath "$D")/${PRN}")"
 else
   echo "  SKIP /System/Volumes/Data 経由の表記（firmlink の無い環境）"
 fi
@@ -166,7 +184,7 @@ fi
 echo "[保存先の外 — deny]"
 run_tool "cwd 配下の CLAUDE.md" deny "$AGENT" Read "$(read_input "${WT}/CLAUDE.md")"
 run_tool "cwd 配下の .claude/rules" deny "$AGENT" Read "$(read_input "${WT}/.claude/rules/dev-flow.md")"
-run_tool "cwd 配下に作った同じ名前のディレクトリ" deny "$AGENT" Read "$(read_input "${FAKE_D}/pr.diff")"
+run_tool "cwd 配下に作った同じ名前のディレクトリ" deny "$AGENT" Read "$(read_input "${FAKE_D}/${PRN}")"
 run_tool "cwd 配下の同じ名前のディレクトリを Glob" deny "$AGENT" Glob "$(jq -cn --arg p "$FAKE_D" '{pattern:"*", path:$p}')"
 run_tool "保存先の中の symlink が cwd を指す" deny "$AGENT" Read "$(read_input "${D}/escape-to-cwd")"
 run_tool "保存先の中の symlink が保存先の外を指す" deny "$AGENT" Read "$(read_input "${D}/escape-to-outside")"
@@ -174,10 +192,10 @@ run_tool "保存先の中の dangling symlink" deny "$AGENT" Read "$(read_input 
 run_tool "存在しないパス（保存先の中）" deny "$AGENT" Read "$(read_input "${D}/missing.diff")"
 run_tool "保存先の .. で外に出る" deny "$AGENT" Read "$(read_input "${D}/../outside.txt")"
 run_tool "保存先と無関係のファイル" deny "$AGENT" Read "$(read_input "${WORKDIR}/outside.txt")"
-run_tool "名前の乱数部が 5 文字" deny "$AGENT" Read "$(read_input "${WORKDIR}/dev-flow-security-review-abc12/pr.diff")"
-run_tool "名前の乱数部に記号" deny "$AGENT" Read "$(read_input "${WORKDIR}/dev-flow-security-review-abc12!/pr.diff")"
+run_tool "名前の乱数部が 5 文字" deny "$AGENT" Read "$(read_input "${WORKDIR}/dev-flow-security-review-abc12/${PRN}")"
+run_tool "名前の乱数部に記号" deny "$AGENT" Read "$(read_input "${WORKDIR}/dev-flow-security-review-abc12!/${PRN}")"
 run_tool "相対パスは cwd から解決する" deny "$AGENT" Read "$(read_input "CLAUDE.md")"
-run_tool "cwd 自身が保存先の配下でも cwd 配下は deny" deny "$AGENT" Read "$(read_input "${D}/pr.diff")" "$D"
+run_tool "cwd 自身が保存先の配下でも cwd 配下は deny" deny "$AGENT" Read "$(read_input "${D}/${PRN}")" "$D"
 
 echo "[Grep / Glob の path と pattern — deny]"
 run_tool "Grep: path 無し" deny "$AGENT" Grep '{"pattern":"x"}'
@@ -207,7 +225,7 @@ run_raw "--agent: checkout の CLAUDE.md を Read" deny "$(main_input Read "$(re
 run_raw "--agent: checkout の .claude/rules を Read" deny "$(main_input Read "$(read_input "${WT}/.claude/rules/dev-flow.md")")"
 run_raw "--agent: checkout を Grep" deny "$(main_input Grep "$(jq -cn --arg p "$WT" '{pattern:"x", path:$p}')")"
 run_raw "--agent: 相対パスは空の cwd から解決し保存先の外" deny "$(main_input Read "$(read_input "CLAUDE.md")")"
-run_raw "--agent: 保存先の pr.diff は許可" silent "$(main_input Read "$(read_input "${D}/pr.diff")")"
+run_raw "--agent: 保存先の diff は許可" silent "$(main_input Read "$(read_input "${D}/${PRN}")")"
 run_raw "subagent（agent_id 付き）の checkout Read も deny" deny "$(jq -cn --arg a "$AGENT" --arg cwd "$NEUTRAL" --arg p "${WT}/CLAUDE.md" \
   '{session_id:"s", hook_event_name:"PreToolUse", cwd:$cwd, agent_id:"a1", agent_type:$a, tool_name:"Read", tool_input:{file_path:$p}}')"
 
@@ -218,12 +236,12 @@ run_raw "tool_input が無い" deny "$(jq -cn --arg cwd "$WT" --arg a "$AGENT" '
 run_raw "tool_input が object でない" deny "$(jq -cn --arg cwd "$WT" --arg a "$AGENT" '{agent_type:$a, cwd:$cwd, tool_name:"Read", tool_input:"x"}')"
 run_tool "Read: file_path が無い" deny "$AGENT" Read '{}'
 run_tool "Read: file_path が文字列でない" deny "$AGENT" Read '{"file_path":42}'
-run_tool "Read: file_path が改行を含む" deny "$AGENT" Read "$(jq -cn --arg p "${D}/pr.diff" '{file_path:($p + "\n")}')"
-run_tool "対象外の tool 名" deny "$AGENT" Write "$(read_input "${D}/pr.diff")"
-run_raw "cwd が無い" deny "$(jq -cn --arg a "$AGENT" --arg p "${D}/pr.diff" '{agent_type:$a, tool_name:"Read", tool_input:{file_path:$p}}')"
-run_tool "cwd が存在しない（realpath が失敗）" deny "$AGENT" Read "$(read_input "${D}/pr.diff")" "${WORKDIR}/no-such-wt"
-run_raw "realpath コマンドが失敗する" deny "$(jq -cn --arg a "$AGENT" --arg cwd "$WT" --arg p "${D}/pr.diff" '{agent_type:$a, cwd:$cwd, tool_name:"Read", tool_input:{file_path:$p}}')" "$STUB_REALPATH"
-run_raw "jq が失敗する" deny "$(jq -cn --arg a "$AGENT" --arg cwd "$WT" --arg p "${D}/pr.diff" '{agent_type:$a, cwd:$cwd, tool_name:"Read", tool_input:{file_path:$p}}')" "$STUB_JQ"
+run_tool "Read: file_path が改行を含む" deny "$AGENT" Read "$(jq -cn --arg p "${D}/${PRN}" '{file_path:($p + "\n")}')"
+run_tool "対象外の tool 名" deny "$AGENT" Write "$(read_input "${D}/${PRN}")"
+run_raw "cwd が無い" deny "$(jq -cn --arg a "$AGENT" --arg p "${D}/${PRN}" '{agent_type:$a, tool_name:"Read", tool_input:{file_path:$p}}')"
+run_tool "cwd が存在しない（realpath が失敗）" deny "$AGENT" Read "$(read_input "${D}/${PRN}")" "${WORKDIR}/no-such-wt"
+run_raw "realpath コマンドが失敗する" deny "$(jq -cn --arg a "$AGENT" --arg cwd "$WT" --arg p "${D}/${PRN}" '{agent_type:$a, cwd:$cwd, tool_name:"Read", tool_input:{file_path:$p}}')" "$STUB_REALPATH"
+run_raw "jq が失敗する" deny "$(jq -cn --arg a "$AGENT" --arg cwd "$WT" --arg p "${D}/${PRN}" '{agent_type:$a, cwd:$cwd, tool_name:"Read", tool_input:{file_path:$p}}')" "$STUB_JQ"
 
 echo ""
 echo "=== Results: ${PASS} passed, ${FAIL} failed ==="

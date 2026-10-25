@@ -107,7 +107,8 @@ MAJOR_ISSUE='[{"severity":"major","topic":"hook-injection","file":"CLAUDE.md","l
     diff_path="$(sed -n 's/^diff_path: //p' "$CLAUDE_STUB_DIR/prompt")"
     review_dir="$(dirname "$diff_path")"
     [[ "$(basename "$review_dir")" =~ ^dev-flow-security-review-[A-Za-z0-9]{6}$ ]]
-    [ "$(basename "$diff_path")" = "pr.diff" ]
+    # read-scope hook が読ませる名前（pr.diff への hard link pr-<dev>-<ino>.diff）
+    [[ "$(basename "$diff_path")" =~ ^pr-[0-9]+-[0-9]+\.diff$ ]]
     [[ "$review_dir" != "$ROOT_P"/* ]]
     [[ "$review_dir" != "$cwd"/* ]]
     [ "$allowed" = "Read(/${review_dir}/**)" ]
