@@ -353,7 +353,7 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
 - PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`）は `security-codex-relay` の Bash を
   `security-review-codex-prep` / `codex exec`（上の固定形）/ `security-review-codex-result` の固定形の allowlist に限る
   （語を探す判定は引用の分割・`$` 展開で組み立てた語をすり抜けるので使わない）。他の dev-flow の agent には、引用符と
-  バックスラッシュを外した command を単文に分け、どれかの先頭トークンが `codex` / `*/codex` か、保存先・作業ディレクトリの名前を含めば
+  バックスラッシュを外した command を単文に分け、予約語・前置コマンド（env / exec 等）・代入を読み飛ばした先頭トークンが `codex` / `*/codex` か、保存先・作業ディレクトリの名前を含めば
   拒否する（任意の Bash を持つ agent への多層防御で保証ではない。引数の `codex` の語 — `grep codex`・PR タイトル — では止めない）
 - `--output-schema` は OpenAI の strict 形（全 object が `additionalProperties:false`・全 property が required・`maxLength` 無し）
   でないと 400 になる。result.json の schema 適合は `security-review-codex-result` が判定し、適合しない結果は clear にしない

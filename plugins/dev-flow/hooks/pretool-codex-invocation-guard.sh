@@ -28,8 +28,9 @@
 #      codex の形は hook がパスの実体も確かめる: <C> は空の実ディレクトリ、<D> は prompt.md・schema.json を実ファイルとして持ち
 #      result.json を持たない実ディレクトリ（symlink の result.json を通じて保存先の外へ書かせない・先に置かれた result.json を
 #      codex の結果として読ませない）で、どちらも入力の cwd（PR の worktree）の配下でない
-#   4. それ以外の dev-flow の agent → 引用符とバックスラッシュを外した command を `;` `&` `|` `(` `)` と改行で単文に分け、
-#      どれかの単文の先頭トークンが `codex` か `*/codex` なら deny。保存先・作業ディレクトリの名前（dev-flow-security-review- /
+#   4. それ以外の dev-flow の agent → 引用符とバックスラッシュを外した command を `;` `&` `|` `(` `)` `{` `}` と改行で単文に分け、
+#      各単文の先頭から予約語（then / do / ! 等）・前置コマンド（env / exec / command / nohup / timeout 等）とその option・
+#      `NAME=value` の代入を読み飛ばした最初のトークンが `codex` か `*/codex` なら deny。保存先・作業ディレクトリの名前（dev-flow-security-review- /
 #      dev-flow-codex-cwd-）を含む command も deny。それ以外は通す。引数の中の codex の語（`grep codex`・
 #      `gh pr create --title "… codex …"`）では止めない。
 #      この agent たちは任意の Bash を持つので、ここは誤って codex や保存先を触ることを止める多層防御であり保証ではない —
@@ -163,12 +164,26 @@ fi
 NORM=${CMD//\'/}
 NORM=${NORM//\"/}
 NORM=${NORM//\\/}
-# 単文の区切りで分け、各単文の先頭トークンだけを見る（引数・タイトル文字列の中の codex の語では止めない）
-SIMPLE=${NORM//[;&|()]/$'\n'}
-while read -r first _; do
-  if [[ $first == "codex" || $first == */codex ]]; then
-    emit_deny "dev-flow の agent は codex を起動できない（Codex 経路の security review は security-codex-relay が固定形で起動する）"
-  fi
+# 単文の区切りで分け、各単文で実際に起動されるコマンド名だけを見る（引数・タイトル文字列の中の codex の語では止めない）。
+# 先頭の予約語・前置コマンド（env / exec 等）・その option・`NAME=value` の代入は読み飛ばす
+SEP_GLOB='[;&|(){}]'
+SIMPLE=${NORM//$SEP_GLOB/$'\n'}
+while read -r -a words; do
+  after_prefix=0
+  for w in "${words[@]}"; do
+    case $w in
+      then | do | else | elif | if | while | until | ! | env | exec | command | builtin | nohup | time | nice | timeout | sudo)
+        after_prefix=1
+        continue
+        ;;
+    esac
+    [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && continue
+    [[ $after_prefix -eq 1 && ( $w == -* || $w =~ ^[0-9.]+[smhd]?$ ) ]] && continue
+    if [[ $w == "codex" || $w == */codex ]]; then
+      emit_deny "dev-flow の agent は codex を起動できない（Codex 経路の security review は security-codex-relay が固定形で起動する）"
+    fi
+    break
+  done
 done <<<"$SIMPLE"
 if [[ $NORM =~ $DIR_NAME_RE ]]; then
   emit_deny "dev-flow の agent は security review の保存先・作業ディレクトリを Bash で触れない（security-codex-relay の固定形だけが扱う）。文字列の検索は Grep tool を使う"
