@@ -97,7 +97,8 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
        出力先が sandbox の中から書ける場所だと、PR のプロセスが結果ファイルの名前に symlink を置いて任意のファイルを上書きさせられる
      - 出力先は人が一度作り（例: `mkdir ~/.local/state/dev-flow-codex-out`）、user 設定の `"dev-flow".codex_output_dir` に絶対パスで書く。
        sandbox の書き込み許可には入れない（書ける出力先は prep が拒否し、security-reviewer の判定に戻る）。plugin は出力先を作らず消さない
-     - 結果ファイル（`dev-flow-codex-result-<nonce>.json`）は round ごとに溜まる。sandbox の中からは消せないので、古いものは人が片付ける
+     - 結果ファイル（`dev-flow-codex-result-<nonce>-<binding>.json`）と、hook が codex に読ませるために作る指示ファイル・schema の
+       複製（`dev-flow-codex-{prompt,schema}-<nonce>-<binding>`）は round ごとに溜まる。sandbox の中からは消せないので、古いものは人が片付ける
 
    - `prior_devflow` が HOLD の dev-flow サマリーなら、終端サマリーは HOLD 理由の code ごとの回収状況を出し、
      未解消が残れば見出しを「🎉 LGTM」にしない（このレポートが PR の最後のコメント＝最新の結論になるため）。

@@ -22,9 +22,9 @@ prompt が指定した JSON（script なら stdout の JSON object そのもの�
 
 この agent の Bash は `hooks/pretool-codex-invocation-guard.sh` が次の固定形だけに限る（それ以外は拒否される）:
 
-- `security-review-codex-prep <保存先> <sha> <pr> <出力先>[ --verify-from <前回の nonce>]`
-- `codex exec -s read-only ... -C <作業ディレクトリ> ... -o <出力先>/dev-flow-codex-result-<nonce>.json "<固定文> <nonce>"`（workflow が組み立てた固定形）
-- `security-review-codex-result <保存先> <sha> <nonce> <出力先>[ --issues]`
+- `security-review-codex-prep <保存先> <sha> <pr> <出力先>[ --verify-from <前回の nonce> <前回の binding>]`
+- `codex exec -s read-only ... -C <保存先>/<作業ディレクトリ> ... -o <出力先>/dev-flow-codex-result-<nonce>-<binding>.json "<固定文> <nonce>"`（workflow が組み立てた固定形）
+- `security-review-codex-result <保存先> <sha> <nonce> <binding> <出力先>[ --issues]`
 
 ## 規約
 

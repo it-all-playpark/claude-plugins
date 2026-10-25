@@ -4,7 +4,8 @@ bats_require_minimum_version 1.5.0
 # Tests for bin/security-review-codex-prep（_shared/scripts/security-review-codex-prep.sh → _lib/scripts/security-review-codex-prep.mjs。issue #1087 / #1097）
 #
 # Codex 経路の security review の入力を、security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX）に
-# 用意する: prompt.md（prompt + diff）・schema.json（strict 形）と、codex の -C に渡す新しい空の mkdtemp。
+# 用意する: prompt.md（prompt + diff）・schema.json（strict 形）と、codex の -C に渡す新しい空の mkdtemp（保存先の直下）。
+# stdout の binding は保存先のパスと書いた 2 つの中身の sha256（hook が出力先へ複製した中身と照合する）。
 # codex が -o で書く出力先は、realpath が自身と一致する実ディレクトリの絶対パスで、出力先と全祖先のどこにも prep（sandbox の中）から
 # ファイルを作れないものだけを受け付ける。
 # 起動形そのもの（codexSecurityReviewCommand）と hook の一致は _lib/security-review.test.mjs が確かめる。
@@ -12,6 +13,11 @@ bats_require_minimum_version 1.5.0
 BIN="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/bin/security-review-codex-prep"
 HEAD_SHA="$(printf 'a%.0s' {1..40})"
 PREV_NONCE="$(printf '0123456789abcdef%.0s' 1 2)"
+PREV_BINDING="$(printf '0123456789abcdef%.0s' 1 2 3 4)"
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
+}
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR/tmp"
@@ -38,16 +44,20 @@ teardown() {
 # 出力先に前回の round の結果ファイル（第 1 引数の issues）を置く（人の操作の代わりに一時的に書き込み権限を戻す）
 write_prev_result() {
     chmod u+w "$O"
-    jq -n --argjson issues "$1" --arg sha "$HEAD_SHA" --arg n "$PREV_NONCE" '{nonce: $n, reviewed_sha: $sha, issues: $issues, summary: "s"}' >"$O/dev-flow-codex-result-$PREV_NONCE.json"
+    jq -n --argjson issues "$1" --arg sha "$HEAD_SHA" --arg n "$PREV_NONCE" '{nonce: $n, reviewed_sha: $sha, issues: $issues, summary: "s"}' >"$O/dev-flow-codex-result-$PREV_NONCE-$PREV_BINDING.json"
     chmod a-w "$O"
 }
 
-@test "保存先に prompt.md（diff を末尾に置く）と strict 形の schema.json を書き、新しい空の mkdtemp を返す" {
+@test "保存先に prompt.md（diff を末尾に置く）と strict 形の schema.json を書き、保存先の直下の新しい空の mkdtemp と binding を返す" {
     run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg d "$D" '.ok == true and .review_dir == $d and has("error") == false'
     cwd="$(echo "$output" | jq -r '.cwd_dir')"
-    [[ "$cwd" == "$TMPDIR"/dev-flow-codex-cwd-* ]]
+    [[ "$cwd" == "$D"/dev-flow-codex-cwd-* ]]
+    # binding: sha256("<保存先>\n<sha256(prompt.md)>\n<sha256(schema.json)>\n")
+    binding="$(echo "$output" | jq -r '.binding')"
+    expected="$(printf '%s\n%s\n%s\n' "$D" "$(sha256_of <"$D/prompt.md")" "$(sha256_of <"$D/schema.json")" | sha256_of)"
+    [ "$binding" = "$expected" ]
     [[ "$(basename "$cwd")" =~ ^dev-flow-codex-cwd-[A-Za-z0-9]{6}$ ]]
     [ -d "$cwd" ]
     [ -z "$(ls -A "$cwd")" ]
@@ -97,7 +107,7 @@ write_prev_result() {
     echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid"'
 
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
-    [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
+    [ -z "$(find "$D" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
 }
 
 @test "出力先の祖先に symlink がある（realpath が自身と一致しない）なら ok:false" {
@@ -118,7 +128,7 @@ write_prev_result() {
     echo "$output" | jq -e '.ok == false and .error == "output_dir_writable" and .cwd_dir == null and .nonce == null'
     [ -z "$(find "$BATS_P" -maxdepth 1 -name '.dev-flow-codex-write-probe-*')" ]
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
-    [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
+    [ -z "$(find "$D" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
 }
 
 @test "出力先に prep からファイルを作れる（sandbox の中から書ける）なら、作ったファイルを消してから ok:false" {
@@ -129,32 +139,34 @@ write_prev_result() {
     echo "$output" | jq -e '.ok == false and .error == "output_dir_writable" and .cwd_dir == null and .nonce == null'
     [ -z "$(ls -A "$O")" ]
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
-    [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
+    [ -z "$(find "$D" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
 }
 
-@test "--verify-from: 出力先の前回の nonce の結果ファイルの critical/major だけを verify_items にする" {
+@test "--verify-from: 出力先の前回の nonce と binding の結果ファイルの critical/major だけを verify_items にする" {
     write_prev_result '[{"severity":"critical","topic":"cmd-injection","file":"run.sh","line":2,"description":"D1","suggestion":"S1"},{"severity":"minor","topic":"hardening","file":"run.sh","line":null,"description":"D2","suggestion":"S2"}]'
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE" "$PREV_BINDING"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     verify="$(sed -n 's/^verify_items: //p' "$D/prompt.md")"
     echo "$verify" | jq -e '. == [{topic: "cmd-injection", severity: "critical", file: "run.sh", line: 2, description: "D1"}]'
 }
 
-@test "--verify-from の結果ファイルが無い・schema や nonce が合わない・nonce の形でないなら ok:false で何も書かない" {
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE"
+@test "--verify-from の結果ファイルが無い・schema や nonce が合わない・nonce や binding の形でないなら ok:false で何も書かない" {
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE" "$PREV_BINDING"
     echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable" and .cwd_dir == null'
     chmod u+w "$O"
-    jq -n '{reviewed_sha: "x", issues: [], summary: "s", approved: true}' >"$O/dev-flow-codex-result-$PREV_NONCE.json"
+    jq -n '{reviewed_sha: "x", issues: [], summary: "s", approved: true}' >"$O/dev-flow-codex-result-$PREV_NONCE-$PREV_BINDING.json"
     chmod a-w "$O"
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE" "$PREV_BINDING"
     echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable"'
     chmod u+w "$O"
-    jq -n --arg sha "$HEAD_SHA" '{nonce: "ffffffffffffffffffffffffffffffff", reviewed_sha: $sha, issues: [], summary: "s"}' >"$O/dev-flow-codex-result-$PREV_NONCE.json"
+    jq -n --arg sha "$HEAD_SHA" '{nonce: "ffffffffffffffffffffffffffffffff", reviewed_sha: $sha, issues: [], summary: "s"}' >"$O/dev-flow-codex-result-$PREV_NONCE-$PREV_BINDING.json"
     chmod a-w "$O"
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE" "$PREV_BINDING"
     echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable"'
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$D"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$D" "$PREV_BINDING"
+    echo "$output" | jq -e '.ok == false and .error == "verify_from_invalid"'
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE" abc
     echo "$output" | jq -e '.ok == false and .error == "verify_from_invalid"'
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ]
 }
@@ -199,7 +211,7 @@ write_prev_result() {
     [ ! -e "$D/prompt.md" ]
 }
 
-@test "保存先・-C の親（TMPDIR）の祖先に .git / AGENTS.md / AGENTS.override.md / CLAUDE.md があれば作業場所を作らず ok:false" {
+@test "保存先（-C の親）とその祖先に .git / AGENTS.md / AGENTS.override.md / CLAUDE.md があれば作業場所を作らず ok:false" {
     for name in .git AGENTS.md AGENTS.override.md CLAUDE.md; do
         # 保存先の祖先（TMPDIR の外の親）
         P="$BATS_TEST_TMPDIR/rv-$name"
@@ -214,16 +226,16 @@ write_prev_result() {
         echo "$output" | jq -e '.ok == false and .error == "workspace_tainted" and .cwd_dir == null'
         [ ! -e "$R/prompt.md" ] && [ ! -e "$R/schema.json" ] && [ ! -e "$R/prepared_at" ]
 
-        # -C を作る TMPDIR 自身（-C の親）
-        if [ "$name" = .git ]; then mkdir "$TMPDIR/.git"; else : >"$TMPDIR/$name"; fi
+        # -C を作る保存先自身（-C の親）
+        if [ "$name" = .git ]; then mkdir "$D/.git"; else : >"$D/$name"; fi
         run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
         echo "$output" | jq -e '.ok == false and .error == "workspace_tainted"'
-        [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
+        [ -z "$(find "$D" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
         [ ! -e "$D/prompt.md" ]
-        rm -rf "${TMPDIR:?}/$name"
+        rm -rf "${D:?}/$name"
     done
     # dangling symlink も「ある」とみなす
-    ln -s /nonexistent "$TMPDIR/CLAUDE.md"
+    ln -s /nonexistent "$D/CLAUDE.md"
     run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     echo "$output" | jq -e '.ok == false and .error == "workspace_tainted"'
 }
