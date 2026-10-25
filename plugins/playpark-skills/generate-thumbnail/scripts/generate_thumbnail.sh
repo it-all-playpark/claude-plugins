@@ -17,6 +17,9 @@ source "$(dirname "$_CORE_BIN")/../_lib/common.sh"
 # so the requirement check must look at the resolved binary, not the bare name.
 CODEX_BIN="${THUMBNAIL_CODEX_BIN:-codex}"
 require_cmd "$CODEX_BIN" "codex CLI not found: $CODEX_BIN"
+# この script は sandbox の外で動く（excludedCommands）。Claude Code の設定が sandbox の中の codex 用に渡す CODEX_HOME は
+# sandbox から書ける場所なので使わず、既定の ~/.codex で動かす（sandbox の中から書き換えた設定・skills を sandbox の外の codex に読ませない）
+unset CODEX_HOME
 require_cmds jq python3
 
 CONFIG=$(load_skill_config "generate-thumbnail")

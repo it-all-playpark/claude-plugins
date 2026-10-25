@@ -41,6 +41,16 @@ spawn prompt に Objective / Steps（解消すべき指摘）/ Output format / T
   理由を summary に書く（握り潰さない）
 - 指摘に関係するファイルだけを読む。無関係な探索・リファクタをしない
 
+## security review の指摘
+
+security review の指摘を含む fix では、prompt に修正方針（`_lib/security-review.mjs` の `SECURITY_FIX_GUIDANCE`）が入る。
+要点は、要件に立ち返って最も単純な形で塞ぐこと（危ない機能を使わない・入力を受け取らない形を検査の追加より優先する）、
+人に手作業を課す修正（hash の固定・所有者や権限を指定した配置・新しい設定項目）や検査の層を重ねる修正をしないこと、
+その形でしか塞げない指摘と守る範囲の外の指摘は直さず理由を summary に書いて人に返すこと。
+
+分類: **incentive-structural**（指摘を消すことが目的になると、指摘ごとに検査を積むのが最短になり、その検査がまた次の
+指摘の的になる。モデルの能力に依らないので sunset しない）。
+
 ## Boundary
 
 - 他の subagent を spawn しない（ネスト不可）

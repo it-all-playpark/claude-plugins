@@ -53,7 +53,6 @@ run-tests
 secfloor-classify
 security-review-codex-prep
 security-review-codex-result
-security-review-diff-check
 security-review-isolated
 security-review-scope
 structural-classify
@@ -92,7 +91,6 @@ target_for() {
         secfloor-classify) echo "_shared/scripts/secfloor-classify.sh" ;;
         security-review-codex-prep) echo "_shared/scripts/security-review-codex-prep.sh" ;;
         security-review-codex-result) echo "_shared/scripts/security-review-codex-result.sh" ;;
-        security-review-diff-check) echo "_shared/scripts/security-review-diff-check.sh" ;;
         security-review-isolated) echo "_shared/scripts/security-review-isolated.sh" ;;
         security-review-scope) echo "_shared/scripts/security-review-scope.sh" ;;
         structural-classify) echo "_shared/scripts/structural-classify.sh" ;;
