@@ -1,14 +1,16 @@
 #!/usr/bin/env bats
 bats_require_minimum_version 1.5.0
 
-# Tests for bin/security-review-codex-prep（_shared/scripts/security-review-codex-prep.sh → _lib/scripts/security-review-codex-prep.mjs。issue #1087）
+# Tests for bin/security-review-codex-prep（_shared/scripts/security-review-codex-prep.sh → _lib/scripts/security-review-codex-prep.mjs。issue #1087 / #1097）
 #
 # Codex 経路の security review の入力を、security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX）に
 # 用意する: prompt.md（prompt + diff）・schema.json（strict 形）と、codex の -C に渡す新しい空の mkdtemp。
+# codex が -o で書く出力先は、symlink でない実ディレクトリの絶対パスで、prep（sandbox の中）からファイルを作れないものだけを受け付ける。
 # 起動形そのもの（codexSecurityReviewCommand）と hook の一致は _lib/security-review.test.mjs が確かめる。
 
 BIN="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/bin/security-review-codex-prep"
 HEAD_SHA="$(printf 'a%.0s' {1..40})"
+PREV_NONCE="$(printf '0123456789abcdef%.0s' 1 2)"
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR/tmp"
@@ -17,15 +19,25 @@ setup() {
     D="$TMP_P/dev-flow-security-review-Ab12Cd"
     mkdir -p "$D"
     printf 'diff --git a/run.sh b/run.sh\n+echo "$1" | sh\n' >"$D/pr.diff"
+    # 出力先: 人が用意した、prep からは書けないディレクトリ（sandbox の外の場所の代わりに書き込み権限を外す）
+    O="$(cd "$BATS_TEST_TMPDIR" && pwd -P)/codex-out"
+    mkdir -p "$O"
+    chmod a-w "$O"
 }
 
-# 第 1 引数の保存先に result.json（第 2 引数の issues）を書く
-write_result() {
-    jq -n --argjson issues "$2" --arg sha "$HEAD_SHA" '{nonce: "0123456789abcdef0123456789abcdef", reviewed_sha: $sha, issues: $issues, summary: "s"}' >"$1/result.json"
+teardown() {
+    chmod u+w "$O" 2>/dev/null || true
+}
+
+# 出力先に前回の round の結果ファイル（第 1 引数の issues）を置く（人の操作の代わりに一時的に書き込み権限を戻す）
+write_prev_result() {
+    chmod u+w "$O"
+    jq -n --argjson issues "$1" --arg sha "$HEAD_SHA" --arg n "$PREV_NONCE" '{nonce: $n, reviewed_sha: $sha, issues: $issues, summary: "s"}' >"$O/dev-flow-codex-result-$PREV_NONCE.json"
+    chmod a-w "$O"
 }
 
 @test "保存先に prompt.md（diff を末尾に置く）と strict 形の schema.json を書き、新しい空の mkdtemp を返す" {
-    run bash "$BIN" "$D" "$HEAD_SHA" 5
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg d "$D" '.ok == true and .review_dir == $d and has("error") == false'
     cwd="$(echo "$output" | jq -r '.cwd_dir')"
@@ -47,44 +59,90 @@ write_result() {
     jq -e '[.. | objects | select(.type == "object")] | length == 2 and all(.additionalProperties == false and ((.required | sort) == (.properties | keys)))' "$D/schema.json"
     jq -e '[.. | objects | has("maxLength")] | any | not' "$D/schema.json"
     [ ! -e "$D/result.json" ]
+    # 出力先には何も作らない
+    [ -z "$(ls -A "$O")" ]
 }
 
-@test "--verify-from: 前回の保存先の result.json の critical/major だけを verify_items にする" {
-    PREV="$TMP_P/dev-flow-security-review-Prev01"
-    mkdir -p "$PREV"
-    write_result "$PREV" '[{"severity":"critical","topic":"cmd-injection","file":"run.sh","line":2,"description":"D1","suggestion":"S1"},{"severity":"minor","topic":"hardening","file":"run.sh","line":null,"description":"D2","suggestion":"S2"}]'
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV"
+@test "出力先が未設定・相対パス・起動形に入れられない・実在しない・symlink・ディレクトリでないなら ok:false で何も作らない" {
+    run bash "$BIN" "$D" "$HEAD_SHA" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_unset" and .cwd_dir == null and .nonce == null'
+
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 codex-out
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid"'
+
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O/../codex-out"
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid"'
+
+    mkdir -p "$BATS_TEST_TMPDIR/a b"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$BATS_TEST_TMPDIR/a b"
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid"'
+
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$BATS_TEST_TMPDIR/missing"
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid"'
+
+    # 書けない実ディレクトリを指す symlink も受け付けない（symlink の先を差し替えられる）
+    ln -s "$O" "$BATS_TEST_TMPDIR/codex-out-link"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$BATS_TEST_TMPDIR/codex-out-link"
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid"'
+
+    : >"$BATS_TEST_TMPDIR/codex-out-file"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$BATS_TEST_TMPDIR/codex-out-file"
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid"'
+
+    [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
+    [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
+}
+
+@test "出力先に prep からファイルを作れる（sandbox の中から書ける）なら、作ったファイルを消してから ok:false" {
+    chmod u+w "$O"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_writable" and .cwd_dir == null and .nonce == null'
+    [ -z "$(ls -A "$O")" ]
+    [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
+    [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
+}
+
+@test "--verify-from: 出力先の前回の nonce の結果ファイルの critical/major だけを verify_items にする" {
+    write_prev_result '[{"severity":"critical","topic":"cmd-injection","file":"run.sh","line":2,"description":"D1","suggestion":"S1"},{"severity":"minor","topic":"hardening","file":"run.sh","line":null,"description":"D2","suggestion":"S2"}]'
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     verify="$(sed -n 's/^verify_items: //p' "$D/prompt.md")"
     echo "$verify" | jq -e '. == [{topic: "cmd-injection", severity: "critical", file: "run.sh", line: 2, description: "D1"}]'
 }
 
-@test "--verify-from の result.json が読めない・schema に適合しない・保存先の形でないなら ok:false で何も書かない" {
-    PREV="$TMP_P/dev-flow-security-review-Prev02"
-    mkdir -p "$PREV"
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV"
+@test "--verify-from の結果ファイルが無い・schema や nonce が合わない・nonce の形でないなら ok:false で何も書かない" {
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE"
     echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable" and .cwd_dir == null'
-    jq -n '{reviewed_sha: "x", issues: [], summary: "s", approved: true}' >"$PREV/result.json"
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV"
+    chmod u+w "$O"
+    jq -n '{reviewed_sha: "x", issues: [], summary: "s", approved: true}' >"$O/dev-flow-codex-result-$PREV_NONCE.json"
+    chmod a-w "$O"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE"
     echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable"'
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$TMP_P"
+    chmod u+w "$O"
+    jq -n --arg sha "$HEAD_SHA" '{nonce: "ffffffffffffffffffffffffffffffff", reviewed_sha: $sha, issues: [], summary: "s"}' >"$O/dev-flow-codex-result-$PREV_NONCE.json"
+    chmod a-w "$O"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE"
+    echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable"'
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$D"
     echo "$output" | jq -e '.ok == false and .error == "verify_from_invalid"'
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ]
 }
 
 @test "prompt.md・schema.json・result.json が既にある保存先には書かない（前の結果と取り違えない）" {
-    run bash "$BIN" "$D" "$HEAD_SHA" 5
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     echo "$output" | jq -e '.ok == true'
-    run bash "$BIN" "$D" "$HEAD_SHA" 5
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .error == "review_dir_not_fresh"'
 
     D2="$TMP_P/dev-flow-security-review-Res001"
     mkdir -p "$D2"
     printf 'diff\n' >"$D2/pr.diff"
-    write_result "$D2" '[]'
-    run bash "$BIN" "$D2" "$HEAD_SHA" 5
+    printf '{}\n' >"$D2/result.json"
+    run bash "$BIN" "$D2" "$HEAD_SHA" 5 "$O"
     echo "$output" | jq -e '.ok == false and .error == "review_dir_not_fresh"'
     [ ! -e "$D2/prompt.md" ]
 }
@@ -92,23 +150,23 @@ write_result() {
 @test "保存先が mkdtemp の形でない・symlink・pr.diff が無い・起動形に入れられないパスなら ok:false" {
     mkdir -p "$TMP_P/not-a-review-dir"
     printf 'diff\n' >"$TMP_P/not-a-review-dir/pr.diff"
-    run bash "$BIN" "$TMP_P/not-a-review-dir" "$HEAD_SHA" 5
+    run bash "$BIN" "$TMP_P/not-a-review-dir" "$HEAD_SHA" 5 "$O"
     echo "$output" | jq -e '.ok == false and .error == "review_dir_invalid"'
 
     ln -s "$D" "$TMP_P/dev-flow-security-review-Lnk001"
-    run bash "$BIN" "$TMP_P/dev-flow-security-review-Lnk001" "$HEAD_SHA" 5
+    run bash "$BIN" "$TMP_P/dev-flow-security-review-Lnk001" "$HEAD_SHA" 5 "$O"
     echo "$output" | jq -e '.ok == false and .error == "review_dir_invalid"'
 
-    run bash "$BIN" "$TMP_P/x/../dev-flow-security-review-Ab12Cd" "$HEAD_SHA" 5
+    run bash "$BIN" "$TMP_P/x/../dev-flow-security-review-Ab12Cd" "$HEAD_SHA" 5 "$O"
     echo "$output" | jq -e '.ok == false and .error == "review_dir_invalid"'
 
     mkdir -p "$TMP_P/a b/dev-flow-security-review-Spc001"
     printf 'diff\n' >"$TMP_P/a b/dev-flow-security-review-Spc001/pr.diff"
-    run bash "$BIN" "$TMP_P/a b/dev-flow-security-review-Spc001" "$HEAD_SHA" 5
+    run bash "$BIN" "$TMP_P/a b/dev-flow-security-review-Spc001" "$HEAD_SHA" 5 "$O"
     echo "$output" | jq -e '.ok == false and .error == "review_dir_invalid"'
 
     mkdir -p "$TMP_P/dev-flow-security-review-NoDf01"
-    run bash "$BIN" "$TMP_P/dev-flow-security-review-NoDf01" "$HEAD_SHA" 5
+    run bash "$BIN" "$TMP_P/dev-flow-security-review-NoDf01" "$HEAD_SHA" 5 "$O"
     echo "$output" | jq -e '.ok == false and .error == "diff_unavailable"'
     [ ! -e "$D/prompt.md" ]
 }
@@ -123,14 +181,14 @@ write_result() {
         mkdir -p "$R"
         printf 'diff\n' >"$R/pr.diff"
         if [ "$name" = .git ]; then mkdir "$RP/.git"; else : >"$RP/$name"; fi
-        run bash "$BIN" "$R" "$HEAD_SHA" 5
+        run bash "$BIN" "$R" "$HEAD_SHA" 5 "$O"
         [ "$status" -eq 0 ]
         echo "$output" | jq -e '.ok == false and .error == "workspace_tainted" and .cwd_dir == null'
         [ ! -e "$R/prompt.md" ] && [ ! -e "$R/schema.json" ] && [ ! -e "$R/prepared_at" ]
 
         # -C を作る TMPDIR 自身（-C の親）
         if [ "$name" = .git ]; then mkdir "$TMPDIR/.git"; else : >"$TMPDIR/$name"; fi
-        run bash "$BIN" "$D" "$HEAD_SHA" 5
+        run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
         echo "$output" | jq -e '.ok == false and .error == "workspace_tainted"'
         [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
         [ ! -e "$D/prompt.md" ]
@@ -138,13 +196,13 @@ write_result() {
     done
     # dangling symlink も「ある」とみなす
     ln -s /nonexistent "$TMPDIR/CLAUDE.md"
-    run bash "$BIN" "$D" "$HEAD_SHA" 5
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     echo "$output" | jq -e '.ok == false and .error == "workspace_tainted"'
 }
 
 @test "prep 時刻（epoch ms）を保存先の prepared_at に書く" {
     before="$(($(date +%s) * 1000))"
-    run bash "$BIN" "$D" "$HEAD_SHA" 5
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     echo "$output" | jq -e '.ok == true'
     at="$(cat "$D/prepared_at")"
     [[ "$at" =~ ^[1-9][0-9]*$ ]]
@@ -154,11 +212,13 @@ write_result() {
 @test "引数不正は exit 2" {
     run bash "$BIN" "$D" "$HEAD_SHA"
     [ "$status" -eq 2 ]
-    run bash "$BIN" "$D" abc 5
+    run bash "$BIN" "$D" abc 5 "$O"
     [ "$status" -eq 2 ]
-    run bash "$BIN" "$D" "$HEAD_SHA" 0
+    run bash "$BIN" "$D" "$HEAD_SHA" 0 "$O"
     [ "$status" -eq 2 ]
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 --unknown
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --unknown
+    [ "$status" -eq 2 ]
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" extra
     [ "$status" -eq 2 ]
     [ ! -e "$D/prompt.md" ]
 }

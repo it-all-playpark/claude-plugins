@@ -3,9 +3,13 @@
 // prompt・schema・起動形の規則は _lib/security-review.mjs の 1 か所に置き、ここは書き出すだけ。
 //
 // Usage:
-//   node security-review-codex-prep.mjs <review_dir> <head_sha> <pr> [--verify-from <prev_review_dir>]
+//   node security-review-codex-prep.mjs <review_dir> <head_sha> <pr> <output_dir> [--verify-from <prev_nonce>]
 //     review_dir: security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX。pr.diff を持つ）
-//     --verify-from: 前回の Codex の review の保存先。その result.json の critical/major を verify_items にする
+//     output_dir: codex が -o で結果ファイル（dev-flow-codex-result-<nonce>.json）を書く出力先（user 設定の "dev-flow".codex_output_dir）。
+//       省略は未設定（output_dir_unset）。symlink でない実ディレクトリの絶対パスで、ここ（sandbox の中）からファイルを作れないこと —
+//       作れる出力先では、sandbox の中の常駐プロセスが結果ファイルの名前に symlink を置き、sandbox の外で動く codex に任意のファイルを
+//       上書きさせられる。作れてしまったら消してから output_dir_writable。出力先を作る・片付けるのは人で、この script はしない
+//     --verify-from: 前回の Codex の review の nonce。出力先のその結果ファイルの critical/major を verify_items にする
 //
 // 書くもの: <review_dir>/prompt.md（codexSecurityReviewPrompt + diff）・<review_dir>/schema.json（strict 形）・
 //   <review_dir>/prepared_at（prep 時刻の epoch ms）と、codex の -C に渡す新しい空の mkdtemp（os.tmpdir() 配下の
@@ -20,8 +24,8 @@ import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import {
-  codexSecurityReviewPrompt, codexResultVerdict, isCodexArgPath, CODEX_CWD_NAME_RE, CODEX_SECURITY_REVIEW_SCHEMA,
-  SECURITY_REVIEW_DIR_NAME_RE, CODEX_PREPARED_AT_FILE,
+  codexSecurityReviewPrompt, codexResultVerdict, codexResultPath, isCodexArgPath, CODEX_CWD_NAME_RE, CODEX_SECURITY_REVIEW_SCHEMA,
+  SECURITY_REVIEW_DIR_NAME_RE, CODEX_PREPARED_AT_FILE, CODEX_NONCE_RE,
 } from '../security-review.mjs'
 
 const emit = (obj, code = 0) => {
@@ -37,8 +41,8 @@ for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--verify-from' && i + 1 < argv.length && verifyFrom == null) verifyFrom = argv[++i]
   else positional.push(argv[i])
 }
-if (positional.length !== 3 || positional.some((a) => a.startsWith('-'))) fail('usage', 2)
-const [reviewDir, headSha, pr] = positional
+if (positional.length < 3 || positional.length > 4 || positional.some((a) => a.startsWith('-'))) fail('usage', 2)
+const [reviewDir, headSha, pr, outputDir = null] = positional
 if (!/^[0-9a-f]{40}$/i.test(headSha) || !/^[1-9][0-9]*$/.test(pr)) fail('usage', 2)
 
 // 保存先は実在するディレクトリ（symlink でない）で、起動形に入れられる形のパス
@@ -51,6 +55,22 @@ const isRealFile = (p) => {
 if (!isCodexArgPath(reviewDir, SECURITY_REVIEW_DIR_NAME_RE) || !isRealDir(reviewDir)) fail('review_dir_invalid')
 if (!isRealFile(join(reviewDir, 'pr.diff'))) fail('diff_unavailable')
 if (['prompt.md', 'schema.json', 'result.json', CODEX_PREPARED_AT_FILE].some((f) => existsSync(join(reviewDir, f)))) fail('review_dir_not_fresh')
+
+// 出力先は人が用意した、sandbox の中から書けない実ディレクトリだけ（ファイルを作れてしまったら消してから拒否する）
+if (outputDir == null) fail('output_dir_unset')
+if (!isCodexArgPath(outputDir) || !isRealDir(outputDir)) fail('output_dir_invalid')
+const probe = join(outputDir, `.dev-flow-codex-write-probe-${randomBytes(8).toString('hex')}`)
+let writable = false
+try {
+  writeFileSync(probe, '', { flag: 'wx' })
+  writable = true
+} catch {
+  // 作れない（sandbox の中から書けない）出力先だけを使う
+}
+if (writable) {
+  rmSync(probe, { force: true })
+  fail('output_dir_writable')
+}
 
 // codex は作業ディレクトリから上へ .git・AGENTS.md 等を探して読む。-C の空ディレクトリ（tmpdir の配下）と保存先の祖先に
 // 細工されたファイルがあれば、空の -C で指示ファイルを読ませない前提が崩れるので作業場所を作らない（run は Claude 経路に倒れる）
@@ -68,16 +88,18 @@ if (taintedAncestor(reviewDir) || taintedAncestor(tmpdir())) fail('workspace_tai
 
 let verifyItems = []
 if (verifyFrom != null) {
-  if (!isCodexArgPath(verifyFrom, SECURITY_REVIEW_DIR_NAME_RE) || !isRealDir(verifyFrom) || verifyFrom === reviewDir) fail('verify_from_invalid')
+  if (!CODEX_NONCE_RE.test(verifyFrom)) fail('verify_from_invalid')
+  const prevPath = codexResultPath(outputDir, verifyFrom)
+  if (!isRealFile(prevPath)) fail('verify_from_unreadable')
   let prev
   try {
-    prev = JSON.parse(readFileSync(join(verifyFrom, 'result.json'), 'utf8'))
+    prev = JSON.parse(readFileSync(prevPath, 'utf8'))
   } catch {
     fail('verify_from_unreadable')
   }
-  // 前回の reviewed_sha・nonce は今の round と違うので、件数の判定ではなく schema の適合だけを見る（verify_items は prompt の
+  // 前回の reviewed_sha は今の head と違うので、件数の判定ではなく schema と前回の nonce の一致だけを見る（verify_items は prompt の
   // DATA 区間に入るだけで clear の根拠にならない）
-  const v = codexResultVerdict(prev, prev?.reviewed_sha, prev?.nonce)
+  const v = codexResultVerdict(prev, prev?.reviewed_sha, verifyFrom)
   if (!v.ok) fail('verify_from_unreadable')
   verifyItems = v.issues.filter((x) => x.severity === 'critical' || x.severity === 'major')
 }
