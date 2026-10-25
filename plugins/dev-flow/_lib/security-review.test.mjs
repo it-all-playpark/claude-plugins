@@ -23,7 +23,7 @@ import {
   CODEX_SECURITY_REVIEW_SCHEMA, codexCwdPath, codexPromptCopyPath, codexResultPath, codexResultVerdict, codexSchemaCopyPath, codexSecurityReviewCommand,
   codexSecurityReviewPrompt, securityReviewPrompt, securityReviewVerdict,
 } from './security-review.mjs';
-import { codexBinding } from './scripts/security-review-codex-binding.mjs';
+import { codexBinding, sha256Hex } from './scripts/security-review-codex-binding.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const RESULT_CLI = join(here, 'scripts', 'security-review-codex-result.mjs');
@@ -128,7 +128,7 @@ test('[security-review][3] prep が用意した保存先と binding で組み立
   chmodSync(prepOut, 0o555);
   try {
     // 出力先の祖先はテスト環境では書けるので、sandbox の書き込み拒否を真似て prep を動かす（base の配下だけ書ける）
-    const prep = JSON.parse(execFileSync('node', ['--import', PREP_FAKE_SANDBOX, PREP_CLI, reviewDir, HEAD, '5', prepOut], { env: { ...process.env, TMPDIR: base, FAKE_SANDBOX_WRITABLE: base }, encoding: 'utf8' }));
+    const prep = JSON.parse(execFileSync('node', ['--import', PREP_FAKE_SANDBOX, PREP_CLI, reviewDir, HEAD, '5', sha256Hex('diff --git a/x b/x\n'), prepOut], { env: { ...process.env, TMPDIR: base, FAKE_SANDBOX_WRITABLE: base }, encoding: 'utf8' }));
     assert.equal(prep.ok, true, JSON.stringify(prep));
     assert.ok(!('cwd_dir' in prep), 'prep は作業ディレクトリを作らない');
     // binding は保存先のパスと prep が書いた 2 つの中身から計算した値
@@ -136,7 +136,12 @@ test('[security-review][3] prep が用意した保存先と binding で組み立
     // hook は sandbox の外で動き出力先に複製を書くので、prep の後は出力先の書き込み権限を戻す
     chmodSync(out.outputDir, 0o755);
     const cfg = join(base, 'skill-config.json');
-    const env = { SKILL_CONFIG_PATH: cfg, HOME: join(base, 'home') };
+    // hook は PATH 上の codex の実体が cwd・$TMPDIR・/tmp の配下でないことを確かめるので、出力先と同じ repo の .devflow-tmp/ に置いた
+    // 代わりの codex を PATH の先頭に置く（実際には起動しない）
+    const fakeBin = join(out.root, 'bin');
+    mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const env = { SKILL_CONFIG_PATH: cfg, HOME: join(base, 'home'), PATH: `${fakeBin}:${process.env.PATH}` };
     writeFileSync(cfg, JSON.stringify({ 'dev-flow': { codex_output_dir: out.outputDir } }));
     const clean = () => { for (const f of readdirSync(out.outputDir)) rmSync(join(out.outputDir, f), { recursive: true, force: true }); };
     const decide = (c, cwd) => { const d = hookDecision(c, cwd, env); clean(); return d; };
@@ -249,16 +254,25 @@ test('[security-review][4] codexResultVerdict の issues は line:null を省き
   assert.deepEqual(v.issues, [{ severity: 'major', topic: 't-major', file: 'src/x.sh', description: 'x'.repeat(600), suggestion: 'y'.repeat(300) }]);
 });
 
+// args は [保存先, head, nonce, binding, 出力先, ...]。prep が返す prompt.md・schema.json の sha256（placeCopies の既定の中身の値）を
+// binding の後に差し込む（codex の後の再照合は security-review-codex-result.bats が確かめる）
+const PROMPT_SHA = sha256Hex('p');
+const SCHEMA_SHA = sha256Hex('{}');
 function runResultCli(args) {
-  const r = spawnSync('node', [RESULT_CLI, ...args], { encoding: 'utf8' });
+  const argv = args.length >= 5 ? [...args.slice(0, 4), PROMPT_SHA, SCHEMA_SHA, ...args.slice(4)] : args;
+  const r = spawnSync('node', [RESULT_CLI, ...argv], { encoding: 'utf8' });
   return { status: r.status, out: r.stdout.trim() === '' ? null : JSON.parse(r.stdout) };
 }
 
-// hook が起動の直前に作る複製（保存先の prompt.md・schema.json と同じ中身）を出力先に置き、その binding を返す
+// hook が起動の直前に作る複製（保存先の prompt.md・schema.json と同じ中身）と空の作業ディレクトリを出力先に置き、その binding を返す
+// （保存先にも prep が書いた 2 つを置く）
 function placeCopies(reviewDir, outputDir, nonce, prompt = 'p', schema = '{}') {
   const binding = codexBinding(reviewDir, prompt, schema);
+  writeFileSync(join(reviewDir, 'prompt.md'), prompt);
+  writeFileSync(join(reviewDir, 'schema.json'), schema);
   writeFileSync(codexPromptCopyPath(outputDir, nonce, binding), prompt);
   writeFileSync(codexSchemaCopyPath(outputDir, nonce, binding), schema);
+  mkdirSync(codexCwdPath(outputDir, nonce, binding), { recursive: true });
   return binding;
 }
 
