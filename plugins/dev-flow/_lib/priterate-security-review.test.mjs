@@ -481,7 +481,7 @@ test('[security-review][F] Codex 経路は固定の codex exec・判定・指摘
   const expected = 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check'
     + ` -C ${CODEX_CWD} -c web_search="disabled"`
     + ' --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use'
-    + ` -c model_instructions_file=${SECURITY_REVIEW_DIR}/prompt.md --output-schema ${SECURITY_REVIEW_DIR}/schema.json -o ${SECURITY_REVIEW_DIR}/${OUT_NAME}/result.json`
+    + ` -c model_instructions_file=${SECURITY_REVIEW_DIR}/prompt.md --output-schema ${SECURITY_REVIEW_DIR}/schema.json -o ${SECURITY_REVIEW_DIR}/out/${OUT_NAME}/result.json`
     + ` "Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to ${CODEX_NONCE}"`;
   const lines = r.prompt.split('\n');
   assert.ok(lines.includes(expected), `固定の codex exec の行が無い: ${r.prompt}`);
@@ -571,7 +571,7 @@ test('[security-review][F] Codex の critical/major は fix に回し、次の r
   });
   const [p1, p2] = calls.filter((c) => c.label.startsWith('security-codex-prep#'));
   assert.ok(p1.prompt.endsWith(`\nsecurity-review-codex-prep ${dir1} ${SHA_A} 5`), p1.prompt);
-  assert.ok(p2.prompt.endsWith(`\nsecurity-review-codex-prep ${dir2} ${SHA_B} 5 --verify-from ${dir1}/${OUT_NAME}`), p2.prompt);
+  assert.ok(p2.prompt.endsWith(`\nsecurity-review-codex-prep ${dir2} ${SHA_B} 5 --verify-from ${dir1}/out/${OUT_NAME}`), p2.prompt);
   assert.ok(calls.find((c) => c.label === 'fix#1').prompt.includes('hardlink-write'), 'Codex の指摘を fix に渡す');
   assert.equal(result.status, 'lgtm');
   assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 2, critical: 0, major: 0, minor: 0 });

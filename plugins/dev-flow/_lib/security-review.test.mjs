@@ -85,7 +85,7 @@ test('[security-review][3] codexSecurityReviewCommand は先頭トークン code
     + ' -C /tmp/dev-flow-codex-cwd-Qw12Er -c web_search="disabled"'
     + ' --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use'
     + ' -c model_instructions_file=/tmp/dev-flow-security-review-Ab12Cd/prompt.md'
-    + ' --output-schema /tmp/dev-flow-security-review-Ab12Cd/schema.json -o /tmp/dev-flow-security-review-Ab12Cd/' + OUT + '/result.json'
+    + ' --output-schema /tmp/dev-flow-security-review-Ab12Cd/schema.json -o /tmp/dev-flow-security-review-Ab12Cd/out/' + OUT + '/result.json'
     + ' "Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to ' + NONCE + '"');
 });
 
@@ -128,7 +128,7 @@ test('[security-review][3] prep が用意した保存先と作業ディレクト
   }
   // prep が返した sha256・statDigest は result script が codex の後にファイルから取り直す値と一致する（codex が置き場に書いた
   // clear の結果を読める）
-  writeFileSync(join(out.review_dir, out.out_name, 'result.json'), JSON.stringify({ ...resultOf(), nonce: out.nonce }));
+  writeFileSync(join(out.review_dir, 'out', out.out_name, 'result.json'), JSON.stringify({ ...resultOf(), nonce: out.nonce }));
   const r = spawnSync('node', [RESULT_CLI, out.review_dir, HEAD, out.nonce, out.cwd_dir, out.out_name, out.prompt_sha256, out.schema_sha256, out.stat_sha256], { env: { ...process.env, TMPDIR: base }, encoding: 'utf8' });
   assert.deepEqual(JSON.parse(r.stdout), { ok: true, cleared: true, reason: null, reviewed_sha: HEAD, counts: { critical: 0, major: 0, minor: 0 } });
   // Codex から Claude 経路に倒れた round: prep が書いた保存先は scope の値（書く前）と一致せず、prep が書いた後の値と一致する
@@ -206,18 +206,19 @@ function runResultCli(args) {
 test('[security-review][4] security-review-codex-result は保存先の result.json を読んで判定し、読めなければ ok:false・cleared:false', () => {
   const root = mkdtempSync(join(tmpdir(), 'codex-result-'));
   const dir = mkdtempSync(join(root, 'dev-flow-security-review-'));
-  // prep が書く prep 時刻・prompt.md・schema.json と空の -C（codex の後の入力の照合は security-review-codex-result.bats が確かめる）
+  // prep が書く prep 時刻・prompt.md・schema.json と空の .git だけの -C（codex の後の入力の照合は security-review-codex-result.bats が確かめる）
   writeFileSync(join(dir, 'prepared_at'), `${Date.now() - 60000}\n`);
   writeFileSync(join(dir, 'pr.diff'), 'd');
   writeFileSync(join(dir, 'prompt.md'), 'p');
   writeFileSync(join(dir, 'schema.json'), '{}');
-  mkdirSync(join(dir, OUT));
+  mkdirSync(join(dir, 'out', OUT), { recursive: true });
   const cwd = mkdtempSync(join(root, 'dev-flow-codex-cwd-'));
+  writeFileSync(join(cwd, '.git'), '');
   const sha = (s) => createHash('sha256').update(s).digest('hex');
-  const stat = statDigest([dir, ...['pr.diff', 'prompt.md', 'schema.json', 'prepared_at'].map((f) => join(dir, f)), cwd]);
+  const stat = statDigest([dir, ...['pr.diff', 'prompt.md', 'schema.json', 'prepared_at', 'out'].map((f) => join(dir, f)), cwd, join(cwd, '.git')]);
   const inputs = [cwd, OUT, sha('p'), sha('{}'), stat];
   const runResult = (head, nonce, ...rest) => runResultCli([dir, head, nonce, ...inputs, ...rest]);
-  const resultPath = join(dir, OUT, 'result.json');
+  const resultPath = join(dir, 'out', OUT, 'result.json');
   // result.json が無い（codex が無い・hook が起動を拒否した）
   let r = runResult(HEAD, NONCE);
   assert.equal(r.status, 0);

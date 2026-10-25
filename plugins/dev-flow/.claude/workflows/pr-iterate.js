@@ -1439,6 +1439,8 @@ const SECURITY_REVIEW_DIR_NAME_RE = /^dev-flow-security-review-[A-Za-z0-9]{6}$/;
 const CODEX_NONCE_RE = /^[0-9a-f]{32}$/;
 const CODEX_PREPARED_AT_FILE = 'prepared_at';
 const CODEX_OUT_NAME_RE = /^[0-9a-f]{32}$/;
+const CODEX_OUT_PARENT = 'out';
+const CODEX_CWD_ROOT_MARKER = '.git';
 
 const CODEX_REVIEW_PROMPT = 'Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to';
 
@@ -1450,7 +1452,7 @@ function codexSecurityReviewCommand({ reviewDir, cwdDir, outName, nonce }) {
     '--disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use',
     `-c model_instructions_file=${reviewDir}/prompt.md`,
     `--output-schema ${reviewDir}/schema.json`,
-    `-o ${reviewDir}/${outName}/result.json`,
+    `-o ${reviewDir}/${CODEX_OUT_PARENT}/${outName}/result.json`,
     `"${CODEX_REVIEW_PROMPT} ${nonce}"`,
   ].join(' ');
 }
@@ -2152,7 +2154,7 @@ let securityStopReason = null
 let securityCounts = { critical: 0, major: 0, minor: 0 }  // 最後の review の件数
 let securityOpen = []       // 前回の review で未解消の critical/major（次の spawn に「直ったか確かめる項目」として渡す）
 const securitySeen = makeSeenTracker(REVIEW_STUCK)  // security の指摘の stuck 検出（review の reviewSeen とは分ける — pr-reviewer の既出 findings に混ぜない）
-// 前回の round を Codex で review した結果の置き場（保存先/out_name。次の round の prep が result.json の critical/major を
+// 前回の round を Codex で review した結果の置き場（保存先/out/out_name。次の round の prep が result.json の critical/major を
 // verify_items にする）。前回が Claude 経路・Codex を起動できなかった round なら null
 let securityCodexPrevDir = null
 // Codex 経路の 1 round（_lib/security-review.mjs の Codex 経路の節）。prep が保存先に prompt.md・schema.json と空の作業ディレクトリを
@@ -2209,7 +2211,7 @@ async function codexSecurityReview(iteration, { reviewDir, headSha, diffSha256, 
     log(`⚠️ iteration ${iteration}: security-codex-verdict#${iteration} の結果を読めない（codex が無い・起動を拒否された・result.json が schema に適合しない等）`)
     return null
   }
-  const outDir = `${reviewDir}/${outName}`
+  const outDir = `${reviewDir}/${CODEX_OUT_PARENT}/${outName}`
   if (verdict.cleared) return { review: { reviewed_sha: verdict.reviewed_sha, issues: [] }, cleared: true, counts: verdict.counts, outDir }
   // clear でない round だけ指摘の本文を取る。取れなければ review は null（no_result で止める — Codex が clear と言わなかった round を
   // Claude 経路の判定で clear にしない）

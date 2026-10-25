@@ -340,18 +340,19 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
                   args.security_review.reviewer で渡す（PR head の設定ファイルは読まない。無ければ "claude"）
 pr-iterate      → security-scope#i の前提チェックを通った round で（指示ファイルを変える PR は Codex の agent を spawn せず、Claude 経路と
                   同じ reviewer_context_changed で止める — 中継も PR の worktree で起動し、PR の CLAUDE.md を受け取れば clear の JSON を捏造できる）:
-                  security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>/<前回の out_name>]`
-                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、codex の -o の置き場 <保存先>/<out_name>（乱数名・mode 0300）、
-                      新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）。書いた後に保存先を mode 0300（一覧を取れない）にする。
+                  security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>/out/<前回の out_name>]`
+                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、codex の -o の置き場 <保存先>/out/<out_name>（out は
+                      作成時から mode 0300、out_name は乱数名・mode 0300）、新しい mkdtemp（dev-flow-codex-cwd-XXXXXX）と、その中の空の .git
+                      （codex の project root を -C に止める）。書いた後に保存先を mode 0300（一覧を取れない）にする。
                       round の nonce と out_name はファイルに書かず stdout で返す。読んだ pr.diff の sha256・書く前と書いた後の保存先・
                       pr.diff の statDigest（書いた後の値は倒れた先の security-diff-check#i に渡す）、書いた prompt.md・
-                      schema.json の sha256、書いた後の保存先・pr.diff・prompt.md・schema.json・prepared_at・-C の statDigest も返す
+                      schema.json の sha256、書いた後の保存先・pr.diff・prompt.md・schema.json・prepared_at・out・-C・-C/.git の statDigest も返す
                       （pr.diff の sha256・statDigest が scope の値と違えば Codex を起動せず security-review#i に倒す）
-                  security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... -o <保存先>/<out_name>/result.json "<固定文> <nonce>"`（先頭トークン codex の単文。返り値は使わない）
+                  security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... -o <保存先>/out/<out_name>/result.json "<固定文> <nonce>"`（先頭トークン codex の単文。返り値は使わない）
                   security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head> <nonce> <-C> <out_name> <prompt の sha256> <schema の sha256> <statDigest>`
                     （自由文を出さない判定）
                     → clear でなければ security-codex-issues#i: 同じ引数 + `--issues`（指摘の本文）
-                    → codex の後に prompt.md・schema.json の sha256 か statDigest が prep の値と違う・-C が空でない・-C と保存先の祖先に
+                    → codex の後に prompt.md・schema.json の sha256 か statDigest が prep の値と違う・-C が prep の空の .git 以外を持つ・保存先の祖先に
                       .git / AGENTS.md / AGENTS.override.md / CLAUDE.md がある → 判定できない（security-review#i に倒す）
                     → result.json の nonce が一致しなければ判定できない — 保存先（$TMPDIR 配下）は PR のコードが残した常駐プロセスからも
                       書けるので、先回り・上書きした JSON で clear にしない。result.json は out_name の置き場にだけ書かせ、置き場の名前を
@@ -365,9 +366,10 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
   sandbox の外で通信できるのは先頭が codex の単文だけで、exec-proxy script の中から起動すると通信が拒否される）: `codex exec -s read-only --ephemeral --ignore-user-config
   --ignore-rules --skip-git-repo-check -C <空の mkdtemp> -c web_search="disabled" --disable shell_tool --disable unified_exec
   --disable apps --disable browser_use --disable computer_use -c model_instructions_file=<保存先>/prompt.md
-  --output-schema <保存先>/schema.json -o <保存先>/<out_name>/result.json "<固定文> <nonce>"`。空の `-C` で cwd の AGENTS.md を読ませず、shell 等を外して
-  diff の外を読む手段を無くす。hook は起動の前に、保存先・作業ディレクトリが mkdtemp の形の実ディレクトリで cwd の配下でないこと、
-  `-C` が空であること、保存先に prompt.md・schema.json と実ディレクトリの置き場があり、置き場に result.json（symlink を含む）が無いことを確かめる。
+  --output-schema <保存先>/schema.json -o <保存先>/out/<out_name>/result.json "<固定文> <nonce>"`。空の `.git` だけを持つ `-C` で
+  codex の project root を `-C` に止め（codex は root から cwd までの AGENTS.md を読むので、祖先の `$TMPDIR` に起動の間だけ置かれた
+  `.git`・AGENTS.md を読ませない）、shell 等を外して diff の外を読む手段を無くす。hook は起動の前に、保存先・作業ディレクトリが
+  mkdtemp の形の実ディレクトリで cwd の配下でないこと、`-C` が空の `.git`（通常ファイル）だけを持つこと、保存先に prompt.md・schema.json と実ディレクトリの置き場があり、置き場に result.json（symlink を含む）が無いことを確かめる。
   起動される `codex` の実体も確かめる: hook の PATH を bash と同じ順でたどって最初に見つかる実行可能な通常ファイルの realpath が、
   解決できない・PATH の相対パスか空の要素から解決された・入力の cwd（PR の worktree）・`$TMPDIR`・`/tmp`・`/private/tmp` の配下なら
   拒否する（中継の codex は sandbox の外で動くので、PR のコードが sandbox の中から置いた `codex` を起動させない）
@@ -391,10 +393,11 @@ sandbox の中の PR のコード — fix や Validate のテストで走らせ�
   完全一致を求める。Claude 経路は scope が返した保存先と `pr.diff` の値を security-reviewer の返却後に `security-review-diff-check` が
   取り直し、一致しなければ clear にしない（保存先自身も含めるのは、保存先ごと rename で退避して良性の `pr.diff` を持つ同名の
   ディレクトリと入れ替えて戻すと `pr.diff` の stat は変わらないため。Codex から倒れた round は prep が書いた後の値で照合する）。Codex 経路は prep が読んだ `pr.diff` の値を workflow が scope の値と照合し、`security-review-codex-result` が
-  codex の後に `prompt.md`・`schema.json` の sha256、保存先・入力・`-C` の statDigest、`-C` が空であること・`-C` と保存先の祖先の
+  codex の後に `prompt.md`・`schema.json` の sha256、保存先・入力・out・`-C`・`-C/.git` の statDigest、`-C` が prep の空の `.git` だけを持つこと・保存先の祖先の
   指示ファイルの有無を確かめる（当たれば Claude 経路の判定に倒す。`-C` に AGENTS.md を置いて消す・保存先を chmod して一覧を取るのも
   ctime で当たる）。照合は決定論 script が行い、中継は argv と stdout を写すだけ（sha256 を LLM に判定させない）。result.json の
-  先回り・上書きは nonce で弾き、codex が書いた result.json は一覧を取れない保存先の中の乱数名の置き場に置かせて nonce を写させない
+  先回り・上書きは nonce で弾き、codex が書いた result.json は作成時から一覧を取れない out の中の乱数名の置き場に置かせて nonce を写させない（保存先は
+  chmod の前に開かれた fd の readdir で一覧を読めるので、置き場を保存先の直下に置かない）
 - 残る経路（この gate では塞がない）: `codex` の実体の検査は hook の PATH で行い、Bash tool の shell の PATH・alias・関数は見ない
 
 - **`agent()` へ渡す agentType は plugin namespace 必須** — subagent の実体は plugin 配下

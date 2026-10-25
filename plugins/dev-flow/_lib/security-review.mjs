@@ -142,8 +142,8 @@ export function isDiffUnchanged(res) {
 
 // ---- Codex 経路（args.security_review.reviewer === 'codex'。issue #1087）----
 // Claude の subagent は PR の worktree を cwd に起動し、PR が書いた指示ファイル（CLAUDE.md 等）が判定者に届き得るので、
-// 指示ファイルを変える PR は自動 review で clear にできない（reviewer_context_changed で止める）。Codex CLI は空の
-// mkdtemp を作業ディレクトリ（-C）にすれば cwd の AGENTS.md を読まず、shell 等の読み取り手段を外せば diff の外を読めない。
+// 指示ファイルを変える PR は自動 review で clear にできない（reviewer_context_changed で止める）。Codex CLI は空の `.git` だけを持つ
+// mkdtemp を作業ディレクトリ（-C）にすれば AGENTS.md を読まず、shell 等の読み取り手段を外せば diff の外を読めない。
 // そこで opt-in した repo では、security-review-codex-prep が保存先（dev-flow-security-review-XXXXXX）に prompt.md（下の prompt
 // + diff）と strict 形の schema.json を書き、workflow が組み立てた固定の `codex exec` を中継が先頭トークン codex の単文で起動し
 // （sandbox の外で通信できるのは先頭が codex の単文だけ — exec-proxy script の中から起動すると通信が拒否される）、result.json を
@@ -155,12 +155,15 @@ export function isDiffUnchanged(res) {
 // 保存先（$TMPDIR 配下）は sandbox の中の PR のコード（fix・test で走らせて残った常駐プロセス）からも書けるので、result.json の中身だけを
 // clear の根拠にしない。prep が round ごとの nonce を作ってファイルに書かずに stdout で返し、workflow が codex の起動形の末尾の prompt
 // （argv）と result script の引数にだけ渡す。result.json の nonce が一致しなければ判定できない（先回り・上書きした JSON で clear にしない）。
-// nonce を知る codex が書いた result.json を読んで nonce を写されないよう、codex の -o は保存先の中の乱数名の置き場（out_name）に向け、
-// prep の後の保存先は mode 0300（一覧を取れない）にする。out_name も nonce と同じく stdout でだけ返す。
+// nonce を知る codex が書いた result.json を読んで nonce を写されないよう、codex の -o は保存先の中の、作成時から mode 0300 の
+// 親（CODEX_OUT_PARENT）の中の乱数名の置き場（out_name）に向け、prep の後の保存先も mode 0300（一覧を取れない）にする。
+// out_name も nonce と同じく stdout でだけ返す。
+// -C には prep が空の `.git` を置く。codex は -C から上へ .git を探して project root を決め、root から -C までの AGENTS.md を読むので、
+// -C 自身を root にして祖先（sandbox の中から書ける $TMPDIR）に codex の起動の間だけ置かれた .git・AGENTS.md を読ませない。
 // codex が読む入力も同じ理由で照合する（issue #1095）: prep が読んだ pr.diff の sha256・statDigest、書いた prompt.md・schema.json の
 // sha256、書いた後の保存先・入力・-C の statDigest（dev・ino・ctime の ns・nlink）を返し、workflow は pr.diff の値を security-review-scope
-// の値と照合し、残りと -C・out_name を result script の引数に渡す。result script は codex の後に sha256・statDigest・-C が空であること・
-// -C と保存先の祖先に指示ファイルが無いことを確かめ、当たれば判定できない（Claude 経路に倒す）。ctime は利用者が戻せないので、
+// の値と照合し、残りと -C・out_name を result script の引数に渡す。result script は codex の後に sha256・statDigest・-C が prep の `.git` だけを持つこと・
+// 保存先の祖先に指示ファイルが無いことを確かめ、当たれば判定できない（Claude 経路に倒す）。ctime は利用者が戻せないので、
 // 差し替えて codex の後に戻した入力・保存先を chmod して一覧を取った round も検出する。
 
 // --output-schema は OpenAI の strict 形（全 object が additionalProperties:false・全 property が required・maxLength を持たない）
@@ -243,6 +246,13 @@ export const CODEX_PREPARED_AT_FILE = 'prepared_at';
 // prep が保存先の中に作る codex の -o の置き場の名前（128 bit の hex）。保存先は prep の後 mode 0300 で一覧を取れず、名前は
 // nonce と同じく stdout でだけ返す（result.json の場所を知らない者は codex が書いた nonce を読んで写せない）
 export const CODEX_OUT_NAME_RE = /^[0-9a-f]{32}$/;
+// 置き場（out_name）の親。prep が保存先の直下に作成時から mode 0300 で作る（作成の前から一覧を取れない）。保存先は scope の mkdtemp
+// から prep の chmod までの間 0700 で、その間に開いた fd の readdir は chmod の後も保存先の一覧を返すので、置き場を保存先の直下に
+// 置くと名前を読まれる。この親は一度も読める mode にならないので、その中の out_name は開いた fd があっても読めない
+export const CODEX_OUT_PARENT = 'out';
+// prep が -C に置く空の通常ファイル。codex の project root を -C 自身に止める（祖先の .git・AGENTS.md を読ませない）。
+// -C はこれだけを持つ（hook と result script が確かめる）
+export const CODEX_CWD_ROOT_MARKER = '.git';
 
 // codex exec の起動形（security-codex-relay が一字一句写し、hooks/pretool-codex-invocation-guard.sh が完全一致で検査する —
 // 起動形を変えるときは hook の固定形も同時に変える）。末尾の prompt は固定文 + nonce で、review の中身は prompt.md にだけ置く
@@ -257,7 +267,7 @@ export function codexSecurityReviewCommand({ reviewDir, cwdDir, outName, nonce }
     '--disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use',
     `-c model_instructions_file=${reviewDir}/prompt.md`,
     `--output-schema ${reviewDir}/schema.json`,
-    `-o ${reviewDir}/${outName}/result.json`,
+    `-o ${reviewDir}/${CODEX_OUT_PARENT}/${outName}/result.json`,
     `"${CODEX_REVIEW_PROMPT} ${nonce}"`,
   ].join(' ');
 }

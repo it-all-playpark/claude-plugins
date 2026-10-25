@@ -6,8 +6,8 @@ bats_require_minimum_version 1.5.0
 # result.json の判定規則そのもの（schema 適合・件数・reviewed_sha）は _lib/security-review.test.mjs の codexResultVerdict が確かめる。
 # ここは作業場所への細工で clear にならないこと: result.json が symlink・通常ファイルでない・保存先の外を指す・
 # prep が記録した時刻（prepared_at）より前の mtime・nonce が prep の nonce と違う、
-# codex の後に prompt.md・schema.json の sha256 か保存先・入力・-C の statDigest（dev・ino・ctime・nlink）が prep の値と違う・
-# -C が空でない・-C と保存先の祖先に指示ファイルがある・result.json が prep の作った置き場（out_name）の中にない
+# codex の後に prompt.md・schema.json の sha256 か保存先・入力・out・-C・-C/.git の statDigest（dev・ino・ctime・nlink）が prep の値と違う・
+# -C が prep の空の .git 以外を持つ・保存先の祖先に指示ファイルがある・result.json が prep の作った置き場（out/out_name）の中にない
 # なら ok:false・cleared:false（workflow は Claude 経路の判定に倒す）。
 
 PLUGIN_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
@@ -20,9 +20,9 @@ stat_digest() {
     node --input-type=module -e "import { statDigest } from '$PLUGIN_ROOT/_lib/scripts/security-review-workspace.mjs'; process.stdout.write(String(statDigest(process.argv.slice(1))))" "$@"
 }
 
-# prep が書いた後の保存先・pr.diff・prompt.md・schema.json・prepared_at・-C の statDigest
+# prep が書いた後の保存先・pr.diff・prompt.md・schema.json・prepared_at・out・-C・-C/.git の statDigest
 take_stat() {
-    STAT="$(stat_digest "$D" "$D/pr.diff" "$D/prompt.md" "$D/schema.json" "$D/prepared_at" "$C")"
+    STAT="$(stat_digest "$D" "$D/pr.diff" "$D/prompt.md" "$D/schema.json" "$D/prepared_at" "$D/out" "$C" "$C/.git")"
 }
 
 sha256_of() {
@@ -35,6 +35,8 @@ setup() {
     C="$TMP_P/cw/dev-flow-codex-cwd-Qw12Er"
     O="fedcba9876543210fedcba9876543210"
     mkdir -p "$D" "$C"
+    # prep が -C に置く空の .git（codex の project root を -C に止める）
+    : >"$C/.git"
     printf 'diff --git a/run.sh b/run.sh\n+echo "$1" | sh\n' >"$D/pr.diff"
     # prep 時刻は今（epoch ms）
     printf '%s\n' "$(($(date +%s) * 1000))" >"$D/prepared_at"
@@ -42,9 +44,9 @@ setup() {
     printf '{"type":"object","properties":{"issues":{"type":"array"}}}\n' >"$D/schema.json"
     PSHA="$(sha256_of "$D/prompt.md")"
     SSHA="$(sha256_of "$D/schema.json")"
-    # codex の -o の置き場（prep が保存先の中に作る乱数名のディレクトリ）
-    mkdir "$D/$O"
-    R="$D/$O/result.json"
+    # codex の -o の置き場（prep が保存先の中の out に作る乱数名のディレクトリ）
+    mkdir -p "$D/out/$O"
+    R="$D/out/$O/result.json"
     take_stat
 }
 
@@ -136,13 +138,34 @@ assert_not_cleared() {
     chmod 700 "$D"
 }
 
-@test "result.json が置き場（out_name）の中にない・置き場が無いなら clear にしない" {
-    # 旧形の固定名（保存先の直下）に置かれた result.json は読まない
+@test "result.json が置き場（out/out_name）の中にない・置き場が無いなら clear にしない" {
+    # 旧形（保存先の直下の固定名・保存先の直下の置き場）に置かれた result.json は読まない
     write_clear "$D/result.json"
+    mkdir "$D/$O"
+    write_clear "$D/$O/result.json"
     take_stat
     run_result
     assert_not_cleared result_unreadable
-    rmdir "$D/$O"
+    rmdir "$D/out/$O"
+    run_result
+    assert_not_cleared input_changed
+}
+
+@test "out の mode を戻して一覧を取った・out を入れ替えて戻した round は clear にしない" {
+    write_clear "$R"
+    chmod 300 "$D/out"
+    take_stat
+    sleep 0.01
+    chmod 700 "$D/out"
+    ls "$D/out" >/dev/null
+    chmod 300 "$D/out"
+    run_result
+    assert_not_cleared input_changed
+    chmod 700 "$D/out"
+    take_stat
+    sleep 0.01
+    mv "$D/out" "$TMP_P/out-moved"
+    mv "$TMP_P/out-moved" "$D/out"
     run_result
     assert_not_cleared input_changed
 }
@@ -173,32 +196,41 @@ assert_not_cleared() {
     assert_not_cleared input_changed
 }
 
-@test "-C が空でない（AGENTS.md 等を置いた）なら clear にしない" {
+@test "-C が prep の空の .git 以外を持つ（AGENTS.md 等を置いた・.git を書き換えた）なら clear にしない" {
     write_clear "$R"
-    for name in AGENTS.md .git x; do
-        if [ "$name" = .git ]; then mkdir "$C/.git"; else : >"$C/$name"; fi
+    for name in AGENTS.md x; do
+        : >"$C/$name"
         run_result
         assert_not_cleared cwd_not_empty
-        rm -rf "${C:?}/$name"
+        rm -f "${C:?}/$name"
     done
+    printf 'gitdir: /x\n' >"$C/.git"
+    run_result
+    assert_not_cleared cwd_not_empty
+    rm "$C/.git"
+    run_result
+    assert_not_cleared cwd_not_empty
+    mkdir "$C/.git"
+    run_result
+    assert_not_cleared cwd_not_empty
+    rmdir "$C/.git"
+    : >"$C/.git"
     # 置いて消した -C は ctime が変わる（prep の後の値として取り直すと clear）
     take_stat
     run_result
     echo "$output" | jq -e '.ok == true and .cleared == true'
 }
 
-@test "-C と保存先の祖先に .git / AGENTS.md / AGENTS.override.md / CLAUDE.md があれば clear にしない" {
+@test "保存先の祖先に .git / AGENTS.md / AGENTS.override.md / CLAUDE.md があれば clear にしない" {
     write_clear "$R"
-    for parent in "$TMP_P/cw" "$TMP_P/rv"; do
-        for name in .git AGENTS.md AGENTS.override.md CLAUDE.md; do
-            if [ "$name" = .git ]; then mkdir "$parent/.git"; else : >"$parent/$name"; fi
-            run_result
-            assert_not_cleared workspace_tainted
-            rm -rf "${parent:?}/$name"
-        done
+    for name in .git AGENTS.md AGENTS.override.md CLAUDE.md; do
+        if [ "$name" = .git ]; then mkdir "$TMP_P/rv/.git"; else : >"$TMP_P/rv/$name"; fi
+        run_result
+        assert_not_cleared workspace_tainted
+        rm -rf "${TMP_P:?}/rv/$name"
     done
     # dangling symlink も「ある」とみなす
-    ln -s /nonexistent "$TMP_P/cw/CLAUDE.md"
+    ln -s /nonexistent "$TMP_P/rv/CLAUDE.md"
     run_result
     assert_not_cleared workspace_tainted
 }

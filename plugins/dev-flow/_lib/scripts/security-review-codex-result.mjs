@@ -6,11 +6,11 @@
 //   review_dir: security-review-codex-prep が prompt.md・schema.json を書いた保存先
 //   nonce: prep が stdout で返した round の nonce（保存先には無い。codex の起動形の prompt にだけ渡る）
 //   cwd_dir / out_name / prompt_sha256 / schema_sha256 / stat_sha256: prep が stdout で返した codex の -C・-o の置き場の名前
-//     （codex exec -o が <review_dir>/<out_name>/result.json を書く）・書いた prompt.md・schema.json の sha256・書いた後の statDigest
+//     （codex exec -o が <review_dir>/out/<out_name>/result.json を書く）・書いた prompt.md・schema.json の sha256・書いた後の statDigest
 //
-// codex の後に入力を照合する（issue #1095）: prompt.md・schema.json の sha256 が prep の値と一致し、-C が空の実ディレクトリで、
-//   -C と保存先の祖先（自身を含む）に .git・AGENTS.md・AGENTS.override.md・CLAUDE.md が無く、保存先・pr.diff・prompt.md・schema.json・
-//   prepared_at・-C の statDigest（dev・ino・ctime の ns・nlink）が prep の値と一致するときだけ result.json を読む。
+// codex の後に入力を照合する（issue #1095）: prompt.md・schema.json の sha256 が prep の値と一致し、-C が prep の空の .git だけを持つ
+//   実ディレクトリで、保存先の祖先（自身を含む）に .git・AGENTS.md・AGENTS.override.md・CLAUDE.md が無く、保存先・pr.diff・prompt.md・
+//   schema.json・prepared_at・out・-C・-C/.git の statDigest（dev・ino・ctime の ns・nlink）が prep の値と一致するときだけ result.json を読む。
 //   保存先と -C は sandbox の中から書けるので、codex が読む前に差し替えた diff・schema・指示ファイルで clear にしない
 //   （hook の検査は起動直前の 1 回だけ）。ctime は利用者が戻せないので、差し替えて codex の後に戻した入力・保存先の chmod も検出する。
 //
@@ -28,7 +28,7 @@ import { readFileSync, readdirSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   codexResultVerdict, isCodexArgPath, SECURITY_REVIEW_DIR_NAME_RE, CODEX_CWD_NAME_RE, CODEX_PREPARED_AT_FILE, CODEX_NONCE_RE,
-  CODEX_OUT_NAME_RE, SHA256_HEX_RE,
+  CODEX_OUT_NAME_RE, CODEX_OUT_PARENT, CODEX_CWD_ROOT_MARKER, SHA256_HEX_RE,
 } from '../security-review.mjs'
 import { sha256OfRegularFile, statDigest, taintedAncestor } from './security-review-workspace.mjs'
 
@@ -59,19 +59,29 @@ if (!isRealDir(cwdDir)) fail('cwd_dir_invalid')
 if (sha256OfRegularFile(join(reviewDir, 'prompt.md')) !== promptSha || sha256OfRegularFile(join(reviewDir, 'schema.json')) !== schemaSha) {
   fail('input_changed')
 }
-// -C に置いた指示ファイル（AGENTS.md 等）を codex に読ませた round を clear にしない
+// -C に置いた指示ファイル（AGENTS.md 等）を codex に読ませた round を clear にしない。-C は prep の空の .git（codex の project root を
+// -C に止める）だけを持つ。祖先は見ない — root が -C なので codex は祖先の .git・AGENTS.md を読まない（祖先は $TMPDIR で、codex の
+// 起動の間だけ置いて消されると prep と result の 2 回の検査では当たらない）
 let cwdEntries
 try {
   cwdEntries = readdirSync(cwdDir)
 } catch {
   fail('cwd_dir_invalid')
 }
-if (cwdEntries.length > 0) fail('cwd_not_empty')
-if (taintedAncestor(cwdDir) || taintedAncestor(reviewDir)) fail('workspace_tainted')
+const markerPath = join(cwdDir, CODEX_CWD_ROOT_MARKER)
+if (cwdEntries.length !== 1 || cwdEntries[0] !== CODEX_CWD_ROOT_MARKER) fail('cwd_not_empty')
+try {
+  const m = lstatSync(markerPath)
+  if (!m.isFile() || m.size !== 0) fail('cwd_not_empty')
+} catch {
+  fail('cwd_not_empty')
+}
+if (taintedAncestor(reviewDir)) fail('workspace_tainted')
 
 // result.json は保存先（symlink でない実ディレクトリ）の直下の通常ファイル（symlink でない）で、prep が記録した時刻より後に
 // 書かれたものだけを読む（作業場所に先回りして置かれた結果や前の review の結果を clear の根拠にしない）
-const outDir = join(reviewDir, outName)
+const outParent = join(reviewDir, CODEX_OUT_PARENT)
+const outDir = join(outParent, outName)
 const resultPath = join(outDir, 'result.json')
 let preparedAt
 try {
@@ -81,10 +91,10 @@ try {
 } catch {
   fail('prepared_at_unreadable')
 }
-// 保存先・入力・-C が prep の書いた直後のまま（内容を戻しても ctime は戻らない。保存先を chmod して一覧を取った round も当たる）
+// 保存先・入力・out・-C が prep の書いた直後のまま（内容を戻しても ctime は戻らない。保存先・out を chmod して一覧を取った round も当たる）
 const statNow = statDigest([
   reviewDir, join(reviewDir, 'pr.diff'), join(reviewDir, 'prompt.md'), join(reviewDir, 'schema.json'),
-  join(reviewDir, CODEX_PREPARED_AT_FILE), cwdDir,
+  join(reviewDir, CODEX_PREPARED_AT_FILE), outParent, cwdDir, markerPath,
 ])
 if (statNow !== statSha) fail('input_changed')
 if (!isRealDir(outDir)) fail('result_unreadable')

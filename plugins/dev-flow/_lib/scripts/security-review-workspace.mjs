@@ -43,8 +43,9 @@ export function diffStatDigest(reviewDir) {
   return statDigest([reviewDir, join(reviewDir, 'pr.diff')])
 }
 
-// codex は作業ディレクトリから上へ .git・AGENTS.md 等を探して読む。-C の空ディレクトリと保存先の祖先（自身を含む）に
-// これらがあれば、空の -C で指示ファイルを読ませない前提が崩れる。dangling symlink も「ある」とみなす
+// codex は作業ディレクトリから上へ .git・AGENTS.md 等を探して読む。prep の時点で保存先と -C の親の祖先（自身を含む）に
+// これらがあれば作業場所を作らない（codex の起動の間の祖先は見ない — -C に置く .git で project root を -C に止める）。
+// dangling symlink も「ある」とみなす
 const TAINT_NAMES = ['.git', 'AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md']
 const existsNoFollow = (p) => {
   try { lstatSync(p); return true } catch { return false }

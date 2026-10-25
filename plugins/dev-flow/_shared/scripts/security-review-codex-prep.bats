@@ -42,7 +42,9 @@ write_result() {
     [[ "$cwd" == "$TMPDIR"/dev-flow-codex-cwd-* ]]
     [[ "$(basename "$cwd")" =~ ^dev-flow-codex-cwd-[A-Za-z0-9]{6}$ ]]
     [ -d "$cwd" ]
-    [ -z "$(ls -A "$cwd")" ]
+    # -C は空の .git（通常ファイル）だけを持つ（codex の project root を -C に止め、祖先の .git・AGENTS.md を読ませない）
+    [ "$(ls -A "$cwd")" = .git ]
+    [ -f "$cwd/.git" ] && [ ! -L "$cwd/.git" ] && [ ! -s "$cwd/.git" ]
     # nonce: round ごとの 32 桁 hex。sandbox の中から読める保存先・作業ディレクトリのどのファイルにも書かない
     nonce="$(echo "$output" | jq -r '.nonce')"
     [[ "$nonce" =~ ^[0-9a-f]{32}$ ]]
@@ -52,14 +54,20 @@ write_result() {
     for f in pr.diff prompt.md schema.json prepared_at; do
         ! grep -qF -e "$nonce" -e "$out" "$D/$f"
     done
-    # 保存先と置き場は mode 0300（一覧を取れない — 置き場の名前・result.json を見つけさせない）。置き場は空
+    # 保存先・out・置き場は mode 0300（一覧を取れない — 置き場の名前・result.json を見つけさせない）。置き場は空
     [ "$(stat -c %a "$D" 2>/dev/null || stat -f %Lp "$D")" = 300 ]
-    [ "$(stat -c %a "$D/$out" 2>/dev/null || stat -f %Lp "$D/$out")" = 300 ]
-    [ -d "$D/$out" ] && [ ! -L "$D/$out" ]
+    [ "$(stat -c %a "$D/out" 2>/dev/null || stat -f %Lp "$D/out")" = 300 ]
+    [ "$(stat -c %a "$D/out/$out" 2>/dev/null || stat -f %Lp "$D/out/$out")" = 300 ]
+    [ -d "$D/out/$out" ] && [ ! -L "$D/out/$out" ]
     ! ls "$D" >/dev/null 2>&1
-    chmod 700 "$D/$out"
-    [ -z "$(ls -A "$D/$out")" ]
-    chmod 300 "$D/$out"
+    # 保存先の一覧を読めても（chmod の前に開かれた fd の readdir）、置き場の名前は出ず、out は一覧を取れない
+    chmod 700 "$D"
+    [ "$(ls -A "$D" | sort | tr '\n' ' ')" = "out pr.diff prepared_at prompt.md schema.json " ]
+    ! ls "$D/out" >/dev/null 2>&1
+    chmod 300 "$D"
+    chmod 700 "$D/out/$out"
+    [ -z "$(ls -A "$D/out/$out")" ]
+    chmod 300 "$D/out/$out"
     # prompt.md: PR 番号・head・脅威モデル、diff は DATA 区間の末尾
     grep -qF '# Security review of PR #5' "$D/prompt.md"
     grep -qxF "head_sha: $HEAD_SHA" "$D/prompt.md"
@@ -83,24 +91,24 @@ write_result() {
     prep="$output"
     v() { echo "$prep" | jq -r ".$1"; }
     out="$(v out_name)"
-    chmod 700 "$D/$out"
-    jq -n --arg sha "$HEAD_SHA" --arg n "$(v nonce)" '{nonce: $n, reviewed_sha: $sha, issues: [], summary: "s"}' >"$D/$out/result.json"
+    chmod 700 "$D/out/$out"
+    jq -n --arg sha "$HEAD_SHA" --arg n "$(v nonce)" '{nonce: $n, reviewed_sha: $sha, issues: [], summary: "s"}' >"$D/out/$out/result.json"
     RES_BIN="$(dirname "$BIN")/security-review-codex-result"
     run bash "$RES_BIN" "$D" "$HEAD_SHA" "$(v nonce)" "$(v cwd_dir)" "$out" "$(v prompt_sha256)" "$(v schema_sha256)" "$(v stat_sha256)"
     echo "$output" | jq -e '.ok == true and .cleared == true'
-    # 保存先の mode を戻して一覧を取った（置き場の名前を読んだ）round は clear にしない
-    chmod 700 "$D"
-    ls "$D" >/dev/null
-    chmod 300 "$D"
+    # out の mode を戻して一覧を取った（置き場の名前を読んだ）round は clear にしない
+    chmod 700 "$D/out"
+    ls "$D/out" >/dev/null
+    chmod 300 "$D/out"
     run bash "$RES_BIN" "$D" "$HEAD_SHA" "$(v nonce)" "$(v cwd_dir)" "$out" "$(v prompt_sha256)" "$(v schema_sha256)" "$(v stat_sha256)"
     echo "$output" | jq -e '.ok == false and .error == "input_changed"'
 }
 
-@test "--verify-from: 前回の置き場（保存先/out_name）の result.json の critical/major だけを verify_items にする" {
+@test "--verify-from: 前回の置き場（保存先/out/out_name）の result.json の critical/major だけを verify_items にする" {
     PREV="$TMP_P/dev-flow-security-review-Prev01"
-    mkdir -p "$PREV/$O"
-    write_result "$PREV/$O" '[{"severity":"critical","topic":"cmd-injection","file":"run.sh","line":2,"description":"D1","suggestion":"S1"},{"severity":"minor","topic":"hardening","file":"run.sh","line":null,"description":"D2","suggestion":"S2"}]'
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV/$O"
+    mkdir -p "$PREV/out/$O"
+    write_result "$PREV/out/$O" '[{"severity":"critical","topic":"cmd-injection","file":"run.sh","line":2,"description":"D1","suggestion":"S1"},{"severity":"minor","topic":"hardening","file":"run.sh","line":null,"description":"D2","suggestion":"S2"}]'
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV/out/$O"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     verify="$(sed -n 's/^verify_items: //p' "$D/prompt.md")"
@@ -109,16 +117,19 @@ write_result() {
 
 @test "--verify-from の result.json が読めない・schema に適合しない・保存先の形でないなら ok:false で何も書かない" {
     PREV="$TMP_P/dev-flow-security-review-Prev02"
-    mkdir -p "$PREV/$O"
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV/$O"
+    mkdir -p "$PREV/out/$O"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV/out/$O"
     echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable" and .cwd_dir == null and .out_name == null and .prompt_sha256 == null and .schema_sha256 == null and .stat_sha256 == null'
-    jq -n '{reviewed_sha: "x", issues: [], summary: "s", approved: true}' >"$PREV/$O/result.json"
-    run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV/$O"
+    jq -n '{reviewed_sha: "x", issues: [], summary: "s", approved: true}' >"$PREV/out/$O/result.json"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV/out/$O"
     echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable"'
     run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$TMP_P"
     echo "$output" | jq -e '.ok == false and .error == "verify_from_invalid"'
-    # 置き場の名前の無い保存先そのもの（旧形）
+    # 置き場の名前の無い保存先そのもの・out を挟まない置き場（旧形）
     run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV"
+    echo "$output" | jq -e '.ok == false and .error == "verify_from_invalid"'
+    mkdir -p "$PREV/$O"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV/$O"
     echo "$output" | jq -e '.ok == false and .error == "verify_from_invalid"'
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ]
 }

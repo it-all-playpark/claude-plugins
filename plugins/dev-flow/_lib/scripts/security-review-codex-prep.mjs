@@ -5,13 +5,15 @@
 // Usage:
 //   node security-review-codex-prep.mjs <review_dir> <head_sha> <pr> [--verify-from <prev_review_dir>/<prev_out_name>]
 //     review_dir: security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX。pr.diff だけを持つ）
-//     --verify-from: 前回の Codex の review の結果の置き場（保存先/out_name）。その result.json の critical/major を verify_items にする
+//     --verify-from: 前回の Codex の review の結果の置き場（保存先/out/out_name）。その result.json の critical/major を verify_items にする
 //
 // 書くもの: <review_dir>/prompt.md（codexSecurityReviewPrompt + diff）・<review_dir>/schema.json（strict 形）・
-//   <review_dir>/prepared_at（prep 時刻の epoch ms）・codex の -o の置き場 <review_dir>/<out_name>（乱数名、mode 0300）と、
-//   codex の -C に渡す新しい空の mkdtemp（os.tmpdir() 配下の dev-flow-codex-cwd-XXXXXX）。保存先に pr.diff 以外があれば書かない
-//   （前の結果を今の review と取り違えない）。書いた後に保存先を mode 0300 にする（一覧を取れない — out_name を知らない者は
-//   result.json の場所が分からない。chmod で戻すと保存先の ctime が変わり stat_sha256 で検出する）。
+//   <review_dir>/prepared_at（prep 時刻の epoch ms）・codex の -o の置き場 <review_dir>/out/<out_name>（out は作成時から mode 0300、
+//   out_name は乱数名で mode 0300）と、codex の -C に渡す新しい mkdtemp（os.tmpdir() 配下の dev-flow-codex-cwd-XXXXXX）と
+//   その中の空の .git（codex の project root を -C に止め、祖先の .git・AGENTS.md を読ませない）。保存先に pr.diff 以外があれば書かない
+//   （前の結果を今の review と取り違えない）。書いた後に保存先を mode 0300 にする。保存先は scope の mkdtemp から 0700 で、
+//   その間に開かれた fd の readdir は chmod の後も一覧を返すので、out_name は一度も読める mode にならない out の中に置く
+//   （out_name を知らない者は result.json の場所が分からない。chmod で戻すと out・保存先の ctime が変わり stat_sha256 で検出する）。
 //   保存先と os.tmpdir() の祖先（自身を含む）に .git・AGENTS.md・AGENTS.override.md・CLAUDE.md があれば何も作らない（workspace_tainted）。
 // stdout: JSON 1 行 {ok, review_dir, cwd_dir, out_name, nonce, diff_sha256, diff_stat_sha256, fallback_diff_stat_sha256, prompt_sha256, schema_sha256, stat_sha256, error?}。
 //   error は固定の code だけ（stdout を写す agent へ PR 由来の文字列を渡さない）。
@@ -21,7 +23,7 @@
 //   diff_sha256 / diff_stat_sha256 は読んだ pr.diff の sha256 と書く前の保存先・pr.diff の statDigest、fallback_diff_stat_sha256 は
 //   書いた後の保存先・pr.diff の statDigest（prep が保存先を書き換えるので、Codex から Claude 経路に倒れた round の
 //   security-review-diff-check にはこの値を渡す）、prompt_sha256 / schema_sha256 は書いた内容の
-//   sha256、stat_sha256 は書いた後の保存先・pr.diff・prompt.md・schema.json・prepared_at・-C の statDigest（dev・ino・ctime・nlink）。
+//   sha256、stat_sha256 は書いた後の保存先・pr.diff・prompt.md・schema.json・prepared_at・out・-C・-C/.git の statDigest（dev・ino・ctime・nlink）。
 //   workflow は diff_sha256 / diff_stat_sha256 を security-review-scope の値と照合し、prompt_sha256 / schema_sha256 / stat_sha256 を
 //   security-review-codex-result に渡して codex の後に照合させる（保存先は sandbox の中から書けるので、codex が読む前に差し替えた
 //   入力で clear にしない。ctime は戻せないので、差し替えて codex の後に戻した入力も検出する）。
@@ -32,7 +34,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import {
   codexSecurityReviewPrompt, codexResultVerdict, isCodexArgPath, CODEX_CWD_NAME_RE, CODEX_SECURITY_REVIEW_SCHEMA,
-  SECURITY_REVIEW_DIR_NAME_RE, CODEX_PREPARED_AT_FILE, CODEX_OUT_NAME_RE,
+  SECURITY_REVIEW_DIR_NAME_RE, CODEX_PREPARED_AT_FILE, CODEX_OUT_NAME_RE, CODEX_OUT_PARENT, CODEX_CWD_ROOT_MARKER,
 } from '../security-review.mjs'
 import { diffStatDigest, sha256Hex, statDigest, taintedAncestor } from './security-review-workspace.mjs'
 
@@ -80,8 +82,9 @@ if (taintedAncestor(reviewDir) || taintedAncestor(tmpdir())) fail('workspace_tai
 
 let verifyItems = []
 if (verifyFrom != null) {
-  const prevDir = dirname(verifyFrom)
-  if (!CODEX_OUT_NAME_RE.test(basename(verifyFrom)) || !isCodexArgPath(prevDir, SECURITY_REVIEW_DIR_NAME_RE)
+  const prevDir = dirname(dirname(verifyFrom))
+  if (!CODEX_OUT_NAME_RE.test(basename(verifyFrom)) || basename(dirname(verifyFrom)) !== CODEX_OUT_PARENT
+    || !isCodexArgPath(prevDir, SECURITY_REVIEW_DIR_NAME_RE)
     || !isRealDir(prevDir) || !isRealDir(verifyFrom) || prevDir === reviewDir) fail('verify_from_invalid')
   let prev
   try {
@@ -106,13 +109,22 @@ try {
   writeFileSync(join(reviewDir, CODEX_PREPARED_AT_FILE), `${Date.now()}\n`, { flag: 'wx' })
   writeFileSync(join(reviewDir, 'schema.json'), schema, { flag: 'wx' })
   writeFileSync(join(reviewDir, 'prompt.md'), prompt, { flag: 'wx' })
-  // 一覧を取れなくしてから乱数名の置き場を作る（作った名前を保存先の一覧から読ませない）
+  // 乱数名の置き場は、作成時から一覧を取れない out の中に作る（保存先の chmod より前に開かれた fd の readdir で名前を読ませない）
   chmodSync(reviewDir, 0o300)
+  const outParent = join(reviewDir, CODEX_OUT_PARENT)
+  mkdirSync(outParent, { mode: 0o300 })
+  chmodSync(outParent, 0o300)
   const outName = randomBytes(16).toString('hex')
-  mkdirSync(join(reviewDir, outName), { mode: 0o300 })
-  chmodSync(join(reviewDir, outName), 0o300)
+  mkdirSync(join(outParent, outName), { mode: 0o300 })
+  chmodSync(join(outParent, outName), 0o300)
   cwdDir = mkdtempSync(join(tmpdir(), 'dev-flow-codex-cwd-'))
-  const statSha256 = statDigest([reviewDir, diffPath, join(reviewDir, 'prompt.md'), join(reviewDir, 'schema.json'), join(reviewDir, CODEX_PREPARED_AT_FILE), cwdDir])
+  // -C を codex の project root にする（祖先に codex の起動の間だけ置かれた .git・AGENTS.md を読ませない）
+  const marker = join(cwdDir, CODEX_CWD_ROOT_MARKER)
+  writeFileSync(marker, '', { flag: 'wx', mode: 0o400 })
+  const statSha256 = statDigest([
+    reviewDir, diffPath, join(reviewDir, 'prompt.md'), join(reviewDir, 'schema.json'), join(reviewDir, CODEX_PREPARED_AT_FILE),
+    outParent, cwdDir, marker,
+  ])
   const fallbackDiffStatSha256 = diffStatDigest(reviewDir)
   if (diffStatSha256 == null || statSha256 == null || fallbackDiffStatSha256 == null) throw new Error('stat')
   out = {

@@ -17,10 +17,10 @@
 #      tool が Bash でない → 無出力 exit 0
 #   3. agent_type が dev-flow:security-codex-relay → command が次のどれかと完全に一致するときだけ通す（改行・余分な空白・
 #      引用符・shell の記号を含む形は一致しない）:
-#        security-review-codex-prep <D> <sha> <pr>[ --verify-from <D>/<O>]
+#        security-review-codex-prep <D> <sha> <pr>[ --verify-from <D>/out/<O>]
 #        codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C <C>
 #          -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use
-#          --disable computer_use -c model_instructions_file=<D>/prompt.md --output-schema <D>/schema.json -o <D>/<O>/result.json "<固定文> <N>"
+#          --disable computer_use -c model_instructions_file=<D>/prompt.md --output-schema <D>/schema.json -o <D>/out/<O>/result.json "<固定文> <N>"
 #        （codex は実際は 1 行。_lib/security-review.mjs の codexSecurityReviewCommand と同じ — 起動形を変えるときは両方を同時に変える）
 #        security-review-codex-result <D> <sha> <N> <C> <O> <h> <h> <h>[ --issues]
 #        security-review-diff-check <D> <h> <h>（Claude 経路の review の後の pr.diff の照合）
@@ -28,8 +28,8 @@
 #      [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字、<N> は prep が返した nonce・<O> は prep が保存先の中に
 #      作った出力の置き場の名前（どちらも 32 桁の小文字 hex）、<h> は prep / scope が返した sha256・statDigest（64 桁の小文字 hex）。
 #      prep / result / diff-check のパスの実体は各 script が確かめる。
-#      codex の形は hook がパスの実体も確かめる: <C> は空の実ディレクトリ、<D> は prompt.md・schema.json を実ファイルとして持つ
-#      実ディレクトリ、<D>/<O> は result.json を持たない実ディレクトリ（symlink の result.json を通じて保存先の外へ書かせない・先に
+#      codex の形は hook がパスの実体も確かめる: <C> は prep の空の .git（通常ファイル）だけを持つ実ディレクトリ、<D> は prompt.md・
+#      schema.json を実ファイルとして持つ実ディレクトリ、<D>/out/<O> は result.json を持たない実ディレクトリ（symlink の result.json を通じて保存先の外へ書かせない・先に
 #      置かれた result.json を codex の結果として読ませない）で、<C> と <D> は入力の cwd（PR の worktree）の配下でない。
 #      起動される codex の実体も確かめる: bash と同じ順で PATH をたどって最初に見つかる実行可能な通常ファイルの realpath が、
 #      解決できない・PATH の相対パスか空の要素から解決された・入力の cwd・$TMPDIR・/tmp・/private/tmp の配下なら deny
@@ -56,7 +56,7 @@ D_RE="(${SEG})*/dev-flow-security-review-[A-Za-z0-9]{6}"
 C_RE="(${SEG})*/dev-flow-codex-cwd-[A-Za-z0-9]{6}"
 SHA_RE='[0-9a-fA-F]{40}'
 OUT_RE='[0-9a-f]{32}'
-PREP_RE="^security-review-codex-prep ${D_RE} ${SHA_RE} [0-9]+( --verify-from ${D_RE}/${OUT_RE})?$"
+PREP_RE="^security-review-codex-prep ${D_RE} ${SHA_RE} [0-9]+( --verify-from ${D_RE}/out/${OUT_RE})?$"
 NONCE_RE='[0-9a-f]{32}'
 CODEX_PROMPT='Run the security review described in your instructions and reply only with the JSON object defined by the output schema. Set its nonce field to'
 SHA256_RE='[0-9a-f]{64}'
@@ -90,7 +90,7 @@ check_codex() {
   c="${BASH_REMATCH[1]}"
   [[ $CMD =~ \ -c\ model_instructions_file=([^ ]+)/prompt\.md\  ]] || emit_deny "codex の起動形が固定形と一致しない"
   d="${BASH_REMATCH[1]}"
-  local o_re=' -o [^ ]+/([^ /]+)/result\.json '
+  local o_re=' -o [^ ]+/out/([^ /]+)/result\.json '
   [[ $CMD =~ $o_re ]] || emit_deny "codex の起動形が固定形と一致しない"
   o="${BASH_REMATCH[1]}"
   [[ $CMD =~ \ ([^ \"]+)\"$ ]] || emit_deny "codex の起動形が固定形と一致しない"
@@ -98,7 +98,7 @@ check_codex() {
   [[ $c =~ ^${C_RE}$ && $d =~ ^${D_RE}$ ]] || emit_deny "codex の作業ディレクトリ・保存先が mkdtemp の形でない"
   [[ $o =~ ^${OUT_RE}$ ]] || emit_deny "codex の出力の置き場が prep の作る形でない"
   [[ $n =~ ^${NONCE_RE}$ ]] || emit_deny "codex の prompt の nonce が固定の形でない"
-  expected="codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C ${c} -c web_search=\"disabled\" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=${d}/prompt.md --output-schema ${d}/schema.json -o ${d}/${o}/result.json \"${CODEX_PROMPT} ${n}\""
+  expected="codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C ${c} -c web_search=\"disabled\" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=${d}/prompt.md --output-schema ${d}/schema.json -o ${d}/out/${o}/result.json \"${CODEX_PROMPT} ${n}\""
   [[ $CMD == "$expected" ]] || emit_deny "codex の起動形が固定形と一致しない（フラグの過不足・schema / 出力が保存先の外）"
   for p in "$c" "$d"; do
     IFS='/' read -r -a SEGS <<<"${p#/}"
@@ -110,12 +110,14 @@ check_codex() {
   shopt -s nullglob dotglob
   local entries=("$c"/*)
   shopt -u nullglob dotglob
-  ((${#entries[@]} == 0)) || emit_deny "codex の作業ディレクトリが空でない"
+  # -C は prep の空の .git（codex の project root を -C に止める）だけを持つ
+  ((${#entries[@]} == 1)) && [[ ${entries[0]} == "$c/.git" && -f "$c/.git" && ! -L "$c/.git" && ! -s "$c/.git" ]] \
+    || emit_deny "codex の作業ディレクトリが prep の空の .git だけを持つ形でない"
   [[ -d $d && ! -L $d ]] || emit_deny "保存先が実ディレクトリでない"
   [[ -f "$d/prompt.md" && ! -L "$d/prompt.md" ]] || emit_deny "保存先に prompt.md が無い"
   [[ -f "$d/schema.json" && ! -L "$d/schema.json" ]] || emit_deny "保存先に schema.json が無い"
-  [[ -d "$d/$o" && ! -L "$d/$o" ]] || emit_deny "保存先に出力の置き場が無い"
-  [[ ! -e "$d/$o/result.json" && ! -L "$d/$o/result.json" ]] || emit_deny "出力の置き場に result.json が既にある"
+  [[ -d "$d/out" && ! -L "$d/out" && -d "$d/out/$o" && ! -L "$d/out/$o" ]] || emit_deny "保存先に出力の置き場が無い"
+  [[ ! -e "$d/out/$o/result.json" && ! -L "$d/out/$o/result.json" ]] || emit_deny "出力の置き場に result.json が既にある"
   cwd=$(jq -r '.cwd | if type == "string" then . else "" end' 2>/dev/null <<<"$INPUT") || emit_deny "cwd を読めない"
   [[ $cwd == /* ]] || emit_deny "cwd が絶対パスでない"
   cwd_real=$(realpath -- "$cwd" 2>/dev/null) || emit_deny "cwd の realpath を取れない"

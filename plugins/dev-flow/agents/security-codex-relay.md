@@ -23,8 +23,8 @@ pr-iterate の security review（Codex 経路と、Claude 経路の pr.diff の�
 
 この agent の Bash は `hooks/pretool-codex-invocation-guard.sh` が次の固定形だけに限る（それ以外は拒否される）:
 
-- `security-review-codex-prep <保存先> <sha> <pr>[ --verify-from <保存先>/<置き場>]`
-- `codex exec -s read-only ... -C <作業ディレクトリ> ... -o <保存先>/<置き場>/result.json "<固定文> <nonce>"`（workflow が組み立てた固定形）
+- `security-review-codex-prep <保存先> <sha> <pr>[ --verify-from <保存先>/out/<置き場>]`
+- `codex exec -s read-only ... -C <作業ディレクトリ> ... -o <保存先>/out/<置き場>/result.json "<固定文> <nonce>"`（workflow が組み立てた固定形）
 - `security-review-codex-result <保存先> <sha> <nonce> <作業ディレクトリ> <置き場> <sha256> <sha256> <sha256>[ --issues]`
 - `security-review-diff-check <保存先> <sha256> <sha256>`
 
