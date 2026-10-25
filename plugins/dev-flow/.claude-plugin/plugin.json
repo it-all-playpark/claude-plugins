@@ -1,6 +1,6 @@
 {
   "name": "dev-flow",
-  "description": "dev-flow: issue-to-LGTM dynamic workflows (dev-flow-run / pr-iterate-run / canary), 4 skills and 9 dev-flow agents, by playpark LLC",
+  "description": "dev-flow: issue-to-LGTM dynamic workflows (dev-flow-run / pr-iterate-run / canary), 4 skills and 10 dev-flow agents, by playpark LLC",
   "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
   "repository": "https://github.com/it-all-playpark/claude-plugins",
   "license": "MIT",

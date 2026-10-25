@@ -496,7 +496,8 @@ pr-iterate の `MAX`（review ⇄ fix 反復、既定 10）は `args.max_iterati
 | `evaluator` | 実装品質ゲート | opus / medium |
 | `pr-reviewer` | PR レビュー | opus / high |
 | `security-reviewer` | 敵対的 security review（LGTM の前。PR 全 diff を worktree の外で読み取り専用に読む） | opus / high |
-| `dev-runner` | Setup 末尾の analyze ゲート後の `analyze-clarify#N`（missing_context 生成）と `ac-observational#N`（観測型 AC の分類）、pr-iterate の fix。通常経路の Setup では起動しない | frontmatter / high |
+| `pr-fixer` | pr-iterate の fix（`fix#i` / `fix#i-retry`。maxTurns 100） | opus / medium |
+| `dev-runner` | Setup 末尾の analyze ゲート後の `analyze-clarify#N`（missing_context 生成）と `ac-observational#N`（観測型 AC の分類）。通常経路の Setup では起動しない | sonnet / high |
 | `dev-runner-haiku` | 書き込み・Skill 呼び出しを伴う exec-proxy | haiku / low |
 | `dev-runner-haiku-ro` | read-only exec-proxy | haiku / low |
 | `dev-runner-haiku-wo` | isolation probe 専任（Write のみ） | haiku / low |
@@ -504,10 +505,9 @@ pr-iterate の `MAX`（review ⇄ fix 反復、既定 10）は `args.max_iterati
 model は subagent の frontmatter で決める。品質ゲート agent の call site は `opts.model` を渡さない
 （evaluator / pr-reviewer の model を変えるなら `agents/*.md` の frontmatter を変える）。
 
-effort は原則 subagent の frontmatter で決める。`agent()` の `opts.effort` は frontmatter より優先して
+effort も subagent の frontmatter で決める。`agent()` の `opts.effort` は frontmatter より優先して
 実効値に反映される（transcript で確認済み。`dev-flow-canary` の `agent_opts_effort_accepted` probe は
-受理可否だけを測る）。opts で effort を渡すのは pr-iterate の fix（`fix#i` / `fix#i-retry`）のみで、
-`dev-runner`（frontmatter high）を `FIX_EFFORT = 'medium'` で起動する。
+受理可否だけを測る）が、dev-flow.js / pr-iterate.js の call site は opts で effort を渡さない。
 
 ---
 

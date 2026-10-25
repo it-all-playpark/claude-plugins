@@ -2060,18 +2060,13 @@ if (shaNow == null) log('⚠️ review#1 時点の head sha を取得できず �
 // applied:false（agent の明示判断による修正不能）は retry しない — stuck 検出等の incentive-structural
 // 機構は不変。retry は iteration ごと最大 1 回で有限（review#N-contract-retry :604-614 と同パターン、
 // MAX 非消費）
-// model は dev-runner frontmatter の sonnet を上書きして opus で起動する。opus reviewer の指摘は設計判断を
-// 伴う修正が中心で、sonnet は maxTurns 50 内に終わらず null（fix_failed）になりやすい。frontmatter は
-// analyze-clarify と共用なので変えず、この call site だけで渡す。
-const FIX_MODEL = 'opus'
-// effort も frontmatter の high を call site で medium に下げる。opts.effort は frontmatter より優先され、
-// paired replay で medium は high と完走率・品質同等のまま所要・コストが下がった（frontmatter は共用なので変えない）。
-const FIX_EFFORT = 'medium'
+// fix は専用 agent pr-fixer で起動し、model / effort / maxTurns は frontmatter（opus / medium / 100）で決める。
+// turn の上限は agent() の opts では変えられないため、opts で model / effort を渡さない。
 async function callFixAgent(prompt, i) {
   securityHeadMayChange()
   let fix = null
   try {
-    fix = await trackedAgent(prompt, { agentType: 'dev-runner', schema: FIX, label: `fix#${i}`, phase: 'Iterate', model: FIX_MODEL, effort: FIX_EFFORT })
+    fix = await trackedAgent(prompt, { agentType: 'pr-fixer', schema: FIX, label: `fix#${i}`, phase: 'Iterate' })
   } catch (e) {
     log(`⚠️ fix#${i} が例外を投げた（StructuredOutput 契約違反等）: ${e?.message ?? e}`)
   }
@@ -2081,7 +2076,7 @@ async function callFixAgent(prompt, i) {
     fixNullRetries++
     log(`⚠️ fix#${i} が null（schema 不一致/技術的失敗）— 同一 findings で 1 回だけ再試行する（fix-null-retry）`)
     try {
-      fix = await trackedAgent(prompt, { agentType: 'dev-runner', schema: FIX, label: `fix#${i}-retry`, phase: 'Iterate', model: FIX_MODEL, effort: FIX_EFFORT })
+      fix = await trackedAgent(prompt, { agentType: 'pr-fixer', schema: FIX, label: `fix#${i}-retry`, phase: 'Iterate' })
     } catch (e) {
       log(`⚠️ fix#${i}-retry も例外: ${e?.message ?? e}`)
     }
@@ -2784,7 +2779,7 @@ for (i = 1; i <= MAX; i++) {
         ? `${reviewIssuesText}\n\nsecurity review の指摘:\n${buildFixIssuesText(secBlocking.blocking)}`
         : buildFixIssuesText(secBlocking.blocking)
 
-    // fix は dev-runner agent に直接指示する（専用の pr-fix skill は持たない）。
+    // fix は pr-fixer agent に直接指示する（専用の pr-fix skill は持たない）。
     const reviewFixPrompt = fixPrompt({
       objective: !secBlocking
         ? `PR #${PR} のレビュー指摘を修正し、PR ブランチへ commit・push する。`

@@ -301,7 +301,7 @@ pr-iterate      → round の開始時に対象の run は各 round で、review
                       `security-review-diff-check <保存先> <diff_sha256> <diff_ino> <diff_ctime_ns> <dir_ino> <dir_ctime_ns>` → matched:true
                       → 同じ round の review approve・CI passed / no_checks がそろえば LGTM
                       （一致しない・照合できない → LGTM の候補の round で security_unresolved。Codex 経路で clear の round も同じ）
-                    → critical/major あり → review の blocking（と CI failed）と 1 回の fix#i（dev-runner）にまとめる。review が
+                    → critical/major あり → review の blocking（と CI failed）と 1 回の fix#i（pr-fixer）にまとめる。review が
                       approve でも CI を待たない（ci-wait-check なし）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
                       上限まで残れば max_reached）。security の指摘は history の blocking に載せない
                     → worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致・
@@ -439,11 +439,10 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
   namespace は `agent()` を呼ぶ直前の `nsAgentOpts()` (canonical `_lib/agent-namespace.mjs`。dev-flow.js /
   pr-iterate.js へ inline 生成) でのみ付与する。dev-flow-canary.js は inline bridge 非依存
   (self-contained) を保つため例外で、namespaced id を直接書く。新しい call site はこの経路に乗せる。
-- **判断系 leaf は subagent** (`.claude/agents/{dev-implementer,evaluator,pr-reviewer,security-reviewer,security-codex-relay,dev-runner,dev-runner-haiku,dev-runner-haiku-ro,dev-runner-haiku-wo}.md`)。
-  effort は原則 subagent frontmatter で決める。`agent()` の `opts.effort` は frontmatter より優先して実効値に反映される
+- **判断系 leaf は subagent** (`.claude/agents/{dev-implementer,evaluator,pr-reviewer,security-reviewer,security-codex-relay,pr-fixer,dev-runner,dev-runner-haiku,dev-runner-haiku-ro,dev-runner-haiku-wo}.md`)。
+  effort は subagent frontmatter で決める。`agent()` の `opts.effort` は frontmatter より優先して実効値に反映される
   （transcript で確認済み。dev-flow-canary の `agent_opts_effort_accepted` probe は受理の有無だけを見る）が、
-  opts で effort を渡すのは pr-iterate の fix（`fix#i` / `fix#i-retry`、`FIX_EFFORT = 'medium'`）のみ
-  （`_lib/agent-frontmatter.test.mjs` が pin）。
+  dev-flow.js / pr-iterate.js の call site は opts で effort を渡さない（`_lib/agent-frontmatter.test.mjs` が pin）。
   model は subagent frontmatter で決める。品質ゲート agent の call site は `opts.model` を渡さない —
   evaluator（`eval#i` / `eval-green-fix` / `final-ac-reconcile` / `security-clearance-final`）と pr-reviewer（`review#i` /
   schema-retry / `pr-review-lite`）はともに frontmatter（evaluator は opus / medium、pr-reviewer は opus / high）で spawn し、workflow 側に model 定数・
@@ -453,12 +452,13 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
   `dev-implementer` も frontmatter（opus / high）で spawn する（complex の盲検 replay で fable-high と品質同等・
   所要時間とコストが約 −45% だったため）。override は green-fix の `model: 'sonnet'` だけ
   （call site 別の挙動は `_lib/impl-model-opus.test.mjs` が pin）。
-  pr-iterate の fix（`fix#i` / `fix#i-retry`）は `dev-runner`（frontmatter sonnet / high）に `model: 'opus'` と
-  `effort: 'medium'` を渡す
-  （reviewer 指摘は設計判断を伴う修正が中心で、sonnet は maxTurns 50 内に終わらず fix_failed になりやすい。
-  失敗 6 ケースの盲検 replay で opus は完走 5/6 対 3/6・品質同等以上だった。effort は paired replay で high と
-  完走率・品質同等のまま所要・コストが下がった。frontmatter は analyze-clarify と共用なので変えない。
-  `_lib/priterate-fix-retry.test.mjs` が pin）。
+  pr-iterate の fix（`fix#i` / `fix#i-retry`）は専用 agent `pr-fixer`（frontmatter opus / medium / `maxTurns: 100`）で
+  起動し、opts で model / effort を渡さない
+  （reviewer 指摘は設計判断を伴う修正が中心で、失敗 6 ケースの盲検 replay で opus は sonnet に対し完走 5/6 対 3/6・
+  品質同等以上だった。effort は paired replay で high と完走率・品質同等のまま所要・コストが下がった。
+  maxTurns は API リクエスト数で数え、opts では変えられないので frontmatter に置く。50 では大きめの指摘の fix が
+  結果を返さずに打ち切られ fix-null-retry に回っていた。call site は `_lib/priterate-fix-retry.test.mjs`、
+  frontmatter は `_lib/agent-frontmatter.test.mjs` が pin）。
   `_lib/plugin-version.mjs` の `PLUGIN_VERSION` は inline 生成方式（dev-flow.js / pr-iterate.js）。
   model を恒久的に別系統へ固定したい leaf には専用 agent 定義
   （例: `dev-runner-haiku.md`、`model: haiku`）を用意し `agentType` を切り替える。

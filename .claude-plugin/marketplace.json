@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "playpark",
-  "description": "playpark LLC marketplace: playpark-core (shared base), dev-flow (issue-to-LGTM workflows + 9 dev-flow agents), playpark-skills (personal skills), host-exec (approved host execution outside the sandbox), meeting (auto meeting recording + local transcription + notes), bg-sessions (where each background Claude session is working), mosh-paste (fetch files pasted by path from the Mac you mosh in from)",
+  "description": "playpark LLC marketplace: playpark-core (shared base), dev-flow (issue-to-LGTM workflows + 10 dev-flow agents), playpark-skills (personal skills), host-exec (approved host execution outside the sandbox), meeting (auto meeting recording + local transcription + notes), bg-sessions (where each background Claude session is working), mosh-paste (fetch files pasted by path from the Mac you mosh in from)",
   "owner": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" },
   "plugins": [
     {
@@ -12,7 +12,7 @@
     },
     {
       "name": "dev-flow",
-      "description": "dev-flow: issue-to-LGTM dynamic workflows (dev-flow-run / pr-iterate-run / canary), 4 skills and 9 dev-flow agents, by playpark LLC",
+      "description": "dev-flow: issue-to-LGTM dynamic workflows (dev-flow-run / pr-iterate-run / canary), 4 skills and 10 dev-flow agents, by playpark LLC",
       "source": "./plugins/dev-flow",
       "author": { "name": "playpark LLC", "url": "https://www.playpark.co.jp/" }
     },
