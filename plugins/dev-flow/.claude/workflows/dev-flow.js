@@ -4637,6 +4637,32 @@ function prSectionsTrimFeedback(plan) {
   }];
 }
 
+const JAPANESE_CHAR_RE = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
+
+function prBodyLanguageFeedback(plan) {
+  const items = [];
+  const check = (field, v) => {
+    const text = collapseWhitespace(v);
+    if (text && !JAPANESE_CHAR_RE.test(text)) items.push({ field, text });
+  };
+  for (const key of ['behavior_changes', 'review_points', 'out_of_scope']) {
+    arr(plan?.[key]).forEach((v, i) => check(`${key}[${i}]`, v));
+  }
+  arr(plan?.architecture_decisions).forEach((d, i) => {
+    check(`design_decisions[${i}].title`, d?.decision);
+    check(`design_decisions[${i}].rationale`, d?.rationale);
+  });
+  arr(plan?.pr_notes).forEach((n, i) => check(`pr_notes[${i}].text`, n?.text));
+  if (items.length === 0) return null;
+  return [{
+    pr_body_not_japanese: { items },
+    instruction: `PR 本文に載る項目のうち ${items.length} 件が日本語で書かれていない。`
+      + 'コード・テストは変更しない。該当項目を日本語で書き直し（識別子・パス・コマンド・エラー引用は原文のまま）、'
+      + 'behavior_changes / review_points / design_decisions / pr_notes / out_of_scope / pr_sections を全件返せ'
+      + '（返した項目が前回分を置き換える）',
+  }];
+}
+
 function hitItem(h, keyOf) {
   const key = cell(typeof h === 'string' ? h : keyOf(h));
   const file = typeof h === 'string' ? '' : cell(h?.file);
@@ -5381,6 +5407,20 @@ async function trimPrSectionsIfOver(req, plan, tag) {
   return adoptImplPrNotes(adoptReportedFiles(plan, results), results)
 }
 
+// PR 本文の 1 行要約欄に日本語を含まない項目があれば、builder で訳さずに dev-implementer へ日本語での書き直しを
+// 1 回だけ差し戻す。trimPrSectionsIfOver の後（Evaluate より前）に呼ぶ。差し戻し後も残っても言語を理由に run を
+// 止めず、本文に載せたまま警告だけ出す（言語は AC の充足・HOLD の判定材料ではない）。
+async function rewriteNonJapanesePrBodyItems(req, plan, tag) {
+  const feedback = prBodyLanguageFeedback(plan)
+  if (!feedback) return plan
+  log(`⚠️ PR 本文の項目 ${feedback[0].pr_body_not_japanese.items.length} 件が日本語でない — dev-implementer へ書き直しを差し戻す（${tag}）`)
+  const results = await runImplement(req, plan, feedback, tag)
+  const next = adoptImplPrNotes(adoptReportedFiles(plan, results), results)
+  const left = prBodyLanguageFeedback(next)
+  if (left) log(`⚠️ 差し戻し後も PR 本文の項目 ${left[0].pr_body_not_japanese.items.length} 件が日本語でない — 本文に載せたまま進む（${tag}）`)
+  return next
+}
+
 // implementDrops(plan, results): runImplement が落とした task 数（計画 task 数 − 返却結果数）。
 // 合成 plan は task 1 件なので、返却 null は 1 として implDroppedCount に計上される。
 function implementDrops(plan, results) {
@@ -5740,6 +5780,7 @@ async function execImplementPhase(state) {
 
   // guard_blocked で implResults から除いた結果の files も宣言に取り込む（replan・blockSeen の遮断とは独立）
   state.plan = await trimPrSectionsIfOver(req, adoptImplPrNotes(adoptReportedFiles(plan, [...implResults, ...state.guardBlockedResults]), implResults), 'sections-trim')
+  state.plan = await rewriteNonJapanesePrBodyItems(req, state.plan, 'lang-rewrite')
   state.implResults = implResults
   state.blockedConcerns = blockedConcerns
   state.concerns = concerns
@@ -6120,6 +6161,7 @@ async function execLocalVerify(state) {
     const reimplResults = await runImplement(state.req, state.plan, feedback, `reimpl-local-verify#${attempt}`)
     for (const r of reimplResults) { if (r && Array.isArray(r.concerns)) state.concerns.push(...r.concerns) }
     state.plan = await trimPrSectionsIfOver(state.req, adoptImplPrNotes(adoptReportedFiles(state.plan, reimplResults), reimplResults), `sections-trim-local-verify#${attempt}`)
+    state.plan = await rewriteNonJapanesePrBodyItems(state.req, state.plan, `lang-rewrite-local-verify#${attempt}`)
     // 差し戻し後の tree で unit テストを Validate と同じループで確かめてから再実行する（tree が変わったので validate_result は渡さない）
     const gfBefore = state.greenFixIterations.length
     state.val = await runValidateLoop('local-verify', { concerns: state.concerns, greenFixIterations: state.greenFixIterations, phaseName: 'Validate', baseFailing: state.baseFailing })
@@ -6691,6 +6733,7 @@ async function execEvaluatePhase(state) {
     if (agentAcReimpl) agentAcReimplCount++
     const reimplResults = await runImplement(req, plan, implFeedback, `reimpl#${i}`)
     plan = await trimPrSectionsIfOver(req, adoptImplPrNotes(adoptReportedFiles(plan, reimplResults), reimplResults), `sections-trim#${i}`)
+    plan = await rewriteNonJapanesePrBodyItems(req, plan, `lang-rewrite#${i}`)
   }
 
   state.plan = plan

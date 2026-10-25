@@ -223,6 +223,11 @@ builder はどの欄も字数で切らない — 1 行要約欄の長さは IMPL
 書き手に収めさせ、超過は schema 検証で差し戻す。`pr_sections` の合計が `PR_SECTIONS_MAX_CHARS`（3000 字）を超えたら、
 Implement / reimpl の直後（Evaluate より前）に `dev-implementer` へ要約を 1 回差し戻す（`sections-trim` / `sections-trim#<i>`）。
 判定する LLM の文脈を薄めないための上限で、差し戻し後も超えたら切らずに載せる。
+その後、`behavior_changes` / `review_points` / `out_of_scope` / 設計判断（`title`・`rationale`）/ `pr_notes` の `text` に
+ひらがな・カタカナ・漢字を 1 文字も含まない項目があれば、`prBodyLanguageFeedback` が該当項目を列挙し、builder で訳さずに
+`dev-implementer` へ日本語での書き直しを 1 回差し戻す（`lang-rewrite` / `lang-rewrite-local-verify#<n>` / `lang-rewrite#<i>`）。
+差し戻し後も残っても run は止めず（HOLD 理由にもしない）、本文に載せたまま log に警告を出す。`pr_sections` の markdown（表・識別子で
+誤検出しやすい）と `concerns`（plan に入らない）は検出の対象外で、`dev-implementer.md` の言語の規則だけで扱う。
 evaluator（Evaluate / final-ac-reconcile）には plan の本文材料ではなく `buildPrBody` の出力（Evaluate は PR 作成前に
 同じ builder・同じ材料で組んだプレビュー）を渡し、「PR 本文に書く」型の AC を本文テキスト（`<details>` の中を含む）で判定させる。
 `out_of_scope` は終端サマリーの「この PR に含めなかったもの」節にもそのまま転記する（空なら節ごと出さない）。
