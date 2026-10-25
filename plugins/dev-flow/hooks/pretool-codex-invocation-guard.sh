@@ -18,23 +18,26 @@
 #   3. agent_type が dev-flow:security-codex-relay → command が次のどれかと完全に一致するときだけ通す（改行・余分な空白・
 #      引用符・shell の記号を含む形は一致しない）:
 #        security-review-codex-prep <D> <sha> <pr> <O>[ --verify-from <N> <B>]
-#        codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C <D>/<C>
-#          -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use
+#        codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check
+#          -C <O>/dev-flow-codex-cwd-<N>-<B> -c dev_flow_review_dir="<D>" -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use
 #          --disable computer_use -c model_instructions_file=<O>/dev-flow-codex-prompt-<N>-<B>.md
 #          --output-schema <O>/dev-flow-codex-schema-<N>-<B>.json -o <O>/dev-flow-codex-result-<N>-<B>.json "<固定文> <N>"
 #        （codex は実際は 1 行。_lib/security-review.mjs の codexSecurityReviewCommand と同じ — 起動形を変えるときは両方を同時に変える）
 #        security-review-codex-result <D> <sha> <N> <B> <O>[ --issues]
-#      <D> は basename が dev-flow-security-review-XXXXXX、<C> は保存先の直下の dev-flow-codex-cwd-XXXXXX の、<O> は人が用意した出力先の、
+#      <D> は basename が dev-flow-security-review-XXXXXX の、<O> は人が用意した出力先の、
 #      `.` / `..` の要素を持たない [A-Za-z0-9._-] だけの絶対パス。<sha> は 40 桁の hex、<pr> は数字、<N> は prep が返した nonce
 #      （32 桁の小文字 hex）、<B> は prep が返した binding（64 桁の小文字 hex）。
 #      3 形とも <O> は user 設定の "dev-flow".codex_output_dir（pr-iterate-prerun と同じ順: $SKILL_CONFIG_PATH →
 #      ~/.config/skills/config.json → ~/.claude/skill-config.json）と完全に一致するときだけ通し、値が無ければ deny する —
 #      prep が書き込み不可を確かめた出力先以外（sandbox から書ける別の場所）を -o にした codex を中継が起動できないようにする。
 #      prep / result のパスの実体は各 script が確かめる。
-#      codex の形は hook がパスの実体も確かめる: -C は空の実ディレクトリ、その親 <D> は prompt.md・schema.json を実ファイルとして持つ
-#      実ディレクトリで、どちらも入力の cwd（PR の worktree）の配下でない。3 つの名前の nonce は prompt の nonce と同じで、<O> は
-#      symlink でない実ディレクトリで realpath が自身と一致する（祖先にも symlink が無い）・cwd / $TMPDIR / /tmp / /private/tmp の配下でない・
-#      複製と結果ファイル（symlink を含む）がまだ無い。
+#      codex の形は hook がパスの実体も確かめる: dev_flow_review_dir の <D>（codex は使わない設定キー。hook が複製元を知るためだけに
+#      置く）は prompt.md・schema.json を実ファイルとして持つ実ディレクトリで、入力の cwd（PR の worktree）の配下でない。4 つの名前の
+#      nonce は prompt の nonce と同じで、<O> は symlink でない実ディレクトリで realpath が自身と一致する（祖先にも symlink が無い）・
+#      cwd / $TMPDIR / /tmp / /private/tmp の配下でない・作業ディレクトリ・複製・結果ファイル（symlink を含む）がまだ無い。
+#      -C は sandbox の中から書けない <O> の直下に置き、binding の照合を通した後に hook が新しく作る（既にあれば deny）。<D> の配下に
+#      置くと、常駐プロセスが hook の確認の後に <D> へ .git・AGENTS.md を置き、codex に <D> を project root として指示を読ませられる。
+#      <O> と祖先に .git・AGENTS.md 等が無いことは prep が確かめる（どちらも sandbox の中から書けないので prep の後に置けない）。
 #      codex を excludedCommands に入れると -o は sandbox の外で codex CLI 自身が書くので、sandbox の中から書ける場所を出力先にすると
 #      常駐プロセスが結果ファイルの名前に symlink を置いて任意のファイルを上書きさせられる（sandbox の中から書けないことは prep が確かめる）。
 #      <D> も sandbox の中から書けるので codex に読ませない: 全部の確認が通った後、hook が <D>/prompt.md・schema.json を <O> の
@@ -51,7 +54,7 @@
 #      Codex の review の完全性は 3 の allowlist と、round の間に他の agent を起動しない workflow の順序で持つ
 #
 # fail-closed: exit 2 以外の非 0 終了は tool を通すので、判定中に想定外で終わったら EXIT trap が deny を出して exit 0 にする。
-# hook が変えるのは、Codex 経路を opt-in した利用者の出力先（codex_output_dir）に round の複製 2 つを新しく作ることだけで、
+# hook が変えるのは、Codex 経路を opt-in した利用者の出力先（codex_output_dir）に round の複製 2 つと空の作業ディレクトリを新しく作ることだけで、
 # 既存のファイルの変更・削除・プロセス操作・外部送信をしない。抜け道（環境変数・フラグ）は作らない。
 # deny の理由に入力の文字列を埋め込まない（中継の session に入力由来の文字列を返さない）。
 
@@ -61,7 +64,6 @@ DECIDED=0
 RELAY_AGENT='dev-flow:security-codex-relay'
 SEG='/[A-Za-z0-9._-]+'
 D_RE="(${SEG})*/dev-flow-security-review-[A-Za-z0-9]{6}"
-C_RE="${D_RE}/dev-flow-codex-cwd-[A-Za-z0-9]{6}"
 O_RE="(${SEG})+"
 SHA_RE='[0-9a-fA-F]{40}'
 NONCE_RE='[0-9a-f]{32}'
@@ -136,60 +138,54 @@ codex_binding() {
 check_codex() {
   local c d n o on b f pc sc p s x cwd cwd_real a expected got
   local -a forbid
-  [[ $CMD =~ \ -C\ ([^ ]+)\  ]] || emit_deny "codex の起動形が固定形と一致しない"
-  c="${BASH_REMATCH[1]}"
   [[ $CMD =~ \ -o\ ([^ ]+)/dev-flow-codex-result-([0-9a-f]{32})-([0-9a-f]{64})\.json\  ]] || emit_deny "codex の -o が出力先の dev-flow-codex-result-<nonce>-<binding>.json の形でない"
   o="${BASH_REMATCH[1]}"
   on="${BASH_REMATCH[2]}"
   b="${BASH_REMATCH[3]}"
+  [[ $CMD =~ \ -c\ dev_flow_review_dir=\"([^ \"]+)\"\  ]] || emit_deny "codex の起動形が固定形と一致しない"
+  d="${BASH_REMATCH[1]}"
   [[ $CMD =~ \ ([^ \"]+)\"$ ]] || emit_deny "codex の起動形が固定形と一致しない"
   n="${BASH_REMATCH[1]}"
-  [[ $c =~ ^${C_RE}$ ]] || emit_deny "codex の作業ディレクトリが保存先の直下の mkdtemp の形でない"
-  d="${c%/*}"
-  [[ $d =~ ^${D_RE}$ ]] || emit_deny "codex の作業ディレクトリが保存先の直下の mkdtemp の形でない"
+  [[ $d =~ ^${D_RE}$ ]] || emit_deny "codex の dev_flow_review_dir が保存先の mkdtemp の形でない"
   [[ $o =~ ^${O_RE}$ ]] || emit_deny "codex の出力先が絶対パスの形でない"
   [[ $n =~ ^${NONCE_RE}$ ]] || emit_deny "codex の prompt の nonce が固定の形でない"
   [[ $on == "$n" ]] || emit_deny "codex の -o の nonce が prompt の nonce と一致しない"
+  c="${o}/dev-flow-codex-cwd-${n}-${b}"
   f="${o}/dev-flow-codex-result-${n}-${b}.json"
   pc="${o}/dev-flow-codex-prompt-${n}-${b}.md"
   sc="${o}/dev-flow-codex-schema-${n}-${b}.json"
-  expected="codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C ${c} -c web_search=\"disabled\" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=${pc} --output-schema ${sc} -o ${f} \"${CODEX_PROMPT} ${n}\""
-  [[ $CMD == "$expected" ]] || emit_deny "codex の起動形が固定形と一致しない（フラグの過不足・指示ファイルや schema が出力先の複製でない）"
-  for p in "$c" "$d" "$o"; do
+  expected="codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C ${c} -c dev_flow_review_dir=\"${d}\" -c web_search=\"disabled\" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=${pc} --output-schema ${sc} -o ${f} \"${CODEX_PROMPT} ${n}\""
+  [[ $CMD == "$expected" ]] || emit_deny "codex の起動形が固定形と一致しない（フラグの過不足・作業ディレクトリ・指示ファイル・schema が出力先の round の名前でない）"
+  for p in "$d" "$o"; do
     IFS='/' read -r -a SEGS <<<"${p#/}"
     for s in "${SEGS[@]}"; do
       [[ $s == "." || $s == ".." ]] && emit_deny "security-codex-relay のパスに . / .. の要素がある"
     done
   done
-  [[ -d $c && ! -L $c ]] || emit_deny "codex の作業ディレクトリが実ディレクトリでない"
-  shopt -s nullglob dotglob
-  local entries=("$c"/*)
-  shopt -u nullglob dotglob
-  ((${#entries[@]} == 0)) || emit_deny "codex の作業ディレクトリが空でない"
   [[ -d $d && ! -L $d ]] || emit_deny "保存先が実ディレクトリでない"
   [[ -f "$d/prompt.md" && ! -L "$d/prompt.md" ]] || emit_deny "保存先に prompt.md が無い"
   [[ -f "$d/schema.json" && ! -L "$d/schema.json" ]] || emit_deny "保存先に schema.json が無い"
   [[ -d $o && ! -L $o ]] || emit_deny "codex の出力先が symlink でない実ディレクトリでない"
   # 祖先の symlink も許さない（realpath が自身と一致する出力先だけ。祖先の書き込み不可は prep が確かめる）
   [[ $(realpath -- "$o" 2>/dev/null) == "$o" ]] || emit_deny "codex の出力先の realpath が自身と一致しない（祖先に symlink がある）"
-  for p in "$f" "$pc" "$sc"; do
-    [[ ! -e $p && ! -L $p ]] || emit_deny "codex の出力先に結果ファイルか複製が既にある"
+  for p in "$c" "$f" "$pc" "$sc"; do
+    [[ ! -e $p && ! -L $p ]] || emit_deny "codex の出力先に作業ディレクトリ・結果ファイル・複製が既にある"
   done
   cwd=$(jq -r '.cwd | if type == "string" then . else "" end' 2>/dev/null <<<"$INPUT") || emit_deny "cwd を読めない"
   [[ $cwd == /* ]] || emit_deny "cwd が絶対パスでない"
   cwd_real=$(realpath -- "$cwd" 2>/dev/null) || emit_deny "cwd の realpath を取れない"
   # 自身かその祖先のどれかが cwd と同じディレクトリか（dev+inode で比べる — firmlink・大文字小文字の別表記に依らない）。
   # 出力先は sandbox の中から書ける一時領域（$TMPDIR・/tmp・/private/tmp）の配下も拒否する
-  for p in "$c" "$d" "$o"; do
+  for p in "$d" "$o"; do
     forbid=("$cwd_real")
     if [[ $p == "$o" ]]; then
       forbid+=(/tmp /private/tmp)
       [[ -n ${TMPDIR:-} ]] && forbid+=("$TMPDIR")
     fi
-    a=$(realpath -- "$p" 2>/dev/null) || emit_deny "codex の作業ディレクトリ・保存先・出力先の realpath を取れない"
+    a=$(realpath -- "$p" 2>/dev/null) || emit_deny "codex の保存先・出力先の realpath を取れない"
     while :; do
       for x in "${forbid[@]}"; do
-        [[ $a -ef $x ]] && emit_deny "codex の作業ディレクトリ・保存先が cwd の配下か、出力先が cwd・\$TMPDIR・/tmp の配下"
+        [[ $a -ef $x ]] && emit_deny "codex の保存先が cwd の配下か、出力先が cwd・\$TMPDIR・/tmp の配下"
       done
       [[ -z $a || $a == / ]] && break
       a="${a%/*}"
@@ -210,6 +206,8 @@ check_codex() {
   [[ $got == "$b" ]] || emit_deny "保存先から計算した binding が起動形の binding と一致しない（prep の後に保存先が変わった・別の保存先）"
   (set -C && printf '%s' "$pbody" >"$pc") 2>/dev/null || emit_deny "prompt.md を出力先へ複製できない"
   (set -C && printf '%s' "$sbody" >"$sc") 2>/dev/null || emit_deny "schema.json を出力先へ複製できない"
+  # 作業ディレクトリは照合の後に新しく作る（既にあれば mkdir が失敗して拒否 — 先に置かれた中身を codex に読ませない）
+  mkdir -- "$c" 2>/dev/null || emit_deny "codex の作業ディレクトリを出力先に作れない"
 }
 
 INPUT=$(cat) || INPUT=""

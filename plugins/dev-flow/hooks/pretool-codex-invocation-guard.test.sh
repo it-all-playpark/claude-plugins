@@ -28,7 +28,7 @@ D="/tmp/x/dev-flow-security-review-Ab12Cd"
 C="${D}/dev-flow-codex-cwd-Qw12Er"
 SHA="$(printf 'a%.0s' {1..40})"
 
-# codex の形は hook がパスの実体を確かめるので、実在する保存先・作業ディレクトリ・出力先を作る。
+# codex の形は hook がパスの実体を確かめるので、実在する保存先・出力先を作る。
 # 出力先は $TMPDIR・/tmp の配下を拒否されるので、repo の .devflow-tmp/（gitignore 済み）に作る
 TMP_ROOT="$(mktemp -d)"
 mkdir -p "${PLUGIN_ROOT}/../../.devflow-tmp"
@@ -39,10 +39,9 @@ trap 'rm -rf "$TMP_ROOT" "$OUT_ROOT" "$TMP_UNDER"' EXIT
 TMP_ROOT="$(cd "$TMP_ROOT" && pwd -P)"
 OUT_ROOT="$(cd "$OUT_ROOT" && pwd -P)"
 RD="${TMP_ROOT}/dev-flow-security-review-Ab12Cd"
-RC="${RD}/dev-flow-codex-cwd-Qw12Er"
 RO="${OUT_ROOT}/out"
 O="$RO"
-mkdir -p "$RD" "$RC" "${TMP_ROOT}/wt" "$RO" "${TMP_ROOT}/out" "${TMP_UNDER}/out" "${TMP_ROOT}/fake-home/.config/skills"
+mkdir -p "$RD" "${TMP_ROOT}/wt" "$RO" "${TMP_ROOT}/out" "${TMP_UNDER}/out" "${TMP_ROOT}/fake-home/.config/skills"
 # hook は user 設定の "dev-flow".codex_output_dir を読むので、$SKILL_CONFIG_PATH と $HOME をテスト用に差し替える
 HOOK_CFG="${TMP_ROOT}/skill-config.json"
 HOOK_HOME="${TMP_ROOT}/fake-home"
@@ -60,15 +59,18 @@ binding_of() {
 }
 B="$(binding_of "$RD")"
 B2="$(printf '%064d' 0)"
-# codex_cmd <C> [<nonce>] [<出力先>] [<-o の nonce>] [<binding>] — _lib/security-review.mjs の codexSecurityReviewCommand と同じ固定形
+# codex_cmd <D> [<nonce>] [<出力先>] [<-o の nonce>] [<binding>] [<-C>] — _lib/security-review.mjs の codexSecurityReviewCommand と同じ固定形
+#   -C の既定は <出力先>/dev-flow-codex-cwd-<nonce>-<binding>
 codex_cmd() {
   local o="${3:-$RO}" n="${2:-$N}" b="${5:-$B}"
-  printf 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C %s -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=%s/dev-flow-codex-prompt-%s-%s.md --output-schema %s/dev-flow-codex-schema-%s-%s.json -o %s/dev-flow-codex-result-%s-%s.json "%s %s"' "$1" "$o" "$n" "$b" "$o" "$n" "$b" "$o" "${4:-$n}" "$b" "$CODEX_PROMPT" "$n"
+  local c="${6:-${o}/dev-flow-codex-cwd-${n}-${b}}"
+  printf 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C %s -c dev_flow_review_dir="%s" -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=%s/dev-flow-codex-prompt-%s-%s.md --output-schema %s/dev-flow-codex-schema-%s-%s.json -o %s/dev-flow-codex-result-%s-%s.json "%s %s"' "$c" "$1" "$o" "$n" "$b" "$o" "$n" "$b" "$o" "${4:-$n}" "$b" "$CODEX_PROMPT" "$n"
 }
-CODEX_CMD="$(codex_cmd "$RC")"
-# hook が通した起動は出力先に複製を作るので、次の判定の前に片付ける（人が出力先を片付ける操作の代わり）
+CODEX_CMD="$(codex_cmd "$RD")"
+RC="${RO}/dev-flow-codex-cwd-${N}-${B}"
+# hook が通した起動は出力先に複製と作業ディレクトリを作るので、次の判定の前に片付ける（人が出力先を片付ける操作の代わり）
 clean_copies() {
-  rm -f "$RO"/dev-flow-codex-prompt-* "$RO"/dev-flow-codex-schema-* "${OUT_ROOT}"/real/out/dev-flow-codex-prompt-* "${OUT_ROOT}"/real/out/dev-flow-codex-schema-*
+  rm -rf "$RO"/dev-flow-codex-prompt-* "$RO"/dev-flow-codex-schema-* "$RO"/dev-flow-codex-cwd-* "${OUT_ROOT}"/real/out/dev-flow-codex-prompt-* "${OUT_ROOT}"/real/out/dev-flow-codex-schema-* "${OUT_ROOT}"/real/out/dev-flow-codex-cwd-*
 }
 
 PASS=0
@@ -142,6 +144,12 @@ if cmp -s "$RD/prompt.md" "$RO/dev-flow-codex-prompt-${N}-${B}.md" && cmp -s "$R
 else
   FAIL=$((FAIL + 1)); FAILURES+=("通した起動は保存先の 2 つを出力先へ複製する"); printf "  \033[31mFAIL\033[0m %s\n" "通した起動は保存先の 2 つを出力先へ複製する"
 fi
+# 通した起動は -C の作業ディレクトリを出力先（sandbox の中から書けない）に空で新しく作る
+if [[ -d $RC && ! -L $RC && -z "$(ls -A "$RC")" ]]; then
+  PASS=$((PASS + 1)); printf "  \033[32mPASS\033[0m %s\n" "通した起動は出力先に空の作業ディレクトリを作る"
+else
+  FAIL=$((FAIL + 1)); FAILURES+=("通した起動は出力先に空の作業ディレクトリを作る"); printf "  \033[31mFAIL\033[0m %s\n" "通した起動は出力先に空の作業ディレクトリを作る"
+fi
 run_bash "複製が既にある（同じ nonce・binding で 2 回目の起動）" deny "$RELAY" "$CODEX_CMD"
 run_bash "result" silent "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O}"
 run_bash "result --issues" silent "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O} --issues"
@@ -156,13 +164,18 @@ else
   PASS=$((PASS + 1)); printf "  \033[32mPASS\033[0m %s\n" "一致しない中身は出力先へ複製しない"
 fi
 # 書き換えた中身に合わせた binding を中継に渡させても（誘導）、結果は prep が返した binding の名前に書かれない（result script が読まない）
-run_bash "書き換えた中身の binding の起動は形としては通る（結果の名前が prep の binding と違う）" silent "$RELAY" "$(codex_cmd "$RC" "$N" "$RO" "$N" "$(binding_of "$RD")")"
+run_bash "書き換えた中身の binding の起動は形としては通る（結果の名前が prep の binding と違う）" silent "$RELAY" "$(codex_cmd "$RD" "$N" "$RO" "$N" "$(binding_of "$RD")")"
 printf 'p' >"$RD/prompt.md"
 # 別の保存先（常駐プロセスが作った偽の保存先）を指した起動: 保存先のパスが binding に入るので、同じ中身でも prep の binding と一致しない
 FAKE_D="${TMP_ROOT}/dev-flow-security-review-Fake01"
-mkdir -p "$FAKE_D/dev-flow-codex-cwd-Fake01"
+mkdir -p "$FAKE_D"
 cp "$RD/prompt.md" "$RD/schema.json" "$FAKE_D/"
-run_bash "別の保存先を指した起動は prep の binding で通らない" deny "$RELAY" "$(codex_cmd "$FAKE_D/dev-flow-codex-cwd-Fake01")"
+run_bash "別の保存先を指した起動は prep の binding で通らない" deny "$RELAY" "$(codex_cmd "$FAKE_D")"
+if [[ -e $RC ]]; then
+  FAIL=$((FAIL + 1)); FAILURES+=("binding が一致しない起動は作業ディレクトリを作らない"); printf "  \033[31mFAIL\033[0m %s\n" "binding が一致しない起動は作業ディレクトリを作らない"
+else
+  PASS=$((PASS + 1)); printf "  \033[32mPASS\033[0m %s\n" "binding が一致しない起動は作業ディレクトリを作らない"
+fi
 # 保存先の prompt.md を symlink にして sandbox の外のファイルを読ませても、一致しない中身は出力先に出さない
 mv "$RD/prompt.md" "$RD/prompt.md.orig"
 printf 'secret' >"${TMP_ROOT}/secret.txt"
@@ -181,38 +194,49 @@ run_bash "結果ファイルの上書き（codex の語を含まない）" deny 
 run_bash "固定形でない codex" deny "$RELAY" "codex exec -s read-only -C ${RC} hi"
 run_bash "codex の sandbox を緩める" deny "$RELAY" "${CODEX_CMD/-s read-only/-s workspace-write}"
 run_bash "codex にフラグを足す" deny "$RELAY" "${CODEX_CMD} --dangerously-bypass-approvals-and-sandbox"
-run_bash "codex の保存先・作業ディレクトリが実在しない" deny "$RELAY" "$(codex_cmd "$C")"
-run_bash "codex の作業ディレクトリが保存先の直下でない" deny "$RELAY" "$(codex_cmd "${TMP_ROOT}/dev-flow-codex-cwd-Qw12Er")"
+run_bash "codex の保存先が実在しない" deny "$RELAY" "$(codex_cmd "$D")"
+run_bash "codex の dev_flow_review_dir が無い" deny "$RELAY" "${CODEX_CMD/ -c dev_flow_review_dir=\"${RD}\"/}"
+run_bash "codex の dev_flow_review_dir が保存先の mkdtemp の形でない" deny "$RELAY" "$(codex_cmd "${TMP_ROOT}/wt")"
+# -C を保存先（sandbox の中から書ける）の直下に置く旧形: 常駐プロセスが保存先に .git・AGENTS.md を置けるので通さない
+mkdir -p "${RD}/dev-flow-codex-cwd-Qw12Er"
+run_bash "codex の -C が保存先の直下（旧形）" deny "$RELAY" "$(codex_cmd "$RD" "$N" "$RO" "$N" "$B" "${RD}/dev-flow-codex-cwd-Qw12Er")"
+rmdir "${RD}/dev-flow-codex-cwd-Qw12Er"
+run_bash "codex の -C の nonce・binding が -o と違う" deny "$RELAY" "$(codex_cmd "$RD" "$N" "$RO" "$N" "$B" "${RO}/dev-flow-codex-cwd-${N2}-${B}")"
 run_bash "codex の指示ファイルが保存先の prompt.md（旧形）" deny "$RELAY" "${CODEX_CMD/model_instructions_file=${RO}\/dev-flow-codex-prompt-${N}-${B}.md/model_instructions_file=${RD}/prompt.md}"
 run_bash "codex の schema が保存先の schema.json（旧形）" deny "$RELAY" "${CODEX_CMD/--output-schema ${RO}\/dev-flow-codex-schema-${N}-${B}.json/--output-schema ${RD}/schema.json}"
 run_bash "codex の固定形の後ろに連結" deny "$RELAY" "${CODEX_CMD}; rm -f ${RO}/dev-flow-codex-result-${N}-${B}.json"
 run_bash "codex の固定形の後ろにリダイレクト" deny "$RELAY" "${CODEX_CMD} > /dev/null"
-run_raw "codex の保存先・作業ディレクトリが cwd の配下" deny "$(jq -cn --arg a "$RELAY" --arg c "$CODEX_CMD" --arg cwd "$TMP_ROOT" '{agent_type:$a, cwd:$cwd, tool_name:"Bash", tool_input:{command:$c}}')"
+run_raw "codex の保存先が cwd の配下" deny "$(jq -cn --arg a "$RELAY" --arg c "$CODEX_CMD" --arg cwd "$TMP_ROOT" '{agent_type:$a, cwd:$cwd, tool_name:"Bash", tool_input:{command:$c}}')"
+# 作業ディレクトリが既にある（先に置かれた AGENTS.md を codex に読ませない）: 中身の有無に関わらず通さない
+mkdir -p "$RC"
 touch "$RC/AGENTS.md"
-run_bash "codex の作業ディレクトリが空でない" deny "$RELAY" "$CODEX_CMD"
-rm -f "$RC/AGENTS.md"
+KEEP_COPIES=1 run_bash "codex の作業ディレクトリが既にある" deny "$RELAY" "$CODEX_CMD"
+rm -rf "$RC"
+ln -s "${TMP_ROOT}/wt" "$RC"
+KEEP_COPIES=1 run_bash "codex の作業ディレクトリの名前に symlink がある" deny "$RELAY" "$CODEX_CMD"
+rm -f "$RC"
 
 echo "[security-codex-relay — codex の -o は sandbox の中から書けない出力先の dev-flow-codex-result-<nonce>-<binding>.json だけ]"
 run_bash "-o を保存先の result.json にする（旧形）" deny "$RELAY" "${CODEX_CMD/-o ${RO}\/dev-flow-codex-result-${N}-${B}.json/-o ${RD}/result.json}"
 run_bash "-o の basename が結果ファイルの形でない" deny "$RELAY" "${CODEX_CMD/dev-flow-codex-result-${N}-${B}.json/result.json}"
 run_bash "-o に binding が無い（dev-flow-codex-result-<nonce>.json）" deny "$RELAY" "${CODEX_CMD/dev-flow-codex-result-${N}-${B}.json/dev-flow-codex-result-${N}.json}"
-run_bash "-o の nonce が prompt の nonce と違う" deny "$RELAY" "$(codex_cmd "$RC" "$N" "$RO" "$N2")"
-HOOK_OUT="${OUT_ROOT}/missing" run_bash "出力先が実在しない" deny "$RELAY" "$(codex_cmd "$RC" "$N" "${OUT_ROOT}/missing")"
+run_bash "-o の nonce が prompt の nonce と違う" deny "$RELAY" "$(codex_cmd "$RD" "$N" "$RO" "$N2")"
+HOOK_OUT="${OUT_ROOT}/missing" run_bash "出力先が実在しない" deny "$RELAY" "$(codex_cmd "$RD" "$N" "${OUT_ROOT}/missing")"
 ln -s "$RO" "${OUT_ROOT}/out-link"
-HOOK_OUT="${OUT_ROOT}/out-link" run_bash "出力先が実ディレクトリを指す symlink" deny "$RELAY" "$(codex_cmd "$RC" "$N" "${OUT_ROOT}/out-link")"
+HOOK_OUT="${OUT_ROOT}/out-link" run_bash "出力先が実ディレクトリを指す symlink" deny "$RELAY" "$(codex_cmd "$RD" "$N" "${OUT_ROOT}/out-link")"
 mkdir -p "${OUT_ROOT}/real/out"
 ln -s "${OUT_ROOT}/real" "${OUT_ROOT}/alias"
-HOOK_OUT="${OUT_ROOT}/alias/out" run_bash "出力先の祖先が symlink（realpath が自身と一致しない）" deny "$RELAY" "$(codex_cmd "$RC" "$N" "${OUT_ROOT}/alias/out")"
-HOOK_OUT="${OUT_ROOT}/x/../out" run_bash "出力先が . / .. の要素を持つ" deny "$RELAY" "$(codex_cmd "$RC" "$N" "${OUT_ROOT}/x/../out")"
+HOOK_OUT="${OUT_ROOT}/alias/out" run_bash "出力先の祖先が symlink（realpath が自身と一致しない）" deny "$RELAY" "$(codex_cmd "$RD" "$N" "${OUT_ROOT}/alias/out")"
+HOOK_OUT="${OUT_ROOT}/x/../out" run_bash "出力先が . / .. の要素を持つ" deny "$RELAY" "$(codex_cmd "$RD" "$N" "${OUT_ROOT}/x/../out")"
 HOOK_TMPDIR="$OUT_ROOT" run_bash "出力先が \$TMPDIR の配下" deny "$RELAY" "$CODEX_CMD"
 HOOK_TMPDIR="$OUT_ROOT/" run_bash "出力先が \$TMPDIR（末尾 /）の配下" deny "$RELAY" "$CODEX_CMD"
 TMP_UNDER_OUT="$(cd "${TMP_UNDER}/out" && pwd -P)"
-HOOK_OUT="$TMP_UNDER_OUT" HOOK_TMPDIR="$OUT_ROOT" run_bash "出力先が /tmp の配下" deny "$RELAY" "$(codex_cmd "$RC" "$N" "$TMP_UNDER_OUT")"
-HOOK_OUT="${TMP_ROOT}/out" run_bash "出力先が mktemp -d（\$TMPDIR か /tmp）の配下" deny "$RELAY" "$(codex_cmd "$RC" "$N" "${TMP_ROOT}/out")"
+HOOK_OUT="$TMP_UNDER_OUT" HOOK_TMPDIR="$OUT_ROOT" run_bash "出力先が /tmp の配下" deny "$RELAY" "$(codex_cmd "$RD" "$N" "$TMP_UNDER_OUT")"
+HOOK_OUT="${TMP_ROOT}/out" run_bash "出力先が mktemp -d（\$TMPDIR か /tmp）の配下" deny "$RELAY" "$(codex_cmd "$RD" "$N" "${TMP_ROOT}/out")"
 
 echo "[security-codex-relay — 出力先は user 設定の codex_output_dir と完全に一致するものだけ]"
 HOOK_OUT="${OUT_ROOT}/real/out" run_bash "codex の -o が設定と違う実ディレクトリ（条件は全部満たす）" deny "$RELAY" "$CODEX_CMD"
-HOOK_OUT="${OUT_ROOT}/real/out" run_bash "設定と同じ出力先の codex は通す" silent "$RELAY" "$(codex_cmd "$RC" "$N" "${OUT_ROOT}/real/out")"
+HOOK_OUT="${OUT_ROOT}/real/out" run_bash "設定と同じ出力先の codex は通す" silent "$RELAY" "$(codex_cmd "$RD" "$N" "${OUT_ROOT}/real/out")"
 HOOK_OUT="${RO}/" run_bash "設定の末尾 / も一致とみなさない" deny "$RELAY" "$CODEX_CMD"
 HOOK_OUT=none run_bash "設定に codex_output_dir が無い codex" deny "$RELAY" "$CODEX_CMD"
 HOOK_OUT=none run_bash "設定に codex_output_dir が無い prep" deny "$RELAY" "security-review-codex-prep ${D} ${SHA} 5 ${O}"
@@ -247,14 +271,14 @@ run_bash "固定形の後ろに連結" deny "$RELAY" "security-review-codex-resu
 run_bash "固定形の後ろにリダイレクト" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O} > ${D}/prepared_at"
 run_bash "固定形に改行で続ける" deny "$RELAY" "${CODEX_CMD}"$'\n'"touch ${RO}/dev-flow-codex-result-${N}-${B}.json"
 run_bash "result に余分な引数" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B} ${O} --extra"
-run_bash "codex の -C 側が保存先の形" deny "$RELAY" "$(codex_cmd "$RD")"
+run_bash "codex の -C が保存先そのもの" deny "$RELAY" "$(codex_cmd "$RD" "$N" "$RO" "$N" "$B" "$RD")"
 run_bash "保存先の名前が mkdtemp の形でない" deny "$RELAY" "security-review-codex-result /tmp/x/dev-flow-security-review-abc12 ${SHA} ${N} ${B} ${O}"
 run_bash "保存先が相対パス" deny "$RELAY" "security-review-codex-result dev-flow-security-review-Ab12Cd ${SHA} ${N} ${B} ${O}"
 run_bash "保存先が .. を含む" deny "$RELAY" "security-review-codex-result /tmp/../tmp/dev-flow-security-review-Ab12Cd ${SHA} ${N} ${B} ${O}"
 run_bash "result に nonce が無い" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${B} ${O}"
 run_bash "result の nonce が 32 桁の小文字 hex でない" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N^^} ${B} ${O}"
 run_bash "result の binding が 64 桁の小文字 hex でない" deny "$RELAY" "security-review-codex-result ${D} ${SHA} ${N} ${B:0:63} ${O}"
-run_bash "codex の prompt の nonce が 32 桁の小文字 hex でない" deny "$RELAY" "$(codex_cmd "$RC" "abc")"
+run_bash "codex の prompt の nonce が 32 桁の小文字 hex でない" deny "$RELAY" "$(codex_cmd "$RD" "abc")"
 run_bash "codex の prompt に nonce が無い" deny "$RELAY" "${CODEX_CMD/ ${N}\"/\"}"
 run_bash "sha が 40 桁でない" deny "$RELAY" "security-review-codex-result ${D} abc ${N} ${B} ${O}"
 run_bash "cd 前置" deny "$RELAY" "cd ${WT} && ${CODEX_CMD}"

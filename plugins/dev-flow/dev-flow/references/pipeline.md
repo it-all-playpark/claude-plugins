@@ -344,12 +344,14 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
                     → 出力先が realpath が自身と一致する実ディレクトリの絶対パスで、出力先と全祖先のどこにも prep（sandbox の中）から
                       ファイルを作れないときだけ進む（作れる祖先があると、hook の確認後に出力先を symlink へ差し替えられる）
                       （作れてしまったら消してから ok:false）
-                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json、保存先の直下に新しい空の mkdtemp（dev-flow-codex-cwd-XXXXXX）。
+                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json（作業ディレクトリは作らない）。
                       round の nonce と binding（sha256("<保存先>\n<sha256(prompt.md)>\n<sha256(schema.json)>\n")）はファイルに書かず stdout で返す
                   security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... -o <出力先>/dev-flow-codex-result-<nonce>-<binding>.json "<固定文> <nonce>"`
                     （先頭トークン codex の単文。返り値は使わない）
                     → hook が保存先の prompt.md・schema.json を出力先の dev-flow-codex-{prompt,schema}-<nonce>-<binding> へ複製し、複製と保存先から
-                      計算した binding が起動形の binding と一致したときだけ通す。codex は複製を読む（保存先は sandbox の中から書けるので読ませない）
+                      計算した binding が起動形の binding と一致したときだけ通す。codex は複製を読む（保存先は sandbox の中から書けるので読ませない）。
+                      -C は照合の後に hook が出力先に新しく作る空の dev-flow-codex-cwd-<nonce>-<binding>（既にあれば拒否。sandbox の中から
+                      書ける場所に置くと .git・AGENTS.md を置かれて指示として読まれる）。保存先は `-c dev_flow_review_dir="<保存先>"` で渡す
                   security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head> <nonce> <binding> <出力先>`（自由文を出さない判定）
                     → clear でなければ security-codex-issues#i: `security-review-codex-result <保存先> <head> <nonce> <binding> <出力先> --issues`（指摘の本文）
                     → 結果ファイルの nonce が一致しなければ判定できない — 先回り・上書きした JSON で clear にしない

@@ -357,15 +357,13 @@ test('[security-review][E] 終端サマリー（公開の PR コメント）と�
 
 // ---- (F) Codex 経路（args.security_review.reviewer === 'codex'。issue #1087）----
 
-// prep は作業ディレクトリを保存先の直下に作る
-const CODEX_CWD = `${SECURITY_REVIEW_DIR}/dev-flow-codex-cwd-Cwd001`;
 const CODEX_OUT = '/Users/x/codex-out';
 const codexArgs = (contextChanged, outputDir = CODEX_OUT) => ({ pr: '5', security_review: { target: true, reasons: [], reviewer_context_changed: contextChanged, reviewer: 'codex', codex_output_dir: outputDir } });
 const CODEX_NONCE = '0123456789abcdef'.repeat(2);
 const CODEX_BINDING = '0123456789abcdef'.repeat(4);
-const codexPrep = ({ cwdDir, nonce = CODEX_NONCE, binding = CODEX_BINDING } = {}) => ({ prompt }) => {
+const codexPrep = ({ nonce = CODEX_NONCE, binding = CODEX_BINDING } = {}) => ({ prompt }) => {
   const reviewDir = prompt.match(/security-review-codex-prep (\S+) /)[1];
-  return { ok: true, review_dir: reviewDir, cwd_dir: cwdDir ?? `${reviewDir}/dev-flow-codex-cwd-Cwd001`, nonce, binding };
+  return { ok: true, review_dir: reviewDir, nonce, binding };
 };
 const codexHeadOf = (prompt) => prompt.match(/security-review-codex-result \S+ ([0-9a-f]{40})/)[1];
 // security-review-codex-result（判定）と security-review-codex-result --issues（指摘）の stdout と同形の応答を、round i の
@@ -421,9 +419,10 @@ test('[security-review][F] Codex 経路は固定の codex exec・判定・指摘
   assert.ok(v.prompt.endsWith(`\nsecurity-review-codex-result ${SECURITY_REVIEW_DIR} ${SECURITY_SCOPE_DEFAULT_HEAD} ${CODEX_NONCE} ${CODEX_BINDING} ${CODEX_OUT}`), v.prompt);
   assert.ok(!v.prompt.includes('codex exec'), '判定の中継に codex を起動させない');
   assert.ok(iss.prompt.endsWith(`\nsecurity-review-codex-result ${SECURITY_REVIEW_DIR} ${SECURITY_SCOPE_DEFAULT_HEAD} ${CODEX_NONCE} ${CODEX_BINDING} ${CODEX_OUT} --issues`), iss.prompt);
-  // 指示ファイル・schema・-o は user 設定の出力先の nonce と binding の名前（sandbox の中から書ける保存先は codex に読ませない）
+  // -C・指示ファイル・schema・-o は user 設定の出力先の nonce と binding の名前（sandbox の中から書ける保存先は codex に読ませず、
+  // -C にもしない）。保存先は hook が複製元にするために dev_flow_review_dir で渡す
   const expected = 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check'
-    + ` -C ${CODEX_CWD} -c web_search="disabled"`
+    + ` -C ${CODEX_OUT}/dev-flow-codex-cwd-${CODEX_NONCE}-${CODEX_BINDING} -c dev_flow_review_dir="${SECURITY_REVIEW_DIR}" -c web_search="disabled"`
     + ' --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use'
     + ` -c model_instructions_file=${CODEX_OUT}/dev-flow-codex-prompt-${CODEX_NONCE}-${CODEX_BINDING}.md`
     + ` --output-schema ${CODEX_OUT}/dev-flow-codex-schema-${CODEX_NONCE}-${CODEX_BINDING}.json -o ${CODEX_OUT}/dev-flow-codex-result-${CODEX_NONCE}-${CODEX_BINDING}.json`
@@ -438,15 +437,12 @@ test('[security-review][F] Codex を起動できない（prep / 起動 / 結果�
   for (const [name, overrides] of [
     ['prep が null', { 'security-codex-prep#1': null }],
     ['prep が throw', { 'security-codex-prep#1': () => { throw new Error('StructuredOutput 未返却'); } }],
-    ['prep が ok:false（node が無い等）', { 'security-codex-prep#1': { ok: false, review_dir: null, cwd_dir: null, error: 'node_unavailable' } }],
-    ['prep の作業ディレクトリが PR の worktree の中', { 'security-codex-prep#1': codexPrep({ cwdDir: '/tmp/wt/dev-flow-codex-cwd-Cwd001' }) }],
-    ['prep の作業ディレクトリが保存先の直下でない', { 'security-codex-prep#1': codexPrep({ cwdDir: '/tmp/dev-flow-codex-cwd-Cwd001' }) }],
-    ['prep の作業ディレクトリが mkdtemp の形でない', { 'security-codex-prep#1': codexPrep({ cwdDir: `${SECURITY_REVIEW_DIR}/codex-cwd` }) }],
+    ['prep が ok:false（node が無い等）', { 'security-codex-prep#1': { ok: false, review_dir: null, error: 'node_unavailable' } }],
     ['prep の nonce が無い', { 'security-codex-prep#1': codexPrep({ nonce: null }) }],
     ['prep の nonce が形の外', { 'security-codex-prep#1': codexPrep({ nonce: 'abc"; rm -rf x' }) }],
     ['prep の binding が無い', { 'security-codex-prep#1': codexPrep({ binding: null }) }],
     ['prep の binding が形の外', { 'security-codex-prep#1': codexPrep({ binding: 'abc' }) }],
-    ['prep の保存先が別', { 'security-codex-prep#1': { ok: true, review_dir: '/tmp/dev-flow-security-review-Other1', cwd_dir: '/tmp/dev-flow-security-review-Other1/dev-flow-codex-cwd-Cwd001', nonce: CODEX_NONCE, binding: CODEX_BINDING } }],
+    ['prep の保存先が別', { 'security-codex-prep#1': { ok: true, review_dir: '/tmp/dev-flow-security-review-Other1', nonce: CODEX_NONCE, binding: CODEX_BINDING } }],
     ['codex が無い・hook が拒否した（result.json が無い）', { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': { ok: false, cleared: false, reason: null, reviewed_sha: null, counts: { critical: 0, major: 0, minor: 0 }, error: 'result_unreadable' } }],
     ['result.json が schema に適合しない', { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': { ok: false, cleared: false, error: 'schema_mismatch' } }],
     ['判定の中継が null', { 'security-codex-prep#1': codexPrep(), 'security-codex-verdict#1': null }],
@@ -502,7 +498,7 @@ test('[security-review][F] Codex の critical/major は fix に回し、次の r
       ...codexRound(1, [finding('hardlink-write'), finding('hardening', 'minor')]),
       'commit-ensure#1': { dirty: false, committed: false, pushed: false, head_sha: SHA_B },
       'security-scope#2': () => securityScopeResponse({ head: SHA_B, reviewDir: dir2 }),
-      'security-codex-prep#2': codexPrep({ cwdDir: `${dir2}/dev-flow-codex-cwd-Cwd002`, nonce: nonce2, binding: binding2 }),
+      'security-codex-prep#2': codexPrep({ nonce: nonce2, binding: binding2 }),
       ...codexRound(2),
     },
   });

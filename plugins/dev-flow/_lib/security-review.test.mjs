@@ -4,10 +4,10 @@
 //     全 property が required・maxLength を持たない）
 // (2) prompt: Codex 用の脅威モデルは、攻撃者の入力を PR の内容と外部データに限り（利用者自身が設定する環境変数を含めない）、
 //     業務ロジックの正しさを critical / major にしない。diff はファイルの末尾の DATA 区間に置き、区間を閉じる行を持たない
-// (3) 起動形: codexSecurityReviewCommand は保存先の直下の空の mkdtemp を -C にし、指示ファイル・schema・-o を出力先の
-//     dev-flow-codex-{prompt,schema,result}-<nonce>-<binding> にする固定形の codex exec で、hooks/pretool-codex-invocation-guard.sh は
-//     security-codex-relay のその形（prep が実際に用意した保存先・作業ディレクトリ・binding と、prep が受け付けた出力先）を通し、
-//     保存先の 2 つを出力先へ複製する
+// (3) 起動形: codexSecurityReviewCommand は -C・指示ファイル・schema・-o を出力先の
+//     dev-flow-codex-{cwd,prompt,schema,result}-<nonce>-<binding> にし、保存先を dev_flow_review_dir で渡す固定形の codex exec で、
+//     hooks/pretool-codex-invocation-guard.sh は security-codex-relay のその形（prep が実際に用意した保存先・binding）を通し、
+//     保存先の 2 つを出力先へ複製して空の作業ディレクトリを作る
 // (4) result の判定（codexResultVerdict と CLI _lib/scripts/security-review-codex-result.mjs）: schema に適合し、nonce が prep の
 //     nonce と一致し、reviewed_sha が head と一致し、critical/major が 0 件のときだけ clear。件数の規則は securityReviewVerdict と同じ
 //
@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  CODEX_SECURITY_REVIEW_SCHEMA, codexPromptCopyPath, codexResultPath, codexResultVerdict, codexSchemaCopyPath, codexSecurityReviewCommand,
+  CODEX_SECURITY_REVIEW_SCHEMA, codexCwdPath, codexPromptCopyPath, codexResultPath, codexResultVerdict, codexSchemaCopyPath, codexSecurityReviewCommand,
   codexSecurityReviewPrompt, securityReviewPrompt, securityReviewVerdict,
 } from './security-review.mjs';
 import { codexBinding } from './scripts/security-review-codex-binding.mjs';
@@ -80,10 +80,10 @@ test('[security-review][2] diff と前回の未解消の指摘はファイルの
 
 // ---- (3) 起動形と hook ----
 
-test('[security-review][3] codexSecurityReviewCommand は先頭トークン codex の固定形で、保存先の直下の空の mkdtemp を -C にし、指示ファイル・schema・-o は出力先の nonce と binding の名前で、それ以外のフラグを含まない', () => {
-  const cmd = codexSecurityReviewCommand({ cwdDir: '/tmp/dev-flow-security-review-Ab12Cd/dev-flow-codex-cwd-Qw12Er', outputDir: '/Users/x/codex-out', nonce: NONCE, binding: BINDING });
+test('[security-review][3] codexSecurityReviewCommand は先頭トークン codex の固定形で、-C・指示ファイル・schema・-o は出力先の nonce と binding の名前、保存先は dev_flow_review_dir で渡し、それ以外のフラグを含まない', () => {
+  const cmd = codexSecurityReviewCommand({ reviewDir: '/tmp/dev-flow-security-review-Ab12Cd', outputDir: '/Users/x/codex-out', nonce: NONCE, binding: BINDING });
   assert.equal(cmd, 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check'
-    + ' -C /tmp/dev-flow-security-review-Ab12Cd/dev-flow-codex-cwd-Qw12Er -c web_search="disabled"'
+    + ` -C /Users/x/codex-out/dev-flow-codex-cwd-${NONCE}-${BINDING} -c dev_flow_review_dir="/tmp/dev-flow-security-review-Ab12Cd" -c web_search="disabled"`
     + ' --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use'
     + ` -c model_instructions_file=/Users/x/codex-out/dev-flow-codex-prompt-${NONCE}-${BINDING}.md`
     + ` --output-schema /Users/x/codex-out/dev-flow-codex-schema-${NONCE}-${BINDING}.json -o /Users/x/codex-out/dev-flow-codex-result-${NONCE}-${BINDING}.json`
@@ -111,7 +111,7 @@ function makeOutputDir() {
   return { root, outputDir, cleanup: () => { chmodSync(outputDir, 0o755); rmSync(root, { recursive: true, force: true }); } };
 }
 
-test('[security-review][3] prep が用意した保存先・作業ディレクトリと受け付けた出力先で組み立てた起動形を hook が通し、書き換えた形は拒否する', () => {
+test('[security-review][3] prep が用意した保存先と binding で組み立てた起動形を hook が通し、出力先に作業ディレクトリを作る。書き換えた形は拒否する', () => {
   const root = mkdtempSync(join(tmpdir(), 'codex-cmd-'));
   const base = execFileSync('pwd', ['-P'], { cwd: root, encoding: 'utf8' }).trim();
   const wt = join(base, 'wt');
@@ -119,11 +119,18 @@ test('[security-review][3] prep が用意した保存先・作業ディレクト
   const reviewDir = mkdtempSync(join(base, 'dev-flow-security-review-'));
   writeFileSync(join(reviewDir, 'pr.diff'), 'diff --git a/x b/x\n');
   const out = makeOutputDir();
+  // prep は出力先の祖先に .git・AGENTS.md があると拒否する（repo の .devflow-tmp/ は祖先に repo の .git を持つ）。hook は出力先を
+  // $TMPDIR・/tmp の配下で拒否する。両方を満たす場所はテスト環境に無いので、prep には $TMPDIR の配下の別の出力先を渡す
+  // （binding と nonce は出力先に依らない — hook が照合するのは保存先と中身）
+  const prepOutRoot = execFileSync('pwd', ['-P'], { cwd: mkdtempSync(join(tmpdir(), 'codex-prep-out-')), encoding: 'utf8' }).trim();
+  const prepOut = join(prepOutRoot, 'out');
+  mkdirSync(prepOut);
+  chmodSync(prepOut, 0o555);
   try {
-    // 出力先の祖先（repo の作業ツリー）はテスト環境では書けるので、sandbox の書き込み拒否を真似て prep を動かす（base の配下だけ書ける）
-    const prep = JSON.parse(execFileSync('node', ['--import', PREP_FAKE_SANDBOX, PREP_CLI, reviewDir, HEAD, '5', out.outputDir], { env: { ...process.env, TMPDIR: base, FAKE_SANDBOX_WRITABLE: base }, encoding: 'utf8' }));
+    // 出力先の祖先はテスト環境では書けるので、sandbox の書き込み拒否を真似て prep を動かす（base の配下だけ書ける）
+    const prep = JSON.parse(execFileSync('node', ['--import', PREP_FAKE_SANDBOX, PREP_CLI, reviewDir, HEAD, '5', prepOut], { env: { ...process.env, TMPDIR: base, FAKE_SANDBOX_WRITABLE: base }, encoding: 'utf8' }));
     assert.equal(prep.ok, true, JSON.stringify(prep));
-    assert.equal(dirname(prep.cwd_dir), reviewDir, '作業ディレクトリは保存先の直下');
+    assert.ok(!('cwd_dir' in prep), 'prep は作業ディレクトリを作らない');
     // binding は保存先のパスと prep が書いた 2 つの中身から計算した値
     assert.equal(prep.binding, codexBinding(reviewDir, readFileSync(join(reviewDir, 'prompt.md')), readFileSync(join(reviewDir, 'schema.json'))));
     // hook は sandbox の外で動き出力先に複製を書くので、prep の後は出力先の書き込み権限を戻す
@@ -131,19 +138,22 @@ test('[security-review][3] prep が用意した保存先・作業ディレクト
     const cfg = join(base, 'skill-config.json');
     const env = { SKILL_CONFIG_PATH: cfg, HOME: join(base, 'home') };
     writeFileSync(cfg, JSON.stringify({ 'dev-flow': { codex_output_dir: out.outputDir } }));
-    const clean = () => { for (const f of readdirSync(out.outputDir)) rmSync(join(out.outputDir, f), { force: true }); };
+    const clean = () => { for (const f of readdirSync(out.outputDir)) rmSync(join(out.outputDir, f), { recursive: true, force: true }); };
     const decide = (c, cwd) => { const d = hookDecision(c, cwd, env); clean(); return d; };
-    const cmdOf = (o = {}) => codexSecurityReviewCommand({ cwdDir: prep.cwd_dir, outputDir: out.outputDir, nonce: prep.nonce, binding: prep.binding, ...o });
+    const cmdOf = (o = {}) => codexSecurityReviewCommand({ reviewDir: prep.review_dir, outputDir: out.outputDir, nonce: prep.nonce, binding: prep.binding, ...o });
     const cmd = cmdOf();
     assert.equal(hookDecision(cmd, wt, env), 'allow');
-    // 通した起動は保存先の 2 つを出力先の nonce と binding の名前へ複製する（codex はこれを読む）
+    // 通した起動は保存先の 2 つを出力先の nonce と binding の名前へ複製し（codex はこれを読む）、-C の作業ディレクトリを出力先に空で作る
     assert.equal(readFileSync(codexPromptCopyPath(out.outputDir, prep.nonce, prep.binding), 'utf8'), readFileSync(join(reviewDir, 'prompt.md'), 'utf8'));
     assert.equal(readFileSync(codexSchemaCopyPath(out.outputDir, prep.nonce, prep.binding), 'utf8'), readFileSync(join(reviewDir, 'schema.json'), 'utf8'));
+    assert.deepEqual(readdirSync(codexCwdPath(out.outputDir, prep.nonce, prep.binding)), []);
     clean();
     assert.equal(decide(cmd.replace(` ${prep.nonce}"`, ' x"'), wt), 'deny');
     assert.equal(decide(cmd.replace('-s read-only', '-s workspace-write'), wt), 'deny');
     assert.equal(decide(`${cmd} --dangerously-bypass-approvals-and-sandbox`, wt), 'deny');
-    assert.equal(decide(`codex exec -s read-only -C ${prep.cwd_dir} hi`, wt), 'deny');
+    assert.equal(decide(`codex exec -s read-only -C ${codexCwdPath(out.outputDir, prep.nonce, prep.binding)} hi`, wt), 'deny');
+    // -C を sandbox の中から書ける保存先の配下に置く形は拒否する
+    assert.equal(decide(cmd.replace(`-C ${codexCwdPath(out.outputDir, prep.nonce, prep.binding)}`, `-C ${reviewDir}`), wt), 'deny');
     // -o の nonce が prompt の nonce と違う・-o が出力先の結果ファイルの形でない・-o を sandbox の中から書ける保存先や $TMPDIR に置く
     const other = cmdOf({ nonce: 'f'.repeat(32) });
     assert.equal(decide(other.replace(` ${'f'.repeat(32)}"`, ` ${prep.nonce}"`), wt), 'deny');
@@ -173,6 +183,8 @@ test('[security-review][3] prep が用意した保存先・作業ディレクト
     assert.equal(decide(cmd, wt), 'deny');
   } finally {
     out.cleanup();
+    chmodSync(prepOut, 0o755);
+    rmSync(prepOutRoot, { recursive: true, force: true });
   }
 });
 

@@ -4,7 +4,7 @@ bats_require_minimum_version 1.5.0
 # Tests for bin/security-review-codex-prep（_shared/scripts/security-review-codex-prep.sh → _lib/scripts/security-review-codex-prep.mjs。issue #1087 / #1097）
 #
 # Codex 経路の security review の入力を、security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX）に
-# 用意する: prompt.md（prompt + diff）・schema.json（strict 形）と、codex の -C に渡す新しい空の mkdtemp（保存先の直下）。
+# 用意する: prompt.md（prompt + diff）・schema.json（strict 形）。codex の -C は hook が出力先に作るので prep は作らない。
 # stdout の binding は保存先のパスと書いた 2 つの中身の sha256（hook が出力先へ複製した中身と照合する）。
 # codex が -o で書く出力先は、realpath が自身と一致する実ディレクトリの絶対パスで、出力先と全祖先のどこにも prep（sandbox の中）から
 # ファイルを作れないものだけを受け付ける。
@@ -48,23 +48,20 @@ write_prev_result() {
     chmod a-w "$O"
 }
 
-@test "保存先に prompt.md（diff を末尾に置く）と strict 形の schema.json を書き、保存先の直下の新しい空の mkdtemp と binding を返す" {
+@test "保存先に prompt.md（diff を末尾に置く）と strict 形の schema.json を書き、binding を返す（作業ディレクトリは作らない）" {
     run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e --arg d "$D" '.ok == true and .review_dir == $d and has("error") == false'
-    cwd="$(echo "$output" | jq -r '.cwd_dir')"
-    [[ "$cwd" == "$D"/dev-flow-codex-cwd-* ]]
+    echo "$output" | jq -e --arg d "$D" '.ok == true and .review_dir == $d and has("error") == false and has("cwd_dir") == false'
     # binding: sha256("<保存先>\n<sha256(prompt.md)>\n<sha256(schema.json)>\n")
     binding="$(echo "$output" | jq -r '.binding')"
     expected="$(printf '%s\n%s\n%s\n' "$D" "$(sha256_of <"$D/prompt.md")" "$(sha256_of <"$D/schema.json")" | sha256_of)"
     [ "$binding" = "$expected" ]
-    [[ "$(basename "$cwd")" =~ ^dev-flow-codex-cwd-[A-Za-z0-9]{6}$ ]]
-    [ -d "$cwd" ]
-    [ -z "$(ls -A "$cwd")" ]
-    # nonce: round ごとの 32 桁 hex。sandbox の中から読める保存先・作業ディレクトリのどのファイルにも書かない
+    # codex の -C は hook が出力先に作る — sandbox の中から書ける保存先の配下には作らない
+    [ -z "$(find "$D" -mindepth 1 -type d)" ]
+    # nonce: round ごとの 32 桁 hex。sandbox の中から読める保存先のどのファイルにも書かない
     nonce="$(echo "$output" | jq -r '.nonce')"
     [[ "$nonce" =~ ^[0-9a-f]{32}$ ]]
-    [ -z "$(grep -rlF "$nonce" "$D" "$cwd")" ]
+    [ -z "$(grep -rlF "$nonce" "$D")" ]
     # prompt.md: PR 番号・head・脅威モデル、diff は DATA 区間の末尾
     grep -qF '# Security review of PR #5' "$D/prompt.md"
     grep -qxF "head_sha: $HEAD_SHA" "$D/prompt.md"
@@ -82,7 +79,7 @@ write_prev_result() {
 @test "出力先が未設定・相対パス・起動形に入れられない・実在しない・symlink・ディレクトリでないなら ok:false で何も作らない" {
     run bash "$BIN" "$D" "$HEAD_SHA" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == false and .error == "output_dir_unset" and .cwd_dir == null and .nonce == null'
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_unset" and .nonce == null'
 
     run bash "$BIN" "$D" "$HEAD_SHA" 5 codex-out
     echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid"'
@@ -116,7 +113,7 @@ write_prev_result() {
     ln -s "$BATS_P/real" "$BATS_P/alias"
     run bash "$BIN" "$D" "$HEAD_SHA" 5 "$BATS_P/alias/codex-out"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid" and .cwd_dir == null'
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_invalid"'
     [ ! -e "$D/prompt.md" ]
     chmod u+w "$BATS_P/real/codex-out"
 }
@@ -125,7 +122,7 @@ write_prev_result() {
     export FAKE_SANDBOX_WRITABLE="$TMP_P:$BATS_P"
     run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == false and .error == "output_dir_writable" and .cwd_dir == null and .nonce == null'
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_writable" and .nonce == null'
     [ -z "$(find "$BATS_P" -maxdepth 1 -name '.dev-flow-codex-write-probe-*')" ]
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
     [ -z "$(find "$D" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
@@ -136,7 +133,7 @@ write_prev_result() {
     export FAKE_SANDBOX_WRITABLE="$TMP_P:$O"
     run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == false and .error == "output_dir_writable" and .cwd_dir == null and .nonce == null'
+    echo "$output" | jq -e '.ok == false and .error == "output_dir_writable" and .nonce == null'
     [ -z "$(ls -A "$O")" ]
     [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
     [ -z "$(find "$D" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
@@ -153,7 +150,7 @@ write_prev_result() {
 
 @test "--verify-from の結果ファイルが無い・schema や nonce が合わない・nonce や binding の形でないなら ok:false で何も書かない" {
     run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O" --verify-from "$PREV_NONCE" "$PREV_BINDING"
-    echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable" and .cwd_dir == null'
+    echo "$output" | jq -e '.ok == false and .error == "verify_from_unreadable"'
     chmod u+w "$O"
     jq -n '{reviewed_sha: "x", issues: [], summary: "s", approved: true}' >"$O/dev-flow-codex-result-$PREV_NONCE-$PREV_BINDING.json"
     chmod a-w "$O"
@@ -211,33 +208,43 @@ write_prev_result() {
     [ ! -e "$D/prompt.md" ]
 }
 
-@test "保存先（-C の親）とその祖先に .git / AGENTS.md / AGENTS.override.md / CLAUDE.md があれば作業場所を作らず ok:false" {
+@test "出力先（-C の親）とその祖先に .git / AGENTS.md / AGENTS.override.md / CLAUDE.md があれば何も書かず ok:false" {
     for name in .git AGENTS.md AGENTS.override.md CLAUDE.md; do
-        # 保存先の祖先（TMPDIR の外の親）
-        P="$BATS_TEST_TMPDIR/rv-$name"
-        mkdir -p "$P/sub"
-        RP="$(cd "$P" && pwd -P)"
-        R="$RP/sub/dev-flow-security-review-Tnt001"
-        mkdir -p "$R"
-        printf 'diff\n' >"$R/pr.diff"
-        if [ "$name" = .git ]; then mkdir "$RP/.git"; else : >"$RP/$name"; fi
-        run bash "$BIN" "$R" "$HEAD_SHA" 5 "$O"
+        # 出力先の祖先
+        P="$BATS_P/ov-$name"
+        mkdir -p "$P/sub/codex-out"
+        chmod a-w "$P/sub/codex-out"
+        if [ "$name" = .git ]; then mkdir "$P/.git"; else : >"$P/$name"; fi
+        run bash "$BIN" "$D" "$HEAD_SHA" 5 "$P/sub/codex-out"
         [ "$status" -eq 0 ]
-        echo "$output" | jq -e '.ok == false and .error == "workspace_tainted" and .cwd_dir == null'
-        [ ! -e "$R/prompt.md" ] && [ ! -e "$R/schema.json" ] && [ ! -e "$R/prepared_at" ]
+        echo "$output" | jq -e '.ok == false and .error == "workspace_tainted" and .nonce == null'
+        [ ! -e "$D/prompt.md" ] && [ ! -e "$D/schema.json" ] && [ ! -e "$D/prepared_at" ]
+        chmod u+w "$P/sub/codex-out"
 
-        # -C を作る保存先自身（-C の親）
-        if [ "$name" = .git ]; then mkdir "$D/.git"; else : >"$D/$name"; fi
+        # -C を作る出力先自身（-C の親）
+        chmod u+w "$O"
+        if [ "$name" = .git ]; then mkdir "$O/.git"; else : >"$O/$name"; fi
+        chmod a-w "$O"
         run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
         echo "$output" | jq -e '.ok == false and .error == "workspace_tainted"'
-        [ -z "$(find "$D" -maxdepth 1 -name 'dev-flow-codex-cwd-*')" ]
         [ ! -e "$D/prompt.md" ]
-        rm -rf "${D:?}/$name"
+        chmod u+w "$O"
+        rm -rf "${O:?}/$name"
+        chmod a-w "$O"
     done
     # dangling symlink も「ある」とみなす
-    ln -s /nonexistent "$D/CLAUDE.md"
+    chmod u+w "$O"
+    ln -s /nonexistent "$O/CLAUDE.md"
+    chmod a-w "$O"
     run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
     echo "$output" | jq -e '.ok == false and .error == "workspace_tainted"'
+    # 保存先（sandbox の中から書ける）は codex の -C の祖先でないので見ない — 保存先の AGENTS.md は codex に届かない
+    chmod u+w "$O"
+    rm -f "$O/CLAUDE.md"
+    chmod a-w "$O"
+    : >"$D/AGENTS.md"
+    run bash "$BIN" "$D" "$HEAD_SHA" 5 "$O"
+    echo "$output" | jq -e '.ok == true'
 }
 
 @test "prep 時刻（epoch ms）を保存先の prepared_at に書く" {
