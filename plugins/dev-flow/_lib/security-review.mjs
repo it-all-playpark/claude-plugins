@@ -11,7 +11,7 @@
 // 読ませない（PR が書いた `.claude/rules/*.md` 等の指示ファイル・設定を gate の判定者に届けない）。PR 本文・diff・コード中のコメントは攻撃者が書けるので、指示として
 // 扱わせない（agents/security-reviewer.md）。
 //
-// 守る要件と境界は SECURITY_REVIEW_BOUNDARY（dev-flow/references/pipeline.md の「守る要件と境界」と同じ）。sandbox の中で既に動いた
+// 守る要件と境界は SECURITY_REVIEW_BOUNDARY（dev-flow/references/security-review.md の「守る要件と境界」と同じ）。sandbox の中で既に動いた
 // PR のコードが同じ uid のプロセスとして残り、review の作業ディレクトリを書き換える攻撃は境界の外で、この gate では塞がない
 // （同じ権限のプロセスに対する path の検査は必ず競合が残り、検査を積むほど運用だけが重くなる。そこは sandbox と人間の merge が持つ）。
 //

@@ -226,8 +226,18 @@ test('atlas / pipeline.md: LITE 条件が dev-flow.js の const LITE と一致�
   const m = devFlowSrc.match(/^const LITE = (.+)$/m);
   assert.ok(m, 'dev-flow.js に const LITE が無い');
   const expr = m[1].trim();
-  assert.ok(pipelineMd.includes(`\`${expr}\``), `pipeline.md の micro lite route 条件が dev-flow.js と一致しない: ${expr}`);
+  const prSection = sectionOf(pipelineMd, '## PR\n');
+  assert.ok(prSection.includes(`\`${expr}\``), `pipeline.md の micro lite route 条件が dev-flow.js と一致しない: ${expr}`);
   assert.ok(expr.includes('CI_AC_INDEXES.length === 0'), 'LITE 条件から ci の AC が外れた — atlas の LITE ノードを見直す');
+  // lite route の spawn は pr-review-lite と ci-check-lite で、CI が passed / no_checks でなければフル pr-iterate へ昇格する
+  const liteBlock = devFlowSrc.slice(devFlowSrc.indexOf('if (LITE) {'), devFlowSrc.indexOf('feedClockMark(\'iterate_end\''));
+  for (const label of ['pr-review-lite', 'ci-check-lite']) {
+    assert.ok(liteBlock.includes(`label: '${label}'`), `dev-flow.js の lite route に ${label} が無い — pipeline.md の PR 節を見直す`);
+    assert.ok(prSection.includes(`\`${label}\``), `pipeline.md の PR 節に lite route の spawn ${label} が無い`);
+  }
+  assert.ok(liteBlock.includes("ciLite.status === 'passed' || ciLite.status === 'no_checks'"), 'lite route の CI 判定が変わった — pipeline.md の PR 節を見直す');
+  const flatPr = prSection.replace(/\n\s*/g, '');
+  assert.ok(flatPr.includes('CI が passed / no_checks でなければ（failed・pending・error・null）同じく昇格する'), 'pipeline.md の PR 節に CI 不成立でも昇格する旨が無い');
   const lite = atlasSrc.split('\n').find((l) => l.includes('R4{"LITE ?'));
   assert.ok(lite, 'atlas に LITE 判定ノードが無い');
   for (const cond of ['micro', 'runEval=false', 'danger clean', 'ci の AC なし']) {
@@ -250,19 +260,104 @@ test('atlas / rules / SKILL.md: Setup で起動する dev-runner の label を�
   }
 });
 
-test('pipeline.md: 判断系 leaf の subagent 一覧が agents/ の実体と一致する', () => {
-  const m = pipelineMd.match(/\*\*判断系 leaf は subagent\*\* \(`\.claude\/agents\/\{([^}]+)\}\.md`\)/);
-  assert.ok(m, 'pipeline.md に判断系 leaf の一覧が無い');
-  const documented = m[1].split(',').map((s) => s.trim()).sort();
-  const actual = readdirSync(join(pluginRoot, 'agents')).filter((f) => f.endsWith('.md')).map((f) => f.replace(/\.md$/, '')).sort();
-  assert.deepEqual(documented, actual);
+test('pipeline.md: 混在 AC の説明は mixedScopeAcReasons と同じく repo 外の作業を human-task issue に切り出させ、依存の向きを書く', () => {
+  // 日本語の折り返しは空白なしで繋がるので改行と続く字下げを除いて照合する
+  const flat = sectionOf(pipelineMd, '## Setup\n').replace(/\n\s*/g, '');
+  assert.ok(flat.includes('`mixed` で、repo 外の作業を `human-task` ラベルの別 issue に切り出し、実装 issue の AC を repo 内で検証できるものだけにするよう求める'), 'pipeline.md の混在 AC の説明が human-task issue への切り出しを求めていない');
+  assert.ok(flat.includes('merge 前に人がやる作業なら実装 issue に `Blocked by #<human issue>`、merge 後に確認する作業なら human issue に `Blocked by #<実装 issue>`'), 'pipeline.md に依存の向きが無い');
 });
 
-test('pipeline.md: 混在 AC の説明は mixedScopeAcReasons と同じく repo 外の作業を human-task issue に切り出させ、依存の向きを書く', () => {
-  // 日本語の折り返しは空白なしで繋がるので改行を除いて照合する
-  const flat = pipelineMd.replace(/\n/g, '');
-  assert.ok(flat.includes('`mixed` で、repo 外の作業を `human-task` ラベルの別 issue に切り出し、実装 issue の AC を repo 内で検証できるものだけにするよう求める'), 'pipeline.md の混在 AC の説明が human-task issue への切り出しを求めていない');
-  assert.ok(flat.includes('merge 前に人がやる作業なら実装 issue に`Blocked by #<human issue>`、merge 後に確認する作業なら human issue に `Blocked by #<実装 issue>`'), 'pipeline.md に依存の向きが無い');
+// pipeline.md は phase ごとに部分を読める地図: 各 phase の ## 節が 判定 / 失敗の扱い / コード を持ち、コードの場所は実在を指す
+const prIterateWorkflowSrc = readFileSync(join(pluginRoot, '.claude/workflows/pr-iterate.js'), 'utf8');
+const libSrc = readdirSync(join(pluginRoot, '_lib'))
+  .filter((f) => f.endsWith('.mjs') && !f.endsWith('.test.mjs'))
+  .map((f) => readFileSync(join(pluginRoot, '_lib', f), 'utf8'))
+  .join('\n');
+const fieldOf = (section, label) => {
+  const start = section.indexOf(`- **${label}**:`);
+  if (start === -1) return null;
+  const rest = section.slice(start + `- **${label}**:`.length);
+  const next = rest.search(/^- \*\*[^*]+\*\*:/m);
+  return next === -1 ? rest : rest.slice(0, next);
+};
+
+test('pipeline.md: phase ごとの ## 節（meta.phases と PR の後の pr-iterate）を持ち、各節に判定・失敗の扱い・実在するコードの場所を書く', () => {
+  const start = devFlowSrc.indexOf('phases: [');
+  const titles = [...devFlowSrc.slice(start, devFlowSrc.indexOf('],', start)).matchAll(/\{ title: '([^']+)' \}/g)].map((m) => m[1]);
+  assert.ok(titles.includes('PR'), `meta.phases が読めない: ${titles.join(', ')}`);
+  const expected = [...titles.slice(0, titles.indexOf('PR') + 1), 'pr-iterate', ...titles.slice(titles.indexOf('PR') + 1)];
+  const headings = [...pipelineMd.matchAll(/^## (.+)$/gm)].map((m) => m[1].trim());
+  assert.deepEqual(headings.filter((h) => expected.includes(h)), expected, `pipeline.md の phase 節が phase の並びと一致しない: ${headings.join(' / ')}`);
+
+  for (const phase of expected) {
+    const section = sectionOf(pipelineMd, `## ${phase}\n`);
+    const judge = fieldOf(section, '判定');
+    const failure = fieldOf(section, '失敗の扱い');
+    const code = fieldOf(section, 'コード');
+    assert.ok(judge && judge.trim(), `pipeline.md「${phase}」に判定が無い`);
+    assert.ok(failure && /fail-(closed|safe|open)/.test(failure), `pipeline.md「${phase}」の失敗の扱いが fail-closed / fail-safe / fail-open で書かれていない`);
+    assert.ok(failure.includes('（') , `pipeline.md「${phase}」の失敗の扱いに理由が無い`);
+    assert.ok(code, `pipeline.md「${phase}」にコードの場所が無い`);
+    const refs = [...code.matchAll(/`([^`\n]+)`/g)].map((m) => m[1].replace(/\(\)$/, ''));
+    const paths = refs.filter((r) => /^[\w.][\w./-]*\.(mjs|js|sh)$/.test(r));
+    const idents = refs.filter((r) => /^[a-z]+[A-Z]\w*$/.test(r));
+    assert.ok(paths.length + idents.length > 0, `pipeline.md「${phase}」のコードの場所がファイルも関数も指していない`);
+    for (const p of paths) assert.ok(existsSync(join(pluginRoot, p)), `pipeline.md「${phase}」のコードの場所 ${p} が実在しない`);
+    for (const id of idents) {
+      assert.ok([devFlowSrc, prIterateWorkflowSrc, libSrc].some((s) => new RegExp(`(function|const) ${id}\\b`).test(s)), `pipeline.md「${phase}」のコードの場所 ${id} が workflow / _lib の関数に無い`);
+    }
+  }
+});
+
+test('pipeline.md は 30KB 以下', () => {
+  const size = Buffer.byteLength(pipelineMd, 'utf8');
+  assert.ok(size <= 30 * 1024, `pipeline.md が ${size} bytes（上限 30KB）`);
+});
+
+test('pipeline.md: 回数・enum の値・HOLD 理由の一覧を書き写さず、定数名かファイルで指す', () => {
+  // 値の正はコード。導出した値が pipeline.md に現れない
+  const sectionsMax = devFlowSrc.match(/^const PR_SECTIONS_MAX_CHARS = (\d+);?$/m)?.[1];
+  assert.ok(sectionsMax, 'dev-flow.js に PR_SECTIONS_MAX_CHARS が無い');
+  assert.ok(!pipelineMd.includes(sectionsMax), `pipeline.md が PR_SECTIONS_MAX_CHARS の値 ${sectionsMax} を書き写している`);
+  const copied = pipelineMd.match(/(maxTurns|\b[A-Z][A-Z0-9]*_(?:MAX|SECONDS|MARGIN|STUCK|BYTES|PASSES))`?\s*[=:：（(]?\s*\d+/);
+  assert.equal(copied, null, `pipeline.md に定数の値が書き写されている: ${copied?.[0]}`);
+  const stopReasons = [...new Set([...prIterateWorkflowSrc.matchAll(/return stop\([^\n]*?, '([a-z_]+)'\)/g)].map((m) => m[1]))];
+  assert.ok(stopReasons.includes('pr_head_unknown'), `pr-iterate.js の stop_reason が読めない: ${stopReasons.join(', ')}`);
+  for (const [name, doc] of [['pipeline.md', pipelineMd], ['security-review.md', readFileSync(join(pluginRoot, 'dev-flow/references/security-review.md'), 'utf8')]]) {
+    const listed = stopReasons.filter((r) => doc.includes(r) && r !== 'reviewer_context_changed');
+    assert.deepEqual(listed, [], `${name} が stop_reason の値を書き写している（securityRound を指す）`);
+  }
+  const mergeTierSrc = readFileSync(join(pluginRoot, '_lib/merge-tier.mjs'), 'utf8');
+  const holdCodes = [...new Set([...mergeTierSrc.matchAll(/pushBlocking\(\s*'([a-z_]+)'/g)].map((m) => m[1]))];
+  assert.ok(holdCodes.length > 1, 'merge-tier.mjs の HOLD code が読めない');
+  assert.ok(!holdCodes.every((c) => pipelineMd.includes(c)), 'pipeline.md が HOLD 理由の code を一覧で書き写している（merge-tier.mjs を指す）');
+  assert.ok(pipelineMd.includes('`pushBlocking`') && pipelineMd.includes('`_lib/merge-tier.mjs`'), 'pipeline.md が HOLD 理由の code の置き場所を指していない');
+});
+
+test('security-review.md: 守る要件と境界（R1〜R3）と経路を持ち、hook・_lib のコメントと SKILL.md・pipeline.md はそこを指す', () => {
+  const refDir = join(pluginRoot, 'dev-flow/references');
+  const md = readFileSync(join(refDir, 'security-review.md'), 'utf8');
+  const boundary = sectionOf(md, '## 守る要件と境界');
+  for (const s of ['- R1 ', '- R2 ', '- R3 ', '**境界の外（塞がない。issue にもしない）**', '`SECURITY_REVIEW_BOUNDARY`', '`SECURITY_FIX_GUIDANCE`']) {
+    assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
+  }
+  for (const h of ['## 対象の判定', '## Claude 経路', '## Codex 経路']) assert.ok(md.includes(`${h}\n`), `security-review.md に ${h} が無い`);
+  // R1〜R3 を定義するのは security-review.md だけ
+  const holders = readdirSync(refDir).filter((f) => f.endsWith('.md')).filter((f) => /^- R1 /m.test(readFileSync(join(refDir, f), 'utf8')));
+  assert.deepEqual(holders, ['security-review.md'], `R1〜R3 の定義が security-review.md 以外にもある: ${holders.join(', ')}`);
+  const referrers = [
+    '_lib/security-review.mjs',
+    'hooks/pretool-security-reviewer-read-scope.sh',
+    'hooks/pretool-codex-invocation-guard.sh',
+    'dev-flow/SKILL.md',
+    'pr-iterate/SKILL.md',
+  ];
+  for (const rel of referrers) {
+    const src = readFileSync(join(pluginRoot, rel), 'utf8');
+    assert.ok(src.includes('references/security-review.md'), `${rel} が references/security-review.md を指していない`);
+    assert.ok(!/pipeline\.md`?\s*の「守る要件と境界」/.test(src), `${rel} が pipeline.md の「守る要件と境界」を指したまま`);
+  }
+  assert.ok(pipelineMd.includes('`security-review.md`'), 'pipeline.md が security-review.md を指していない');
 });
 
 test('AGENTS.md: 日次 launchd は install-schedule.sh --install の手動登録が前提であると書く', () => {

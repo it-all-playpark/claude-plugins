@@ -44,7 +44,8 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    `<worktree>/.devflow-tmp/prerun-setup.json` にも書く。deps install はしない（手順2b）。
    `security_reviewer` は nested pr-iterate の security review を回す CLI の opt-in（`"dev-flow".security_reviewer`）で、
    `pr-iterate-prerun` と同じ規則（base branch の設定 → user 設定、worktree の設定は読まない、無ければ `"claude"`）で読む。
-   `claude` / `codex` 以外は `dev-flow-run` が明示 error で止める。
+   `claude` / `codex` 以外は `dev-flow-run` が明示 error で止める。security review の守る要件と境界・経路は
+   `references/security-review.md`。
    書けないパス（`.githooks` 等）を追跡する repo で full checkout が失敗したら、取り出せるパスだけを取り出して
    取り出せないパスに skip-worktree を付ける（`skip_worktree` に列挙）。再利用する worktree に未ステージの削除
    （部分 checkout）が残っていれば `ok:false`（手順 (c)）。
@@ -195,7 +196,7 @@ AC があるときは AC の文面だけを読む分類 agent（`ac-observationa
 1 spawn する。BLOCKED 再実装（`reimpl-blocked#b`）・Validate の green-fix・Evaluate の差し戻し（`reimpl#i`）も
 同じ agent への再 spawn。shape（micro / standard / complex）は analyze ゲートでは決めず、Diff triage で
 realized diff の file 数 + AC 数 / issue_type / 構造化 breaking_change から決定論に決める
-（Evaluate の深さ・LITE gate・merge tier の入力）。詳細は `references/pipeline.md` の shape 3 tier 表。
+（Evaluate の深さ・LITE gate・merge tier の入力）。詳細は `references/pipeline.md` の「Diff triage」節。
 
 ## 直列複数 issue 実行時の worktree 切替
 
