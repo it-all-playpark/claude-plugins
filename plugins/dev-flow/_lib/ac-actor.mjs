@@ -49,7 +49,8 @@
 // AGENT_AC_REIMPL_MAX を使い切ってから HOLD になるだけのため）。
 // 判定は 2 段構え（issue #859）: prerun-analyze.sh が正規表現（isObservationalAc）で絞り込み、当たった AC だけを
 // Jev に聞いて analyze.ac_observational（true / false / null）を出す。analyze ゲートは null の AC だけを AC の文面と
-// issue のタイトルだけを読む分類 agent に 1 回で渡し、それでも決まらなければ true にする（resolveAcObservational）。
+// issue のタイトルだけを読む分類 agent に 1 回で渡し、それでも決まらなければ true にする（resolveAcObservational。
+// テストファイルを名指ししてそのテストで確かめると書いた AC だけは false にする — issue #1147）。
 // 正規表現は絞り込み専用で拾いすぎてよい（語の追加で誤判定を直す方式は語彙の違う repo で収束しないため）。
 // 分類 agent に diff・evaluator の結果を渡さないのは、観測型の仕組みが evaluator のコード読みだけで達成扱いになるのを
 // 止めるためのもので、実装や評価を見た判定にすると抜け道になるため（incentive-structural）。
@@ -223,16 +224,37 @@ export function acObservationalPrompt(issueTitle, acceptanceCriteria, indexes) {
     + '上の全 AC について 1 件ずつ {"results":[{"ac_index":<上の ac_index>,"observational":true|false|null}]} の形で返せ。\n'
 }
 
+// テストファイルのパス（*.bats / *.test.* / *.spec.* / *_test.* / *_spec.* / *Test.php / __tests__/ 配下）。
+// inline code の中身 1 つに対して見る。
+const TEST_FILE_PATH_RE = /^[^\s]*(\.bats|\.(test|spec)\.[A-Za-z0-9]+|_(test|spec)\.[A-Za-z0-9]+|Test\.php)$|^([^\s]*\/)?__tests__\/[^\s]+\.[A-Za-z0-9]+$/
+// テストを足す・テストで確かめる動詞（inline code を除いた本文に対して見る）。
+const TEST_VERIFY_RE = /足す|足し|追加|加え|確かめ|確認|検証|\bpin\b/i
+
+// AC の文面がテストでの検証を指定しているか: inline code にテストファイルのパスがあり、テストを足す・
+// テストで確かめると書いた AC。evaluator はそのテストの red→green（または追加の有無）で判定できるので、
+// 観測型かを Jev と分類 agent が決めきれなくても観測型に倒さない（resolveAcObservational）。
+export function specifiesTestVerification(ac) {
+  const text = String(ac ?? '')
+  const codes = (text.match(INLINE_CODE_RE) ?? []).map((m) => m.slice(1, -1).trim())
+  if (!codes.some((code) => TEST_FILE_PATH_RE.test(code))) return false
+  return TEST_VERIFY_RE.test(text.replace(INLINE_CODE_RE, ' '))
+}
+
 // prerun の ac_observational（true / false / null）に分類 agent の応答を重ねて AC ごとの boolean に確定する。
 // prerun が確定した値はそのまま使い、null の AC は agent の boolean を採る。agent が判定できない（null 応答・
 // 応答なし・該当 index なし）AC は true（観測型）に倒す — 観測型の誤判定は人手 AC 待ちの HOLD で止まるだけだが、
 // 非観測型への誤判定は inspection の達成扱いを素通しするため。
-export function resolveAcObservational(acObservational, agentResult) {
+// 例外はテストでの検証を文面で指定した AC（specifiesTestVerification）で false にする。観測型に倒すと evaluator の
+// 未達が差し戻されず人手 AC 待ちの HOLD になるが、そのテストは worktree 内で足して red→green を示せるため。
+// acceptanceCriteria は ac_observational と同じ index の AC 本文（省略時は例外を当てない）。
+export function resolveAcObservational(acObservational, agentResult, acceptanceCriteria) {
   const results = Array.isArray(agentResult?.results) ? agentResult.results : []
+  const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
   return (Array.isArray(acObservational) ? acObservational : []).map((v, i) => {
     if (typeof v === 'boolean') return v
     const r = results.find((x) => x && x.ac_index === i)
-    return typeof r?.observational === 'boolean' ? r.observational : true
+    if (typeof r?.observational === 'boolean') return r.observational
+    return !specifiesTestVerification(acs[i])
   })
 }
 

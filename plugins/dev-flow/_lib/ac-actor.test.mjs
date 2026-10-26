@@ -317,6 +317,39 @@ test('[ac-observational] pendingAcObservationalIndexes / resolveAcObservational:
   assert.deepEqual(resolveAcObservational([false, true], null), [false, true]);
 });
 
+// issue #1142 の AC-2: 弱い語 journal で絞り込みに当たり、Jev（観測型 p=0.6）と分類 agent がどちらも null を返した AC。
+// テストファイルを名指しし、そのテストを足すと書いているので bats で確かめられる。
+const AC_1142_2 = 'AC-2 `journal.sh hook-capture` は、64KB を超える error（一致行を多数含むもの・一致行を含まないものの両方）でも exit 0 で終わり、journal に 1 件記録する。記録の `error.message` は現行と同じ規則（一致行の先頭 3 行、一致が無ければ先頭 3 行、各 300 文字まで）で作られる。`journal.bats` に両ケースを足し、そのテストは現行の hook-capture では落ちる';
+
+// prerun と同じ経路: 正規表現の絞り込みに当たった AC を Jev に回し、Jev が低確信で null → 分類 agent も null → actor。
+function actorsViaUndecidedPath(acs) {
+  const prerun = acObservationalOf(acs).map((hit) => (hit ? null : false));
+  const agentResult = { results: pendingAcObservationalIndexes(prerun).map((i) => ({ ac_index: i, observational: null })) };
+  return acActorsOf(acs, { repo: 'it-all-playpark/claude-plugins', observational: resolveAcObservational(prerun, agentResult, acs) });
+}
+
+test('[ac-observational] テストファイルを名指ししてそのテストで確かめる AC は、Jev と分類 agent が決めきれなくても agent', () => {
+  assert.equal(isObservationalAc(AC_1142_2), true, '前提: 弱い語 journal で絞り込みに当たる');
+  assert.deepEqual(actorsViaUndecidedPath([AC_1142_2]), ['agent']);
+  for (const ac of [
+    '`src/report.test.ts` に件数 0 のケースを足し、修正前の実装では落ちる',
+    '`tests/journal_spec.rb` で telemetry に記録されることを確かめる',
+    '`__tests__/receipt.ts` に receipt が生成されるケースを追加する',
+  ]) assert.deepEqual(actorsViaUndecidedPath([ac]), ['agent'], ac);
+});
+
+test('[ac-observational] テストでの検証を指定していない観測型の AC は、同じ経路で human のまま', () => {
+  for (const ac of [
+    '修正後の dev-flow run で journal に 1 件以上記録される',
+    'A/B 比較表を issue コメントに載せる',
+    '実 run の journal に `duration_seconds` が記録される',
+    '`journal.bats` は変えず、修正後の run で journal に記録される',
+    'journal に記録されることを統合テストで確かめる',
+  ]) assert.deepEqual(actorsViaUndecidedPath([ac]), ['human'], ac);
+  // 確定した観測型判定（prerun・分類 agent の boolean）は文面がテストを指定していても上書きしない
+  assert.deepEqual(resolveAcObservational([true, null], { results: [{ ac_index: 1, observational: true }] }, [AC_1142_2, AC_1142_2]), [true, true]);
+});
+
 test('[ac-observational] acObservationalPrompt: issue のタイトルと未確定 AC の文面だけを渡し、判定できない AC は null で返させる', () => {
   const acs = ['ログの件数表示を修正する', 'エラー件数を返す関数にテストを足す', '実行ログに 1 件以上記録される'];
   const prompt = acObservationalPrompt('fix: ログの件数', acs, [1]);

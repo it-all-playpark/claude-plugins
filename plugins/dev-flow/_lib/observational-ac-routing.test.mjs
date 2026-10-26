@@ -10,6 +10,7 @@
 //   (F) 回帰（acme/webapp）: null の AC だけを title と AC 文面で 1 回渡し、確定値が evaluator と actor に効く
 //       （prerun が全 AC を確定していれば spawn しないことは (A) で見る）
 //   (G) 分類 agent の失敗は未確定の AC を観測型に倒す
+//   (H) 例外: テストファイルを名指ししてそのテストで確かめる AC は観測型に倒さず、未達を差し戻す（issue #1147）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -162,4 +163,24 @@ test('[observational-ac] (G) 分類 agent が失敗（null）なら未確定の 
   assert.equal(reimplCalls(calls).length, 0);
   assert.equal(result?.merge_tier, 'HOLD');
   assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [2, 3], ci: [] });
+});
+
+test('[observational-ac] (H) テストファイルを名指ししてそのテストで確かめる AC は、分類 agent が null でも agent の AC として未達を差し戻す', async () => {
+  const TEST_AC = '`src/report.test.ts` に journal に記録される件数のケースを足し、修正前の実装では落ちる';
+  const analyze = prerunAnalyze({
+    acceptance_criteria: [TEST_AC, OBS_AC],
+    ac_observational: [null, null],
+    ac_observational_evidence: ['Jev が低確信（観測型 p=0.6）', 'Jev が低確信（観測型 p=0.5）'],
+  });
+  const { result, calls } = await run({
+    'ac-observational#1': null,
+    'eval#1': evalWith([inspection(0, false), inspection(1)]),
+    'eval#2': evalWith([inspection(0), inspection(1)]),
+  }, { analyze });
+  assert.equal(acObsCalls(calls).length, 1);
+  assert.ok(evalCalls(calls)[0].prompt.includes('"ac_observational":[false,true]'), evalCalls(calls)[0].prompt.slice(0, 2000));
+  const reimpl = reimplCalls(calls);
+  assert.equal(reimpl.length, 1, `テストを指定した AC の未達を差し戻していない: ${calls.map((c) => c.label).join(', ')}`);
+  assert.match(reimpl[0].prompt, /AC-1 未達/);
+  assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [1], ci: [] }, 'テストを指定していない観測型の AC は人手 AC 待ちのまま');
 });

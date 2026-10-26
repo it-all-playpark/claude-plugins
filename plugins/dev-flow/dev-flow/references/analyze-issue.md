@@ -58,7 +58,8 @@ merge tier が補償する（意図的な設計判断）。
   進む
 - 観測型 AC は（実行環境に node が無くて絞り込みを実行できないときを除き）`uncertain` に積まず、判定できない AC を null にしてゲート通過後に AC 文面だけを読む
   `ac-observational#<issue>` に回し、そこでも決まらなければ観測型として扱う。観測型への誤判定は人手 AC 待ちの
-  HOLD で止まるだけだが、逆は evaluator のコード読みだけで達成扱いになる
+  HOLD で止まるだけだが、逆は evaluator のコード読みだけで達成扱いになる。例外として、inline code でテストファイルを
+  名指ししてそのテストを足す・確かめると書いた AC は観測型にしない（worktree 内で red→green を示せ、未達を差し戻せるため）
 
 ## comment の override 判定に使う `author_association` / `issue_author`
 

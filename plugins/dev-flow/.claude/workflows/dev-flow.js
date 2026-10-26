@@ -1132,12 +1132,24 @@ function acObservationalPrompt(issueTitle, acceptanceCriteria, indexes) {
     + '上の全 AC について 1 件ずつ {"results":[{"ac_index":<上の ac_index>,"observational":true|false|null}]} の形で返せ。\n'
 }
 
-function resolveAcObservational(acObservational, agentResult) {
+const TEST_FILE_PATH_RE = /^[^\s]*(\.bats|\.(test|spec)\.[A-Za-z0-9]+|_(test|spec)\.[A-Za-z0-9]+|Test\.php)$|^([^\s]*\/)?__tests__\/[^\s]+\.[A-Za-z0-9]+$/
+const TEST_VERIFY_RE = /足す|足し|追加|加え|確かめ|確認|検証|\bpin\b/i
+
+function specifiesTestVerification(ac) {
+  const text = String(ac ?? '')
+  const codes = (text.match(INLINE_CODE_RE) ?? []).map((m) => m.slice(1, -1).trim())
+  if (!codes.some((code) => TEST_FILE_PATH_RE.test(code))) return false
+  return TEST_VERIFY_RE.test(text.replace(INLINE_CODE_RE, ' '))
+}
+
+function resolveAcObservational(acObservational, agentResult, acceptanceCriteria) {
   const results = Array.isArray(agentResult?.results) ? agentResult.results : []
+  const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
   return (Array.isArray(acObservational) ? acObservational : []).map((v, i) => {
     if (typeof v === 'boolean') return v
     const r = results.find((x) => x && x.ac_index === i)
-    return typeof r?.observational === 'boolean' ? r.observational : true
+    if (typeof r?.observational === 'boolean') return r.observational
+    return !specifiesTestVerification(acs[i])
   })
 }
 
@@ -5656,7 +5668,8 @@ if (gateReasons.length) {
 
 // 観測型 AC（実行して出力・記録を観測しないと確かめられない。actor は human）。prerun が正規表現の
 // 絞り込み + Jev で出した analyze.ac_observational を使い、null（Jev 低確信・Jev に届かない）の AC だけを
-// AC の文面と issue のタイトルだけを読む分類 agent に 1 回で渡す。agent が判定できない AC は true（resolveAcObservational）。
+// AC の文面と issue のタイトルだけを読む分類 agent に 1 回で渡す。agent が判定できない AC は true（resolveAcObservational。
+// テストファイルを名指ししてそのテストで確かめると書いた AC は false — evaluator の未達を差し戻せるようにする）。
 // null が無ければ spawn しない。needs_clarification で終わる run に spawn を使わないようゲート通過後に置く。
 // Evaluate / Final reconcile は red→green 実証で deterministic 昇格したときだけ checked にし、inspection の
 // satisfied:true は人手 AC 待ちに倒す。
@@ -5665,8 +5678,8 @@ const acObsPending = pendingAcObservationalIndexes(req.ac_observational)
 if (acObsPending.length) {
   log(`analyze: 観測型判定が prerun で確定しない AC ${acObsPending.length} 件（AC-${acObsPending.map((i) => i + 1).join(', AC-')}）— AC の文面だけを読む分類 agent に 1 回で渡す`)
   const acObsAgent = await failOpenAgent(acObservationalPrompt(req.issue_title, req.acceptance_criteria, acObsPending), { agentType: 'dev-runner', schema: AC_OBSERVATIONAL, label: `ac-observational#${ISSUE}`, phase: 'Setup' })
-  if (!acObsAgent) log('⚠️ analyze: 観測型の分類 agent が null — 未確定の AC は観測型として扱う')
-  req.ac_observational = resolveAcObservational(req.ac_observational, acObsAgent)
+  if (!acObsAgent) log('⚠️ analyze: 観測型の分類 agent が null — テストを指定した AC を除き、未確定の AC は観測型として扱う')
+  req.ac_observational = resolveAcObservational(req.ac_observational, acObsAgent, req.acceptance_criteria)
 }
 if (req.ac_observational.includes(true)) log(`analyze: 観測型 AC ${req.ac_observational.filter(Boolean).length} 件（AC-${req.ac_observational.map((o, i) => o ? i + 1 : null).filter((n) => n != null).join(', AC-')}）— red→green 実証が無ければ inspection で達成扱いにせず人手 AC 待ちへ回す`)
 // AC ごとの actor（'agent' | 'human'。_lib/ac-actor.mjs）。analyze ゲートで AC と一緒に freeze し、Evaluate の
