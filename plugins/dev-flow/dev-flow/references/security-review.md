@@ -19,6 +19,11 @@
   攻撃 — 保存先（`$TMPDIR` 配下）の差し替え、確認と使用の間の競合、hard link・rename での入れ替え、PATH の前方への同名ファイルの設置。
   同じ権限のプロセスに対する path の検査は必ず競合が残り、検査を積むほど運用（人の手作業・設定項目）だけが重くなる。この段階は
   sandbox の境界と人間の merge が守る。利用者が文書の前提（codex を sandbox の中で動かす等）と違う環境を作った場合だけの経路も外
+- **将来の PR の変更を要する経路は今の PR の欠陥にしない**: 将来の PR が対象のファイル（`isSecurityReviewExemptPath` が false）を
+  変えて初めて成り立つ経路は、今の PR の critical / major にしない。前提は「merge は人間が行う」ことで、「全 PR が security review を
+  通る」ことではない（pr-iterate を通らない PR は review を受けない）。例外として、今の diff が PR の制御できる出力を gate の根拠に
+  すること自体・今の diff がその出力を偽ること・免除ファイル（`*.bats`・`*.test.*`・`*.spec.*`・`.md` 等）の出力が根拠に入る経路は、
+  この除外に含めず通常どおり判定する
 - reviewer の prompt（`SECURITY_REVIEW_BOUNDARY`）は境界の外を critical / major にさせず、fix の prompt（`SECURITY_FIX_GUIDANCE`）は
   人に手作業を課す修正・同じ入力に同じ種類の検査を重ねる修正をさせない（縛られていない入力元を縛る修正は対象外。できない指摘は
   `deferred_security_topics` で人に返す）。どちらも `_lib/security-review.mjs` の 1 か所に置く

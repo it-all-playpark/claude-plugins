@@ -341,6 +341,11 @@ test('security-review.md: 守る要件と境界（R1〜R3）と経路を持ち�
   for (const s of ['- R1 ', '- R2 ', '- R3 ', '**境界の外（塞がない。issue にもしない）**', '`SECURITY_REVIEW_BOUNDARY`', '`SECURITY_FIX_GUIDANCE`']) {
     assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
   }
+  // 将来の PR の変更を要する経路の除外とその例外。前提は人間の merge で、全 PR の review ではない
+  for (const s of ['将来の PR が対象のファイル（`isSecurityReviewExemptPath` が false）を', '前提は「merge は人間が行う」ことで、「全 PR が security review を',
+    '今の diff が PR の制御できる出力を gate の根拠に', '今の diff がその出力を偽ること', '免除ファイル（`*.bats`・`*.test.*`・`*.spec.*`・`.md` 等）の出力が根拠に入る経路']) {
+    assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
+  }
   for (const h of ['## 対象の判定', '## Claude 経路', '## Codex 経路']) assert.ok(md.includes(`${h}\n`), `security-review.md に ${h} が無い`);
   // R1〜R3 を定義するのは security-review.md だけ
   const holders = readdirSync(refDir).filter((f) => f.endsWith('.md')).filter((f) => /^- R1 /m.test(readFileSync(join(refDir, f), 'utf8')));

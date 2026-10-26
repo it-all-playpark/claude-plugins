@@ -65,6 +65,16 @@ test('[security-review][2] Claude 経路・Codex 経路の prompt は同じ境�
   const boundary = SECURITY_REVIEW_BOUNDARY.slice(SECURITY_REVIEW_BOUNDARY.indexOf('## 境界'), SECURITY_REVIEW_BOUNDARY.indexOf('## severity'));
   assert.ok(boundary.includes('同じ uid のプロセスとして残っている前提の攻撃'), boundary);
   assert.ok(boundary.includes('業務ロジックの正しさ'), boundary);
+  // 将来の PR が対象のファイルを変えて初めて成り立つ経路は除外し、今の diff が出力を根拠にする・偽る・免除ファイルの出力が入る経路は除外しない
+  assert.ok(boundary.includes('将来の PR が security review の対象のファイル（`isSecurityReviewExemptPath` が false のもの）を変えて初めて成り立つ経路'), boundary);
+  for (const s of ['ただし次はこの除外に含めず通常どおり判定する', '今の diff が PR の制御できる出力を gate の根拠にすること自体', '今の diff がその出力を偽ること',
+    '免除ファイル（`*.bats`・`*.test.*`・`*.spec.*`・`.md` 等）の出力が根拠に入る経路']) {
+    assert.ok(boundary.includes(s), `境界の節に ${s} が無い`);
+  }
+  // テストランナー・テストファイルの出力が evaluator の根拠になることを reviewer に伝える
+  const threat = SECURITY_REVIEW_BOUNDARY.slice(0, SECURITY_REVIEW_BOUNDARY.indexOf('## 境界'));
+  assert.ok(threat.includes('テストランナー（`tests/run-*.sh` や `package.json` の test script 等）とテストファイルの出力は、dev-flow の evaluator が AC 判定の'
+    + '根拠に使う。実際の実行と異なる結果を出させる変更は、検証や gate の素通りとして判定する。'), threat);
   assert.ok(SECURITY_REVIEW_BOUNDARY.includes('「経路を否定できない」だけでは major にしない'));
   assert.ok(SECURITY_REVIEW_BOUNDARY.includes('人に手作業を課す修正'));
 });
