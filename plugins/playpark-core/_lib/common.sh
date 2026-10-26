@@ -50,7 +50,7 @@ json_str() {
 
 json_array() {
     if has_jq; then
-        jq -R . | jq -s '.'
+        jq -nR '[inputs]'
     else
         local first=true
         echo -n "["

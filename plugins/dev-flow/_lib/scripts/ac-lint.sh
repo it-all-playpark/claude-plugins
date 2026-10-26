@@ -57,13 +57,16 @@ heading_found=false
 heading_idx=-1
 total=${#LINES[@]}
 
+# 行ごとの判定は grep を fork せず bash の [[ =~ ]]（同じ POSIX ERE）で行う。-i 相当は nocasematch
+shopt -s nocasematch
 for ((i = 0; i < total; i++)); do
-    if echo "${LINES[$i]}" | grep -qiE "$HEADING_RE"; then
+    if [[ "${LINES[$i]}" =~ $HEADING_RE ]]; then
         heading_found=true
         heading_idx=$i
         break
     fi
 done
+shopt -u nocasematch
 
 checkbox_count=0
 bullet_count=0
@@ -72,7 +75,7 @@ if [[ "$heading_found" == true ]]; then
     # Section: from heading_idx+1 up to (not including) next markdown heading or EOF
     section_end=$total
     for ((i = heading_idx + 1; i < total; i++)); do
-        if echo "${LINES[$i]}" | grep -qE "$ANY_HEADING_RE"; then
+        if [[ "${LINES[$i]}" =~ $ANY_HEADING_RE ]]; then
             section_end=$i
             break
         fi
@@ -80,9 +83,9 @@ if [[ "$heading_found" == true ]]; then
 
     for ((i = heading_idx + 1; i < section_end; i++)); do
         line="${LINES[$i]}"
-        if echo "$line" | grep -qE "$CHECKBOX_RE"; then
+        if [[ "$line" =~ $CHECKBOX_RE ]]; then
             checkbox_count=$((checkbox_count + 1))
-        elif echo "$line" | grep -qE "$BULLET_RE"; then
+        elif [[ "$line" =~ $BULLET_RE ]]; then
             bullet_count=$((bullet_count + 1))
         fi
     done
