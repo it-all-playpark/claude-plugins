@@ -380,21 +380,23 @@ cmd_stats() {
 # ============================================================================
 
 # Error classification patterns (from error-categories.md)
+# here-string で渡す: 早く終わる grep -q へ pipe すると、一致の後ろの write が SIGPIPE になり
+# pipefail で条件が偽になって後ろの分類（最終的に runtime）に落ちる
 classify_error() {
     local msg="$1"
-    if echo "$msg" | grep -qiE 'eslint|prettier|biome|stylelint|lint.*error'; then
+    if grep -qiE 'eslint|prettier|biome|stylelint|lint.*error' <<<"$msg"; then
         echo "lint"
-    elif echo "$msg" | grep -qiE 'test.*fail|assert|expect.*to|FAIL.*test'; then
+    elif grep -qiE 'test.*fail|assert|expect.*to|FAIL.*test' <<<"$msg"; then
         echo "test"
-    elif echo "$msg" | grep -qiE 'build.*fail|compile.*error|esbuild|webpack.*error|vite.*error'; then
+    elif grep -qiE 'build.*fail|compile.*error|esbuild|webpack.*error|vite.*error' <<<"$msg"; then
         echo "build"
-    elif echo "$msg" | grep -qiE 'CONFLICT|merge.*fail|rebase.*conflict|cannot.*merge'; then
+    elif grep -qiE 'CONFLICT|merge.*fail|rebase.*conflict|cannot.*merge' <<<"$msg"; then
         echo "merge"
-    elif echo "$msg" | grep -qiE 'TS[0-9]+:|type.*error|mypy.*error|no.*overload'; then
+    elif grep -qiE 'TS[0-9]+:|type.*error|mypy.*error|no.*overload' <<<"$msg"; then
         echo "type-check"
-    elif echo "$msg" | grep -qiE 'node_modules|ENOENT.*package|pip.*not found|command not found|version.*mismatch'; then
+    elif grep -qiE 'node_modules|ENOENT.*package|pip.*not found|command not found|version.*mismatch' <<<"$msg"; then
         echo "env"
-    elif echo "$msg" | grep -qiE 'config.*not found|invalid.*config|missing.*setting'; then
+    elif grep -qiE 'config.*not found|invalid.*config|missing.*setting' <<<"$msg"; then
         echo "config"
     else
         echo "runtime"
@@ -424,15 +426,17 @@ cmd_hook_capture() {
     # Guard every stage so empty input / no-match doesn't trip `set -e -o pipefail`.
     # iconv -f UTF-8 -t UTF-8 -c removes invalid UTF-8 bytes caused by multibyte truncation,
     # ensuring safe input to jq --arg.
+    # head の後ろで残りを読み捨てる: head が 3 行で終わると上流の write が SIGPIPE になり、
+    # pipefail + set -e で hook-capture ごと exit 141 で終わって記録が欠落する
     local error_snippet=""
     if [[ -n "$error_text" ]]; then
         error_snippet=$(printf '%s\n' "$error_text" \
             | { grep -iE 'error|fail|exception|fatal|panic|denied|not found' || true; } \
-            | head -n 3 \
+            | { head -n 3; cat >/dev/null; } \
             | cut -c1-300 \
             | iconv -f UTF-8 -t UTF-8 -c)
         if [[ -z "$error_snippet" ]]; then
-            error_snippet=$(printf '%s\n' "$error_text" | head -n 3 | cut -c1-300 | iconv -f UTF-8 -t UTF-8 -c)
+            error_snippet=$(printf '%s\n' "$error_text" | { head -n 3; cat >/dev/null; } | cut -c1-300 | iconv -f UTF-8 -t UTF-8 -c)
         fi
     fi
     [[ -z "$error_snippet" ]] && error_snippet="(no error text)"
