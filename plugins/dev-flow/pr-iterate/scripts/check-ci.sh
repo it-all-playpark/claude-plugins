@@ -175,12 +175,13 @@ read_snapshot() {
         CHECKS_JSON="$CHECKS_DATA"
         return 0
     fi
-    if printf '%s' "$FETCH_ERR_DATA" | grep -qi 'no checks reported'; then
+    # 早く終わる reader（grep -q / head）へ pipe しない: 残りの write が SIGPIPE になり pipefail で偽・非 0 になる
+    if grep -qi 'no checks reported' <<<"$FETCH_ERR_DATA"; then
         CHECKS_JSON="[]"
         return 0
     fi
     if [[ -n "$FETCH_ERR_DATA" ]]; then
-        FETCH_ERR="gh pr checks: $(printf '%s' "$FETCH_ERR_DATA" | head -3 | tr '\n' ' ')"
+        FETCH_ERR="gh pr checks: $(printf '%s' "$FETCH_ERR_DATA" | { head -3; cat >/dev/null; } | tr '\n' ' ')"
     else
         FETCH_ERR="gh pr checks: snapshot data is not a JSON array"
     fi

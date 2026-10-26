@@ -265,7 +265,8 @@ git check-ref-format --branch "$head_ref" >/dev/null 2>&1 || fail "headRefName i
 # ============================================================================
 
 WTLIST_RAW="$(git worktree list --porcelain 2>&1)" || fail "not a git repository (git worktree list failed): ${WTLIST_RAW}"
-ROOT="$(printf '%s\n' "$WTLIST_RAW" | awk '/^worktree /{print substr($0,10); exit}')"
+# here-string で渡す（awk の exit へ pipe すると残りの write が SIGPIPE になり pipefail で非 0 になる）
+ROOT="$(awk '/^worktree /{print substr($0,10); exit}' <<<"$WTLIST_RAW")"
 [[ -n "$ROOT" ]] || fail "failed to resolve git root from worktree list"
 
 if ! FETCH_OUT="$(git -C "$ROOT" fetch origin --quiet 2>&1)"; then

@@ -89,7 +89,8 @@ fi
 WT_BRANCHES="$(printf '%s\n' "$WORKTREES" | awk '/^branch refs\/heads\//{ print substr($0, 19) }')"
 WT_DIRS="$(printf '%s\n' "$WORKTREES" | awk '/^worktree /{ n = split(substr($0, 10), p, "/"); print p[n] }')"
 
-has_line() { printf '%s\n' "$2" | grep -qxF -- "$1"; }
+# here-string で渡す: 早く終わる grep -q へ pipe すると、一致の後ろの write が SIGPIPE になり pipefail で偽になる
+has_line() { grep -qxF -- "$1" <<<"$2"; }
 
 # --with-in-flight: 実行中の issue を open PR の head / local branch / worktree から拾い、候補に足す。
 # 利用者が渡した候補（USER_CANDIDATES）とは分けて持ち、拾っただけの issue は in_flight 判定だけ行う

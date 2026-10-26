@@ -187,6 +187,13 @@ run_edit_case "Edit whose old_string is exactly a marker line" "$MIXED_FILE" \
 run_edit_case "Edit whose new_string injects a marker line into hand-written code" "$MIXED_FILE" \
   $'function handWrittenBefore() {\n  return "before";\n}' \
   $'// ==== BEGIN inline: _lib/evil.mjs ====\nfunction handWrittenBefore() {\n  return "evil";\n}' "deny"
+# マーカー行の後ろに pipe buffer（64KB）を超える内容が続いても、grep の早期終了で判定が偽にならない
+LARGE_TAIL=$(awk 'BEGIN { for (i = 0; i < 8000; i++) printf "const pad%d = 0; // filler\n", i }')
+run_case "Write whose content starts with a marker line followed by >64KB" "Write" "$NEW_FILE_PATH" \
+  $'// ==== BEGIN inline: _lib/evil.mjs ====\n'"$LARGE_TAIL" "deny"
+run_edit_case "Edit whose new_string starts with a marker line followed by >64KB" "$MIXED_FILE" \
+  $'function handWrittenBefore() {\n  return "before";\n}' \
+  $'// ==== BEGIN inline: _lib/evil.mjs ====\n'"$LARGE_TAIL" "deny"
 
 echo "[Negative cases — should pass through]"
 run_case "Edit on marker-less workflows/*.js" "Edit" "$PLAIN_FILE" "" "pass"

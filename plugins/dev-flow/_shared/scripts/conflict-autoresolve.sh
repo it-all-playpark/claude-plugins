@@ -182,11 +182,13 @@ while IFS="$(printf '\t')" read -r stages path; do
     idx=$((idx + 1))
 done < "$tmp/unmerged.tsv"
 
-# 型 B の canonical が衝突していれば、その workflow は再生成の入力が確定しないので解かない
+# 型 B の canonical が衝突していれば、その workflow は再生成の入力が確定しないので解かない。
+# 衝突パスはファイルで渡す（早く終わる grep -q へ pipe すると残りの write が SIGPIPE になり pipefail で偽になる）
+printf '%s\n' "${paths[@]}" > "$tmp/unmerged-paths.txt"
 for i in "${!paths[@]}"; do
     [ "${types[$i]}" = "B" ] || continue
     for src in ${b_sources[$i]}; do
-        if printf '%s\n' "${paths[@]}" | grep -Fxq -- "${b_roots[$i]}$src"; then
+        if grep -Fxq -- "${b_roots[$i]}$src" "$tmp/unmerged-paths.txt"; then
             types[$i]="canonical_conflict"
         fi
     done
