@@ -146,6 +146,11 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - lane は `gate_policy` で決まる（`_lib/gate-policy.mjs`。既定は `DEFAULT_GATE_POLICY`）。critical・決定論 check・seed は全 policy で blocking
   - 差し戻しの上限は `EVAL_PASSES`（shape から決まる。上限 `EVAL_MAX`）、design 差し戻しは `DESIGN_REPLAN_MAX`、同じ topic の反復は
     `EVAL_STUCK` で stuck。既出の指摘を渡して蒸し返しを抑える
+  - Validate と同じ tree の eval#N には Validate の結果と `run-tests` の各 script のログパス（`scripts[].log`。worktree の外）を渡す。
+    evaluator はログに載っている AC 関連テストファイルを再実行せずログの行を根拠にし、載っていないものだけを実行する
+    （`validateResultPromptBlock`）。ログを根拠にできるのは realized diff が変更したファイルだけ（ログの中身はテストが
+    自由に書けるので、変更していないファイルの結果は偽の行と区別できない）。tree が違う・ログか変更ファイルが無いときは
+    AC 関連テストファイルを実行させる
   - agent AC の `satisfied:false` は gate_policy に依らず差し戻す（`AGENT_AC_REIMPL_MAX` まで延長）。human AC は差し戻さない。
     観測型 AC は redgreen-verify で red→green を実証して deterministic 昇格したときだけ checked（`demoteUnprovenObservationalAc`）。
     ci AC は evaluator に判定させない。実行環境に届かない理由の未達（`unreachable_env`）は人手 AC 待ちに数える
@@ -224,6 +229,9 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - final test が green か CI で確かめられた run は、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
     解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は決定論の evidence で checked にする
     （evaluator は fix 後に再実行されないため）。SEC seed・TESTSURF・AC-FINAL は LLM の判断で解消しない
+  - test#final が green か no_tests なら、Final AC reconcile に test#final の `tests` / `green` と各 script のログパスを渡し、
+    実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）。error（CI 委譲）・
+    red の flake 判定ではログを渡さない
 - skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'` は `validate_test_red`、`tests:'error'` は PR head の
   CI で green を確かめられなければ `validate_tests_not_run` で HOLD
 - **失敗の扱い**:
