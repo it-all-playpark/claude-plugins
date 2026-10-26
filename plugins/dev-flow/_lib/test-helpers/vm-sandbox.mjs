@@ -424,6 +424,8 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
 
 /** security-scope 応答の head を省いたときの既定（40 桁）。 */
 export const SECURITY_SCOPE_DEFAULT_HEAD = 'c'.repeat(40);
+/** Codex 経路の security-pr-head#i の応答の baseRefOid の既定（40 桁）。 */
+export const SECURITY_PR_BASE_DEFAULT = 'd'.repeat(40);
 /** security-scope 応答の review_dir / diff_path の既定（PR の worktree '/tmp/wt' の外）。 */
 export const SECURITY_REVIEW_DIR = '/tmp/dev-flow-security-review-Stub01';
 
@@ -486,6 +488,9 @@ export function prIterateResponder(overrides = {}, rounds = null) {
     // 敵対的 security review（issue #1063）: args.security_review の無い単体起動は対象なので、LGTM の前に
     // security-scope#i（今の head の diff）→ security-review#i が走る。既定は対象・clear（head は prompt の値を写す）
     if (label.startsWith('security-scope#')) return securityScopeResponse({ target: true, head: securityScopeHeadOf(callCtx.prompt) });
+    // Codex 経路の GitHub の PR の head と base（gh pr view の stdout と同形）と fetch の中継
+    if (label.startsWith('security-pr-head#')) return { baseRefOid: SECURITY_PR_BASE_DEFAULT, headRefOid: SECURITY_SCOPE_DEFAULT_HEAD };
+    if (label.startsWith('security-pr-fetch#')) return { done: true };
     if (agentType === 'dev-flow:security-reviewer') return { reviewed_sha: securityReviewHeadOf(callCtx.prompt), issues: [], summary: 'ok' };
     if (label.startsWith('fix#')) return { applied: true, files: [], summary: 'fixed' };
     if (label.startsWith('commit-ensure#')) return { committed: true, pushed: true, dirty: false };

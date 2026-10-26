@@ -306,7 +306,7 @@ pr-iterate      → round の開始時に対象の run は各 round で、review
                   security-scope#i → security-review#i を起動する（review の decision を待たない）。対象でない run は
                   CI gate を通り conflict も無い round（LGTM の候補）でだけ security-scope#i を取り直す:
                   security-scope#i: `security-review-scope <wt> origin/<base> <shaNow|HEAD> --save-diff`（Codex 経路の run は
-                    security-codex-relay に写させ、head は常に HEAD — 中継が返した shaNow の tree を review させない）
+                    下の「Codex 経路」の形 — GitHub の PR の head と base の sha で取る）
                     → 起動時・run 中のどれか 1 回でも対象なら run の終わりまで対象（args.security_review が無い run も対象）
                     → worktree の外の新しい保存先 `dev-flow-security-review-XXXXXX/pr.diff` に diff を書く
                   対象なら security-review#i（security-reviewer を毎回新しく spawn。pr.diff のパスと head sha と
@@ -358,7 +358,11 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 /pr-iterate     → pr-iterate-prerun が base branch（origin/<base>）の skill-config.json / .claude/skill-config.json、無ければ user 設定
                   （$SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）から読み、
                   args.security_review.reviewer で渡す（PR head の設定ファイルは読まない。無ければ "claude"）
-pr-iterate      → security-scope#i（security-codex-relay）: `security-review-scope <wt> origin/<base> HEAD --save-diff`
+pr-iterate      → security-pr-head#i（security-codex-relay）: `gh pr view <PR> --repo <repo> --json baseRefOid,headRefOid`
+                    → 返り値（stdout に縛られる）の 2 つの sha が review の基準。取れなければ stop_reason `pr_head_unknown`
+                  security-pr-fetch#i（security-codex-relay）: `git fetch origin <base> refs/pull/<PR>/head`（返り値は `{"done":true}` だけ）
+                  security-scope#i（security-codex-relay）: `security-review-scope <wt> <base の sha> <head の sha> --save-diff`
+                    → head_sha が GitHub の PR head か shaNow と食い違えば `head_mismatch`
                   の前提チェックを通った round で（指示ファイルを変える PR も止めずに review する — 判定者の codex は空の cwd で動き、
                   中継のコマンドと返り値は hook が縛るので、中継が PR の CLAUDE.md を受け取っても判定を偽れない）:
                   security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`
@@ -382,7 +386,7 @@ pr-iterate      → security-scope#i（security-codex-relay）: `security-review
   --disable apps --disable browser_use --disable computer_use -c model_instructions_file=<保存先>/prompt.md
   --output-schema <保存先>/schema.json -o <保存先>/result.json "<固定文>"`。可変部は保存先のパスだけ。空の `-C` で cwd の AGENTS.md を
   読ませず、shell 等を外して diff の外を読む手段を無くす
-- PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`）は `security-codex-relay` の Bash を `security-review-scope` /
+- PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`）は `security-codex-relay` の Bash を `gh pr view` / `git fetch` / `security-review-scope` /
   `security-review-codex-prep` / `codex exec`（上の固定形）/ `security-review-codex-result` の固定形の allowlist に限る（語を探す判定は
   引用の分割・`$` 展開で組み立てた語をすり抜けるので使わない）。起動形を変えるときは `codexSecurityReviewCommand` と hook を同時に変える
 - 同じ hook（matcher `Bash` と `StructuredOutput`。入力の `agent_type` が `dev-flow:security-codex-relay` のときだけ判定）は、
@@ -391,8 +395,11 @@ pr-iterate      → security-scope#i（security-codex-relay）: `security-review
   返り値は直前にそのコマンドを実行した Bash の実 stdout の 1 行目の JSON か、prompt が定める失敗時の JSON（`SECURITY_SCOPE_RELAY_FAILED` 等。
   Bash を実行していなくてよい。codex の起動は `{"done":true}` だけ）と一致するときだけ通す。transcript は Claude Code の設定ディレクトリに
   harness が書き、sandbox の中の中継・PR のプロセスからは書けない。transcript・prompt が無い・枠の形が違う・コマンド行が取れないときは deny
-- review する head は縛った scope の stdout の `head_sha` で決まる。`commit-ensure#i` 等の中継が返した `shaNow` と食い違えば
-  `head_mismatch` で止める（古い commit の sha を返されても古い tree で clear にしない）
+- review する head と base は GitHub の PR の値（縛った `gh pr view` の stdout）で決まる。手元の HEAD・`origin/<base>` は PR の worktree で
+  動く fix#i・commit-ensure#i（PR の CLAUDE.md を受け取り得る）が push しない commit や ref の書き換えで変えられるので基準にしない。
+  `commit-ensure#i` 等の中継が返した `shaNow` が GitHub の PR head と食い違えば `head_mismatch` で止める（push されていない commit・
+  古い commit の sha を返されても、GitHub に無い tree・古い tree で clear にしない）。exec-proxy の規約どおり script は通信しない
+  （sha の取得と fetch は中継の bare の gh / git の単文）
 - `--output-schema` は OpenAI の strict 形（全 object が `additionalProperties:false`・全 property が required・`maxLength` 無し）
   でないと 400 になる。結果ファイルの schema 適合は `security-review-codex-result` が判定し、適合しない結果は clear にしない
 - 返り値 `rounds` は Claude の security-reviewer と、結果を読めた Codex の review の合計

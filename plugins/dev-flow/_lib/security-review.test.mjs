@@ -23,7 +23,9 @@ import {
   SECURITY_REVIEW_BOUNDARY, codexIssuesPrompt, codexPrepPrompt, codexResultVerdict, codexRunPrompt, codexSecurityReviewCommand,
   codexSecurityReviewPrompt, codexVerdictPrompt, parseSecurityReviewArg, securityReviewPrompt, securityReviewVerdict,
 } from './security-review.mjs';
-import { SECURITY_SCOPE_RELAY_FAILED, securityScopePrompt } from './security-scope.mjs';
+import {
+  SECURITY_PR_HEAD_RELAY_FAILED, SECURITY_SCOPE_RELAY_FAILED, securityPrFetchPrompt, securityPrHeadPrompt, securityScopePrompt,
+} from './security-scope.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PREP_CLI = join(here, 'scripts', 'security-review-codex-prep.mjs');
@@ -135,7 +137,9 @@ test('[security-review][3] prep が用意した保存先から組み立てた起
 test('[security-review][3] 各中継の prompt の最終行のコマンドと、prompt が定める失敗時の JSON を hook が通す（prompt と hook の形が揃っている）', () => {
   const d = '/tmp/x/dev-flow-security-review-Ab12Cd';
   for (const [name, prompt, failed] of [
-    ['scope', securityScopePrompt({ worktree: '/tmp/wt', base: 'origin/main', head: 'HEAD', saveDiff: true }), SECURITY_SCOPE_RELAY_FAILED],
+    ['pr-head', securityPrHeadPrompt({ pr: 5, repo: 'acme/skills' }), SECURITY_PR_HEAD_RELAY_FAILED],
+    ['fetch', securityPrFetchPrompt({ base: 'release/v2', pr: 5 }), SECURITY_CODEX_RUN_DONE],
+    ['scope', securityScopePrompt({ worktree: '/tmp/wt', base: 'd'.repeat(40), head: HEAD, saveDiff: true }), SECURITY_SCOPE_RELAY_FAILED],
     ['prep', codexPrepPrompt({ reviewDir: d, headSha: HEAD, pr: 5, verifyFrom: '/tmp/x/dev-flow-security-review-Zz98Yy' }), SECURITY_CODEX_RELAY_FAILED],
     ['run', codexRunPrompt({ reviewDir: d }), SECURITY_CODEX_RUN_DONE],
     ['verdict', codexVerdictPrompt({ reviewDir: d, headSha: HEAD }), SECURITY_CODEX_VERDICT_RELAY_FAILED],

@@ -20,7 +20,7 @@
 //   （中継の session に入力由来の文字列を返さない）。exit 0。想定外で落ちたときは呼び出し側が deny にする。
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { SECURITY_SCOPE_RELAY_FAILED } from '../security-scope.mjs'
+import { SECURITY_PR_HEAD_RELAY_FAILED, SECURITY_SCOPE_RELAY_FAILED } from '../security-scope.mjs'
 import { SECURITY_CODEX_RELAY_FAILED, SECURITY_CODEX_RUN_DONE, SECURITY_CODEX_VERDICT_RELAY_FAILED } from '../security-review.mjs'
 
 // harness が workflow の prompt を載せる枠（この行の後に prompt の各行を 2 字下げして続ける）
@@ -55,6 +55,8 @@ function promptCommand(entries) {
 
 // prompt のコマンドの種類と、その prompt が定める失敗時の JSON
 function failedOutputOf(command) {
+  if (command.startsWith('gh pr view ')) return SECURITY_PR_HEAD_RELAY_FAILED
+  if (command.startsWith('git fetch ')) return SECURITY_CODEX_RUN_DONE
   if (command.startsWith('security-review-scope ')) return SECURITY_SCOPE_RELAY_FAILED
   if (command.startsWith('security-review-codex-prep ')) return SECURITY_CODEX_RELAY_FAILED
   if (command.startsWith('codex exec ')) return SECURITY_CODEX_RUN_DONE

@@ -6,7 +6,8 @@ description: |
   the fixed codex exec / security-review-codex-result as given and returns the
   JSON the prompt asks for. A PreToolUse hook denies every other Bash command
   and every return value that differs from the command's stdout.
-  Use when: pr-iterate (security_reviewer codex) dispatches security-scope#i /
+  Use when: pr-iterate (security_reviewer codex) dispatches security-pr-head#i /
+  security-pr-fetch#i / security-scope#i /
   security-codex-prep#i / security-review-codex#i / security-codex-verdict#i /
   security-codex-issues#i.
 model: haiku
@@ -23,7 +24,9 @@ prompt が指定した JSON（script なら stdout の JSON object そのもの�
 
 この agent の Bash は `hooks/pretool-codex-invocation-guard.sh` が次の固定形だけに限る（それ以外は拒否される）:
 
-- `security-review-scope <worktree> origin/<base> HEAD --save-diff`
+- `gh pr view <pr> --repo <owner>/<name> --json baseRefOid,headRefOid`
+- `git fetch origin <base> refs/pull/<pr>/head`
+- `security-review-scope <worktree> <base の sha> <head の sha> --save-diff`
 - `security-review-codex-prep <保存先> <sha> <pr>[ --verify-from <前回の保存先>]`
 - `codex exec -s read-only ... -C <保存先>/cwd ... -o <保存先>/result.json "<固定文>"`（workflow が組み立てた固定形）
 - `security-review-codex-result <保存先> <sha>[ --issues]`

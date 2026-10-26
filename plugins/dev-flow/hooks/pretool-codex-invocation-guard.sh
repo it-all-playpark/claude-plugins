@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse(Bash|StructuredOutput) hook: security review の中継（dev-flow:security-codex-relay）の Bash を固定の 4 形に限り
+# PreToolUse(Bash|StructuredOutput) hook: security review の中継（dev-flow:security-codex-relay）の Bash を固定の 6 形に限り
 # （issue #1087）、Bash と返り値をその spawn の workflow の prompt と実 stdout に縛る（issue #1116）
 #
 # 目的:
@@ -20,7 +20,9 @@
 #   2. JSON として読めない → deny。`agent_type` が `dev-flow:security-codex-relay` でない・tool が Bash / StructuredOutput でない
 #      → 無出力 exit 0
 #   3. Bash は command が次の形のどれかと完全に一致するときだけ 4 へ進む（改行・余分な空白・引用符・shell の記号を含む形は一致しない）:
-#        security-review-scope <W> origin/<base> HEAD --save-diff
+#        gh pr view <pr> --repo <owner>/<name> --json baseRefOid,headRefOid
+#        git fetch origin <base> refs/pull/<pr>/head
+#        security-review-scope <W> <sha> <sha> --save-diff
 #        security-review-codex-prep <D> <sha> <pr>[ --verify-from <D>]
 #        codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C <D>/cwd
 #          -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use
@@ -49,7 +51,9 @@ CODEX_HEAD_RE="^codex exec -s read-only --ephemeral --ignore-user-config --ignor
 CODEX_PROMPT='Run the security review described in your instructions and reply only with the JSON object defined by the output schema.'
 W_RE='(/[A-Za-z0-9._-]+)+'
 REF_RE='[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*'
-SCOPE_RE="^security-review-scope (${W_RE}) origin/(${REF_RE}) HEAD --save-diff$"
+SCOPE_RE="^security-review-scope (${W_RE}) ${SHA_RE} ${SHA_RE} --save-diff$"
+PR_HEAD_RE="^gh pr view [1-9][0-9]* --repo [A-Za-z0-9._-]+/[A-Za-z0-9._-]+ --json baseRefOid,headRefOid$"
+FETCH_RE="^git fetch origin (${REF_RE}) refs/pull/[1-9][0-9]*/head$"
 BIND="$(dirname "${BASH_SOURCE[0]}")/../_lib/scripts/security-relay-bind.mjs"
 
 emit_deny() {
@@ -110,7 +114,13 @@ ALLOWED="security-codex-relay は prompt が指定した固定のコマンドだ
 
 if [[ $CMD =~ $SCOPE_RE ]]; then
   plain_path "${BASH_REMATCH[1]}" || emit_deny "$ALLOWED"
-  plain_path "/${BASH_REMATCH[3]}" || emit_deny "$ALLOWED"
+  bind
+fi
+
+[[ $CMD =~ $PR_HEAD_RE ]] && bind
+
+if [[ $CMD =~ $FETCH_RE ]]; then
+  plain_path "/${BASH_REMATCH[1]}" || emit_deny "$ALLOWED"
   bind
 fi
 

@@ -49,7 +49,9 @@ codex_cmd() {
   printf 'codex exec -s read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check -C %s/cwd -c web_search="disabled" --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use -c model_instructions_file=%s/prompt.md --output-schema %s/schema.json -o %s/result.json "%s"' "$1" "$1" "$1" "$1" "$CODEX_PROMPT"
 }
 CODEX_CMD="$(codex_cmd "$D")"
-SCOPE_CMD="security-review-scope ${WT} origin/main HEAD --save-diff"
+SCOPE_CMD="security-review-scope ${WT} ${SHA2} ${SHA} --save-diff"
+PR_HEAD_CMD="gh pr view 5 --repo acme/skills --json baseRefOid,headRefOid"
+FETCH_CMD="git fetch origin main refs/pull/5/head"
 PREP_CMD="security-review-codex-prep ${D} ${SHA} 5"
 VERDICT_CMD="security-review-codex-result ${D} ${SHA}"
 ISSUES_CMD="security-review-codex-result ${D} ${SHA} --issues"
@@ -159,9 +161,11 @@ run_bash "他の dev-flow の agent は対象外" silent "$OTHER" "codex exec -s
 run_bash "他 plugin の agent は対象外" silent "other:agent" "rm -rf ${D}"
 run_bash "中継でも Bash・StructuredOutput 以外の tool は対象外" silent "$RELAY" "codex" "Read"
 
-echo "[security-codex-relay — 固定の 4 形だけ通す]"
+echo "[security-codex-relay — 固定の 6 形だけ通す]"
+run_bash "PR の head と base の sha" silent "$RELAY" "$PR_HEAD_CMD"
+run_bash "fetch" silent "$RELAY" "$FETCH_CMD"
+run_bash "fetch（base に / を含む）" silent "$RELAY" "git fetch origin release/v2 refs/pull/5/head"
 run_bash "scope" silent "$RELAY" "$SCOPE_CMD"
-run_bash "scope（base に / を含む）" silent "$RELAY" "security-review-scope ${WT} origin/release/v2 HEAD --save-diff"
 run_bash "prep" silent "$RELAY" "$PREP_CMD"
 run_bash "prep --verify-from" silent "$RELAY" "${PREP_CMD} --verify-from ${D2}"
 run_bash "codex exec の固定形" silent "$RELAY" "$CODEX_CMD"
@@ -190,11 +194,17 @@ run_bash "引用符で包んだ引数" deny "$RELAY" "security-review-codex-resu
 run_bash "改行を含む command" deny "$RELAY" "${VERDICT_CMD}
 rm -rf /"
 run_bash "余分な空白" deny "$RELAY" "security-review-codex-result  ${D} ${SHA}"
-run_bash "scope の head が HEAD でない" deny "$RELAY" "security-review-scope ${WT} origin/main ${SHA} --save-diff"
-run_bash "scope の --save-diff が無い" deny "$RELAY" "security-review-scope ${WT} origin/main HEAD"
-run_bash "scope の base が origin/ でない" deny "$RELAY" "security-review-scope ${WT} ${SHA} HEAD --save-diff"
-run_bash "scope の worktree に .. の要素" deny "$RELAY" "security-review-scope /tmp/../wt origin/main HEAD --save-diff"
-run_bash "scope の base に .. の要素" deny "$RELAY" "security-review-scope ${WT} origin/../main HEAD --save-diff"
+run_bash "scope の head が手元の HEAD" deny "$RELAY" "security-review-scope ${WT} ${SHA2} HEAD --save-diff"
+run_bash "scope の base が手元の origin/<base>" deny "$RELAY" "security-review-scope ${WT} origin/main ${SHA} --save-diff"
+run_bash "scope の --save-diff が無い" deny "$RELAY" "security-review-scope ${WT} ${SHA2} ${SHA}"
+run_bash "scope の sha が 40 桁でない" deny "$RELAY" "security-review-scope ${WT} ${SHA2} abc --save-diff"
+run_bash "scope の worktree に .. の要素" deny "$RELAY" "security-review-scope /tmp/../wt ${SHA2} ${SHA} --save-diff"
+run_bash "gh の field を変える" deny "$RELAY" "gh pr view 5 --repo acme/skills --json headRefOid"
+run_bash "gh に --jq を足す" deny "$RELAY" "${PR_HEAD_CMD} --jq ."
+run_bash "gh の --repo が無い" deny "$RELAY" "gh pr view 5 --json baseRefOid,headRefOid"
+run_bash "fetch の ref が PR の head でない" deny "$RELAY" "git fetch origin main refs/heads/feature/x"
+run_bash "fetch の base に .. の要素" deny "$RELAY" "git fetch origin ../main refs/pull/5/head"
+run_bash "fetch に option を足す" deny "$RELAY" "git fetch --upload-pack=x origin main refs/pull/5/head"
 
 echo "[判定できない入力は deny]"
 run_raw "JSON でない入力" deny 'not json security-codex-relay'
@@ -204,8 +214,14 @@ echo "[Bash は transcript の workflow の prompt の最終行と完全一致�
 new_transcript "$(framed "$(relay_prompt "$SCOPE_CMD")")"
 run_cmd "prompt の行と一致する scope は通す" silent "$SCOPE_CMD"
 run_raw "一致するコマンドでも dangerouslyDisableSandbox:true なら deny" deny "$(hook_input Bash "$RELAY" "$(jq -cn --arg cmd "$SCOPE_CMD" '{command:$cmd, dangerouslyDisableSandbox:true}')")"
-run_cmd "scope の base を差し替えたら deny（固定形には当たる）" deny "security-review-scope ${WT} origin/feature/x HEAD --save-diff"
-run_cmd "scope の worktree を差し替えたら deny" deny "security-review-scope /tmp/other origin/main HEAD --save-diff"
+run_cmd "scope の base を head に差し替えたら deny（固定形には当たる・空の diff になる）" deny "security-review-scope ${WT} ${SHA} ${SHA} --save-diff"
+run_cmd "scope の worktree を差し替えたら deny" deny "security-review-scope /tmp/other ${SHA2} ${SHA} --save-diff"
+new_transcript "$(framed "$(relay_prompt "$PR_HEAD_CMD")")"
+run_cmd "prompt の行と一致する gh は通す" silent "$PR_HEAD_CMD"
+run_cmd "gh の PR 番号を差し替えたら deny" deny "gh pr view 6 --repo acme/skills --json baseRefOid,headRefOid"
+new_transcript "$(framed "$(relay_prompt "$FETCH_CMD")")"
+run_cmd "prompt の行と一致する fetch は通す" silent "$FETCH_CMD"
+run_cmd "fetch の base を差し替えたら deny" deny "git fetch origin feature/x refs/pull/5/head"
 new_transcript "$(framed "$(relay_prompt "$PREP_CMD")")"
 run_cmd "prep の保存先を差し替えたら deny" deny "security-review-codex-prep ${D2} ${SHA} 5"
 new_transcript "$(framed "$(relay_prompt "$VERDICT_CMD")")"
@@ -255,6 +271,19 @@ run_so "scope: reviewer_context_changed を false にしたら deny" deny "$(jq 
 run_so "scope: key を落としたら deny" deny "$(jq -c 'del(.review_dir)' <<<"$SCOPE_OUT")"
 run_so "scope: 失敗時の JSON は Bash を実行した後も通す" silent '{"ok":false,"target":true,"reasons":[],"reviewer_context_changed":true,"error":"relay_failed"}'
 run_so "scope: 失敗時の JSON に成功の値を混ぜたら deny" deny '{"ok":false,"target":false,"reasons":[],"reviewer_context_changed":true,"error":"relay_failed"}'
+
+PR_HEAD_OUT="{\"baseRefOid\":\"${SHA2}\",\"headRefOid\":\"${SHA}\"}"
+new_transcript "$(framed "$(relay_prompt "$PR_HEAD_CMD")")"
+run_so "pr-head: Bash を実行せずに sha を返したら deny" deny "$PR_HEAD_OUT"
+run_so "pr-head: Bash を実行していなくても prompt の失敗時の JSON は通す" silent '{"ok":false,"error":"relay_failed"}'
+add_bash "$PR_HEAD_CMD" "$PR_HEAD_OUT"
+run_so "pr-head: stdout と一致する返り値は通す" silent "$PR_HEAD_OUT"
+run_so "pr-head: headRefOid を手元の commit に差し替えたら deny" deny "$(jq -c --arg s "$SHA2" '.headRefOid = $s' <<<"$PR_HEAD_OUT")"
+run_so "pr-head: baseRefOid を head に差し替えたら deny" deny "$(jq -c --arg s "$SHA" '.baseRefOid = $s' <<<"$PR_HEAD_OUT")"
+new_transcript "$(framed "$(relay_prompt "$FETCH_CMD")")"
+add_bash "$FETCH_CMD" ""
+run_so "fetch: {\"done\":true} は通す" silent '{"done":true}'
+run_so "fetch: それ以外の値は deny" deny '{"done":true,"ok":true}'
 
 VERDICT_OUT="{\"ok\":true,\"cleared\":false,\"reason\":\"blocking\",\"reviewed_sha\":\"${SHA}\",\"counts\":{\"critical\":1,\"major\":0,\"minor\":0}}"
 new_transcript "$(framed "$(relay_prompt "$VERDICT_CMD")")"
