@@ -1,119 +1,88 @@
 # analyze-issue（issue の取得と決定論 parse）
 
 `analyze-issue`（`bin/analyze-issue` → `dev-flow/scripts/analyze-issue.sh`）は GitHub issue を取得し、
-分析 JSON を stdout に出す exec-proxy。issue の取得（`gh issue view <n> [--repo R] --json ...`）は
-script の中で行う — 呼び出し側は issue を先に取得せず、コマンドに redirect / pipe / `cd`・`bash`・env
-前置 / `&&` 連結を付けない。
+分析 JSON を stdout に出す exec-proxy。issue の取得は script の中で行う — 呼び出し側は issue を先に
+取得せず、コマンドに redirect / pipe / `cd`・`bash`・env 前置 / `&&` 連結を付けない。
 
-呼び出し元は 2 つ:
+dev-flow の通常経路では prerun（`dev-flow/scripts/prerun-analyze.sh`）が `--contract` で呼び、その出力から
+Setup 末尾の analyze ゲートが読む `args.setup.analyze` を組む。ゲートが引いたときだけ
+`analyze-clarify#<issue>`（dev-runner）が `--depth comprehensive --dump-body <path>` で issue を読み直し、
+質問文を起こす。
 
-- prerun（`prerun-analyze.sh`）が `--contract` で呼ぶ。dev-flow の通常経路の issue 分析はこれだけ
-- analyze ゲートが引いたときの `analyze-clarify#<issue>`（dev-runner）が
-  `analyze-issue <n> [--repo R] --depth comprehensive --dump-body <path>` で issue を読み、質問文を起こす
+本ファイルは出力の意味と、判定できないときの fail-closed の扱いだけを書く。オプション・出力キーの一覧・
+本文の切断上限と切断マーカーの文言・AC 見出しの許容表記・breaking キーワードは `analyze-issue.sh` が、
+Jev に聞く質問・comment の分類・確信の閾値は `prerun-analyze.sh`（冒頭コメントとコード）が正で、ここには
+写さない — 写しは script を変えるたびにずれる。
 
-```bash
-analyze-issue <issue-number> [--repo <owner/repo>] [--depth minimal|standard|comprehensive | --contract] [--dump-body <file>]
-```
+## prerun が読む出力の意味
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--repo` | (cwd の repo) | `gh issue view --repo` へそのまま渡す `owner/repo`。dev-flow は `REPO` を渡して cwd 非依存にする |
-| `--depth` | `standard` | 出力の深さ（下表） |
-| `--contract` | off | T1/T2 契約の決定論 parse（下記）。`--depth` より優先 |
-| `--dump-body` | (none) | 切断時のみ body 全文を書き出すファイルパス（standard / comprehensive のみ有効） |
+`--contract` の出力のうち prerun が読むのは、次の意味を持つ生シグナル:
 
-`--depth standard|comprehensive` で呼ぶときは `--dump-body <path>` を付ける。`scope_truncated` /
-`body_preview_truncated` / `issue_body_truncated` のいずれかが true のときだけ body 全文を `<path>` へ書き、
-実際に書いた絶対パスを `body_dump_path` に返す（切断なしなら `null`、ファイルは作らない）。
-`body_dump_path` が null でなければそのファイルを Read してから要件を読む — issue の再取得はしない。
+- **要件**: AC 節の項目（`acceptance_criteria`）、AC 節を除いた本文（`scope`）、AC 節を含む本文
+  （`issue_body`。Implement が dev-implementer へ issue 本文として渡す）。AC 見出しが許容表記に一致しない
+  ときは `acceptance_criteria` を空のまま、その見出し行を `ac_heading_near_miss` に載せる
+- **互換性の手がかり**: title + body の決定論 keyword scan（`breaking_keyword_scan`）と、title の
+  conventional prefix の `!`（`title_breaking_marker`）
+- **comment**: `comments`（各 comment の author・`author_association`・作成時刻・本文）と件数、issue 報告者
+  （`issue_author`）、issue の最終更新時刻（`issue_updated_at`。comment の後に body が編集されたかの
+  前後関係に使う）
+- **切断の事実**: 本文の抜粋を上限で切ったかの boolean と、切る前の総文字数
 
-## depth ごとの出力
+prerun はこれを決定論で処理し、下記の判定だけを Jev に回して、ゲートに渡す
+`comment_overrides` / `comment_conflicts` / `uncertain` / `breaking_change` / `ac_observational` を組む。
 
-| Level | Output |
-|-------|--------|
-| `minimal` | `issue_number`, `title`, `type`, `state`, `labels`, `milestone`, `breaking_keyword_scan`, `comment_count`, `issue_author` |
-| `standard` | minimal + `acceptance_criteria`, `requirements`, `comments`, `ac_heading_near_miss`, `warnings`, `body_preview`, `body_preview_truncated`, `body_total_chars`, `scope`, `scope_truncated`, `scope_total_chars`, `issue_body`, `issue_body_truncated`, `body_dump_path` |
-| `comprehensive` | standard の `body_preview` を `body_full`（body 全文）に置き換え、`affected_files`, `components` を足す |
+## prerun が Jev に回す理由
 
-- `type`: label から決める（`bug` → `fix` / `enhancement`・`feature` → `feat` / `refactor` → `refactor` /
-  `doc` → `docs` / 既定 `feat`）
-- `acceptance_criteria`: body の checkbox（`- [ ]` / `- [x]`）と番号付き項目、最大 20 件
-- `comments`: `[{author, author_association, created_at, body}]`、先頭 50 件。0 件でも `[]`
-- `warnings`: AC 0 件・切断・AC 見出しの near-miss を列挙する（AC 0 件を空配列のまま黙らせない）
-- `affected_files` / `components`: body からの正規表現抽出、各最大 10 件
+決定論の parse では次の 3 つを判定できない: 互換性に関わる語が title / body にあるときに非互換な変更・
+既存データの変換が本当に要るか、comment が body の要件を訂正しているか、AC が実行結果の観測を要するか。
+LLM に issue を転写させて読ませる工程は持たず、この 3 つだけを Jev に回す。Jev は有界な確率だけを返す
+判定モデルなので、確率を閾値で決定論の値に落とし、確信の無い判定は人間へ返す（下記の fail-closed）。
+転写する工程が無いので、転写事故を突き合わせる工程（取得元の突合・comment 件数の突合・切断時の再実行）も
+持たない。
 
-`breaking_keyword_scan` は全 depth と contract に出る決定論 keyword scan
-（`breaking|incompatible|migration|破壊的|非互換`、title + body 全文、大文字小文字無視）。dev-flow の
-shape floor / merge tier HOLD の breaking 判定入力の一つ（`req.breaking_change` との OR）。
+どの入力を Jev に回すか、質問文、分類、閾値は `prerun-analyze.sh` が持つ。
 
-## Contract mode（`--contract`）
+残余リスク: 互換性に関わる語を含まない実質的な非互換変更は Jev にも回らず、realized diff の danger-grep と
+merge tier が補償する（意図的な設計判断）。
 
-T1/T2 契約準拠 issue の決定論 parse。T1 = AC 見出し（`## 受け入れ基準` / `受け入れ条件` / `受入基準` /
-`受入条件` / `Acceptance Criteria` / `完了条件`、h2〜h6）+ checkbox 項目 1 件以上。T2 = 同見出し + 素の
-箇条書き（`- ` / `* ` / 番号付き）1 件以上。h1 は `ac-lint.sh` の HEADING_RE が h2〜h6 のみを受理するため
-AC 見出しとして扱わない（許容表記は `ac-lint.sh` と一致させる）。一致しない AC 風見出しは
-`ac_heading_near_miss` に載り、`acceptance_criteria` は空のまま analyze ゲート（AC 空）が
-needs_clarification に倒す。
+## 判定できないときの fail-closed
 
-| Key | Description |
-|-----|-------------|
-| `contract` | `t1` / `t2` / `none` |
-| `eligible` | boolean |
-| `ineligible_reason` | 不合格理由（`eligible: false` のときだけ） |
-| `issue_number` | issue 番号 |
-| `title` | issue title |
-| `issue_type` | `feat`/`fix`/`docs`/`refactor`/`chore`/`test`/`perf`/`ci`（title の conventional prefix → label の `type`） |
-| `acceptance_criteria` | AC 節の項目（marker 除去済み、最大 20 件） |
-| `scope` | AC 節を除く body の先頭 4000 字（切断マーカーは下記） |
-| `scope_truncated` | boolean、常時出力。`scope` が切断されたか |
-| `scope_total_chars` | 整数、常時出力。AC 節を除く body の総文字数（切断前） |
-| `issue_body` | AC 節を含む body の先頭 4000 字。dev-flow の Implement が dev-implementer へ issue 本文として渡す |
-| `issue_body_truncated` | boolean、常時出力。`issue_body` が切断されたか |
-| `breaking_keyword_scan` | 決定論 keyword scan の結果 |
-| `title_breaking_marker` | boolean、常時出力。title の conventional prefix に `!`（`feat!:` 等）があるか |
-| `comment_count` | issue comments 件数 |
-| `issue_author` | issue 報告者の login（不明は `""`） |
-| `issue_updated_at` | issue の `updatedAt`（prerun が最新 comment との前後関係を Jev に渡す） |
-| `comments` | `[{author, author_association, created_at, body}]`（先頭 50 件、0 件でも `[]`） |
-| `ac_heading_near_miss` | 許容表記に一致しない AC 風見出し行（0 件でも `[]`） |
+判定できない入力を「問題なし」と同一視しない。analyze ゲートは AC 空・`comment_conflicts` 非空・
+`uncertain` 非空のどれかで needs_clarification に倒し、人間に返す。
 
-**Eligibility**: `contract` ∈ `{t1, t2}` かつ `comment_count === 0` かつ `scope_truncated === false` かつ
-`issue_type` ∈ `{feat, fix, docs, refactor, chore, test, perf, ci}` かつ title に `!` なし かつ
-`breaking_keyword_scan === false`。`ineligible_reason` は最初に不合格になった 1 理由だけを載せる要約で、
-不合格でも exit 0。prerun（`prerun-analyze.sh`）は `eligible` ではなく生シグナル（`acceptance_criteria` /
-`breaking_keyword_scan` / `title_breaking_marker` / `comment_count` / `comments` / `issue_author`）を読み、
-決定論で解けない 3 理由（breaking keyword hit / comments present / 観測型 AC の正規表現の絞り込み hit）だけを
-Jev の有界判定に回す。
-
-残余リスク: breaking keyword を含まない実質 breaking の issue は Jev にも回らず、realized diff の
-danger-grep と merge tier が補償する（意図的な設計判断）。
+- prerun の analyze 段の失敗（issue を取得できない・JSON 不正・blocker を読めない）は `ok:false` で返り、
+  ゲートは spawn せず needs_clarification で終える
+- Jev が応答しない・低確信・無効（未導入・`DEVFLOW_JEV_DISABLE=1`）の互換性と comment の判定は
+  `uncertain` に、権限の無い override・conflict・低確信の comment は `comment_conflicts` に積む。決定論は
+  意味的な矛盾をどちらに解くべきか判定できず、LLM に黙って片方を採らせると、訂正が実装に反映されないまま
+  進む
+- 観測型 AC は（実行環境に node が無くて絞り込みを実行できないときを除き）`uncertain` に積まず、判定できない AC を null にしてゲート通過後に AC 文面だけを読む
+  `ac-observational#<issue>` に回し、そこでも決まらなければ観測型として扱う。観測型への誤判定は人手 AC 待ちの
+  HOLD で止まるだけだが、逆は evaluator のコード読みだけで達成扱いになる
 
 ## comment の override 判定に使う `author_association` / `issue_author`
 
-`author_association` は `gh` の `authorAssociation`（`OWNER`/`MEMBER`/`COLLABORATOR`/`NONE` 等）を verbatim
-転写する。`issue_author` は issue 報告者の login（`author.login`）。prerun はこの 2 つで comment を
-`comment_overrides` に採るかを決める（issue 報告者本人 または OWNER/MEMBER/COLLABORATOR に限る。判定は
-決定論、comment の意味分類は Jev の `{override, conflict, unrelated}`）。override だが権限なし / conflict /
-低確信の comment は `comment_conflicts` に入り、dev-flow はそれが非空なら needs_clarification で終端する。
+`author_association` は `gh` の `authorAssociation` を verbatim 転写し、`issue_author` は issue 報告者の
+login。prerun はこの 2 つで、Jev が override と判定した comment を `comment_overrides` に採るかを決定論で
+決める（issue 報告者本人か、repo の権限を持つ投稿者に限る）。権限の無い override は `comment_conflicts` に
+入る。
 
 これは fail-closed の一部: public repo では誰でも comment を書けるので、権限で絞らないと任意の外部
 comment が issue body から抽出した要件を黙って上書きできる。`author` / `author_association` /
 `issue_author` は取得できない場合も `null` ではなく `""` を返す。空文字列は「不明」であって一致ではない
 ため、override 採用の判定材料にならない。
 
-`comments` キーが無い / 配列でない取得結果は「comment 0 件」と同一視せず `die_json` で落とす — 取得の
-欠落を comment 無しとして通すと、comment による訂正の読み落としが黙って起きる。
+`comments` キーが無い / 配列でない取得結果は「comment 0 件」と同一視せず、`analyze-issue.sh` が非 0 で
+落ちる（prerun は `ok:false`）— 取得の欠落を comment 無しとして通すと、comment による訂正の読み落としが
+黙って起きる。
 
-## 4000 字切断とマーカー
+## 本文の切断
 
-`scope` / `issue_body` の 4000 字、`body_preview` の 500 字は context 予算の上限で、値自体は変えない。
-切断は黙って行わない: 切断時は本文末尾に次のマーカーを付ける。
+本文の抜粋（`scope` / `issue_body` 等）は context 予算のために上限で切る。切断は黙って行わない: 切った
+抜粋の末尾にマーカーを付け、加えて切断の boolean と総文字数を常時出力する — マーカー文字列を見ない下流
+（boolean だけを見る決定論ゲート）にも切断の事実が届く。`--dump-body <path>` を付けた呼び出しは、切断が
+あったときだけ body 全文をそのファイルに書いて `body_dump_path` に返す（無ければ `null`）。
+`analyze-clarify` はそのファイルを Read してから要件を読み、issue を再取得しない。
 
-```
-[TRUNCATED: <field> shows the first <N> of <total> chars...; the remainder was NOT included. Do not treat anything absent from this excerpt as unspecified — read the full body from the body_dump_path file (--dump-body) before raising ambiguities]
-```
-
-加えて `scope_truncated` / `body_preview_truncated` / `issue_body_truncated` と `scope_total_chars` /
-`body_total_chars` を常時出力する — マーカー文字列を見ない下流（boolean だけを見る決定論ゲート）にも
-切断の事実が届く。切断が黙っていると、issue 末尾に書かれた確定仕様が抜粋の外へ落ち、それを読めない
-analyze が needs_clarification を返し続ける。人間が回答を追記するほど末尾に押し出されて悪化する。
+切断が黙っていると、issue 末尾に書かれた確定仕様が抜粋の外へ落ち、それを読めない analyze が
+needs_clarification を返し続ける。人間が回答を追記するほど末尾に押し出されて悪化する。

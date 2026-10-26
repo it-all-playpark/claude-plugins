@@ -106,23 +106,56 @@ test("dev-runner.md: 役割記述が agentType: 'dev-runner' の実呼び出し�
   );
 });
 
-test('references/analyze-issue.md: analyze-issue.sh が出す全キー・切断上限とマーカー・override 判定の fail-closed を載せる', () => {
+test('references/analyze-issue.md: 判定できないときの fail-closed の扱いと理由を書き、値は写さず analyze-issue.sh / prerun-analyze.sh を指す', () => {
   const sh = readFileSync(join(pluginRoot, 'dev-flow/scripts/analyze-issue.sh'), 'utf8');
+  const prerunAnalyzeSh = readFileSync(join(pluginRoot, 'dev-flow/scripts/prerun-analyze.sh'), 'utf8');
   const md = readFileSync(join(pluginRoot, 'dev-flow/references/analyze-issue.md'), 'utf8');
-  // depth 出力（minimal の 1 行 echo と standard / comprehensive の heredoc）と contract 出力（jq の object）のキー
-  const depthKeys = [...sh.matchAll(/^ {2}"(\w+)": /gm), ...sh.matchAll(/\\"(\w+)\\":/g)].map((m) => m[1]);
-  const contractKeys = [...sh.matchAll(/^ {10}(\w+): \$\w+,?$/gm)].map((m) => m[1]);
-  assert.ok(depthKeys.includes('body_dump_path') && depthKeys.includes('state'), `depth 出力のキーが読めない: ${depthKeys.join(', ')}`);
-  assert.ok(contractKeys.includes('contract') && contractKeys.includes('issue_updated_at'), `contract 出力のキーが読めない: ${contractKeys.join(', ')}`);
-  for (const key of new Set([...depthKeys, ...contractKeys, 'ineligible_reason'])) {
-    assert.ok(md.includes(`\`${key}\``), `analyze-issue.md に出力キー ${key} が無い`);
+  const flat = md.replace(/\n/g, '');
+
+  // 値の正は script。md はそこを指す
+  for (const script of ['analyze-issue.sh', 'prerun-analyze.sh']) {
+    assert.ok(md.includes(`\`${script}\``), `analyze-issue.md が ${script} を指していない`);
   }
+  // 写しを持たない: 切断上限・切断マーカーの文言・Jev の閾値・comment の分類（script から導出した値が md に現れない）
   const maxChars = sh.match(/^SCOPE_MAX_CHARS=(\d+)$/m)?.[1];
   assert.ok(maxChars, 'analyze-issue.sh に SCOPE_MAX_CHARS が無い');
-  assert.ok(md.includes(`${maxChars} 字`), `analyze-issue.md に切断上限 ${maxChars} 字が無い`);
-  assert.ok(sh.includes('[TRUNCATED: %s shows the first') && md.includes('[TRUNCATED: <field> shows the first'), '切断マーカーの形が script と一致しない');
+  assert.ok(!md.includes(maxChars), `analyze-issue.md が切断上限 ${maxChars} を書き写している`);
+  assert.ok(sh.includes('[TRUNCATED: '), 'analyze-issue.sh に切断マーカーが無い');
+  assert.ok(!md.includes('[TRUNCATED:'), 'analyze-issue.md が切断マーカーの文言を書き写している');
+  const confMin = prerunAnalyzeSh.match(/^JEV_CONF_MIN="([\d.]+)"$/m)?.[1];
+  assert.ok(confMin, 'prerun-analyze.sh に JEV_CONF_MIN が無い');
+  assert.ok(!md.includes(confMin), `analyze-issue.md が Jev の閾値 ${confMin} を書き写している`);
+  const criteria = prerunAnalyzeSh.match(/"criteria":\{(.*?)\}\}\}'/)?.[1];
+  const choices = [...(criteria ?? '').matchAll(/"(\w+)":"/g)].map((m) => m[1]);
+  assert.ok(choices.includes('override') && choices.includes('resolved'), `prerun-analyze.sh の comment 分類が読めない: ${choices.join(', ')}`);
+  assert.ok(!choices.every((c) => md.includes(c)), `analyze-issue.md が comment の分類（${choices.join(' / ')}）を書き写している`);
+
+  // fail-closed の扱いと理由
+  const failClosed = sectionOf(md, '## 判定できないときの fail-closed').replace(/\n/g, '');
+  for (const s of ['AC 空', '`comment_conflicts` 非空', '`uncertain` 非空', 'needs_clarification', '`ok:false`']) {
+    assert.ok(failClosed.includes(s), `fail-closed の節に ${s} が無い`);
+  }
+  assert.ok(failClosed.includes('LLM に黙って片方を採らせると'), 'fail-closed の節に理由が無い');
   const override = sectionOf(md, '## comment の override 判定に使う');
   assert.ok(override.includes('`author_association`') && override.includes('`issue_author`') && override.includes('fail-closed'), 'override 判定の fail-closed の理由が無い');
+  assert.ok(flat.includes('「comment 0 件」と同一視せず'), 'comments 欠落を comment 0 件と同一視しない fail-closed が無い');
+  const truncation = sectionOf(md, '## 本文の切断').replace(/\n/g, '');
+  assert.ok(truncation.includes('切断は黙って行わない') && truncation.includes('`body_dump_path`'), '本文の切断を黙って行わない扱いが無い');
+});
+
+test('references: prerun が Jev に回す理由は analyze-issue.md の 1 か所に書き、exec-proxy.md の analyze 行はそこを指す', () => {
+  const refDir = join(pluginRoot, 'dev-flow/references');
+  const md = readFileSync(join(refDir, 'analyze-issue.md'), 'utf8');
+  const reason = sectionOf(md, '## prerun が Jev に回す理由').replace(/\n/g, '');
+  const anchor = 'Jev は有界な確率だけを返す';
+  assert.ok(reason.includes(anchor), `analyze-issue.md の Jev に回す理由の節に「${anchor}」が無い`);
+  const holders = readdirSync(refDir)
+    .filter((f) => f.endsWith('.md'))
+    .filter((f) => readFileSync(join(refDir, f), 'utf8').replace(/\n/g, '').includes(anchor));
+  assert.deepEqual(holders, ['analyze-issue.md'], `Jev に回す理由が analyze-issue.md 以外にもある: ${holders.join(', ')}`);
+  const row = readFileSync(join(refDir, 'exec-proxy.md'), 'utf8').split('\n').find((l) => l.startsWith('| analyze（prerun'));
+  assert.ok(row, 'exec-proxy.md に analyze の行が無い');
+  assert.ok(row.includes('Jev に回す理由') && row.includes('`analyze-issue.md`'), `exec-proxy.md の analyze 行が analyze-issue.md の Jev に回す理由を指していない: ${row}`);
 });
 
 // issue #897: atlas / pipeline / rules / SKILL.md / AGENTS.md の記述を実装に合わせて pin する。
