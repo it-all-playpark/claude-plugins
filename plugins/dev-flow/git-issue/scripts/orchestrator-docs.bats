@@ -32,6 +32,10 @@
 #
 # 起票時の AC の人手判定（issue #1026）:
 # - Phase 6 の --kind agent と軽い経路のゲートに、dev-flow と同じ ac-actor.mjs の判定が載る
+#
+# dev-flow の security review の脅威モデル（PR の作者が攻撃者）:
+# - devils-advocate-checklist.md の Blocking Categories に、PR が書き換えられる入力を根拠に gate を外す・
+#   検証を省く AC を止める項目がある
 
 setup() {
     command -v python3 >/dev/null || skip "python3 not available"
@@ -377,4 +381,9 @@ frontmatter_value() {
     # 載せた判定は create_issue.py が ac-actor.mjs を import する CLI を呼んで行う
     grep -q '"ac-actor-classify.mjs"' "$SCRIPT"
     grep -q "from '../ac-actor.mjs'" "$REPO_ROOT/plugins/dev-flow/_lib/scripts/ac-actor-classify.mjs"
+}
+
+@test "(27) devils-advocate-checklist の Blocking Categories に、PR が書き換えられる入力で gate を外す・検証を省く AC を止める項目がある" {
+    section="$(awk '/^## Blocking Categories/ { f = 1; next } f && /^## / { exit } f { print }' "$CHECKLIST")"
+    [[ "$section" == *"PR が書き換えられる入力"*"merge gate・HOLD を外す、または検証"*"を省くよう指示している"* ]]
 }
