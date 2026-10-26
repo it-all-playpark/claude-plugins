@@ -16,6 +16,9 @@
 //   (H) 対象の run は各 round で security-scope#i → security-review#i を review#i と同じ parallel() で同じ head に対して起動し、
 //       review の blocking と security の critical/major を 1 回の fix#i にまとめる。LGTM は同じ head の review approve・CI・
 //       security clear がそろった round だけ（issue #1100）
+//   (I) fix#i が渡された security の指摘を deferred_security_topics で人の判断に返したら、applied を見る前にその場で
+//       security_unresolved で終え、次の review・security review を spawn しない。件数は終端サマリーと security_review.deferred に
+//       載り、topic は載らない（issue #1121）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -65,7 +68,7 @@ test('[security-review][A] args.security_review が無い単体起動は対象�
   assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1', 'security-review#1']);
   assert.equal(calls.find((c) => c.label === 'security-review#1').agentType, 'dev-flow:security-reviewer');
   assert.equal(result.status, 'lgtm');
-  assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0 });
+  assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0, deferred: 0 });
 });
 
 test('[security-review][A] 起動時が対象外で LGTM 前の判定も対象外なら security-reviewer を spawn せず lgtm（対象外を返り値に出す）', async () => {
@@ -102,7 +105,7 @@ test('[security-review][A] run 中の 1 回目の判定が対象なら、2 回�
   });
   assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1', 'security-review#1', 'security-scope#2', 'security-review#2']);
   assert.equal(result.status, 'lgtm');
-  assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 2, critical: 0, major: 0, minor: 0 });
+  assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 2, critical: 0, major: 0, minor: 0, deferred: 0 });
 });
 
 test('[security-review][A] 判定はその時点の PR head の `origin/<base>...<head>` の diff で取る（fix 後は新しい head）', async () => {
@@ -189,7 +192,7 @@ test('[security-review][B] critical/major 0 件でも reviewed_sha が今の hea
 test('[security-review][B] minor だけなら clear、結果が返らなければ clear にしない', async () => {
   const minorOnly = await run({ overrides: { 'security-review#1': reviewWith([finding('hardening', 'minor')]) } });
   assert.equal(minorOnly.result.status, 'lgtm');
-  assert.deepEqual(plain(minorOnly.result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 1 });
+  assert.deepEqual(plain(minorOnly.result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 1, deferred: 0 });
   for (const review of [null, () => { throw new Error('StructuredOutput 未返却'); }]) {
     const { result } = await run({ overrides: { 'security-review#1': review } });
     assert.equal(result.status, 'security_unresolved');
@@ -228,7 +231,7 @@ test('[security-review][C] critical/major が上限回数まで残れば max_rea
     },
   });
   assert.equal(result.status, 'max_reached');
-  assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: null, rounds: 2, critical: 0, major: 1, minor: 0 });
+  assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: null, rounds: 2, critical: 0, major: 1, minor: 0, deferred: 0 });
   assert.ok(summaryOf(calls).includes('**Security review**: ❌ 未完了（敵対的 review 2 回・最終 critical 0 / major 1 / minor 0）'));
 });
 
@@ -260,7 +263,7 @@ test('[security-review][C] 対象の run が ci_pending / ci_error で終われ�
     const { result, calls } = await run({ overrides });
     assert.equal(result.status, want);
     // security review は review#1 と並列に同じ head で走り、head は変わっていないので clear のまま返す
-    assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0 }, want);
+    assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0, deferred: 0 }, want);
     assert.ok(summaryOf(calls).includes('**Security review**: ✅ clear（敵対的 review 1 回・最終 critical 0 / major 0 / minor 0）'), want);
   }
 });
@@ -269,7 +272,7 @@ test('[security-review][C] clear の後に fix へ進んで fix_failed で終わ
   const blocking = { decision: 'request-changes', issues: [{ severity: 'major', topic: 't', file: 'a.js', description: 'd', suggestion: 's' }], summary: 'ng' };
   const { result, calls } = await run({ overrides: { 'review#1': blocking, 'fix#1': { applied: false, summary: 'できない' } } });
   assert.equal(result.status, 'fix_failed');
-  assert.deepEqual(plain(result.security_review), { target: true, status: 'not_run', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0 });
+  assert.deepEqual(plain(result.security_review), { target: true, status: 'not_run', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0, deferred: 0 });
   assert.ok(summaryOf(calls).includes('**Security review**: ❌ 未完了（LGTM の前の review に到達していない）'));
 });
 
@@ -330,7 +333,7 @@ test('[security-review][D] PR が reviewer に読み込まれる指示ファイ�
   ]) {
     const { result, calls } = await run({ overrides: { 'security-scope#1': () => scope } });
     assert.equal(result.status, 'security_unresolved', JSON.stringify(scope));
-    assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0, major: 0, minor: 0 });
+    assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0, major: 0, minor: 0, deferred: 0 });
     assert.ok(!calls.some((c) => c.label.startsWith('security-review#')));
     // 終端サマリーは「clear にならなかった」ではなく「自動 review をしていない」と出す（指摘があったと読ませない）
     const body = summaryOf(calls);
@@ -402,7 +405,7 @@ test('[security-review][F] Codex 経路は reviewer_context_changed でも止め
     const { result, calls } = await run({ args: opts.args, overrides: { ...opts.overrides, ...codexRound(1, []) } });
     assert.deepEqual(labelsOf(calls, 'security-'), ['security-pr-head#1', 'security-pr-fetch#1', 'security-scope#1', 'security-codex-prep#1', 'security-review-codex#1', 'security-codex-verdict#1'], name);
     assert.equal(result.status, 'lgtm', name);
-    assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0 }, name);
+    assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0, deferred: 0 }, name);
   }
 });
 
@@ -434,7 +437,7 @@ test('[security-review][F] reviewer_context_changed の round で Codex が判�
     });
     assert.ok(!calls.some((c) => c.label.startsWith('security-review#')), `${name}: Claude 経路の security-reviewer を spawn した`);
     assert.equal(result.status, 'security_unresolved', name);
-    assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: 'reviewer_context_codex_unavailable', rounds: 0, critical: 0, major: 0, minor: 0 }, name);
+    assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: 'reviewer_context_codex_unavailable', rounds: 0, critical: 0, major: 0, minor: 0, deferred: 0 }, name);
   }
 });
 
@@ -583,7 +586,7 @@ test('[security-review][F] Codex の critical/major は fix に回し、次の r
   assert.ok(calls.find((c) => c.label === 'security-review-codex#2').prompt.includes(`-o ${dir2}/result.json "`), 'round ごとに新しい保存先の result.json に書かせる');
   assert.ok(calls.find((c) => c.label === 'fix#1').prompt.includes('hardlink-write'), 'Codex の指摘を fix に渡す');
   assert.equal(result.status, 'lgtm');
-  assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 2, critical: 0, major: 0, minor: 0 });
+  assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 2, critical: 0, major: 0, minor: 0, deferred: 0 });
   const body = summaryOf(calls);
   assert.ok(!body.includes('ATTACK-PATH') && !body.includes('hardlink-write'), 'Codex の指摘の本文を公開コメントに載せない');
 });
@@ -624,8 +627,13 @@ test('[security-review][G] security review の指摘を含む fix#i にだけ修
   });
   const secFix = sec.calls.find((c) => c.label === 'fix#1').prompt;
   assert.ok(secFix.includes(SECURITY_FIX_GUIDANCE), secFix);
-  assert.ok(secFix.includes('人に手作業を課す修正'), secFix);
-  assert.ok(secFix.includes('1 件も直さなかったときは applied:false'), secFix);
+  assert.ok(secFix.includes('人に手作業を課す修正（hash の固定・所有者や権限を指定した配置・新しい設定項目とその手順書）はしない'), secFix);
+  // 禁止するのは「同じ入力に同じ種類の検査を重ねる」増築で、縛られていない入力元を縛る修正は対象外（issue #1121）
+  assert.ok(SECURITY_FIX_GUIDANCE.includes('既に検査している同じ入力に、同じ種類の検査を重ねる修正（同じ値を別の形でもう一度確かめる等）もしない'), SECURITY_FIX_GUIDANCE);
+  assert.ok(SECURITY_FIX_GUIDANCE.includes('縛られていない入力元を縛る修正は、上の禁止の対象外である（例: 自由な返り値や手元の状態から取っていた値を、'
+    + '縛った中継で取り直し、hook でその中継の実 stdout に縛る）'), SECURITY_FIX_GUIDANCE);
+  // 直さなかった指摘は deferred_security_topics で返させる
+  assert.ok(SECURITY_FIX_GUIDANCE.includes('直さなかった指摘は topic（指摘の topic 文字列をそのまま）を deferred_security_topics に入れ、理由を summary に書く'), SECURITY_FIX_GUIDANCE);
 
   const reviewOnly = await run({
     args: { pr: '5', security_review: { target: false, reasons: [], reviewer_context_changed: false } },
@@ -760,4 +768,99 @@ test('[security-review][H] LGTM は同じ head の review approve・CI・securit
   });
   assert.equal(maxed.result.status, 'max_reached');
   assert.equal(maxed.result.security_review.status, 'not_run');
+});
+
+// ---- (I) fix が security の指摘を人の判断に返したらその場で終える（issue #1121）----
+
+const deferFix = (applied, topics) => ({ applied, files: applied ? ['scripts/set-names.sh'] : [], summary: '人に返す', deferred_security_topics: topics });
+const nextRoundLabels = (calls) => calls.filter((c) => /^(review|security-scope|security-review)#2/.test(c.label)).map((c) => c.label);
+const DEFERRED_LINE = 'security の指摘 1 件を fix が直さずに人の判断に返した';
+
+test('[security-review][I] fix が applied:true で security の指摘を人に返したら、commit 保証と fixes_applied の加算をしてから次の review・security review を spawn せずに security_unresolved で終える', async () => {
+  const { result, calls } = await run({
+    args: { pr: '5', nested: NESTED_A },
+    overrides: {
+      // review の blocking と security の指摘を同じ fix#1 に渡し、fix は review の指摘だけ直して security の 1 件を人に返す
+      'review#1': reviewRequestChanges,
+      'security-review#1': reviewWith([finding('hardlink-write'), finding('git-config-write', 'major')]),
+      'fix#1': deferFix(true, ['hardlink-write']),
+      'commit-ensure#1': pushedTo(SHA_B),
+    },
+  });
+  assert.deepEqual(nextRoundLabels(calls), [], '人に返した後に次の round の review を spawn した');
+  assert.ok(calls.some((c) => c.label === 'commit-ensure#1'), 'applied:true なのに commit を保証していない');
+  assert.equal(result.status, 'security_unresolved');
+  assert.equal(result.fixes_applied, 1);
+  assert.equal(result.fix_terminal_reason, null);
+  assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: null, rounds: 1, critical: 1, major: 1, minor: 0, deferred: 1 });
+  const body = summaryOf(calls);
+  assert.ok(body.includes(`**Security review**: ❌ 未完了（敵対的 review 1 回・最終 critical 1 / major 1 / minor 0）— ${DEFERRED_LINE}。`), body.slice(0, 2000));
+  for (const secret of ['ATTACK-PATH', 'hardlink-write', 'git-config-write']) {
+    assert.ok(!body.includes(secret), `終端サマリーに人に返した指摘（${secret}）が載っている`);
+    assert.ok(!JSON.stringify(result).includes(secret), `返り値に人に返した指摘（${secret}）が載っている`);
+  }
+});
+
+test('[security-review][I] fix が applied:false でも security の指摘を人に返したなら fix_failed ではなく security_unresolved で終え、次の round を spawn しない', async () => {
+  const { result, calls } = await run({
+    overrides: {
+      'security-review#1': reviewWith([finding('hardlink-write')]),
+      'fix#1': deferFix(false, ['hardlink-write', 'hardlink-write']),
+    },
+  });
+  assert.deepEqual(nextRoundLabels(calls), []);
+  assert.ok(!calls.some((c) => c.label.startsWith('commit-ensure#')), 'applied:false なのに commit 保証を回した');
+  assert.equal(result.status, 'security_unresolved');
+  assert.equal(result.fix_terminal_reason, null);
+  assert.equal(result.fixes_applied, 0);
+  assert.equal(result.security_review.status, 'unresolved');
+  assert.equal(result.security_review.deferred, 1, '同じ topic は 1 件と数える');
+  assert.ok(summaryOf(calls).includes(DEFERRED_LINE));
+});
+
+test('[security-review][I] 人に返した fix の commit 保証に失敗したら、今と同じく fix_failed（commit_unensured）で終える', async () => {
+  const { result, calls } = await run({
+    overrides: {
+      'security-review#1': reviewWith([finding('hardlink-write')]),
+      'fix#1': deferFix(true, ['hardlink-write']),
+      'commit-ensure#1': null,
+    },
+  });
+  assert.deepEqual(nextRoundLabels(calls), []);
+  assert.equal(result.status, 'fix_failed');
+  assert.equal(result.fix_terminal_reason, 'commit_unensured');
+  assert.equal(result.fixes_applied, 0);
+});
+
+test('[security-review][I] 渡した指摘の topic と一致しない（空・渡していない topic だけ）なら今と同じ判定 — applied:false は fix_failed、applied:true は次の round', async () => {
+  for (const topics of [[], ['other-topic']]) {
+    const failed = await run({ overrides: { 'security-review#1': reviewWith([finding('hardlink-write')]), 'fix#1': deferFix(false, topics) } });
+    assert.equal(failed.result.status, 'fix_failed', JSON.stringify(topics));
+    assert.equal(failed.result.fix_terminal_reason, 'applied_false', JSON.stringify(topics));
+    assert.equal(failed.result.security_review.deferred, 0, JSON.stringify(topics));
+
+    const next = await run({
+      args: { pr: '5', nested: NESTED_A },
+      overrides: { 'security-review#1': reviewWith([finding('hardlink-write')]), 'fix#1': deferFix(true, topics), 'commit-ensure#1': pushedTo(SHA_B) },
+    });
+    assert.deepEqual(nextRoundLabels(next.calls), ['review#2', 'security-scope#2', 'security-review#2'], JSON.stringify(topics));
+    assert.equal(next.result.status, 'lgtm', JSON.stringify(topics));
+    assert.deepEqual(plain(next.result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 2, critical: 0, major: 0, minor: 0, deferred: 0 });
+  }
+});
+
+test('[security-review][I] round の開始時に対象でなかった run の LGTM の候補の round（securityGate の fix）でも、修正方針を渡し、人に返したらその場で終える', async () => {
+  const { result, calls } = await run({
+    args: { pr: '5', security_review: { target: false, reasons: [], reviewer_context_changed: false } },
+    overrides: {
+      'security-scope#1': target,
+      'security-review#1': reviewWith([finding('hardlink-write')]),
+      'fix#1': deferFix(false, ['hardlink-write']),
+    },
+  });
+  assert.ok(calls.find((c) => c.label === 'fix#1').prompt.includes(SECURITY_FIX_GUIDANCE), 'securityGate の fix に修正方針が無い');
+  assert.deepEqual(nextRoundLabels(calls), []);
+  assert.equal(result.status, 'security_unresolved');
+  assert.equal(result.fix_terminal_reason, null);
+  assert.equal(result.security_review.deferred, 1);
 });

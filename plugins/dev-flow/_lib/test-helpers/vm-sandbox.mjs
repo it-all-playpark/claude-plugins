@@ -492,7 +492,7 @@ export function prIterateResponder(overrides = {}, rounds = null) {
     if (label.startsWith('security-pr-head#')) return { baseRefOid: SECURITY_PR_BASE_DEFAULT, headRefOid: SECURITY_SCOPE_DEFAULT_HEAD };
     if (label.startsWith('security-pr-fetch#')) return { done: true };
     if (agentType === 'dev-flow:security-reviewer') return { reviewed_sha: securityReviewHeadOf(callCtx.prompt), issues: [], summary: 'ok' };
-    if (label.startsWith('fix#')) return { applied: true, files: [], summary: 'fixed' };
+    if (label.startsWith('fix#')) return { applied: true, files: [], summary: 'fixed', deferred_security_topics: [] };
     if (label.startsWith('commit-ensure#')) return { committed: true, pushed: true, dirty: false };
     if (label.startsWith('ci-check')) return { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [] };
     if (label.startsWith('post-')) return { posted: true, method: 'gh', url: 'http://x', epoch: 3000 };

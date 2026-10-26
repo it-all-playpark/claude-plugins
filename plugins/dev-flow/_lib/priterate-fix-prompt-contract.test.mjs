@@ -1,7 +1,8 @@
 // _lib/priterate-fix-prompt-contract.test.mjs
 // pr-iterate の fix agent prompt（review 指摘の fix_loop と CI 失敗の ci_gate の両経路）が subagent dispatch の
 // 必須 5 要素（Objective / Output format / Tools / Boundary / Token cap）を持ち、Boundary が worktree の外・他 repo への
-// 書き込み、ブランチ作成、gh api での変更を禁止していることを pin する（issue #793）。
+// 書き込み、ブランチ作成、gh api での変更を禁止していることを pin する（issue #793）。Output format は全経路で
+// deferred_security_topics を返させる（issue #1121）。
 //   (a) fix_loop の fix#1 prompt（VM で実 prompt を観測）
 //   (b) ci_gate の fix#1 prompt（同上）
 //   (c) 静的: callFixAgent に渡す prompt は fixPrompt() で組んだものだけ（5 要素を持たない prompt を足させない）
@@ -39,7 +40,11 @@ function assertFiveElements(prompt, label) {
   for (const h of SECTIONS) assert.ok(prompt.includes(`${h}\n`), `${label}: ${h} が無い。prompt: ${prompt}`);
   const order = SECTIONS.map((h) => prompt.indexOf(h));
   assert.deepEqual([...order].sort((a, b) => a - b), order, `${label}: 5 要素の順序が崩れている`);
-  assert.match(sectionOf(prompt, '## Output format'), /"applied": boolean/);
+  const output = sectionOf(prompt, '## Output format');
+  assert.match(output, /"applied": boolean/);
+  // security の指摘が無い fix（CI だけの fix を含む）にも deferred_security_topics を返させ、空の配列にさせる（issue #1121）
+  assert.ok(output.includes('"deferred_security_topics": string[]'), `${label}: Output format に deferred_security_topics が無い: ${output}`);
+  assert.ok(output.includes('security review の指摘が無い fix・全部直した fix では空の配列 [] にする（省略しない）'), `${label}: 空の配列にさせる指示が無い: ${output}`);
   assert.match(sectionOf(prompt, '## Tools'), /使用可:/);
   assert.match(sectionOf(prompt, '## Token cap'), /summary は \d+ 字以内/);
   const boundary = sectionOf(prompt, '## Boundary');

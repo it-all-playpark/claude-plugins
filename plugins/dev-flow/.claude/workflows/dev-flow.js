@@ -3133,8 +3133,9 @@ function holdReasonDisplay(code, kind, ctx) {
       const counts = s && s.status !== 'not_run' && Number.isFinite(s.rounds)
         ? `（敵対的 review ${s.rounds} 回・最終 critical ${s.critical ?? 0} / major ${s.major ?? 0}）`
         : '（LGTM の前の review に到達していない）';
+      const deferred = s && s.deferred > 0 ? `— security の指摘 ${s.deferred} 件を fix が直さずに人の判断に返した` : '';
       return {
-        current: `security review が今の PR head で clear になっていない${counts}`,
+        current: `security review が今の PR head で clear になっていない${counts}${deferred}`,
         action: `\`/pr-iterate ${ctx.pr}\` で回収するか、人が diff を確認する（指摘の本文は公開コメントに載せない）`,
       };
     }
@@ -7716,6 +7717,8 @@ const securityReviewFinal = {
   critical: iterate?.security_review?.critical ?? 0,
   major: iterate?.security_review?.major ?? 0,
   minor: iterate?.security_review?.minor ?? 0,
+  // fix が直さずに人の判断に返した security の指摘の件数。終端サマリーの security_review_unresolved の「現状」に件数だけを出す
+  deferred: iterate?.security_review?.deferred ?? 0,
 }
 const securityReviewUnresolved = securityReviewFinal.target && !(iterate?.status === 'lgtm' && securityReviewFinal.status === 'cleared')
 if (securityReviewUnresolved) log(`⚠️ security review: 対象だが今の PR head で clear になっていない（iterate status=${iterate?.status ?? 'null'} / security status=${securityReviewFinal.status}）— HOLD`)

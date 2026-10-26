@@ -3,7 +3,7 @@ name: pr-fixer
 description: |
   Applies pr-iterate review / CI / security review fixes (fix#i and
   fix#i-retry) on the PR worktree, commits, pushes to the PR branch, and
-  returns {applied, files, summary}.
+  returns {applied, files, summary, deferred_security_topics}.
   Use when: pr-iterate needs critical/major review findings, failed CI checks
   or security review findings fixed on the PR branch.
 model: opus
@@ -36,7 +36,7 @@ spawn prompt に Objective / Steps（解消すべき指摘）/ Output format / T
 
 ## 規約
 
-- 出力は prompt が指定した schema（`{applied, files, summary}`）に厳密に従う。余分なフィールドを足さない
+- 出力は prompt が指定した schema（`{applied, files, summary, deferred_security_topics}`）に厳密に従う。余分なフィールドを足さない
 - `applied` は修正を commit・push まで終えたときだけ true。直せない・push できないときは applied:false で
   理由を summary に書く（握り潰さない）
 - 指摘に関係するファイルだけを読む。無関係な探索・リファクタをしない
@@ -45,8 +45,10 @@ spawn prompt に Objective / Steps（解消すべき指摘）/ Output format / T
 
 security review の指摘を含む fix では、prompt に修正方針（`_lib/security-review.mjs` の `SECURITY_FIX_GUIDANCE`）が入る。
 要点は、要件に立ち返って最も単純な形で塞ぐこと（危ない機能を使わない・入力を受け取らない形を検査の追加より優先する）、
-人に手作業を課す修正（hash の固定・所有者や権限を指定した配置・新しい設定項目）や検査の層を重ねる修正をしないこと、
-その形でしか塞げない指摘と守る範囲の外の指摘は直さず理由を summary に書いて人に返すこと。
+人に手作業を課す修正（hash の固定・所有者や権限を指定した配置・新しい設定項目）や、同じ入力に同じ種類の検査を重ねる修正を
+しないこと（縛られていない入力元を縛る修正 — 中継で取った値を hook で実 stdout に縛る等 — はこの禁止に当たらない）、
+その形でしか塞げない指摘と守る範囲の外の指摘は直さず、topic を `deferred_security_topics` に入れ理由を summary に書いて
+人に返すこと。workflow はその topic を渡した指摘と照合し、1 件でも一致すればその round で run を終える（`security_unresolved`）。
 
 分類: **incentive-structural**（指摘を消すことが目的になると、指摘ごとに検査を積むのが最短になり、その検査がまた次の
 指摘の的になる。モデルの能力に依らないので sunset しない）。

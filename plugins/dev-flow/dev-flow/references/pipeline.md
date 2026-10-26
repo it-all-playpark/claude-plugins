@@ -296,7 +296,8 @@ hit で `runEval=true` になったケースは lite ゲート条件を満たさ
   同じ権限のプロセスに対する path の検査は必ず競合が残り、検査を積むほど運用（人の手作業・設定項目）だけが重くなる。この段階は
   sandbox の境界と人間の merge が守る。利用者が文書の前提（codex を sandbox の中で動かす等）と違う環境を作った場合だけの経路も外
 - reviewer の prompt（`SECURITY_REVIEW_BOUNDARY`）は境界の外を critical / major にさせず、fix の prompt（`SECURITY_FIX_GUIDANCE`）は
-  人に手作業を課す修正・検査の層を重ねる修正をさせない（できない指摘は人に返す）。どちらも `_lib/security-review.mjs` の 1 か所に置く
+  人に手作業を課す修正・同じ入力に同じ種類の検査を重ねる修正をさせない（縛られていない入力元を縛る修正は対象外。できない指摘は
+  `deferred_security_topics` で人に返す）。どちらも `_lib/security-review.mjs` の 1 か所に置く
 
 ```
 Security floor  → security-scope（dev-runner-haiku-ro）: `security-review-scope <WT> origin/<base> --working-tree`
@@ -315,6 +316,9 @@ pr-iterate      → round の開始時に対象の run は各 round で、review
                     → critical/major あり → review の blocking（と CI failed）と 1 回の fix#i（pr-fixer）にまとめる。review が
                       approve でも CI を待たない（ci-wait-check なし）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
                       上限まで残れば max_reached）。security の指摘は history の blocking に載せない
+                      → fix#i の deferred_security_topics（直さずに人へ返した topic）が渡した指摘の topic と 1 件でも一致すれば、
+                        applied を見る前にその round で status: security_unresolved（applied:true なら commit-ensure#i の後。
+                        保証に失敗すれば fix_failed）。次の review・security review は spawn しない
                     → worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致・
                       Claude 経路で reviewer_context_changed が false でない（起動時の args.security_review の決定論の値と run 中の判定の
                       どれか 1 回でも true なら run の終わりまで true）→ LGTM の候補の round で status: security_unresolved
@@ -345,7 +349,8 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 - security-scope の CLI は stdout・stderr に PR 由来の文字列（ファイルパス・git の stderr）を出さない。reasons は固定 code と
   件数、error は固定 code（`usage` / `git_failed`）だけ。stdout を写す exec-proxy の agent に判定を書き換える文を渡さないため
 - 公開の PR コメント（pr-iterate・dev-flow の終端サマリー）には指摘の件数だけを載せ、本文（攻撃経路）は fix の prompt にだけ渡す。
-  security の指摘は `history` / `human_followups` に入れない。返り値 `security_review` は `{target, status, stop_reason, rounds, critical, major, minor}`
+  security の指摘は `history` / `human_followups` に入れない。返り値 `security_review` は `{target, status, stop_reason, rounds, critical, major, minor, deferred}`
+  （`deferred` は fix が直さずに人の判断に返した指摘の件数。終端サマリーには件数だけを出し、topic は載せない）
 - `stop_reason` は review の前提チェックで clear にできずに止めた理由の閉じた enum（`diff_unavailable` / `head_unknown` /
   `head_mismatch` / `review_dir_invalid` / `reviewer_context_changed` / `reviewer_context_codex_unavailable`）。review を実行した・
   止めていない run は null。
