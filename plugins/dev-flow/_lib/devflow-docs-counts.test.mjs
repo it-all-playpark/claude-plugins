@@ -347,6 +347,13 @@ test('security-review.md: 守る要件と境界（R1〜R3）と経路を持ち�
     assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
   }
   for (const h of ['## 対象の判定', '## Claude 経路', '## Codex 経路']) assert.ok(md.includes(`${h}\n`), `security-review.md に ${h} が無い`);
+  // AC とぶつかる指摘も fix は直さず人へ返す。security-review.md の人へ返す条件と pr-fixer.md の「security review の指摘」節に書く（issue #1163）
+  const fixerSection = sectionOf(readFileSync(join(pluginRoot, 'agents/pr-fixer.md'), 'utf8'), '## security review の指摘');
+  for (const [name, doc] of [['security-review.md の守る要件と境界', boundary], ['pr-fixer.md の security review の指摘', fixerSection]]) {
+    for (const s of ['`securityFixAcceptanceCriteriaBlock`', 'AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない', 'summary にぶつかる AC の番号を書']) {
+      assert.ok(doc.replace(/\n\s*/g, '').includes(s), `${name} に ${s} が無い`);
+    }
+  }
   // R1〜R3 を定義するのは security-review.md だけ
   const holders = readdirSync(refDir).filter((f) => f.endsWith('.md')).filter((f) => /^- R1 /m.test(readFileSync(join(refDir, f), 'utf8')));
   assert.deepEqual(holders, ['security-review.md'], `R1〜R3 の定義が security-review.md 以外にもある: ${holders.join(', ')}`);

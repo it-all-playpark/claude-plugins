@@ -7,21 +7,22 @@
 //   (b) ci_gate の fix#1 prompt（同上）
 //   (c) 静的: callFixAgent に渡す prompt は fixPrompt() で組んだものだけ（5 要素を持たない prompt を足させない）
 //   (d)(e) fix#1 / commit-ensure#1 の push は timeout: 600000 指定・run_in_background 禁止・再発行禁止（issue #804）
+//   (f) AC がある run の security review の指摘を含む fix#1 にだけ、AC の番号付き一覧と AC とぶつかる指摘を人に返させる指示が入る（issue #1163）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
+import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash, securityReviewHeadOf } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const prIterateSrc = readFileSync(join(here, '..', '.claude/workflows/pr-iterate.js'), 'utf8');
 
 const SECTIONS = ['## Objective', '## Output format', '## Tools', '## Boundary', '## Token cap'];
 
-async function fixPromptOf(overrides) {
-  const { ctx, calls } = makePrIterateSandbox({ overrides });
+async function fixPromptOf(overrides, args = '5') {
+  const { ctx, calls } = makePrIterateSandbox({ overrides, args });
   const { error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
   assertNoCrash(error, 'fix-prompt-contract');
   assert.equal(error, null, `run が throw した: ${error?.message}`);
@@ -120,6 +121,45 @@ test('[fix-prompt-contract] (e) commit-ensure#1 prompt の push も timeout: 600
   const steps = sectionOf(ensure.prompt, '## Steps');
   assertPushRule(steps, 'commit-ensure');
   assert.ok(steps.includes('`git push origin HEAD`（失敗・timeout でも再発行せず手順 3 へ進む）'), `commit-ensure: push 失敗・timeout 時に再発行しない指示が無い: ${steps}`);
+});
+
+// AC がある run の security review の指摘を含む fix は、AC を書き換えて指摘を塞がず、ぶつかる指摘を人に返す（issue #1163）
+const AC = ['AC-1 flake の HOLD を外す', 'AC-2 既存の判定を変えない'];
+const AC_LIST = '1. AC-1 flake の HOLD を外す\n2. AC-2 既存の判定を変えない';
+const AC_CONFLICT_RULE = 'AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない指摘は直さず、'
+  + 'その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに deferred_security_topics に入れ、summary にぶつかる AC の番号を書く';
+const SECURITY_FINDING = {
+  'security-review#1': ({ prompt }) => ({
+    reviewed_sha: securityReviewHeadOf(prompt),
+    issues: [{ severity: 'major', topic: 'rerun-unhold', file: 'scripts/rerun.sh', line: 3, description: 'PR が書き換えられるテストの再実行で HOLD を外せる', suggestion: '再実行をやめる' }],
+    summary: 'review した',
+  }),
+  'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_topics: [] },
+};
+
+test('[fix-prompt-contract] (f) AC がある run の security review の指摘を含む fix#1 にだけ AC の番号付き一覧と、AC とぶつかる指摘を人に返させる指示が入る', async () => {
+  const withAc = await fixPromptOf(SECURITY_FINDING, { pr: '5', acceptance_criteria: AC });
+  assert.ok(withAc.includes(`この PR の issue の受入条件（AC）:\n${AC_LIST}\n`), `security の指摘を含む fix#1 に AC の一覧が無い: ${withAc}`);
+  assert.ok(withAc.includes(AC_CONFLICT_RULE), `AC とぶつかる指摘を人に返させる指示が無い: ${withAc}`);
+  assert.ok(withAc.includes('security review の指摘の直し方:'), '修正方針が無い');
+  assertFiveElements(withAc, 'security fix with AC');
+
+  // AC が無い・空の run（単体の /pr-iterate）は security の指摘を含む fix でも入れない
+  for (const args of ['5', { pr: '5', acceptance_criteria: [] }]) {
+    const noAc = await fixPromptOf(SECURITY_FINDING, args);
+    assert.ok(noAc.includes('security review の指摘の直し方:'), `${JSON.stringify(args)}: security の指摘を含む fix#1 ではない`);
+    assert.ok(!noAc.includes('受入条件'), `${JSON.stringify(args)}: AC の無い run の fix#1 に AC の区間が入っている`);
+    assert.ok(!noAc.includes('summary にぶつかる AC の番号を書く'), `${JSON.stringify(args)}: AC の無い run の fix#1 に AC とぶつかる指摘の指示が入っている`);
+  }
+
+  // AC がある run でも security の指摘を含まない fix（review の指摘だけ）には入れない
+  const reviewOnly = await fixPromptOf({
+    'review#1': { decision: 'request-changes', issues: [{ severity: 'major', topic: 't', file: 'src/a.js', line: 1, description: 'd', suggestion: '' }], summary: 'ng' },
+    'fix#1': { applied: false, files: [], summary: 'stop' },
+  }, { pr: '5', acceptance_criteria: AC });
+  assert.ok(!reviewOnly.includes('security review の指摘の直し方:'), 'review の指摘だけの fix に security の修正方針が入っている');
+  assert.ok(!reviewOnly.includes('AC-1 flake の HOLD を外す'), `security の指摘を含まない fix#1 に AC の一覧が入っている: ${reviewOnly}`);
+  assert.ok(!reviewOnly.includes('summary にぶつかる AC の番号を書く'), 'security の指摘を含まない fix#1 に AC とぶつかる指摘の指示が入っている');
 });
 
 test('[fix-prompt-contract] (c) 静的: callFixAgent に渡す prompt は fixPrompt() で組んだ 2 つだけ', () => {

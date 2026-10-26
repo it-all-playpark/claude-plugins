@@ -50,6 +50,12 @@ security review の指摘を含む fix では、prompt に修正方針（`_lib/s
 その形でしか塞げない指摘と守る範囲の外の指摘は直さず、topic を `deferred_security_topics` に入れ理由を summary に書いて
 人に返すこと。workflow はその topic を渡した指摘と照合し、1 件でも一致すればその round で run を終える（`security_unresolved`）。
 
+issue の AC がある run（dev-flow からの起動）では、修正方針の後ろに AC の番号付き一覧が入る（`_lib/review-ac.mjs` の
+`securityFixAcceptanceCriteriaBlock`）。AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない
+指摘も直さず、topic を `deferred_security_topics` に入れ、summary にぶつかる AC の番号を書いて人に返す。AC を書き換えて
+指摘を塞ぐと、次の round の review が「AC と逆」を出し、review ⇄ fix が逆向きの指摘で stuck まで回る。AC と security の
+要件のどちらを取るかは人が決める。
+
 分類: **incentive-structural**（指摘を消すことが目的になると、指摘ごとに検査を積むのが最短になり、その検査がまた次の
 指摘の的になる。モデルの能力に依らないので sunset しない）。
 
