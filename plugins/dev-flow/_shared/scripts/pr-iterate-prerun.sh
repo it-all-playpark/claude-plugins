@@ -66,6 +66,8 @@ command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 127; }
 source "$(dirname "${BASH_SOURCE[0]}")/worktree-checkout.sh"
 # shellcheck source=ci-wait-ceiling.sh
 source "$(dirname "${BASH_SOURCE[0]}")/ci-wait-ceiling.sh"
+# shellcheck source=security-reviewer-config.sh
+source "$(dirname "${BASH_SOURCE[0]}")/security-reviewer-config.sh"
 
 usage() {
     echo "Usage: pr-iterate-prerun <PR> [--repo owner/name] [--direction <file>]" >&2
@@ -466,37 +468,9 @@ if [[ -n "$base_ref" ]]; then
     fi
 fi
 
-# security review を回す CLI の opt-in（"dev-flow".security_reviewer。issue #1087）。base branch（origin/<base>）の
-# skill-config.json / .claude/skill-config.json（前者優先）を先に、無ければ user 設定（$SKILL_CONFIG_PATH /
-# ~/.config/skills/config.json / ~/.claude/skill-config.json の順）を読む。PR head（worktree）の設定ファイルは読まない —
-# PR が gate の判定者を自分で選べないようにする。どこにも無ければ "claude"。値の検証は workflow（parseSecurityReviewArg）が
-# 行い、out-of-enum は明示 error にする。JSON として読めないファイルは未設定として扱う。
-reviewer_of() {
-    jq -c 'if type == "object" and (.["dev-flow"] | type) == "object" then .["dev-flow"].security_reviewer else null end' 2>/dev/null
-}
-USER_CONFIGS=("${SKILL_CONFIG_PATH:-}" "${HOME}/.config/skills/config.json" "${HOME}/.claude/skill-config.json")
-security_reviewer='"claude"'
-reviewer_found=false
-if [[ -n "$base_ref" ]]; then
-    for rel in skill-config.json .claude/skill-config.json; do
-        v="$(git -C "$ROOT" show "refs/remotes/origin/${base_ref}:${rel}" 2>/dev/null | reviewer_of)" || v=''
-        if [[ -n "$v" && "$v" != 'null' ]]; then
-            security_reviewer="$v"
-            reviewer_found=true
-            break
-        fi
-    done
-fi
-if [[ "$reviewer_found" == false ]]; then
-    for cfg in "${USER_CONFIGS[@]}"; do
-        [[ -n "$cfg" && -f "$cfg" ]] || continue
-        v="$(reviewer_of <"$cfg")" || v=''
-        if [[ -n "$v" && "$v" != 'null' ]]; then
-            security_reviewer="$v"
-            break
-        fi
-    done
-fi
+# security review を回す CLI の opt-in（"dev-flow".security_reviewer。issue #1087）。読む場所と優先順は
+# security-reviewer-config.sh（dev-flow-prerun と共通）。PR head（worktree）の設定ファイルは読まない
+security_reviewer="$(security_reviewer_config "$ROOT" "$base_ref")"
 security_review="$(printf '%s' "$security_review" | jq -c --argjson r "$security_reviewer" '. + {reviewer: $r}')"
 
 emit true

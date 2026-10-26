@@ -38,6 +38,8 @@ PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$PLUGIN_ROOT/_shared/scripts/worktree-checkout.sh"
 # shellcheck source=../../_shared/scripts/ci-wait-ceiling.sh
 source "$PLUGIN_ROOT/_shared/scripts/ci-wait-ceiling.sh"
+# shellcheck source=../../_shared/scripts/security-reviewer-config.sh
+source "$PLUGIN_ROOT/_shared/scripts/security-reviewer-config.sh"
 
 usage() {
     echo "Usage: dev-flow-prerun --issue <N> --worktree <abs-path> [--base <ref>]" >&2
@@ -189,6 +191,11 @@ ci_wait_ceiling_seconds="$CI_WAIT_CEILING_DEFAULT"
 if [[ "$BASE_OK" == true ]]; then
     ci_wait_ceiling_seconds="$(ci_wait_ceiling "$base" "$repo")"
 fi
+
+# security_reviewer: nested pr-iterate の security review を回す CLI の opt-in（"dev-flow".security_reviewer）。
+# pr-iterate-prerun と同じ security-reviewer-config.sh で、解決した base の origin/<base> と user 設定から読む。
+# worktree（PR head になる作業ツリー）の設定ファイルは読まない。値の検証は workflow（_lib/prerun-setup.mjs）が行う
+security_reviewer="$(security_reviewer_config "$ROOT" "$base")"
 
 # ============================================================================
 # Segment 2: worktree create/reuse + base-origin match verification + write probe
@@ -516,6 +523,7 @@ OUT_JSON="$(jq -n \
     --argjson skip_worktree "$(skip_worktree_json)" \
     --argjson epoch "$epoch" \
     --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
+    --argjson security_reviewer "$security_reviewer" \
     --arg plugin_commit "$plugin_commit" \
     '
     {ok: $ok, issue: $issue}
@@ -526,7 +534,7 @@ OUT_JSON="$(jq -n \
     + (if $have_worktree_error then {worktree_error: $worktree_error} else {} end)
     + {worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree}
     + {clean: $clean, stack: $stack, analyze: $analyze, ci_verify: $ci_verify, local_verify: $local_verify, epoch: $epoch}
-    + {ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds}
+    + {ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds, security_reviewer: $security_reviewer}
     + {plugin_commit: (if ($plugin_commit | test("^[0-9a-f]{12}$")) then $plugin_commit else null end)}
     ')"
 

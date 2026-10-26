@@ -42,6 +42,9 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    書き込み probe・`.devflow-tmp` の clean・issue analyze（`analyze-issue --contract` の
    決定論 parse + Jev 有界判定）・framework 検出を 1 コマンドで行い、`ok:true` なら同じ JSON を
    `<worktree>/.devflow-tmp/prerun-setup.json` にも書く。deps install はしない（手順2b）。
+   `security_reviewer` は nested pr-iterate の security review を回す CLI の opt-in（`"dev-flow".security_reviewer`）で、
+   `pr-iterate-prerun` と同じ規則（base branch の設定 → user 設定、worktree の設定は読まない、無ければ `"claude"`）で読む。
+   `claude` / `codex` 以外は `dev-flow-run` が明示 error で止める。
    書けないパス（`.githooks` 等）を追跡する repo で full checkout が失敗したら、取り出せるパスだけを取り出して
    取り出せないパスに skip-worktree を付ける（`skip_worktree` に列挙）。再利用する worktree に未ステージの削除
    （部分 checkout）が残っていれば `ok:false`（手順 (c)）。

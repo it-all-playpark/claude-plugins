@@ -7,13 +7,14 @@
 //   (d) 公開の終端サマリーには security review の件数だけが載る
 //   (e) pr-iterate が review 前に止めた理由（security_review.stop_reason）を引き継ぎ、終端サマリーを出し分ける（issue #1082）
 //   (f) fix が人の判断に返した security の指摘の件数（security_review.deferred）を引き継ぎ、終端サマリーに件数を出す（issue #1121）
+//   (g) prerun が読んだ security review の CLI の opt-in（args.setup.security_reviewer）を security_review.reviewer で渡す（issue #1125）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, securityScopeResponse } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, securityScopeResponse, devFlowArgs } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const devFlowSrc = readFileSync(join(here, '..', '.claude/workflows/dev-flow.js'), 'utf8');
@@ -21,11 +22,12 @@ const devFlowSrc = readFileSync(join(here, '..', '.claude/workflows/dev-flow.js'
 const TARGET = { 'security-scope': securityScopeResponse({ target: true, head: null }) };
 const sr = (status, counts = {}) => ({ target: true, status, rounds: 2, critical: 1, major: 0, minor: 0, ...counts });
 
-async function run({ overrides = TARGET, iterate } = {}) {
+async function run({ overrides = TARGET, iterate, setup = {} } = {}) {
   const workflowCalls = [];
   const { ctx, calls } = makeDevFlowSandbox({
     overrides,
     workflow: async (name, opts) => { workflowCalls.push({ name, opts }); return iterate; },
+    extra: { args: devFlowArgs(1, setup) },
   });
   const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'devflow-security-review');
@@ -37,7 +39,7 @@ const codes = (result) => JSON.parse(JSON.stringify(result.merge_tier_hold_reaso
 test('[devflow-security-review] (a) Security floor の対象判定を nested pr-iterate の args.security_review で渡す', async () => {
   const { workflowCalls, calls } = await run({ iterate: { status: 'lgtm', fixes_applied: 0, security_review: sr('cleared', { critical: 0 }) } });
   assert.equal(workflowCalls.length, 1);
-  assert.deepEqual(JSON.parse(JSON.stringify(workflowCalls[0].opts.security_review)), { target: true, reasons: ['not_allowlisted:1'], reviewer_context_changed: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(workflowCalls[0].opts.security_review)), { target: true, reasons: ['not_allowlisted:1'], reviewer_context_changed: false, reviewer: 'claude' });
   // reviewer の指示ファイルを変える diff（と取得失敗）は reviewer_context_changed:true で渡す（pr-iterate が run の終わりまで固定する）
   for (const scope of [securityScopeResponse({ target: true, head: null, contextChanged: true }), null]) {
     const changed = await run({ overrides: { 'security-scope': scope }, iterate: { status: 'security_unresolved', fixes_applied: 0, security_review: sr('unresolved') } });
@@ -46,6 +48,21 @@ test('[devflow-security-review] (a) Security floor の対象判定を nested pr-
   const scope = calls.find((c) => c.label === 'security-scope');
   assert.equal(scope.agentType, 'dev-flow:dev-runner-haiku-ro');
   assert.ok(scope.prompt.endsWith('\nsecurity-review-scope /tmp/wt origin/main --working-tree'), scope.prompt);
+});
+
+test('[devflow-security-review] (g) args.setup.security_reviewer（prerun が base branch か user 設定から読んだ opt-in）を nested pr-iterate の args.security_review.reviewer で渡す', async () => {
+  for (const reviewer of ['codex', 'claude']) {
+    const { workflowCalls } = await run({ setup: { security_reviewer: reviewer }, iterate: { status: 'lgtm', fixes_applied: 0, security_review: sr('cleared', { critical: 0 }) } });
+    assert.equal(workflowCalls.length, 1, reviewer);
+    assert.equal(workflowCalls[0].opts.security_review.reviewer, reviewer, JSON.stringify(workflowCalls[0].opts.security_review));
+  }
+  // 指示ファイルを変える PR（reviewer_context_changed:true）でも opt-in の値をそのまま渡す（Codex で判定させる）
+  const changed = await run({
+    setup: { security_reviewer: 'codex' },
+    overrides: { 'security-scope': securityScopeResponse({ target: true, head: null, contextChanged: true }) },
+    iterate: { status: 'lgtm', fixes_applied: 0, security_review: sr('cleared', { critical: 0 }) },
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(changed.workflowCalls[0].opts.security_review)), { target: true, reasons: ['not_allowlisted:1'], reviewer_context_changed: true, reviewer: 'codex' });
 });
 
 test('[devflow-security-review] (b) 対象の run で pr-iterate が clear にしないまま終われば、どの status でも security_review_unresolved で HOLD', async () => {

@@ -65,6 +65,19 @@ STUB
     export DEVFLOW_JEV_CLASSIFY=jev-classify-not-installed
     export GH_RUN_STUB_LOG="$BATS_TEST_TMPDIR/gh-run.log"
     unset GH_STUB_FIXTURE GH_RUN_STUB_FIXTURE
+    # user 設定（"dev-flow".security_reviewer の読み先）を実行者の環境から切り離す
+    export HOME="$BATS_TEST_TMPDIR/home"
+    mkdir -p "$HOME"
+    unset SKILL_CONFIG_PATH
+}
+
+# origin の第 1 引数の branch に "dev-flow".security_reviewer = 第 2 引数 の skill-config.json を commit して push する
+commit_reviewer_config() {
+    git -C "$SEED" checkout -q "$1"
+    jq -n --arg r "$2" '{"dev-flow": {security_reviewer: $r}}' > "$SEED/skill-config.json"
+    git -C "$SEED" add skill-config.json
+    git -C "$SEED" commit -q -m "reviewer config"
+    git -C "$SEED" push -q origin "$1"
 }
 
 # issue fixture（AC あり・comment 無し・breaking 無し → Jev 不要の contract 経路）
@@ -130,6 +143,47 @@ make_issue_fixture() {
     run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .ci_wait_ceiling_seconds == 300'
+}
+
+# ---- (1e) security review を回す CLI の opt-in（security_reviewer。issue #1125） ----
+# 読む場所と優先順の細部は _shared/scripts/pr-iterate-prerun.bats の (8) が見る（同じ security-reviewer-config.sh）。ここは配線だけ。
+
+@test "(1e) 解決した base にも user 設定にも opt-in が無ければ security_reviewer は claude" {
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_reviewer == "claude"'
+    jq -e '.security_reviewer == "claude"' "$WT/.devflow-tmp/prerun-setup.json"
+}
+
+@test "(1e) 解決した base（origin/dev）の opt-in を user 設定より優先し、base に無ければ user 設定を読む" {
+    mkdir -p "$HOME/.claude"
+    jq -n '{"dev-flow": {security_reviewer: "claude"}}' > "$HOME/.claude/skill-config.json"
+    commit_reviewer_config dev codex
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .base == "dev" and .security_reviewer == "codex"'
+    jq -e '.security_reviewer == "codex"' "$WT/.devflow-tmp/prerun-setup.json"
+
+    # base に宣言が無い issue では user 設定の値になる
+    jq -n '{"dev-flow": {security_reviewer: "codex"}}' > "$HOME/.claude/skill-config.json"
+    run --separate-stderr "$SCRIPT" --issue 2 --worktree "$BATS_TEST_TMPDIR/wt/df-2" --base main
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .base == "main" and .security_reviewer == "codex"'
+}
+
+@test "(1e) worktree（と起動元 checkout の作業ツリー）にだけある opt-in は読まない" {
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    jq -n '{"dev-flow": {security_reviewer: "codex"}}' > "$WT/skill-config.json"
+    mkdir -p "$WT/.claude"
+    jq -n '{"dev-flow": {security_reviewer: "codex"}}' > "$WT/.claude/skill-config.json"
+    jq -n '{"dev-flow": {security_reviewer: "codex"}}' > "$ROOT/skill-config.json"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .worktree_status == "reused" and .security_reviewer == "claude"'
 }
 
 # ---- (2) origin に dev 無し ----
