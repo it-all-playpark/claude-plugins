@@ -5,7 +5,7 @@
 // 中継は PR の worktree を cwd に起動するので、PR が変えた CLAUDE.md 等を指示として受け取り得る。固定形の allowlist だけでは
 // 「allowlist の形のまま引数を差し替える（base を head に・保存先を前回のものに）」「コマンドを実行せずに clear の JSON を返す」を
 // 止められないので、workflow が書いた prompt と harness が記録した実行結果を正にする。
-//   - Bash: command が prompt の最終行（harness の 2 字下げを外したもの）と完全に一致するときだけ通す
+//   - Bash: command が prompt（computed task の枠を含む最初の user 行）の最終行（harness の 2 字下げを外したもの）と完全に一致するときだけ通す
 //   - StructuredOutput: 値が、直前にそのコマンドを実行した Bash の実 stdout の JSON か、prompt が定める失敗時の JSON
 //     （SECURITY_SCOPE_RELAY_FAILED 等。Bash を実行していなくてよい）と一致するときだけ通す。起動の中継（codex exec）は
 //     SECURITY_CODEX_RUN_DONE だけ
@@ -36,9 +36,12 @@ const decide = (allow, reason = null) => {
 }
 const deny = (reason) => decide(false, reason)
 
-// 最初の type:"user" 行（content が文字列）の、枠の後の最終行（2 字下げを外したもの）
+// 枠の行（行頭が FRAME_HEAD）を含む最初の type:"user" 行（content が文字列）の、枠の後の最終行（2 字下げを外したもの）。
+// harness はその前に user request の枠の行（依頼文は 2 字下げなので行頭に FRAME_HEAD は来ない）を置くことがあるので、
+// 最初の user 行とは限らない
 function promptCommand(entries) {
-  const first = entries.find((e) => e?.type === 'user' && typeof e?.message?.content === 'string')
+  const first = entries.find((e) => e?.type === 'user' && typeof e?.message?.content === 'string'
+    && e.message.content.split('\n').some((l) => l.startsWith(FRAME_HEAD)))
   if (first == null) return { error: 'transcript に workflow の prompt が無い' }
   const lines = first.message.content.split('\n')
   const frames = lines.flatMap((l, i) => (l.startsWith(FRAME_HEAD) ? [i] : []))
