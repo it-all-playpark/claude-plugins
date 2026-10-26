@@ -2406,6 +2406,19 @@ test('issue #1086: validate_test_red 単独 HOLD は final_test_red と同じく
   assert.ok(!body.includes('修正作業は不要'), '結論行は「修正作業は不要」ではない');
 });
 
+test('issue #1117: validate_tests_not_run 単独 HOLD は現状に「テストが 1 件も実行されていない」、対応は kind で CI 完了待ちか手元実行・CI 確認に分かれる', () => {
+  const REASON = 'テストが 1 件も実行されていない（Validate tests:error = テスト起動失敗）';
+  const rowOf = (kind) => buildDevflowSummaryBody({
+    ...BASE_INPUT,
+    mergeTier: 'HOLD',
+    mergeTierReasons: [REASON],
+    holdReasons: [{ code: 'validate_tests_not_run', reason: REASON, kind }],
+    holdKind: kind,
+  }).split('\n').find((l) => l.startsWith(`| ${REASON} |`));
+  assert.equal(rowOf('deterministic_recheck'), `| ${REASON} | テストが 1 件も実行されていない（ローカルは起動失敗・PR head の CI は未完了か取得できず） | CI 完了後に \`gh pr checks 42\` で test の結果を確認する |`);
+  assert.equal(rowOf('human_judgment'), `| ${REASON} | テストが 1 件も実行されていない（ローカルは起動失敗・PR head の CI でも green を確認できず） | テストを手元で実行するか、CI の test 結果を確認する |`);
+});
+
 test('issue #1082: security_review_unresolved は stop_reason=reviewer_context_changed なら「自動 review をしていない」と変わった指示ファイルを一覧する固定コマンド、それ以外は従来の文面', () => {
   const REASON = '敵対的 security review が今の PR head で clear になっていない';
   const rowOf = (securityReview) => buildDevflowSummaryBody({

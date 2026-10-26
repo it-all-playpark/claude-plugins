@@ -121,9 +121,10 @@ function resolvedCell(v) {
  * @param {boolean|null|undefined} opts.testGreen - test green フラグ（at-a-glance 表では finalReconcile が 'ci_verified'/'reverified' のとき最終状態を優先。issue #625）
  * @param {'passed'|'failed'|'no_tests'|'error'|null|undefined} [opts.validateTests] - Validate 時点の GREEN.tests。
  *   'error' は起動失敗（テストが 1 件も実行されていない）で、at-a-glance 表では ❌ red と区別する（issue #707）
- * @param {boolean|null|undefined} [opts.ciTestVerified] - 表示専用。finalReconcile が再検証していない run で、
+ * @param {boolean|null|undefined} [opts.ciTestVerified] - finalReconcile が再検証していない run で、
  *   PR head sha に pin した CI check が finalCiVerdict で verified になったか（issue #707）。
- *   validateTests==='error' のときだけテスト欄を '✅ green (CI)' にする。merge tier の入力にはしない
+ *   validateTests==='error' のときだけテスト欄を '✅ green (CI)' にする。同じ判定が merge tier の validateCi に
+ *   渡り、verified でなければ HOLD（validate_tests_not_run。issue #1117）
  * @param {string|null|undefined} opts.evalVerdict - evaluator verdict（'pass'|'fail' 等）（at-a-glance 表では iterate_fixed+lgtm+finalAcReconcile=reverified の fail を '✅ pass (fix 後 LGTM)' と表示。issue #625）
  * @param {string|null|undefined} opts.evalStaleness - 'none'|'hash_mismatch'|'hash_reconverged'|'iterate_incomplete'|'iterate_fixed'（issue #288, #631）
  * @param {string|null|undefined} [opts.evalDiffHash] - Evaluate 時点の tree diff hash（issue #631）
@@ -1166,6 +1167,10 @@ function holdReasonDisplay(code, kind, ctx) {
       return { current: 'fix 後の最終 tree でテスト失敗', action: '修正が必要' };
     case 'validate_test_red':
       return { current: 'Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', action: '修正が必要（落ちたテストを直して push する）' };
+    case 'validate_tests_not_run':
+      return kind === 'deterministic_recheck'
+        ? { current: 'テストが 1 件も実行されていない（ローカルは起動失敗・PR head の CI は未完了か取得できず）', action: `CI 完了後に \`gh pr checks ${ctx.pr}\` で test の結果を確認する` }
+        : { current: 'テストが 1 件も実行されていない（ローカルは起動失敗・PR head の CI でも green を確認できず）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
     case 'final_ac_unavailable':
       return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
     case 'iterate_non_lgtm':
