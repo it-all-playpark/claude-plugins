@@ -9,7 +9,8 @@
 //       telemetry を literal 以外（変数・shorthand）で渡す箇所が無いことも pin する。
 //   (2) 挙動 pin: DEV_FLOW_SCENARIOS（成功 / lite / abort / empty-diff / cross-repo / needs_clarification …）と
 //       pr-iterate.js の成功・abort を VM 実行し、journal handoff payload の telemetry キーが 23 キーの部分集合であること。
-//   (3) telemetry.md のキー一覧が 23 キーと一致すること。
+//   (3) telemetry.md のキー一覧が 23 キーと一致すること。entry 列が (1) の literal と、読み手列が health-report.sh が
+//       実際に読むキーと一致し、表すもの列が 1〜2 文で、signature にする値の列挙・要素の形を写していないこと。
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -280,4 +281,66 @@ test('[telemetry-keys] telemetry.md のキー一覧が残す 23 キーと一致�
   assert.ok(section, 'telemetry.md に「## キー一覧」節が無い');
   const listed = [...section.matchAll(/^\| `([a-z_]+)` \|/gm)].map((m) => m[1]);
   assert.deepEqual([...listed].sort(), [...KEPT_TELEMETRY_KEYS].sort(), `telemetry.md のキー一覧: ${JSON.stringify(listed)}`);
+});
+
+const HEALTH_REPORT = join(HERE, '..', 'dev-flow-health', 'scripts', 'health-report.sh');
+const READER_SCRIPT = '`health-report.sh` が読む';
+const READER_MANUAL = 'dev-flow-health の手読みだけ';
+
+// キー一覧の表の行を { key, entry, reader, meaning } で返す
+function telemetryTableRows(md) {
+  const section = md.split(/^## /m).find((s) => s.startsWith('キー一覧'));
+  assert.ok(section, 'telemetry.md に「## キー一覧」節が無い');
+  const lines = section.split('\n');
+  const header = lines.indexOf('| キー | entry | 読み手 | 表すもの |');
+  assert.ok(header >= 0, 'キー一覧の表の見出しが「| キー | entry | 読み手 | 表すもの |」でない');
+  return lines.slice(header + 2).filter((l) => l.startsWith('| `')).map((l) => {
+    const [key, entry, reader, meaning] = l.split(' | ').map((c) => c.replace(/^\| |\s*\|$/g, '').trim());
+    return { key: key.replace(/`/g, ''), entry, reader, meaning };
+  });
+}
+
+test('[telemetry-keys] telemetry.md の entry 列は workflow の telemetry literal が書くキーと一致する', () => {
+  const rows = telemetryTableRows(readFileSync(TELEMETRY_MD, 'utf8'));
+  const writers = [['dev-flow', devFlowSrc], ['pr-iterate', prIterateSrc]].map(([name, src]) => [name, new Set(telemetryLiterals(src).flatMap((l) => l.keys))]);
+  for (const { key, entry } of rows) {
+    const expected = writers.filter(([, keys]) => keys.has(key)).map(([name]) => name).join(' / ');
+    assert.equal(entry, expected, `${key} の entry 列`);
+  }
+});
+
+test('[telemetry-keys] telemetry.md の読み手列は health-report.sh が読むキーと一致し、それ以外は手読みだけ', () => {
+  const rows = telemetryTableRows(readFileSync(TELEMETRY_MD, 'utf8'));
+  for (const { key, reader } of rows) assert.ok([READER_SCRIPT, READER_MANUAL].includes(reader), `${key} の読み手列が 2 値のどちらでもない: ${reader}`);
+  const readByScript = new Set([...readFileSync(HEALTH_REPORT, 'utf8').matchAll(/\.telemetry\.([a-z_]+)/g)].map((m) => m[1]));
+  assert.ok(readByScript.size > 0, 'health-report.sh から .telemetry.<key> の読み取りを拾えない');
+  const listedAsScript = rows.filter((r) => r.reader === READER_SCRIPT).map((r) => r.key).sort();
+  assert.deepEqual(listedAsScript, [...readByScript].sort(), '読み手列が health-report.sh の読むキーと食い違う');
+});
+
+test('[telemetry-keys] telemetry.md の表すもの列は 1〜2 文で、signature にする値の列挙・要素の形を写さない', () => {
+  const md = readFileSync(TELEMETRY_MD, 'utf8');
+  for (const { key, meaning } of telemetryTableRows(md)) {
+    const sentences = meaning.split('。').filter((s) => s.trim());
+    assert.ok(sentences.length >= 1 && sentences.length <= 2, `${key} の表すもの列が 1〜2 文でない: ${meaning}`);
+  }
+  // health-report.sh の signature 用の値の一覧（HOLD 理由の code・iterate_status）は定数名で指し、値を写さない
+  const hr = readFileSync(HEALTH_REPORT, 'utf8');
+  const values = ['HOLD_SIGNATURE_CODES', 'HOLD_SIGNATURE_ITERATE_STATUSES'].flatMap((name) => {
+    const m = hr.match(new RegExp(`^${name}='(\\[[^']*\\])'`, 'm'));
+    assert.ok(m, `health-report.sh に ${name} の定義が無い`);
+    return JSON.parse(m[1]);
+  });
+  const copied = values.filter((v) => md.includes(`\`${v}\``));
+  assert.deepEqual(copied, [], 'telemetry.md が signature にする値を書き写している');
+  const shape = md.match(/`\{[^`]*\}`/);
+  assert.equal(shape, null, `telemetry.md が要素の形を書き写している: ${shape?.[0]}`);
+});
+
+test('[telemetry-keys] telemetry.md は Stop hook の転送と clock の給電元をそれぞれ 1 つの節にだけ書く', () => {
+  const sections = readFileSync(TELEMETRY_MD, 'utf8').split(/^##+ /m);
+  for (const term of ['hooks/stop-devflow-telemetry.sh', '給電']) {
+    const holders = sections.filter((s) => s.includes(term)).map((s) => s.split('\n')[0]);
+    assert.equal(holders.length, 1, `「${term}」を書いた節が 1 つでない: ${JSON.stringify(holders)}`);
+  }
 });

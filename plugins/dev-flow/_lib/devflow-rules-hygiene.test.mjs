@@ -113,13 +113,14 @@ const codeSrc = [...collectFiles(PLUGIN_ROOT), ...collectFiles(join(REPO_ROOT, '
   .map((p) => readFileSync(p, 'utf8'))
   .join('\n');
 
-// pipeline.md / security-review.md / exec-proxy.md も値の写しを持たず定数名・ファイルで指すので、同じ検査を掛ける
+// pipeline.md / security-review.md / exec-proxy.md / telemetry.md も値の写しを持たず定数名・ファイルで指すので、同じ検査を掛ける
 const pipelineSrc = readFileSync(join(REFERENCES_ABS, 'pipeline.md'), 'utf8');
 const securityReviewSrc = readFileSync(join(REFERENCES_ABS, 'security-review.md'), 'utf8');
 const execProxySrc = readFileSync(join(REFERENCES_ABS, 'exec-proxy.md'), 'utf8');
-const NAMED_DOCS = [['rules', rulesSrc], ['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc], ['exec-proxy.md', execProxySrc]];
+const telemetrySrc = readFileSync(join(REFERENCES_ABS, 'telemetry.md'), 'utf8');
+const NAMED_DOCS = [['rules', rulesSrc], ['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc], ['exec-proxy.md', execProxySrc], ['telemetry.md', telemetrySrc]];
 
-test('(h) rules と references（capability-bound.md / pipeline.md / security-review.md / exec-proxy.md）が挙げる定数・識別子・パスはコードに実在し、値を書き写さない', () => {
+test('(h) rules と references（capability-bound.md / pipeline.md / security-review.md / exec-proxy.md / telemetry.md）が挙げる定数・識別子・パスはコードに実在し、値を書き写さない', () => {
   const missing = [];
   for (const [name, src] of NAMED_DOCS) {
     for (const [, raw] of src.matchAll(/`([^`\n]+)`/g)) {
@@ -139,8 +140,8 @@ test('(h) rules と references（capability-bound.md / pipeline.md / security-re
   assert.deepEqual(missing, [], `コードに実在しないものを挙げている:\n${missing.join('\n')}`);
 });
 
-test('(i) capability-bound.md / pipeline.md / security-review.md / exec-proxy.md に経緯記述（禁止辞書ヒット）が存在しない', () => {
-  const hits = [['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc], ['exec-proxy.md', execProxySrc]].flatMap(([name, src]) =>
+test('(i) capability-bound.md / pipeline.md / security-review.md / exec-proxy.md / telemetry.md に経緯記述（禁止辞書ヒット）が存在しない', () => {
+  const hits = [['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc], ['exec-proxy.md', execProxySrc], ['telemetry.md', telemetrySrc]].flatMap(([name, src]) =>
     src.split('\n').flatMap((line, i) => {
       const terms = findHistoryTerms(line);
       return terms.length > 0 ? [`${name}:${i + 1}: ${line} (${terms.join(',')})`] : [];

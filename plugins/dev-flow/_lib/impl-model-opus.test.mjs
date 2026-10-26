@@ -2,7 +2,7 @@
 // 静的検査と dev-flow.js 全体の VM 実行で pin する（issue #705）。
 //
 //   (a) 静的: dev-flow.js と _lib 配下（本ファイルを除く）に fallback 機構のシンボルが無い。
-//       references/telemetry.md / capability-bound.md に fable→opus fallback と「既定 model fable」の記述が無い
+//       references/capability-bound.md に fable→opus fallback と「既定 model fable」の記述が無い
 //   (b) call site: Implement（impl）・BLOCKED 再実装（reimpl-blocked#b）・Evaluate 差し戻し（reimpl#i）・
 //       empty-diff 差し戻し（reimpl-empty-diff）の dev-implementer call は opts に model キーを持たない
 //       （frontmatter 既定で起動）。model を渡すのは green-fix#i / green-fix#retry-i の 'sonnet' だけ
@@ -54,15 +54,13 @@ test('[impl-model-opus] (a) dev-flow.js と _lib に fallback 機構のシンボ
   assert.deepEqual(hits, [], 'fable→opus fallback 機構のシンボルが残っている');
 });
 
-test('[impl-model-opus] (a) references/telemetry.md / capability-bound.md に fable→opus fallback と既定 model fable の記述が無い', () => {
+test('[impl-model-opus] (a) references/capability-bound.md に fable→opus fallback と既定 model fable の記述が無い', () => {
   const forbiddenDoc = [...FORBIDDEN, 'impl-model-fallback', /fable\s*(→|->)\s*opus/, /frontmatter\s*`?fable/, /既定[^\n。]*(?<![-\w])fable(?![-\w])/, /fable \/ high/];
   // model の割り当ては capability-bound.md の「subagent の model・effort の割り当て」に置く
-  for (const name of ['telemetry.md', 'capability-bound.md']) {
-    const text = readFileSync(join(pluginRoot, 'dev-flow', 'references', name), 'utf8');
-    for (const pat of forbiddenDoc) {
-      const hit = typeof pat === 'string' ? text.includes(pat) : pat.test(text);
-      assert.equal(hit, false, `references/${name} に fallback / 既定 fable の記述が残っている: ${pat}`);
-    }
+  const text = readFileSync(join(pluginRoot, 'dev-flow', 'references', 'capability-bound.md'), 'utf8');
+  for (const pat of forbiddenDoc) {
+    const hit = typeof pat === 'string' ? text.includes(pat) : pat.test(text);
+    assert.equal(hit, false, `references/capability-bound.md に fallback / 既定 fable の記述が残っている: ${pat}`);
   }
 });
 

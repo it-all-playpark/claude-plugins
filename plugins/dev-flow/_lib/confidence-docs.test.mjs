@@ -1,6 +1,6 @@
 // _lib/confidence-docs.test.mjs
-// evaluator.md / pr-reviewer.md / references/telemetry.md の confidence 記載を静的 pin する。
-// docs drift（判定基準の必須マーカー欠落・撤去した telemetry キーの残存）を検出する。
+// evaluator.md / pr-reviewer.md の confidence 記載を静的 pin する。
+// docs drift（判定基準の必須マーカー欠落）を検出する。
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -11,7 +11,6 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const evaluatorMd = readFileSync(join(repoRoot, '.claude/agents/evaluator.md'), 'utf8');
 const prReviewerMd = readFileSync(join(repoRoot, '.claude/agents/pr-reviewer.md'), 'utf8');
-const devFlowRules = readFileSync(join(repoRoot, 'dev-flow/references/telemetry.md'), 'utf8');
 
 test('evaluator.md: confidence が出現し判定基準の必須マーカーを含む', () => {
   assert.match(evaluatorMd, /confidence/);
@@ -25,10 +24,4 @@ test('pr-reviewer.md: confidence が出現し判定基準の必須マーカー�
   assert.match(prReviewerMd, /独立/);
   assert.match(prReviewerMd, /乱発/);
   assert.match(prReviewerMd, /記録専用/);
-});
-
-// confidence は agent 出力の記録専用フィールドで、journal telemetry には書かない（issue #789）
-test('references/telemetry.md: eval_confidence / review_confidence は telemetry キー一覧に無い（docs drift 防止）', () => {
-  assert.doesNotMatch(devFlowRules, /eval_confidence/);
-  assert.doesNotMatch(devFlowRules, /review_confidence/);
 });
