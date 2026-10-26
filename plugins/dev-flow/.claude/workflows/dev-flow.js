@@ -42,10 +42,6 @@ function nsAgentOpts(opts) {
 
 // ==== BEGIN inline: _lib/evaluator-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
-const TEST_LOG_REUSE = 'テストログに AC に関係するテストファイルの実行結果が載っていれば、そのファイルは再実行せず、'
-  + 'ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とせよ。'
-  + 'ログに載っていない AC に関係するテストファイルだけを実行せよ。ログが読めなければ AC に関係するテストファイルを実行せよ。'
-
 const EVALUATOR_OPERATIONAL_CONTRACT = {
   critical_resolutions: [
     'critical_resolutions 契約:',
@@ -89,7 +85,6 @@ const EVALUATOR_OPERATIONAL_CONTRACT = {
     '- ac_index は渡された AC の index をそのまま返す。AC の追加・分割・言い換え・index の欠落や重複は禁止。',
     '- 新規 finding の報告・feedback の付与・コード修正・追加検証 loop の要求は禁止（出力は ac_results のみが使われる）。',
     '- satisfied:true / false のいずれでも非空 evidence 必須（file:line / テスト名 / 実行結果）。index 不完全・evidence 欠落は出力全体が unavailable 扱いとなり merge tier が HOLD になる。',
-    '- prompt に「テストログ」が渡された場合、ログに実行結果が載っている AC 関連テストファイルは再実行せず、ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とする。ログに載っていない AC 関連テストファイルだけを実行する。テストログが渡されない・読めない場合は AC に関係するテストファイルを実行して根拠にする。',
     '- prompt に「final 再評価対象 item 一覧」が渡された場合、各 item を fix 後の最終 PR tree で再検証し、item_resolutions:[{id, resolution, evidence}] で全件返す。resolution は resolved（指摘内容が最終 tree で解消されている — revert / 修正済み等）/ ci_delegated（ローカルでは実行不能だが PR CI が同等の検証を実行する — build / compose / e2e 等）/ unresolved の 3 値のみ。',
     '- id は渡された id をそのまま返す。resolved / ci_delegated は具体的 evidence 必須（commit / file:line / 該当 CI check 名）。evidence のない resolved / ci_delegated は無視され未解消のまま表示される。',
     '- item_resolutions は表示専用で checked / merge tier / HOLD 判定は変えない（ESCALATE は解消済みでも HOLD のまま人がマージ可否を判断する）。',
@@ -121,26 +116,9 @@ const EVAL_FULL_SUITE = '全件スイート（tests/run-*.sh・run-all-bats・vi
 
 function validateResultPromptBlock(val) {
   const v = val ?? {}
-  const logs = testLogsPromptBlock(v)
   return `validate_result（Validate がこの tree で実行したテストの結果。Validate の返り値をそのまま渡す）:\n`
     + `${JSON.stringify({ green: v.green ?? null, tests: v.tests ?? null, summary: v.summary ?? '' })}\n`
-    + (logs
-      ? `${EVAL_FULL_SUITE}は走らせない。\n${logs}`
-      : `${EVAL_FULL_SUITE}は走らせず、AC に関係するテストファイルだけを実行して根拠にせよ。\n`)
-}
-
-function testRunLogs(res) {
-  if (!res || res.tests === 'error' || !Array.isArray(res.scripts)) return []
-  return res.scripts
-    .filter((s) => s && typeof s.log === 'string' && s.log.length > 0)
-    .map((s) => ({ path: typeof s.path === 'string' ? s.path : null, log: s.log }))
-}
-
-function testLogsPromptBlock(res) {
-  const logs = testRunLogs(res)
-  if (logs.length === 0) return ''
-  return `テストログ（run-tests が各 script の出力を残したファイル。Read / Grep で読む）:\n${JSON.stringify(logs)}\n`
-    + `${TEST_LOG_REUSE}\n`
+    + `${EVAL_FULL_SUITE}は走らせず、AC に関係するテストファイルだけを実行して根拠にせよ。\n`
 }
 
 const CONCERN_RESOLUTIONS = ['resolved', 'triaged', 'unresolved']
@@ -3848,21 +3826,12 @@ const IMPL = {
 // failed_files: tests:'failed' のとき失敗したテストファイルの repo 相対パス。runValidateLoop が diff・base 再実行と
 // 突き合わせて「base でも落ちる既存の失敗」を green 要件から外す材料（_lib/base-failure-triage.mjs）。
 // 省略時はすべての失敗を green-fix の対象にする。
-// scripts[].log: 各 script の出力ログの絶対パス（worktree 外）。同じ tree を判定する eval#N / final-ac-reconcile に
-// testLogsPromptBlock で渡し、実行済みのテストファイルを evaluator に再実行させない。
 const GREEN = {
   type: 'object', required: ['tests', 'green'],
   properties: {
     tests: { type: 'string', enum: ['passed', 'failed', 'no_tests', 'error'] },
     green: { type: 'boolean' },
     summary: { type: 'string' },
-    scripts: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: { path: { type: 'string' }, exit: { type: 'number' }, launch_failed: { type: 'boolean' }, log: { type: 'string' } },
-      },
-    },
     failed_files: { type: 'array', items: { type: 'string' } },
     epoch: { type: 'number' },
   },
@@ -7276,10 +7245,6 @@ let finalTestGreen = null        // true|false|null（null = 未実行/no_tests/
 // test#final が red で、落ちたファイルだけの単体再実行（test#final-rerun）が green だった記録 {files, logs}。
 // このとき finalTestGreen は true（flake）。null = 再実行していない / 再実行も red
 let finalTestFlaky = null
-// test#final が green か no_tests のときの返り値。final-ac-reconcile は同期後の同じ tree を判定するので、tests / green と
-// 各 script のログパスを渡して実行済みのテストファイルを再実行させない。red（flake を含む）・error・未実行は null
-// （1 回目のログに AC の根拠が揃っていない — evaluator は AC に関係するテストファイルを実行する）
-let finalTestForEval = null
 // changed-files-final の raw files。Merge tier が同一 tree・同一コマンドの changed-files を
 // 再実行せず再利用するために持ち越す。null は「Final reconcile 未実行 or 取得失敗」で、
 // その場合 Merge tier は自前で changed-files を発行する。
@@ -7332,7 +7297,6 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
     else {
       finalReconcile = 'reverified'
       finalTestGreen = ft.tests === 'no_tests' ? null : ft.green === true
-      if (ft.tests === 'no_tests' || (ft.tests === 'passed' && ft.green === true)) finalTestForEval = ft
       log(`Final reconcile: test#final tests=${ft.tests} green=${ft.green}`)
       // Step2b 落ちたファイルだけを 1 回流し直し、flake と本物の red を分ける。全件は流し直さない
       // （並列負荷の flake は全件で再発する）。failed_files が空・安全に渡せないパスを含む red は再実行せず HOLD。
@@ -7496,8 +7460,7 @@ if (_facDecision.run) {
     `cd ${WT} で作業。pr-iterate の fix 適用後の最終 PR tree に対し、以下の既存 acceptance_criteria のみを one-shot で再検証せよ（final AC 再検証）。\n`
     + `\`git diff origin/${BASE}...HEAD\` で最終 diff を確認し該当ファイルを Read で精査すること（fix は commit 済みのため三点 diff でよい）。\n`
     + `acceptance_criteria（index 順。これが全対象 — 追加・分割・言い換え禁止）:\n${JSON.stringify(req.acceptance_criteria)}\n`
-    + `test#final 結果: ${JSON.stringify({ finalReconcile, finalTestGreen, ...(finalTestForEval ? { tests: finalTestForEval.tests, green: finalTestForEval.green } : {}) })}\n`
-    + testLogsPromptBlock(finalTestForEval)
+    + `test#final 結果: ${JSON.stringify({ finalReconcile, finalTestGreen })}\n`
     // Evaluate と同じ判定材料を渡す: 「PR 本文に書く」型の AC は diff に現れないため、PR 本文を欠くと fix 後の
     // 再検証で satisfied:false に反転し、偽の ac_agent_unsatisfied HOLD になる。PR に載せた本文そのもの（prBody）で判定させる。
     + prBodyEvidenceInstr(prBody)
