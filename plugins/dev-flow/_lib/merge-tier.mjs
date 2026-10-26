@@ -241,15 +241,18 @@ export function classifyMergeableState(meta) {
 //   test 結果（workflow の state.val。issue #1086）。finalReconcile === 'skipped'（fixes_applied=0 で最終 tree を
 //   再検証していない）かつ tests:'failed' + green:false のとき 'validate_test_red'（human_judgment）で HOLD —
 //   GREEN_MAX 到達で red のまま PR へ進んだ run で、この Validate の結果が PR tree のテスト状態そのもの
-//   （base でも落ちる既存失敗は Validate が green:true にして抜けるので、ここに来る red は diff 起因）。
+//   （base でも落ちる既存失敗は Validate が green:true にして抜けるが、base で pass する flake は red のまま残る）。
+//   PR head sha に pin した CI が verified:true（s.validateCi）なら同じ tree のテストが CI で green なので積まない
+//   （issue #1138）。CI 未取得・verified:false は積む（kind は CI の kind に依らず human_judgment）。
 //   tests:'error'（起動失敗 = テストが 1 件も実行されていない）は s.validateCi が持つ。finalReconcile が skipped
 //   以外のときは最終 tree の判定（final_test_red / final_reconcile_unavailable / ci_verified）が持つので見ない。
 //   未指定 = reason 追加なし。object でない / tests が enum 外 / green が boolean でないものは明示 error。
-// s.validateCi (optional finalCiVerdict の返り値 | null): finalReconcile === 'skipped' かつ validateResult.tests:'error'
-//   の run で、PR head sha に pin して読んだ CI check の決定論判定（workflow はこの 1 回の取得を終端サマリーの
-//   テスト欄と共有する。issue #1117）。この条件で verified:true でなければ（未取得 = null・pending・
-//   failure・sha 不一致・check 0 件）'validate_tests_not_run' で HOLD — テストをローカルでも CI でも 1 件も
-//   確かめないまま REVIEW にしない。kind は validateCi.kind ?? 'human_judgment'（final_reconcile_unavailable と同じ）。
+// s.validateCi (optional finalCiVerdict の返り値 | null): finalReconcile === 'skipped' かつ validateResult が
+//   tests:'error'、または tests:'failed' + green:false の run で、PR head sha に pin して読んだ CI check の決定論判定
+//   （workflow はこの 1 回の取得を終端サマリーのテスト欄と共有する。issue #1117 / #1138）。tests:'error' で
+//   verified:true でなければ（未取得 = null・pending・failure・sha 不一致・check 0 件）'validate_tests_not_run' で
+//   HOLD — テストをローカルでも CI でも 1 件も確かめないまま REVIEW にしない。kind は validateCi.kind ?? 'human_judgment'
+//   （final_reconcile_unavailable と同じ）。tests:'failed' では verified:true のときだけ 'validate_test_red' を外す。
 //   条件外の run では見ない。verified が boolean でない / kind が HOLD_REASON_KINDS 外は明示 error。
 // s.setupDeps (optional { ok: boolean, note: string }): Setup(deps) の結果（prerun の deps）。ok:false の run では
 //   'validate_tests_not_run' の文言に note を載せる（テスト未実行の原因の手がかり）。tier 判定には使わない。
@@ -466,7 +469,8 @@ export function classifyMergeTier(s) {
     }
   }
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
-  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false) {
+  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false
+    && s.validateCi?.verified !== true) {
     pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   }
   if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'error' && s.validateCi?.verified !== true) {

@@ -224,8 +224,10 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - final test が green か CI で確かめられた run は、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
     解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は決定論の evidence で checked にする
     （evaluator は fix 後に再実行されないため）。SEC seed・TESTSURF・AC-FINAL は LLM の判断で解消しない
-- skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'` は `validate_test_red`、`tests:'error'` は PR head の
-  CI で green を確かめられなければ `validate_tests_not_run` で HOLD
+- skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'`（`green:false`）は `validate_test_red`、
+  `tests:'error'` は `validate_tests_not_run` で HOLD。どちらも PR head sha に pin した CI check を 1 回だけ読み（`ci-test-display`）、
+  `finalCiVerdict` が green と判定したときだけ外す（base では pass する flake は Validate の base 再実行で外れないため）。
+  flake かどうかを LLM に判定させず、テストも再実行しない
 - **失敗の扱い**:
   - 同期失敗・test の null は `unavailable`（fail-safe → Merge tier HOLD）。flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）
   - CI での代替が成立しない（pending・failure・sha 不一致）は HOLD のまま（fail-closed。判定は LLM にさせない）
