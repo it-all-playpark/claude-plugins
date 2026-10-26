@@ -6,7 +6,7 @@
 #   ペアごとの red 意味論は 1 ペア呼び出しと同一(当該ペアの impl だけを外す)。worktree を書き換えるため
 #   ペア間の並列化は不可で、Evaluate の全 AC を 1 呼び出しにまとめるのは spawn 数削減のため(issue #683)。
 # テストは repo の任意コードなので sandbox 内で走らせる(bin/redgreen-verify を excludedCommands に登録しない。
-# references/exec-proxy.md)。そのため index を書く git は使わない(write_head_blob)。
+# .claude/rules/dev-flow.md)。そのため index を書く git は使わない(write_head_blob)。
 # test_files の受理判定と実行コマンドは detect-test-runner.sh(repo に既にある設定ファイルからランナーを判定)が決める。
 # ランナーが判定できないファイルを含むペアは reason "non-test file declared (ランナー未検出): <file>" の入力エラー(昇格しない)。
 # vdelta 経路: package.json の dependencies / devDependencies に vdelta があり、ランナーが vitest のときだけ、

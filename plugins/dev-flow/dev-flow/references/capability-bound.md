@@ -60,7 +60,7 @@ report と比べて読む。
 
 - **何をするか**: workflow script から決定論 script を直接実行できないため、`agents/` の dev-runner 系 subagent に `bin/` の
   bare 名を実行させ、stdout を verbatim で返させる。agent は capability 別に分け、frontmatter に有限の `maxTurns` を置く
-  （一覧と失敗ポリシーは `dev-flow/references/exec-proxy.md`）。起動形の不変条件は rules
+  （担当・tools は `agents/*.md` の frontmatter、proxy ごとの失敗ポリシーは `dev-flow/references/exec-proxy.md`）。起動形の不変条件は rules
 - **なぜ**: workflow runtime に fs / exec が無い
 - **sunset トリガ**: `dev-flow-canary` の `direct_shell` と `direct_fs` が pass
 - **次のモデル世代での測り直し方**: Claude Code の更新後に `dev-flow-canary` を回す。report の
@@ -75,7 +75,7 @@ report と比べて読む。
   1 spawn の必要 turn（`CI_TURN_MARGIN` を含む）は当該 agent の `maxTurns` を超えない（`_lib/ci-check.test.mjs` が
   agent md を実読して検査）。応答が `slept:true` でなければ積算せず、同じ応答の status も採らずに `ci_pending` で終端する
 - **なぜ**: subagent の turn 会計は CI の所要時間に連動し、ループを subagent に置くと StructuredOutput 未達で `ci_error` に
-  化ける。Bash tool は数秒を超える bare `sleep` を拒否する。`CI_TURN_MARGIN` は model が 1 判定に使う tool call 数の
+  化ける。待機を `ci-wait` にする理由は下の「長い bare `sleep` の拒否」。`CI_TURN_MARGIN` は model が 1 判定に使う tool call 数の
   ばらつきを吸収する
 - **sunset トリガ**: `dev-flow-canary` の `direct_shell` が pass（workflow が自分で待って CI を読める）。`CI_TURN_MARGIN` は
   major モデルリリースごとの dry-run
@@ -98,11 +98,33 @@ report と比べて読む。
 ### plugin の bin/ PATH の version 固定
 
 - **何をするか**: plugin の `bin/` はセッション起動時に version 込みで PATH に載る。plugin を更新したら新しいセッションで
-  `command -v <bare 名>` を確かめる（plugin の PATH を持たない素のシェルでは常に失敗する）
+  `command -v <bare 名>` を確かめる（plugin の PATH を持たない素のシェルでは常に失敗する。skill の一覧に `/dev-flow` が
+  出ることは PATH が正しい証拠にならない）
 - **なぜ**: harness の plugin loader が `bin/` の PATH を起動時に固定し、既存のセッション（長寿命の bg を含む）に更新を反映しない
 - **sunset トリガ**: major モデルリリースごとの dry-run（同梱の Claude Code 更新を含む）
 - **次のモデル世代での測り直し方**: plugin を更新した後、更新前から動いているセッションで `command -v` の解決先が新しい
   version を指すかを見る。指すなら「新しいセッションで確かめる」手順を外す
+
+### 長い bare `sleep` の拒否
+
+- **何をするか**: CI の待機は bare `sleep <秒>` を直接呼ばず、`ci-wait <秒>`（`pr-iterate/scripts/ci-wait.sh`。短い sleep を
+  つないで同じ総待機時間を作る 1 本の script）を bare 単文で呼ぶ
+- **なぜ**: harness の Bash tool は、呼び出し全体が `sleep <N>` で N が数秒を超える形を拒否する。bare `sleep` では実際には
+  待たずに拒否され、待機の会計が実時間からずれる
+- **sunset トリガ**: major モデルリリースごとの dry-run（同梱の Claude Code 更新を含む）
+- **次のモデル世代での測り直し方**: subagent から長い bare `sleep` を 1 回呼び、拒否されずに実時間だけ待つかを見る。待つなら
+  `ci-wait` を bare `sleep` に置き換える issue を立てる
+
+### 読み取り系 git の optional lock
+
+- **何をするか**: dev-flow の `bin/` wrapper は exec の前に `GIT_OPTIONAL_LOCKS=0` を export し、読み取り系 git が index の
+  書き戻しのために `.git/worktrees/*/index.lock` を取りに行かないようにする（`tests/bin-wrappers.bats` が pin）。commit・
+  worktree add 等の必須ロックには効かない
+- **なぜ**: 起動元 checkout の `.git` が sandbox から書けない場合（harness の組み込み保護や sandbox 設定が write deny している
+  場合）だけ、optional lock の取得が EPERM で落ちる。`.git` が書ける checkout では踏まない
+- **sunset トリガ**: major モデルリリースごとの dry-run（同梱の Claude Code 更新を含む）
+- **次のモデル世代での測り直し方**: worktree 分離セッションで `GIT_OPTIONAL_LOCKS=0` を付けずに `git status` を回し、`index.lock`
+  の EPERM が出るかを見る。出なければ wrapper の export を外す issue を立てる
 
 ### subagent の model・effort の割り当て
 

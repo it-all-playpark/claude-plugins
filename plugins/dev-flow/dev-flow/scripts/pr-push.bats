@@ -197,13 +197,13 @@ exit 1'
     [ -d "$LOCK/pid-1" ]
 }
 
-@test "exec-proxy.md の失敗ポリシー表に lock_timeout の行があり、exit code が実装と一致する" {
+@test "exec-proxy.md の失敗ポリシー表の lock_timeout 行は exit code を実装の定数名で指し、fail-closed にする" {
     doc="$(dirname "$SCRIPT")/../references/exec-proxy.md"
     row="$(grep '^| pr-push の lock_timeout' "$doc")"
     [ -n "$row" ]
-    code="$(sed -n 's/^LOCK_TIMEOUT_EXIT=//p' "$SCRIPT")"
-    [ -n "$code" ]
-    [[ "$row" == *"exit ${code}"* ]]
+    grep -q '^LOCK_TIMEOUT_EXIT=' "$SCRIPT"
+    [[ "$row" == *'exit `LOCK_TIMEOUT_EXIT`'* ]]
+    [[ "$row" == *'| fail-closed'* ]]
 }
 
 @test "push は git push origin HEAD の 1 回だけで、--no-verify を使わない" {

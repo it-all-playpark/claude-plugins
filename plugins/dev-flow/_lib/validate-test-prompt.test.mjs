@@ -156,16 +156,11 @@ test('[validate-test-prompt] Final reconcile の test#final は Validate の tes
 });
 
 // 変数の契約（名前・形式・未設定 = 全件）は repo 側のランナーが読む唯一の仕様なので、reference の記述を pin する
-test('[validate-test-prompt] exec-proxy.md / pipeline.md の run-tests 説明に DEVFLOW_CHANGED_FILES / DEVFLOW_BASE の契約がある', () => {
-  const execProxyMd = readFileSync(join(repoRoot, 'dev-flow/references/exec-proxy.md'), 'utf8');
+test('[validate-test-prompt] pipeline.md の run-tests 説明に DEVFLOW_CHANGED_FILES / DEVFLOW_BASE の契約がある', () => {
   const pipelineMd = readFileSync(join(repoRoot, 'dev-flow/references/pipeline.md'), 'utf8');
-  const execRow = execProxyMd.match(/^\| validate-test.*$/m)?.[0];
-  assert.ok(execRow, 'exec-proxy.md に validate-test 行が無い');
   const pipelinePara = pipelineMd.split('\n\n').find((p) => p.includes('run-tests <WT>'));
   assert.ok(pipelinePara, 'pipeline.md に run-tests の段落が無い');
-  for (const [name, text] of [['exec-proxy.md', execRow], ['pipeline.md', pipelinePara]]) {
-    for (const token of ['--base', 'DEVFLOW_CHANGED_FILES', 'DEVFLOW_BASE', '絶対パス', '1 行 1 件', '全件', 'untracked']) {
-      assert.ok(text.includes(token), `${name} の run-tests 説明に '${token}' が無い`);
-    }
+  for (const token of ['--base', 'DEVFLOW_CHANGED_FILES', 'DEVFLOW_BASE', '絶対パス', '1 行 1 件', '全件', 'untracked']) {
+    assert.ok(pipelinePara.includes(token), `pipeline.md の run-tests 説明に '${token}' が無い`);
   }
 });
