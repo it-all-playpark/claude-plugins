@@ -63,6 +63,18 @@ test('[priterate-skill-wrapper] Workflow の args に prerun の ci_wait_ceiling
   assert.ok(args.includes('ci_wait_ceiling_seconds: <ci_wait_ceiling_seconds>'), `Workflow の args に ci_wait_ceiling_seconds が無い: ${args}`);
 });
 
+test('[priterate-skill-wrapper] /pr-iterate <PR> --direction <file> を受け、prerun に --direction を渡し、出力の fix_direction を加工せずに args.fix_direction へ転記する（issue #1122）', () => {
+  assert.ok(src.includes('/pr-iterate <PR> --direction <file>'), '--direction 付きの起動形が書かれていない');
+  const prerunStep = steps.slice(0, steps.indexOf("EnterWorktree({ path: '<prerun 出力の worktree>' })"));
+  assert.ok(prerunStep.includes('prerun に `--direction <file>` を付ける'), `prerun に --direction を渡す手順が無い: ${prerunStep}`);
+  assert.ok(prerunStep.includes('stderr を人間に報告して停止する'), 'prerun が --direction を拒否したときの停止が無い');
+  const launch = steps.slice(steps.indexOf("Workflow({ name: 'dev-flow:pr-iterate-run'"));
+  const args = launch.slice(0, launch.indexOf('} })'));
+  assert.ok(args.includes('fix_direction: <fix_direction>'), `Workflow の args に fix_direction が無い: ${args}`);
+  assert.ok(steps.includes('`fix_direction` は prerun 出力の `fix_direction` を加工・要約・翻訳せずにそのまま転記する'), 'fix_direction を加工せずに転記する指示が無い');
+  assert.match(steps, /prerun 出力に `fix_direction` が\s+無ければキーごと省く/, 'fix_direction が無いときに省く指示が無い');
+});
+
 test('[priterate-skill-wrapper] 旧名 pr-iterate での Workflow 起動・自前の git worktree add・前回 prerun 出力の使い回しを書かない', () => {
   assert.doesNotMatch(src, /Workflow\(\{ name: '(dev-flow:)?pr-iterate'/, '旧名 pr-iterate での起動記述が残っている（alias は作らない）');
   assert.ok(!src.includes('git worktree add'), 'worktree 作成は pr-iterate-prerun に一本化する');

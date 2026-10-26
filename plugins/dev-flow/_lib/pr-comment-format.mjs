@@ -54,6 +54,9 @@ const STATUS_HEADLINE = {
 // 止めたのはゲートが正しく働いた結果で、指摘があったのではない — 「clear にならなかった」と読ませない
 const SECURITY_CONTEXT_CHANGED_HEADLINE = '🛡️ SECURITY REVIEW 未実施 — 指示ファイルを変える PR なので自動 review をしていない（review <ROUNDS> 回）。変わった指示ファイルを人が確認する';
 
+// /pr-iterate --direction で人の修正方針を fix に渡した run の 1 行。方針の本文は載せない（公開の PR コメントに出す前提で書かれていない）
+const FIX_DIRECTION_LINE = '**修正方針**: /pr-iterate を起動した人が決めた修正方針（`--direction`）を fix に渡して回した（本文はこのコメントに載せない）';
+
 const isSecurityContextChanged = (sr) => sr != null && sr.target === true && sr.stop_reason === 'reviewer_context_changed';
 
 // reviewer_context_changed の run で人が回す隔離 review の案内（issue #1083）。差し込むのは PR 番号だけ（PR が決めた文字列を載せない）。
@@ -181,9 +184,11 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
  *   敵対的 security review の結果（pr-iterate の返り値 security_review）。件数だけを 1 行出す（null なら出さない）。
  *   stop_reason が 'reviewer_context_changed' なら見出しと行を「自動 review をしていない」に出し分け、`security-review-isolated <PR>` の実行案内を足す
  * @param {string|null} [opts.headSha] - この結論を出した PR head の commit sha。40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる
+ * @param {boolean} [opts.fixDirectionUsed] - /pr-iterate を起動した人の修正方針（args.fix_direction）を fix に渡した run か。
+ *   true なら渡したことだけを 1 行出す（方針の本文は受け取らない — 公開の PR コメントに載せない）
  * @returns {string}
  */
-export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, securityReview = null, headSha = null }) {
+export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, securityReview = null, headSha = null, fixDirectionUsed = false }) {
   const DECISION_EMOJI = { 'approve': '✅', 'request-changes': '🔴', 'comment': '💬' };
   const lines = [];
   const priorHold = priorDevflow != null && priorDevflow.tier === 'HOLD'
@@ -231,6 +236,11 @@ export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision,
       lines.push('');
       lines.push(securityIsolatedReviewLine(Number(pr)));
     }
+  }
+
+  if (fixDirectionUsed === true) {
+    lines.push('');
+    lines.push(FIX_DIRECTION_LINE);
   }
 
   if (priorHold) {

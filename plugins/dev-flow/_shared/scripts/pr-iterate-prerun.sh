@@ -6,7 +6,12 @@
 # `Workflow({ name: 'dev-flow:pr-iterate-run', args: { pr, nested, prior_devflow } })` の nested・prior_devflow へ渡す。
 # workflow 側は NESTED 分岐で pr-meta（haiku の gh pr view 転写）と isolation-cleanup を起動しない。
 #
-# Usage: pr-iterate-prerun <PR> [--repo owner/name]
+# Usage: pr-iterate-prerun <PR> [--repo owner/name] [--direction <file>]
+#
+# --direction <file>: /pr-iterate を起動した人が決めた修正方針のファイル。wrapper が EnterWorktree する前（launch dir）に
+# 実行されるこの prerun が読み、本文を加工せずに出力の fix_direction に載せる（workflow が全 fix#i の prompt に入れる）。
+# PR の作者が書けるファイルを人の方針として fix に届けないよう、実体（symlink は辿る）が PR の worktree の中にあれば拒否する。
+# 読めない・空（空白だけを含む）・FIX_DIRECTION_MAX_CHARS 字を超えるときも拒否する。拒否は引数不正と同じ exit 2・stdout 空。
 #
 # 行う処理: gh pr view で url / headRefName / baseRefName / headRefOid / comments を取得（comments からは直前の
 # dev-flow サマリーと最後の終端サマリーの marker を読む）→ git fetch origin →
@@ -25,7 +30,8 @@
 # 再利用した worktree が書けない場合は退避しない（branch がそこで checkout 済み）— ok:false で人間に返す。
 #
 # Output (stdout, JSON 1 行):
-#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, error?}
+#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, fix_direction?, error?}
+#   fix_direction: --direction のファイルの本文（ok:true で --direction を渡したときだけ載せる）
 #   worktree_status: created / reused / unwritable / error / skipped
 #   skip_worktree: 作成時に取り出せず skip-worktree を付けたパス（worktree-checkout.sh。full checkout できれば []）
 #   prior_devflow: PR コメントのうち `<!-- dev-flow:<tier>[ codes=<code>,...][ head=<sha>] -->` marker を持つ最後のもの
@@ -42,7 +48,7 @@
 #     早期終端・base 不明・node 不在・取得失敗）ときは target:true。reviewer_context_changed は diff が reviewer の指示ファイル
 #     （CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変えるか — 判定できたうえで false のときだけ false（workflow は
 #     この決定論の値を run の終わりまで固定する。run 中の判定は LLM の中継を通るので PR の指示文で偽れる）
-#   不明な値は null。ok:false でも exit 0（引数不正のみ exit 2、stdout 空）。
+#   不明な値は null。ok:false でも exit 0（引数不正と --direction の拒否のみ exit 2、stdout 空）。
 #
 # GitHub I/O は `gh pr view` と `gh run list`（base branch の成功 run。いずれも読み取り）のみ。push / comment / worktree の削除（この呼び出しで作った
 # 書けない worktree の退避を除く）はしない — 単体起動の worktree は回収後も人間が確認できるよう残す。
@@ -60,8 +66,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/worktree-checkout.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/ci-wait-ceiling.sh"
 
 usage() {
-    echo "Usage: pr-iterate-prerun <PR> [--repo owner/name]" >&2
+    echo "Usage: pr-iterate-prerun <PR> [--repo owner/name] [--direction <file>]" >&2
 }
+
+# 修正方針の上限（字数。workflow の args.fix_direction の検査と同じ値）
+FIX_DIRECTION_MAX_CHARS=4000
 
 # ============================================================================
 # Args
@@ -69,12 +78,17 @@ usage() {
 
 PR=""
 REPO_ARG=""
+DIRECTION_ARG=""
+DIRECTION_GIVEN=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --repo)
             [[ $# -ge 2 ]] || { usage; exit 2; }
             REPO_ARG="$2"; shift 2 ;;
+        --direction)
+            [[ $# -ge 2 ]] || { usage; exit 2; }
+            DIRECTION_ARG="$2"; DIRECTION_GIVEN=true; shift 2 ;;
         -*)
             echo "Unknown option: $1" >&2
             usage
@@ -92,6 +106,38 @@ if [[ -n "$REPO_ARG" ]]; then
         echo "--repo must be owner/name" >&2
         exit 2
     }
+fi
+
+# --direction: launch dir（EnterWorktree の前）で読み、本文を JSON 文字列で保持する。PR の worktree の中かどうかは
+# worktree を決めた後（Segment 3 の後）に、ここで取った実体の物理パスで判定する。
+direction_reject() {
+    echo "--direction ${DIRECTION_ARG}: $1" >&2
+    exit 2
+}
+# symlink を辿った実体の物理パス（読めなければ失敗）
+direction_physical_path() {
+    local p="$1" link n=0 dir
+    while [[ -L "$p" ]]; do
+        (( n++ < 40 )) || return 1
+        link="$(readlink "$p")" || return 1
+        case "$link" in
+            /*) p="$link" ;;
+            *) p="$(dirname "$p")/$link" ;;
+        esac
+    done
+    dir="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+    printf '%s/%s' "$dir" "$(basename "$p")"
+}
+DIRECTION_JSON=""
+DIRECTION_REAL=""
+if [[ "$DIRECTION_GIVEN" == true ]]; then
+    [[ -n "$DIRECTION_ARG" ]] || direction_reject "ファイルのパスが空"
+    [[ -f "$DIRECTION_ARG" && -r "$DIRECTION_ARG" ]] || direction_reject "読めない（通常のファイルでないか、読み取り権限が無い）"
+    DIRECTION_REAL="$(direction_physical_path "$DIRECTION_ARG")" || direction_reject "実体のパスを解決できない"
+    DIRECTION_JSON="$(jq -Rs . <"$DIRECTION_ARG" 2>/dev/null)" || direction_reject "読めない"
+    jq -e 'test("[^[:space:]]")' >/dev/null 2>&1 <<<"$DIRECTION_JSON" || direction_reject "空（空白だけ）"
+    direction_chars="$(jq -r 'length' <<<"$DIRECTION_JSON")"
+    (( direction_chars <= FIX_DIRECTION_MAX_CHARS )) || direction_reject "${direction_chars} 字（上限 ${FIX_DIRECTION_MAX_CHARS} 字）を超える"
 fi
 
 # epoch は workflow の isolation-probe token（`.devflow-tmp/.isolation-probe-<epoch>`）と clock の給電元。
@@ -131,6 +177,7 @@ emit() {
         --argjson prior_summary "$prior_summary" \
         --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
         --argjson security_review "$security_review" \
+        --argjson fix_direction "${DIRECTION_JSON:-null}" \
         --arg error "$error" \
         '
         def nz: if . == "" then null else . end;
@@ -139,6 +186,7 @@ emit() {
          worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree,
          prior_devflow: $prior_devflow, prior_summary: $prior_summary, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds,
          security_review: $security_review}
+        + (if $ok and $fix_direction != null then {fix_direction: $fix_direction} else {} end)
         + (if $error == "" then {} else {error: $error} end)
         '
     exit 0
@@ -371,6 +419,14 @@ else
         fi
     fi
     align_head "$WT" || fail "$error"
+fi
+
+# --direction の実体が PR の worktree の中なら拒否する（PR の作者が書けるファイルを人の方針として fix に届けない）
+if [[ -n "$DIRECTION_REAL" ]]; then
+    CANON_WT_FINAL="$(canon_path "$WT")"
+    if [[ "$DIRECTION_REAL" == "$CANON_WT_FINAL"/* ]]; then
+        direction_reject "PR の worktree（${WT}）の中のファイルは方針として読まない（PR の作者が書ける）。launch dir 側のファイルを渡す"
+    fi
 fi
 
 # ============================================================================
