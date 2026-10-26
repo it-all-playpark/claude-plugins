@@ -247,7 +247,7 @@ const x = await Promise.resolve('test');
 // ---- 4/5/6 (旧): REQ schema shape / triage consume(classifyShape) / W5 danger-grep 配線 は
 // source-regex 走査だった（issue #636 で削除）。同じ挙動は shape-loop-routing.test.mjs /
 // realized-shape-routing.test.mjs（realized diff からの EFFECTIVE_SHAPE 判定）と
-// secfloor-unified-routing.test.mjs / merge-tier 系ルーティングテスト（danger-grep 配線・
+// diff-triage-routing.test.mjs / merge-tier 系ルーティングテスト（danger-grep 配線・
 // merge tier 算出）が VM 挙動として担う。
 
 // ---- 7. issue #443 / #550 F1+F3: clock epoch 給電 prompt の VM 挙動検証 --------------------

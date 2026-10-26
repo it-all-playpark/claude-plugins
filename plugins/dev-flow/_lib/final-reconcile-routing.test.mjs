@@ -102,7 +102,7 @@ function createResponder(overrides = {}) {
     if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-320' };
     if (label.startsWith('analyze')) return STANDARD_REQ;
-    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
     if (label === 'realized-diff') return { files: ['src/x.ts'] };
@@ -120,8 +120,8 @@ function createResponder(overrides = {}) {
     if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
     if (label === 'changed-files-final') return { files: [] };
     // merge-tier-facts の diffhash のみ別ハッシュを返す（issue #377 diff-hash reuse）。この test 群は
-    // fixes_applied>0（Final reconcile で tree が変化）を想定しており、Security floor 時点
-    // (diff-hash-secfloor) と Merge tier 時点 (merge-tier-facts.diffhash) のハッシュ不一致が意味的に正しい。
+    // fixes_applied>0（Final reconcile で tree が変化）を想定しており、Diff triage 時点
+    // (diff-hash-triage) と Merge tier 時点 (merge-tier-facts.diffhash) のハッシュ不一致が意味的に正しい。
     // 一致させると reuse が発火し、Merge tier の risk / changed 再判定が facts を使わなくなる（特に case (h)）。
     if (label === 'merge-tier-facts') return mergeTierFacts({ hash: 'H_MERGE', files: ['src/x.ts'] });
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };

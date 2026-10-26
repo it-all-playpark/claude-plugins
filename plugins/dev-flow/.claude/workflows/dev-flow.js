@@ -1,11 +1,11 @@
 export const meta = {
   name: 'dev-flow-run',
-  description: 'Issue から LGTM まで: Setup(prerun 結果の検証 + 末尾で決定論 analyze のゲート判定、spawn 0)→実装(dev-implementer 1 spawn)→test green→security floor(realized diff から shape 判定)→評価→PR→pr-iterate→merge tier。micro/standard/complex で evaluate の深さを切替(complex: eval上限10)。merge は手動。needs_clarification が返ったら呼び出し元が AskUserQuestion で人間に確認し再起動（worktree は保持）',
+  description: 'Issue から LGTM まで: Setup(prerun 結果の検証 + 末尾で決定論 analyze のゲート判定、spawn 0)→実装(dev-implementer 1 spawn)→test green→Diff triage(realized diff から shape 判定)→評価→PR→pr-iterate→merge tier。micro/standard/complex で evaluate の深さを切替(complex: eval上限10)。merge は手動。needs_clarification が返ったら呼び出し元が AskUserQuestion で人間に確認し再起動（worktree は保持）',
   phases: [
     { title: 'Setup' },
     { title: 'Implement' },
     { title: 'Validate' },
-    { title: 'Security floor' },
+    { title: 'Diff triage' },
     { title: 'Evaluate' },
     { title: 'PR' },
     { title: 'Final reconcile' },
@@ -57,7 +57,7 @@ const EVALUATOR_OPERATIONAL_CONTRACT = {
     '- danger_class は渡された危険クラス名をそのまま返す。',
     '- 安全確認できないものは cleared:false。',
     '- cleared:true は具体的 evidence 必須。evidence のない cleared:true は無視され、SEC item は blocking のまま残る。',
-    '- cleared:false の SEC item は blocking のまま merge tier に反映される（security floor は gate_policy で緩めない）。',
+    '- cleared:false の SEC item は blocking のまま merge tier に反映される（SEC item の blocking は gate_policy で緩めない）。',
   ].join('\n'),
   concern_resolutions: [
     'concern_resolutions 契約:',
@@ -4101,13 +4101,13 @@ const TREE_DIFF_LINES = {
   type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, lines: { type: 'array', items: { type: 'string' } }, error: { type: 'string' } },
 }
-// SECFLOOR: Security floor 統合 exec-proxy (`_shared/scripts/secfloor-classify.sh`) の応答 schema。
+// DIFF_TRIAGE: Diff triage 統合 exec-proxy (`_shared/scripts/diff-triage.sh`) の応答 schema。
 // `risk` のみ required（ok:boolean / hits:array 必須）— risk は
 // fail-closed フィールドなので、proxy が payload をネストする等の形状不一致を schema 契約違反として
 // 検知し retryOnContractViolation の再試行機会を与える（required:[] だと契約違反にならず一発で
 // fail-closed に倒れ、診断もできない）。files / struct / diffhash / lines は required にしない（fail-safe /
-// fail-open のまま per-field 検証 parseSecfloorFields へ流す）。
-const SECFLOOR = {
+// fail-open のまま per-field 検証 parseDiffTriageFields へ流す）。
+const DIFF_TRIAGE = {
   type: 'object',
   required: ['risk'],
   properties: {
@@ -4122,8 +4122,8 @@ const SECFLOOR = {
     lines: { type: ['array', 'null'] },
   },
 }
-// secfloor-unified-schema-end: SECFLOOR 直後に parseSecfloorFields の inline 区間を続ける（anchor 用の一意行）。
-// ==== BEGIN inline: _lib/secfloor-unified.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+// diff-triage-schema-end: DIFF_TRIAGE 直後に parseDiffTriageFields の inline 区間を続ける（anchor 用の一意行）。
+// ==== BEGIN inline: _lib/diff-triage.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
 function isWellFormedRiskField(unified) {
   const risk = unified?.risk;
@@ -4134,7 +4134,7 @@ function parseRiskField(unified) {
   if (isWellFormedRiskField(unified)) {
     return unified.risk;
   }
-  return { ok: false, hits: [], error: 'secfloor unified proxy unavailable (fail-closed)' };
+  return { ok: false, hits: [], error: 'diff-triage unified proxy unavailable (fail-closed)' };
 }
 
 function parseFilesField(unified) {
@@ -4177,7 +4177,7 @@ function parseLinesField(unified) {
   return null;
 }
 
-function parseSecfloorFields(unified) {
+function parseDiffTriageFields(unified) {
   return {
     risk: parseRiskField(unified),
     files: parseFilesField(unified),
@@ -4198,7 +4198,7 @@ function lineStatsFor(files, lines) {
   }
   return stats;
 }
-// ==== END inline: _lib/secfloor-unified.mjs ====
+// ==== END inline: _lib/diff-triage.mjs ====
 // ISSUE_LABELS: `gh issue view --json labels` の read-only exec-proxy 結果（empty-diff gate の
 // cross-repo lazy probe 用）。required は 'ok' のみ（fail-safe: schema 不一致・ok:false は非 cross-repo 扱い）。
 const ISSUE_LABELS = {
@@ -5271,11 +5271,11 @@ function isReviewerContextChanged(res) {
 // call site を無差別リトライすると、副作用完了後に StructuredOutput 未達で終わった agent を
 // 同一 prompt で再実行して二重 push・journal 二重追記・重複コメントを起こし得るため、副作用の
 // ない読み取り専用 probe 系 call site（resolve-base / worktree-base-check 等）のみで有効化する。
-// secfloorTopLevelKeys: Security floor 統合 proxy が契約外形状を返して risk fail-closed へ倒れたとき、
+// diffTriageTopLevelKeys: Diff triage 統合 proxy が契約外形状を返して risk fail-closed へ倒れたとき、
 // 診断用に応答の top-level キー一覧を文字列化する（値は log 専用で判定に使わない）。
 // 形状が契約通りで proxy 自身が ok:false を報告したケースでは top-level キーは正常な並びになり
 // 診断価値がないため、呼び出し側は isWellFormedRiskField で 2 原因を出し分けて risk.error を出す。
-function secfloorTopLevelKeys(unified) {
+function diffTriageTopLevelKeys(unified) {
   if (unified == null) return 'null'
   if (Array.isArray(unified)) return 'array'
   if (typeof unified !== 'object') return typeof unified
@@ -5674,7 +5674,7 @@ if (!isoProbe) log('⚠️ isolation probe 自体が失敗 — 書き込み可�
 // 合成 plan: planner agent を起動せず、issue から単一 task の plan を合成する（Implement の spawn 単位）。
 // 実装 agent に「手順書型 task」を書かせる prescriptive な使い方は品質を落とすため、issue 仕様を Implement で
 // 直接 dev-implementer に渡す。
-// shape はここでは決めない: 実効 shape は Security floor で realized diff の file 数から
+// shape はここでは決めない: 実効 shape は Diff triage で realized diff の file 数から
 // classifyShape が 1 回で決める（EFFECTIVE_SHAPE / TRIVIAL）。実効 shape 確定前の失敗 telemetry
 // （needs_clarification / cross_repo / empty_diff）は shape キーを載せない。
 // ============================================================
@@ -6015,9 +6015,9 @@ async function execValidatePhase(state) {
   pushGreenFixAudit(greenFixIterations)
 
   // diff-gate/diff-hash 共通 prompt。worktree-diff-hash.sh のコントラクトに依存。
-  // Security floor より前に定義し state.dhPrompt に保持: PR/Evaluate phase でも参照するため
+  // Diff triage より前に定義し state.dhPrompt に保持: PR/Evaluate phase でも参照するため
   // （evalDiffHash != null ガードで micro は skip）。
-  // Security floor 直前に置くことで、empty-diff gate の retry 後の tree に対して danger-grep /
+  // Diff triage 直前に置くことで、empty-diff gate の retry 後の tree に対して danger-grep /
   // realized-diff / classifyShape / declared-path-check が自然に実行される。
   const dhPrompt = `次のコマンドを **先頭トークンが worktree-diff-hash の bare 単文** で 1 回だけ実行し、**stdout の JSON 1 行をそのまま** verbatim で返せ（判定や脚色をしない）。`
     + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止`
@@ -6026,8 +6026,8 @@ async function execValidatePhase(state) {
   state.dhPrompt = dhPrompt
 
   // ============================================================
-  // empty-diff gate: Security floor phase の直前。
-  // Security floor より前に置くことで retry 後の実体に対して danger-grep / realized-diff /
+  // empty-diff gate: Diff triage phase の直前。
+  // Diff triage より前に置くことで retry 後の実体に対して danger-grep / realized-diff /
   // classifyShape / declared-path-check が正しく実行される。
   // 判定は tree OID 一致の 0/非0 二値・差し戻しはループ無しの 1 回のみ・needs_clarification 不使用。
   // ============================================================
@@ -6258,19 +6258,19 @@ async function reconcileLocalVerifyTree(state, { worktreeAtFinal }) {
 }
 
 // ============================================================
-// Phase Security floor: realized diff に diff-risk-classify(W1)を当て、
+// Phase Diff triage: realized diff に diff-risk-classify(W1)を当て、
 // 7 danger クラスを常時 seed した Goal Ledger に反映する(W5)。
 // clean クラスは自動 check、hit クラスは critical 据え置きで evaluator が evidence 解消する。
 // danger hit があれば micro でも Evaluate を走らせる(tier 無視の security path 強制)。
 // ============================================================
-// secfloor-classify（danger-grep / realized-diff / structural-classify / diff-hash の統合 exec-proxy）の prompt。
-// Security floor と post-eval green-fix 再評価が同じ prompt を使う。
-function secfloorClassifyPrompt() {
+// diff-triage（danger-grep / realized-diff / structural-classify / diff-hash の統合 exec-proxy）の prompt。
+// Diff triage と post-eval green-fix 再評価が同じ prompt を使う。
+function diffTriagePrompt() {
   return `cd ${WT} で作業。次を実行し **stdout の JSON object をそのまま** 返せ`
     + `（判定や脚色をしない。exit 非0・stdout 空・JSON 不正なら `
     + `{"risk":{"ok":false,"hits":[],"error":"..."},"files":null,"struct":null,"diffhash":null,"lines":null} で返せ。`
     + `失敗時に risk.ok:true を生成してはならない）:\n`
-    + `secfloor-classify ${WT} origin/${BASE}`
+    + `diff-triage ${WT} origin/${BASE}`
 }
 
 // `git diff --numstat <from> <to>`（tree OID / commit）の stdout 行を verbatim 転写させる read-only exec-proxy の prompt。
@@ -6281,34 +6281,34 @@ function treeDiffNumstatPrompt(from, to) {
     + `git -C ${WT} diff --numstat ${from} ${to}`
 }
 
-async function execSecurityFloorPhase(state) {
+async function execDiffTriagePhase(state) {
   let ledger = makeLedger()
   for (const seed of seedSecurityLedger()) {
     ledger = appendItem(ledger, seed).ledger
   }
-  // Security floor 統合 exec-proxy: danger-grep(risk) / realized-diff(files) /
-  // structural-classify(struct) / diff-hash-secfloor(hash) の 4 呼び出しを secfloor-classify.sh の
+  // Diff triage 統合 exec-proxy: danger-grep(risk) / realized-diff(files) /
+  // structural-classify(struct) / diff-hash-triage(hash) の 4 呼び出しを diff-triage.sh の
   // 1 本へ統合する。label は 'danger-grep' を据え置く（agentType の dev-runner-haiku-ro 復帰と
   // telemetry label 連続性のため）。throw（StructuredOutput 未返却・proxy 実行失敗等）は
   // structural-classify の try 包み precedent と同型で吸収し、unified=null として
-  // parseSecfloorFields の per-field フォールバック（risk fail-closed 支配）へ倒す。need() は撤去 —
+  // parseDiffTriageFields の per-field フォールバック（risk fail-closed 支配）へ倒す。need() は撤去 —
   // null で run abort させず fail-closed HOLD へ倒す。StructuredOutput 契約違反（schema 不一致で
   // StructuredOutput が完了しない場合を含む）は read-only probe のため retryOnContractViolation で
   // 同一 prompt を 1 回だけリトライする。
   let unified = null
   try {
     unified = await trackedAgent(
-      secfloorClassifyPrompt(),
-      { agentType: 'dev-runner-haiku-ro', schema: SECFLOOR, label: 'danger-grep', phase: 'Security floor', retryOnContractViolation: true },
+      diffTriagePrompt(),
+      { agentType: 'dev-runner-haiku-ro', schema: DIFF_TRIAGE, label: 'danger-grep', phase: 'Diff triage', retryOnContractViolation: true },
     )
-  } catch (e) { log(`⚠️ secfloor-classify 呼び出しが例外 — unified=null として per-field フォールバック（risk fail-closed）で続行: ${e && e.message ? e.message : e}`) }
-  const { risk, files, struct, hash, lines } = parseSecfloorFields(unified)
+  } catch (e) { log(`⚠️ diff-triage 呼び出しが例外 — unified=null として per-field フォールバック（risk fail-closed）で続行: ${e && e.message ? e.message : e}`) }
+  const { risk, files, struct, hash, lines } = parseDiffTriageFields(unified)
   // fail-closed の 2 原因を出し分ける。形状不一致は top-level キー一覧が、
   // proxy 自身の失敗報告（形状は契約通り）は risk.error が診断値になる。
   if (risk.ok !== true) {
     log(isWellFormedRiskField(unified)
-      ? `⚠️ secfloor proxy が失敗を報告した（error: ${risk.error ?? 'unknown'}）— risk fail-closed へ倒す`
-      : `⚠️ secfloor proxy が契約外形状を返した（top-level keys: ${secfloorTopLevelKeys(unified)}）— risk fail-closed へ倒す`)
+      ? `⚠️ diff-triage proxy が失敗を報告した（error: ${risk.error ?? 'unknown'}）— risk fail-closed へ倒す`
+      : `⚠️ diff-triage proxy が契約外形状を返した（top-level keys: ${diffTriageTopLevelKeys(unified)}）— risk fail-closed へ倒す`)
   }
   const dangerHits = risk.ok === true ? [...new Set(secHitsOf(risk).map((h) => h.class))] : []
   // 敵対的 security review の起動時の判定: merge-base と作業ツリー（未コミット・untracked を含む）の diff が
@@ -6317,7 +6317,7 @@ async function execSecurityFloorPhase(state) {
   // 判定し直し、どれか 1 回でも対象なら run の終わりまで対象のまま）
   const secScope = await failOpenAgent(
     securityScopePrompt({ worktree: WT, base: `origin/${BASE}` }),
-    { agentType: 'dev-runner-haiku-ro', schema: SECURITY_SCOPE_SCHEMA, label: 'security-scope', phase: 'Security floor', retryOnContractViolation: true },
+    { agentType: 'dev-runner-haiku-ro', schema: SECURITY_SCOPE_SCHEMA, label: 'security-scope', phase: 'Diff triage', retryOnContractViolation: true },
   )
   const securityReview = {
     target: !isSecurityScopeExempt(secScope),
@@ -6335,14 +6335,14 @@ async function execSecurityFloorPhase(state) {
   // Step F2: realized diff のファイル数を取得して実効 shape（classifyShape）の入力にする
   // files が null（統合 proxy の files フィールド欠落／型不正）のときは NaN を classifyShape へ渡し
   // complex 安全弁へ流す。files:[] は取得成功かつ正常な 0 ファイルとして null と区別する（fail-safe。
-  // parseSecfloorFields が既に検証済みのため ?? [] で潰さない）。
+  // parseDiffTriageFields が既に検証済みのため ?? [] で潰さない）。
   // 注: この時点で implementer はコミットしていない（git add / commit 禁止）ため、
-  //     secfloor-classify.sh は `git status --porcelain --untracked-files=all` を直接パースする。
+  //     diff-triage.sh は `git status --porcelain --untracked-files=all` を直接パースする。
   const realized = files == null ? null : { files }
   // structural-classify: difftastic による structural / format_only 機械分類。
-  // parseSecfloorFields が struct.ok===true && available boolean && format_only/structural 配列形を
+  // parseDiffTriageFields が struct.ok===true && available boolean && format_only/structural 配列形を
   // 検証済み（fail-open: 不正/欠落は struct=null）。formatOnlySet はそのまま struct?.format_only を
-  // 使えばよい（difft 未インストール時も secfloor-classify.sh 契約上 format_only は空配列のため、
+  // 使えばよい（difft 未インストール時も diff-triage.sh 契約上 format_only は空配列のため、
   // realizedCount・evaluator prompt とも現行動作 (全ファイル精査扱い) と完全一致する）。
   const formatOnlySet = new Set(struct?.format_only ?? [])
   if (struct?.ok === true && struct.available === false) log('structural-classify: difft 未インストール — 分類 skip（現行動作 fallback）')
@@ -6396,7 +6396,7 @@ async function execSecurityFloorPhase(state) {
   // 宣言外変更を concerns へ注入する（evaluator focus_areas 経由で重点監査）。
   // ============================================================
   {
-    // declared-path-check は独立 agent 呼び出しを持たず、Security floor で既に算出済みの
+    // declared-path-check は独立 agent 呼び出しを持たず、Diff triage で既に算出済みの
     // undeclared（宣言ベース count と同一算出）を再利用する（1 回に統合）。
     if (undeclared.length > 0) {
       if (runEval) {
@@ -6439,11 +6439,11 @@ async function execSecurityFloorPhase(state) {
   // diff-hash reuse: danger-grep が成功し realized-diff が取れた場合のみ、
   // Merge tier での danger-grep-final/changed-files 再実行を tree OID 完全一致時に skip できる
   // よう diff-hash を捕捉しておく。fail-open な条件は不変（この gating 条件を満たさないときは
-  // secfloor-classify.sh が diffhash を取得していても再利用しない）。取得失敗時は null のまま
-  // Merge tier 側で必ず再実行させる（Security floor の fail-closed 性は変えない）。
+  // diff-triage.sh が diffhash を取得していても再利用しない）。取得失敗時は null のまま
+  // Merge tier 側で必ず再実行させる（Diff triage の fail-closed 性は変えない）。
   if (risk.ok === true && Array.isArray(files)) {
     state.secDiffHash = hash
-    if (state.secDiffHash == null) log('⚠️ diff-hash-secfloor: hash 取得失敗 — Merge tier での再利用は skip（fail-open、danger-grep-final は merge-tier-facts の risk で再判定）')
+    if (state.secDiffHash == null) log('⚠️ diff-hash-triage: hash 取得失敗 — Merge tier での再利用は skip（fail-open、danger-grep-final は merge-tier-facts の risk で再判定）')
   } else {
     state.secDiffHash = null
   }
@@ -6479,7 +6479,7 @@ async function execEvaluatePhase(state) {
   // 「worktree 内で満たせる AC が未達のまま PR → lgtm → HOLD」を差し戻しで拾うため。
   let evalLimit = EVAL_PASSES
   let evalDiffHash = null  // 最後の evaluator 呼び出し直前の diff hash（PR 直前と突合し乖離で summary 警告）
-  // Security floor で build 済みの ledger(SEC seed + danger 反映済)に AC + concerns を足す。
+  // Diff triage で build 済みの ledger(SEC seed + danger 反映済)に AC + concerns を足す。
   // makeLedger で作り直さない(SEC seed を失わないため)。
   for (const [i, crit] of (req.acceptance_criteria ?? []).entries()) {
     // AC は現状 inspection-blocking(LLM 判定)。W4 で red→green 実証済みのものを deterministic 化する。
@@ -6827,7 +6827,7 @@ async function execPostEvalValidate(state) {
 // ============================================================
 // post-eval green-fix の再評価。Evaluate の評価済み tree（state.evalDiffHash）の後に green-fix が入れた差分を、
 // 人間に回さず run 内で確かめる:
-//   1. secfloor-classify を当て、green-fix 後の tree hash・risk（danger / test-weakening）・structural 分類を取る
+//   1. diff-triage を当て、green-fix 後の tree hash・risk（danger / test-weakening）・structural 分類を取る
 //   2. 評価済み tree → green-fix 後 tree の numstat で green-fix の差分ファイルを決める
 //   3. classifyGreenFixDiff: hit 0 かつテストファイルだけなら assert_only（assert を弱めていないかだけ確認）、
 //      それ以外は full（差分全体を評価）。evaluator の model は override しない（品質ゲートは定義どおり）
@@ -6851,11 +6851,11 @@ async function recheckPostEvalGreenFix(state, newIters) {
   let cls = null
   try {
     cls = await trackedAgent(
-      secfloorClassifyPrompt(),
-      { agentType: 'dev-runner-haiku-ro', schema: SECFLOOR, label: 'green-fix-classify', phase: 'Evaluate', retryOnContractViolation: true },
+      diffTriagePrompt(),
+      { agentType: 'dev-runner-haiku-ro', schema: DIFF_TRIAGE, label: 'green-fix-classify', phase: 'Evaluate', retryOnContractViolation: true },
     )
   } catch (e) { log(`⚠️ green-fix-classify 呼び出しが例外 — per-field フォールバック（risk fail-closed → full）で続行: ${e && e.message ? e.message : e}`) }
-  const { risk, struct, hash: gfHash } = parseSecfloorFields(cls)
+  const { risk, struct, hash: gfHash } = parseDiffTriageFields(cls)
   if (gfHash == null) {
     log('⚠️ post-eval recheck: green-fix 後の tree hash を取得できず — 再評価せず、PR 直前の hash_mismatch（HOLD）で人間へ（fail-safe）')
     return state
@@ -6951,8 +6951,8 @@ if (state.__earlyReturn) return state.__earlyReturn
 state = await execLocalVerify(state)
 feedClockMark('validate_end', epochResOf(state.validateEndEpochRes))
 
-phase('Security floor')
-state = await execSecurityFloorPhase(state)
+phase('Diff triage')
+state = await execDiffTriagePhase(state)
 
 if (state.runEval) {
 phase('Evaluate')
@@ -7112,7 +7112,7 @@ const prIterateArgs = () => ({
   plugin_commit: PLUGIN_COMMIT,
   // CI 待ちの上限（秒）。dev-flow-prerun が base の CI 所要時間から決めた値（単体起動の pr-iterate-prerun と同じ求め方）
   ci_wait_ceiling_seconds: PRERUN.ci_wait_ceiling_seconds,
-  // 敵対的 security review の起動時の判定（Security floor）。pr-iterate は LGTM の前に PR head の diff で判定し直す。
+  // 敵対的 security review の起動時の判定（Diff triage）。pr-iterate は LGTM の前に PR head の diff で判定し直す。
   // reviewer は review を回す CLI の opt-in（dev-flow-prerun が base branch か user 設定から読んだ値。単体起動の pr-iterate-prerun と同じ規則）
   security_review: { target: state.securityReview.target, reasons: state.securityReview.reasons, reviewer_context_changed: state.securityReview.reviewer_context_changed, reviewer: PRERUN.security_reviewer },
   ...(CI_AC_INDEXES.length ? { ci_verify: { label: CI_VERIFY.label, checks: CI_VERIFY.checks, wait_ceiling_seconds: CI_VERIFY.wait_ceiling_seconds, ...(LOCAL_VERIFY_DECIDED ? { wait: false } : {}) } } : {}),
@@ -7139,7 +7139,7 @@ const prIterateArgs = () => ({
 // ============================================================
 // ci の AC がある run は lite に入れない（ci_verify.checks の完了待ちは pr-iterate だけが持つ）。
 // 敵対的 security review の対象の run も lite に入れない（security review は pr-iterate だけが持つ。lite に入るのは
-// Security floor の merge-base 基準の diff が決定論の許可リストに全ファイル当たった run だけ）。
+// Diff triage の merge-base 基準の diff が決定論の許可リストに全ファイル当たった run だけ）。
 const LITE = state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target
 let iterate
 // route: PR phase の経路識別子（'lite'|'full'）。返り値と telemetry に載る。
@@ -7312,7 +7312,7 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
       // changed-files は元々 filter せず raw を使うため、加工すると挙動が変わる。
       changedFilesFinal = changedFinal.files
       const filesFinal = filterEphemeralPaths(changedFinal.files)
-      // Step4 宣言外パス再監査（advisory）: Security floor 時点の undeclared に無い新規分のみ集約 1 item
+      // Step4 宣言外パス再監査（advisory）: Diff triage 時点の undeclared に無い新規分のみ集約 1 item
       const planAllTasksF = state.plan.serial ?? []
       const undeclaredFinal = diffDeclaredPaths(planAllTasksF, filesFinal)
       const newUndeclared = undeclaredFinal.filter((p) => !(state.undeclared ?? []).includes(p))
@@ -7548,9 +7548,9 @@ phase('Merge tier')
 // verbatim 転写し（PR body は gh の --jq で true / false に畳んだ結果だけを渡す）、
 // merge-tier-facts はローカル read-only git との純変換で 7 サブ結果を {ok,value,error}
 // で返す（exec-proxy スクリプトは認証付き network I/O を内部に持たない）。判定は全て JS 側 —
-// parseMergeTierFacts がサブ結果ごとに独立検証し、以降の reuseSecFloor / reconcileDanger /
+// parseMergeTierFacts がサブ結果ごとに独立検証し、以降の reuseDiffTriage / reconcileDanger /
 // classifyMergeableState / hash_reconverged / envChecksGreen はその値で判定する。throw / null / 契約外形状は
-// Security floor の統合呼び出しと同じく per-field フォールバック（risk fail-closed → dangerFailClosed で
+// Diff triage の統合呼び出しと同じく per-field フォールバック（risk fail-closed → dangerFailClosed で
 // HOLD 強制、他は fail-open）で続行し、run を abort しない（abort は終端サマリと journal entry を失う）。
 // 7 サブ結果は常に取得する（head_tree / checks を使うかどうかは spawn 費用が無いため JS の分岐が決める）。
 let mergeFacts = null
@@ -7573,9 +7573,9 @@ try {
   }
 }
 const facts = parseMergeTierFacts(mergeFacts)
-// diff-hash reuse: Security floor 時点の tree OID（state.secDiffHash）と Merge tier
+// diff-hash reuse: Diff triage 時点の tree OID（state.secDiffHash）と Merge tier
 // 冒頭の tree OID が完全一致するときのみ danger-grep-final/changed-files の再判定を skip し、
-// Security floor の risk/realized をそのまま再利用する。secDiffHash が null（Security floor
+// Diff triage の risk/realized をそのまま再利用する。secDiffHash が null（Diff triage
 // 側 fail-closed・取得失敗）のときは merge 側 hash を参照しない（比較対象が無い hash は再利用にも
 // hash_reconverged 判定にも使わず、後者は mergeDiffHash=null で hash_mismatch 維持に倒れる）。
 let riskFinal
@@ -7583,11 +7583,11 @@ let changed
 let mergeDiffHash = null
 if (state.secDiffHash != null) {
   mergeDiffHash = facts.mergeDiffHash
-  if (mergeDiffHash == null) log('⚠️ diff-hash-merge の取得に失敗 — Security floor 結果の再利用は skip し danger-grep-final / changed-files を再判定（fail-safe）')
+  if (mergeDiffHash == null) log('⚠️ diff-hash-merge の取得に失敗 — Diff triage 結果の再利用は skip し danger-grep-final / changed-files を再判定（fail-safe）')
 }
-const reuseSecFloor = state.secDiffHash != null && mergeDiffHash != null && state.secDiffHash === mergeDiffHash
-if (reuseSecFloor) {
-  log(`Merge tier: diff-hash 一致（${mergeDiffHash}）— Security floor の danger-grep/changed-files 結果を再利用（danger-grep-final/changed-files の再判定を skip）`)
+const reuseDiffTriage = state.secDiffHash != null && mergeDiffHash != null && state.secDiffHash === mergeDiffHash
+if (reuseDiffTriage) {
+  log(`Merge tier: diff-hash 一致（${mergeDiffHash}）— Diff triage の danger-grep/changed-files 結果を再利用（danger-grep-final/changed-files の再判定を skip）`)
   riskFinal = state.risk
   changed = { files: state.realized?.files ?? [] }
 } else {
@@ -7617,9 +7617,9 @@ const dangerHitsFinal = riskFinal.ok === true ? [...new Set(secHitsOf(riskFinal)
 const testsurfPatternsFinal = testsurfPatternsOf(riskFinal)
 const dangerFailClosedFinal = riskFinal.ok !== true
 // fail-closed の原因が merge-tier-facts の転記欠落か（HOLD reason を danger_fail_closed と出し分ける）。
-// Security floor 結果を再利用した場合は facts の risk を見ていないので常に false。
+// Diff triage 結果を再利用した場合は facts の risk を見ていないので常に false。
 // 再試行後も StructuredOutput 契約違反で終わった場合（mergeFacts=null）も転記欠落として扱う。
-const riskValueDroppedFinal = dangerFailClosedFinal && !reuseSecFloor && (isRiskValueDropped(mergeFacts) || mergeFactsContractViolation)
+const riskValueDroppedFinal = dangerFailClosedFinal && !reuseDiffTriage && (isRiskValueDropped(mergeFacts) || mergeFactsContractViolation)
 if (dangerFailClosedFinal) log(`⚠️ danger-grep-final が fail-closed (${riskFinal.error ?? 'unknown'}) — merge tier を HOLD 強制`)
 
 // 最終 danger を ledger に再反映(PR 中の修正で hit が消えた/増えた場合に追従)。
@@ -7628,7 +7628,7 @@ state.ledger = reconcileDanger(state.ledger, riskFinal)
 state.ledger = reconcileTestsurf(state.ledger, riskFinal)
 // one-shot security clearance: Evaluate 時点 clean → 最終 danger-grep で新規 hit に
 // 転じた SEC class のみを対象に、evaluator へ 1 回だけ clearance を求める。cleared:true + 非空
-// evidence のみ checkItem。null / cleared:false / evidence 空は据え置き = HOLD（security floor は
+// evidence のみ checkItem。null / cleared:false / evidence 空は据え置き = HOLD（SEC item の blocking は
 // 緩めない）。fail-closed 時は試みない。反復ループは作らない。
 const newlyUnchecked = dangerFailClosedFinal ? [] : newlyUncheckedSecClasses(ledgerBeforeFinalReconcile, state.ledger)
 if (newlyUnchecked.length > 0) {
@@ -7641,7 +7641,7 @@ if (newlyUnchecked.length > 0) {
     + `${EVALUATOR_OPERATIONAL_CONTRACT.security_clearance}\n`,
     { agentType: 'evaluator', schema: SEC_CLEAR, label: 'security-clearance-final', phase: 'Merge tier' },
   )
-  if (!clearance) log('⚠️ security-clearance-final が null — SEC item 据え置き（HOLD。security floor は緩めない）')
+  if (!clearance) log('⚠️ security-clearance-final が null — SEC item 据え置き（HOLD。SEC item の blocking は緩めない）')
   for (const sc of (clearance?.security_clearance ?? [])) {
     if (!sc || typeof sc.danger_class !== 'string') continue
     if (!newlyUnchecked.includes(sc.danger_class)) continue   // 新規 hit 以外（Evaluate 由来の未解消 SEC 等）は clear させない
@@ -7712,9 +7712,9 @@ if (facts.closes === 'unknown') {
 // AC 未達の actor 別内訳（Final AC reconcile が reverified ならその結果、それ以外は Evaluate の最終結果）。
 // agent 側は Evaluate 差し戻しで拾えなかった取りこぼし、human 側は人手 AC 待ちとして HOLD 理由を分ける。
 const acGapsFinal = state.finalUnsatisfiedAcByActor ?? state.unsatisfiedAcByActor
-// 敵対的 security review: Security floor か pr-iterate の判定のどちらかで対象なら、pr-iterate が今の PR head で
+// 敵対的 security review: Diff triage か pr-iterate の判定のどちらかで対象なら、pr-iterate が今の PR head で
 // clear にした（status lgtm かつ security_review.status 'cleared'）run 以外は HOLD。nested pr-iterate が security_review を
-// 返さない（lite の clean 終端）run は Security floor の判定だけで決める — lite に入るのは対象外の run だけ。
+// 返さない（lite の clean 終端）run は Diff triage の判定だけで決める — lite に入るのは対象外の run だけ。
 const securityReviewFinal = {
   target: state.securityReview.target === true || iterate?.security_review?.target === true,
   status: iterate?.security_review?.status ?? (state.securityReview.target ? 'not_run' : 'not_target'),

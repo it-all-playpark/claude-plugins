@@ -60,7 +60,7 @@ const DF_B4 = {
     'test#final': { tests: 'error', summary: 'startup failed', green: false },
   },
 };
-// B5: Merge tier の merge-tier-facts が Security floor と異なる hash（reuse miss）かつ risk に新規 hit
+// B5: Merge tier の merge-tier-facts が Diff triage と異なる hash（reuse miss）かつ risk に新規 hit
 // （auth）を報告 → one-shot security-clearance-final へ到達する。
 const DF_B5 = {
   workflow: async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }),
@@ -70,10 +70,10 @@ const DF_B5 = {
     'merge-tier-facts': mergeTierFacts({ hash: 'BBB', risk: { ok: true, hits: [{ class: 'auth', file: 'src/x.ts' }] } }),
   },
 };
-// DANGER: danger-grep（Security floor）throw に加え、merge-tier-facts（Merge tier）の risk も fail-closed
-// を返す複合 override。Merge tier は Security floor の結果を独立に再取得するため、danger-grep 単体の
+// DANGER: danger-grep（Diff triage）throw に加え、merge-tier-facts（Merge tier）の risk も fail-closed
+// を返す複合 override。Merge tier は Diff triage の結果を独立に再取得するため、danger-grep 単体の
 // throw だけでは Merge tier 側の再取得で「clean」に復元されてしまい HOLD を再現できない
-// （fail-closed が Security floor と Merge tier の両方で持続する現実的なシナリオとして構成する）。
+// （fail-closed が Diff triage と Merge tier の両方で持続する現実的なシナリオとして構成する）。
 const DF_DANGER = { overrides: { 'merge-tier-facts': mergeTierFacts({ risk: { ok: false, hits: [], error: 'still down' } }) } };
 // CLOSES: merge-tier-facts の closes サブ結果が Closes 欠落を報告し closes-reinject へ到達させる。
 const DF_CLOSES = { overrides: { 'merge-tier-facts': mergeTierFacts({ closes: false }) } };

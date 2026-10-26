@@ -5,12 +5,12 @@
 // サブ結果は全て {ok, value, error?} 形。本関数は「1 サブ結果の不正が他サブ結果の判定に影響しない」
 // ことを保証するため、各サブ結果を完全に独立して検証し、旧 6 spawn（diff-hash-merge /
 // danger-grep-final / changed-files / gh-pr-view / head-tree-oid / ci-checks）が個別に返していた
-// 形へ写す。呼び出し側の判定ロジック（reuseSecFloor / reconcileDanger / classifyMergeableState /
+// 形へ写す。呼び出し側の判定ロジック（reuseDiffTriage / reconcileDanger / classifyMergeableState /
 // hash_reconverged / envChecksGreen）はこの写像の上で不変。
 //
 // サブ結果別失敗ポリシー（旧 spawn の fail-closed / fail-open 区別と同一）:
 //   mergeDiffHash - fail-open。diffhash.ok===true かつ value.hash が string のときのみ採用、それ以外 null
-//                   （null は「Security floor 結果の再利用不可 → danger-grep 再判定」と
+//                   （null は「Diff triage 結果の再利用不可 → danger-grep 再判定」と
 //                   「hash_reconverged 判定不能 → hash_mismatch 維持」に倒れる）。
 //   risk          - fail-closed。risk.ok===true かつ value が {ok:boolean, hits:array} のときのみ採用。
 //                   それ以外は {ok:false, hits:[], error} を合成（null は返さない — hits 欠落を clean と

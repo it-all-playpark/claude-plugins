@@ -28,7 +28,7 @@ const src = readFileSync(devFlowPath, 'utf8');
 
 /**
  * danger-fail-closed 専用の VM sandbox を組む。
- * label 'danger-grep'（Security floor。issue #544 統合呼び出し）は dangerGrepResponse を
+ * label 'danger-grep'（Diff triage。issue #544 統合呼び出し）は dangerGrepResponse を
  * risk フィールドに包んで返し、label 'merge-tier-facts'（Merge tier 統合呼び出し）は risk サブ結果に包んで
  * dangerGrepResponse をそのまま返す。evaluator 呼び出し回数と journal-log に渡された
  * prompt を捕捉する。
@@ -59,10 +59,10 @@ function makeSandbox(analyzeReq, dangerGrepResponse, evaluatorResponse) {
     if (label.startsWith('analyze')) {
       return analyzeReq;
     }
-    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
-    // Security floor: label 'danger-grep' は issue #544 で統合呼び出しへ変わった
-    // （secfloor-classify.sh 経由の {risk, files, struct, diffhash} 応答）。dangerGrepResponse
+    // Diff triage: label 'danger-grep' は issue #544 で統合呼び出しへ変わった
+    // （diff-triage.sh 経由の {risk, files, struct, diffhash} 応答）。dangerGrepResponse
     // を risk フィールドに包んで返す（fail-closed / clean を切り替え可能）。
     if (label === 'danger-grep') {
       return { risk: dangerGrepResponse, files: ['src/foo.ts'], struct: null, diffhash: null };
@@ -242,7 +242,7 @@ test('[danger-fail-closed] AC#1: danger-grep fail-closed でも evaluator はち
   );
 });
 
-test('[danger-fail-closed] AC#2: danger-grep fail-closed 時、merge tier は HOLD になる（軸A invariant: security floor は緩めない）', async () => {
+test('[danger-fail-closed] AC#2: danger-grep fail-closed 時、merge tier は HOLD になる（軸A invariant: danger-grep の fail-closed は緩めない）', async () => {
   const { ctx } = makeSandbox(ANALYZE_REQ_COMPLEX, DANGER_FAIL_CLOSED, EVAL_RESPONSE_CLEAN);
   const { result, error } = await runDevFlowCapture(src, ctx);
 

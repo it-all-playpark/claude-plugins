@@ -98,7 +98,7 @@ function createResponder(overrides = {}) {
     if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-631' };
     if (label.startsWith('analyze')) return STANDARD_REQ;
-    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     if (label === 'danger-grep') {
       return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'AAA', empty: false } };

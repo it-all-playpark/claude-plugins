@@ -113,7 +113,7 @@ security_clearance 契約:
 - danger_class は渡された危険クラス名をそのまま返す。
 - 安全確認できないものは cleared:false。
 - cleared:true は具体的 evidence 必須。evidence のない cleared:true は無視され、SEC item は blocking のまま残る。
-- cleared:false の SEC item は blocking のまま merge tier に反映される（security floor は gate_policy で緩めない）。
+- cleared:false の SEC item は blocking のまま merge tier に反映される（SEC item の blocking は gate_policy で緩めない）。
 
 concern_resolutions 契約:
 - prompt に「未解消 concern 一覧」が渡された場合、各 item を実コードで再検証し、concern_resolutions:[{id, resolution, evidence}] で全件判定して返す。

@@ -1,6 +1,6 @@
 // 実効 shape が realized diff の file 数だけで決まることを VM sandbox で pin する（issue #676）。
 // Analyze 由来の事前見積もり（req.shape / req.estimated_change_file_count）は decision に効かず、
-// EFFECTIVE_SHAPE は Security floor で classifyShape(req, realizedCount, lineStats) が 1 回で決める。
+// EFFECTIVE_SHAPE は Diff triage で classifyShape(req, realizedCount, lineStats) が 1 回で決める。
 //
 // テストケース:
 //   (A) realized 6 件（全件宣言）→ shape=complex + evaluator >= 1 回 + shape_reason が realized ベース
@@ -15,7 +15,7 @@
 //       triviality / estimated_file_count）が無い
 //   (J) 3 shape の spawn 構造（dev-implementer 回数 / evaluator 回数 / route）が shape 別経路の期待と一致する
 //   (K) 静的 pin: dev-flow.js（inline 生成区間含む）に refloorShape / mergeShape / 事前見積もりキーが無い
-//   (L) acme/webapp#101 相当 + secfloor の lines → 重み・削除主体の補正で micro、shape_reason に補正前の shape（issue #740）
+//   (L) acme/webapp#101 相当 + diff-triage の lines → 重み・削除主体の補正で micro、shape_reason に補正前の shape（issue #740）
 //   (M) 同じ files で lines 無し → file 数判定の complex（補正なし）
 //   (N) counted file の 1 件に行数が無い → 補正なし
 //   (O) 宣言外 file の行数は補正に使わない
@@ -187,10 +187,10 @@ test('[realized-shape] (K) 静的 pin: dev-flow.js（inline 生成区間含む�
   }
   // 実効 shape は classifyShape(req, realizedCount, lineStats) の 1 呼び出しで決まる
   assert.match(src, /const triage = classifyShape\(req, realizedCount, lineStats\)\n\s*const EFFECTIVE_SHAPE = triage\.shape/);
-  assert.equal((src.match(/classifyShape\(/g) ?? []).length - 1, 1, 'classifyShape の呼び出しは Security floor の 1 箇所のみ（-1 は関数定義）');
+  assert.equal((src.match(/classifyShape\(/g) ?? []).length - 1, 1, 'classifyShape の呼び出しは Diff triage の 1 箇所のみ（-1 は関数定義）');
 });
 
-// ---- 差分の中身による補正（issue #740）: secfloor の lines が classifyShape に届く ----
+// ---- 差分の中身による補正（issue #740）: diff-triage の lines が classifyShape に届く ----
 
 // acme/webapp#101 相当: docs 2 + 本番 2（うち削除だけ 1）+ テスト 2、+24/-128
 const WEBAPP_101_LINES = [
@@ -216,7 +216,7 @@ test('[realized-shape] (L) acme/webapp#101 相当（6 files, +24/-128, AC 3, cho
   assert.equal(telemetry.shape, 'micro');
 });
 
-test('[realized-shape] (M) 同じ 6 files で lines が無い（secfloor が lines を返さない）→ file 数判定の complex（補正なし）', async () => {
+test('[realized-shape] (M) 同じ 6 files で lines が無い（diff-triage が lines を返さない）→ file 数判定の complex（補正なし）', async () => {
   const { calls, returned } = await run({ ...filesOverrides(WEBAPP_101_FILES) }, WEBAPP_101_REQ);
   assert.equal(returned.shape, 'complex');
   assert.equal(returned.shape_reason, 'realized 6 file(s), 3 AC, type=chore → shape=complex');

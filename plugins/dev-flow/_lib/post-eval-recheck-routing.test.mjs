@@ -1,7 +1,7 @@
 // post-eval-recheck-routing.test.mjs — Evaluate 後に入った変更を run 内で確かめ直す経路を dev-flow.js の VM 実行で pin する。
 //
 // (1) post-eval green-fix の再評価: Evaluate 差し戻し後の PR 前テストで green-fix が入った run は、green-fix の差分に
-//     secfloor-classify（testsurf / structural）を当て、hit 0 かつテストファイルだけなら assert_only、それ以外は full で
+//     diff-triage（testsurf / structural）を当て、hit 0 かつテストファイルだけなら assert_only、それ以外は full で
 //     evaluator に差分を評価させ、評価済み tree（evalDiffHash）を green-fix 後の tree へ進める。
 //     assert を弱めない修正なら hash_mismatch で HOLD にならず、弱めた修正は critical（全 gate_policy で blocking）で HOLD。
 // (2) 解消済み item の再検証: green-fix / pr-iterate fix が触ったファイルに言及する解消済み item は、

@@ -62,7 +62,7 @@ function makeSandbox(analyzeReq, opts) {
     if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-233' };
     if (label.startsWith('analyze')) return analyzeReq;
-    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // file_changes は既定 realizedFiles（docs/a.md）と一致させ、宣言外扱いによる
     // micro Evaluate 強制（issue #272 F2）が誤発火しないようにする。

@@ -155,7 +155,7 @@ test('[impl-model-opus] (c) impl:serial:issue-1 の null は再試行されず 1
 // ============================================================
 // (d) shape 別 spawn 数・Evaluate 回数（fallback 撤去前の実測値から、journal handoff の 1 spawn 化
 // （issue #807: journal-save + journal-log → journal-log）で dev-runner-haiku が 1 減り、closes-check の
-// merge-tier-facts 吸収（issue #824）で dev-runner-haiku-ro が 1 減り、Security floor の敵対的 security review の
+// merge-tier-facts 吸収（issue #824）で dev-runner-haiku-ro が 1 減り、Diff triage の敵対的 security review の
 // 対象判定 security-scope（issue #1063）で dev-runner-haiku-ro が 1 増えた値）
 // ============================================================
 

@@ -1,5 +1,5 @@
 // classifyShape: realized diff の file 数・file ごとの追加/削除行数と REQ 由来の決定論特徴量（AC 数 /
-// issue_type / 構造化 breaking_change）から実効 shape を決める純粋関数。dev-flow の Security floor（realized diff 取得後）
+// issue_type / 構造化 breaking_change）から実効 shape を決める純粋関数。dev-flow の Diff triage（realized diff 取得後）
 // で 1 回だけ呼ばれ、返り値が EFFECTIVE_SHAPE（Evaluate 深さ・LITE gate・merge tier の入力）になる。
 //
 // 入力は実装後の realized diff のみ。Setup 末尾の analyze ゲートまでに得られる LLM の事前見積もり（shape / 見込み file 数）は

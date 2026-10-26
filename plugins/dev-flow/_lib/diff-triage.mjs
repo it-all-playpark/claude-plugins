@@ -1,5 +1,5 @@
-// parseSecfloorFields: dev-flow Security floor が使う統合 exec-proxy
-// (`_shared/scripts/secfloor-classify.sh`) の応答を per-field 独立に検証する純関数 (issue #544, S1)。
+// parseDiffTriageFields: dev-flow Diff triage が使う統合 exec-proxy
+// (`_shared/scripts/diff-triage.sh`) の応答を per-field 独立に検証する純関数 (issue #544, S1)。
 //
 // 統合スクリプトは {"risk":..., "files":..., "struct":..., "diffhash":..., "lines":...} の 1 JSON object を返すが、
 // 各フィールドはそれぞれ別のフィールド別失敗ポリシーを持つ (下記)。本関数は「1 フィールドの不正が
@@ -8,9 +8,9 @@
 // フィールド別失敗ポリシー:
 //   risk   - fail-closed。unified?.risk が object かつ typeof ok==='boolean' かつ
 //            Array.isArray(hits) のときのみそのまま採用。それ以外は
-//            {ok:false, hits:[], error:'secfloor unified proxy unavailable (fail-closed)'} を合成
+//            {ok:false, hits:[], error:'diff-triage unified proxy unavailable (fail-closed)'} を合成
 //            (null は返さない -- hits フィールド欠落を clean と同一視しない fail-closed が要件。
-//            security floor の reconcileDanger/reconcileTestsurf は risk.ok!==true を fail-closed
+//            Diff triage の reconcileDanger/reconcileTestsurf は risk.ok!==true を fail-closed
 //            として扱い、全 SEC/TESTSURF seed を unchecked に倒す)。
 //   files  - fail-safe。Array.isArray(unified?.files) かつ全要素が string のときのみ採用。
 //            それ以外は null (呼び出し側の realizedCount が NaN になり complex floor 安全弁へ
@@ -29,7 +29,7 @@
 
 // risk フィールドが契約通りの形か (issue #617)。fail-closed に倒れた 2 原因
 // ---- (a) proxy が契約外形状を返した (top-level risk 欠落) / (b) proxy が契約通りの形で
-// ok:false を報告した (secfloor-classify.sh 自体の失敗) ---- を呼び出し側が区別するための述語。
+// ok:false を報告した (diff-triage.sh 自体の失敗) ---- を呼び出し側が区別するための述語。
 // parseRiskField の採用条件そのもので、両者が drift しないよう単一定義を共有する。
 export function isWellFormedRiskField(unified) {
   const risk = unified?.risk;
@@ -40,7 +40,7 @@ function parseRiskField(unified) {
   if (isWellFormedRiskField(unified)) {
     return unified.risk;
   }
-  return { ok: false, hits: [], error: 'secfloor unified proxy unavailable (fail-closed)' };
+  return { ok: false, hits: [], error: 'diff-triage unified proxy unavailable (fail-closed)' };
 }
 
 function parseFilesField(unified) {
@@ -83,7 +83,7 @@ function parseLinesField(unified) {
   return null;
 }
 
-export function parseSecfloorFields(unified) {
+export function parseDiffTriageFields(unified) {
   return {
     risk: parseRiskField(unified),
     files: parseFilesField(unified),

@@ -45,7 +45,7 @@ function makeCountingSandbox(analyzeReq, diffHashConfig) {
     if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
     if (label.startsWith('analyze')) return analyzeReq;
-    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // label 'danger-grep'（issue #544 統合呼び出し）: risk/files を 1 応答で返す。
     if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: [...realizedFiles], struct: null, diffhash: null };
@@ -177,9 +177,9 @@ test('[empty-diff] (F) empty-diff gate retry 後に validate 再実行 → test#
 });
 
 // (G) empty-diff gate retry 後に danger-grep が retry 後 tree を見ること（issue #219 major fix）
-// gate 移動により Security floor が retry 後に実行される → danger-grep は reimpl-empty-diff より後に呼ばれる invariant。
-// もし gate が Security floor の後にあれば danger-grep は reimpl-empty-diff より前に来る（旧バグ）。
-test('[empty-diff] (G) retry 後に danger-grep が reimpl-empty-diff より後に呼ばれること（Security floor が retry 後 tree を見る）', async () => {
+// gate 移動により Diff triage が retry 後に実行される → danger-grep は reimpl-empty-diff より後に呼ばれる invariant。
+// もし gate が Diff triage の後にあれば danger-grep は reimpl-empty-diff より前に来る（旧バグ）。
+test('[empty-diff] (G) retry 後に danger-grep が reimpl-empty-diff より後に呼ばれること（Diff triage が retry 後 tree を見る）', async () => {
   const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, { gateEmpty: true, retryEmpty: false });
   const { error } = await runDevFlowInSandbox(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
@@ -231,8 +231,8 @@ test('[empty-diff] (I) 両 hash 一致 + status=stuck → eval_staleness===itera
   assert.ok(journalCall?.prompt?.includes('"iterate_status":"stuck"'), `(I) journal-log prompt に "iterate_status":"stuck" を含むべきだが: ${journalCall?.prompt?.slice(0, 500)}`);
 });
 
-// (K) empty-diff gate retry 経路の phase タグが 'Validate'（'Security floor' でない）こと（issue #253）
-// runValidateLoop('retry') は empty-diff gate 内（phase('Security floor') 呼び出し前）で実行されるため、
+// (K) empty-diff gate retry 経路の phase タグが 'Validate'（'Diff triage' でない）こと（issue #253）
+// runValidateLoop('retry') は empty-diff gate 内（phase('Diff triage') 呼び出し前）で実行されるため、
 // test#retry-N / green-fix#retry-N の agent 呼び出しに付く phase タグは 'Validate' が正しい。
 test('[empty-diff] (K) retry 経路の test#retry / green-fix#retry call の phase タグが Validate であること（issue #253）', async () => {
   const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, { gateEmpty: true, retryEmpty: false });
@@ -243,12 +243,12 @@ test('[empty-diff] (K) retry 経路の test#retry / green-fix#retry call の pha
   const retryTestCalls = calls.filter((c) => c.label.startsWith('test#retry'));
   assert.ok(retryTestCalls.length >= 1, `(K) test#retry-N が 1 件以上呼ばれるはず（gateEmpty:true で retry 経路が発火）`);
   for (const c of retryTestCalls) {
-    assert.strictEqual(c.phase, 'Validate', `(K) test#retry call（label=${c.label}）の phase は 'Validate' のはずだが '${c.phase}'（Security floor タグ誤帰属）`);
+    assert.strictEqual(c.phase, 'Validate', `(K) test#retry call（label=${c.label}）の phase は 'Validate' のはずだが '${c.phase}'（Diff triage タグ誤帰属）`);
   }
   // green-fix#retry-N calls の phase が全て 'Validate' であること（green が false になりうる場合は呼ばれる）
   const retryGreenFixCalls = calls.filter((c) => c.label.startsWith('green-fix#retry'));
   for (const c of retryGreenFixCalls) {
-    assert.strictEqual(c.phase, 'Validate', `(K) green-fix#retry call（label=${c.label}）の phase は 'Validate' のはずだが '${c.phase}'（Security floor タグ誤帰属）`);
+    assert.strictEqual(c.phase, 'Validate', `(K) green-fix#retry call（label=${c.label}）の phase は 'Validate' のはずだが '${c.phase}'（Diff triage タグ誤帰属）`);
   }
 });
 

@@ -16,7 +16,7 @@ GitHub issue から LGTM までを 8 phase で駆動する `dev-flow` の実処�
   自動 merge ではない。全 tier で例外なし
 - **1 issue = 1 PR。** Implement は全 shape で `dev-implementer` を単一 worktree に 1 spawn する
   （parallel fan-out は持たない）。issue 分割も integration branch も使わない
-- **軸A invariant。** 決定論オラクル・security floor・critical アイテムはどの `gate_policy` でも
+- **軸A invariant。** 決定論オラクル・danger-grep の fail-closed・critical アイテムはどの `gate_policy` でも
   blocking。policy で緩めない
 - **後方互換 scaffolding を作らない。** enum 外の値は legacy fallback ではなく明示 error にする
 
@@ -39,7 +39,7 @@ flowchart TD
     W --> S["1. Setup"]
     S --> I["2. Implement"]
     I --> V["3. Validate"]
-    V --> SF["4. Security floor"]
+    V --> SF["4. Diff triage"]
     SF --> E["5. Evaluate"]
     E --> R["6. PR"]
     R --> FR["7. Final reconcile"]
@@ -130,7 +130,7 @@ override だが権限なし / conflict / 低確信 → `comment_conflicts`、本
 ### 1.3 Implement
 
 Setup 末尾の analyze ゲート直後に issue から単一 task の plan を合成する（planner 0 回、`implement#synth-plan`。
-shape はこの時点では決まっていない — Security floor で realized diff から決める）。
+shape はこの時点では決まっていない — Diff triage で realized diff から決める）。
 合成 task の `file_changes` は空で始まり、Implement の返却 `files` を宣言として取り込む。
 
 `dev-implementer`（plan+impl 統合、frontmatter opus）を単一 worktree に 1 spawn する。parallel fan-out・
@@ -155,7 +155,7 @@ flowchart TD
     V2 -->|no| V3["green-fix（sonnet）<br/>テスト弱体化は禁止"]
     V3 --> V1
     V2 -->|"yes / no_tests<br/>GREEN_MAX 到達"| V4{"empty-diff gate<br/>origin/BASE と一致 ?"}
-    V4 -->|"差分あり"| OUT["Security floor へ"]
+    V4 -->|"差分あり"| OUT["Diff triage へ"]
     V4 -->|"空 diff"| V5["cross-repo probe<br/>差し戻し 1 回"]
     V5 -->|"差分あり"| OUT
     V5 -->|"再度空"| AB["throw / abort"]
@@ -164,11 +164,11 @@ flowchart TD
 format / lint はこの phase の責務外で、test の結果だけを見る。
 `GREEN_MAX` 到達時は red のまま次へ進むが、未解消の状態は merge tier が HOLD で受け止める。
 
-### 1.5 Security floor
+### 1.5 Diff triage
 
 ```mermaid
 flowchart TD
-    IN["test green"] --> C1["secfloor-classify.sh<br/>統合 exec-proxy・1 呼び出し"]
+    IN["test green"] --> C1["diff-triage.sh<br/>統合 exec-proxy・1 呼び出し"]
     C1 --> C2["ephemeral・宣言外・format_only を count から除外"]
     C2 --> C3["classifyShape(req, realizedCount, lineStats)<br/>EFFECTIVE_SHAPE 確定"]
     C3 --> C5{"runEval ?"}
@@ -178,7 +178,7 @@ flowchart TD
     C1 -.->|"risk 欠落・実行不能"| FC["fail-closed<br/>SEC 全 unchecked → HOLD"]
 ```
 
-`secfloor-classify.sh` は risk（danger-grep）/ files（realized diff）/ struct（structural 分類）/
+`diff-triage.sh` は risk（danger-grep）/ files（realized diff）/ struct（structural 分類）/
 diffhash / lines（ファイルごとの追加・削除行数。untracked は `wc -l`）を 1 回で返す。フィールドごとに失敗セマンティクスが分かれており、**risk の欠落だけは
 fail-closed** で SEC seed を全 unchecked にして merge tier を HOLD へ倒す（軸A invariant）。
 
@@ -233,8 +233,8 @@ flowchart TD
 ```
 
 nested 起動する `pr-iterate` には issue の acceptance criteria と
-nested context（cwd / head_ref / repo / epoch）と、Security floor の敵対的 security review の対象判定
-（`security_review`）を渡す。Security floor は merge-base と作業ツリーの diff を `security-review-scope --working-tree`
+nested context（cwd / head_ref / repo / epoch）と、Diff triage の敵対的 security review の対象判定
+（`security_review`）を渡す。Diff triage は merge-base と作業ツリーの diff を `security-review-scope --working-tree`
 で判定し、全ファイルが決定論の許可リスト（指示ファイルでない文書・テスト）に当たる run だけが対象外 — lite route に
 入れるのもこの run だけ。
 
@@ -266,14 +266,14 @@ flowchart TD
     M4 --> HU["merge は常に人間"]
 ```
 
-`merge-tier-facts` の diffhash が Security floor 時点の tree OID と一致すれば、facts の risk / changed
-を使わず Security floor の結果を再利用する。tier の判定ロジックは [4. merge tier 判定](#4-merge-tier-判定) を参照。
+`merge-tier-facts` の diffhash が Diff triage 時点の tree OID と一致すれば、facts の risk / changed
+を使わず Diff triage の結果を再利用する。tier の判定ロジックは [4. merge tier 判定](#4-merge-tier-判定) を参照。
 
 ---
 
 ## 2. shape 判定
 
-shape は Setup 末尾の analyze ゲートでは決めない。Implement 後の Security floor で `classifyShape(req, realizedCount, lineStats)` が
+shape は Setup 末尾の analyze ゲートでは決めない。Implement 後の Diff triage で `classifyShape(req, realizedCount, lineStats)` が
 realized diff のファイル数（ephemeral・宣言外・format_only を除外した数）・ファイルごとの追加/削除行数と issue 由来の決定論特徴量
 （AC 数 / `issue_type` / 構造化 `breaking_change`）で **1 回で** 決め、その返り値が `EFFECTIVE_SHAPE`
 になる。LLM の事前見積もりは入力にならない。入力が欠けていたり（realized count 取得不能）enum 外だったり
@@ -284,7 +284,7 @@ runEval 強制条件（danger-grep / testsurf / green-fix / dropped task / 宣�
 
 ```mermaid
 flowchart TD
-    START["Security floor: req + realized diff"] --> F1{"realized file count<br/>が有限の数値 ?"}
+    START["Diff triage: req + realized diff"] --> F1{"realized file count<br/>が有限の数値 ?"}
     F1 -->|"no（取得不能 NaN）"| CX["shape = complex"]
     F1 -->|yes| F2{"acceptance_criteria<br/>が配列 ?"}
     F2 -->|no| CX

@@ -49,9 +49,9 @@ function makeSandbox(analyzeReq, responses) {
     if (label.startsWith('analyze')) {
       return analyzeReq;
     }
-    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
-    // Security floor / Merge tier: danger-grep 系（label が 'danger-grep' で始まる）
+    // Diff triage / Merge tier: danger-grep 系（label が 'danger-grep' で始まる）
     // → danger clean にして HOLD 要因を絞る
     if (label.startsWith('danger-grep')) {
       return { ok: true, hits: [] };
@@ -71,7 +71,7 @@ function makeSandbox(analyzeReq, responses) {
     if (agentType === 'dev-flow:dev-runner-haiku' && label.startsWith('redgreen')) {
       return { red: false, green: false, reason: 'stub' };
     }
-    // realized-diff（Security floor）: dev-runner-haiku, label='realized-diff', CHANGED schema
+    // realized-diff（Diff triage）: dev-runner-haiku, label='realized-diff', CHANGED schema
     if (agentType === 'dev-flow:dev-runner-haiku-ro' && label === 'realized-diff') {
       return { files: ['src/foo.ts'] };
     }

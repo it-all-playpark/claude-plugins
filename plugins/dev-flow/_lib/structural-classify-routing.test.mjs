@@ -3,20 +3,20 @@
 // issue #636 で source regex 走査から共有 vm-sandbox.mjs による VM 挙動検証 + 純関数検証へ移行)。
 //
 // Background:
-//   dev-flow.js の Security floor phase はもともと F1 の決定論 script
+//   dev-flow.js の Diff triage phase はもともと F1 の決定論 script
 //   `_shared/scripts/structural-classify.sh` を専用 label 'structural-classify' の
 //   dev-runner-haiku-ro exec-proxy 経由で個別に呼んでいたが、issue #544 (S1) で
-//   danger-grep(risk) / realized-diff(files) / structural-classify(struct) / diff-hash-secfloor(hash)
-//   の 4 呼び出しが統合スクリプト `_shared/scripts/secfloor-classify.sh` 経由の単一呼び出し
+//   danger-grep(risk) / realized-diff(files) / structural-classify(struct) / diff-hash-triage(hash)
+//   の 4 呼び出しが統合スクリプト `_shared/scripts/diff-triage.sh` 経由の単一呼び出し
 //   （label 'danger-grep' 据え置き）へ集約された。struct 分類データはその応答の `struct` フィールド
-//   として得られ、`_lib/secfloor-unified.mjs` の `parseSecfloorFields`（dev-flow.js へ inline 生成
+//   として得られ、`_lib/diff-triage.mjs` の `parseDiffTriageFields`（dev-flow.js へ inline 生成
 //   済み）が per-field 独立に fail-open 検証する: struct が null / ok!==true / available 非boolean /
 //   format_only・structural 非配列のいずれでも struct=null（呼び出し元は formatOnlySet を空にして
 //   現行動作 = 全ファイル structural 扱い相当へフォールバックする）。
 //
 // routing / try-catch pin（label が dev-runner-haiku-ro へ routing される・try/catch で包まれる等）は
-// _lib/secfloor-unified-routing.test.mjs の [A1]/[A5] で検証済みのため、ここでは重複検証しない。
-// struct 専用の fail-open 純関数 parseSecfloorFields(unified).struct の挙動は secfloor-unified.test.mjs が持つ。
+// _lib/diff-triage-routing.test.mjs の [A1]/[A5] で検証済みのため、ここでは重複検証しない。
+// struct 専用の fail-open 純関数 parseDiffTriageFields(unified).struct の挙動は diff-triage.test.mjs が持つ。
 // 本ファイルは (2) evaluator prompt への diff_classification 注入が i===1 に限定されること、(3) formatOnlySet に
 // よる realizedCount 除外（実効 shape への影響）を VM 挙動として検証する。
 //
@@ -36,8 +36,8 @@ const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude', 'workflows', 'dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 
-// ---- (1) struct フィールドの fail-open 純関数検証（parseSecfloorFields(unified).struct）は
-// secfloor-unified.test.mjs が表駆動で持つ ----
+// ---- (1) struct フィールドの fail-open 純関数検証（parseDiffTriageFields(unified).struct）は
+// diff-triage.test.mjs が表駆動で持つ ----
 
 // ---- (2) diff_classification prompt injection is gated by i === 1 (VM 挙動) ----
 //

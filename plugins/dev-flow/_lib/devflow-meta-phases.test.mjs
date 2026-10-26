@@ -17,7 +17,7 @@ const EXPECTED_PHASES = [
   'Setup',
   'Implement',
   'Validate',
-  'Security floor',
+  'Diff triage',
   'Evaluate',
   'PR',
   'Final reconcile',

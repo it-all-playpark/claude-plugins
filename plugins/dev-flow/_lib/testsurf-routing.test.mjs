@@ -24,7 +24,7 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 
 /**
  * testsurf 専用の VM sandbox を組む。
- * label 'danger-grep'（Security floor。issue #544 統合呼び出し）は riskResponse を risk
+ * label 'danger-grep'（Diff triage。issue #544 統合呼び出し）は riskResponse を risk
  * フィールドへ包んで返し、label 'merge-tier-facts'（Merge tier 統合呼び出し）は riskResponse を risk サブ結果に包んで
  * そのまま返す。evaluator 呼び出し回数・evaluator prompt・journal-log prompt を捕捉する。
  *
@@ -51,9 +51,9 @@ function makeSandbox(analyzeReq, riskResponse, evaluatorResponse) {
     if (label.startsWith('analyze')) {
       return analyzeReq;
     }
-    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
-    // label 'danger-grep'（Security floor。issue #544 統合呼び出し）は riskResponse を risk
+    // label 'danger-grep'（Diff triage。issue #544 統合呼び出し）は riskResponse を risk
     // フィールドに包んで返す。label 'merge-tier-facts'（Merge tier 統合呼び出し）は
     // riskResponse を risk サブ結果に包んで返す。
     if (label === 'danger-grep') {

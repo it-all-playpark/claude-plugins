@@ -42,7 +42,7 @@ function frontmatterField(md, name, key) {
 }
 const frontmatterModel = (md, name) => frontmatterField(md, name, 'model');
 
-// security-clearance-final は Merge tier で merge-tier-facts が Security floor と異なる hash + risk に新規 hit を
+// security-clearance-final は Merge tier で merge-tier-facts が Diff triage と異なる hash + risk に新規 hit を
 // 返したときだけ到達する（tracked-agent-failure-policy.test.mjs の DF_B5 と同じ構成）。
 const SEC_CLEARANCE_FINAL = {
   name: 'security-clearance-final',

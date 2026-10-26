@@ -31,9 +31,9 @@ const BARE = [
   'cross-repo-artifacts',
   'detect-and-install',
   'diff-risk-classify',
+  'diff-triage',
   'ensure-worktree-deps',
   'redgreen-verify',
-  'secfloor-classify',
   'structural-classify',
   'worktree-diff-hash',
   'worktree-teardown',
@@ -105,7 +105,7 @@ const PASS_EVAL_TEST_AC = {
 // [label prefix, 期待 needle（展開済み）, scenario overrides]
 const DEV_FLOW_CALL_SITES = [
   ['diff-hash-eval', 'worktree-diff-hash /tmp/wt origin/main', {}],
-  ['danger-grep', 'secfloor-classify /tmp/wt origin/main', {}],
+  ['danger-grep', 'diff-triage /tmp/wt origin/main', {}],
   ['security-scope', '\nsecurity-review-scope /tmp/wt origin/main --working-tree', {}],
   ['merge-tier-facts', '`merge-tier-facts --worktree /tmp/wt --base origin/main --pr-view-data ', {}],
   ['test#1', '\nrun-tests /tmp/wt', {}],

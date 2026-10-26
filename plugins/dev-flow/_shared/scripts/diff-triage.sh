@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# secfloor-classify.sh - dev-flow Security floor 統合 composition wrapper (issue #544, P1).
+# diff-triage.sh - dev-flow Diff triage 統合 composition wrapper (issue #544, P1).
 #
-# Purpose: dev-flow の Security floor phase が今まで個別に取得していた 4 exec-proxy
-# (danger-grep / realized-diff / structural-classify / diff-hash-secfloor) 相当の情報を
+# Purpose: dev-flow の Diff triage phase が今まで個別に取得していた 4 exec-proxy
+# (danger-grep / realized-diff / structural-classify / diff-hash-triage) 相当の情報を
 # 1 回のスクリプト実行にまとめて返す薄い composition wrapper。既存 3 スクリプト
 # (diff-risk-classify.sh --working-tree / structural-classify.sh / worktree-diff-hash.sh)
 # + `git status --porcelain` を worktree cwd から順に呼び出して集約するのみで、各スクリプト
 # の検出ロジックそのものは複製しない。
 #
-# Usage: secfloor-classify.sh <worktree-path> <base-ref>
+# Usage: diff-triage.sh <worktree-path> <base-ref>
 #
 # Output (stdout, JSON 1 行):
 #   {"risk":<diff-risk-classify.sh の出力 object>,
@@ -22,7 +22,7 @@
 #              {"ok":false,"hits":[...],...} を出す契約なのでそれをそのまま使う。
 #              stdout が空/JSON 不正なときのみ {"ok":false,"hits":[],"error":...,
 #              "exit_code":N} を合成する -- risk フィールドは決して null にしない
-#              (security floor が hits 欠落を clean と同一視しないための fail-closed 要)。
+#              (danger-grep が hits 欠落を clean と同一視しないための fail-closed 要)。
 #   files    - fail-safe 用。`git status --porcelain` 取得成功時のみ配列 (0 件は [])、
 #              取得失敗は null (取得失敗と空 diff の区別を維持する -- complex floor
 #              安全弁の前提)。
@@ -72,7 +72,7 @@ wt="${1:-}"
 base="${2:-}"
 
 if [[ -z "$wt" || -z "$base" ]]; then
-    usage_error "usage: secfloor-classify.sh <worktree-path> <base-ref>" 2
+    usage_error "usage: diff-triage.sh <worktree-path> <base-ref>" 2
 fi
 
 if [[ ! -d "$wt" ]]; then

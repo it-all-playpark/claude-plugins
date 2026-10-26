@@ -1,14 +1,14 @@
-// merge-tier-diffhash-reuse-routing: VM sandbox routing test for dev-flow の Security floor ↔
+// merge-tier-diffhash-reuse-routing: VM sandbox routing test for dev-flow の Diff triage ↔
 // Merge tier 間の diff-hash 一致による danger-grep-final / changed-files 再利用（issue #377）。
 //
-// Security floor phase（execSecurityFloorPhase）は danger-grep 成功時（risk.ok===true）かつ
+// Diff triage phase（execDiffTriagePhase）は danger-grep 成功時（risk.ok===true）かつ
 // files（旧 realized-diff）成功時のみ、統合呼び出し（issue #544, label 'danger-grep' 据え置き）の
 // diffhash フィールドから tree OID を捕捉し state.secDiffHash に保持する。Merge tier phase 冒頭は
 // label 'merge-tier-facts' の統合 exec-proxy（issue #637）を 1 回呼び、state.secDiffHash != null の
 // ときのみその diffhash サブ結果と比較し、両ハッシュが文字列完全一致する場合のみ facts の risk / changed
-// を使わず Security floor の risk/realized を再利用する（reuseSecFloor）。不一致・取得失敗・Security
-// floor 側 fail-closed のときは facts の risk / changed で再判定し、security floor の fail-closed 性は
-// 一切変えない。再利用の発火は「facts.risk に hit を仕込み、Security floor が clean なら REVIEW（再利用）/
+// を使わず Diff triage の risk/realized を再利用する（reuseDiffTriage）。不一致・取得失敗・Diff
+// triage 側 fail-closed のときは facts の risk / changed で再判定し、danger-grep の fail-closed 性は
+// 一切変えない。再利用の発火は「facts.risk に hit を仕込み、Diff triage が clean なら REVIEW（再利用）/
 // facts の risk が使われれば HOLD」で観測する。
 //
 // ハーネスは _lib/ci-checks-routing.test.mjs の createResponder パターン（overrides の
@@ -17,15 +17,15 @@
 // （{result, error} を返す vm 実行）を踏襲する。
 //
 // テストケース:
-//   (1) 再利用発火: danger-grep clean + realized valid + secfloor hash===facts hash →
-//       facts.risk に hit があっても Security floor の clean risk が再利用され REVIEW、
+//   (1) 再利用発火: danger-grep clean + realized valid + diff-triage hash===facts hash →
+//       facts.risk に hit があっても Diff triage の clean risk が再利用され REVIEW、
 //       'merge-tier-facts' は 1 回だけ呼ばれ、workflow は完走する
-//   (2) 不一致: secfloor='A' / facts='B' → facts.risk（hit）で再判定され HOLD
+//   (2) 不一致: diff-triage='A' / facts='B' → facts.risk（hit）で再判定され HOLD
 //   (3) facts 側 diffhash 取得失敗（ok:false）→ 再判定（facts.risk の hit で HOLD）
-//   (4) Security floor fail-closed: danger-grep が {ok:false,hits:[]} → secDiffHash null →
+//   (4) Diff triage fail-closed: danger-grep が {ok:false,hits:[]} → secDiffHash null →
 //       facts の diffhash は参照されず（reuse ログ無し）、facts.risk fail-closed で merge_tier が HOLD
 //       （fail-closed 維持）
-//   (5) 再利用発火 + Security floor hit: danger-grep が ok:true で危険クラス hit + 同一 hash →
+//   (5) 再利用発火 + Diff triage hit: danger-grep が ok:true で危険クラス hit + 同一 hash →
 //       再利用で facts.risk（clean）は使われず hit が残り merge_tier HOLD（unresolvedDanger 維持）
 
 import { test } from 'vitest';
@@ -101,10 +101,10 @@ function createResponder(overrides = {}) {
     if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-377' };
     if (label.startsWith('analyze')) return STANDARD_REQ;
-    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
-    // label 'danger-grep'（Security floor。issue #544 統合呼び出し）は
-    // {risk, files, struct, diffhash} を 1 応答で返す。diffhash は既定で secfloor/merge 同一
+    // label 'danger-grep'（Diff triage。issue #544 統合呼び出し）は
+    // {risk, files, struct, diffhash} を 1 応答で返す。diffhash は既定で diff-triage/merge 同一
     // ハッシュ（再利用が発火する）。不一致にしたいテストは override で個別に上書きする。
     if (label === 'danger-grep') {
       return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'SAMEHASH', empty: false } };
@@ -121,7 +121,7 @@ function createResponder(overrides = {}) {
       };
     }
     if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
-    // merge-tier-facts（Merge tier 統合呼び出し）は既定で secfloor 側と同一ハッシュ（再利用が発火する）
+    // merge-tier-facts（Merge tier 統合呼び出し）は既定で diff-triage 側と同一ハッシュ（再利用が発火する）
     // かつ risk に hit を仕込む — 再利用が発火すれば hit は使われず REVIEW、facts の risk が使われれば HOLD
     // になるため、再利用の発火有無を merge_tier で観測できる。不一致にしたいテストは override で上書きする。
     if (label === 'merge-tier-facts') return mergeTierFacts({ hash: 'SAMEHASH', risk: FACTS_RISK_HIT, files: ['src/x.ts'] });
@@ -145,7 +145,7 @@ function makeSandbox({ overrides = {} } = {}) {
 }
 
 // ============================================================
-// (1) 再利用発火: 完全一致 → facts.risk（hit）は使われず Security floor の clean risk を再利用
+// (1) 再利用発火: 完全一致 → facts.risk（hit）は使われず Diff triage の clean risk を再利用
 // ============================================================
 
 test('[diffhash-reuse] (1) 完全一致 → facts.risk の hit は使われず（再利用）REVIEW、merge-tier-facts は 1 回、workflow 完走', async () => {
@@ -198,10 +198,10 @@ test("[diffhash-reuse] (3) facts の diffhash が ok:false（取得失敗） →
 });
 
 // ============================================================
-// (4) Security floor fail-closed → facts の diffhash 不参照 + facts.risk fail-closed + HOLD
+// (4) Diff triage fail-closed → facts の diffhash 不参照 + facts.risk fail-closed + HOLD
 // ============================================================
 
-test("[diffhash-reuse] (4) Security floor fail-closed → 再利用 log 無し・facts.risk fail-closed で merge_tier HOLD（fail-closed 維持）", async () => {
+test("[diffhash-reuse] (4) Diff triage fail-closed → 再利用 log 無し・facts.risk fail-closed で merge_tier HOLD（fail-closed 維持）", async () => {
   const { ctx, calls, logs } = makeSandbox({
     overrides: {
       'danger-grep': { risk: { ok: false, hits: [], error: 'sec floor stub fail' }, files: null, struct: null, diffhash: null },
@@ -212,17 +212,17 @@ test("[diffhash-reuse] (4) Security floor fail-closed → 再利用 log 無し�
   assertNoCrash(error, '4');
   assert.ok(result !== null, '(4) workflow は return object を返すべきだが null だった');
 
-  assert.ok(!logs.some((l) => l.includes('diff-hash 一致')), "(4) Security floor fail-closed（secDiffHash null）のとき再利用 log が出てはならない");
-  assert.ok(calls.some((c) => c.label === 'merge-tier-facts'), "(4) 'merge-tier-facts' は必ず呼ばれるはず（security floor の fail-closed 性は緩めない）");
+  assert.ok(!logs.some((l) => l.includes('diff-hash 一致')), "(4) Diff triage fail-closed（secDiffHash null）のとき再利用 log が出てはならない");
+  assert.ok(calls.some((c) => c.label === 'merge-tier-facts'), "(4) 'merge-tier-facts' は必ず呼ばれるはず（danger-grep の fail-closed 性は緩めない）");
   assert.equal(result?.merge_tier, 'HOLD', `(4) danger-grep が両段で fail-closed のため merge_tier は HOLD のはずだが ${JSON.stringify(result?.merge_tier)}`);
   assert.equal(result?.danger_fail_closed, true, '(4) danger_fail_closed:true のはず');
 });
 
 // ============================================================
-// (5) 再利用発火 + Security floor hit → HOLD（unresolvedDanger 維持）
+// (5) 再利用発火 + Diff triage hit → HOLD（unresolvedDanger 維持）
 // ============================================================
 
-test("[diffhash-reuse] (5) hash 一致 + Security floor で danger hit → 再利用で facts.risk（clean）は使われず hit が残り merge_tier HOLD", async () => {
+test("[diffhash-reuse] (5) hash 一致 + Diff triage で danger hit → 再利用で facts.risk（clean）は使われず hit が残り merge_tier HOLD", async () => {
   const { ctx, calls } = makeSandbox({
     overrides: {
       'danger-grep': {
@@ -240,5 +240,5 @@ test("[diffhash-reuse] (5) hash 一致 + Security floor で danger hit → 再�
 
   assert.ok(calls.some((c) => c.label === 'merge-tier-facts'), "(5) 'merge-tier-facts' は呼ばれるはず");
   assert.equal(result?.merge_tier, 'HOLD', `(5) 再利用した risk に未解消の danger hit が残るため merge_tier は HOLD のはずだが ${JSON.stringify(result?.merge_tier)}`);
-  assert.equal(JSON.stringify(result?.danger_hits), JSON.stringify(['config']), '(5) 再利用時は Security floor の hit が danger_hits に残るはず（facts の clean で上書きしない）');
+  assert.equal(JSON.stringify(result?.danger_hits), JSON.stringify(['config']), '(5) 再利用時は Diff triage の hit が danger_hits に残るはず（facts の clean で上書きしない）');
 });

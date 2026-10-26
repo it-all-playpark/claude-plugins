@@ -166,7 +166,7 @@ fi
 hits=""
 
 # Matches use here-strings, not `echo | grep -q`: grep -q exits at the first match, the writer dies of
-# SIGPIPE, and pipefail turns a hit into a miss (a dropped hit silently lowers the security floor).
+# SIGPIPE, and pipefail turns a hit into a miss (a dropped hit silently weakens the fail-closed danger gate).
 while IFS= read -r file; do
     [[ -z "$file" ]] && continue
 

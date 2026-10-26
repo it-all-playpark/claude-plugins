@@ -5,7 +5,7 @@
 //
 // _lib/danger-fail-closed-loop-routing.test.mjs の VM sandbox パターン（node:vm で
 // .claude/workflows/dev-flow.js を読み込み、agent() を label/agentType で stub）を踏襲する。
-// 本テストは Security floor（Evaluate 前, label:'danger-grep'）と Merge tier（label:
+// 本テストは Diff triage（Evaluate 前, label:'danger-grep'）と Merge tier（label:
 // 'merge-tier-facts' の risk サブ結果）に**別々**の danger-grep レスポンスを注入できるようにし、
 // 'security-clearance-final' の呼び出し回数・prompt、'journal-log'/'post-summary' の
 // prompt（merge_tier / summary body）を捕捉する。
@@ -27,7 +27,7 @@ const src = readFileSync(devFlowPath, 'utf8');
 
 /**
  * @param {object} analyzeReq - analyze フェーズの agent が返す req オブジェクト（SHAPE を決定する）
- * @param {object} dangerGrepPre - Security floor（Evaluate 前, label:'danger-grep'）の stub レスポンス
+ * @param {object} dangerGrepPre - Diff triage（Evaluate 前, label:'danger-grep'）の stub レスポンス
  * @param {object} dangerGrepFinal - Merge tier（label:'merge-tier-facts' の risk サブ結果）の stub レスポンス
  * @param {object} evaluatorResponse - Evaluate 本体（label:'eval#N'）の stub レスポンス（全 iteration 同一）
  * @param {object|null} clearanceResponse - 'security-clearance-final' の stub レスポンス（null 可）
@@ -51,16 +51,16 @@ function makeSandbox(analyzeReq, dangerGrepPre, dangerGrepFinal, evaluatorRespon
     if (label.startsWith('analyze')) {
       return analyzeReq;
     }
-    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
-    // Security floor（Evaluate 前）の danger-grep（issue #544 統合呼び出し。dangerGrepPre を
+    // Diff triage（Evaluate 前）の danger-grep（issue #544 統合呼び出し。dangerGrepPre を
     // risk フィールドへ包む。diffhash は Merge tier 側（'H_MERGE'）と意図的に異なる値にして
     // reuse を発火させない — シナリオが pre/final の乖離を前提にしているため）。
     if (label === 'danger-grep') {
       return { risk: dangerGrepPre, files: ['src/foo.ts'], struct: null, diffhash: { hash: 'H', empty: false } };
     }
-    // Merge tier の最終 danger-grep は merge-tier-facts の risk サブ結果。diffhash は Security floor 側（'H'）と
-    // 意図的に異なる値（'H_MERGE'）にして reuse を発火させない — 本 test はシナリオごとに Security floor と
+    // Merge tier の最終 danger-grep は merge-tier-facts の risk サブ結果。diffhash は Diff triage 側（'H'）と
+    // 意図的に異なる値（'H_MERGE'）にして reuse を発火させない — 本 test はシナリオごとに Diff triage と
     // Merge tier で異なる danger-grep 応答を注入するため、両段の diff-hash を同一にすると reuse が発火し
     // facts の risk が使われなくなってシナリオの前提（pre/final の乖離）が壊れる。
     if (label === 'merge-tier-facts') {
@@ -292,7 +292,7 @@ test('[merge-tier-sec-clearance] シナリオ3: clearance null — HOLD かつ w
 
 // ============================================================
 // シナリオ 4: merge-tier-facts の risk が fail-closed → one-shot clearance を試みず、
-// 全 SEC seed unchecked で HOLD を強制する（security floor 不変）。
+// 全 SEC seed unchecked で HOLD を強制する（danger-grep の fail-closed 不変）。
 // ============================================================
 test('[merge-tier-sec-clearance] シナリオ4: merge-tier-facts risk fail-closed — clearance は呼ばれず HOLD 強制', async () => {
   const clearanceResponse = {

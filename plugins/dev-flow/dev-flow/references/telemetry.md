@@ -50,12 +50,12 @@ nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の e
 
 ### 値の補足
 
-- `shape`: Security floor で `classifyShape(req, realizedCount, lineStats)` が realized diff の file 数・行数 +
+- `shape`: Diff triage で `classifyShape(req, realizedCount, lineStats)` が realized diff の file 数・行数 +
   AC 数 / `issue_type` / 構造化 `breaking_change` で決めた値（事前見積もりは持たない）。判定根拠 `shape_reason`
-  と `realized_file_count` は run の返り値に載り、telemetry には書かない。Security floor 前の失敗・abort は
+  と `realized_file_count` は run の返り値に載り、telemetry には書かない。Diff triage 前の失敗・abort は
   shape キーを持たない。
 - `duration_seconds` / `phase_durations`: 各 phase は開始〜終了の全体時間（evaluate 差し戻し loop 等の内部反復を
-  含む）。evaluate 区間は Security floor を含む。micro path（Evaluate skip）では evaluate キー自体が欠落し pr は直近
+  含む）。evaluate 区間は Diff triage を含む。micro path（Evaluate skip）では evaluate キー自体が欠落し pr は直近
   mark（validate_end）起点で計算される。時刻は専用 clock probe を起動せず、start は wrapper（dev-flow-prerun、
   top-level Bash）が渡す `args.setup.epoch`、end は Merge tier 末尾の post-summary 応答の optional epoch から給電し、
   implement 区間の起点 `setup_end` は `args.setup.epoch_end`（prerun の後に wrapper が回す

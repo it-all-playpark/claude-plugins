@@ -55,7 +55,7 @@ const EXPECTED_DEV_FLOW = {
   'ci-final': RO,
   'ci-test-display': RO,
   'tree-diff-numstat': RO,
-  // post-eval green-fix 再評価（secfloor-classify / green-fix 差分の numstat）と Final reconcile の fix 差分 numstat
+  // post-eval green-fix 再評価（diff-triage / green-fix 差分の numstat）と Final reconcile の fix 差分 numstat
   'green-fix-classify': RO,
   'green-fix-numstat': RO,
   'fix-diff-numstat': RO,

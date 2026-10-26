@@ -41,7 +41,7 @@ function makeSandbox({
 
     if (label === 'issue-meta') return { ok: true, number: 1, title: analyzeReq?.issue_title ?? 'stub-issue-title' };
     if (label.startsWith('analyze')) return analyzeReq;
-    // Security floor 統合 exec-proxy: realized 3 件（dev-implementer の申告と一致 → 宣言外 0 件）。
+    // Diff triage 統合 exec-proxy: realized 3 件（dev-implementer の申告と一致 → 宣言外 0 件）。
     // 実効 shape は realized 3 件 + AC 数で決まる（issue #676）: AC 2 → standard、AC 7 → complex。
     if (label.startsWith('danger-grep')) return { risk: { ok: true, hits: [] }, files: [...REALIZED_FILES], struct: null, diffhash: null };
     if (label === 'changed-files') return { files: ['src/foo.ts'] };
@@ -170,7 +170,7 @@ test('[abort-telemetry] (1) Validate で diff-gate proxy が throw → abort ent
     assert.ok(!savePrompt.includes(key),
       `(1) journal-log-abort prompt に削除済み telemetry キー '${key}' が含まれていた。prompt:\n${savePrompt.slice(0, 800)}`);
   }
-  // 実効 shape は Security floor（realized diff 取得後）で確定する（issue #676）。Validate の abort は確定前なので
+  // 実効 shape は Diff triage（realized diff 取得後）で確定する（issue #676）。Validate の abort は確定前なので
   // shape キーを載せない。
   assert.ok(!savePrompt.includes('"shape"'),
     `(1) 実効 shape 確定前の abort では journal-log-abort prompt に '"shape"' キーを含むべきではないが含まれていた。prompt:\n${savePrompt.slice(0, 800)}`);
