@@ -71,7 +71,7 @@ export const SECURITY_REVIEW_BOUNDARY = '## Threat model\n'
 
 // security review の指摘を含む fix#i の prompt に足す修正方針。fix が指摘ごとに検査を積むと、その検査がまた次の round の指摘の
 // 的になり、運用に手作業を足す増築が続く。要件に立ち返った最小の形で塞ぎ、それができない指摘は人に返す。
-// 人に返した指摘の topic は返り値の deferred_security_topics で受け取り、workflow はその round で run を終える
+// 人に返した指摘の topic（指摘行の `[topic: …]`。_lib/review-finding-scrub.mjs の fixIssueTopic）は返り値の deferred_security_topics で受け取り、workflow はその round で run を終える
 // （summary の自由文では区別できず、次の round で同じ指摘をもう一度 review して stuck まで 1 round 余計に使う）。
 export const SECURITY_FIX_GUIDANCE = 'security review の指摘の直し方:\n'
   + '- 指摘の経路を、守る要件（PR の内容で判定や実行を誘導させない・PR に制御される入力を sandbox の外で実行しない・'
@@ -82,7 +82,7 @@ export const SECURITY_FIX_GUIDANCE = 'security review の指摘の直し方:\n'
   + '- 縛られていない入力元を縛る修正は、上の禁止の対象外である（例: 自由な返り値や手元の状態から取っていた値を、'
   + '縛った中継で取り直し、hook でその中継の実 stdout に縛る）。指摘の経路がそれで塞がるなら直す\n'
   + '- 上の禁止に当たる形でしか塞げない指摘と、sandbox の中に残った PR のプロセスを前提にした指摘（守る範囲の外）は直さない。'
-  + '直さなかった指摘は topic（指摘の topic 文字列をそのまま）を deferred_security_topics に入れ、理由を summary に書く（人が判断する）。'
+  + '直さなかった指摘は、その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに deferred_security_topics に入れ、理由を summary に書く（人が判断する）。'
   + '直した指摘の topic は入れない\n';
 
 // args.security_review（起動時の判定。dev-flow の Diff triage / pr-iterate-prerun の出力）。

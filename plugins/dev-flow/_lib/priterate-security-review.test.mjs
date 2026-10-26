@@ -632,8 +632,10 @@ test('[security-review][G] security review の指摘を含む fix#i にだけ修
   assert.ok(SECURITY_FIX_GUIDANCE.includes('既に検査している同じ入力に、同じ種類の検査を重ねる修正（同じ値を別の形でもう一度確かめる等）もしない'), SECURITY_FIX_GUIDANCE);
   assert.ok(SECURITY_FIX_GUIDANCE.includes('縛られていない入力元を縛る修正は、上の禁止の対象外である（例: 自由な返り値や手元の状態から取っていた値を、'
     + '縛った中継で取り直し、hook でその中継の実 stdout に縛る）'), SECURITY_FIX_GUIDANCE);
-  // 直さなかった指摘は deferred_security_topics で返させる
-  assert.ok(SECURITY_FIX_GUIDANCE.includes('直さなかった指摘は topic（指摘の topic 文字列をそのまま）を deferred_security_topics に入れ、理由を summary に書く'), SECURITY_FIX_GUIDANCE);
+  // 直さなかった指摘は、prompt の指摘行に載せた `[topic: <topic>]` の値を deferred_security_topics で返させる（issue #1155）
+  assert.ok(SECURITY_FIX_GUIDANCE.includes('直さなかった指摘は、その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに deferred_security_topics に入れ、理由を summary に書く'), SECURITY_FIX_GUIDANCE);
+  assert.ok(secFix.includes('topic（その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに）'), 'fix の Output format が指摘行の topic の表記を指していない');
+  assert.ok(secFix.includes('- [critical] [topic: hardlink-write] scripts/set-names.sh:3 '), 'fix#1 の指摘行に `[topic: <topic>]` が無い');
 
   const reviewOnly = await run({
     args: { pr: '5', security_review: { target: false, reasons: [], reviewer_context_changed: false } },
@@ -816,6 +818,25 @@ test('[security-review][I] fix が applied:false でも security の指摘を人
   assert.equal(result.security_review.status, 'unresolved');
   assert.equal(result.security_review.deferred, 1, '同じ topic は 1 件と数える');
   assert.ok(summaryOf(calls).includes(DEFERRED_LINE));
+});
+
+// fix#1 の prompt の指摘行（`- [<severity>] [topic: <topic>] ...`）から topic を取り出して人に返す fix（issue #1155）。
+// prompt に topic が無ければ空の配列を返す — prompt に載っていない topic を test 側で補わない
+const deferFromPrompt = ({ prompt }) => deferFix(false, [...prompt.matchAll(/^- \[\w+\] \[topic: ([^\]\n]+)\]/gm)].map((m) => m[1]));
+
+test('[security-review][I] security-review#1 の指摘の topic が fix#1 の prompt に載り、fix がそれを写して applied:false で人に返したら fix_failed ではなく security_unresolved で終える', async () => {
+  const { result, calls } = await run({
+    overrides: {
+      'security-review#1': reviewWith([finding('forged-test-log-gate-bypass', 'major')]),
+      'fix#1': deferFromPrompt,
+    },
+  });
+  assert.ok(calls.find((c) => c.label === 'fix#1').prompt.includes('[topic: forged-test-log-gate-bypass]'), 'fix#1 の prompt に security の指摘の topic が無い');
+  assert.deepEqual(nextRoundLabels(calls), []);
+  assert.equal(result.status, 'security_unresolved');
+  assert.equal(result.fix_terminal_reason, null);
+  assert.equal(result.security_review.deferred, 1);
+  assert.ok(!summaryOf(calls).includes('forged-test-log-gate-bypass'), '終端サマリーに人に返した指摘の topic が載っている');
 });
 
 test('[security-review][I] 人に返した fix の commit 保証に失敗したら、今と同じく fix_failed（commit_unensured）で終える', async () => {
