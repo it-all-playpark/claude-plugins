@@ -754,7 +754,7 @@ const HOLD_REASON_CODES = [
   'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
   'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
   'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
-  'security_review_unresolved', 'validate_test_red',
+  'security_review_unresolved', 'validate_test_red', 'validate_tests_not_run',
 ];
 
 function classifyCiChecks(ciChecks) {
@@ -856,6 +856,13 @@ function classifyMergeTier(s) {
     || typeof s.validateResult.green !== 'boolean')) {
     throw new Error('classifyMergeTier: invalid validateResult');
   }
+  if (s.validateCi != null && (typeof s.validateCi.verified !== 'boolean'
+    || (s.validateCi.kind != null && !HOLD_REASON_KINDS.includes(s.validateCi.kind)))) {
+    throw new Error('classifyMergeTier: invalid validateCi');
+  }
+  if (s.setupDeps != null && (typeof s.setupDeps.ok !== 'boolean' || typeof s.setupDeps.note !== 'string')) {
+    throw new Error('classifyMergeTier: invalid setupDeps');
+  }
   const ci =s.ciChecks != null ? classifyCiChecks(s.ciChecks) : null;
   const blockingReasons = [];
   const pushBlocking = (code, reason, kind) => blockingReasons.push({ code, reason, kind });
@@ -898,6 +905,19 @@ function classifyMergeTier(s) {
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
   if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false) {
     pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
+  }
+  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'error' && s.validateCi?.verified !== true) {
+    const kind = s.validateCi?.kind ?? 'human_judgment';
+    const ciPart = s.validateCi == null
+      ? 'PR head sha の CI を取得していない'
+      : 'PR head sha の CI でも test green を確認できず（reason=' + s.validateCi.reason
+        + (s.validateCi.checkNames.length ? ': ' + s.validateCi.checkNames.join(', ') : '') + '）';
+    const depsPart = s.setupDeps?.ok === false
+      ? ' — Setup(deps) ok:false: ' + (s.setupDeps.note || '依存インストール結果を確認できなかった')
+      : '';
+    pushBlocking('validate_tests_not_run', 'テストが 1 件も実行されていない（Validate tests:error = テスト起動失敗。pr-iterate の fix が 0 件で Final reconcile は skip）— '
+      + ciPart + depsPart + ' — '
+      + (kind === 'deterministic_recheck' ? '決定論再チェック（CI 完了待ち / 再取得）で解消しうる' : '人間確認必須'), kind);
   }
   if (s.finalAcReconcile === 'unavailable') pushBlocking('final_ac_unavailable', 'Final AC reconcile 判定不能（最終 PR tree に対する AC 再検証結果を取得できず — agent null / schema 不一致 / index 欠落・重複・範囲外 / evidence 不足）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   if (s.securityReviewUnresolved === true) pushBlocking('security_review_unresolved', '敵対的 security review が今の PR head で clear になっていない（信頼境界をまたぎうる変更を含む PR で、pr-iterate が critical/major 0 件の review を通さずに終端）— 指摘の本文は公開しない。merge 前に人が diff を確認する（gate_policy に依らず不変）', 'human_judgment');
@@ -3107,6 +3127,10 @@ function holdReasonDisplay(code, kind, ctx) {
       return { current: 'fix 後の最終 tree でテスト失敗', action: '修正が必要' };
     case 'validate_test_red':
       return { current: 'Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', action: '修正が必要（落ちたテストを直して push する）' };
+    case 'validate_tests_not_run':
+      return kind === 'deterministic_recheck'
+        ? { current: 'テストが 1 件も実行されていない（ローカルは起動失敗・PR head の CI は未完了か取得できず）', action: `CI 完了後に \`gh pr checks ${ctx.pr}\` で test の結果を確認する` }
+        : { current: 'テストが 1 件も実行されていない（ローカルは起動失敗・PR head の CI でも green を確認できず）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
     case 'final_ac_unavailable':
       return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
     case 'iterate_non_lgtm':
@@ -7391,13 +7415,15 @@ if (finalReconcile === 'unavailable') {
 }
 
 // ============================================================
-// 表示専用の CI 確認: Final reconcile が skipped（fixes_applied=0）で Validate が
+// テスト未実行 run の CI 確認: Final reconcile が skipped（fixes_applied=0）で Validate が
 // tests:'error'（起動失敗 = テスト未実行）の run だけ、PR phase の head sha に pin した CI check を
-// ci-final と同じ finalCiPrompt + finalCiVerdict で 1 回読み、終端サマリーのテスト欄にだけ渡す。
-// finalReconcile / finalCi / classifyMergeTier には渡さない（表示のみ。merge tier 判定は不変）。
-// 取得失敗・sha 不一致・pending は verified:false で「未検証」表示に倒れる（fail-open）。
+// ci-final と同じ finalCiPrompt + finalCiVerdict で 1 回読む。その判定（displayCi）を終端サマリーの
+// テスト欄と classifyMergeTier の validateCi の両方に渡す（CI の読み取りはこの 1 回だけ）。
+// verified:true でなければ（取得失敗・sha 不一致・pending・failure・check 0 件、PR head sha が無く未取得 = null）
+// merge tier は validate_tests_not_run で HOLD。finalReconcile / finalCi は変えない。判定は finalCiVerdict のみ。
 // ============================================================
 let summaryCiTestVerified = null
+let displayCi = null
 const prHeadShaForDisplay = typeof pr?.head_sha === 'string' ? pr.head_sha.trim() : ''
 if (finalReconcile === 'skipped' && state.val?.tests === 'error' && /^[0-9a-f]{40}$/i.test(prHeadShaForDisplay)) {
   let displayCiMeta = null
@@ -7406,11 +7432,11 @@ if (finalReconcile === 'skipped' && state.val?.tests === 'error' && /^[0-9a-f]{4
       finalCiPrompt({ pr: pr.pr_number, repo: REPO }),
       { agentType: 'dev-runner-haiku-ro', schema: FINAL_CI_META, label: 'ci-test-display', phase: 'Final reconcile' })
   } catch (e) {
-    log(`⚠️ ci-test-display: 取得が throw（${e && e.message ? e.message : e}）— テスト欄は未検証表示（表示のみ・fail-open）`)
+    log(`⚠️ ci-test-display: 取得が throw（${e && e.message ? e.message : e}）— null 扱い（テスト欄は未検証・merge tier HOLD）`)
   }
-  const displayCi = finalCiVerdict({ expectedSha: prHeadShaForDisplay, meta: displayCiMeta })
+  displayCi = finalCiVerdict({ expectedSha: prHeadShaForDisplay, meta: displayCiMeta })
   summaryCiTestVerified = displayCi.verified
-  log(`ci-test-display: Validate tests=error — PR head sha の CI ${displayCi.verified ? '全 success（テスト欄 ✅ green (CI)）' : `未確認（reason=${displayCi.reason}）— テスト欄は未検証`}（表示のみ。merge tier 不変）`)
+  log(`ci-test-display: Validate tests=error — PR head sha の CI ${displayCi.verified ? '全 success（テスト欄 ✅ green (CI)）' : `未確認（reason=${displayCi.reason}）— テスト欄は未検証・merge tier HOLD（validate_tests_not_run）`}`)
 }
 
 // ============================================================
@@ -7749,6 +7775,10 @@ const mergeTier = classifyMergeTier({
   // Validate の最新の test 結果。Final reconcile が skipped の run では PR tree のテスト状態そのもので、
   // red（tests:'failed'）のまま PR へ進んだら validate_test_red で HOLD
   validateResult: state.val,
+  // Validate が tests:'error'（テスト未実行）で Final reconcile skipped の run の CI 確認（ci-test-display の判定。
+  // 未取得は null）。verified:true でなければ validate_tests_not_run で HOLD。deps の note はその文言に載る
+  validateCi: displayCi,
+  setupDeps: PRERUN.deps,
   iterateStatus: iterate?.status ?? null,
   securityReviewUnresolved,
   evalStaleness,

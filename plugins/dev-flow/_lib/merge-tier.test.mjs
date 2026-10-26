@@ -16,6 +16,7 @@ import {
 } from './merge-tier.mjs';
 import { PR_CLOSES_STATUS_VALUES } from './pr-artifacts.mjs';
 import { parseMergeTierFacts } from './merge-tier-facts.mjs';
+import { finalCiVerdict } from './final-ci.mjs';
 
 // ---- Task 1: DANGER_CLASSES + seedSecurityLedger ----
 
@@ -1278,13 +1279,13 @@ test('classifyMergeTier: evalStaleness:undefined/null → throw しない(従来
 
 // ---- issue #658: HOLD_REASON_CODES + holdReasons[].code + disclosures ----
 
-test('HOLD_REASON_CODES は 20 の閉じた enum と一致', () => {
+test('HOLD_REASON_CODES は 21 の閉じた enum と一致', () => {
   assert.deepEqual(HOLD_REASON_CODES, [
     'ledger_unconverged', 'danger_unresolved', 'breaking_structured', 'escalate',
     'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
     'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
     'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
-    'security_review_unresolved', 'validate_test_red',
+    'security_review_unresolved', 'validate_test_red', 'validate_tests_not_run',
   ]);
 });
 
@@ -1648,7 +1649,7 @@ test('classifyMergeTier: finalReconcile skipped + Validate red（tests:failed / 
   assert.deepEqual(codesOf(both), ['validate_test_red', 'iterate_non_lgtm']);
 });
 
-test('classifyMergeTier: finalReconcile skipped で Validate が green / tests:error / no_tests なら validate_test_red を出さず、未指定時と完全一致', () => {
+test('classifyMergeTier: finalReconcile skipped で Validate が green / no_tests なら validate_test_red を出さず、未指定時と完全一致', () => {
   const cases = [
     ['REVIEW', baseCleanInput({ finalReconcile: 'skipped' })],
     ['AUTO', { ...autoBase(), iterateStatus: 'lgtm', evalStaleness: 'none', finalReconcile: 'skipped' }],
@@ -1658,7 +1659,6 @@ test('classifyMergeTier: finalReconcile skipped で Validate が green / tests:e
     { tests: 'passed', green: true },
     // base でも落ちる既存失敗だけの red は Validate が green:true にして抜ける
     { tests: 'failed', green: true },
-    { tests: 'error', green: false, summary: 'command not found' },
     { tests: 'no_tests', green: false },
   ];
   for (const [name, input] of cases) {
@@ -1693,6 +1693,96 @@ test('classifyMergeTier: finalReconcile が reverified / ci_verified / unavailab
 test('classifyMergeTier: validateResult の契約外形状は明示 error', () => {
   for (const v of ['failed', { tests: 'failed' }, { tests: 'red', green: false }, { tests: 'failed', green: 'false' }]) {
     assert.throws(() => classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: v })), /invalid validateResult/, JSON.stringify(v));
+  }
+});
+
+// ---- validateCi（Final reconcile skipped + Validate tests:error の run の CI 確認、issue #1117）----
+
+const VALIDATE_ERROR = { tests: 'error', green: false, summary: 'pnpm install failed — テストは 1 件も実行されていない' };
+const PR_SHA = 'a'.repeat(40);
+const rollup = (conclusion, status = 'COMPLETED') => [{ __typename: 'CheckRun', name: 'test', status, conclusion }];
+// ci-test-display の応答を finalCiVerdict に通した実際の判定（verified:false の各経路）
+const UNVERIFIED_CI = {
+  '未取得（PR head sha 無し）': null,
+  '取得失敗': finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: false, error: 'gh failed' } }),
+  pending: finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: true, headRefOid: PR_SHA, statusCheckRollup: rollup(null, 'IN_PROGRESS') } }),
+  failure: finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: true, headRefOid: PR_SHA, statusCheckRollup: rollup('FAILURE') } }),
+  'sha 不一致': finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: true, headRefOid: 'b'.repeat(40), statusCheckRollup: rollup('SUCCESS') } }),
+  'check 0 件': finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: true, headRefOid: PR_SHA, statusCheckRollup: [] } }),
+};
+const VERIFIED_CI = finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: true, headRefOid: PR_SHA, statusCheckRollup: rollup('SUCCESS') } });
+const DEPS_FAILED = { ok: false, note: 'pnpm install failed: EPERM .gitmodules' };
+
+test('classifyMergeTier: finalReconcile skipped + Validate tests:error で PR head sha の CI 確認が成立していない → HOLD 理由 validate_tests_not_run を 1 件積む', () => {
+  for (const [name, validateCi] of Object.entries(UNVERIFIED_CI)) {
+    for (const base of [baseCleanInput({}), { ...autoBase(), iterateStatus: 'lgtm', evalStaleness: 'none' }]) {
+      const r = classifyMergeTier({ ...base, finalReconcile: 'skipped', validateResult: VALIDATE_ERROR, validateCi });
+      assert.equal(r.tier, 'HOLD', `${name}: ${JSON.stringify(r)}`);
+      // kind は CI 判定の kind（pending / 取得失敗は再チェックで解消しうる）。未取得は人間確認
+      assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['validate_tests_not_run', validateCi?.kind ?? 'human_judgment']], name);
+      if (validateCi != null) assert.ok(r.reasons[0].includes('reason=' + validateCi.reason), `${name}: ${r.reasons[0]}`);
+    }
+  }
+  // 他の HOLD 理由と並んでも積まれる
+  const both = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_ERROR, validateCi: null, iterateStatus: 'stuck' }));
+  assert.deepEqual(codesOf(both), ['validate_tests_not_run', 'iterate_non_lgtm']);
+});
+
+test('classifyMergeTier: finalReconcile skipped + Validate tests:error でも PR head sha の CI が verified:true なら validate_tests_not_run を積まず、Validate 未指定時と完全一致', () => {
+  const cases = [
+    ['REVIEW', baseCleanInput({ finalReconcile: 'skipped' })],
+    ['AUTO', { ...autoBase(), iterateStatus: 'lgtm', evalStaleness: 'none', finalReconcile: 'skipped' }],
+    ['HOLD（既存理由）', baseCleanInput({ finalReconcile: 'skipped', iterateStatus: 'stuck' })],
+  ];
+  for (const [name, input] of cases) {
+    const r = classifyMergeTier({ ...input, validateResult: VALIDATE_ERROR, validateCi: VERIFIED_CI, setupDeps: DEPS_FAILED });
+    assert.deepEqual(r, classifyMergeTier(input), name);
+    assert.ok(!codesOf(r).includes('validate_tests_not_run'), name);
+  }
+});
+
+test('classifyMergeTier: validate_tests_not_run の文言は「テストが 1 件も実行されていない」で始まり、Setup(deps) が ok:false の run だけ note を含む', () => {
+  const reasonOf = (setupDeps) => classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_ERROR, validateCi: UNVERIFIED_CI['check 0 件'], setupDeps }))
+    .holdReasons.find((x) => x.code === 'validate_tests_not_run').reason;
+  const failed = reasonOf(DEPS_FAILED);
+  assert.ok(failed.startsWith('テストが 1 件も実行されていない'), failed);
+  assert.ok(failed.includes('Setup(deps) ok:false: pnpm install failed: EPERM .gitmodules'), failed);
+  assert.ok(reasonOf({ ok: false, note: '' }).includes('Setup(deps) ok:false: 依存インストール結果を確認できなかった'));
+  for (const setupDeps of [{ ok: true, note: 'pnpm install 完了' }, undefined]) {
+    const r = reasonOf(setupDeps);
+    assert.ok(r.startsWith('テストが 1 件も実行されていない'), r);
+    assert.ok(!r.includes('Setup(deps)'), r);
+  }
+});
+
+test('classifyMergeTier: finalReconcile が skipped 以外 / Validate tests が error 以外なら validateCi・setupDeps を見ず、未指定時と完全一致', () => {
+  const finalCi = { verified: true, reason: 'ok', kind: null, checkNames: ['test'], headRefOid: PR_SHA };
+  const inputs = [
+    baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: true, validateResult: VALIDATE_ERROR }),
+    baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: false, validateResult: VALIDATE_ERROR }),
+    baseCleanInput({ finalReconcile: 'ci_verified', finalCi, validateResult: VALIDATE_ERROR }),
+    baseCleanInput({ finalReconcile: 'unavailable', validateResult: VALIDATE_ERROR }),
+    baseCleanInput({ validateResult: VALIDATE_ERROR }),
+    baseCleanInput({ finalReconcile: 'skipped', validateResult: { tests: 'passed', green: true } }),
+    baseCleanInput({ finalReconcile: 'skipped', validateResult: { tests: 'no_tests', green: false } }),
+    baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_RED }),
+    baseCleanInput({ finalReconcile: 'skipped' }),
+  ];
+  for (const input of inputs) {
+    const baseline = classifyMergeTier(input);
+    const r = classifyMergeTier({ ...input, validateCi: UNVERIFIED_CI.failure, setupDeps: DEPS_FAILED });
+    assert.deepEqual(r, baseline, JSON.stringify(input));
+    assert.ok(!codesOf(r).includes('validate_tests_not_run'), JSON.stringify(input));
+  }
+});
+
+test('classifyMergeTier: validateCi / setupDeps の契約外形状は明示 error', () => {
+  const base = { finalReconcile: 'skipped', validateResult: VALIDATE_ERROR };
+  for (const validateCi of [{ verified: 'false' }, { reason: 'ok' }, { verified: false, kind: 'unknown' }]) {
+    assert.throws(() => classifyMergeTier(baseCleanInput({ ...base, validateCi })), /invalid validateCi/, JSON.stringify(validateCi));
+  }
+  for (const setupDeps of [{ ok: 'false', note: '' }, { ok: false }, { note: 'x' }]) {
+    assert.throws(() => classifyMergeTier(baseCleanInput({ ...base, setupDeps })), /invalid setupDeps/, JSON.stringify(setupDeps));
   }
 });
 
