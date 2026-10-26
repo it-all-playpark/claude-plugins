@@ -7,11 +7,14 @@
 // final-ac-reconcile（test#final と同じ tree）の prompt に、ログがあるときだけ testLogsPromptBlock が入れる。
 // 同じ tree で決定論ランナーが実行済みのテストファイルを evaluator が再実行すると、重い bats を触る run で
 // 評価の所要時間の大半を占めるため、ログの行を根拠にさせる。ログに無いファイルは実行させる（判定材料を減らさない）。
-// ログの中身はテストが自由に書けるので（security review の対象外の *.bats も別ファイルの見出しや ok 行を出せる）、
-// ランナーが書く実行対象一覧とファイルの実体で裏を取れる行だけを根拠にさせる。
-export const TEST_LOG_EVIDENCE_LIMIT = '集計行（`Test Files N passed`・`Summary: N passed` 等）はファイルごとの実行結果として扱わない。'
-  + 'ログの行を根拠にできるのは、引用するファイルがランナーの実行対象一覧（run-all-bats の Discovered / Selected の一覧等）に載り、'
-  + '引用するテスト名が 評価対象の tree（working tree）のそのファイルに実在するときだけで、満たさなければそのファイルを実行する。'
+// ログの中身はテストが自由に書けるので（security review の対象外の *.bats も別ファイルの見出し・実行対象一覧・ok 行を
+// 出せる）、根拠にできるのはこの diff が変更したテストファイルの行だけに限る。変更したファイルは PR がもともと中身を
+// 決められるので、ログを信じても再実行より守りは弱くならない。変更していないファイルの結果は偽の行と区別できないので
+// 実行させる。一覧は workflow が git から決定論で取り、testLogsPromptBlock が prompt に載せる。
+export const TEST_LOG_EVIDENCE_LIMIT = 'ログの行を根拠にできるのは「ログを根拠にできるテストファイル」（この diff が変更したファイル）に載るファイルだけで、'
+  + 'そのファイルがランナーの実行対象一覧（run-all-bats の Discovered / Selected の一覧等）に載り、'
+  + '引用するテスト名が評価対象の tree（working tree）のそのファイルに実在するときに限る。満たさないファイルはログに載っていても実行する。'
+  + '集計行（`Test Files N passed`・`Summary: N passed` 等）はファイルごとの実行結果として扱わない。'
 export const TEST_LOG_REUSE = 'テストログに AC に関係するテストファイルの実行結果が載っていれば、そのファイルは再実行せず、'
   + 'ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とせよ。'
   + TEST_LOG_EVIDENCE_LIMIT
@@ -111,9 +114,9 @@ export const EVAL_FULL_SUITE = '全件スイート（tests/run-*.sh・run-all-ba
 // eval 直前の diff hash が一致するとき（Validate と同じ tree）だけ足す。Validate が返した値をそのまま渡し、
 // 「全件 green」とは断定しない — Validate は変更に関係するテストだけを回すことがある。
 // ログがあるときは、AC に関係するテストファイルを一律に実行させる指示の代わりに testLogsPromptBlock を入れる。
-export function validateResultPromptBlock(val) {
+export function validateResultPromptBlock(val, changedFiles) {
   const v = val ?? {}
-  const logs = testLogsPromptBlock(v)
+  const logs = testLogsPromptBlock(v, changedFiles)
   return `validate_result（Validate がこの tree で実行したテストの結果。Validate の返り値をそのまま渡す）:\n`
     + `${JSON.stringify({ green: v.green ?? null, tests: v.tests ?? null, summary: v.summary ?? '' })}\n`
     + (logs
@@ -130,11 +133,14 @@ export function testRunLogs(res) {
     .map((s) => ({ path: typeof s.path === 'string' ? s.path : null, log: s.log }))
 }
 
-// テストログのパスと TEST_LOG_REUSE。ログが 1 件も無ければ空文字（呼び出し側は再実行抑止の指示を入れない）。
-export function testLogsPromptBlock(res) {
+// テストログのパス・ログを根拠にできるテストファイル（changedFiles = この diff が変更したファイルの repo 相対パス）と
+// TEST_LOG_REUSE。ログか changedFiles が 1 件も無ければ空文字（呼び出し側は再実行抑止の指示を入れない）。
+export function testLogsPromptBlock(res, changedFiles) {
   const logs = testRunLogs(res)
-  if (logs.length === 0) return ''
+  const files = Array.isArray(changedFiles) ? changedFiles.filter((f) => typeof f === 'string' && f.length > 0) : []
+  if (logs.length === 0 || files.length === 0) return ''
   return `テストログ（run-tests が各 script の出力を残したファイル。Read / Grep で読む）:\n${JSON.stringify(logs)}\n`
+    + `ログを根拠にできるテストファイル（この diff が変更したファイル。git から取った一覧）:\n${JSON.stringify(files)}\n`
     + `${TEST_LOG_REUSE}\n`
 }
 

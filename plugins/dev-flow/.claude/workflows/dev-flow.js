@@ -42,9 +42,10 @@ function nsAgentOpts(opts) {
 
 // ==== BEGIN inline: _lib/evaluator-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
-const TEST_LOG_EVIDENCE_LIMIT = '集計行（`Test Files N passed`・`Summary: N passed` 等）はファイルごとの実行結果として扱わない。'
-  + 'ログの行を根拠にできるのは、引用するファイルがランナーの実行対象一覧（run-all-bats の Discovered / Selected の一覧等）に載り、'
-  + '引用するテスト名が 評価対象の tree（working tree）のそのファイルに実在するときだけで、満たさなければそのファイルを実行する。'
+const TEST_LOG_EVIDENCE_LIMIT = 'ログの行を根拠にできるのは「ログを根拠にできるテストファイル」（この diff が変更したファイル）に載るファイルだけで、'
+  + 'そのファイルがランナーの実行対象一覧（run-all-bats の Discovered / Selected の一覧等）に載り、'
+  + '引用するテスト名が評価対象の tree（working tree）のそのファイルに実在するときに限る。満たさないファイルはログに載っていても実行する。'
+  + '集計行（`Test Files N passed`・`Summary: N passed` 等）はファイルごとの実行結果として扱わない。'
 const TEST_LOG_REUSE = 'テストログに AC に関係するテストファイルの実行結果が載っていれば、そのファイルは再実行せず、'
   + 'ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とせよ。'
   + TEST_LOG_EVIDENCE_LIMIT
@@ -123,9 +124,9 @@ const EVAL_EVIDENCE_MAX = 200
 
 const EVAL_FULL_SUITE = '全件スイート（tests/run-*.sh・run-all-bats・vitest のディレクトリ全体実行）'
 
-function validateResultPromptBlock(val) {
+function validateResultPromptBlock(val, changedFiles) {
   const v = val ?? {}
-  const logs = testLogsPromptBlock(v)
+  const logs = testLogsPromptBlock(v, changedFiles)
   return `validate_result（Validate がこの tree で実行したテストの結果。Validate の返り値をそのまま渡す）:\n`
     + `${JSON.stringify({ green: v.green ?? null, tests: v.tests ?? null, summary: v.summary ?? '' })}\n`
     + (logs
@@ -140,10 +141,12 @@ function testRunLogs(res) {
     .map((s) => ({ path: typeof s.path === 'string' ? s.path : null, log: s.log }))
 }
 
-function testLogsPromptBlock(res) {
+function testLogsPromptBlock(res, changedFiles) {
   const logs = testRunLogs(res)
-  if (logs.length === 0) return ''
+  const files = Array.isArray(changedFiles) ? changedFiles.filter((f) => typeof f === 'string' && f.length > 0) : []
+  if (logs.length === 0 || files.length === 0) return ''
   return `テストログ（run-tests が各 script の出力を残したファイル。Read / Grep で読む）:\n${JSON.stringify(logs)}\n`
+    + `ログを根拠にできるテストファイル（この diff が変更したファイル。git から取った一覧）:\n${JSON.stringify(files)}\n`
     + `${TEST_LOG_REUSE}\n`
 }
 
@@ -6602,7 +6605,7 @@ async function execEvaluatePhase(state) {
       + TEST_DISCOVERY_NOTE
       // PR 作成前なので、PR phase と同じ材料（plan / ledger / risk hits）で組んだ本文プレビューを渡す（AC checkbox は未確定）。
       + prBodyEvidenceInstr(buildPrBody({ issue: ISSUE, req, plan, ledger, testsurfHits, dangerHits: secHitsOf(state.risk) }))
-      + (sameTreeAsValidate ? validateResultPromptBlock(state.val) : '')
+      + (sameTreeAsValidate ? validateResultPromptBlock(state.val, state.realized?.files) : '')
       + ((i === 1 && cls.concerns.length) ? `focus_areas（重点監査せよ。implementer の自己申告した弱点/未解消BLOCKED）:\n${JSON.stringify(cls.concerns)}\n` : '')
       + ((i === 1 && state.diffClassification && state.diffClassification.format_only.length) ? `diff_classification（difftastic による機械分類。読み方ガイド）: structural（構造変化あり — Read で精査せよ）:\n${JSON.stringify(state.diffClassification.structural)}\nformat_only（フォーマットのみの変更 — Read での精査は不要。ファイル名の把握と plan 宣言との整合確認のみでよい）:\n${JSON.stringify(state.diffClassification.format_only)}\nこの分類は精査の優先順位ガイドであり、security 判定・AC 判定を skip する根拠にはするな。\n` : '')
       + (dangerHits.length
@@ -7501,7 +7504,7 @@ if (_facDecision.run) {
     + `\`git diff origin/${BASE}...HEAD\` で最終 diff を確認し該当ファイルを Read で精査すること（fix は commit 済みのため三点 diff でよい）。\n`
     + `acceptance_criteria（index 順。これが全対象 — 追加・分割・言い換え禁止）:\n${JSON.stringify(req.acceptance_criteria)}\n`
     + `test#final 結果: ${JSON.stringify({ finalReconcile, finalTestGreen, ...(finalTestForEval ? { tests: finalTestForEval.tests, green: finalTestForEval.green } : {}) })}\n`
-    + testLogsPromptBlock(finalTestForEval)
+    + testLogsPromptBlock(finalTestForEval, changedFilesFinal)
     // Evaluate と同じ判定材料を渡す: 「PR 本文に書く」型の AC は diff に現れないため、PR 本文を欠くと fix 後の
     // 再検証で satisfied:false に反転し、偽の ac_agent_unsatisfied HOLD になる。PR に載せた本文そのもの（prBody）で判定させる。
     + prBodyEvidenceInstr(prBody)

@@ -31,7 +31,7 @@ tools:
 - `validate_result`（任意）: 評価対象と同じ tree で Validate が実行したテストの結果（`green` / `tests` / `summary`）。
   Validate は変更に関係するテストだけを回すことがあるので、全件 green の証明としては読まない
 - `テストログ`（任意）: 評価対象と同じ tree でテストランナーが実行した各 script の出力ログの絶対パス（Read / Grep で読む）。
-  どのテストファイルが走ったかはログの中身から読む
+  どのテストファイルが走ったかはログの中身から読む。`ログを根拠にできるテストファイル` と対で渡る
 - `focus_areas`（任意）: 実装 agent が自己申告した懸念。まずここを厳しく確かめる
 - `既出 feedback`（2 回目以降）: 前回までに自分が出した指摘。実装 agent は対応済みの前提で読む
 - `security_focus`（任意）: realized diff で検出された危険クラス → `security_clearance[]` で全件判定
@@ -47,9 +47,10 @@ tools:
    全件スイート（tests/run-*.sh・run-all-bats・vitest のディレクトリ全体実行）は走らせず、AC に関係するテストファイルだけを実行して根拠にする（同じ tree の全件は Validate が実行済み）。
    テストログ（同じ tree でテストランナーが各 script の出力を残したファイルのパス）が渡され、AC に関係するテストファイルの実行結果がそこに載っていれば、
    そのファイルは再実行せず、ログの該当行（テスト名と ok / not ok）を evidence にして `verified_by: "test"` とする。
+   ログの行を根拠にできるのは「ログを根拠にできるテストファイル」（この diff が変更したファイル）に載るファイルだけで、
+   そのファイルがランナーの実行対象一覧（run-all-bats の Discovered / Selected の一覧等）に載り、
+   引用するテスト名が評価対象の tree（working tree）のそのファイルに実在するときに限る。満たさないファイルはログに載っていても実行する。
    集計行（`Test Files N passed`・`Summary: N passed` 等）はファイルごとの実行結果として扱わない。
-   ログの行を根拠にできるのは、引用するファイルがランナーの実行対象一覧（run-all-bats の Discovered / Selected の一覧等）に載り、
-   引用するテスト名が 評価対象の tree（working tree）のそのファイルに実在するときだけで、満たさなければそのファイルを実行する。
    ログに載っていない AC に関係するテストファイルだけを実行する。ログが渡されない・読めないときは AC に関係するテストファイルを実行する
 3. diff から task type（api / ui / lib / cli / infra 等）を見立て、AC 充足・コード品質・境界と異常系、
    その type 固有の観点で確かめる

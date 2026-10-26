@@ -289,10 +289,13 @@ const FINAL_GREEN_LOGS = {
 };
 
 test('[final-ac-reconcile] (r7) test#final green → prompt に test#final の tests / green・ログパス・再実行しない指示が入る', async () => {
-  const { ctx, calls } = makeSandbox({ fixesApplied: 1, overrides: { 'test#final': FINAL_GREEN_LOGS } });
+  const changed = ['plugins/a.bats', 'plugins/a.sh'];
+  const { ctx, calls } = makeSandbox({ fixesApplied: 1, overrides: { 'test#final': FINAL_GREEN_LOGS, 'changed-files-final': { files: changed } } });
   const { error } = await runDevFlowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'r7');
   const p = calls.find((c) => c.label === 'final-ac-reconcile')?.prompt ?? '';
+  // ログを根拠にできるのは最終 diff が変更したファイルだけ（changed-files-final の一覧をそのまま渡す）
+  assert.ok(p.includes(`ログを根拠にできるテストファイル（この diff が変更したファイル。git から取った一覧）:\n${JSON.stringify(changed)}\n`), '(r7) ログを根拠にできるファイルの一覧が無い');
   assert.ok(p.includes(`test#final 結果: ${JSON.stringify({ finalReconcile: 'reverified', finalTestGreen: true, tests: 'passed', green: true })}`), `(r7) test#final の tests / green が無い: ${p.slice(0, 600)}`);
   assert.ok(p.includes(FINAL_LOG), '(r7) test#final のログパスが無い');
   assert.ok(p.includes(TEST_LOG_REUSE), '(r7) ログの行を根拠にして再実行しない指示が無い');

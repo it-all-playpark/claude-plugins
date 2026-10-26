@@ -91,11 +91,13 @@ test('[evaluator-contract][#1144] TEST_LOG_REUSE と final_ac_reconcile 契約�
     assert.ok(text.includes('再実行せず'), `${name}: 再実行しない指示が無い`);
     assert.ok(text.includes(LOG_EVIDENCE) && text.includes('verified_by:"test"'), `${name}: ログの行を evidence にして verified_by:"test" とする指示が無い`);
     assert.ok(/ログに載っていない AC (に関係する|関連)テストファイルだけを実行/.test(text), `${name}: ログに無いものだけ実行する指示が無い`);
-    // ログはテストが自由に書けるので、集計行を使わず、実行対象一覧とファイルの実体で裏を取れる行だけを根拠にする
+    // ログはテストが自由に書けるので、この diff が変更したファイルの、実行対象一覧とファイルの実体で裏を取れる行だけを根拠にする
     assert.ok(text.includes(TEST_LOG_EVIDENCE_LIMIT), `${name}: ログ行の裏取りの指示が無い`);
   }
-  assert.ok(TEST_LOG_EVIDENCE_LIMIT.includes('集計行') && TEST_LOG_EVIDENCE_LIMIT.includes('実行対象一覧')
-    && TEST_LOG_EVIDENCE_LIMIT.includes('評価対象の tree（working tree）のそのファイルに実在する'), TEST_LOG_EVIDENCE_LIMIT);
+  for (const s of ['「ログを根拠にできるテストファイル」（この diff が変更したファイル）に載るファイルだけ', 'ログに載っていても実行する',
+    '集計行', '実行対象一覧', '評価対象の tree（working tree）のそのファイルに実在する']) {
+    assert.ok(TEST_LOG_EVIDENCE_LIMIT.includes(s), `${s}: ${TEST_LOG_EVIDENCE_LIMIT}`);
+  }
   // 契約はテストログが渡されたときに限る（渡されない・読めないときは AC 関連テストを実行する）
   assert.ok(EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile.includes('テストログが渡されない・読めない場合は AC に関係するテストファイルを実行'));
 });
@@ -109,16 +111,21 @@ test('[evaluator-contract][#1144] evaluator.md の「進め方」2 はテスト�
   assert.ok(step2.includes('ログが渡されない・読めないときは AC に関係するテストファイルを実行する'), step2);
 });
 
-test('[evaluator-contract][#1144] validateResultPromptBlock はログがあるときだけログパスと TEST_LOG_REUSE を入れる', () => {
+test('[evaluator-contract][#1144] validateResultPromptBlock はログと変更ファイルがあるときだけログパス・根拠にできるファイル・TEST_LOG_REUSE を入れる', () => {
   const scripts = [{ path: '/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-q/0.log' }];
-  const withLogs = validateResultPromptBlock({ tests: 'passed', green: true, summary: 's', scripts });
+  const changed = ['plugins/x/a.bats', 'plugins/x/a.sh'];
+  const withLogs = validateResultPromptBlock({ tests: 'passed', green: true, summary: 's', scripts }, changed);
   assert.ok(withLogs.includes('/tmp/run-tests-q/0.log') && withLogs.includes(TEST_LOG_REUSE), withLogs);
-  for (const [name, val] of [
-    ['scripts 無し', { tests: 'passed', green: true, summary: 's' }],
-    ['log 無し', { tests: 'passed', green: true, summary: 's', scripts: [{ path: '/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false }] }],
-    ['tests:error', { tests: 'error', green: false, summary: 's', scripts }],
+  assert.ok(withLogs.includes(`ログを根拠にできるテストファイル（この diff が変更したファイル。git から取った一覧）:\n${JSON.stringify(changed)}\n`), withLogs);
+  for (const [name, val, files] of [
+    ['scripts 無し', { tests: 'passed', green: true, summary: 's' }, changed],
+    ['log 無し', { tests: 'passed', green: true, summary: 's', scripts: [{ path: '/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false }] }, changed],
+    ['tests:error', { tests: 'error', green: false, summary: 's', scripts }, changed],
+    // 変更ファイルが取れない・空なら、ログを根拠にできるファイルが無いので再実行抑止の指示を入れない
+    ['変更ファイル null', { tests: 'passed', green: true, summary: 's', scripts }, null],
+    ['変更ファイル空', { tests: 'passed', green: true, summary: 's', scripts }, []],
   ]) {
-    const block = validateResultPromptBlock(val);
+    const block = validateResultPromptBlock(val, files);
     assert.ok(!block.includes(TEST_LOG_REUSE) && !block.includes('/tmp/run-tests-q/'), `${name}: ${block}`);
     assert.ok(block.includes(`${EVAL_FULL_SUITE}は走らせず、AC に関係するテストファイルだけを実行して根拠にせよ。`), `${name}: ${block}`);
   }

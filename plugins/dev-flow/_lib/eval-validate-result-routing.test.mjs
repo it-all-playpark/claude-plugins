@@ -87,7 +87,11 @@ test('[eval-validate-result] Validate 終了時と eval 直前の hash が食い
 
 // issue #1144: Validate が返した scripts[].log を、同じ tree の eval#N にだけ渡して実行済みのテストファイルを再実行させない
 test('[eval-validate-result] tree が Validate と同じ eval#1 には各 script のログパスと再実行しない指示が入る', async () => {
-  const { ctx, calls } = makeDevFlowSandbox({ overrides: { 'test#1': VAL_LOGS, 'diff-gate': { hash: 'AAA', empty: false }, 'diff-hash-eval': evalHashes('AAA') } });
+  const changed = ['src/x.ts', 'src/x.test.ts'];
+  const { ctx, calls } = makeDevFlowSandbox({ overrides: {
+    'test#1': VAL_LOGS, 'diff-gate': { hash: 'AAA', empty: false }, 'diff-hash-eval': evalHashes('AAA'),
+    'danger-grep': { risk: { ok: true, hits: [] }, files: changed, struct: null, diffhash: null },
+  } });
   const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error, 'eval-validate-result-logs');
   // test 系 exec-proxy の schema が scripts[].log を受け取る（schema に無いキーは structured output で落ちうる）
@@ -98,6 +102,8 @@ test('[eval-validate-result] tree が Validate と同じ eval#1 には各 script
   const p = evals[0].prompt;
   assert.ok(p.includes(LOG_BATS) && p.includes(LOG_NODE), 'eval#1 に各 script のログパスが無い');
   assert.ok(p.includes(TEST_LOG_REUSE), 'eval#1 にログの行を根拠にして再実行しない指示が無い');
+  // ログを根拠にできるのは realized diff が変更したファイルだけ（Diff triage の files をそのまま渡す）
+  assert.ok(p.includes(`ログを根拠にできるテストファイル（この diff が変更したファイル。git から取った一覧）:\n${JSON.stringify(changed)}\n`), 'eval#1 にログを根拠にできるファイルの一覧が無い');
   assert.ok(p.includes(`${EVAL_FULL_SUITE}は走らせない。`), 'eval#1 に全件スイートを走らせない指示が無い');
   assert.ok(!p.includes(NO_FULL_SUITE), 'ログがあるのに AC 関連テストを一律に実行させる指示が残っている');
 });
@@ -107,6 +113,10 @@ test('[eval-validate-result] ログパスが無い・tree が Validate と異な
   for (const [name, val, overrides, extra] of [
     ['scripts[].log 無し', VAL, { 'diff-gate': { hash: 'AAA', empty: false }, 'diff-hash-eval': evalHashes('AAA') }, {}],
     ['hash 不一致', VAL_LOGS, { 'diff-gate': { hash: 'AAA', empty: false }, 'diff-hash-eval': evalHashes('CCC') }, {}],
+    ['realized diff のファイル取得失敗', VAL_LOGS, {
+      'diff-gate': { hash: 'AAA', empty: false }, 'diff-hash-eval': evalHashes('AAA'),
+      'danger-grep': { risk: { ok: true, hits: [] }, files: null, struct: null, diffhash: null },
+    }, {}],
     ['reimpl 後の eval#2', VAL_LOGS, {
       ...shapeOverrides('complex'),
       'diff-gate': { hash: 'AAA', empty: false },
