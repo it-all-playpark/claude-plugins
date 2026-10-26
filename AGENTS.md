@@ -34,6 +34,9 @@ plugin の install 手順（marketplace / link mode）は README.md を参照。
 - **「なぜ」は残し「経緯」は書かない** — 判別基準は「次にこのファイルを触る agent の判断を変えるか」。
   不変条件・sunset トリガ・fail-closed の理由は残す (理由なきルールは圧力下で合理化して破られる)。
   比較検討テーブル・不採用案・旧仕様の解説は書かない (腐って現行 invariant と逆を指示する)。追跡は git log / issue
+- **LLM が後で読む・判定に使う成果物は書き手が要点を選ぶ** — PR 本文・handoff・evaluator への入力などは
+  全文を転写せず、上限は実測か要件から決めた必要量にする。超えたら機械的に切らず、中身を知る書き手
+  (implementer 等) に要約を差し戻す (長い文脈は判定を歪め、黙った clip は必要な行を落とす)
 
 SKILL.md description は third-person 命令形で書く (`Extracts ...`, `Converts ...`)。
 `Use when:` には具体トリガ語を列挙する。`"I"` / `"this skill"` 等の一人称は禁止。
