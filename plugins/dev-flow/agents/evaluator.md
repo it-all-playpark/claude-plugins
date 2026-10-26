@@ -49,7 +49,7 @@ tools:
    そのファイルは再実行せず、ログの該当行（テスト名と ok / not ok）を evidence にして `verified_by: "test"` とする。
    集計行（`Test Files N passed`・`Summary: N passed` 等）はファイルごとの実行結果として扱わない。
    ログの行を根拠にできるのは、引用するファイルがランナーの実行対象一覧（run-all-bats の Discovered / Selected の一覧等）に載り、
-   引用するテスト名が HEAD のそのファイルに実在するときだけで、満たさなければそのファイルを実行する。
+   引用するテスト名が 評価対象の tree（working tree）のそのファイルに実在するときだけで、満たさなければそのファイルを実行する。
    ログに載っていない AC に関係するテストファイルだけを実行する。ログが渡されない・読めないときは AC に関係するテストファイルを実行する
 3. diff から task type（api / ui / lib / cli / infra 等）を見立て、AC 充足・コード品質・境界と異常系、
    その type 固有の観点で確かめる

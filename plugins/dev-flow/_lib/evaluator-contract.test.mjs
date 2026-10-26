@@ -95,7 +95,7 @@ test('[evaluator-contract][#1144] TEST_LOG_REUSE と final_ac_reconcile 契約�
     assert.ok(text.includes(TEST_LOG_EVIDENCE_LIMIT), `${name}: ログ行の裏取りの指示が無い`);
   }
   assert.ok(TEST_LOG_EVIDENCE_LIMIT.includes('集計行') && TEST_LOG_EVIDENCE_LIMIT.includes('実行対象一覧')
-    && TEST_LOG_EVIDENCE_LIMIT.includes('HEAD のそのファイルに実在する'), TEST_LOG_EVIDENCE_LIMIT);
+    && TEST_LOG_EVIDENCE_LIMIT.includes('評価対象の tree（working tree）のそのファイルに実在する'), TEST_LOG_EVIDENCE_LIMIT);
   // 契約はテストログが渡されたときに限る（渡されない・読めないときは AC 関連テストを実行する）
   assert.ok(EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile.includes('テストログが渡されない・読めない場合は AC に関係するテストファイルを実行'));
 });

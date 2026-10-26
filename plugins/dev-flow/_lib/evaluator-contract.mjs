@@ -11,7 +11,7 @@
 // ランナーが書く実行対象一覧とファイルの実体で裏を取れる行だけを根拠にさせる。
 export const TEST_LOG_EVIDENCE_LIMIT = '集計行（`Test Files N passed`・`Summary: N passed` 等）はファイルごとの実行結果として扱わない。'
   + 'ログの行を根拠にできるのは、引用するファイルがランナーの実行対象一覧（run-all-bats の Discovered / Selected の一覧等）に載り、'
-  + '引用するテスト名が HEAD のそのファイルに実在するときだけで、満たさなければそのファイルを実行する。'
+  + '引用するテスト名が 評価対象の tree（working tree）のそのファイルに実在するときだけで、満たさなければそのファイルを実行する。'
 export const TEST_LOG_REUSE = 'テストログに AC に関係するテストファイルの実行結果が載っていれば、そのファイルは再実行せず、'
   + 'ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とせよ。'
   + TEST_LOG_EVIDENCE_LIMIT
