@@ -39,7 +39,7 @@ object literal（成功・失敗・abort）と VM 実行の handoff の両方で
 | `review_model_config` | dev-flow / pr-iterate | dev-flow-health の手読みだけ | pr-reviewer の model。一致は `eval_model_config` と同じテスト |
 | `plugin_version` | dev-flow / pr-iterate | dev-flow-health の手読みだけ | 集計上区別したい挙動変更の世代ラベル（`_lib/plugin-version.mjs` の `PLUGIN_VERSION`） |
 | `plugin_commit` | dev-flow / pr-iterate | `health-report.sh` が読む | 実行中の dev-flow plugin の commit。signature の first_seen / last_seen と候補 commit を決める |
-| `final_test_flaky` | dev-flow | dev-flow-health の手読みだけ | test#final（Final reconcile が skip の run は Validate の最終結果）で落ち、落ちたファイルだけの再実行で green だった flake の記録（`_lib/final-test-rerun.mjs`。Validate 由来は開示だけの flake 候補） |
+| `final_test_flaky` | dev-flow | dev-flow-health の手読みだけ | test#final（Final reconcile が skip の run は Validate の最終結果）で落ち、落ちたファイルだけの再実行で green だった flake 候補の記録（`_lib/final-test-rerun.mjs`。開示だけで HOLD は解除しない） |
 | `ci_wait_ceiling_seconds` | pr-iterate | dev-flow-health の手読みだけ | CI 待ちに使った上限秒（`_shared/scripts/ci-wait-ceiling.sh`、渡されなければ `CI_WAIT_CEILING_SECONDS`） |
 | `ci_wait_seconds` | pr-iterate | dev-flow-health の手読みだけ | 全 round の CI 待ちの累積秒。上限に近い run が多ければ上限の決め方を見直す |
 | `hold_reason_codes` | dev-flow | `health-report.sh` が読む | HOLD の run の HOLD 理由の code。signature にする code は `HOLD_SIGNATURE_CODES` |

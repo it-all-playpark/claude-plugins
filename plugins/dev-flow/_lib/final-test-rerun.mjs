@@ -1,8 +1,8 @@
-// 全件実行が red のとき、落ちたテストファイルだけを 1 回流し直して flake と本物の red を分ける純関数（issue #865）。
+// 全件実行が red のとき、落ちたテストファイルだけを 1 回流し直して flake 候補を見つける純関数（issue #865）。
 // 対象は Final reconcile の test#final（test#final-rerun）と、Final reconcile が skip（fixes_applied=0）の run の
-// Validate の最終結果（test#validate-rerun。issue #1138）の 2 つ。後者の flake は開示するだけで、merge tier は
-// validate_test_red で HOLD したまま（単体再実行の成功は PR が書き換えられるテストの出力で、全件実行のときだけ
-// 落ちるテストを書けば決定的な失敗でも green になる）。
+// Validate の最終結果（test#validate-rerun。issue #1138）の 2 つ。どちらも flake 候補を開示するだけで、merge tier は
+// final_test_red / validate_test_red で HOLD したまま（単体再実行の成功は PR が書き換えられるテストの出力で、
+// 全件実行のときだけ落ちるテストを書けば決定的な失敗でも green になる）。
 //
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
@@ -11,8 +11,7 @@
 // - 再実行は 1 回だけ、落ちたファイルだけ。全件は流し直さない — 並列負荷による flake は全件を回すと再発する。
 // - failed_files が空（ビルド失敗・ファイルに結び付かない失敗）は再実行しない。一部のファイルだけを流し直して
 //   green と言うと、ファイルに結び付かなかった失敗を見落とす。1 件でも安全に渡せないパスがあれば同じ扱いにする。
-// - 再実行が tests:'passed' かつ green:true のときだけ flake。red・起動失敗・no_tests・応答なしは本物の red のまま
-//   （final_test_red で HOLD）。
+// - 再実行が tests:'passed' かつ green:true のときだけ flake 候補。red・起動失敗・no_tests・応答なしは開示もしない。
 // run-tests.sh の「リトライしない」は起動失敗（環境要因）についての規約で、この再実行は Final reconcile 側の判断。
 // Validate の各周（test#i）の red は green-fix に回るので対象にしない — 対象は green-fix の上限後に PR tree の
 // テスト状態として残った最終結果だけ。

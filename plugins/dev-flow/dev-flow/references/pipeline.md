@@ -223,7 +223,9 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 
 - **判定**: pr-iterate が fix を適用した run（`fixes_applied > 0`）だけ、fix 後の最終 tree で確かめ直す（0 の run は spawn しない）:
   - worktree を PR の最終 HEAD に同期し、Validate と同じ prompt の `run-tests <WT>` を 1 回だけ実行する（green-fix はしない）。red で
-    落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake として記録する（`_lib/final-test-rerun.mjs`）
+    落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake 候補として記録・開示する（`_lib/final-test-rerun.mjs`）。
+    final test は red のままで、`final_test_red` の HOLD も `EVAL-*` blocking も解除しない（単体再実行の成功は PR が書き換えられる
+    テストの出力で、全件実行のときだけ落ちるテストなら決定的な失敗でも green になる）
   - テストを実行できなければ（同期失敗・null・`tests:'error'`）`unavailable` で HOLD。PR の CI の success では代えない —
     `pull_request` の CI は PR head の workflow で動き、CI が呼ぶスクリプトも PR が書き換えられる
   - 最終の changed-files で宣言外変更を監査し直す
@@ -231,11 +233,10 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
     解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は決定論の evidence で checked にする
     （evaluator は fix 後に再実行されないため）。SEC seed・TESTSURF・AC-FINAL は LLM の判断で解消しない
   - test#final が green か no_tests なら、Final AC reconcile に test#final の `tests` / `green` と各 script のログパスを渡し、
-    実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）。red の flake 判定ではログを渡さない
+    実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）
 - skip した run の PR tree のテスト状態は Validate の結果のまま。`tests:'failed'` は落ちたファイルだけを 1 回流し直し
   （`test#validate-rerun`。test#final と同じ `_lib/final-test-rerun.mjs`）、green なら flake 候補として `final_test_flaky` に記録・開示するが、
-  `validate_test_red` の HOLD は解除しない（単体再実行の成功は PR が書き換えられるテストの出力で、全件実行のときだけ落ちる
-  テストなら決定的な失敗でも green になる）。`tests:'error'` は常に `validate_tests_not_run` で HOLD
+  test#final と同じ理由で `validate_test_red` の HOLD は解除しない。`tests:'error'` は常に `validate_tests_not_run` で HOLD
 - **失敗の扱い**:
   - 同期失敗・test の null は `unavailable`（fail-safe → Merge tier HOLD）。flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）。
     `failed_files` が空・安全に渡せないパスを含む red は再実行せず、再実行の throw / null / red は red のまま

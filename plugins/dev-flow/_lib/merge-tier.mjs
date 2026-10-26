@@ -319,11 +319,13 @@ export function classifyMergeableState(meta) {
 //   未指定 = reason・開示とも追加なし。object でない / ok が boolean でない / ok:true で checks が配列で
 //   ないものは明示 error。
 // s.finalTestFlaky (optional { files: string[], logs: string[] }): 全件実行で落ち、落ちたファイルだけの
-//   単体再実行が green だった記録（_lib/final-test-rerun.mjs の finalTestRerunVerdict。issue #865）。2 経路ある:
-//   - Final reconcile の test#final（finalReconcile !== 'skipped'）: workflow は finalTestGreen を true にするので
-//     final_test_red は積まれない。
+//   単体再実行が green だった記録（_lib/final-test-rerun.mjs の finalTestRerunVerdict。issue #865）。どちらの経路でも
+//   HOLD は解除せず flake 候補として開示するだけ — 単体再実行の成功は PR が書き換えられるテストの出力で、
+//   全件実行のときだけ落ちるテストを書けば決定的な失敗でも green になる。2 経路ある:
+//   - Final reconcile の test#final（finalReconcile !== 'skipped'）: workflow は finalTestGreen を false のままにするので
+//     final_test_red は積まれる。
 //   - Final reconcile が skip の run の Validate red（finalReconcile === 'skipped' かつ validateResult が
-//     tests:'failed' / green:false。issue #1138）: validate_test_red は積んだまま、flake 候補として開示するだけ。
+//     tests:'failed' / green:false。issue #1138）: validate_test_red は積まれる。
 //   開示行（finalTestFlakyDisclosure）を disclosures に積む。未指定 = 開示なし。
 //   files が非空の string[] でない / logs が string[] でない / どちらの経路の red にも当たらない
 //   （red でないまま flake を名乗る矛盾）は明示 error。
@@ -395,8 +397,8 @@ export function classifyMergeTier(s) {
   }
   // Final reconcile が skip の run で、PR tree のテスト状態が Validate の red（tests:'failed'）のまま
   const validateRed = s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false;
-  if (s.finalTestFlaky != null && !validateRed && s.finalTestGreen !== true) {
-    throw new Error('classifyMergeTier: finalTestFlaky requires finalTestGreen===true (or a red Validate in a skipped Final reconcile)');
+  if (s.finalTestFlaky != null && !validateRed && s.finalTestGreen !== false) {
+    throw new Error('classifyMergeTier: finalTestFlaky requires finalTestGreen===false (or a red Validate in a skipped Final reconcile)');
   }
   if (s.setupDeps != null && (typeof s.setupDeps.ok !== 'boolean' || typeof s.setupDeps.note !== 'string')) {
     throw new Error('classifyMergeTier: invalid setupDeps');
@@ -479,7 +481,7 @@ export function classifyMergeTier(s) {
   const finalTestFlakyDisclosure = s.finalTestFlaky == null ? null
     : validateRed
       ? `Validate test flake 候補（単体再実行で green）: ${s.finalTestFlaky.files.join(', ')} — Validate の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green（PR が書き換えられるテストの出力なので validate_test_red は解除しない。1 回目のログ: ${flakyLogs}）`
-      : `final test flake（単体再実行で green）: ${s.finalTestFlaky.files.join(', ')} — 最終 tree の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green（HOLD 理由にしない。1 回目のログ: ${flakyLogs}）`;
+      : `final test flake 候補（単体再実行で green）: ${s.finalTestFlaky.files.join(', ')} — 最終 tree の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green（PR が書き換えられるテストの出力なので final_test_red は解除しない。1 回目のログ: ${flakyLogs}）`;
   const disclosures = [keywordAloneDisclosure, evalFailDisclosure, ciIncompleteDisclosure, finalTestFlakyDisclosure].filter(Boolean);
   if (blockingReasons.length) {
     const reasons = blockingReasons.map((r) => r.reason);

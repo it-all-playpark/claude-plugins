@@ -153,7 +153,8 @@ Jev のクライアントは plugin に同梱せず、公開された参照実�
 
 - `validate_tests`: Validate の最終 test 状態（`'passed' | 'failed' | 'no_tests' | 'error' | null`）
 - `final_test_flaky`: 全件実行で落ち、落ちたファイルだけの 1 回の再実行で green だったファイルと 1 回目のログ
-  （`{files, logs} | null`）。Final reconcile が走った run は `test#final` の red、skipped の run は Validate の red が対象
+  （`{files, logs} | null`）。Final reconcile が走った run は `test#final` の red、skipped の run は Validate の red が対象。
+  どちらも flake 候補の開示だけで、`final_test_red` / `validate_test_red` の HOLD は解除しない
 
 Final reconcile が skipped の run で `validate_tests === 'error'` は、テストが 1 件も実行されていないので
 merge tier は HOLD（`validate_tests_not_run`。Setup の deps が `ok:false` ならその note が理由に載る）になる。

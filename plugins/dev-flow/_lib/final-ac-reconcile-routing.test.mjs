@@ -301,19 +301,15 @@ test('[final-ac-reconcile] (r7) test#final green → prompt に test#final の t
   assert.ok(p.includes(TEST_LOG_REUSE), '(r7) ログの行を根拠にして再実行しない指示が無い');
 });
 
-test('[final-ac-reconcile] (r8) test#final が red の flake 判定 → prompt にログパスも再実行しない指示も入らない', async () => {
-  for (const [name, overrides] of [
-    ['red → 単体再実行 green（flake）', {
-      'test#final': { tests: 'failed', green: false, summary: 'not ok 1 x', failed_files: ['plugins/a.bats'], scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 1, launch_failed: false, log: FINAL_LOG }] },
-      'test#final-rerun': { tests: 'passed', green: true, summary: 'passed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-Zz99/rerun.log' }] },
-    }],
-  ]) {
-    const { ctx, calls } = makeSandbox({ fixesApplied: 1, overrides });
-    const { error } = await runDevFlowCapture(devFlowSrc, ctx);
-    assertNoCrash(error, `r8 ${name}`);
-    const fac = calls.find((c) => c.label === 'final-ac-reconcile');
-    assert.ok(fac, `(r8) ${name}: final-ac-reconcile が呼ばれていない (labels: ${calls.map((c) => c.label).join(', ')})`);
-    assert.ok(!fac.prompt.includes(TEST_LOG_REUSE), `(r8) ${name}: 再実行しない指示が入っている`);
-    assert.ok(!fac.prompt.includes('/tmp/run-tests-Zz99/'), `(r8) ${name}: ログパスが入っている`);
-  }
+test('[final-ac-reconcile] (r8) test#final が red で単体再実行が green（flake 候補）→ final_test_red のまま final-ac-reconcile を呼ばない', async () => {
+  // 単体再実行の成功は PR が書き換えられるテストの出力なので、最終 tree の red を green に替えない（issue #1138）
+  const overrides = {
+    'test#final': { tests: 'failed', green: false, summary: 'not ok 1 x', failed_files: ['plugins/a.bats'], scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 1, launch_failed: false, log: FINAL_LOG }] },
+    'test#final-rerun': { tests: 'passed', green: true, summary: 'passed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-Zz99/rerun.log' }] },
+  };
+  const { ctx, calls } = makeSandbox({ fixesApplied: 1, overrides });
+  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  assertNoCrash(error, 'r8');
+  assert.ok(calls.some((c) => c.label === 'test#final-rerun'), '(r8) test#final-rerun が呼ばれていない');
+  assert.ok(!calls.some((c) => c.label === 'final-ac-reconcile'), `(r8) final-ac-reconcile が呼ばれた (labels: ${calls.map((c) => c.label).join(', ')})`);
 });

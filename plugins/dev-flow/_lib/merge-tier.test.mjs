@@ -1466,31 +1466,31 @@ test('classifyMergeTier: ciChecks の契約外形状は明示 error', () => {
   assert.throws(() => classifyMergeTier(baseCleanInput({ ciChecks: { ok: true } })), /invalid ciChecks/);
 });
 
-// ---- finalTestFlaky（test#final の単体再実行が green、issue #865）----
+// ---- finalTestFlaky（test#final の単体再実行が green、issue #865 / #1138）----
 
 const FLAKY = { files: ['plugins/x/a.bats'], logs: ['/tmp/run-tests-abc/0.log'] };
 
-test('classifyMergeTier: finalTestFlaky は HOLD にせず、落ちたファイルと 1 回目のログを開示行に出す', () => {
-  const r = classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: FLAKY }));
-  assert.equal(r.tier, 'REVIEW');
-  assert.deepEqual(r.holdReasons, []);
+test('classifyMergeTier: test#final の単体再実行が green（finalTestFlaky）でも final_test_red で HOLD し、flake 候補の開示行だけを足す', () => {
+  // 単体再実行の成功は PR が書き換えられるテストの出力（全件実行のときだけ落ちるテストで決定的な失敗も green になる）
+  const r = classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: false, finalTestFlaky: FLAKY }));
+  assert.equal(r.tier, 'HOLD', JSON.stringify(r));
+  assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['final_test_red', 'human_judgment']]);
   assert.equal(r.disclosures.length, 1);
-  assert.ok(r.disclosures[0].startsWith('final test flake（単体再実行で green）'), r.disclosures[0]);
+  assert.ok(r.disclosures[0].startsWith('final test flake 候補（単体再実行で green）'), r.disclosures[0]);
   assert.ok(r.disclosures[0].includes('plugins/x/a.bats') && r.disclosures[0].includes('/tmp/run-tests-abc/0.log'), r.disclosures[0]);
   assert.ok(r.reasons.includes(r.disclosures[0]));
 
-  // 他の理由で HOLD の run でも final_test_red は積まず、開示行は reasons に残る
-  const hold = classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: FLAKY, iterateStatus: 'stuck' }));
-  assert.equal(hold.tier, 'HOLD');
-  assert.ok(!hold.holdReasons.some((x) => x.code === 'final_test_red'), JSON.stringify(hold.holdReasons));
-  assert.ok(hold.reasons.some((x) => x.startsWith('final test flake')));
+  // 開示行の有無だけが違い、HOLD 理由は finalTestFlaky なしの run と同じ
+  const red = classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: false }));
+  assert.deepEqual(red.holdReasons, r.holdReasons);
+  assert.deepEqual(red.disclosures, []);
 });
 
-test('classifyMergeTier: finalTestFlaky の契約外形状・red のままの flake は明示 error', () => {
-  const green = { finalReconcile: 'reverified', finalTestGreen: true };
-  assert.throws(() => classifyMergeTier(baseCleanInput({ ...green, finalTestFlaky: { files: [], logs: [] } })), /invalid finalTestFlaky/);
-  assert.throws(() => classifyMergeTier(baseCleanInput({ ...green, finalTestFlaky: { files: ['a.bats'] } })), /invalid finalTestFlaky/);
-  assert.throws(() => classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: false, finalTestFlaky: FLAKY })), /requires finalTestGreen===true/);
+test('classifyMergeTier: finalTestFlaky の契約外形状・green の run の flake は明示 error', () => {
+  const red = { finalReconcile: 'reverified', finalTestGreen: false };
+  assert.throws(() => classifyMergeTier(baseCleanInput({ ...red, finalTestFlaky: { files: [], logs: [] } })), /invalid finalTestFlaky/);
+  assert.throws(() => classifyMergeTier(baseCleanInput({ ...red, finalTestFlaky: { files: ['a.bats'] } })), /invalid finalTestFlaky/);
+  assert.throws(() => classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: FLAKY })), /requires finalTestGreen===false/);
 });
 
 // ---- validateResult（Final reconcile skipped の run の Validate red、issue #1086）----
@@ -1573,7 +1573,7 @@ test('classifyMergeTier: finalReconcile skipped + Validate red は落ちたフ�
 test('classifyMergeTier: Validate が red でない skip の run の finalTestFlaky は明示 error', () => {
   for (const validateResult of [undefined, { tests: 'passed', green: true }, { tests: 'failed', green: true }, { tests: 'error', green: false }]) {
     assert.throws(() => classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult, finalTestFlaky: FLAKY })),
-      /requires finalTestGreen===true/, JSON.stringify(validateResult));
+      /requires finalTestGreen===false/, JSON.stringify(validateResult));
   }
 });
 
