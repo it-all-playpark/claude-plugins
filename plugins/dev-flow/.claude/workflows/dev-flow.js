@@ -903,8 +903,7 @@ function classifyMergeTier(s) {
     }
   }
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
-  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false
-    && s.validateCi?.verified !== true) {
+  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false) {
     pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   }
   if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'error' && s.validateCi?.verified !== true) {
@@ -2516,7 +2515,7 @@ function buildDevflowSummaryBody({
     testCell = FLAKY_CELL;
   } else if (finalReconcile === 'reverified') {
     testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? '❌ red' : '不明';
-  } else if ((validateTests === 'error' || (validateTests === 'failed' && testGreen === false)) && ciTestVerified === true) {
+  } else if (validateTests === 'error' && ciTestVerified === true) {
     testCell = '✅ green (CI)';
   } else if (validateTests === 'error') {
     testCell = '⚠️ 未実行（環境）・未検証';
@@ -7416,19 +7415,17 @@ if (finalReconcile === 'unavailable') {
 }
 
 // ============================================================
-// テスト未実行 / Validate red の run の CI 確認: Final reconcile が skipped（fixes_applied=0）で Validate が
-// tests:'error'（起動失敗 = テスト未実行）か tests:'failed' + green:false（green-fix 上限後も red。base で pass する
-// flake を含む）の run だけ、PR phase の head sha に pin した CI check を ci-final と同じ finalCiPrompt +
-// finalCiVerdict で 1 回読む。その判定（displayCi）を終端サマリーのテスト欄と classifyMergeTier の validateCi の
-// 両方に渡す（CI の読み取りはこの 1 回だけ）。verified:true でなければ（取得失敗・sha 不一致・pending・failure・
-// check 0 件、PR head sha が無く未取得 = null）merge tier は validate_tests_not_run / validate_test_red で HOLD。
-// finalReconcile / finalCi は変えない。判定は finalCiVerdict のみ（flake かを LLM に判定させない・テストを再実行しない）。
+// テスト未実行 run の CI 確認: Final reconcile が skipped（fixes_applied=0）で Validate が
+// tests:'error'（起動失敗 = テスト未実行）の run だけ、PR phase の head sha に pin した CI check を
+// ci-final と同じ finalCiPrompt + finalCiVerdict で 1 回読む。その判定（displayCi）を終端サマリーの
+// テスト欄と classifyMergeTier の validateCi の両方に渡す（CI の読み取りはこの 1 回だけ）。
+// verified:true でなければ（取得失敗・sha 不一致・pending・failure・check 0 件、PR head sha が無く未取得 = null）
+// merge tier は validate_tests_not_run で HOLD。finalReconcile / finalCi は変えない。判定は finalCiVerdict のみ。
 // ============================================================
 let summaryCiTestVerified = null
 let displayCi = null
 const prHeadShaForDisplay = typeof pr?.head_sha === 'string' ? pr.head_sha.trim() : ''
-const validateRedOrNotRun = state.val?.tests === 'error' || (state.val?.tests === 'failed' && state.val?.green === false)
-if (finalReconcile === 'skipped' && validateRedOrNotRun && /^[0-9a-f]{40}$/i.test(prHeadShaForDisplay)) {
+if (finalReconcile === 'skipped' && state.val?.tests === 'error' && /^[0-9a-f]{40}$/i.test(prHeadShaForDisplay)) {
   let displayCiMeta = null
   try {
     displayCiMeta = await trackedAgent(
@@ -7439,8 +7436,7 @@ if (finalReconcile === 'skipped' && validateRedOrNotRun && /^[0-9a-f]{40}$/i.tes
   }
   displayCi = finalCiVerdict({ expectedSha: prHeadShaForDisplay, meta: displayCiMeta })
   summaryCiTestVerified = displayCi.verified
-  const notVerifiedCode = state.val.tests === 'error' ? 'validate_tests_not_run' : 'validate_test_red'
-  log(`ci-test-display: Validate tests=${state.val.tests} — PR head sha の CI ${displayCi.verified ? '全 success（テスト欄 ✅ green (CI)）' : `未確認（reason=${displayCi.reason}）— merge tier HOLD（${notVerifiedCode}）`}`)
+  log(`ci-test-display: Validate tests=error — PR head sha の CI ${displayCi.verified ? '全 success（テスト欄 ✅ green (CI)）' : `未確認（reason=${displayCi.reason}）— テスト欄は未検証・merge tier HOLD（validate_tests_not_run）`}`)
 }
 
 // ============================================================
@@ -7777,10 +7773,10 @@ const mergeTier = classifyMergeTier({
   finalTestGreen,
   finalTestFlaky,
   // Validate の最新の test 結果。Final reconcile が skipped の run では PR tree のテスト状態そのもので、
-  // red（tests:'failed'）のまま PR へ進み、PR head sha の CI でも green を確認できなければ validate_test_red で HOLD
+  // red（tests:'failed'）のまま PR へ進んだら validate_test_red で HOLD
   validateResult: state.val,
-  // Validate が tests:'error'（テスト未実行）か red で Final reconcile skipped の run の CI 確認（ci-test-display の判定。
-  // 未取得は null）。verified:true でなければ validate_tests_not_run / validate_test_red で HOLD。deps の note は前者の文言に載る
+  // Validate が tests:'error'（テスト未実行）で Final reconcile skipped の run の CI 確認（ci-test-display の判定。
+  // 未取得は null）。verified:true でなければ validate_tests_not_run で HOLD。deps の note はその文言に載る
   validateCi: displayCi,
   setupDeps: PRERUN.deps,
   iterateStatus: iterate?.status ?? null,

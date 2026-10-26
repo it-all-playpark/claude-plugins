@@ -152,16 +152,14 @@ Jev のクライアントは plugin に同梱せず、公開された参照実�
 
 - `validate_tests`: Validate の最終 test 状態（`'passed' | 'failed' | 'no_tests' | 'error' | null`）
 - `ci_test_verified`: 終端サマリーのテスト欄と merge tier に使った CI 照合結果（`true | false | null`）。
-  Validate が `'error'` か red（`'failed'`）で Final reconcile が skipped の run だけ、PR head sha に pin した CI check を読んで決まる
+  Validate が `'error'` かつ Final reconcile が skipped の run だけ、PR head sha に pin した CI check を読んで決まる
 
 `validate_tests === 'error' && ci_test_verified === true` は「ローカルではテスト未実行、同じ head sha の
 CI test は green」を意味する。呼び出し元は journal・`gh pr checks`・`gh run view` で再検証せず、
 その旨をそのまま報告する。Final reconcile が skipped の run で `validate_tests === 'error'` かつ
 `ci_test_verified` が `true` でなければ（`null` は PR head sha が無く CI を読んでいない）、テストは
 1 件も実行されていないので merge tier は HOLD（`validate_tests_not_run`。Setup の deps が `ok:false` なら
-その note が理由に載る）になる。その旨を報告して CI の確認を人間に委ねる。`validate_tests === 'failed'` は
-ローカルの red で、`ci_test_verified === true` なら同じ head sha の CI test は green（ローカルだけの失敗）、そうでなければ
-merge tier は HOLD（`validate_test_red`）。
+その note が理由に載る）になる。その旨を報告して CI の確認を人間に委ねる。`validate_tests === 'failed'` は本物の red。
 
 ## PR phase 失敗の扱い（`error_category: "pr_phase_failed"`）
 

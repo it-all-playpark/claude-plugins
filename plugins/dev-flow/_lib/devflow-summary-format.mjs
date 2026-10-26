@@ -123,9 +123,8 @@ function resolvedCell(v) {
  *   'error' は起動失敗（テストが 1 件も実行されていない）で、at-a-glance 表では ❌ red と区別する（issue #707）
  * @param {boolean|null|undefined} [opts.ciTestVerified] - finalReconcile が再検証していない run で、
  *   PR head sha に pin した CI check が finalCiVerdict で verified になったか（issue #707）。
- *   validateTests==='error'、または validateTests==='failed' かつ testGreen===false のときだけテスト欄を
- *   '✅ green (CI)' にする。同じ判定が merge tier の validateCi に渡り、verified でなければ HOLD
- *   （'error' は validate_tests_not_run、'failed' は validate_test_red。issue #1117 / #1138）
+ *   validateTests==='error' のときだけテスト欄を '✅ green (CI)' にする。同じ判定が merge tier の validateCi に
+ *   渡り、verified でなければ HOLD（validate_tests_not_run。issue #1117）
  * @param {string|null|undefined} opts.evalVerdict - evaluator verdict（'pass'|'fail' 等）（at-a-glance 表では iterate_fixed+lgtm+finalAcReconcile=reverified の fail を '✅ pass (fix 後 LGTM)' と表示。issue #625）
  * @param {string|null|undefined} opts.evalStaleness - 'none'|'hash_mismatch'|'hash_reconverged'|'iterate_incomplete'|'iterate_fixed'（issue #288, #631）
  * @param {string|null|undefined} [opts.evalDiffHash] - Evaluate 時点の tree diff hash（issue #631）
@@ -459,7 +458,6 @@ export function buildDevflowSummaryBody({
   // （= 最終 tree の再検証が行われていない）のときだけ使う。経過は参考セクションの Final reconcile 行に残る。
   // Validate の tests:'error' はテストが 1 件も実行されていない起動失敗で red ではない（issue #707）。
   // PR head sha に pin した CI が green なら '✅ green (CI)'、そうでなければ未検証として結論行で CI 確認を促す。
-  // Validate red（tests:'failed' / green:false）も同じ CI が green なら '✅ green (CI)'、確認できなければ '❌ red'。
   const baseFailing = Array.isArray(baseFailingTests) ? baseFailingTests.filter((f) => typeof f === 'string' && f.length > 0) : [];
   // flake: 最終 tree の全件実行で落ち、落ちたファイルだけの単体再実行で green（issue #865）。green 扱いだが
   // 「一度落ちた」事実をテスト欄と Final reconcile 行に残す（ファイルとログは merge tier の開示行に出る）。
@@ -474,7 +472,7 @@ export function buildDevflowSummaryBody({
     testCell = FLAKY_CELL;
   } else if (finalReconcile === 'reverified') {
     testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? '❌ red' : '不明';
-  } else if ((validateTests === 'error' || (validateTests === 'failed' && testGreen === false)) && ciTestVerified === true) {
+  } else if (validateTests === 'error' && ciTestVerified === true) {
     testCell = '✅ green (CI)';
   } else if (validateTests === 'error') {
     testCell = '⚠️ 未実行（環境）・未検証';

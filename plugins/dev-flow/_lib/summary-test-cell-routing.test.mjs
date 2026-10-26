@@ -9,9 +9,7 @@
 //   (a) sha 一致 + 全 success → テスト欄 '✅ green (CI)'
 //   (b) sha 不一致 / check failure / 取得失敗 / throw → テスト欄 '⚠️ 未実行（環境）・未検証' + 結論行で CI 確認
 //   (c) (b) と PR head sha 無し（未取得）は merge tier HOLD（validate_tests_not_run）、(a) は積まない。final_reconcile は skipped のまま
-//   (d) Validate が tests:'failed'（green-fix 上限後も red。base で pass する flake を含む）も ci-test-display を 1 回読む（issue #1138）
-//       (d-1) CI 確認あり → テスト欄 '✅ green (CI)' + validate_test_red を積まない
-//       (d-2) CI 確認なし（未確認・PR head sha 無し）→ テスト欄 '❌ red' + merge tier HOLD（validate_test_red、issue #1086）
+//   (d) Validate が tests:'failed'（本物の red）→ ci-test-display 不発 + テスト欄 '❌ red' + merge tier HOLD（validate_test_red、issue #1086）
 //   (e) fixes_applied>0（Final reconcile 実行）→ ci-test-display 不発
 //   (f) PR head sha が取れていない → ci-test-display 不発 + 未検証表示
 //   (g) CI の読み取りは ci-test-display の 1 回だけで、その判定がテスト欄と merge tier の validateCi に渡る。
@@ -107,44 +105,19 @@ test('[summary-test-cell] (c) CI 確認が成立しない run（未確認 / PR h
   assert.ok(notRunCodes(noProbe.result)[0]?.reason.includes('PR head sha の CI を取得していない'), tierFacts(noProbe.result));
 });
 
-// green-fix 後も red のまま（GREEN_MAX 到達）にする
-const RED = { tests: 'failed', green: false, summary: 'assert mismatch' };
-const RED_OVERRIDES = { 'test#1': RED, 'test#2': RED, 'test#3': RED };
-const testRedCodes = (result) => (result?.merge_tier_hold_reasons ?? []).filter((r) => r.code === 'validate_test_red');
-
-test("[summary-test-cell] (d-1) Validate tests:'failed' + 同一 sha の CI 全 success → ci-test-display 1 回 + テスト欄 ✅ green (CI) + validate_test_red を積まない（issue #1138）", async () => {
-  const { result, calls, testCell, conclusion } = await run(RED_OVERRIDES);
-  const probe = calls.filter((c) => c.label === 'ci-test-display');
-  assert.equal(probe.length, 1, 'Validate red の run でも ci-test-display は 1 回呼ばれる');
-  assert.ok(probe[0].prompt.includes('gh pr view 1 --json headRefOid,statusCheckRollup'), 'tests:error と同じ finalCiPrompt を使う');
-  assert.equal(testCell, '✅ green (CI)', 'tests:error の CI 確認済み run と同じ表示');
-  assert.ok(!conclusion.includes('CI の test 結果を確認してから'), conclusion);
+test("[summary-test-cell] (d) Validate tests:'failed'（本物の red）→ ci-test-display 不発 + テスト欄 ❌ red", async () => {
+  // green-fix 後も red のまま（GREEN_MAX 到達）にする
+  const red = { tests: 'failed', green: false, summary: 'assert mismatch' };
+  const { result, calls, testCell } = await run({ 'test#1': red, 'test#2': red, 'test#3': red });
+  assert.ok(!calls.some((c) => c.label === 'ci-test-display'), '本物の red では CI 表示確認を起動しない');
+  assert.equal(testCell, '❌ red');
   assert.equal(result?.validate_tests, 'failed');
-  assert.equal(result?.ci_test_verified, true);
-  assert.equal(result?.test_green, false, 'test_green は Validate の green のまま');
-  assert.equal(result?.final_reconcile, 'skipped', 'final_reconcile は skipped のまま');
-  assert.equal(testRedCodes(result).length, 0, tierFacts(result));
-  assert.equal(result?.merge_tier, 'REVIEW', tierFacts(result));
-});
-
-test("[summary-test-cell] (d-2) Validate tests:'failed' で CI 確認なし（sha 不一致 / failure / 取得失敗 / throw / PR head sha 無し）→ テスト欄 ❌ red + merge tier HOLD（validate_test_red）", async () => {
-  const cases = [
-    ...Object.entries(UNVERIFIED).map(([name, resp]) => [name, { ...RED_OVERRIDES, 'ci-test-display': resp }, 1, false]),
-    ['PR head sha 無し', { ...RED_OVERRIDES, 'pr#1': { pr_url: 'http://x', pr_number: 1, committed: true } }, 0, null],
-  ];
-  for (const [name, overrides, probes, verified] of cases) {
-    const { result, calls, testCell } = await run(overrides);
-    assert.equal(calls.filter((c) => c.label === 'ci-test-display').length, probes, `${name}: ci-test-display の回数`);
-    assert.equal(testCell, '❌ red', `${name}: テスト欄`);
-    assert.equal(result?.validate_tests, 'failed', name);
-    assert.equal(result?.ci_test_verified, verified, `${name}: 返り値 ci_test_verified`);
-    assert.equal(result?.test_green, false, name);
-    // Final reconcile skipped で Validate の red が残る（issue #1086）
-    assert.equal(result?.final_reconcile, 'skipped', name);
-    assert.equal(result?.merge_tier, 'HOLD', `${name}: ${tierFacts(result)}`);
-    assert.equal(testRedCodes(result).length, 1, `${name}: ${tierFacts(result)}`);
-    assert.equal(notRunCodes(result).length, 0, `${name}: tests:failed は validate_tests_not_run を積まない`);
-  }
+  assert.equal(result?.ci_test_verified, null, 'CI 表示確認を起動しない run は null');
+  assert.equal(result?.test_green, false);
+  // テスト欄 ❌ red の run は merge tier も HOLD（validate_test_red。Final reconcile skipped で Validate の red が残る。issue #1086）
+  assert.equal(result?.final_reconcile, 'skipped');
+  assert.equal(result?.merge_tier, 'HOLD');
+  assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'validate_test_red'), JSON.stringify(result?.merge_tier_hold_reasons));
 });
 
 test('[summary-test-cell] (e) fixes_applied>0（Final reconcile 実行）→ ci-test-display 不発', async () => {

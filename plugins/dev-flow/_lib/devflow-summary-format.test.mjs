@@ -2647,8 +2647,8 @@ test("issue #707 AC2: Validate tests:'error' でも同一 sha の CI test succes
   assert.ok(!conclusionLine(body).includes('CI の test 結果を確認してから'), '確認済みなら結論行に CI 確認を出さない');
 });
 
-test("issue #707 AC3: 実際にテストが失敗した場合（tests:'failed'）は CI 確認が無ければ ❌ red", () => {
-  for (const ciTestVerified of [false, null, undefined]) {
+test("issue #707 AC3: 実際にテストが失敗した場合（tests:'failed'）は CI 確認の有無に関わらず従来どおり ❌ red", () => {
+  for (const ciTestVerified of [true, false, null]) {
     const body = buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false, validateTests: 'failed', finalReconcile: 'skipped', ciTestVerified });
     assert.equal(glanceCells(body)[2], '❌ red', `ciTestVerified=${ciTestVerified}`);
     assert.ok(!conclusionLine(body).includes('CI の test 結果を確認してから'), 'red は未検証扱いしない');
@@ -2659,20 +2659,6 @@ test("issue #707 AC3: 実際にテストが失敗した場合（tests:'failed'�
   // validateTests 未指定の既定出力は tests:'failed' 指定時と同じ（❌ red）
   assert.equal(glanceCells(buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false }))[2], '❌ red');
   assert.equal(glanceCells(buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: true, validateTests: 'passed', ciTestVerified: true }))[2], '✅ green');
-});
-
-test("issue #1138: Validate red（tests:'failed' / green:false）でも同一 sha の CI test success 確認済みなら tests:'error' と同じ ✅ green (CI)", () => {
-  for (const finalReconcile of ['skipped', 'unavailable', undefined]) {
-    const body = buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false, validateTests: 'failed', finalReconcile, ciTestVerified: true });
-    const errorBody = buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false, validateTests: 'error', finalReconcile, ciTestVerified: true });
-    assert.equal(glanceCells(body)[2], '✅ green (CI)', `finalReconcile=${finalReconcile}`);
-    assert.equal(glanceCells(body)[2], glanceCells(errorBody)[2], `finalReconcile=${finalReconcile}`);
-    assert.ok(!conclusionLine(body).includes('CI の test 結果を確認してから'), '確認済みなら結論行に CI 確認を出さない');
-  }
-  // base でも落ちる既存失敗だけの red（green:true）は CI 確認に依らず従来どおり
-  assert.equal(glanceCells(buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: true, validateTests: 'failed', finalReconcile: 'skipped', ciTestVerified: true }))[2], '✅ green');
-  // Final reconcile の reverified red は CI 確認より優先（最終状態）
-  assert.equal(glanceCells(buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false, validateTests: 'failed', finalReconcile: 'reverified', finalTestGreen: false, ciTestVerified: true }))[2], '❌ red');
 });
 
 test('issue #707: validateTests の enum 外は明示 error', () => {

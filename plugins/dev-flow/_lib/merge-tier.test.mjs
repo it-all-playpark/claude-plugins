@@ -1741,26 +1741,11 @@ test('classifyMergeTier: finalReconcile skipped + Validate tests:error でも PR
   }
 });
 
-test('classifyMergeTier: finalReconcile skipped + Validate red でも PR head sha の CI が verified:true なら validate_test_red を積まず、Validate 未指定時と完全一致（issue #1138）', () => {
-  const cases = [
-    ['REVIEW', baseCleanInput({ finalReconcile: 'skipped' })],
-    ['AUTO', { ...autoBase(), iterateStatus: 'lgtm', evalStaleness: 'none', finalReconcile: 'skipped' }],
-    ['HOLD（既存理由）', baseCleanInput({ finalReconcile: 'skipped', iterateStatus: 'stuck' })],
-  ];
-  for (const [name, input] of cases) {
-    const r = classifyMergeTier({ ...input, validateResult: VALIDATE_RED, validateCi: VERIFIED_CI });
-    assert.deepEqual(r, classifyMergeTier(input), name);
-    assert.ok(!codesOf(r).includes('validate_test_red'), name);
-  }
-});
-
-test('classifyMergeTier: finalReconcile skipped + Validate red で PR head sha の CI 確認が成立していない（null / verified:false）→ validate_test_red（human_judgment）を積む（issue #1138）', () => {
-  for (const [name, validateCi] of Object.entries(UNVERIFIED_CI)) {
-    const r = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_RED, validateCi }));
-    assert.equal(r.tier, 'HOLD', `${name}: ${JSON.stringify(r)}`);
-    // pending / 取得失敗（deterministic_recheck の CI 判定）でも kind は human_judgment のまま
-    assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['validate_test_red', 'human_judgment']], name);
-    assert.deepEqual(r, classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_RED })), name);
+test('classifyMergeTier: finalReconcile skipped + Validate red は PR head sha の CI が verified:true でも validate_test_red を積む（CI の success はローカルで落ちたテストを実行した証拠にならない）', () => {
+  for (const base of [baseCleanInput({}), { ...autoBase(), iterateStatus: 'lgtm', evalStaleness: 'none' }]) {
+    const r = classifyMergeTier({ ...base, finalReconcile: 'skipped', validateResult: VALIDATE_RED, validateCi: VERIFIED_CI });
+    assert.equal(r.tier, 'HOLD', JSON.stringify(r));
+    assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['validate_test_red', 'human_judgment']]);
   }
 });
 
