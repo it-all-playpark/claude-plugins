@@ -176,15 +176,16 @@ hook_capture_with_error_file() {
     [ "$output" = "lint" ]
 }
 
-@test "hook-capture: 一致行を多数含む 64KB 超の error でも 1 件記録し、message は一致行の先頭 3 行（各 300 文字まで）" {
+# 100KB 程度では grep が入力を読み切ってから終わり SIGPIPE が再現しないので、数 MB にする
+@test "hook-capture: 一致行を多数含む数 MB の error でも 1 件記録し、message は一致行の先頭 3 行（各 300 文字まで）" {
     err_file="$BATS_TEST_TMPDIR/err.txt"
     long_line="error $(printf 'x%.0s' $(seq 1 400))"
     {
         echo "header without keyword"
         echo "$long_line"
-        awk 'BEGIN { for (i = 0; i < 6000; i++) printf "error line %05d\n", i }'
+        awk 'BEGIN { for (i = 0; i < 200000; i++) printf "error line %06d\n", i }'
     } > "$err_file"
-    [ "$(wc -c < "$err_file")" -gt 65536 ]
+    [ "$(wc -c < "$err_file")" -gt 3000000 ]
 
     hook_capture_with_error_file "$err_file"
     [ "$status" -eq 0 ]
@@ -192,7 +193,7 @@ hook_capture_with_error_file() {
     count=$(ls "$CLAUDE_JOURNAL_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ')
     [ "$count" -eq 1 ]
 
-    expected="${long_line:0:300}"$'\n'"error line 00000"$'\n'"error line 00001"
+    expected="${long_line:0:300}"$'\n'"error line 000000"$'\n'"error line 000001"
     [ "$(jq -r '.error.message' "$(latest_entry)")" = "$expected" ]
 }
 
