@@ -93,7 +93,10 @@ test('[evaluator-contract][#1144] TEST_LOG_REUSE と final_ac_reconcile 契約�
     assert.ok(/ログに載っていない AC (に関係する|関連)テストファイルだけを実行/.test(text), `${name}: ログに無いものだけ実行する指示が無い`);
   }
   // 契約はテストログが渡されたときに限る（渡されない・読めないときは AC 関連テストを実行する）
-  assert.ok(EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile.includes('テストログが渡されない・読めない場合は AC に関係するテストファイルを実行'));
+  assert.ok(EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile.includes('テストログが渡されない・読めない・ハッシュが一致しない場合は AC に関係するテストファイルを実行'));
+  // log_sha256 と一致しないログ（後の script に書き換えられた等）は根拠にさせない
+  assert.ok(TEST_LOG_REUSE.includes('log_sha256 と一致するログだけを根拠にせよ') && TEST_LOG_REUSE.includes('ハッシュが一致しなければ AC に関係するテストファイルを実行'), TEST_LOG_REUSE);
+  assert.ok(EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile.includes('log_sha256 と一致するものだけを根拠にする'));
 });
 
 test('[evaluator-contract][#1144] evaluator.md の「進め方」2 はテストログにある AC 関連テストを再実行せずログの行を根拠にする', () => {
@@ -102,15 +105,19 @@ test('[evaluator-contract][#1144] evaluator.md の「進め方」2 はテスト�
   assert.ok(step2.includes('再実行せず') && step2.includes(LOG_EVIDENCE) && step2.includes('`verified_by: "test"`'), step2);
   assert.ok(step2.includes('ログに載っていない AC に関係するテストファイルだけを実行する'), step2);
   assert.ok(step2.includes('ログが渡されない・読めないときは AC に関係するテストファイルを実行する'), step2);
+  assert.ok(step2.includes('`log_sha256` と一致するログだけを根拠にする') && step2.includes('ハッシュが一致しないときも同じ'), step2);
 });
 
 test('[evaluator-contract][#1144] validateResultPromptBlock はログがあるときだけログパスと TEST_LOG_REUSE を入れる', () => {
-  const scripts = [{ path: '/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-q/0.log' }];
+  const sha = 'a1'.repeat(32);
+  const scripts = [{ path: '/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-q/0.log', log_sha256: sha }];
   const withLogs = validateResultPromptBlock({ tests: 'passed', green: true, summary: 's', scripts });
-  assert.ok(withLogs.includes('/tmp/run-tests-q/0.log') && withLogs.includes(TEST_LOG_REUSE), withLogs);
+  assert.ok(withLogs.includes('/tmp/run-tests-q/0.log') && withLogs.includes(sha) && withLogs.includes(TEST_LOG_REUSE), withLogs);
   for (const [name, val] of [
     ['scripts 無し', { tests: 'passed', green: true, summary: 's' }],
     ['log 無し', { tests: 'passed', green: true, summary: 's', scripts: [{ path: '/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false }] }],
+    ['log_sha256 無し', { tests: 'passed', green: true, summary: 's', scripts: [{ ...scripts[0], log_sha256: undefined }] }],
+    ['log_sha256 が空（ハッシュを取れなかった）', { tests: 'passed', green: true, summary: 's', scripts: [{ ...scripts[0], log_sha256: '' }] }],
     ['tests:error', { tests: 'error', green: false, summary: 's', scripts }],
   ]) {
     const block = validateResultPromptBlock(val);

@@ -148,7 +148,8 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
     `EVAL_STUCK` で stuck。既出の指摘を渡して蒸し返しを抑える
   - Validate と同じ tree の eval#N には Validate の結果と `run-tests` の各 script のログパス（`scripts[].log`。worktree の外）を渡す。
     evaluator はログに載っている AC 関連テストファイルを再実行せずログの行を根拠にし、載っていないものだけを実行する
-    （`validateResultPromptBlock`）。tree が違う・ログが無いときは AC 関連テストファイルを実行させる
+    （`validateResultPromptBlock`）。tree が違う・ログが無いときは AC 関連テストファイルを実行させる。
+    根拠にするのは script 終了直後の sha256（`scripts[].log_sha256`）と一致するログだけ（後から走る script が先行ログを書き換えうる）
   - agent AC の `satisfied:false` は gate_policy に依らず差し戻す（`AGENT_AC_REIMPL_MAX` まで延長）。human AC は差し戻さない。
     観測型 AC は redgreen-verify で red→green を実証して deterministic 昇格したときだけ checked（`demoteUnprovenObservationalAc`）。
     ci AC は evaluator に判定させない。実行環境に届かない理由の未達（`unreachable_env`）は人手 AC 待ちに数える
