@@ -293,6 +293,23 @@ node_missing_result() {
         '{ecosystem: "node", pm: $pm, status: "failed", command: $cmd, missing_node_modules: ($m | split("\n") | map(select(. != "")))}'
 }
 
+# True when any node_modules listed in the manifest $1 (restored into this
+# worktree) holds a symlink whose target does not exist. The links are
+# collected first and checked afterwards: returning from a `find | while`
+# reader would SIGPIPE find and fail the pipeline under pipefail.
+has_dangling_symlink() {
+    local manifest="$1" rel links link
+    while IFS= read -r rel; do
+        [[ -n "$rel" ]] || continue
+        links=$(find "$TARGET_PATH/$rel/node_modules" -type l 2>/dev/null || true)
+        while IFS= read -r link; do
+            [[ -n "$link" ]] || continue
+            [[ -e "$link" ]] || return 0
+        done <<< "$links"
+    done < "$manifest"
+    return 1
+}
+
 # Restore node_modules for ($pm, $hash) from the cross-worktree shared
 # cache into this worktree (issue #387): every dir listed in the entry's
 # manifest — the root and each workspace package (issue #748). On success,
@@ -313,6 +330,18 @@ restore_from_shared_cache() {
         [[ -d "$entry/$rel/node_modules" && -d "$TARGET_PATH/$rel" ]] || return 1
         copy_tree "$entry/$rel/node_modules" "$TARGET_PATH/$rel/node_modules" || return 1
     done < "$entry/$CACHE_MANIFEST"
+    # Relative symlinks that leave the tree (pnpm's global virtual store links
+    # node_modules/<pkg> to ~/Library/pnpm/store/.../links, issue #1118) only
+    # resolve at the depth of the worktree that populated the entry. Drop a
+    # restored tree with a dangling link: pnpm reports such a tree "Already up
+    # to date" and leaves the links broken, so the install must start clean.
+    if has_dangling_symlink "$entry/$CACHE_MANIFEST"; then
+        while IFS= read -r rel; do
+            [[ -n "$rel" ]] || continue
+            rm -rf "$TARGET_PATH/$rel/node_modules" 2>/dev/null || true
+        done < "$entry/$CACHE_MANIFEST"
+        return 1
+    fi
     [[ -z "$(missing_workspace_node_modules "$pm")" ]] || return 1
     if [[ "$pm" == "pnpm" ]]; then rebase_pnpm_workspace_state; fi
     { mkdir -p "$TARGET_PATH/.devflow-tmp" && printf '%s\n' "${pm}:${hash}" > "$TARGET_PATH/.devflow-tmp/deps-lockfile-hash"; } 2>/dev/null || true
@@ -398,7 +427,10 @@ install_node() {
     local cmd=""
 
     case "$pm" in
-        pnpm)   cmd="pnpm install --frozen-lockfile" ;;
+        # Global virtual store (issue #1118): packages are imported into the
+        # pnpm store instead of node_modules/.pnpm, so a package shipping a
+        # .gitmodules (which the worktree sandbox refuses to write) installs.
+        pnpm)   cmd="pnpm install --frozen-lockfile --config.enable-global-virtual-store=true" ;;
         yarn)   cmd="yarn install --frozen-lockfile" ;;
         bun)    cmd="bun install --frozen-lockfile" ;;
         npm)    cmd="npm ci" ;;
