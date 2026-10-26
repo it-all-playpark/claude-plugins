@@ -57,12 +57,10 @@
 # 出力（stdout, JSON 1 行。各 script の出力は $TMPDIR のログに残し stdout に混ぜない — Bash tool の出力上限で
 # JSON 行が切れないように、stderr にも 1 script 1 行の要約だけを出す）:
 #   {"status":"passed|failed|error","tests":"passed|failed|error|no_tests","green":bool,"summary":"...",
-#    "scripts":[{"path":"...","exit":N,"launch_failed":bool,"log":"...","log_sha256":"..."}],"failed_files":[...],"epoch":N}
+#    "scripts":[{"path":"...","exit":N,"launch_failed":bool,"log":"..."}],"failed_files":[...],"epoch":N}
 #   scripts[].log はその script の stdout / stderr を書いたログの絶対パス（$TMPDIR 配下 = worktree の外。worktree 内に
 #   置くと diff-hash が untracked を含むため merge tier を壊す）。evaluator が同じ tree で実行済みのテストを再実行せず
 #   ログの行を根拠にするために渡す。どのテストファイルが走ったかはログの中身から読み手が判断する。
-#   scripts[].log_sha256 はその script の終了直後（次の script を起動する前）のログの sha256（取れなければ空文字）。
-#   後から走る script が先行 script のログを書き換えても、evaluator はハッシュが一致しないログを根拠にせず再実行する。
 # exit: JSON を出力したら 0（判定は JSON の status）/ 引数不正は 2（status "error" の JSON を出す）。
 set -uo pipefail
 
@@ -251,15 +249,6 @@ pnpm_failed_before_script() {
         && ! LC_ALL=C grep -qE '^> |ELIFECYCLE|^(not ok |[[:space:]]*FAIL[[:space:]])' <<< "$plain"
 }
 
-# ログの sha256（$1 = ログ）。取れなければ空文字（読み手はハッシュの無いログを根拠にしない）
-hash_log() {
-    if command -v sha256sum &>/dev/null; then
-        sha256sum "$1" 2>/dev/null | awk '{print $1}'
-    elif command -v shasum &>/dev/null; then
-        shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
-    fi
-}
-
 to_rel() {
     local p="$1"
     p="${p#"$WT"/}"
@@ -304,9 +293,8 @@ for i in "${!TARGETS[@]}"; do
     fi
     [[ "$launch" == true ]] && LAUNCH_FAILED_ANY=true
     echo "[run-tests] $target exit=$rc launch_failed=$launch (log: $log)" >&2
-    log_sha=$(hash_log "$log")
-    SCRIPTS_JSON=$(jq -c --arg p "$target" --argjson e "$rc" --argjson l "$launch" --arg o "$log" --arg h "$log_sha" \
-        '. + [{path: $p, exit: $e, launch_failed: $l, log: $o, log_sha256: $h}]' <<< "$SCRIPTS_JSON")
+    SCRIPTS_JSON=$(jq -c --arg p "$target" --argjson e "$rc" --argjson l "$launch" --arg o "$log" \
+        '. + [{path: $p, exit: $e, launch_failed: $l, log: $o}]' <<< "$SCRIPTS_JSON")
     [[ $rc -eq 0 ]] && continue
     NONZERO_ANY=true
     if [[ "$launch" == true ]]; then

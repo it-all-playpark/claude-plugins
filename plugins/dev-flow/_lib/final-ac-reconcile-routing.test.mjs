@@ -285,7 +285,7 @@ test("[final-ac-reconcile] (r6) fixes=1 + test#final red → final-ac-reconcile 
 const FINAL_LOG = '/tmp/run-tests-Zz99/0.log';
 const FINAL_GREEN_LOGS = {
   tests: 'passed', green: true, summary: 'passed: /tmp/wt/tests/run-all-bats.sh',
-  scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: FINAL_LOG, log_sha256: 'd'.repeat(64) }],
+  scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: FINAL_LOG }],
 };
 
 test('[final-ac-reconcile] (r7) test#final green → prompt に test#final の tests / green・ログパス・再実行しない指示が入る', async () => {
@@ -304,12 +304,12 @@ test('[final-ac-reconcile] (r8) test#final が error（CI 委譲）・red の fl
   for (const [name, overrides] of [
     ['tests:error → ci_verified', {
       'reconcile-sync': { ok: true, head: sha },
-      'test#final': { tests: 'error', green: false, summary: 'launch failed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 127, launch_failed: true, log: FINAL_LOG, log_sha256: 'd'.repeat(64) }] },
+      'test#final': { tests: 'error', green: false, summary: 'launch failed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 127, launch_failed: true, log: FINAL_LOG }] },
       'ci-final': { ok: true, headRefOid: sha, statusCheckRollup: rollup },
     }],
     ['red → 単体再実行 green（flake）', {
-      'test#final': { tests: 'failed', green: false, summary: 'not ok 1 x', failed_files: ['plugins/a.bats'], scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 1, launch_failed: false, log: FINAL_LOG, log_sha256: 'd'.repeat(64) }] },
-      'test#final-rerun': { tests: 'passed', green: true, summary: 'passed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-Zz99/rerun.log', log_sha256: 'd'.repeat(64) }] },
+      'test#final': { tests: 'failed', green: false, summary: 'not ok 1 x', failed_files: ['plugins/a.bats'], scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 1, launch_failed: false, log: FINAL_LOG }] },
+      'test#final-rerun': { tests: 'passed', green: true, summary: 'passed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-Zz99/rerun.log' }] },
     }],
   ]) {
     const { ctx, calls } = makeSandbox({ fixesApplied: 1, overrides });

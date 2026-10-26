@@ -23,8 +23,8 @@ const LOG_NODE = '/tmp/run-tests-Ab12/1.log';
 const VAL_LOGS = {
   ...VAL,
   scripts: [
-    { path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: LOG_BATS, log_sha256: 'b'.repeat(64) },
-    { path: '/tmp/wt/tests/run-node-tests.sh', exit: 0, launch_failed: false, log: LOG_NODE, log_sha256: 'c'.repeat(64) },
+    { path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: LOG_BATS },
+    { path: '/tmp/wt/tests/run-node-tests.sh', exit: 0, launch_failed: false, log: LOG_NODE },
   ],
 };
 

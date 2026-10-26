@@ -42,10 +42,13 @@ function nsAgentOpts(opts) {
 
 // ==== BEGIN inline: _lib/evaluator-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
-const TEST_LOG_REUSE = '各ログは使う前に sha256（shasum -a 256 <log>）を取り、log_sha256 と一致するログだけを根拠にせよ。'
-  + 'テストログに AC に関係するテストファイルの実行結果が載っていれば、そのファイルは再実行せず、'
+const TEST_LOG_EVIDENCE_LIMIT = '集計行（`Test Files N passed`・`Summary: N passed` 等）はファイルごとの実行結果として扱わない。'
+  + 'ログの行を根拠にできるのは、引用するファイルがランナーの実行対象一覧（run-all-bats の Discovered / Selected の一覧等）に載り、'
+  + '引用するテスト名が HEAD のそのファイルに実在するときだけで、満たさなければそのファイルを実行する。'
+const TEST_LOG_REUSE = 'テストログに AC に関係するテストファイルの実行結果が載っていれば、そのファイルは再実行せず、'
   + 'ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とせよ。'
-  + 'ログに載っていない AC に関係するテストファイルだけを実行せよ。ログが読めない・ハッシュが一致しなければ AC に関係するテストファイルを実行せよ。'
+  + TEST_LOG_EVIDENCE_LIMIT
+  + 'ログに載っていない AC に関係するテストファイルだけを実行せよ。ログが読めなければ AC に関係するテストファイルを実行せよ。'
 
 const EVALUATOR_OPERATIONAL_CONTRACT = {
   critical_resolutions: [
@@ -90,7 +93,7 @@ const EVALUATOR_OPERATIONAL_CONTRACT = {
     '- ac_index は渡された AC の index をそのまま返す。AC の追加・分割・言い換え・index の欠落や重複は禁止。',
     '- 新規 finding の報告・feedback の付与・コード修正・追加検証 loop の要求は禁止（出力は ac_results のみが使われる）。',
     '- satisfied:true / false のいずれでも非空 evidence 必須（file:line / テスト名 / 実行結果）。index 不完全・evidence 欠落は出力全体が unavailable 扱いとなり merge tier が HOLD になる。',
-    '- prompt に「テストログ」が渡された場合、ログに実行結果が載っている AC 関連テストファイルは再実行せず、ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とする。ログに載っていない AC 関連テストファイルだけを実行する。ログは使う前に sha256 を取り、log_sha256 と一致するものだけを根拠にする。テストログが渡されない・読めない・ハッシュが一致しない場合は AC に関係するテストファイルを実行して根拠にする。',
+    '- prompt に「テストログ」が渡された場合、ログに実行結果が載っている AC 関連テストファイルは再実行せず、ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とする。' + TEST_LOG_EVIDENCE_LIMIT + 'ログに載っていない AC 関連テストファイルだけを実行する。テストログが渡されない・読めない場合は AC に関係するテストファイルを実行して根拠にする。',
     '- prompt に「final 再評価対象 item 一覧」が渡された場合、各 item を fix 後の最終 PR tree で再検証し、item_resolutions:[{id, resolution, evidence}] で全件返す。resolution は resolved（指摘内容が最終 tree で解消されている — revert / 修正済み等）/ ci_delegated（ローカルでは実行不能だが PR CI が同等の検証を実行する — build / compose / e2e 等）/ unresolved の 3 値のみ。',
     '- id は渡された id をそのまま返す。resolved / ci_delegated は具体的 evidence 必須（commit / file:line / 該当 CI check 名）。evidence のない resolved / ci_delegated は無視され未解消のまま表示される。',
     '- item_resolutions は表示専用で checked / merge tier / HOLD 判定は変えない（ESCALATE は解消済みでも HOLD のまま人がマージ可否を判断する）。',
@@ -133,15 +136,14 @@ function validateResultPromptBlock(val) {
 function testRunLogs(res) {
   if (!res || res.tests === 'error' || !Array.isArray(res.scripts)) return []
   return res.scripts
-    .filter((s) => s && typeof s.log === 'string' && s.log.length > 0
-      && typeof s.log_sha256 === 'string' && /^[0-9a-f]{64}$/.test(s.log_sha256))
-    .map((s) => ({ path: typeof s.path === 'string' ? s.path : null, log: s.log, log_sha256: s.log_sha256 }))
+    .filter((s) => s && typeof s.log === 'string' && s.log.length > 0)
+    .map((s) => ({ path: typeof s.path === 'string' ? s.path : null, log: s.log }))
 }
 
 function testLogsPromptBlock(res) {
   const logs = testRunLogs(res)
   if (logs.length === 0) return ''
-  return `テストログ（run-tests が各 script の出力を残したファイル。Read / Grep で読む。log_sha256 は script 終了直後のハッシュ）:\n${JSON.stringify(logs)}\n`
+  return `テストログ（run-tests が各 script の出力を残したファイル。Read / Grep で読む）:\n${JSON.stringify(logs)}\n`
     + `${TEST_LOG_REUSE}\n`
 }
 
@@ -3852,7 +3854,6 @@ const IMPL = {
 // 省略時はすべての失敗を green-fix の対象にする。
 // scripts[].log: 各 script の出力ログの絶対パス（worktree 外）。同じ tree を判定する eval#N / final-ac-reconcile に
 // testLogsPromptBlock で渡し、実行済みのテストファイルを evaluator に再実行させない。
-// scripts[].log_sha256: script 終了直後のログの sha256。evaluator は一致するログだけを根拠にする。
 const GREEN = {
   type: 'object', required: ['tests', 'green'],
   properties: {
@@ -3863,7 +3864,7 @@ const GREEN = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { path: { type: 'string' }, exit: { type: 'number' }, launch_failed: { type: 'boolean' }, log: { type: 'string' }, log_sha256: { type: 'string' } },
+        properties: { path: { type: 'string' }, exit: { type: 'number' }, launch_failed: { type: 'boolean' }, log: { type: 'string' } },
       },
     },
     failed_files: { type: 'array', items: { type: 'string' } },
