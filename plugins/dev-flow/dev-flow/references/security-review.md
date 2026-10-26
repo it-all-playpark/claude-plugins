@@ -27,6 +27,10 @@
 - reviewer の prompt（`SECURITY_REVIEW_BOUNDARY`）は境界の外を critical / major にさせず、fix の prompt（`SECURITY_FIX_GUIDANCE`）は
   人に手作業を課す修正・同じ入力に同じ種類の検査を重ねる修正をさせない（縛られていない入力元を縛る修正は対象外。できない指摘は
   `deferred_security_topics` で人に返す）。どちらも `_lib/security-review.mjs` の 1 か所に置く
+- issue の AC がある run では、fix の prompt に AC の一覧を足し（`_lib/review-ac.mjs` の `securityFixAcceptanceCriteriaBlock`）、
+  AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない指摘も直さず `deferred_security_topics` で
+  人に返させる（summary にぶつかる AC の番号を書く）。指摘は critical / major のまま残し、境界・severity・LGTM の gate は緩めない。
+  AC は fix の prompt にだけ入れ、reviewer の prompt には入れない（判定者に PR の文を渡さない）
 
 ## 対象の判定
 

@@ -73,6 +73,8 @@ export const SECURITY_REVIEW_BOUNDARY = '## Threat model\n'
 // 的になり、運用に手作業を足す増築が続く。要件に立ち返った最小の形で塞ぎ、それができない指摘は人に返す。
 // 人に返した指摘の topic（指摘行の `[topic: …]`。_lib/review-finding-scrub.mjs の fixIssueTopic）は返り値の deferred_security_topics で受け取り、workflow はその round で run を終える
 // （summary の自由文では区別できず、次の round で同じ指摘をもう一度 review して stuck まで 1 round 余計に使う）。
+// AC がある run では pr-iterate がこの後ろに _lib/review-ac.mjs の securityFixAcceptanceCriteriaBlock（AC の一覧と、AC とぶつかる
+// 指摘を人に返させる指示）を足す。AC は fix の prompt にだけ入れ、security review の prompt には入れない（判定者に PR の文を渡さない）。
 export const SECURITY_FIX_GUIDANCE = 'security review の指摘の直し方:\n'
   + '- 指摘の経路を、守る要件（PR の内容で判定や実行を誘導させない・PR に制御される入力を sandbox の外で実行しない・'
   + 'review の判定は今の head に対するもの）に立ち返って、最も単純な形で塞ぐ。危ない機能を使わない・その入力を受け取らない形に'

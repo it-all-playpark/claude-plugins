@@ -3669,14 +3669,19 @@ function ciHeadRejectReason({ ci, expectedSha }) {
 // ==== END inline: _lib/ci-check.mjs ====
 // ==== BEGIN inline: _lib/review-ac.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
-function acceptanceCriteriaBlock(acceptanceCriteria, { scope = 'full' } = {}) {
+function numberedAcceptanceCriteria(acceptanceCriteria) {
   if (!Array.isArray(acceptanceCriteria)) return '';
-  const items = acceptanceCriteria
+  return acceptanceCriteria
     .filter((a) => typeof a === 'string')
     .map((a) => a.trim())
-    .filter((a) => a.length > 0);
-  if (items.length === 0) return '';
-  const numbered = items.map((a, idx) => `${idx + 1}. ${a}`).join('\n');
+    .filter((a) => a.length > 0)
+    .map((a, idx) => `${idx + 1}. ${a}`)
+    .join('\n');
+}
+
+function acceptanceCriteriaBlock(acceptanceCriteria, { scope = 'full' } = {}) {
+  const numbered = numberedAcceptanceCriteria(acceptanceCriteria);
+  if (numbered === '') return '';
   const instruction = scope === 'delta'
     ? `このラウンドは fix delta（前回 review 以降の差分）のみを読む。AC は delta 外まで含めた`
       + `新規の未達探しには使わず、既出 findings の中に AC 未達があれば今回の delta で解消されたか`
@@ -3685,6 +3690,15 @@ function acceptanceCriteriaBlock(acceptanceCriteria, { scope = 'full' } = {}) {
     : `diff がこれらを満たしているかも判定に含めよ。未達があれば issue として報告せよ`
       + `（severity は他の finding と同じ基準で付ける。AC 未達であることだけを理由に critical へ引き上げない）。\n`;
   return `issue の受入条件（acceptance criteria）:\n${numbered}\n` + instruction;
+}
+
+function securityFixAcceptanceCriteriaBlock(acceptanceCriteria) {
+  const numbered = numberedAcceptanceCriteria(acceptanceCriteria);
+  if (numbered === '') return '';
+  return `この PR の issue の受入条件（AC）:\n${numbered}\n`
+    + '- security review の指摘のうち、AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない指摘は直さず、'
+    + 'その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに deferred_security_topics に入れ、summary にぶつかる AC の番号を書く'
+    + '（AC と security の要件のどちらを取るかは人が決める）。AC を書き換えて指摘を塞がない\n';
 }
 // ==== END inline: _lib/review-ac.mjs ====
 

@@ -18,7 +18,7 @@
 //       security clear がそろった round だけ（issue #1100）
 //   (I) fix#i が渡された security の指摘を deferred_security_topics で人の判断に返したら、applied を見る前にその場で
 //       security_unresolved で終え、次の review・security review を spawn しない。件数は終端サマリーと security_review.deferred に
-//       載り、topic は載らない（issue #1121）
+//       載り、topic は載らない（issue #1121）。AC がある run で AC とぶつかる指摘を返した場合も同じ（issue #1163）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -884,4 +884,37 @@ test('[security-review][I] round の開始時に対象でなかった run の LG
   assert.equal(result.status, 'security_unresolved');
   assert.equal(result.fix_terminal_reason, null);
   assert.equal(result.security_review.deferred, 1);
+});
+
+// AC がある run で、fix が AC とぶつかる security の指摘を直さずに返したら、他の人に返した指摘と同じくその round で終える（issue #1163）
+const AC = ['AC-1 flake の HOLD を外す', 'AC-2 既存の判定を変えない'];
+
+test('[security-review][I] AC がある run で fix が AC とぶつかる security の指摘の topic を返したら、review ⇄ fix・securityGate の両経路でその round に security_unresolved で終える', async () => {
+  const runs = {
+    // review ⇄ fix ループ（対象の run は review#i と並列に security review を取る）
+    fix_loop: { pr: '5', nested: NESTED_A, acceptance_criteria: AC },
+    // round の開始時に対象でなかった run の LGTM の候補の round（securityGate）
+    security_gate: { pr: '5', acceptance_criteria: AC, security_review: { target: false, reasons: [], reviewer_context_changed: false } },
+  };
+  for (const [label, args] of Object.entries(runs)) {
+    const { result, calls } = await run({
+      args,
+      overrides: {
+        'security-scope#1': target,
+        'security-review#1': reviewWith([finding('rerun-unhold', 'major')]),
+        'fix#1': deferFromPrompt,
+      },
+    });
+    const fix1 = calls.find((c) => c.label === 'fix#1').prompt;
+    assert.ok(fix1.includes('1. AC-1 flake の HOLD を外す\n2. AC-2 既存の判定を変えない'), `${label}: fix#1 に AC の一覧が無い`);
+    assert.ok(fix1.includes('[topic: rerun-unhold]'), `${label}: fix#1 の指摘行に topic が無い`);
+    assert.ok(!calls.find((c) => c.label === 'security-review#1').prompt.includes('AC-1 flake'), `${label}: security review の prompt に AC を渡した`);
+    assert.deepEqual(nextRoundLabels(calls), [], `${label}: AC とぶつかる指摘を人に返した後に次の round の review・security review を spawn した`);
+    assert.equal(result.status, 'security_unresolved', label);
+    assert.equal(result.fix_terminal_reason, null, label);
+    assert.equal(result.security_review.status, 'unresolved', label);
+    assert.equal(result.security_review.deferred, 1, label);
+    assert.equal(result.security_review.major, 1, `${label}: AC とぶつかる指摘の severity を下げた`);
+    assert.ok(summaryOf(calls).includes(DEFERRED_LINE), label);
+  }
 });
