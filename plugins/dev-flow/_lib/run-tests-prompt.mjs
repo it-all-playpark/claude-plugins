@@ -9,6 +9,7 @@
 // 決める。agent の仕事は stdout の verbatim 転写だけにする — 規約文を渡して agent に判定させると、1 本の省略・
 // 独断の環境操作・起動失敗の誤分類が偽 red / 再検証不能の HOLD になるため。
 // 全 test spawn が同じ byte 列を使う（経路ごとの複製は空白 drift を生む）。
+// 転写された scripts[].log（各 script の出力ログのパス）は、同じ tree を判定する evaluator に渡る（testLogsPromptBlock）。
 //
 // timeout / background: 全テストを 1 回の Bash で走らせるため Bash tool の既定 timeout（120 秒）を超える repo がある。
 // timeout 未指定だと background に回され、agent が待った後に同じコマンドを再発行して二重実行になるので、

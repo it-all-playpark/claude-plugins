@@ -8,6 +8,7 @@ import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, shapeOverrides }
 import {
   EVALUATOR_OPERATIONAL_CONTRACT, CONCERN_RESOLUTIONS, normalizeConcernResolution,
   EVAL_DESCRIPTION_MAX, EVAL_SUGGESTION_MAX, EVAL_EVIDENCE_MAX, EVAL_FULL_SUITE,
+  TEST_LOG_REUSE, validateResultPromptBlock,
 } from './evaluator-contract.mjs';
 import { RESOLVED_CELL_MAX } from './devflow-summary-format.mjs';
 
@@ -81,6 +82,41 @@ test('[evaluator-contract][#658] final_ac_reconcile 契約が item_resolutions �
   const contract = EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile;
   assert.ok(contract.includes('item_resolutions'), 'final_ac_reconcile 契約に item_resolutions の説明が必要です');
   assert.ok(contract.includes('ci_delegated'), 'final_ac_reconcile 契約に ci_delegated の説明が必要です');
+});
+
+// issue #1144: テストログに載っている AC 関連テストファイルは再実行せずログの行を根拠にし、載っていないものだけ実行する
+const LOG_EVIDENCE = 'ログの該当行（テスト名と ok / not ok）を evidence にして';
+test('[evaluator-contract][#1144] TEST_LOG_REUSE と final_ac_reconcile 契約は、ログにあるものは再実行せずログの行を根拠にし、無いものだけ実行させる', () => {
+  for (const [name, text] of [['TEST_LOG_REUSE', TEST_LOG_REUSE], ['final_ac_reconcile', EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile]]) {
+    assert.ok(text.includes('再実行せず'), `${name}: 再実行しない指示が無い`);
+    assert.ok(text.includes(LOG_EVIDENCE) && text.includes('verified_by:"test"'), `${name}: ログの行を evidence にして verified_by:"test" とする指示が無い`);
+    assert.ok(/ログに載っていない AC (に関係する|関連)テストファイルだけを実行/.test(text), `${name}: ログに無いものだけ実行する指示が無い`);
+  }
+  // 契約はテストログが渡されたときに限る（渡されない・読めないときは AC 関連テストを実行する）
+  assert.ok(EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile.includes('テストログが渡されない・読めない場合は AC に関係するテストファイルを実行'));
+});
+
+test('[evaluator-contract][#1144] evaluator.md の「進め方」2 はテストログにある AC 関連テストを再実行せずログの行を根拠にする', () => {
+  const steps = evaluatorMd.slice(evaluatorMd.indexOf('## 進め方'), evaluatorMd.indexOf('## 判定'));
+  const step2 = steps.slice(steps.indexOf('\n2. '), steps.indexOf('\n3. ')).replace(/\n\s+/g, '');
+  assert.ok(step2.includes('再実行せず') && step2.includes(LOG_EVIDENCE) && step2.includes('`verified_by: "test"`'), step2);
+  assert.ok(step2.includes('ログに載っていない AC に関係するテストファイルだけを実行する'), step2);
+  assert.ok(step2.includes('ログが渡されない・読めないときは AC に関係するテストファイルを実行する'), step2);
+});
+
+test('[evaluator-contract][#1144] validateResultPromptBlock はログがあるときだけログパスと TEST_LOG_REUSE を入れる', () => {
+  const scripts = [{ path: '/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-q/0.log' }];
+  const withLogs = validateResultPromptBlock({ tests: 'passed', green: true, summary: 's', scripts });
+  assert.ok(withLogs.includes('/tmp/run-tests-q/0.log') && withLogs.includes(TEST_LOG_REUSE), withLogs);
+  for (const [name, val] of [
+    ['scripts 無し', { tests: 'passed', green: true, summary: 's' }],
+    ['log 無し', { tests: 'passed', green: true, summary: 's', scripts: [{ path: '/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false }] }],
+    ['tests:error', { tests: 'error', green: false, summary: 's', scripts }],
+  ]) {
+    const block = validateResultPromptBlock(val);
+    assert.ok(!block.includes(TEST_LOG_REUSE) && !block.includes('/tmp/run-tests-q/'), `${name}: ${block}`);
+    assert.ok(block.includes(`${EVAL_FULL_SUITE}は走らせず、AC に関係するテストファイルだけを実行して根拠にせよ。`), `${name}: ${block}`);
+  }
 });
 
 // concern_resolutions 契約は openConcerns.length>0（implementer concerns がある）ときにのみ
