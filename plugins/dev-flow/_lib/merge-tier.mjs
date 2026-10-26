@@ -119,17 +119,14 @@ export function isDocsOrTestOnly(files) {
 // Final reconcile（pr-iterate fix 適用後の最終 tree 再検証、issue #320）の finalReconcile enum。
 // 'skipped': fixes_applied=0 で Final reconcile 自体を実行しなかった（zero-overhead routing）。
 // 'reverified': 最終 tree に対して sync + test 再実行を行った。
-// 'unavailable': worktree sync 失敗 / test agent null・schema 不一致等で再検証結果を取得できなかった
-//   （fail-safe。HOLD へ倒す）。
-// 'ci_verified': ローカル再検証は不能だったが、PR head sha に pin した CI check（finalCiVerdict、
-//   _lib/final-ci.mjs）が sha 一致かつ全 success で最終 tree の test 状態を検証済みとして扱う
-//   （issue #599）。
-const FINAL_RECONCILE_VALUES = ['skipped', 'reverified', 'unavailable', 'ci_verified'];
+// 'unavailable': worktree sync 失敗 / test agent null・schema 不一致・tests:error 等で再検証結果を取得できなかった
+//   （fail-safe。HOLD へ倒す）。CI の success では代替しない — pull_request の CI は PR head の workflow で
+//   動き、CI が呼ぶスクリプトも PR が書き換えられる（テストを走らせない success job でも success になる）。
+const FINAL_RECONCILE_VALUES = ['skipped', 'reverified', 'unavailable'];
 
 // merge tier HOLD 理由の分類（issue #599）。'deterministic_recheck': 決定論的な再チェック
-// （CI 完了待ち・再取得等）で解消しうる。'human_judgment': 決定論的手段では解消できず人間確認が
-// 必須。_lib/final-ci.mjs の FINAL_CI_KIND_* と同値。canonical は import 不可のため重複定義し、
-// 同値性は _lib/final-ci-routing.test.mjs が pin する。
+// （再取得・本文の再投入等）で解消しうる。'human_judgment': 決定論的手段では解消できず人間確認が
+// 必須。
 export const HOLD_REASON_KINDS = ['deterministic_recheck', 'human_judgment'];
 
 // HOLD 理由の閉じた code enum（issue #658、issue #661 で pr_closes_missing 追加）。summary 側
@@ -242,15 +239,11 @@ export function classifyMergeableState(meta) {
 //   再検証していない）かつ tests:'failed' + green:false のとき 'validate_test_red'（human_judgment）で HOLD —
 //   GREEN_MAX 到達で red のまま PR へ進んだ run で、この Validate の結果が PR tree のテスト状態そのもの
 //   （base でも落ちる既存失敗は Validate が green:true にして抜けるので、ここに来る red は diff 起因）。
-//   tests:'error'（起動失敗 = テストが 1 件も実行されていない）は s.validateCi が持つ。finalReconcile が skipped
-//   以外のときは最終 tree の判定（final_test_red / final_reconcile_unavailable / ci_verified）が持つので見ない。
-//   未指定 = reason 追加なし。object でない / tests が enum 外 / green が boolean でないものは明示 error。
-// s.validateCi (optional finalCiVerdict の返り値 | null): finalReconcile === 'skipped' かつ validateResult.tests:'error'
-//   の run で、PR head sha に pin して読んだ CI check の決定論判定（workflow はこの 1 回の取得を終端サマリーの
-//   テスト欄と共有する。issue #1117）。この条件で verified:true でなければ（未取得 = null・pending・
-//   failure・sha 不一致・check 0 件）'validate_tests_not_run' で HOLD — テストをローカルでも CI でも 1 件も
-//   確かめないまま REVIEW にしない。kind は validateCi.kind ?? 'human_judgment'（final_reconcile_unavailable と同じ）。
-//   条件外の run では見ない。verified が boolean でない / kind が HOLD_REASON_KINDS 外は明示 error。
+//   ただし s.finalTestFlaky がある（落ちたファイルだけの 1 回の再実行が green = flake）run は積まない。
+//   tests:'error'（起動失敗 = テストが 1 件も実行されていない）は常に 'validate_tests_not_run'（human_judgment）で
+//   HOLD — テストを 1 件も確かめないまま REVIEW にしない。PR が書き換えられる CI の success では解除しない。
+//   finalReconcile が skipped 以外のときは最終 tree の判定（final_test_red / final_reconcile_unavailable）が
+//   持つので見ない。未指定 = reason 追加なし。object でない / tests が enum 外 / green が boolean でないものは明示 error。
 // s.setupDeps (optional { ok: boolean, note: string }): Setup(deps) の結果（prerun の deps）。ok:false の run では
 //   'validate_tests_not_run' の文言に note を載せる（テスト未実行の原因の手がかり）。tier 判定には使わない。
 //   ok が boolean でない / note が string でないものは明示 error。
@@ -308,18 +301,6 @@ export function classifyMergeableState(meta) {
 //   担保するため tier 判定値は変えない（可視化のみ）。未指定/null/false = reason 追加なし、
 //   tier 判定値も従来と完全同一（regression なし）。boolean 以外は明示 error
 //   （後方互換 scaffolding 禁止規約）。
-// s.finalCi (optional { verified: boolean, reason: string, kind: string|null, checkNames: string[],
-//   headRefOid: string|null }): finalCiVerdict（_lib/final-ci.mjs）の返り値そのもの（issue #599）。
-//   s.finalReconcile === 'unavailable' のとき、ローカル再検証は不能だったが PR head sha に pin した
-//   CI check で代替検証できたかを表す。finalCi が無ければ従来どおりの「人間確認必須」文言のまま
-//   HOLD reason を追記する。finalCi があれば reason に CI 委譲の不成立理由（reason/checkNames）を
-//   追記し、kind（finalCi.kind ?? 'human_judgment'）に応じて「決定論再チェックで解消しうる」か
-//   「人間確認必須」かを文言で区別する。s.finalReconcile === 'ci_verified' のときは HOLD reason を
-//   一切積まず、代わりに ciVerifiedDisclosure（HOLD/AUTO/REVIEW 全分岐共通の可視化行）のみ追記する
-//   （tier 判定値は変えない）。検証: finalCi.verified が boolean でなければ throw。finalCi.kind が
-//   HOLD_REASON_KINDS 外なら throw。finalReconcile==='ci_verified' なのに finalCi.verified!==true
-//   なら throw（証拠なしに ci_verified を名乗らせない fail-closed）。未指定(undefined/null) = 従来と
-//   完全同一挙動（regression なし）。
 // s.prClosesStatus (optional 'verified'|'reinjected'|'missing'|'unverified'): PR body の
 //   `Closes #<issue>` 行の決定論検証結果（issue #661、PR_CLOSES_STATUS_VALUES）。'missing'
 //   （欠落を検出し再投入も失敗）のときのみ専用 HOLD reason（deterministic_recheck）を追記する
@@ -335,11 +316,15 @@ export function classifyMergeableState(meta) {
 //   完了を待たない）。判定は bucket だけで行い mergeStateStatus（UNSTABLE 等）は見ない。
 //   未指定 = reason・開示とも追加なし。object でない / ok が boolean でない / ok:true で checks が配列で
 //   ないものは明示 error。
-// s.finalTestFlaky (optional { files: string[], logs: string[] }): test#final が red で、落ちたファイルだけの
-//   単体再実行が green だった記録（_lib/final-test-rerun.mjs の finalTestRerunVerdict。issue #865）。このとき
-//   workflow は finalTestGreen を true にするので final_test_red は積まれない。flake は HOLD 理由にせず
-//   開示行（finalTestFlakyDisclosure）だけを disclosures に積む。未指定 = 開示なし。files が非空の string[]
-//   でない / logs が string[] でない / finalTestGreen !== true（red のまま flake を名乗る矛盾）は明示 error。
+// s.finalTestFlaky (optional { files: string[], logs: string[] }): 全件実行で落ち、落ちたファイルだけの
+//   単体再実行が green だった記録（_lib/final-test-rerun.mjs の finalTestRerunVerdict。issue #865）。2 経路ある:
+//   - Final reconcile の test#final（finalReconcile !== 'skipped'）: workflow は finalTestGreen を true にするので
+//     final_test_red は積まれない。
+//   - Final reconcile が skip の run の Validate red（finalReconcile === 'skipped' かつ validateResult が
+//     tests:'failed' / green:false。issue #1138）: validate_test_red を積まない。
+//   flake は HOLD 理由にせず開示行（finalTestFlakyDisclosure）だけを disclosures に積む。未指定 = 開示なし。
+//   files が非空の string[] でない / logs が string[] でない / どちらの経路の red にも当たらない
+//   （red でないまま flake を名乗る矛盾）は明示 error。
 // s.securityReviewUnresolved (optional boolean): 敵対的 security review の対象の run（Diff triage か pr-iterate の
 //   判定のどちらかで対象）で、pr-iterate が今の PR head で security review を clear にしていない（LGTM 以外で終端した・
 //   critical/major が残った・worktree の外を指す指摘がある・review を回せなかった。issue #1063）。true なら
@@ -352,7 +337,7 @@ export function classifyMergeableState(meta) {
 //   含めない）、AUTO/REVIEW 時は []。code は HOLD_REASON_CODES の閉じた enum（summary 側の
 //   現状/対応写像キー）。holdKind は aggregateHoldKind(holdReasons)（HOLD 以外は null）。
 //   disclosures は HOLD/AUTO/REVIEW 全 3 分岐共通で、可視化のみ（tier 判定に寄与しない）の開示
-//   文言 string[]（keywordAloneDisclosure / evalFailDisclosure / ciVerifiedDisclosure / ciIncompleteDisclosure のうち
+//   文言 string[]（keywordAloneDisclosure / evalFailDisclosure / ciIncompleteDisclosure / finalTestFlakyDisclosure のうち
 //   非 null のもの）。reasons の内容・順序（可視化行を末尾に含む従来形）は不変 — disclosures は
 //   reasons の部分集合を別途複製したものであり、reasons から可視化行を除去するものではない。
 export function classifyMergeTier(s) {
@@ -386,15 +371,6 @@ export function classifyMergeTier(s) {
   if (s.securityReviewUnresolved != null && typeof s.securityReviewUnresolved !== 'boolean') {
     throw new Error('classifyMergeTier: invalid securityReviewUnresolved: ' + s.securityReviewUnresolved);
   }
-  if (s.finalCi != null && typeof s.finalCi.verified !== 'boolean') {
-    throw new Error('classifyMergeTier: invalid finalCi');
-  }
-  if (s.finalCi != null && s.finalCi.kind != null && !HOLD_REASON_KINDS.includes(s.finalCi.kind)) {
-    throw new Error('classifyMergeTier: invalid finalCi.kind: ' + s.finalCi.kind);
-  }
-  if (s.finalReconcile === 'ci_verified' && (s.finalCi == null || s.finalCi.verified !== true)) {
-    throw new Error('classifyMergeTier: finalReconcile=ci_verified requires finalCi.verified===true');
-  }
   if (s.evalStaleness != null && !EVAL_STALENESS_VALUES.includes(s.evalStaleness)) {
     throw new Error('classifyMergeTier: invalid evalStaleness: ' + s.evalStaleness);
   }
@@ -410,17 +386,15 @@ export function classifyMergeTier(s) {
     || !isStringArray(s.finalTestFlaky.logs))) {
     throw new Error('classifyMergeTier: invalid finalTestFlaky');
   }
-  if (s.finalTestFlaky != null && s.finalTestGreen !== true) {
-    throw new Error('classifyMergeTier: finalTestFlaky requires finalTestGreen===true');
-  }
   if (s.validateResult != null && (typeof s.validateResult !== 'object'
     || !['passed', 'failed', 'no_tests', 'error'].includes(s.validateResult.tests)
     || typeof s.validateResult.green !== 'boolean')) {
     throw new Error('classifyMergeTier: invalid validateResult');
   }
-  if (s.validateCi != null && (typeof s.validateCi.verified !== 'boolean'
-    || (s.validateCi.kind != null && !HOLD_REASON_KINDS.includes(s.validateCi.kind)))) {
-    throw new Error('classifyMergeTier: invalid validateCi');
+  // Final reconcile が skip の run で、PR tree のテスト状態が Validate の red（tests:'failed'）のまま
+  const validateRed = s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false;
+  if (s.finalTestFlaky != null && !validateRed && s.finalTestGreen !== true) {
+    throw new Error('classifyMergeTier: finalTestFlaky requires finalTestGreen===true (or a red Validate in a skipped Final reconcile)');
   }
   if (s.setupDeps != null && (typeof s.setupDeps.ok !== 'boolean' || typeof s.setupDeps.note !== 'string')) {
     throw new Error('classifyMergeTier: invalid setupDeps');
@@ -441,11 +415,6 @@ export function classifyMergeTier(s) {
   const evalFailDisclosure = s.evalVerdictFail === true
     ? 'evaluator verdict=fail のまま PR へ進行 — 未解消 findings は ledger/HOLD 条件が別途担保するため tier 判定は不変（可視化のみ。issue #536）'
     : null;
-  const ciVerifiedDisclosure = s.finalReconcile === 'ci_verified'
-    ? 'Final reconcile はローカル再検証不能だったが PR head sha ' + s.finalCi.headRefOid
-      + ' の CI check 全 success を決定論確認（final_reconcile=ci_verified: ' + s.finalCi.checkNames.join(', ')
-      + '）— test gate は CI 委譲で充足（issue #599）'
-    : null;
   if (s.escalateCount > 0) pushBlocking('escalate', `ESCALATE-TO-HUMAN 項目 ${s.escalateCount} 件`, 'human_judgment');
   if (s.unsatisfiedAgentAc === true) pushBlocking('ac_agent_unsatisfied', 'AC 未達（エージェント AC 未達 — worktree 内で満たせる AC が差し戻し上限後も satisfied:false。ループの取りこぼし。gate_policy に依らず人間確認必須）', 'human_judgment');
   if (s.unsatisfiedHumanAc === true) pushBlocking('ac_human_pending', 'AC 未達（人手 AC 待ち — （人手）/ staging / 本番等の worktree 外作業、または実行環境に届かない検証を要する AC が satisfied:false。人間が実施して確認する）', 'human_judgment');
@@ -455,32 +424,18 @@ export function classifyMergeTier(s) {
     else pushBlocking('danger_fail_closed', 'danger-grep 実行不能（fail-closed）— security 未検証のため人間確認必須', 'human_judgment');
   }
   if (s.finalReconcile === 'unavailable') {
-    if (s.finalCi == null) {
-      pushBlocking('final_reconcile_unavailable', 'Final reconcile 再検証不能（pr-iterate fix 適用後の最終 tree の test 状態を確認できず）— 人間確認必須', 'human_judgment');
-    } else {
-      const kind = s.finalCi.kind ?? 'human_judgment';
-      const reason = 'Final reconcile 再検証不能（pr-iterate fix 適用後の最終 tree の test 状態を確認できず）— CI 委譲も不成立（reason=' + s.finalCi.reason
-        + (s.finalCi.checkNames.length ? ': ' + s.finalCi.checkNames.join(', ') : '') + '）— '
-        + (kind === 'deterministic_recheck' ? '決定論再チェック（CI 完了待ち / 再取得）で解消しうる' : '人間確認必須');
-      pushBlocking('final_reconcile_unavailable', reason, kind);
-    }
+    pushBlocking('final_reconcile_unavailable', 'Final reconcile 再検証不能（pr-iterate fix 適用後の最終 tree の test 状態を確認できず）— 人間確認必須', 'human_judgment');
   }
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
-  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false) {
+  if (validateRed && s.finalTestFlaky == null) {
     pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   }
-  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'error' && s.validateCi?.verified !== true) {
-    const kind = s.validateCi?.kind ?? 'human_judgment';
-    const ciPart = s.validateCi == null
-      ? 'PR head sha の CI を取得していない'
-      : 'PR head sha の CI でも test green を確認できず（reason=' + s.validateCi.reason
-        + (s.validateCi.checkNames.length ? ': ' + s.validateCi.checkNames.join(', ') : '') + '）';
+  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'error') {
     const depsPart = s.setupDeps?.ok === false
       ? ' — Setup(deps) ok:false: ' + (s.setupDeps.note || '依存インストール結果を確認できなかった')
       : '';
-    pushBlocking('validate_tests_not_run', 'テストが 1 件も実行されていない（Validate tests:error = テスト起動失敗。pr-iterate の fix が 0 件で Final reconcile は skip）— '
-      + ciPart + depsPart + ' — '
-      + (kind === 'deterministic_recheck' ? '決定論再チェック（CI 完了待ち / 再取得）で解消しうる' : '人間確認必須'), kind);
+    pushBlocking('validate_tests_not_run', 'テストが 1 件も実行されていない（Validate tests:error = テスト起動失敗。pr-iterate の fix が 0 件で Final reconcile は skip）'
+      + depsPart + ' — 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   }
   if (s.finalAcReconcile === 'unavailable') pushBlocking('final_ac_unavailable', 'Final AC reconcile 判定不能（最終 PR tree に対する AC 再検証結果を取得できず — agent null / schema 不一致 / index 欠落・重複・範囲外 / evidence 不足）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   if (s.securityReviewUnresolved === true) pushBlocking('security_review_unresolved', '敵対的 security review が今の PR head で clear になっていない（信頼境界をまたぎうる変更を含む PR で、pr-iterate が critical/major 0 件の review を通さずに終端）— 指摘の本文は公開しない。merge 前に人が diff を確認する（gate_policy に依らず不変）', 'human_judgment');
@@ -518,15 +473,16 @@ export function classifyMergeTier(s) {
     : ci?.state === 'unavailable'
       ? `CI 未完了（checks を取得できず: ${ci.error ?? 'unknown'}）— CI 結果は未確認（fail-open。HOLD 理由にしない）。merge 前に gh pr checks で結果を確認する`
       : null;
-  const finalTestFlakyDisclosure = s.finalTestFlaky != null
-    ? `final test flake（単体再実行で green）: ${s.finalTestFlaky.files.join(', ')} — 最終 tree の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green（HOLD 理由にしない。1 回目のログ: ${s.finalTestFlaky.logs.length ? s.finalTestFlaky.logs.join(', ') : '不明'}）`
-    : null;
-  const disclosures = [keywordAloneDisclosure, evalFailDisclosure, ciVerifiedDisclosure, ciIncompleteDisclosure, finalTestFlakyDisclosure].filter(Boolean);
+  const flakyLogs = s.finalTestFlaky != null && s.finalTestFlaky.logs.length ? s.finalTestFlaky.logs.join(', ') : '不明';
+  const finalTestFlakyDisclosure = s.finalTestFlaky == null ? null
+    : validateRed
+      ? `Validate test flake（単体再実行で green）: ${s.finalTestFlaky.files.join(', ')} — Validate の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green（HOLD 理由にしない。1 回目のログ: ${flakyLogs}）`
+      : `final test flake（単体再実行で green）: ${s.finalTestFlaky.files.join(', ')} — 最終 tree の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green（HOLD 理由にしない。1 回目のログ: ${flakyLogs}）`;
+  const disclosures = [keywordAloneDisclosure, evalFailDisclosure, ciIncompleteDisclosure, finalTestFlakyDisclosure].filter(Boolean);
   if (blockingReasons.length) {
     const reasons = blockingReasons.map((r) => r.reason);
     if (keywordAloneDisclosure) reasons.push(keywordAloneDisclosure);
     if (evalFailDisclosure) reasons.push(evalFailDisclosure);
-    if (ciVerifiedDisclosure) reasons.push(ciVerifiedDisclosure);
     if (ciIncompleteDisclosure) reasons.push(ciIncompleteDisclosure);
     if (finalTestFlakyDisclosure) reasons.push(finalTestFlakyDisclosure);
     return { tier: 'HOLD', reasons, holdReasons: blockingReasons, holdKind: aggregateHoldKind(blockingReasons), disclosures };
@@ -539,7 +495,6 @@ export function classifyMergeTier(s) {
     if (s.evalSkipped === true) autoReasons.push('AC は未検証（micro eval skip）— evaluator 0 回のため acceptance_criteria の充足は判定していない');
     if (keywordAloneDisclosure) autoReasons.push(keywordAloneDisclosure);
     if (evalFailDisclosure) autoReasons.push(evalFailDisclosure);
-    if (ciVerifiedDisclosure) autoReasons.push(ciVerifiedDisclosure);
     if (ciIncompleteDisclosure) autoReasons.push(ciIncompleteDisclosure);
     if (finalTestFlakyDisclosure) autoReasons.push(finalTestFlakyDisclosure);
     return { tier: 'AUTO', reasons: autoReasons, holdReasons: [], holdKind: null, disclosures };
@@ -549,7 +504,6 @@ export function classifyMergeTier(s) {
   const reviewReasons = ['標準 — 人間が LGTM して merge'];
   if (keywordAloneDisclosure) reviewReasons.push(keywordAloneDisclosure);
   if (evalFailDisclosure) reviewReasons.push(evalFailDisclosure);
-  if (ciVerifiedDisclosure) reviewReasons.push(ciVerifiedDisclosure);
   if (ciIncompleteDisclosure) reviewReasons.push(ciIncompleteDisclosure);
   if (finalTestFlakyDisclosure) reviewReasons.push(finalTestFlakyDisclosure);
   return { tier: 'REVIEW', reasons: reviewReasons, holdReasons: [], holdKind: null, disclosures };

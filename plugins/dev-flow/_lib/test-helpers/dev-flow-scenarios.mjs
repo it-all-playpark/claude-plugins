@@ -43,26 +43,14 @@ export const DEV_FLOW_SCENARIOS = {
     overrides: {
       'reconcile-sync': { ok: true, head: 'deadbeef' },
       'changed-files-final': { files: [...STANDARD_FILES] },
-      'ci-final': { ok: true, headRefOid: 'a'.repeat(40), statusCheckRollup: [] },
     },
     workflow: async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }),
   },
-  // test#final が null（unavailable）→ reconcile-sync の head sha に pin した CI 委譲 ci-final（issue #599）
-  'final-ci': {
-    overrides: {
-      'reconcile-sync': { ok: true, head: 'a'.repeat(40) },
-      'test#final': null,
-      'ci-final': { ok: true, headRefOid: 'a'.repeat(40), statusCheckRollup: [] },
-    },
-    workflow: async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }),
-  },
-  // Validate が tests:'error'（起動失敗）+ fixes_applied=0（Final reconcile skipped）→ PR head sha に pin した
-  // 表示専用の CI 確認 ci-test-display（終端サマリーのテスト欄のみ。merge tier 不変。issue #707）
-  'ci-test-display': {
+  // Validate が tests:'error'（起動失敗）+ fixes_applied=0（Final reconcile skipped）→ テスト欄は未実行・未検証、
+  // merge tier は validate_tests_not_run で HOLD（issue #707 / #1117 / #1138）
+  'validate-tests-error': {
     overrides: {
       'test#1': { tests: 'error', green: false, summary: 'pnpm failed to start. No tests executed.' },
-      'pr#1': { pr_url: 'http://x', pr_number: 1, committed: true, head_sha: 'a'.repeat(40) },
-      'ci-test-display': { ok: true, headRefOid: 'a'.repeat(40), statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }] },
     },
   },
   // evaluator が test 実証 AC を返す → redgreen（1 spawn バッチ。results[k].index は prompt のペア順）

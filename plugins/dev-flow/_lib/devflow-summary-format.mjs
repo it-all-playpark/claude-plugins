@@ -118,13 +118,10 @@ function resolvedCell(v) {
  * @param {string[]} opts.dangerHits - danger-grep で検出したクラス名
  * @param {string[]} [opts.testsurfHits] - danger-grep（test-weakening クラス）で検出した TESTSURF pattern 名の配列（issue #362）
  * @param {string|null|undefined} opts.shape - 実効 shape（'micro'|'standard'|'complex'）
- * @param {boolean|null|undefined} opts.testGreen - test green フラグ（at-a-glance 表では finalReconcile が 'ci_verified'/'reverified' のとき最終状態を優先。issue #625）
+ * @param {boolean|null|undefined} opts.testGreen - test green フラグ（at-a-glance 表では finalReconcile が 'reverified' のとき最終状態を優先。issue #625）
  * @param {'passed'|'failed'|'no_tests'|'error'|null|undefined} [opts.validateTests] - Validate 時点の GREEN.tests。
- *   'error' は起動失敗（テストが 1 件も実行されていない）で、at-a-glance 表では ❌ red と区別する（issue #707）
- * @param {boolean|null|undefined} [opts.ciTestVerified] - finalReconcile が再検証していない run で、
- *   PR head sha に pin した CI check が finalCiVerdict で verified になったか（issue #707）。
- *   validateTests==='error' のときだけテスト欄を '✅ green (CI)' にする。同じ判定が merge tier の validateCi に
- *   渡り、verified でなければ HOLD（validate_tests_not_run。issue #1117）
+ *   'error' は起動失敗（テストが 1 件も実行されていない）で、at-a-glance 表では ❌ red と区別する（issue #707）。
+ *   CI の success では green 扱いにしない（merge tier も validate_tests_not_run で HOLD。issue #1138）
  * @param {string|null|undefined} opts.evalVerdict - evaluator verdict（'pass'|'fail' 等）（at-a-glance 表では iterate_fixed+lgtm+finalAcReconcile=reverified の fail を '✅ pass (fix 後 LGTM)' と表示。issue #625）
  * @param {string|null|undefined} opts.evalStaleness - 'none'|'hash_mismatch'|'hash_reconverged'|'iterate_incomplete'|'iterate_fixed'（issue #288, #631）
  * @param {string|null|undefined} [opts.evalDiffHash] - Evaluate 時点の tree diff hash（issue #631）
@@ -132,11 +129,12 @@ function resolvedCell(v) {
  * @param {Array<{path:string,insertions:number,deletions:number}>|null|undefined} [opts.staleDiffFiles] - hash_mismatch/hash_reconverged 時の eval→PR 直前の差分ファイル一覧。null は取得失敗（issue #631）
  * @param {string|null|undefined} [opts.prHeadTreeOid] - PR head commit の tree OID（issue #631）
  * @param {number|null|undefined} opts.iterateFixesApplied - pr-iterate の適用 fix 件数（iterate_fixed 表示用）
- * @param {string|null|undefined} opts.finalReconcile - Final reconcile 結果（'skipped'|'reverified'|'unavailable'|'ci_verified'。issue #320, #599）
+ * @param {string|null|undefined} opts.finalReconcile - Final reconcile 結果（'skipped'|'reverified'|'unavailable'。issue #320）
  * @param {boolean|null|undefined} opts.finalTestGreen - Final reconcile 時の test green フラグ（issue #320）
- * @param {{files:string[], logs:string[]}|null|undefined} [opts.finalTestFlaky] - test#final が red で、落ちたファイルだけの
- *   単体再実行が green だった記録（issue #865）。finalReconcile==='reverified' かつ finalTestGreen===true のとき、
- *   テスト欄と Final reconcile 行を flake 表記にする（表示専用。merge tier の開示行は disclosures 側で出る）
+ * @param {{files:string[], logs:string[]}|null|undefined} [opts.finalTestFlaky] - 全件実行で落ち、落ちたファイルだけの
+ *   単体再実行が green だった記録（issue #865）。finalReconcile==='reverified' かつ finalTestGreen===true（test#final の flake）、
+ *   または finalReconcile==='skipped' かつ validateTests==='failed'（Validate の flake。issue #1138）のとき、テスト欄を
+ *   flake 表記にする（前者は Final reconcile 行も。表示専用。merge tier の開示行は disclosures 側で出る）
  * @param {string|null|undefined} opts.finalAcReconcile - Final AC reconcile 結果（'skipped'|'reverified'|'unavailable'。issue #331）
  * @param {{decision:string|null, ci:string, summary:string|null}|null|undefined} [opts.liteReview] - dev-flow lite 経路の pr-review-lite 結果。非 null の場合のみ「lite レビュー」セクションを描画する（issue #392 AC-6）
  * @param {string|null|undefined} [opts.iterateStatus] - pr-iterate 終端 status（'lgtm'|'stuck'|'fix_failed'|'max_reached'|'ci_error'|'ci_pending'|'review_contract_error'。非 'lgtm' のときのみ未解消指摘セクションを描画する。issue #602）
@@ -195,7 +193,6 @@ export function buildDevflowSummaryBody({
   shape,
   testGreen,
   validateTests,
-  ciTestVerified,
   evalVerdict,
   evalStaleness,
   evalDiffHash,
@@ -230,7 +227,7 @@ export function buildDevflowSummaryBody({
     throw new Error('buildDevflowSummaryBody: invalid evalStaleness: ' + evalStaleness);
   }
 
-  const FINAL_RECONCILE_VALUES = ['skipped', 'reverified', 'unavailable', 'ci_verified'];
+  const FINAL_RECONCILE_VALUES = ['skipped', 'reverified', 'unavailable'];
   if (finalReconcile != null && !FINAL_RECONCILE_VALUES.includes(finalReconcile)) {
     throw new Error('buildDevflowSummaryBody: invalid finalReconcile: ' + finalReconcile);
   }
@@ -249,14 +246,9 @@ export function buildDevflowSummaryBody({
   const nonEmpty = (s) => typeof s === 'string' && s.length > 0;
 
   // advisory item の「fix 後 tree での再評価」解消判定。blocking lane では呼ばない（軸A invariant）。
-  // 'resolved': fix 後の最終 tree で直接再検証済み。'ci_delegated': ローカル再検証不能だったが
-  // finalReconcile==='ci_verified'（PR head sha 一致・CI check 全 success）のときのみ解消扱い
-  // （それ以外の finalReconcile では「CI が実際に success した」決定論事実がないため未解消のまま）。
-  const isResolved = (it) => {
-    if (it.final_resolution === 'resolved' && nonEmpty(it.final_evidence)) return true;
-    if (it.final_resolution === 'ci_delegated' && nonEmpty(it.final_evidence) && finalReconcile === 'ci_verified') return true;
-    return false;
-  };
+  // 'resolved': fix 後の最終 tree で直接再検証済み。'ci_delegated' は解消扱いにしない — PR の CI の success は
+  // PR が書き換えられる（CI が呼ぶスクリプトも PR head のもの）ため、検証の決定論事実にならない。
+  const isResolved = (it) => it.final_resolution === 'resolved' && nonEmpty(it.final_evidence);
 
   // Security clearance は最終 ledger の SEC seed item（source:'seed' && dimension:'security' && floor:true）
   // から導出する（evalResult.security_clearance は使わない — PR #16 型の表示矛盾を防ぐため）。
@@ -457,23 +449,21 @@ export function buildDevflowSummaryBody({
   // 場合はそれを優先し、Validate 時点の testGreen は finalReconcile が 'skipped'/'unavailable'/null
   // （= 最終 tree の再検証が行われていない）のときだけ使う。経過は参考セクションの Final reconcile 行に残る。
   // Validate の tests:'error' はテストが 1 件も実行されていない起動失敗で red ではない（issue #707）。
-  // PR head sha に pin した CI が green なら '✅ green (CI)'、そうでなければ未検証として結論行で CI 確認を促す。
+  // 未検証として結論行で CI 確認を促す（PR が書き換えられる CI の success では green 扱いにしない）。
   const baseFailing = Array.isArray(baseFailingTests) ? baseFailingTests.filter((f) => typeof f === 'string' && f.length > 0) : [];
-  // flake: 最終 tree の全件実行で落ち、落ちたファイルだけの単体再実行で green（issue #865）。green 扱いだが
-  // 「一度落ちた」事実をテスト欄と Final reconcile 行に残す（ファイルとログは merge tier の開示行に出る）。
-  const finalFlaky = finalReconcile === 'reverified' && finalTestGreen === true
-    && Array.isArray(finalTestFlaky?.files) && finalTestFlaky.files.length > 0;
+  // flake: 全件実行で落ち、落ちたファイルだけの単体再実行で green（issue #865）。green 扱いだが「一度落ちた」事実を
+  // テスト欄（test#final の flake は Final reconcile 行にも）に残す（ファイルとログは merge tier の開示行に出る）。
+  // test#final の flake（reverified）と、Final reconcile が skip の run の Validate red の flake（issue #1138）の 2 経路。
+  const hasFlakyFiles = Array.isArray(finalTestFlaky?.files) && finalTestFlaky.files.length > 0;
+  const finalFlaky = finalReconcile === 'reverified' && finalTestGreen === true && hasFlakyFiles;
+  const validateFlaky = finalReconcile === 'skipped' && validateTests === 'failed' && hasFlakyFiles;
   const FLAKY_CELL = '⚠️ flake（単体再実行で green）';
   let testCell;
   let testUnverified = false;
-  if (finalReconcile === 'ci_verified') {
-    testCell = '✅ green (CI)';
-  } else if (finalFlaky) {
+  if (finalFlaky || validateFlaky) {
     testCell = FLAKY_CELL;
   } else if (finalReconcile === 'reverified') {
     testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? '❌ red' : '不明';
-  } else if (validateTests === 'error' && ciTestVerified === true) {
-    testCell = '✅ green (CI)';
   } else if (validateTests === 'error') {
     testCell = '⚠️ 未実行（環境）・未検証';
     testUnverified = true;
@@ -617,17 +607,12 @@ export function buildDevflowSummaryBody({
     youDoLines.push(`${youDoN}. マージ後: ${msg}`);
     youDoN++;
   }
-  // 4d. workflow ファイル変更検知（issue #662 レビュー: config danger class は .github/workflows/*.yml
-  // に一致しないため、finalReconcile==='ci_verified' 以外の経路では workflow 変更を含んでいても
-  // 「対象 workflow の初回実行確認」が出なかった）。changedFiles から直接判定する。
+  // 4d. workflow ファイル変更検知（config danger class は .github/workflows/*.yml に一致しないため、
+  // changedFiles から直接判定する。issue #662）。
   const changedFilesArr = Array.isArray(changedFiles) ? changedFiles : [];
   const hasWorkflowChange = changedFilesArr.some((f) => /^\.github\/workflows\//.test(f));
   if (hasWorkflowChange) {
     youDoLines.push(`${youDoN}. マージ後: 対象 workflow の初回実行を確認する`);
-    youDoN++;
-  }
-  if (finalReconcile === 'ci_verified') {
-    youDoLines.push(`${youDoN}. マージ後: ローカルで実行できなかった検証は PR CI に委譲済み — PR CI で走らない経路（push トリガの deploy / migrate workflow 等）があれば、その初回実行を確認する`);
     youDoN++;
   }
   for (const l of youDoLines) lines.push(l);
@@ -757,7 +742,7 @@ export function buildDevflowSummaryBody({
   // 現状列の「未解消」は blocking（必須）の項目にだけ使う。ESCALATE は人間の判断待ちなので「未判断」、
   // 助言（advisory）は対応が任意なので「未対応（任意）」と書き、必須の未解消と読み違えさせない。
   const escalateCurrent = (item) => {
-    if (isResolved(item)) return (item.final_resolution === 'ci_delegated' ? 'CI 委譲: ' : 'fix 後 tree で確認: ') + mdCell(item.final_evidence);
+    if (isResolved(item)) return 'fix 後 tree で確認: ' + mdCell(item.final_evidence);
     if (item.final_resolution === 'unresolved' && nonEmpty(item.final_evidence)) return 'fix 後 tree でも残る: ' + mdCell(item.final_evidence);
     return item.evidence ? mdCell(item.evidence) : '未判断';
   };
@@ -1030,7 +1015,7 @@ export function buildDevflowSummaryBody({
         else kind = item._lane;
         let how;
         if (item._lane === 'advisory' && isResolved(item)) {
-          how = (item.final_resolution === 'ci_delegated' ? 'CI 委譲: ' : 'fix 後 tree で確認: ') + resolvedCell(item.final_evidence);
+          how = 'fix 後 tree で確認: ' + resolvedCell(item.final_evidence);
         } else {
           how = nonEmpty(item.evidence) ? resolvedCell(item.evidence) : '—';
         }
@@ -1059,7 +1044,7 @@ export function buildDevflowSummaryBody({
   }
   referenceLines.push(...conflictResolvedLines(conflictAutoresolve));
   if (finalReconcile != null && finalReconcile !== 'skipped') {
-    const t = finalReconcile === 'ci_verified' ? '✅ CI 委譲（PR head sha 一致・check 全 success）' : finalFlaky ? FLAKY_CELL : finalTestGreen === true ? '✅ green' : finalTestGreen === false ? '❌ red' : '不明';
+    const t = finalFlaky ? FLAKY_CELL : finalTestGreen === true ? '✅ green' : finalTestGreen === false ? '❌ red' : '不明';
     referenceLines.push(`- Final reconcile (pr-iterate fix 後の最終 tree 再検証): ${finalReconcile} — final test: ${t}` + (finalAcReconcile != null ? `, final AC: ${finalAcReconcile}` : ''));
     if (finalAcReconcile === 'reverified') {
       referenceLines.push('- ✅ AC は最終 PR tree で再検証済み（Final AC reconcile — AC テーブルは final snapshot）');
@@ -1108,8 +1093,7 @@ export function buildDevflowSummaryBody({
 }
 
 // HOLD 理由 code -> {現状, 対応} の fail-safe 写像（issue #658）。merge-tier.mjs の
-// HOLD_REASON_CODES を canonical とする（import 不可のため重複定義。同値性は
-// _lib/final-ci-routing.test.mjs 系と同じ規約で運用側が pin する）。out-of-enum / 欠落は
+// HOLD_REASON_CODES を canonical とする（import 不可のため重複定義）。out-of-enum / 欠落は
 // throw せず '—' / '人が確認する' に落とす（表示専用フィールドのため）。
 function holdReasonDisplay(code, kind, ctx) {
   switch (code) {
@@ -1160,17 +1144,13 @@ function holdReasonDisplay(code, kind, ctx) {
     case 'breaking_structured':
       return { current: 'analyze が breaking_change=true と判定', action: '互換性影響と告知要否を判断する' };
     case 'final_reconcile_unavailable':
-      return kind === 'deterministic_recheck'
-        ? { current: 'CI 完了待ち / 再取得で解消しうる', action: 'CI 完了後に再確認する' }
-        : { current: '最終 tree のテスト状態が未確認', action: '最終 tree でテストを手動実行する' };
+      return { current: '最終 tree のテスト状態が未確認', action: '最終 tree でテストを手動実行する' };
     case 'final_test_red':
       return { current: 'fix 後の最終 tree でテスト失敗', action: '修正が必要' };
     case 'validate_test_red':
       return { current: 'Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', action: '修正が必要（落ちたテストを直して push する）' };
     case 'validate_tests_not_run':
-      return kind === 'deterministic_recheck'
-        ? { current: 'テストが 1 件も実行されていない（ローカルは起動失敗・PR head の CI は未完了か取得できず）', action: `CI 完了後に \`gh pr checks ${ctx.pr}\` で test の結果を確認する` }
-        : { current: 'テストが 1 件も実行されていない（ローカルは起動失敗・PR head の CI でも green を確認できず）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
+      return { current: 'テストが 1 件も実行されていない（ローカルは起動失敗）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
     case 'final_ac_unavailable':
       return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
     case 'iterate_non_lgtm':

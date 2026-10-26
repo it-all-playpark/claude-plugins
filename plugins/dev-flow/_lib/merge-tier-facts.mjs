@@ -48,7 +48,7 @@ export function closesCheckCommand({ pr, repo, issue }) {
 
 // mergeTierFactsPrompt({ wt, base, pr, repo, issue }): 統合 exec-proxy の prompt。
 // gh の 3 コマンドは subagent が bare 単文で実行し、stdout を argv で merge-tier-facts へ verbatim 転写する
-// （exec-proxy スクリプトは認証付き network I/O を内部に持たない契約。check-ci / finalCiPrompt と同型）。
+// （exec-proxy スクリプトは認証付き network I/O を内部に持たない契約。check-ci と同型）。
 // PR body は closesCheckCommand で true / false に畳んだ結果だけを渡し、本文を argv にも prompt にも載せない。
 // base は origin/ 無しの branch 名を受け、prompt 側で origin/ を付ける（既存 call site と同じ）。
 export function mergeTierFactsPrompt({ wt, base, pr, repo, issue }) {

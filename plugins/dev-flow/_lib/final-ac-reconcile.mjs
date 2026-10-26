@@ -15,9 +15,7 @@ export const FINAL_AC_RECONCILE_VALUES = ['skipped', 'reverified', 'unavailable'
 //   1. fixesApplied が数値でない/<=0        → no_fixes
 //   2. runEval !== true                      → eval_skipped（micro path は Evaluate 0 回）
 //   3. acCount が正整数でない                → no_ac（AC 0 件で agent を起動しない）
-//   4. finalReconcile が 'reverified' でも 'ci_verified' でもない
-//      → final_test_unavailable（ci_verified は sync 成功 = worktree が PR 最終 HEAD、かつ
-//        CI で test 状態検証済みのため reverified と同様に AC 再検証へ進む。issue #599）
+//   4. finalReconcile が 'reverified' でない → final_test_unavailable
 //   5. finalTestGreen === false              → final_test_red
 //   6. それ以外（true または null=no_tests） → run:true
 export function shouldRunFinalAcReconcile({ fixesApplied, finalReconcile, finalTestGreen, runEval, acCount }) {
@@ -30,7 +28,7 @@ export function shouldRunFinalAcReconcile({ fixesApplied, finalReconcile, finalT
   if (!(Number.isInteger(acCount) && acCount > 0)) {
     return { run: false, reason: 'no_ac' };
   }
-  if (finalReconcile !== 'reverified' && finalReconcile !== 'ci_verified') {
+  if (finalReconcile !== 'reverified') {
     return { run: false, reason: 'final_test_unavailable' };
   }
   if (finalTestGreen === false) {
@@ -156,32 +154,26 @@ export function validateFinalItemResolutions(resolutions, targetIds) {
 //
 // standard は Evaluate 1 パスで、EVAL-* を checked にできる evaluator（critical_resolutions）は
 // pr-iterate の fix 後に再実行されない。fix で直った critical が ledger 未収束の HOLD に残り続けるため、
-// fix 後 tree の test#final green（head sha に pin）または CI 委譲（ci_verified）を決定論の根拠に解消する。
+// fix 後 tree の test#final green（head sha に pin）を決定論の根拠に解消する。
 // LLM 判断（final_resolution）は根拠にしない（blocking を LLM 判断で解消しない規則は不変）。
 //
 // 判定順（最初に該当した reason を返す。ok 以外は ids 空）:
 //   1. fixesApplied が数値でない/<=0                                    → no_fixes
 //   2. finalReconcile==='reverified' かつ finalTestGreen===true かつ headSha 非空
 //      → ok（evidence `test#final green @ <headSha>`）
-//   3. finalReconcile==='ci_verified' かつ finalCi.verified===true
-//      → ok（evidence `ci_verified: <check 名, ...>`）
-//   4. それ以外（red / no_tests / unavailable / skipped / head sha 不明） → not_verified
+//   3. それ以外（red / no_tests / unavailable / skipped / head sha 不明） → not_verified
 //
 // 対象は blockingItems のうち id が 'EVAL-' で始まり source==='evaluator' の未 checked item のみ。
 // escalate item は当事者性で人間判断を要求する機構で test green では解消しないため除外する。
 // SEC / TESTSURF（source:'seed'）・AC-FINAL-*（id 接頭辞が異なる）はこの経路で解消しない。
-export function finalEvalBlockingResolutions({ fixesApplied, finalReconcile, finalTestGreen, headSha, finalCi, blockingItems }) {
+export function finalEvalBlockingResolutions({ fixesApplied, finalReconcile, finalTestGreen, headSha, blockingItems }) {
   if (typeof fixesApplied !== 'number' || !Number.isFinite(fixesApplied) || fixesApplied <= 0) {
     return { reason: 'no_fixes', evidence: null, ids: [] };
   }
-  let evidence = null;
-  if (finalReconcile === 'reverified' && finalTestGreen === true && typeof headSha === 'string' && headSha.length > 0) {
-    evidence = `test#final green @ ${headSha}`;
-  } else if (finalReconcile === 'ci_verified' && finalCi && finalCi.verified === true) {
-    evidence = `ci_verified: ${(Array.isArray(finalCi.checkNames) ? finalCi.checkNames : []).join(', ')}`;
-  } else {
+  if (!(finalReconcile === 'reverified' && finalTestGreen === true && typeof headSha === 'string' && headSha.length > 0)) {
     return { reason: 'not_verified', evidence: null, ids: [] };
   }
+  const evidence = `test#final green @ ${headSha}`;
   const ids = (Array.isArray(blockingItems) ? blockingItems : [])
     .filter((it) => it && typeof it.id === 'string' && it.id.startsWith('EVAL-')
       && it.source === 'evaluator' && it.checked !== true && it.escalate !== true)

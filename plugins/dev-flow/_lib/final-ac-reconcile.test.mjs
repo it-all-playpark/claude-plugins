@@ -149,63 +149,6 @@ test('shouldRunFinalAcReconcile: finalTestGreen=true → run:true', () => {
   assert.deepEqual(result, { run: true, reason: 'ok' });
 });
 
-// ---- (2b) shouldRunFinalAcReconcile: finalReconcile='ci_verified' (issue #599) ----
-
-test('shouldRunFinalAcReconcile: finalReconcile=ci_verified + finalTestGreen=null → run:true', () => {
-  const result = shouldRunFinalAcReconcile({
-    fixesApplied: 1,
-    finalReconcile: 'ci_verified',
-    finalTestGreen: null,
-    runEval: true,
-    acCount: 2,
-  });
-  assert.deepEqual(result, { run: true, reason: 'ok' });
-});
-
-test('shouldRunFinalAcReconcile: finalReconcile=ci_verified + finalTestGreen=false → final_test_red（判定順5が引き続き効く）', () => {
-  const result = shouldRunFinalAcReconcile({
-    fixesApplied: 1,
-    finalReconcile: 'ci_verified',
-    finalTestGreen: false,
-    runEval: true,
-    acCount: 2,
-  });
-  assert.deepEqual(result, { run: false, reason: 'final_test_red' });
-});
-
-test('shouldRunFinalAcReconcile: finalReconcile=unavailable → final_test_unavailable 不変（ci_verified 追加後も回帰なし）', () => {
-  const result = shouldRunFinalAcReconcile({
-    fixesApplied: 1,
-    finalReconcile: 'unavailable',
-    finalTestGreen: null,
-    runEval: true,
-    acCount: 2,
-  });
-  assert.deepEqual(result, { run: false, reason: 'final_test_unavailable' });
-});
-
-test('shouldRunFinalAcReconcile: finalReconcile=ci_verified でも fixesApplied=0 → no_fixes（判定順が先）', () => {
-  const result = shouldRunFinalAcReconcile({
-    fixesApplied: 0,
-    finalReconcile: 'ci_verified',
-    finalTestGreen: null,
-    runEval: true,
-    acCount: 2,
-  });
-  assert.deepEqual(result, { run: false, reason: 'no_fixes' });
-});
-
-test('shouldRunFinalAcReconcile: finalReconcile=ci_verified でも runEval=false → eval_skipped（判定順が先）', () => {
-  const result = shouldRunFinalAcReconcile({
-    fixesApplied: 1,
-    finalReconcile: 'ci_verified',
-    finalTestGreen: null,
-    runEval: false,
-    acCount: 2,
-  });
-  assert.deepEqual(result, { run: false, reason: 'eval_skipped' });
-});
-
 // ---- (3) validateFinalAcResults ----
 
 test('validateFinalAcResults: 正常 2 件（順不同入力が sort されて返る + unsatisfiedIndexes 抽出）', () => {
@@ -521,18 +464,11 @@ const MIXED_BLOCKING = [
   { id: 'AC-FINAL-1', source: 'evaluator', dimension: 'ac', severity: 'critical', checked: false },
   { id: 'AC-1', source: 'ac', dimension: 'ac', severity: 'critical', checked: false },
 ];
-const GREEN_RUN = { fixesApplied: 1, finalReconcile: 'reverified', finalTestGreen: true, headSha: SHA, finalCi: null };
-const CI_OK = { verified: true, reason: 'ok', kind: null, checkNames: ['bats', 'vitest'], headRefOid: SHA };
+const GREEN_RUN = { fixesApplied: 1, finalReconcile: 'reverified', finalTestGreen: true, headSha: SHA };
 
 test('finalEvalBlockingResolutions: reverified + test#final green → 未 checked EVAL-* のみ test#final green @ sha で解消', () => {
   const r = finalEvalBlockingResolutions({ ...GREEN_RUN, blockingItems: MIXED_BLOCKING });
   assert.deepEqual(r, { reason: 'ok', evidence: `test#final green @ ${SHA}`, ids: ['EVAL-1-vitest-regression'] });
-});
-test('finalEvalBlockingResolutions: ci_verified → ci_verified: <check 名> で解消', () => {
-  const r = finalEvalBlockingResolutions({
-    fixesApplied: 2, finalReconcile: 'ci_verified', finalTestGreen: null, headSha: SHA, finalCi: CI_OK, blockingItems: MIXED_BLOCKING,
-  });
-  assert.deepEqual(r, { reason: 'ok', evidence: 'ci_verified: bats, vitest', ids: ['EVAL-1-vitest-regression'] });
 });
 test('finalEvalBlockingResolutions: SEC seed / TESTSURF / AC-FINAL-* / AC-* / escalate / checked 済みは対象外', () => {
   const r = finalEvalBlockingResolutions({ ...GREEN_RUN, blockingItems: MIXED_BLOCKING });
@@ -566,14 +502,8 @@ test('finalEvalBlockingResolutions: reverified + green でも head sha 不明 �
 });
 test('finalEvalBlockingResolutions: unavailable / skipped → not_verified', () => {
   for (const finalReconcile of ['unavailable', 'skipped']) {
-    const r = finalEvalBlockingResolutions({ ...GREEN_RUN, finalReconcile, finalCi: CI_OK, blockingItems: [EVAL_OPEN] });
+    const r = finalEvalBlockingResolutions({ ...GREEN_RUN, finalReconcile, blockingItems: [EVAL_OPEN] });
     assert.equal(r.reason, 'not_verified', `finalReconcile=${finalReconcile}`);
-  }
-});
-test('finalEvalBlockingResolutions: ci_verified でも finalCi.verified!==true → not_verified', () => {
-  for (const finalCi of [null, { verified: false, checkNames: [] }]) {
-    const r = finalEvalBlockingResolutions({ ...GREEN_RUN, finalReconcile: 'ci_verified', finalCi, blockingItems: [EVAL_OPEN] });
-    assert.equal(r.reason, 'not_verified');
   }
 });
 test('finalEvalBlockingResolutions: 入力 item を mutate しない', () => {

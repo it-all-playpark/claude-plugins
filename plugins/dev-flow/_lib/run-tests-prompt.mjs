@@ -14,7 +14,7 @@
 // timeout / background: 全テストを 1 回の Bash で走らせるため Bash tool の既定 timeout（120 秒）を超える repo がある。
 // timeout 未指定だと background に回され、agent が待った後に同じコマンドを再発行して二重実行になるので、
 // timeout: 600000 を明示し background 化・再実行を禁じる。JSON が返らなかった場合の応答は固定文字列にして
-// agent に結果を組み立てさせない（tests:"error" は green-fix を回さず Final reconcile では CI 委譲へ進む経路）。
+// agent に結果を組み立てさせない（tests:"error" は green-fix を回さず、merge tier の HOLD に倒れる経路）。
 //
 // --base: run-tests は merge-base からの変更ファイル一覧を DEVFLOW_CHANGED_FILES / DEVFLOW_BASE で tests/run-*.sh に渡す
 // （issue #835）。何を回すかは repo 側のランナーが決める。全 test spawn・全 shape・全 gate_policy で同じ ref を渡す。
@@ -28,7 +28,8 @@ export function runTestsPrompt(wt, base) {
   return runTestsCommandPrompt(wt, `run-tests ${wt} --base ${base}`);
 }
 
-// Final reconcile の test#final-rerun（issue #865）: test#final が落ちたファイルだけを 1 回流し直す。
+// Final reconcile の test#final-rerun（issue #865）/ test#validate-rerun（issue #1138）: test#final（Final reconcile が
+// skip の run は Validate）が落ちたファイルだけを 1 回流し直す。
 // 全件を再実行しない — 並列負荷による flake は全件を回すと再発する。files は呼び出し側（finalTestRerunFiles）が
 // シェルで分割・展開されない文字だけのパスに絞ってから渡す。転写の契約は runTestsPrompt と同じ。
 /**

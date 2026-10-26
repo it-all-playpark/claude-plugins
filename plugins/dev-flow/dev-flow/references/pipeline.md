@@ -224,22 +224,23 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 - **判定**: pr-iterate が fix を適用した run（`fixes_applied > 0`）だけ、fix 後の最終 tree で確かめ直す（0 の run は spawn しない）:
   - worktree を PR の最終 HEAD に同期し、Validate と同じ prompt の `run-tests <WT>` を 1 回だけ実行する（green-fix はしない）。red で
     落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake として記録する（`_lib/final-test-rerun.mjs`）
-  - テストを実行できなければ、PR head sha に pin した CI check を決定論で判定して代える（`finalCiVerdict`）
+  - テストを実行できなければ（同期失敗・null・`tests:'error'`）`unavailable` で HOLD。PR の CI の success では代えない —
+    `pull_request` の CI は PR head の workflow で動き、CI が呼ぶスクリプトも PR が書き換えられる
   - 最終の changed-files で宣言外変更を監査し直す
-  - final test が green か CI で確かめられた run は、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
+  - final test が green の run は、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
     解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は決定論の evidence で checked にする
     （evaluator は fix 後に再実行されないため）。SEC seed・TESTSURF・AC-FINAL は LLM の判断で解消しない
   - test#final が green か no_tests なら、Final AC reconcile に test#final の `tests` / `green` と各 script のログパスを渡し、
-    実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）。error（CI 委譲）・
-    red の flake 判定ではログを渡さない
-- skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'` は `validate_test_red`、`tests:'error'` は PR head の
-  CI で green を確かめられなければ `validate_tests_not_run` で HOLD
+    実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）。red の flake 判定ではログを渡さない
+- skip した run の PR tree のテスト状態は Validate の結果のまま。`tests:'failed'` は落ちたファイルだけを 1 回流し直し
+  （`test#validate-rerun`。test#final と同じ `_lib/final-test-rerun.mjs`）、green なら flake として `final_test_flaky` に記録して
+  HOLD 理由にしない。それ以外は `validate_test_red`。`tests:'error'` は常に `validate_tests_not_run` で HOLD
 - **失敗の扱い**:
-  - 同期失敗・test の null は `unavailable`（fail-safe → Merge tier HOLD）。flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）
-  - CI での代替が成立しない（pending・failure・sha 不一致）は HOLD のまま（fail-closed。判定は LLM にさせない）
+  - 同期失敗・test の null は `unavailable`（fail-safe → Merge tier HOLD）。flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）。
+    `failed_files` が空・安全に渡せないパスを含む red は再実行せず、再実行の throw / null / red は red のまま
   - Final AC reconcile の応答が検証に通らなければ `unavailable`（fail-closed → HOLD）
   - changed-files の取得失敗は宣言外の再監査を skip（fail-open。test gate は維持）。PR 本文の AC checkbox の更新失敗も fail-open
-- **コード**: `phase('Final reconcile')`（`.claude/workflows/dev-flow.js`）、`_lib/final-test-rerun.mjs`、`_lib/final-ci.mjs`、
+- **コード**: `phase('Final reconcile')`（`.claude/workflows/dev-flow.js`）、`_lib/final-test-rerun.mjs`、
   `_lib/final-ac-reconcile.mjs`（`finalEvalBlockingResolutions`）、`_lib/post-eval-recheck.mjs`
 
 ## Merge tier

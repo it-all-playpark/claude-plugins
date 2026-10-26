@@ -429,10 +429,10 @@ flowchart TD
 | `ac_ci_pending` | ci の AC が pr-iterate の LGTM 後の待ちで success にならない（CI 判定待ち） | |
 | `merge_facts_dropped` | merge-tier-facts の応答から danger-grep の結果（`risk.value`）が落ちた | danger-grep 自体は実行済みの可能性あり。security 未検証として扱う |
 | `danger_fail_closed` | danger-grep 実行不能 | fail-closed |
-| `final_reconcile_unavailable` | Final reconcile 再検証不能（CI 委譲も不成立） | |
+| `final_reconcile_unavailable` | Final reconcile 再検証不能（同期失敗・test#final の null / `tests:'error'`） | PR の CI の success では解除しない |
 | `final_test_red` | final test red | 落ちたファイルだけの 1 回の再実行で green なら flake として HOLD にしない |
-| `validate_test_red` | Validate test red のまま PR へ進行し、pr-iterate の fix が 0 件で Final reconcile が skip された | PR tree のテスト状態は Validate の結果のまま。gate_policy に依らず人間確認 |
-| `validate_tests_not_run` | Validate が `tests:'error'`（テストが 1 件も実行されていない）で Final reconcile が skip され、PR head sha に pin した CI でも green を確認できない（未取得・pending・failure・sha 不一致・check 0 件） | CI の 1 回の取得をテスト欄と共有。Setup(deps) が `ok:false` なら note を理由に載せる |
+| `validate_test_red` | Validate test red のまま PR へ進行し、pr-iterate の fix が 0 件で Final reconcile が skip された | PR tree のテスト状態は Validate の結果のまま。落ちたファイルだけの 1 回の再実行で green なら flake として HOLD にしない。gate_policy に依らず人間確認 |
+| `validate_tests_not_run` | Validate が `tests:'error'`（テストが 1 件も実行されていない）で Final reconcile が skip された | PR の CI の success では解除しない。Setup(deps) が `ok:false` なら note を理由に載せる |
 | `final_ac_unavailable` | Final AC reconcile 判定不能 | |
 | `iterate_non_lgtm` | pr-iterate が `lgtm` 以外で終端 | |
 | `hash_mismatch` | `eval_staleness = hash_mismatch` | 評価済み tree と merge 対象 tree の乖離 |

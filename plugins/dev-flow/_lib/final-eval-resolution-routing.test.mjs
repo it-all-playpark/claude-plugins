@@ -1,16 +1,16 @@
 // final-eval-resolution-routing: VM sandbox routing test for dev-flow の Final reconcile における
 // EVAL-* blocking item の決定論解消（issue #720）。standard shape（Evaluate 1 パス）で evaluator が
 // critical を出し、pr-iterate が fix を適用した run で、fix 後の最終 tree に対する決定論の検証
-// （test#final green @ head sha / ci_verified）が成立したときだけ EVAL-* が checked になり、
+// （test#final green @ head sha）が成立したときだけ EVAL-* が checked になり、
 // ledger_unconverged の HOLD が外れることを pin する。
 //
 // テストケース:
 //   (a) fixes=1 + test#final green → EVAL-* checked（evidence `test#final green @ <sha>`）+ ledger 収束 +
 //       ledger_unconverged で HOLD にならない
-//   (b) fixes=1 + test#final tests:'error' + ci-final 全 success → ci_verified で EVAL-* checked
-//       （evidence `ci_verified: <check 名>`）+ ledger_unconverged で HOLD にならない
+//   (b) fixes=1 + test#final tests:'error'（unavailable）→ EVAL-* 未 checked + final_reconcile_unavailable と
+//       ledger_unconverged の HOLD（PR の CI の success では解消しない。issue #1138）
 //   (c) fixes=1 + test#final red → EVAL-* 未 checked + ledger_unconverged の HOLD
-//   (d) fixes=1 + test#final null + ci-final 不成立（unavailable）→ EVAL-* 未 checked + ledger_unconverged の HOLD
+//   (d) fixes=1 + test#final null（unavailable）→ EVAL-* 未 checked + ledger_unconverged の HOLD
 //   (e) fixes=0 → EVAL-* 未 checked + ledger_unconverged の HOLD（解消経路を適用しない）
 //   (f) fixes=1 + test#final green でも Final AC reconcile が AC 不成立 → AC-FINAL-* は未 checked で HOLD
 //       （EVAL-* は checked になるが AC-FINAL-* はこの経路で解消しない）
@@ -27,10 +27,6 @@ const repoRoot = join(here, '..');
 const devFlowSrc = readFileSync(join(repoRoot, '.claude/workflows/dev-flow.js'), 'utf8');
 
 const SHA40 = 'c'.repeat(40);
-const ROLLUP_OK = [
-  { __typename: 'CheckRun', name: 'bats', status: 'COMPLETED', conclusion: 'SUCCESS' },
-  { __typename: 'CheckRun', name: 'vitest', status: 'COMPLETED', conclusion: 'SUCCESS' },
-];
 
 // eval#1（standard は 1 パス）が critical を 1 件返す → EVAL-1-* が blocking lane に未 checked で残ったまま PR へ進む
 const EVAL_CRITICAL = {
@@ -83,23 +79,18 @@ test('[final-eval-resolution] (a) fixes=1 + test#final green → EVAL-* を test
   assert.equal(result?.merge_tier, 'REVIEW', `(a) merge_tier は REVIEW のはずだが ${result?.merge_tier}（${JSON.stringify(result?.merge_tier_reasons)}）`);
 });
 
-test('[final-eval-resolution] (b) fixes=1 + ci_verified → EVAL-* を ci_verified: <check 名> で checked + ledger_unconverged にならない', async () => {
+test("[final-eval-resolution] (b) fixes=1 + test#final tests:'error'（unavailable）→ EVAL-* 未 checked のまま final_reconcile_unavailable と ledger_unconverged の HOLD", async () => {
   const { result, error, logs } = await runScenario({
     fixesApplied: 1,
-    overrides: {
-      'test#final': { tests: 'error', green: false, summary: 'EPERM — テストは 1 件も実行されていない' },
-      'ci-final': { ok: true, headRefOid: SHA40, statusCheckRollup: ROLLUP_OK },
-    },
+    overrides: { 'test#final': { tests: 'error', green: false, summary: 'EPERM — テストは 1 件も実行されていない' } },
   });
   assertNoCrash(error, 'b');
   assert.equal(error, null, `(b) run は完走するはず: ${error?.message}`);
-  assert.equal(result?.final_reconcile, 'ci_verified');
-  const checked = evalCheckedLogs(logs);
-  assert.equal(checked.length, 1, `(b) EVAL-* が 1 件 checked になるはず: ${JSON.stringify(logs.filter((l) => l.includes('EVAL-')))}`);
-  assert.ok(checked[0].includes('ci_verified: bats, vitest'), `(b) evidence に ci_verified: <check 名> が無い: ${checked[0]}`);
-  assert.equal(result?.ledger_converged, true, '(b) ledger は収束するはず');
-  assert.ok(!holdCodes(result).includes('ledger_unconverged'), `(b) ledger_unconverged で HOLD になってはならない: ${JSON.stringify(holdCodes(result))}`);
+  assert.equal(result?.final_reconcile, 'unavailable');
+  assertEvalStillOpen(result, logs, 'b');
+  assert.ok(holdCodes(result).includes('final_reconcile_unavailable'), `(b) hold reason に final_reconcile_unavailable が無い: ${JSON.stringify(holdCodes(result))}`);
 });
+
 
 test('[final-eval-resolution] (c) fixes=1 + test#final red → EVAL-* 未 checked のまま ledger_unconverged の HOLD', async () => {
   const { result, error, logs } = await runScenario({ fixesApplied: 1, overrides: { 'test#final': { tests: 'failed', green: false, summary: '1 failed' } } });
@@ -109,8 +100,8 @@ test('[final-eval-resolution] (c) fixes=1 + test#final red → EVAL-* 未 checke
   assertEvalStillOpen(result, logs, 'c');
 });
 
-test('[final-eval-resolution] (d) fixes=1 + test#final null + ci-final 不成立 → EVAL-* 未 checked のまま ledger_unconverged の HOLD', async () => {
-  const { result, error, logs } = await runScenario({ fixesApplied: 1, overrides: { 'test#final': null, 'ci-final': { ok: false, error: 'x' } } });
+test('[final-eval-resolution] (d) fixes=1 + test#final null（unavailable）→ EVAL-* 未 checked のまま ledger_unconverged の HOLD', async () => {
+  const { result, error, logs } = await runScenario({ fixesApplied: 1, overrides: { 'test#final': null } });
   assertNoCrash(error, 'd');
   assert.equal(result?.final_reconcile, 'unavailable');
   assertEvalStillOpen(result, logs, 'd');

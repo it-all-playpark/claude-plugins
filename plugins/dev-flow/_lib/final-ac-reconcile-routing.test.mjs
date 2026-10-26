@@ -19,7 +19,7 @@
 //        'ledger 未収束' に反映
 //   (r6) fixes=1 + test#final red → 'final-ac-reconcile' 不発 + skipped + HOLD（'final test red'）
 //   (r7) fixes=1 + test#final green → prompt に test#final の tests / green・各 script のログパス・再実行しない指示
-//   (r8) fixes=1 + test#final error（CI 委譲）/ red の flake 判定 → prompt にログパスも再実行しない指示も入らない
+//   (r8) fixes=1 + test#final red の flake 判定 → prompt にログパスも再実行しない指示も入らない
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -301,15 +301,8 @@ test('[final-ac-reconcile] (r7) test#final green → prompt に test#final の t
   assert.ok(p.includes(TEST_LOG_REUSE), '(r7) ログの行を根拠にして再実行しない指示が無い');
 });
 
-test('[final-ac-reconcile] (r8) test#final が error（CI 委譲）・red の flake 判定 → prompt にログパスも再実行しない指示も入らない', async () => {
-  const sha = 'a'.repeat(40);
-  const rollup = [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }];
+test('[final-ac-reconcile] (r8) test#final が red の flake 判定 → prompt にログパスも再実行しない指示も入らない', async () => {
   for (const [name, overrides] of [
-    ['tests:error → ci_verified', {
-      'reconcile-sync': { ok: true, head: sha },
-      'test#final': { tests: 'error', green: false, summary: 'launch failed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 127, launch_failed: true, log: FINAL_LOG }] },
-      'ci-final': { ok: true, headRefOid: sha, statusCheckRollup: rollup },
-    }],
     ['red → 単体再実行 green（flake）', {
       'test#final': { tests: 'failed', green: false, summary: 'not ok 1 x', failed_files: ['plugins/a.bats'], scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 1, launch_failed: false, log: FINAL_LOG }] },
       'test#final-rerun': { tests: 'passed', green: true, summary: 'passed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-Zz99/rerun.log' }] },
