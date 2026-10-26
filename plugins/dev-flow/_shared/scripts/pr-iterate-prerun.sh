@@ -28,6 +28,7 @@
 # 書き込めない場合の退避も同じ規則: この呼び出しで作った worktree が書けなければ remove して repo 外候補で
 # 1 回だけ作り直す（skills repo の repo 内 worktree は index.lock が EPERM になる既知の問題があるため）。
 # 再利用した worktree が書けない場合は退避しない（branch がそこで checkout 済み）— ok:false で人間に返す。
+# 再利用する worktree の basename が git / git-* のときも ok:false で人間に返す（worktree 分離ガードの拒否。移動はしない）。
 #
 # Output (stdout, JSON 1 行):
 #   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, plugin_commit, fix_direction?, error?}
@@ -383,6 +384,13 @@ create_at() {
 if [[ -n "$REUSE_PATH" ]]; then
     WT="$REUSE_PATH"
     worktree_status="reused"
+    # basename が git / git-* の worktree は、パスを operand に取る exec-proxy（security-review-scope 等）を
+    # worktree 分離ガードが git サブコマンドとみなして拒否し、security review が diff_unavailable で止まる。
+    # 人の session の worktree かもしれないので移動・削除せず、起動前に人間へ返す
+    wt_base="$(basename "$WT")"
+    if [[ "$wt_base" == "git" || "$wt_base" == git-* ]]; then
+        fail "再利用する worktree ${WT} の名前（${wt_base}）が git / git- で始まるため、worktree パスを渡す exec-proxy（security-review-scope 等）が worktree 分離ガードに git コマンドとみなされて拒否される。git worktree move ${WT} <git- で始まらない別名のパス> で移すか、その worktree で ${head_ref} の checkout を外して（別 branch へ切り替えて）から再実行する"
+    fi
     if ! PROBE_ERR="$(write_probe "$WT")"; then
         worktree_status="unwritable"
         fail "${PROBE_ERR}（再利用した worktree は ${head_ref} を checkout 済みのため退避しない。git worktree remove ${WT} で削除してから再実行する）"

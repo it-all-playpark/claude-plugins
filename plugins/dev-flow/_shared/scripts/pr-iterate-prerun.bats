@@ -163,6 +163,49 @@ advance_origin_head() {
     [ ! -e "$ROOT/.claude/worktrees/pr-5" ]
 }
 
+# basename が git / git-* の worktree は exec-proxy の operand に載ると worktree 分離ガードに拒否される（issue #1158）
+@test "(2e) head branch を checkout 済みの再利用 worktree の basename が git- で始まる -> ok:false、パス・原因・直し方を返し worktree を動かさない" {
+    cd "$ROOT"
+    GW="$BATS_TEST_TMPDIR/wt/git-issue-x"
+    git worktree add -q --no-track -b feature/x "$GW" origin/feature/x
+    GW_P="$(cd "$GW" && pwd -P)"
+
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "reused"'
+    echo "$output" | jq -e --arg wt "$GW_P" '.worktree == $wt and (.error | contains($wt))'
+    echo "$output" | jq -e '.error | test("worktree 分離ガード") and test("exec-proxy") and test("git worktree move") and test("checkout を外して")'
+    [ -d "$GW" ]
+    [ "$(git -C "$GW" rev-parse --abbrev-ref HEAD)" = "feature/x" ]
+    [ ! -e "$ROOT/.claude/worktrees/pr-5" ]
+}
+
+@test "(2f) 再利用 worktree の basename が git そのもの -> ok:false" {
+    cd "$ROOT"
+    GW="$BATS_TEST_TMPDIR/wt/git"
+    git worktree add -q --no-track -b feature/x "$GW" origin/feature/x
+    GW_P="$(cd "$GW" && pwd -P)"
+
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --arg wt "$GW_P" '.ok == false and .worktree == $wt and (.error | test("worktree 分離ガード"))'
+    [ -d "$GW" ]
+}
+
+@test "(2g) git- で始まらない名前（pr-1157 / df-1157 / github-x）の再利用 worktree は ok:true・reused" {
+    cd "$ROOT"
+    for name in pr-1157 df-1157 github-x; do
+        WT_DIR="$BATS_TEST_TMPDIR/wt-$name/$name"
+        git worktree add -q --no-track -b feature/x "$WT_DIR" origin/feature/x
+        WT_DIR_P="$(cd "$WT_DIR" && pwd -P)"
+        run bash "$SCRIPT" 5
+        [ "$status" -eq 0 ]
+        echo "$output" | jq -e --arg wt "$WT_DIR_P" '.ok == true and .worktree_status == "reused" and .worktree == $wt'
+        git worktree remove --force "$WT_DIR"
+        git branch -q -D feature/x
+    done
+}
+
 @test "(2b) 同じ PR で 2 回目 -> 1 回目に作った worktree を reused で返し、epoch は新しく採る" {
     cd "$ROOT"
     run bash "$SCRIPT" 5
