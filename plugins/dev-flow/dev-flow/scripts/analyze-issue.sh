@@ -185,8 +185,8 @@ AC_NEAR_MISS_RE='受け入れ|受入|acceptance|完了条件|完了基準'
 # `# comment` in a shell snippet) are never mistaken for markdown headings (issue #388 review).
 FENCE_LINE_RE='^[[:space:]]{0,3}(```+|~~~+)'
 
-# 本文の全行で呼ばれるので grep を fork せず bash の [[ =~ ]]（同じ POSIX ERE）で判定する。
-# grep 版は 1 行あたり数 ms かかり、300 行の本文で analyze が 5 秒を超えていた。
+# 本文の全行で何度も呼ばれるので、grep を fork せず bash の [[ =~ ]]（同じ POSIX ERE）で判定する
+# （fork は 1 回数 ms かかり、本文の行数に比例して analyze が秒単位で延びる）。
 # -i 相当は nocasematch をこの判定の間だけ立てる。
 matches_ci() {
     local rc=1
