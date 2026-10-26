@@ -84,7 +84,7 @@ JS で保持し、中間 state は script 変数に持つ (外部 state JSON は
 ```
 /dev-flow <issue>   → [wrapper preflight] → Setup(末尾で決定論 analyze ゲート)
                       → Implement(dev-implementer 1 spawn) → Validate(test green)
-                      → Security floor(realized diff から shape 判定) → Evaluate → PR → workflow('dev-flow:pr-iterate-run')
+                      → Diff triage(realized diff から shape 判定) → Evaluate → PR → workflow('dev-flow:pr-iterate-run')
                       → Final reconcile(fixes_applied>0 のみ) → Merge tier
 /pr-iterate <pr>    → [wrapper preflight: pr-iterate-prerun → EnterWorktree] → Workflow('dev-flow:pr-iterate-run') で
                       review ⇄ fix loop (LGTM まで, 上限10)。dev-flow からは nested 起動
@@ -98,7 +98,7 @@ JS で保持し、中間 state は script 変数に持つ (外部 state JSON は
 
 - **merge は常に人間** (LGTM 後にユーザーが merge)。全 tier で例外なし。
 - **軸A invariant** — deterministic oracle / seed / critical アイテムは全 `gate_policy` で blocking。
-  security floor・決定論ゲートを policy で緩めない。
+  danger-grep の fail-closed（失敗は全 SEC seed unchecked → HOLD）と決定論ゲートを policy で緩めない。
 - **1 issue = 1 PR**。Implement は全 shape で `dev-implementer`（plan+impl 統合）を単一 worktree に 1 spawn する（planner ⇄ reviewer ループ・parallel fan-out は持たない）。
 - **後方互換 scaffolding を作らない** — out-of-enum 値は明示 error (legacy fallback / version 分岐なし)。
 - `plugins/dev-flow/.claude/workflows/*.js` の `// ==== BEGIN inline: <path> ====` 〜

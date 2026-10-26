@@ -3,7 +3,7 @@
 // StructuredOutput 契約違反限定の同一 prompt 1 回リトライ（issue #527 B-2）を検証する。
 //
 // issue #641: Setup phase の 4 spawn（setup-base 含む）が撤去されたため、opt-in call site の
-// 駆動を残存する 'danger-grep'（Security floor、retryOnContractViolation:true・try/catch で
+// 駆動を残存する 'danger-grep'（Diff triage、retryOnContractViolation:true・try/catch で
 // throw を吸収し run は継続する）に置換した。未 opt-in の対照は 'diff-gate'（need() 包み、throw は
 // そのまま伝播する。issue #690 で Analyze の spawn が 0 になり analyze#1 は存在しない）で取る。
 //
@@ -91,12 +91,12 @@ test('[tracked-agent-so-retry] (b) danger-grep が契約違反以外の throw �
   });
   const { error } = await runWorkflowCapture(devFlowSrc, ctx);
 
-  assert.equal(error, null, 'danger-grep の throw は execSecurityFloorPhase の try/catch で吸収され run は継続するはず');
+  assert.equal(error, null, 'danger-grep の throw は execDiffTriagePhase の try/catch で吸収され run は継続するはず');
   const dangerCalls = calls.filter((c) => c.label === 'danger-grep');
   assert.equal(dangerCalls.length, 1, 'danger-grep の呼び出し回数が 1 件ではない（リトライされてしまった）');
   assert.ok(
-    logs.some((l) => l.includes('secfloor-classify 呼び出しが例外')),
-    'secfloor-classify 呼び出しが例外 log が出ていない',
+    logs.some((l) => l.includes('diff-triage 呼び出しが例外')),
+    'diff-triage 呼び出しが例外 log が出ていない',
   );
 });
 

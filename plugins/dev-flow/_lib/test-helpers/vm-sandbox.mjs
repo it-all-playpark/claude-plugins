@@ -387,12 +387,12 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
     if (label === 'danger-grep') {
       return { risk: { ok: true, hits: [] }, files: [...STANDARD_FILES], struct: null, diffhash: { hash: 'AAA', empty: false } };
     }
-    // Security floor の敵対的 security review の対象判定（issue #1063）。既定は対象外（nested pr-iterate の stub が
+    // Diff triage の敵対的 security review の対象判定（issue #1063）。既定は対象外（nested pr-iterate の stub が
     // security_review を返さないので、対象にすると Merge tier が security_review_unresolved で HOLD になる）。
     // 対象の経路を見る test は override で target:true を返す（securityScopeResponse 参照）。
     if (label === 'security-scope') return securityScopeResponse({ target: false });
     // label 'merge-tier-facts'（Merge tier。issue #637 統合呼び出し）は 6 サブ結果を {ok,value,error} で返す。
-    // diffhash は既定で danger-grep（Security floor）と同一ハッシュ 'AAA'（Security floor 結果の再利用が発火）。
+    // diffhash は既定で danger-grep（Diff triage）と同一ハッシュ 'AAA'（Diff triage 結果の再利用が発火）。
     // 不一致・失敗にしたいテストは override で個別に上書きする（mergeTierFacts() helper 参照）。
     if (label === 'merge-tier-facts') return mergeTierFacts();
     if (agentType === 'dev-flow:evaluator') {

@@ -32,7 +32,7 @@ export function isTestFilePath(p) {
 // green-fix 差分の再評価モードを決める。
 //   files:     評価済み tree → green-fix 後 tree の差分パス（ephemeral 除外済み）。null = 取得不能
 //   truncated: numstat の打ち切り有無（打ち切りは差分全体が見えていないので full）
-//   risk:      secfloor-classify の risk（working tree 全体 vs base）。hit は files に含まれるものだけを見る
+//   risk:      diff-triage の risk（working tree 全体 vs base）。hit は files に含まれるものだけを見る
 // 差分パス不明・risk 取得失敗は full（fail-safe: 軽い確認に倒さない）。
 // hits は green-fix 差分のファイルに載った risk hit（danger / test-weakening の両方）。
 export function classifyGreenFixDiff({ files, truncated, risk }) {

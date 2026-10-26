@@ -79,7 +79,7 @@ export const SECURITY_FIX_GUIDANCE = 'security review の指摘の直し方:\n'
   + '直さなかった指摘は topic（指摘の topic 文字列をそのまま）を deferred_security_topics に入れ、理由を summary に書く（人が判断する）。'
   + '直した指摘の topic は入れない\n';
 
-// args.security_review（起動時の判定。dev-flow の Security floor / pr-iterate-prerun の出力）。
+// args.security_review（起動時の判定。dev-flow の Diff triage / pr-iterate-prerun の出力）。
 // 無ければ null（呼び出し側が対象として扱う — 判定できない入力は対象）。不正形は明示 throw（legacy fallback なし）。
 // reviewer_context_changed は起動時に決定論で取った「diff が reviewer の指示ファイルを変えるか」。run 中の判定は PR の
 // worktree を cwd に起動する中継（LLM）を通るので、PR が書いた指示文でその値を偽れる。起動時の値を run の終わりまで固定し、

@@ -1,11 +1,11 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { parseSecfloorFields, lineStatsFor, isWellFormedRiskField } from './secfloor-unified.mjs';
+import { parseDiffTriageFields, lineStatsFor, isWellFormedRiskField } from './diff-triage.mjs';
 
 // (1) null 入力 → risk.ok===false かつ hits===[]、files/struct/hash は null。hits フィールド欠落を
 // clean と同一視しない fail-closed が要件。
 test('null 入力 → risk fail-closed (hits=[]), files/struct/hash=null', () => {
-  const result = parseSecfloorFields(null);
+  const result = parseDiffTriageFields(null);
   assert.equal(result.risk.ok, false);
   assert.deepEqual(result.risk.hits, []);
   assert.equal(typeof result.risk.error, 'string');
@@ -22,7 +22,7 @@ test('全フィールド正常 → risk/files/struct/hash がすべて素通し'
     struct: { ok: true, available: true, structural: ['a.js'], format_only: ['b.js'] },
     diffhash: { hash: 'abc123', empty: false },
   };
-  const result = parseSecfloorFields(unified);
+  const result = parseDiffTriageFields(unified);
   assert.deepEqual(result.risk, unified.risk);
   assert.deepEqual(result.files, unified.files);
   assert.deepEqual(result.struct, unified.struct);
@@ -38,7 +38,7 @@ test('risk のみ型不正 → risk fail-closed だが他フィールドは無�
     struct: { ok: true, available: true, structural: [], format_only: [] },
     diffhash: { hash: 'deadbeef', empty: false },
   };
-  const result = parseSecfloorFields(unified);
+  const result = parseDiffTriageFields(unified);
   assert.equal(result.risk.ok, false);
   assert.deepEqual(result.risk.hits, []);
   assert.deepEqual(result.files, ['a.js']);
@@ -53,7 +53,7 @@ test('risk 欠落フィールド（hits なし）→ risk fail-closed（hits 欠
     struct: null,
     diffhash: { hash: 'x', empty: true },
   };
-  const result = parseSecfloorFields(unified);
+  const result = parseDiffTriageFields(unified);
   assert.equal(result.risk.ok, false);
   assert.deepEqual(result.risk.hits, []);
   assert.deepEqual(result.files, []);
@@ -68,7 +68,7 @@ test('files のみ非配列 → files null だが risk は無傷', () => {
     struct: { ok: true, available: true, structural: [], format_only: [] },
     diffhash: { hash: 'x', empty: true },
   };
-  const result = parseSecfloorFields(unified);
+  const result = parseDiffTriageFields(unified);
   assert.deepEqual(result.risk, { ok: true, hits: [] });
   assert.equal(result.files, null);
   assert.deepEqual(result.struct, unified.struct);
@@ -82,7 +82,7 @@ test('files に非 string 要素混入 → files null（波及なし）', () => 
     struct: null,
     diffhash: null,
   };
-  const result = parseSecfloorFields(unified);
+  const result = parseDiffTriageFields(unified);
   assert.equal(result.files, null);
   assert.deepEqual(result.risk, { ok: true, hits: [] });
 });
@@ -95,7 +95,7 @@ test('struct.ok!==true → struct null だが他フィールドは無傷', () =>
     struct: { ok: false, error: 'boom' },
     diffhash: { hash: 'x', empty: false },
   };
-  const result = parseSecfloorFields(unified);
+  const result = parseDiffTriageFields(unified);
   assert.equal(result.struct, null);
   assert.deepEqual(result.risk, { ok: true, hits: [] });
   assert.deepEqual(result.files, ['a.js']);
@@ -109,7 +109,7 @@ test('struct.available が boolean 以外 → struct null（波及なし）', ()
     struct: { ok: true, available: 'true', structural: [], format_only: [] },
     diffhash: { hash: 'x', empty: false },
   };
-  const result = parseSecfloorFields(unified);
+  const result = parseDiffTriageFields(unified);
   assert.equal(result.struct, null);
   assert.deepEqual(result.files, ['a.js']);
 });
@@ -121,7 +121,7 @@ test('struct.available===false (difft 未インストール) は object かつ�
     struct: { ok: true, available: false, structural: [], format_only: [], reason: 'difft_not_installed' },
     diffhash: null,
   };
-  const result = parseSecfloorFields(unified);
+  const result = parseDiffTriageFields(unified);
   assert.deepEqual(result.struct, unified.struct);
 });
 
@@ -133,7 +133,7 @@ test('diffhash.hash が非 string → hash null（波及なし）', () => {
     struct: { ok: true, available: true, structural: [], format_only: [] },
     diffhash: { hash: 12345, empty: false },
   };
-  const result = parseSecfloorFields(unified);
+  const result = parseDiffTriageFields(unified);
   assert.equal(result.hash, null);
   assert.deepEqual(result.risk, { ok: true, hits: [] });
   assert.deepEqual(result.files, ['a.js']);
@@ -142,7 +142,7 @@ test('diffhash.hash が非 string → hash null（波及なし）', () => {
 
 test('diffhash 欠落 → hash null', () => {
   const unified = { risk: { ok: true, hits: [] }, files: [], struct: null };
-  const result = parseSecfloorFields(unified);
+  const result = parseDiffTriageFields(unified);
   assert.equal(result.hash, null);
 });
 
@@ -154,14 +154,14 @@ test('files:[] は null と区別され [] のまま採用される', () => {
     struct: null,
     diffhash: null,
   };
-  const result = parseSecfloorFields(unified);
+  const result = parseDiffTriageFields(unified);
   assert.deepEqual(result.files, []);
   assert.notEqual(result.files, null);
 });
 
 // non-object / 任意の不正値入力（number, string, array）でも risk fail-closed、他 null に落ちる
 test('unified が非 object（number）→ risk fail-closed、files/struct/hash=null', () => {
-  const result = parseSecfloorFields(42);
+  const result = parseDiffTriageFields(42);
   assert.equal(result.risk.ok, false);
   assert.deepEqual(result.risk.hits, []);
   assert.equal(result.files, null);
@@ -170,7 +170,7 @@ test('unified が非 object（number）→ risk fail-closed、files/struct/hash=
 });
 
 test('unified が undefined → risk fail-closed、files/struct/hash=null', () => {
-  const result = parseSecfloorFields(undefined);
+  const result = parseDiffTriageFields(undefined);
   assert.equal(result.risk.ok, false);
   assert.equal(result.files, null);
   assert.equal(result.struct, null);
@@ -182,7 +182,7 @@ test('unified が undefined → risk fail-closed、files/struct/hash=null', () =
 
 test('lines 正常 → 素通し、他フィールドは無傷', () => {
   const lines = [{ path: 'a.js', added: 3, deleted: 0 }, { path: 'b.md', added: 0, deleted: 12 }];
-  const result = parseSecfloorFields({ risk: { ok: true, hits: [] }, files: ['a.js', 'b.md'], struct: null, diffhash: null, lines });
+  const result = parseDiffTriageFields({ risk: { ok: true, hits: [] }, files: ['a.js', 'b.md'], struct: null, diffhash: null, lines });
   assert.deepEqual(result.lines, lines);
   assert.deepEqual(result.files, ['a.js', 'b.md']);
   assert.equal(result.risk.ok, true);
@@ -197,7 +197,7 @@ for (const [label, lines] of [
   ['null 要素', [null]],
 ]) {
   test(`lines ${label} → lines=null だが risk/files は無傷`, () => {
-    const result = parseSecfloorFields({ risk: { ok: true, hits: [] }, files: ['a.js'], struct: null, diffhash: { hash: 'h' }, lines });
+    const result = parseDiffTriageFields({ risk: { ok: true, hits: [] }, files: ['a.js'], struct: null, diffhash: { hash: 'h' }, lines });
     assert.equal(result.lines, null);
     assert.deepEqual(result.risk, { ok: true, hits: [] });
     assert.deepEqual(result.files, ['a.js']);
@@ -226,7 +226,7 @@ test('lineStatsFor: files / lines のどちらかが null なら null', () => {
 // ---- isWellFormedRiskField: fail-closed の 2 原因を呼び出し側が区別するための述語 (issue #617) ----
 //
 // risk.ok!==true には (a) 形状不一致（top-level risk 欠落 → parseRiskField が合成）と
-// (b) proxy が契約通りの形で ok:false を報告（secfloor-classify.sh 自体の失敗）の 2 通りがある。
+// (b) proxy が契約通りの形で ok:false を報告（diff-triage.sh 自体の失敗）の 2 通りがある。
 // 述語は「採用されたか合成されたか」を返し、診断 log の文言・出力値の出し分けに使う。
 
 test.each([
@@ -246,13 +246,13 @@ test.each([
 test.each([
   // 述語 true: 契約通りの失敗報告では proxy の error がそのまま残り、診断値として log できる
   ['述語 true のとき proxy の risk をそのまま採用する（error も保持）',
-    { risk: { ok: false, hits: [], error: 'secfloor-classify.sh exited 2' } },
-    { ok: false, error: 'secfloor-classify.sh exited 2' }],
+    { risk: { ok: false, hits: [], error: 'diff-triage.sh exited 2' } },
+    { ok: false, error: 'diff-triage.sh exited 2' }],
   ['述語 false のとき fail-closed を合成する',
     { struct: { risk: { ok: true, hits: [] } } },
-    { ok: false, error: 'secfloor unified proxy unavailable (fail-closed)' }],
-])('parseSecfloorFields(unified).risk: %s', (_name, unified, want) => {
-  const { risk } = parseSecfloorFields(unified);
+    { ok: false, error: 'diff-triage unified proxy unavailable (fail-closed)' }],
+])('parseDiffTriageFields(unified).risk: %s', (_name, unified, want) => {
+  const { risk } = parseDiffTriageFields(unified);
   assert.equal(risk.ok, want.ok);
   assert.equal(risk.error, want.error);
 });
@@ -261,9 +261,9 @@ test.each([
 // struct が null / ok!==true / available 非 boolean / format_only・structural 非配列のいずれでも struct=null
 // （呼び出し元は formatOnlySet を空にして全ファイル structural 扱いへフォールバックする）。
 
-test('parseSecfloorFields(unified).struct: 形の正しい struct は非 null で format_only を保持する', () => {
+test('parseDiffTriageFields(unified).struct: 形の正しい struct は非 null で format_only を保持する', () => {
   const unified = { risk: { ok: true, hits: [] }, struct: { ok: true, available: true, format_only: ['a'], structural: [] } };
-  const { struct } = parseSecfloorFields(unified);
+  const { struct } = parseDiffTriageFields(unified);
   assert.notEqual(struct, null);
   assert.deepEqual(struct.format_only, ['a']);
 });
@@ -275,8 +275,8 @@ test.each([
   ['structural が配列でない', { ok: true, available: true, format_only: [], structural: 'x' }],
   ['struct が null', null],
   ['struct 欠落', undefined],
-])('parseSecfloorFields(unified).struct: %s → null（fail-open）', (_name, struct) => {
+])('parseDiffTriageFields(unified).struct: %s → null（fail-open）', (_name, struct) => {
   const unified = { risk: { ok: true, hits: [] } };
   if (struct !== undefined) unified.struct = struct;
-  assert.equal(parseSecfloorFields(unified).struct, null);
+  assert.equal(parseDiffTriageFields(unified).struct, null);
 });

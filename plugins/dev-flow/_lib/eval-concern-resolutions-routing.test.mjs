@@ -53,9 +53,9 @@ function createResponder() {
         issue_title: 'stub-issue-title',
       };
     }
-    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
-    // Security floor / danger-grep 系
+    // Diff triage / danger-grep 系
     if (label.startsWith('danger-grep')) {
       return { ok: true, hits: [] };
     }
@@ -300,7 +300,7 @@ function createSingleConcernResponder(concernResolutions) {
         issue_number: 1, issue_title: 'stub-issue-title',
       };
     }
-    // Security floor の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
+    // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };

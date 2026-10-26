@@ -50,7 +50,7 @@ function createResponder({ concerns, ciChecksResponse }) {
         issue_title: 'stub-issue-title',
       };
     }
-    // Security floor / danger-grep 系
+    // Diff triage / danger-grep 系
     if (label === 'danger-grep') {
       return { ok: true, hits: [] };
     }

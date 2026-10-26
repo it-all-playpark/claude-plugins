@@ -153,7 +153,7 @@ test('[diffhash-failopen] (c) merge-tier-facts が契約違反で throw → run 
   const factCalls = calls.filter((c) => c.label === 'merge-tier-facts');
   assert.equal(factCalls.length, 2, `(c) 契約違反リトライで merge-tier-facts は 2 回呼ばれるはずだが ${factCalls.length} 回`);
 
-  assert.ok(logs.some((l) => l.includes('diff-hash-merge') && l.includes('fail-safe')), '(c) diffhash 取得失敗 → Security floor 結果の再利用 skip の警告 log が無い');
+  assert.ok(logs.some((l) => l.includes('diff-hash-merge') && l.includes('fail-safe')), '(c) diffhash 取得失敗 → Diff triage 結果の再利用 skip の警告 log が無い');
   assert.ok(logs.some((l) => l.includes('merge-tier-facts') && l.includes('fail-closed')), '(c) risk fail-closed の警告 log が無い');
   assert.ok(calls.some((c) => c.label === 'journal-log'), '(c) journal-log まで到達しているはず（handoff 到達）');
 });

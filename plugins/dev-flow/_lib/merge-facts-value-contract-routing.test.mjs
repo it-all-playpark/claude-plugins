@@ -4,7 +4,7 @@
 //     — value 欠落を StructuredOutput の schema 契約違反として検知させる（retryOnContractViolation の対象）。
 // (2) 再試行しても value が得られない場合、HOLD reason は danger_fail_closed（danger-grep 実行不能）ではなく
 //     merge_facts_dropped（merge-tier-facts の転記欠落）で出る。
-// (3) PR body の danger-grep 行は Security floor の hit を {class, file} 単位で出し、`unknown: \`?\`` を出さない。
+// (3) PR body の danger-grep 行は Diff triage の hit を {class, file} 単位で出し、`unknown: \`?\`` を出さない。
 //
 // harness は共有 vm-sandbox.mjs（makeDevFlowSandbox/runWorkflowCapture）。VM 内の既定値は WT='/tmp/wt'。
 //
@@ -195,7 +195,7 @@ test('[merge-facts-value][AC-2] スクリプト自身が risk ok:false を報告
 // AC-3: PR 本文の danger-grep 行に `unknown: \`?\`` を出さない
 // ============================================================
 
-test('[merge-facts-value][AC-3] Security floor の hit は PR body に class: `file` で出て、unknown: `?` を出さない', async () => {
+test('[merge-facts-value][AC-3] Diff triage の hit は PR body に class: `file` で出て、unknown: `?` を出さない', async () => {
   const hits = [
     { file: 'src/x.ts', class: 'public-api', severity: 'critical' },
     { file: 'src/y.ts', class: 'auth', severity: 'critical' },

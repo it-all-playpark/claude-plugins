@@ -1,24 +1,24 @@
-// Issue #550 (S2): Security floor 統合 exec-proxy (danger-grep / realized-diff /
-// structural-classify / diff-hash-secfloor の 4→1 統合) の routing / 挙動 pin。
+// Issue #550 (S2): Diff triage 統合 exec-proxy (danger-grep / realized-diff /
+// structural-classify / diff-hash-triage の 4→1 統合) の routing / 挙動 pin。
 //
 // (A) 挙動 pin（issue #636: dev-flow.js の raw ソース regex 走査から、共有 vm-sandbox.mjs
 //     （agent() mock）による VM 挙動検証へ移行）:
-//   A1. label 'danger-grep'（Security floor）は VM 内で agentType:'dev-flow:dev-runner-haiku-ro'
+//   A1. label 'danger-grep'（Diff triage）は VM 内で agentType:'dev-flow:dev-runner-haiku-ro'
 //       として観測され、opts.schema（clone）は required:['risk']
-//   A2. 既定 run の calls に label 'realized-diff' / 'structural-classify' / 'diff-hash-secfloor'
+//   A2. 既定 run の calls に label 'realized-diff' / 'structural-classify' / 'diff-hash-triage'
 //       が 0 件（4→1 の統合を run 全体の呼び出し集合で実測）
 //   A3. 既定 run の全 calls の prompt に '--out' 文字列が含まれない（証跡書き込み撤去。AC1）
 //   A4. label 'merge-tier-facts'（Merge tier）は agentType:'dev-flow:dev-runner-haiku-ro'
 //   A5. 統合呼び出しは try/catch で包まれ need() では包まれない —
 //       契約違反ではない単なる throw（'without calling StructuredOutput' を含まないメッセージ）で
 //       run が abort せず継続することを VM で確認する（retry 対象外の throw 経路）
-//   A6. 統合呼び出しの prompt が secfloor-classify を参照する（argv token）
+//   A6. 統合呼び出しの prompt が diff-triage を参照する（argv token）
 //
 // (B) 挙動 pin（AC3/AC4/軸A。_lib canonical を直接 import して検証。不変）:
-//   (a) unified=null（agent drop 相当）→ parseSecfloorFields → risk.ok===false →
+//   (a) unified=null（agent drop 相当）→ parseDiffTriageFields → risk.ok===false →
 //       seedSecurityLedger 済み ledger に reconcileDanger を適用すると SEC seed 全件
 //       unchecked（fail-closed）で、classifyMergeTier 相当の判定が HOLD になる
-//   (b) throw 経路の fail-closed HOLD は secfloor-schema-contract-routing AC4 が VM で pin する
+//   (b) throw 経路の fail-closed HOLD は diff-triage-schema-contract-routing AC4 が VM で pin する
 //   (c) risk 正常 + files 欠落 → dangerHits は正常算出されつつ realizedCount 相当が NaN →
 //       classifyShape が complex（安全弁）
 //   (d) risk 欠落 + files 正常 → SEC fail-closed だが files は正常配列のまま（独立性）
@@ -27,7 +27,7 @@
 //   (f) testsurf: risk.ok:false 時に reconcileTestsurf が既存 TESTSURF item 据え置き・
 //       新規 seed なしの現行ポリシーのままであること
 //
-// Run: npx vitest run _lib/secfloor-unified-routing.test.mjs
+// Run: npx vitest run _lib/diff-triage-routing.test.mjs
 // Full CI: bash tests/run-node-tests.sh --strict
 
 import { test } from 'vitest';
@@ -36,7 +36,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { parseSecfloorFields } from './secfloor-unified.mjs';
+import { parseDiffTriageFields } from './diff-triage.mjs';
 import { reconcileDanger, seedSecurityLedger, classifyMergeTier } from './merge-tier.mjs';
 import { policyBlockingItems, DEFAULT_GATE_POLICY } from './gate-policy.mjs';
 import { makeLedger, appendItem } from './goal-ledger.mjs';
@@ -52,7 +52,7 @@ const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 async function defaultRun() {
   const { ctx, calls, logs } = makeDevFlowSandbox({});
   const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
-  assertNoCrash(error, 'secfloor-unified-routing-default-run');
+  assertNoCrash(error, 'diff-triage-routing-default-run');
   return { result, error, calls, logs };
 }
 
@@ -60,7 +60,7 @@ async function defaultRun() {
 // (A) VM 挙動 pin
 // ============================================================
 
-test("[secfloor-unified-routing][A1] label 'danger-grep'（Security floor）は agentType:'dev-flow:dev-runner-haiku-ro' かつ opts.schema.required===['risk']", async () => {
+test("[diff-triage-routing][A1] label 'danger-grep'（Diff triage）は agentType:'dev-flow:dev-runner-haiku-ro' かつ opts.schema.required===['risk']", async () => {
   const { calls } = await defaultRun();
   const call = calls.find((c) => c.label === 'danger-grep');
   assert.ok(call, "label 'danger-grep' の agent() call が見つからない");
@@ -69,22 +69,22 @@ test("[secfloor-unified-routing][A1] label 'danger-grep'（Security floor）は 
   assert.deepEqual(schema.required, ['risk']);
 });
 
-test("[secfloor-unified-routing][A2] 既定 run に label 'realized-diff' / 'structural-classify' / 'diff-hash-secfloor' が存在しない（4→1 統合。AC2）", async () => {
+test("[diff-triage-routing][A2] 既定 run に label 'realized-diff' / 'structural-classify' / 'diff-hash-triage' が存在しない（4→1 統合。AC2）", async () => {
   const { calls } = await defaultRun();
-  for (const label of ['realized-diff', 'structural-classify', 'diff-hash-secfloor']) {
+  for (const label of ['realized-diff', 'structural-classify', 'diff-hash-triage']) {
     const count = calls.filter((c) => c.label === label).length;
     assert.equal(count, 0, `label '${label}' は統合により消滅しているはずだが ${count} 件見つかった`);
   }
 });
 
-test("[secfloor-unified-routing][A3] 既定 run の全 calls の prompt に '--out' 文字列が含まれない（AC1: 証跡書き込み撤去）", async () => {
+test("[diff-triage-routing][A3] 既定 run の全 calls の prompt に '--out' 文字列が含まれない（AC1: 証跡書き込み撤去）", async () => {
   const { calls } = await defaultRun();
   for (const call of calls) {
     assert.ok(!call.prompt.includes('--out'), `label '${call.label}' の prompt に '--out' が残っている`);
   }
 });
 
-test("[secfloor-unified-routing][A4] label 'merge-tier-facts'（Merge tier）は agentType:'dev-flow:dev-runner-haiku-ro'（AC1: agentType 復帰）", async () => {
+test("[diff-triage-routing][A4] label 'merge-tier-facts'（Merge tier）は agentType:'dev-flow:dev-runner-haiku-ro'（AC1: agentType 復帰）", async () => {
   // Merge tier の danger-grep 再判定は merge-tier-facts の risk サブ結果で行う。reuse（secDiffHash===mergeDiffHash）
   // が発火しても spawn 自体は 1 回発生する（pr / checks 等の他サブ結果に必要）。
   const { ctx, calls } = makeDevFlowSandbox({
@@ -97,7 +97,7 @@ test("[secfloor-unified-routing][A4] label 'merge-tier-facts'（Merge tier）は
   assert.equal(call.agentType, 'dev-flow:dev-runner-haiku-ro');
 });
 
-test('[secfloor-unified-routing][A5] 統合呼び出しは try/catch で包まれ need() では包まれない（契約違反ではない throw でも run は abort しない）', async () => {
+test('[diff-triage-routing][A5] 統合呼び出しは try/catch で包まれ need() では包まれない（契約違反ではない throw でも run は abort しない）', async () => {
   const overrides = {
     'danger-grep': () => { throw new Error('boom'); },
   };
@@ -110,12 +110,12 @@ test('[secfloor-unified-routing][A5] 統合呼び出しは try/catch で包ま�
   assert.ok(result, 'run は最後まで完走し結果を返す');
 });
 
-test('[secfloor-unified-routing][A6] 統合呼び出しの prompt が secfloor-classify を argv token として参照する', async () => {
+test('[diff-triage-routing][A6] 統合呼び出しの prompt が diff-triage を argv token として参照する', async () => {
   const { calls } = await defaultRun();
   const call = calls.find((c) => c.label === 'danger-grep');
   assert.ok(
-    call.prompt.includes('secfloor-classify /tmp/wt origin/main'),
-    'execSecurityFloorPhase の統合呼び出し prompt が secfloor-classify の argv token を含んでいない',
+    call.prompt.includes('diff-triage /tmp/wt origin/main'),
+    'execDiffTriagePhase の統合呼び出し prompt が diff-triage の argv token を含んでいない',
   );
 });
 
@@ -136,8 +136,8 @@ function reconcileAndClassify(risk) {
   return { secItems, converged, tier };
 }
 
-test('[secfloor-unified-routing][B-a] unified=null（agent drop）→ risk fail-closed → SEC seed 全 unchecked + HOLD', () => {
-  const { risk } = parseSecfloorFields(null);
+test('[diff-triage-routing][B-a] unified=null（agent drop）→ risk fail-closed → SEC seed 全 unchecked + HOLD', () => {
+  const { risk } = parseDiffTriageFields(null);
   assert.equal(risk.ok, false);
 
   const { secItems, converged, tier } = reconcileAndClassify(risk);
@@ -150,20 +150,20 @@ test('[secfloor-unified-routing][B-a] unified=null（agent drop）→ risk fail-
   assert.equal(tier, 'HOLD', `fail-closed 時は classifyMergeTier が HOLD を返すべきだが '${tier}'`);
 });
 
-test('[secfloor-unified-routing][B-c] risk 正常 + files 欠落 → dangerHits は正常算出されつつ realizedCount 相当は NaN → classifyShape が complex', () => {
+test('[diff-triage-routing][B-c] risk 正常 + files 欠落 → dangerHits は正常算出されつつ realizedCount 相当は NaN → classifyShape が complex', () => {
   const unified = {
     risk: { ok: true, hits: [{ file: 'src/auth.ts', class: 'auth', severity: 'critical' }] },
     files: 'not-an-array',
     struct: null,
     diffhash: null,
   };
-  const { risk, files } = parseSecfloorFields(unified);
+  const { risk, files } = parseDiffTriageFields(unified);
   assert.equal(risk.ok, true);
   const dangerHits = [...new Set(secHitsOf(risk).map((h) => h.class))];
   assert.deepEqual(dangerHits, ['auth'], 'risk 正常時は SEC hit クラスが正しく算出されるべき');
 
   assert.equal(files, null, 'files 型不正は null（fail-safe）に落ちるべき');
-  // dev-flow.js execSecurityFloorPhase と同型のパターン: realized?.files ? .length : NaN
+  // dev-flow.js execDiffTriagePhase と同型のパターン: realized?.files ? .length : NaN
   const realized = files == null ? null : { files };
   const realizedCount = realized?.files ? realized.files.length : NaN;
   assert.ok(Number.isNaN(realizedCount), 'files 欠落時の realizedCount は NaN であるべき（?? [] で 0 に潰さない）');
@@ -173,21 +173,21 @@ test('[secfloor-unified-routing][B-c] risk 正常 + files 欠落 → dangerHits 
   assert.match(triage.reason, /safe floor=complex/);
 });
 
-test('[secfloor-unified-routing][B-d] risk 欠落 + files 正常 → SEC fail-closed だが files は正常配列のまま（独立性）', () => {
+test('[diff-triage-routing][B-d] risk 欠落 + files 正常 → SEC fail-closed だが files は正常配列のまま（独立性）', () => {
   const unified = { files: ['src/foo.ts', 'src/bar.ts'], struct: null, diffhash: null };
-  const { risk, files } = parseSecfloorFields(unified);
+  const { risk, files } = parseDiffTriageFields(unified);
   assert.equal(risk.ok, false, 'risk 欠落時は fail-closed であるべき');
   assert.deepEqual(files, ['src/foo.ts', 'src/bar.ts'], 'risk の欠落が files フィールドへ波及してはならない');
 });
 
-test("[secfloor-unified-routing][B-e] 全フィールド正常 + hits 空 → SEC seed は 'danger-grep clean' で自動 check、blocking 未 checked 0 件（軸A 非抵触）", () => {
+test("[diff-triage-routing][B-e] 全フィールド正常 + hits 空 → SEC seed は 'danger-grep clean' で自動 check、blocking 未 checked 0 件（軸A 非抵触）", () => {
   const unified = {
     risk: { ok: true, hits: [] },
     files: [],
     struct: { ok: true, available: true, structural: [], format_only: [] },
     diffhash: { hash: 'H', empty: false },
   };
-  const { risk } = parseSecfloorFields(unified);
+  const { risk } = parseDiffTriageFields(unified);
   let ledger = makeLedger();
   for (const seed of seedSecurityLedger()) ledger = appendItem(ledger, seed).ledger;
   ledger = reconcileDanger(ledger, risk);
@@ -204,8 +204,8 @@ test("[secfloor-unified-routing][B-e] 全フィールド正常 + hits 空 → SE
   );
 });
 
-test('[secfloor-unified-routing][B-f] risk.ok:false 時、reconcileTestsurf は既存 TESTSURF item を据え置き・新規 seed なし', () => {
-  const { risk } = parseSecfloorFields(null);
+test('[diff-triage-routing][B-f] risk.ok:false 時、reconcileTestsurf は既存 TESTSURF item を据え置き・新規 seed なし', () => {
+  const { risk } = parseDiffTriageFields(null);
   assert.equal(risk.ok, false);
 
   let ledger = makeLedger();
@@ -219,5 +219,5 @@ test('[secfloor-unified-routing][B-f] risk.ok:false 時、reconcileTestsurf は�
   assert.equal(after.items.length, before.items.length, '新規 TESTSURF seed が発生してはならない');
 });
 
-// isWellFormedRiskField（fail-closed の 2 原因を区別する述語）と parseSecfloorFields の risk 採用 / 合成の
-// 純関数検証は secfloor-unified.test.mjs が表駆動で持つ。
+// isWellFormedRiskField（fail-closed の 2 原因を区別する述語）と parseDiffTriageFields の risk 採用 / 合成の
+// 純関数検証は diff-triage.test.mjs が表駆動で持つ。

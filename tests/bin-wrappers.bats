@@ -43,6 +43,7 @@ detect-stack
 dev-flow-prerun
 dev-flow-ready-set
 diff-risk-classify
+diff-triage
 ensure-worktree-deps
 local-verify
 merge-tier-facts
@@ -50,7 +51,6 @@ pr-iterate-prerun
 pr-push
 redgreen-verify
 run-tests
-secfloor-classify
 security-review-codex-prep
 security-review-codex-result
 security-review-isolated
@@ -88,7 +88,7 @@ target_for() {
         local-verify) echo "_shared/scripts/local-verify.sh" ;;
         redgreen-verify) echo "_shared/scripts/redgreen-verify.sh" ;;
         merge-tier-facts) echo "_shared/scripts/merge-tier-facts.sh" ;;
-        secfloor-classify) echo "_shared/scripts/secfloor-classify.sh" ;;
+        diff-triage) echo "_shared/scripts/diff-triage.sh" ;;
         security-review-codex-prep) echo "_shared/scripts/security-review-codex-prep.sh" ;;
         security-review-codex-result) echo "_shared/scripts/security-review-codex-result.sh" ;;
         security-review-isolated) echo "_shared/scripts/security-review-isolated.sh" ;;

@@ -36,7 +36,7 @@ export function seedSecurityLedger() {
 // risk.ok !== true は danger-grep 実行失敗/転写失敗/空出力を表し、fail-closed として
 // 全 SEC seed を unchecked に戻す（clean と区別する）。この際 fail_closed:true を付与する
 // （danger_hits とは別軸の機械可読フラグ。Evaluate ループ収束判定からのみ除外するために使う。
-// merge tier 側は unchecked のまま含めて HOLD を強制し続ける — security floor は緩めない）。
+// merge tier 側は unchecked のまま含めて HOLD を強制し続ける — danger-grep の fail-closed は緩めない）。
 // clean/hit の成功分岐では fail_closed:false を明示セットして stale フラグを解消する。
 // clean クラス → checked(evidence='danger-grep clean')。
 // hit クラス → critical へ raise(floor=true)。
@@ -85,7 +85,7 @@ export function reconcileDanger(ledger, risk) {
 // clearance の対象候補を決定論的に算出する純関数。
 // 「before で checked（Evaluate 時点等で解消済み）だったが after で unchecked に転じた」
 // SEC seed item の danger_class のみを返す（Evaluate 時点から未解消のまま残る SEC は
-// merge tier で clear させない = security floor 不変）。
+// merge tier で clear させない = SEC item の blocking 不変）。
 // after 側で fail_closed:true の item は defense-in-depth として除外する（fail-closed 時は
 // clearance 対象にしない）。before に同 id が無い item も対象外。ledger は mutate しない。
 export function newlyUncheckedSecClasses(before, after) {
@@ -331,7 +331,7 @@ export function classifyMergeableState(meta) {
 //   workflow は finalTestGreen を true にするので final_test_red は積まれない。flake は HOLD 理由にせず
 //   開示行（finalTestFlakyDisclosure）だけを disclosures に積む。未指定 = 開示なし。files が非空の string[]
 //   でない / logs が string[] でない / finalTestGreen !== true（red のまま flake を名乗る矛盾）は明示 error。
-// s.securityReviewUnresolved (optional boolean): 敵対的 security review の対象の run（Security floor か pr-iterate の
+// s.securityReviewUnresolved (optional boolean): 敵対的 security review の対象の run（Diff triage か pr-iterate の
 //   判定のどちらかで対象）で、pr-iterate が今の PR head で security review を clear にしていない（LGTM 以外で終端した・
 //   critical/major が残った・worktree の外を指す指摘がある・review を回せなかった。issue #1063）。true なら
 //   'security_review_unresolved'（human_judgment）で HOLD。blast-radius — merge 直前の最終ゲートで、gate_policy に

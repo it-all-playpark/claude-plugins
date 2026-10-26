@@ -74,7 +74,7 @@ function makeCleanMicroReq() {
 function makeLiteRouteSandbox(analyzeReq, opts = {}) {
   const dangerHits = opts.dangerHits ?? [];
   const reviewOverride = 'reviewOverride' in opts ? opts.reviewOverride : { decision: 'approve', issues: [] };
-  // Security floor の敵対的 security review の対象判定（label 'security-scope'。issue #1063）。既定は対象外
+  // Diff triage の敵対的 security review の対象判定（label 'security-scope'。issue #1063）。既定は対象外
   // （merge-base 基準の diff が許可リストだけ）。関数なら呼び出しごとに評価する（throw の注入用）。
   const securityScope = 'securityScope' in opts ? opts.securityScope : { ok: true, target: false, reasons: [] };
 
@@ -111,7 +111,7 @@ function makeLiteRouteSandbox(analyzeReq, opts = {}) {
     if (label.startsWith('ci-check')) {
       return { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], waited_seconds: 0, poll_attempts: 0 };
     }
-    // Security floor: label 'danger-grep'（issue #544 統合呼び出し）。risk.hits は dangerHits で
+    // Diff triage: label 'danger-grep'（issue #544 統合呼び出し）。risk.hits は dangerHits で
     // 可変。files（旧 realized-diff。issue #376 F3 fix — 未stub だと realizedCount が NaN になり
     // classifyShape が fail-safe で complex に倒し、EFFECTIVE_SHAPE!=='micro' となって
     // state.runEval が強制 true になり LITE ゲートを常に無効化してしまうため、clean シナリオでは
@@ -384,7 +384,7 @@ test('[lite-route][E] ci-check-lite が throw しても lite 経路は full pr-i
 });
 
 // ============================================================
-// (F) lite に入るのは Security floor の merge-base 基準の diff が敵対的 security review の対象外判定
+// (F) lite に入るのは Diff triage の merge-base 基準の diff が敵対的 security review の対象外判定
 //     （_lib/security-review-scope.mjs の許可リスト）に当たるときだけ（issue #1063）
 // ============================================================
 
@@ -411,7 +411,7 @@ test('[lite-route][F] 対象判定は merge-base 基準（origin/<base> と作�
   const err = await runDevFlowInSandbox(src, ctx);
   failOnStructuralCrash(err);
   const scope = calls.find((c) => c.label === 'security-scope');
-  assert.ok(scope, 'Security floor で security-scope が呼ばれていない');
+  assert.ok(scope, 'Diff triage で security-scope が呼ばれていない');
   assert.equal(scope.agentType, 'dev-flow:dev-runner-haiku-ro');
   assert.ok(scope.prompt.endsWith('\nsecurity-review-scope /tmp/wt origin/main --working-tree'), `merge-base 基準の判定になっていない:\n${scope.prompt}`);
   assert.equal(calls.filter((c) => c.label === 'pr-review-lite').length, 1, '対象外なら lite に入る');

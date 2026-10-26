@@ -7,7 +7,7 @@
 //     → `<base-ref>...<head-ref>`（既定 HEAD）の diff を判定する（PR の commit 済みの diff）
 //   node security-review-scope.mjs <worktree> <base-ref> --working-tree
 //     → merge-base(<base-ref>, HEAD) と作業ツリー（未コミット・untracked を含む。一時 index で tree を作り、
-//       実 index は触らない）の diff を判定する（dev-flow の Security floor。implementer は commit しない）
+//       実 index は触らない）の diff を判定する（dev-flow の Diff triage。implementer は commit しない）
 //   --save-diff: diff 全文を worktree の外の新しい一時ディレクトリ（os.tmpdir() 配下の dev-flow-security-review-XXXXXX）の
 //     pr.diff に書き、review_dir / diff_path を返す（pr-iterate の security-reviewer・Codex 経路の prep が読む）
 //

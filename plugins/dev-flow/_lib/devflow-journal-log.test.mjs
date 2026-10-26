@@ -53,7 +53,7 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     if (label.startsWith('analyze')) {
       return analyzeReq;
     }
-    // Security floor / Merge tier: danger-grep 系（label が 'danger-grep' で始まる）
+    // Diff triage / Merge tier: danger-grep 系（label が 'danger-grep' で始まる）
     // → danger clean にして HOLD 要因を発生させない
     if (label.startsWith('danger-grep')) {
       return { ok: true, hits: [] };

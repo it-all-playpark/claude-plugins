@@ -1,15 +1,15 @@
 #!/usr/bin/env bats
-# Tests for _shared/scripts/secfloor-classify.sh (issue #544, P1)
+# Tests for _shared/scripts/diff-triage.sh (issue #544, P1)
 #
 # Strategy: mktemp -d の隔離 git fixture repo を worktree-path として扱い、
-# secfloor-classify.sh を実行して JSON 出力の各フィールド (risk/files/struct/diffhash)
+# diff-triage.sh を実行して JSON 出力の各フィールド (risk/files/struct/diffhash)
 # を検証する。フィールド独立性(1 フィールドの失敗が他へ波及しない)は PATH 細工
 # (jq 不在シミュレート・fake git read-tree 失敗・DIFFT_BIN シーム)で個別に誘発する。
 #
 # NOTE: 実装されるまでこれらのテストは fail (red) になる想定 (TDD)。
 
 setup() {
-    SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/secfloor-classify.sh"
+    SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/diff-triage.sh"
 
     REPO="$(mktemp -d)"
     git -C "$REPO" init -q
@@ -183,7 +183,7 @@ STUB
     cat > "$GIT_STUB_BIN/git" <<STUB
 #!/usr/bin/env bash
 # worktree-diff-hash.sh だけが呼ぶ "git ... read-tree ..." を狙い撃ちで失敗させる。
-# diff-risk-classify.sh / structural-classify.sh / secfloor-classify.sh 本体の
+# diff-risk-classify.sh / structural-classify.sh / diff-triage.sh 本体の
 # git 呼び出しには read-tree が現れないため、他フィールドには波及しない。
 for arg in "\$@"; do
     if [[ "\$arg" == "read-tree" ]]; then

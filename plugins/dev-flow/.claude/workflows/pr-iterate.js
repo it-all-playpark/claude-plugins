@@ -341,7 +341,7 @@ const FIX_DIRECTION = args?.fix_direction == null
       }
       return d
     })()
-// security_review: 起動時の敵対的 security review の対象判定 { target, reasons }（dev-flow は Security floor の判定、
+// security_review: 起動時の敵対的 security review の対象判定 { target, reasons }（dev-flow は Diff triage の判定、
 // 単体起動の wrapper は pr-iterate-prerun の出力を渡す）。無いときは対象として扱う（判定できない入力を
 // 対象外と同一視しない）。不正形は明示 throw（_lib/security-review.mjs の parseSecurityReviewArg）。
 const SECURITY_REVIEW_ARG = parseSecurityReviewArg(args?.security_review)

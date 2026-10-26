@@ -36,7 +36,7 @@ dev-flow 本体・dev-flow-health（frontmatter の paths）を触るときだ�
 
 ## ゲート（fail-closed / fail-safe の理由）
 
-- 軸A invariant: deterministic oracle / seed / critical は全 gate_policy で blocking。security floor と決定論ゲートを policy で緩めない。記録専用 telemetry は gate 入力にしない
+- 軸A invariant: deterministic oracle / seed / critical は全 gate_policy で blocking。danger-grep の fail-closed と決定論ゲートを policy で緩めない。記録専用 telemetry は gate 入力にしない
 - Merge tier は pr-iterate の後（fix 後の最終 tree で danger 再 reconcile）。fixes_applied>0 は Final reconcile で test 再実行、red / 再検証不能は HOLD（PR head sha に pin した CI 決定論判定でのみ代替）。例外は flake だけ: `failed_files` 非空の red は落ちたファイルだけ 1 回再実行し、exit code が green なら flake（`final_test_flaky` に記録・HOLD 理由にしない）。全件・2 回目の再実行と LLM 判定はしない（繰り返すほど本物の red を通す）
 - danger-grep 失敗は fail-closed（全 SEC seed unchecked → HOLD）。realized-diff / redgreen / final-reconcile / final-ac-reconcile / issue-labels の失敗は fail-safe（安全側 floor・HOLD）。advisory 信号（ci-checks / structural / vdelta / post-comment / clock / pr-meta）は fail-open。理由: 決定論 gate の入力不明を通過と同一視しない
 - analyze ゲート（Setup 末尾）は prerun の決定論 analyze（`analyze-issue --contract` + Jev）の検証とゲートのみ。spawn は引いたら `analyze-clarify#N`、通過後に観測型 null の AC があれば `ac-observational#N` の 1 回ずつ。LLM に issue を転写させる経路を戻さない。AC 空 / comment_conflicts 非空 / uncertain 非空は needs_clarification で終端（決定論は意味的矛盾の要否を判定できず、LLM に黙って片方を採らせると訂正が実装に反映されない）

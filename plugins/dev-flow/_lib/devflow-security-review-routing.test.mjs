@@ -1,6 +1,6 @@
 // _lib/devflow-security-review-routing.test.mjs
 // dev-flow の敵対的 security review の配線（issue #1063）を VM 実行で pin する。
-//   (a) Security floor の対象判定を nested pr-iterate へ args.security_review で渡す
+//   (a) Diff triage の対象判定を nested pr-iterate へ args.security_review で渡す
 //   (b) 対象の run で pr-iterate が今の head で clear にしない（critical/major が上限まで残る・worktree の外を指す・
 //       LGTM 以外で終わる）と、Merge tier は専用の hold code security_review_unresolved で HOLD
 //   (c) 対象で clear・対象外の run はこの code を積まない
@@ -36,7 +36,7 @@ async function run({ overrides = TARGET, iterate, setup = {} } = {}) {
 }
 const codes = (result) => JSON.parse(JSON.stringify(result.merge_tier_hold_reasons.map((r) => r.code)));
 
-test('[devflow-security-review] (a) Security floor の対象判定を nested pr-iterate の args.security_review で渡す', async () => {
+test('[devflow-security-review] (a) Diff triage の対象判定を nested pr-iterate の args.security_review で渡す', async () => {
   const { workflowCalls, calls } = await run({ iterate: { status: 'lgtm', fixes_applied: 0, security_review: sr('cleared', { critical: 0 }) } });
   assert.equal(workflowCalls.length, 1);
   assert.deepEqual(JSON.parse(JSON.stringify(workflowCalls[0].opts.security_review)), { target: true, reasons: ['not_allowlisted:1'], reviewer_context_changed: false, reviewer: 'claude' });
@@ -81,12 +81,12 @@ test('[devflow-security-review] (b) 対象の run で pr-iterate が clear に�
   }
 });
 
-test('[devflow-security-review] (b) Security floor が対象外でも pr-iterate が run 中に対象と判定して clear にしなければ HOLD、security_review を返さない pr-iterate も HOLD', async () => {
+test('[devflow-security-review] (b) Diff triage が対象外でも pr-iterate が run 中に対象と判定して clear にしなければ HOLD、security_review を返さない pr-iterate も HOLD', async () => {
   const turned = await run({ overrides: {}, iterate: { status: 'security_unresolved', fixes_applied: 0, security_review: sr('unresolved') } });
   assert.ok(codes(turned.result).includes('security_review_unresolved'));
   const missing = await run({ iterate: { status: 'lgtm', fixes_applied: 0 } });
   assert.equal(missing.result.merge_tier, 'HOLD');
-  assert.deepEqual(codes(missing.result), ['security_review_unresolved'], `Security floor が対象で pr-iterate の clear が無い: ${JSON.stringify(codes(missing.result))}`);
+  assert.deepEqual(codes(missing.result), ['security_review_unresolved'], `Diff triage が対象で pr-iterate の clear が無い: ${JSON.stringify(codes(missing.result))}`);
 });
 
 test('[devflow-security-review] (c) 対象で clear、または対象外の run は security_review_unresolved を積まない', async () => {

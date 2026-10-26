@@ -48,8 +48,8 @@ const src = readFileSync(devFlowPath, 'utf8');
  * 相違点: calls 配列に { label, agentType, prompt } を記録する（prompt も記録するよう拡張）。
  *
  * porcelain 統合（F3, issue #219）後、さらに issue #544 (S1) で danger-grep(risk) /
- * realized-diff(files) / structural-classify(struct) / diff-hash-secfloor(hash) の 4 呼び出しが
- * secfloor-classify.sh 経由の単一呼び出し（label 'danger-grep' 据え置き）へ統合された。
+ * realized-diff(files) / structural-classify(struct) / diff-hash-triage(hash) の 4 呼び出しが
+ * diff-triage.sh 経由の単一呼び出し（label 'danger-grep' 据え置き）へ統合された。
  * files（旧 realized-diff・declared-path-check スナップショット）はその応答の files フィールドで得る。
  *
  * dev-implementer stub の files を declaredFiles で差し替え可能にする。

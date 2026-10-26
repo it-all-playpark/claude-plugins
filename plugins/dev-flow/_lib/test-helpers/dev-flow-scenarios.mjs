@@ -36,7 +36,7 @@ export const DEV_FLOW_SCENARIOS = {
       'merge-tier-facts': mergeTierFacts({ tree: 'AAA' }),
     },
   },
-  // Merge tier で merge-tier-facts の diffhash が secfloor と不一致 → facts の risk / changed で再判定
+  // Merge tier で merge-tier-facts の diffhash が diff-triage と不一致 → facts の risk / changed で再判定
   'merge-rescan': { overrides: { 'merge-tier-facts': mergeTierFacts({ hash: 'CCC' }) } },
   // pr-iterate が fix を適用 → Final reconcile 経路（reconcile-sync / test#final / *-final）
   'final-reconcile': {
@@ -147,7 +147,7 @@ export const DEV_FLOW_SCENARIOS = {
   // Validate red → green-fix#1 → test#2 green
   'green-fix': { overrides: { 'test#1': { tests: 'failed', green: false, summary: 'assert mismatch' } } },
   // Validate red（diff と無関係のテストファイル）→ validate-diff#1（diff 一覧）→ base-rerun#1（base でも同じように落ちる）
-  // → ENV として green 要件から外し green-fix なしで Security floor へ
+  // → ENV として green 要件から外し green-fix なしで Diff triage へ
   'base-failing': {
     overrides: {
       'test#1': { tests: 'failed', green: false, summary: 'plugins/x/scripts/a.bats が red', failed_files: ['plugins/x/scripts/a.bats'] },

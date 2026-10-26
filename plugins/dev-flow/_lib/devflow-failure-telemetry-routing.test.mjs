@@ -189,7 +189,7 @@ test('[failure-telemetry] (2) implement 経路: NEEDS_CONTEXT 解消不能 → j
     assert.ok(savePrompt.includes(key),
       `(2) journal-log-failure prompt に '${key}' が含まれるべきだが含まれていなかった。prompt:\n${savePrompt.slice(0, 500)}`);
   }
-  // 実効 shape は Security floor（realized diff 取得後）で確定する（issue #676）。Implement の失敗 telemetry は
+  // 実効 shape は Diff triage（realized diff 取得後）で確定する（issue #676）。Implement の失敗 telemetry は
   // 確定前なので shape キーを載せない。
   assert.ok(!savePrompt.includes('"shape"'),
     `(2) 実効 shape 確定前の failure telemetry に '"shape"' キーを含むべきではないが含まれていた。prompt:\n${savePrompt.slice(0, 500)}`);

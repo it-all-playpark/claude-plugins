@@ -48,7 +48,7 @@ handoff の `skill` キーは `'dev-flow'` のまま据え置く（集計連続�
 ```
 /dev-flow <issue>   → [wrapper preflight] → Setup(末尾で決定論 analyze ゲート)
                       → Implement(dev-implementer 1 spawn) → Validate(test green)
-                      → Security floor(realized diff から shape 判定) → Evaluate → PR → workflow('dev-flow:pr-iterate-run')
+                      → Diff triage(realized diff から shape 判定) → Evaluate → PR → workflow('dev-flow:pr-iterate-run')
                       → Final reconcile(fixes_applied>0 のみ) → Merge tier
 /pr-iterate <pr>    → [wrapper preflight: pr-iterate-prerun → EnterWorktree]
                       → workflow('dev-flow:pr-iterate-run') で review ⇄ fix loop (LGTM まで, 上限10) → 終端サマリー
@@ -169,7 +169,7 @@ blocking は解消しない。final test が green/ci_verified
 Evaluate 後に入った変更は、評価済みの台帳と tree を run 内で確かめ直す（`_lib/post-eval-recheck.mjs`）:
 
 - **post-eval green-fix の再評価**: Evaluate 差し戻し（reimpl）後の PR 前再テストで `green-fix#post-eval-i` が
-  入った run は、`green-fix-classify`（secfloor-classify）→ `green-fix-numstat`（評価済み tree → 現在の tree の
+  入った run は、`green-fix-classify`（diff-triage）→ `green-fix-numstat`（評価済み tree → 現在の tree の
   numstat）で green-fix の差分を決め、差分ファイルに testsurf / danger hit が 0 件かつテストファイルだけなら
   `assert_only`（assert を弱めていないかだけ）、それ以外は `full`（差分全体・宣言外変更）で evaluator
   （`eval-green-fix`。model は override しない）に評価させる。評価できたら評価済み tree の hash を green-fix 後の
@@ -267,11 +267,11 @@ test script 修正で opus 級の推論を要さず、green-fix > 0 の run は 
 Implement / BLOCKED 再実装 / Evaluate 差し戻しは `opts.model` を渡さず frontmatter の既定（opus / high）で spawn し、
 null 返却は再試行せず drop（`implDroppedCount`）に計上する。
 
-shape は analyze ゲートでは決めない。Security floor（実装後・PR 前）で `classifyShape(req, realizedCount, lineStats)` が
+shape は analyze ゲートでは決めない。Diff triage（実装後・PR 前）で `classifyShape(req, realizedCount, lineStats)` が
 realized diff の file 数・file ごとの追加/削除行数 + issue 由来の決定論特徴量（AC 数 / `issue_type` / 構造化 `breaking_change`）で
 1 回で決め、その返り値が `EFFECTIVE_SHAPE`（Evaluate 深さ・LITE gate・merge tier の入力）になる。安全 floor は
-realized count 欠損（secfloor-unified（danger-grep）の files 欠落 → NaN）・`acceptance_criteria` 欠落・out-of-enum `issue_type`・
-`breaking_change === true` → complex（軸A: 緩めない）。floor を通過した run だけ、secfloor の `lines`
+realized count 欠損（diff-triage（danger-grep）の files 欠落 → NaN）・`acceptance_criteria` 欠落・out-of-enum `issue_type`・
+`breaking_change === true` → complex（軸A: 緩めない）。floor を通過した run だけ、diff-triage の `lines`
 （tracked は numstat、untracked は `wc -l`）から差分の中身で下げ方向に補正する: docs（`docs/**` / `*.md`）と
 対応する本番ファイルも変えたテストは数えない、重み付け後の追加行 < 削除行×0.3 なら 1 段下げる、complex は
 重み付け後 file 数 > 5 かつ追加 > 100 行のときだけ。file 数判定より上には上げない。行数が 1 file でも欠けた run と
@@ -279,14 +279,14 @@ realized count 欠損（secfloor-unified（danger-grep）の files 欠落 → Na
 LLM の事前見積もり（shape / 見込み file 数）は REQ に
 持たず decision に使わない — micro の LITE 経路に対する意味的リスクの安全網は runEval 強制条件
 （danger-grep / testsurf / green-fix / dropped task / 宣言外変更 / UI 接触）が担う。
-`classifyShape` に渡す数は Security floor 時点の working tree から ephemeral・宣言外パス・format-only を
+`classifyShape` に渡す数は Diff triage 時点の working tree から ephemeral・宣言外パス・format-only を
 除外したもの（宣言外は size 信号にせず Evaluate 強制 + concern 監査で扱う）。その数は返り値
 `realized_file_count` に、判定根拠は `shape_reason` に載る（journal telemetry には実効 `shape` だけを書く）。danger-grep hit が
 あれば micro でも Evaluate を強制実行（security path）。
 
 **micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target`
 （clean-micro かつ contract 準拠かつ danger clean かつ ci の AC — `ci_verify` の check で判定する AC — を持たず、
-Security floor の merge-base 基準の diff が敵対的 security review の対象外 — 下の「敵対的 security review」— の）を満たす run は、PR phase で dev-implementer 1 spawn → targeted test →
+Diff triage の merge-base 基準の diff が敵対的 security review の対象外 — 下の「敵対的 security review」— の）を満たす run は、PR phase で dev-implementer 1 spawn → targeted test →
 PR → pr-reviewer 1-pass の縮約経路（lite route、判断系 agent 呼び出し ≤10）を通る。lite の pr-reviewer
 1-pass が `review==null || blocking.length>0`（critical/major finding あり）を検出した場合のみ
 `workflow('dev-flow:pr-iterate-run')` フル loop へ自動昇格し、以降は通常の review⇄fix 経路で処理する。danger-grep
@@ -312,7 +312,7 @@ hit で `runEval=true` になったケースは lite ゲート条件を満たさ
   `deferred_security_topics` で人に返す）。どちらも `_lib/security-review.mjs` の 1 か所に置く
 
 ```
-Security floor  → security-scope（dev-runner-haiku-ro）: `security-review-scope <WT> origin/<base> --working-tree`
+Diff triage     → security-scope（dev-runner-haiku-ro）: `security-review-scope <WT> origin/<base> --working-tree`
                   （merge-base と作業ツリーの diff）→ state.securityReview.target → LITE の条件・nested args.security_review
 /pr-iterate     → pr-iterate-prerun が `<base>...<PR head>` の diff を判定 → wrapper が args.security_review で渡す
 pr-iterate      → round の開始時に対象の run は各 round で、review#i（・ci-check#i）と同じ parallel() で review と同じ head に対して
@@ -337,7 +337,7 @@ pr-iterate      → round の開始時に対象の run は各 round で、review
                       （review が request-changes の round はその fix へ進み、次の round で取り直す）
                   clear はその round の head についての結果。fix・conflict の自動解消で head が変わりうる時点で返り値の
                   status を cleared のまま残さず、次の round の security review が新しい head で取り直す
-Merge tier      → 対象（Security floor か pr-iterate のどちらか）かつ pr-iterate が lgtm + security_review.status 'cleared'
+Merge tier      → 対象（Diff triage か pr-iterate のどちらか）かつ pr-iterate が lgtm + security_review.status 'cleared'
                   でなければ HOLD（security_review_unresolved）
 ```
 
@@ -525,7 +525,7 @@ pr-iterate      → security-pr-head#i（security-codex-relay）: `gh pr view <P
   sunset はしない）。
 - Claude 専用 (workflow 依存)。cross-vendor portability は dev-flow / pr-iterate のみ放棄する例外扱い。
 - **gate_policy**: trust 昇順の 4 値 enum — `deterministic-only` / `llm-major-advisory`（既定）/ `llm-major-blocking` / `llm-autonomous`。
-  **軸A invariant 不変** — deterministic oracle / seed / critical アイテムは全 policy で blocking のまま（security floor / 決定論ゲートは policy で緩めない）。
+  **軸A invariant 不変** — deterministic oracle / seed / critical アイテムは全 policy で blocking のまま（danger-grep の fail-closed / 決定論ゲートは policy で緩めない）。
   **既定同一挙動** — 既定 `llm-major-advisory` は軸A invariant（critical / deterministic / seed = blocking）+ LLM major/minor = advisory の既定 lane 分類と全アイテムで一致し、非 default policy のみ gating が変わる（enum で境界を滑らせる設計）。
   out-of-enum 値は明示 error（legacy fallback / version 分岐なし）。canonical は `_lib/gate-policy.mjs`、dev-flow.js への inline は tools/sync-inlines.mjs で生成・`_lib/workflow-inlines.sync.test.mjs` が全文一致保証。
 - **block_class**: dev-implementer 返り値 `status:'BLOCKED'` の `blocking_reason` は閉じた 2 値 enum

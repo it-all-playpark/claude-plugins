@@ -5,8 +5,8 @@ description: |
   preflight (dev-flow-prerun: base resolution, worktree creation, the deterministic issue
   analyze (analyze-issue --contract + bounded Jev judgement); then deps install via
   ensure-worktree-deps --setup as a separate Bash call; then EnterWorktree) then launches the dev-flow-run dynamic workflow
-  (analyze gate (no LLM spawn on the normal path) → implement → validate → security
-  floor (effective shape from the realized diff) → evaluate → PR → pr-iterate → merge
+  (analyze gate (no LLM spawn on the normal path) → implement → validate → diff
+  triage (effective shape from the realized diff) → evaluate → PR → pr-iterate → merge
   tier). Merge is always human.
   Use when: (1) user asks to implement a GitHub issue end-to-end,
   (2) /dev-flow <issue>, (3) keywords: dev-flow, issue実装, issue→PR, 自動実装.
@@ -191,7 +191,7 @@ missing_context を作って needs_clarification で終端する。ゲートを�
 AC があるときは AC の文面だけを読む分類 agent（`ac-observational#N`）を 1 spawn する）。ゲート直後に issue から単一 task の plan を合成するだけ（Plan phase は
 持たず、planner 系 agent は起動しない）で、Implement で `dev-implementer`（plan+impl 統合、opus / high）を
 1 spawn する。BLOCKED 再実装（`reimpl-blocked#b`）・Validate の green-fix・Evaluate の差し戻し（`reimpl#i`）も
-同じ agent への再 spawn。shape（micro / standard / complex）は analyze ゲートでは決めず、Security floor で
+同じ agent への再 spawn。shape（micro / standard / complex）は analyze ゲートでは決めず、Diff triage で
 realized diff の file 数 + AC 数 / issue_type / 構造化 breaking_change から決定論に決める
 （Evaluate の深さ・LITE gate・merge tier の入力）。詳細は `references/pipeline.md` の shape 3 tier 表。
 

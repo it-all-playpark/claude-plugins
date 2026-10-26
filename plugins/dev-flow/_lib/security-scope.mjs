@@ -1,5 +1,5 @@
 // security-scope.mjs — 敵対的 security review の対象判定を exec-proxy で取る prompt と、その応答の読み方（issue #1063）。
-// dev-flow.js（Security floor の起動時の判定）と pr-iterate.js（LGTM を確定する前の判定）が使う。
+// dev-flow.js（Diff triage の起動時の判定）と pr-iterate.js（LGTM を確定する前の判定）が使う。
 // 判定の規則そのものは _lib/security-review-scope.mjs（bin/ の bare 名 `security-review-scope` が実行する）にあり、
 // workflow 側は応答の ok / target を読むだけ。
 //
@@ -25,7 +25,7 @@ export const SECURITY_SCOPE_SCHEMA = {
 // hooks/pretool-codex-invocation-guard.sh が、中継の返り値を stdout の JSON かこの形のどちらかに限る。
 export const SECURITY_SCOPE_RELAY_FAILED = { ok: false, target: true, reasons: [], reviewer_context_changed: true, error: 'relay_failed' };
 
-// head が null なら作業ツリー（未コミット・untracked を含む）と merge-base の diff（dev-flow の Security floor —
+// head が null なら作業ツリー（未コミット・untracked を含む）と merge-base の diff（dev-flow の Diff triage —
 // implementer は commit しない）、head があれば `<base>...<head>` の diff。saveDiff は diff 全文を worktree の外の
 // 新しい一時ディレクトリの pr.diff に書かせる（pr-iterate の security-reviewer・Codex 経路の prep が読む）。
 export function securityScopePrompt({ worktree, base, head = null, saveDiff = false }) {

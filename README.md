@@ -123,7 +123,7 @@ Use skills in Claude Code:
 
    ```bash
    command -v journal              # playpark-core の bin/journal が解決すること
-   command -v secfloor-classify    # dev-flow の bin/ が解決すること
+   command -v diff-triage          # dev-flow の bin/ が解決すること
    ```
 
    `/dev-flow <issue>` を実行し、`dev-flow:dev-flow-run` が起動することを確認してください。
