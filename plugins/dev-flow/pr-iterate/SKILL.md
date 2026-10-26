@@ -113,7 +113,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      security-reviewer に戻さずに止める
 
    - Codex 経路の前提: codex は Claude Code の sandbox の中で動かす（PR に制御される入力を sandbox の外で実行しない —
-     `dev-flow/references/pipeline.md` の「守る要件と境界」の R3）。Claude Code の設定（settings.json）で:
+     `dev-flow/references/security-review.md` の「守る要件と境界」の R3）。Claude Code の設定（settings.json）で:
      - `codex` を `sandbox.excludedCommands` に入れない
      - `sandbox.network.allowedDomains` に codex が通信するホスト（`chatgpt.com`・`api.openai.com`）を足す
      - `env.CODEX_HOME` を sandbox から書ける専用のディレクトリ（例: `~/.local/state/codex-sandbox`）にし、そのディレクトリを

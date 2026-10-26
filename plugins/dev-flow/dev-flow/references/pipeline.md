@@ -1,49 +1,26 @@
-# dev-flow パイプライン詳細
+# dev-flow パイプライン
 
-phase 経路 / shape 3 tier / lite route / subagent の model・effort 割り当て / isolation probe /
-gate_policy・block_class の詳細。不変条件は `.claude/rules/dev-flow.md` を参照。
-本文中の `.claude/workflows/` / `agents/` / `_lib/` / `_shared/` は `plugins/dev-flow/` を root とする
-plugin 相対パス。`tools/sync-inlines.mjs` のみ repo root。
+`/dev-flow` と `/pr-iterate` の phase ごとの地図。各 phase の節は、何を判定するか（**判定**）、失敗を fail-closed / fail-safe /
+fail-open のどれで扱うかとその理由（**失敗の扱い**）、コードの場所（**コード**）を持つ。回数・秒数・`maxTurns`・enum の値・
+label の一覧は書き写さず、定数名かファイルで指す（値の正はコード）。
 
-## dev-flow (dynamic workflow)
+ほかの置き場所:
 
-`/dev-flow <issue>` は skill wrapper (`dev-flow/SKILL.md`) が `dev-flow-prerun --issue <N>
---worktree <path>`（top-level Bash、bare 形）で base 解決・worktree 作成/再利用・起点検証（独自コミット・未コミット変更の無い再利用 worktree は base へ fast-forward）・
-書き込み probe・`.devflow-tmp` clean・issue analyze（`prerun-analyze.sh`:
-`analyze-issue --contract` の決定論 parse + Jev 有界判定）・framework 検出を
-1 コマンドで行い、続けて別の Bash 呼び出し `ensure-worktree-deps --setup <worktree>/.devflow-tmp/prerun-setup.json`
-で deps install して prerun の出力に `deps` / `epoch_end` を足す（install は依存の postinstall = repo の任意コードを
-走らせるので、repo の任意コードを実行しない prerun の子にしない）。
-`EnterWorktree({ path })` で worktree に入ってから後者の stdout JSON を `Workflow({ args: { issue, setup } })`
-の `args.setup` に渡す（順序は EnterWorktree → Workflow。逆だと isolation probe が fail-closed abort する）。
-dev-flow-run の Setup phase は `args.setup` を fail-closed に検証し、その末尾の analyze ゲート（固有の
-phase は持たない — 純関数の検証とゲート判定だけで所要 ≒0 のため phase_durations に区間を持たない）は
-`args.setup.analyze` の whitelist 検証と 4 条件ゲート（AC 空 / comment_conflicts 非空 / uncertain 非空 /
-repo 内外が混ざった AC）のみで通常経路の subagent 起動は 0（ゲートが引いたときだけ sonnet を 1 spawn して人間向け
-missing_context を生成し needs_clarification で終端する。失敗 telemetry の phase 帰属は `Setup`）。
-例外はゲート通過後の観測型判定で、`args.setup.analyze.ac_observational` に null（Jev 低確信・Jev に届かない）の AC が
-あるときだけ、その AC を AC の文面と issue タイトルだけを読む分類 agent（`ac-observational#N`、dev-runner）に 1 回で渡す。
-repo 内外の混在は `_lib/ac-actor.mjs` の `classifyAcScope` が決定論で判定する: repo 外の目印（`dotfiles` /
-`excludedCommands` / `settings.json` / `~/.claude` / 別 repo・他 repo / 対象 repo 以外の `owner/repo#N`・
-`github.com/owner/repo`）と repo 内の目印（テスト / README / rules / repo 内パス等）が 1 つの AC に両方あれば
-`mixed` で、repo 外の作業を `human-task` ラベルの別 issue に切り出し、実装 issue の AC を repo 内で検証できる
-ものだけにするよう求める（1 issue = 1 PR・単一 worktree では repo 外を満たせず、Evaluate 後に agent AC の
-取りこぼしと誤分類されるため。`（人手）` と明記して同じ issue に残すと actor human の AC として Final reconcile で
-必ず `ac_human_pending` の HOLD になる）。依存の向きは、merge 前に人がやる作業なら実装 issue に
-`Blocked by #<human issue>`、merge 後に確認する作業なら human issue に `Blocked by #<実装 issue>`。
-repo 外の目印は作業の対象として指すものだけを数える:
-否定・不在・件数 0・不要・条件・理由の言及・grep 対象の節にある目印と、対象 repo 自身が持つ目印（対象 repo が
-dotfiles のときの `dotfiles` / `excludedCommands` / `settings.json`）は数えない。`（人手）` と明記した AC は
-混在していても `external`（human）にする。
-analyze ゲートより前に blocked_by ゲートを置く: `args.setup.analyze.blockers`（prerun-analyze.sh が
-GitHub の issue dependencies API と本文の `Blocked by #N` / `owner/repo#N` 行の和集合から読み取る）に
-`state: "OPEN"` が 1 つでもあれば、sonnet も isolation-probe も起動せず needs_clarification
-（source=`blocked_by`、missing_context は未完了 issue の番号と URL）で終端する。blocker の取得失敗は
-`analyze.ok:false`（source=`analyze_prerun`）で止まる。
-isolation-probe はゲート通過後・Implement 前の 1 回。orchestration (phase 遷移 / evaluate・pr-iterate の各ループ) は
-workflow script が JS で保持し、中間 state は script 変数に
-持つ (外部 state JSON は持たない)。workflow の `meta.name` は `dev-flow-run` だが、telemetry
-handoff の `skill` キーは `'dev-flow'` のまま据え置く（集計連続性の不変条件、静的テストで pin 済み）。
+- 不変条件（軸A・human merge・正当化クラス・exec-proxy の起動形・inline 生成区間）は `.claude/rules/dev-flow.md`
+- モデル・harness の能力しだいの判断（model・effort の割り当てを含む）は `capability-bound.md`
+- 敵対的 security review の守る要件と境界（R1〜R3）と経路は `security-review.md`
+- exec-proxy の一覧と proxy ごとの失敗ポリシー表は `exec-proxy.md`、telemetry キーは `telemetry.md`、analyze の出力は `analyze-issue.md`
+
+本文のパス（`.claude/workflows/`・`agents/`・`_lib/`・`_shared/`・`hooks/`）は `plugins/dev-flow/` を root とする plugin 相対パス。
+`tools/` と `.claude/rules/` は repo root。
+
+失敗の扱いの語:
+
+- **fail-closed** — 止める（throw・needs_clarification・HOLD を強制）。決定論 gate の入力が分からないことを通過と同一視しない
+- **fail-safe** — 安全側の値に倒して続ける（complex floor・inspection 据え置き・HOLD 理由を立てる）。run の成果物と終端サマリーを残す
+- **fail-open** — 警告の log だけで続ける。advisory 信号で、gate の入力にしない
+
+## 全体の経路
 
 ```
 /dev-flow <issue>   → [wrapper preflight] → Setup(末尾で決定論 analyze ゲート)
@@ -51,489 +28,229 @@ handoff の `skill` キーは `'dev-flow'` のまま据え置く（集計連続�
                       → Diff triage(realized diff から shape 判定) → Evaluate → PR → workflow('dev-flow:pr-iterate-run')
                       → Final reconcile(fixes_applied>0 のみ) → Merge tier
 /pr-iterate <pr>    → [wrapper preflight: pr-iterate-prerun → EnterWorktree]
-                      → workflow('dev-flow:pr-iterate-run') で review ⇄ fix loop (LGTM まで, 上限10) → 終端サマリー
+                      → workflow('dev-flow:pr-iterate-run') で review ⇄ fix loop (LGTM まで) → 終端サマリー
 ```
 
-`/pr-iterate <pr>` は wrapper skill（`pr-iterate/SKILL.md`）。workflow の meta 名は skill 名と衝突しないよう
-`pr-iterate-run`（`dev-flow-run` と対称）で、起動名は namespaced の `dev-flow:pr-iterate-run`（bare 名・旧名
-`pr-iterate` へのフォールバックや alias は無い）。telemetry handoff の `skill` は `'pr-iterate'` のまま。
+- orchestration（phase 遷移・各ループ）と中間 state は workflow script（`.claude/workflows/dev-flow.js` / `.claude/workflows/pr-iterate.js`）の
+  JS 変数だけに持つ。phase の並びは `dev-flow.js` の `meta.phases`。pr-iterate は親 meta に現れないサブ workflow で、自分の `Iterate` phase を持つ
+- 起動名は namespaced（`dev-flow:dev-flow-run` / `dev-flow:pr-iterate-run`）。telemetry handoff の `skill` は `'dev-flow'` / `'pr-iterate'` のまま
+- `agent()` の agentType は `nsAgentOpts()`（`_lib/agent-namespace.mjs`）でだけ namespace を付ける。判断系 leaf は `agents/` の subagent
+- model は subagent の frontmatter で決め、品質ゲート agent の call site は `opts.model` を渡さない。override は Validate の green-fix の
+  sonnet だけ（`_lib/impl-model-opus.test.mjs` が pin）。割り当ての判断は `capability-bound.md`
+- effort は frontmatter で決め、call site は opts で渡さない（`_lib/agent-frontmatter.test.mjs` が pin）
+- 決定論処理は `bin/` の bare 名の script を dev-runner 系 subagent に実行させる（exec-proxy。`exec-proxy.md`）
+- worktree の後片付けは `_shared/scripts/worktree-teardown.sh`。merge は常に人間
 
-wrapper は `pr-iterate-prerun <PR> [--repo owner/name]`（top-level Bash、bare 名）で `gh pr view` の
-url / headRefName / baseRefName / headRefOid を取り、`origin/<head>` が headRefOid と一致することを確かめてから
-PR head の worktree を用意する（head branch を checkout 済みの worktree があれば再利用、無ければ dev-flow と同じ
-置き場所の規則 — 既定 `<repo>/.claude/worktrees/pr-<N>`・repo 外 `<repo>-wt/pr-<N>` — で `origin/<head>` から作成。
-作った worktree に書けなければ remove して repo 外候補で作り直す）。出力の `{worktree, head_ref, base_ref, head_sha,
-repo, epoch}` を `args.nested`（`caller: 'standalone'`）で渡すので、workflow は dev-flow からの nested 起動と同じ
-NESTED 分岐で pr-meta と isolation-cleanup を起動しない。`nested.caller` は `dev-flow` / `standalone` の閉じた
-enum で必須（欠落・out-of-enum は throw）。終端サマリーの投稿は `caller` で決まり、`dev-flow` のときだけ止める
-（dev-flow は Merge tier の後に自分の終端サマリーを投稿する）。nested 無しで Workflow を直接起動した場合は従来どおり
-pr-meta probe で値を取る。単体起動の worktree は run 後も削除しない（人間が確認してから `worktree-teardown` で片付ける）。
+## Setup
 
-dev-flow の終端サマリーは末尾に `<!-- dev-flow:<tier> head=<sha> -->`（HOLD は `<!-- dev-flow:HOLD codes=<code>,... head=<sha> -->`、
-code は `merge-tier.mjs` の holdReasons の code）を置く。`head` は merge tier を判定した PR head（merge-tier-facts の headRefOid。
-取れなければ載せない）。`pr-iterate-prerun` は同じ `gh pr view` で comments を取り、この marker を
-持つ最後のコメントを `prior_devflow`（`{tier, codes, url}` / null）で出し、wrapper が `args.prior_devflow` で渡す。
-HOLD のとき単体 pr-iterate の終端サマリーは code ごとの回収状況を出す — pr-iterate が自分で確かめられるのは
-`iterate_non_lgtm`（この run が lgtm）・`ci_checks_failed` / `ac_ci_pending`（最終 CI が passed）・`mergeable_conflicting`
-（最後の conflict 自動解消が resolved）だけで、それ以外の code は未解消として人に返す。未解消が残れば見出しを「🎉 LGTM」に
-しない（HOLD 後の回収ではこのレポートが PR の最後のコメント＝最新の結論になるため）。dev-flow のサマリー自体は編集しない。
+- **判定**: wrapper（`dev-flow/SKILL.md`）が `dev-flow-prerun --issue <N> --worktree <path>` で base 解決・worktree の作成/再利用・
+  起点検証・書き込み probe・`.devflow-tmp` の clean・issue analyze（`analyze-issue --contract` の決定論 parse + Jev 有界判定）・
+  framework 検出を済ませ、別の Bash 呼び出しの `ensure-worktree-deps --setup <worktree>/.devflow-tmp/prerun-setup.json` で deps を入れる
+  （install は repo の任意コードを走らせるので prerun の子にしない）。`EnterWorktree` → `Workflow({ args: { issue, setup } })` の順で起動し、
+  Setup は `args.setup` を検証して REQ を組み、次のゲートを順に判定する（通常経路の spawn は 0）:
+  - blocked_by ゲート — `args.setup.analyze.blockers` に open な issue が 1 つでもあれば止める
+  - analyze ゲート — AC 空 / comment_conflicts 非空 / uncertain 非空 / repo 内外が混ざった AC。引いたときだけ missing_context を書く
+    agent を 1 spawn する。repo 内外の混在は `classifyAcScope` が決定論で判定し、
+    `mixed` で、repo 外の作業を `human-task` ラベルの別 issue に切り出し、実装 issue の AC を repo 内で検証できるものだけにするよう求める
+    （1 issue = 1 PR・単一 worktree では repo 外を満たせず、Evaluate 後に agent AC の取りこぼしと誤分類されるため）。依存の向きは、
+    merge 前に人がやる作業なら実装 issue に `Blocked by #<human issue>`、merge 後に確認する作業なら human issue に `Blocked by #<実装 issue>`。
+    `（人手）` と明記した AC は混在していても human
+  - AC の actor — `agent` / `human` / `ci`（`_lib/ac-actor.mjs`）。観測型 AC（実行して観測しないと確かめられない AC）は prerun の
+    正規表現 + Jev で決め、決まらない AC だけを AC の文面と issue タイトルだけを読む分類 agent に 1 回で渡す（diff・evaluator の結果は渡さない —
+    実装を見た判定は抜け道になる）。ci AC は repo の `"dev-flow".ci_verify` の宣言に当たる AC（`matchesCiVerify`）
+  - isolation probe — ゲート通過後・Implement の前に、tools を Write だけにした `dev-runner-haiku-wo` が worktree 直下
+    `.devflow-tmp/.isolation-probe-<token>` に書けるかを確かめる（implementer と同じ Write tool の経路の検証。token は `args.setup.epoch`）
+- **失敗の扱い**:
+  - `args.setup` の欠落・`ok:false`・型不正、analyze の whitelist 不合格は throw（fail-closed。workflow 内に fallback を置かない）
+  - analyze 段の失敗・open な blocker・analyze ゲートは needs_clarification で終端（fail-closed。REQ を推測で組まない。決定論は意味的矛盾の
+    要否を判定できず、LLM に黙って片方を採らせると訂正が実装に反映されない）。missing_context を書く agent の失敗は fail-open
+    （ゲート理由をそのまま返す）
+  - 観測型の分類 agent が決められない AC は観測型にする（fail-safe。evaluator のコード読みで達成扱いにしない側）
+  - isolation probe の `written:false` は throw（fail-closed）。回避手順（別の worktree を作る → `EnterWorktree` → prerun からやり直す）は
+    `isolationFailureMessage` が throw メッセージに載せる。probe 自体の失敗（null）は fail-open
+- **コード**: `phase('Setup')`（`.claude/workflows/dev-flow.js`）、`validatePrerunSetup`（`_lib/prerun-setup.mjs`）、`buildReqFromContract`・
+  `analyzeGateReasons`・`blockedByReasons`（`_lib/analyze-contract.mjs`）、`classifyAcScope`・`mixedScopeAcReasons`・`resolveAcObservational`
+  （`_lib/ac-actor.mjs`）、`isolationProbePrompt`・`isolationFailureMessage`（`_lib/isolation-probe.mjs`）、prerun は
+  `dev-flow/scripts/prerun-analyze.sh` ほか
 
-**再 review 中コメント**: 単体 pr-iterate の終端サマリーも末尾に `<!-- pr-iterate:<status>:<n> head=<sha> -->`（`head` は
-その結論を出した head — 最後の fix の push 後の PR head）を置く。`pr-iterate-prerun` は dev-flow / pr-iterate どちらかの marker を
-持つ最後のコメント（最後の終端サマリー）を `prior_summary`（`{source, url, head_sha, head_mismatch}` / null）で出す。
-`head_mismatch` は marker の head が今の PR head と違うとき true で、marker に head が無いサマリーも true（どの head に対する
-結論か分からない）。wrapper が `args.prior_summary` で渡し、`head_mismatch:true` なら単体 pr-iterate は review を始める前に
-「head `<sha>` で再 review 中。<古いサマリーの URL> の結論はこの head に当てはまらない」コメントを PR に足す。意味は
-**その URL の LGTM / tier は今の head を見ていないので merge の根拠にしない — 今の head に対する結論はこの後に載る
-pr-iterate の終了レポート**。LGTM サマリーの後に push して再実行した間、PR の最新コメントが古い LGTM のまま merge される
-事故を防ぐため。古いサマリーは編集・削除しない（PR 上の証跡を残す）。投稿は `gh pr comment --body-file` の bare 単文で、
-失敗しても review は止めない（advisory）。食い違いが無い・終端サマリーが無い PR、dev-flow からの nested 起動では投稿しない。
-pr-iterate を経ない push（人手の push のみ）は検知しない。
+## Implement
 
-**人が決めた修正方針**: `/pr-iterate <PR> --direction <file>` は、fix が判断を人に返した指摘（`deferred_security_topics` の
-`security_unresolved`・同じ指摘での `stuck` 等）を、人が方針を決めて回し直すための入力。wrapper は `--direction <file>` を
-`pr-iterate-prerun` に渡し、prerun が EnterWorktree の前（launch dir）でそのファイルを読む。実体（symlink は辿る）が PR の
-worktree の中・読めない・空・4000 字超なら exit 2 で止まり、通れば本文を加工せずに `fix_direction` に載せる。wrapper はそれを
-`args.fix_direction` に転記し、workflow は文字列でない・空・4000 字超を throw する。方針は共通の `fixPrompt` の
-「人が決めた修正方針」節に入り、その run のすべての fix#i（review・CI・security の fix。retry は同じ prompt）に届く。
-`SECURITY_FIX_GUIDANCE` と食い違えば方針を優先し、`fixPrompt` の Boundary は優先させない。pr-reviewer・security-reviewer・
-Codex の中継の prompt には入れない（判定者に人の方針を渡さない — R1・review の判定規則は変えない）。終端サマリーには方針を
-渡したことだけを 1 行出し、本文は載せない。PR コメント・PR 本文・issue コメント・PR の worktree の中のファイルからは読まない
-（PR の作者が書ける — security review の脅威モデルでは攻撃者）。wrapper は workflow の起動前に PR の worktree へ入るので、
-読むのはその前の prerun に限る。dev-flow の nested 起動は渡さない。
+- **判定**: issue から単一 task の plan を合成し（`synthesizeImplPlan`。planner は起動しない）、`dev-implementer`（plan+impl 統合）を
+  1 spawn する。入力は issue 本文・AC・`fix_feedback` で、テスト全件・red 証明・AC 判定は後段（Validate / redgreen-verify / evaluator）が担う。
+  返却の `files` を宣言として plan に取り込み（宣言外監査・実効 shape・PR 本文の材料）、PR 本文の材料は `adoptImplPrNotes` が取り込む。
+  - BLOCKED（`approach_mismatch`）は累積の findings（過去のアプローチへの回帰禁止）と DONE 成果を付けて同じ agent を再 spawn する
+    （上限 `BLOCK_MAX`）。`guard_blocked` は再 spawn せず evaluator の focus へ直行する。理由がファイル削除なら、以降の実装 spawn に
+    削除手段の固定文を足す（`isDeletionGuardBlock`）
+  - NEEDS_CONTEXT は needs_clarification で人間に返す
+  - `pr_sections` が `PR_SECTIONS_MAX_CHARS` を超えたら要約を 1 回差し戻し、PR 本文の欄に日本語を含まない項目があれば書き直しを 1 回差し戻す
+    （判定する LLM の文脈を薄めないため）
+- **失敗の扱い**:
+  - `blocking_reason` は閉じた enum の構造化 object で、string・out-of-enum は schema error（fail-closed）
+  - implementer の null は再試行せず drop に数え（`implDroppedCount`）、Evaluate を強制する（fail-safe。計画した範囲が欠けても diff が
+    非空なら後段を素通りするため）
+  - 要約・日本語の差し戻し後も残ったものは切らずに載せ、log に警告を出す（fail-open。HOLD 理由にしない）
+- **コード**: `execImplementPhase`・`runImplement`・`implPrompt`・`extractGuardBlocked`・`trimPrSectionsIfOver`・`rewriteNonJapanesePrBodyItems`
+  （`.claude/workflows/dev-flow.js`）、`normalizeBlockingReason`（`_lib/block-routing.mjs`）、`prSectionsTrimFeedback`・`prBodyLanguageFeedback`
+  （`_lib/pr-artifacts.mjs`）
 
-pr-iterate の review#i（i ≥ 2）は fix delta（前 round の review 時点の head .. 今の head）だけを読む delta review
-（`_lib/review-delta.mjs` の `resolveReviewScope`）。sha が確定できない round は full review にフォールバックする。
-**full review が critical を 1 件以上返したら、次の round は `delta_range` を渡さない full review に戻す**
-（`nextCriticalPending`。判定は fix の対象にした finding の `severity` だけ）。critical を返さない full review を経るまで
-delta review に戻さず LGTM にもしない — critical の fix を delta review が approve しただけでは LGTM にならない。
-delta review は delta 外の新規指摘を出さないので、critical が 1 件出た PR は他にもある前提で扱う。full review が critical を
-返さなければ以降の round は従来どおり delta review。反復上限（`max_reached`）と stuck 判定は変えない。
+## Validate
 
-pr-iterate は review と CI gate が通った round で LGTM を確定する直前に base との conflict を読む（`mergeable-check#i`）。
-CONFLICTING / DIRTY のときだけ `conflict-resolve#i` が base を merge し、決定論スクリプト `conflict-autoresolve` が
-衝突ファイルを diff3 で型 A（全 hunk の base 側が空 → PR 側 → base 側の和集合）/ 型 B（`.claude/workflows/*.js` の
-inline 生成区間内だけの衝突で canonical は衝突なし → `sync-inlines --write` で再生成）に分類する。全ファイルが A / B
-なら merge commit を push して次 iteration の review（`git show --remerge-diff` の範囲）→ CI gate を通してから LGTM を
-確定し、merge commit は `fixes_applied` に数える（nested では Final reconcile が最終 tree の test を取り直す）。
-1 ファイルでもそれ以外なら `git merge --abort` で戻して LGTM にし、Merge tier の `mergeable_conflicting` HOLD に任せる
-（判定は変えない）。base の行を両側が書き換えた hunk は LLM に解かせない — どちらを採るかは仕様判断。
-merge base 名は `args.nested.base_ref`（dev-flow は Setup の base、wrapper は `pr-iterate-prerun` の baseRefName）。
+- **判定**: test が green か。test の実行は exec-proxy `run-tests <WT> --base origin/<base>` の stdout の転写だけで、`tests/run-*.sh` を
+  全本実行し、全本 exit 0 のときだけ green（判定は exit code 由来）。run-tests は merge-base が解決できたときだけ `tests/run-*.sh` に
+  `DEVFLOW_CHANGED_FILES`（merge-base からの差分 — commit 済み・staged・未 stage — と untracked の WT 相対パスを 1 行 1 件・重複なしで
+  書いたファイルの絶対パス）と `DEVFLOW_BASE`（merge-base の sha）を渡す。未設定は「全件実行」の意味で、`--base` 無し・merge-base
+  解決失敗・git 失敗のとき（stderr 1 行の警告のみ、status / green は不変）は設定しない。テストの選択は repo 側のランナーが行い、
+  dev-flow は repo 固有の知識を持たない。テストの直前に `workspace-prebuild <WT>` が pnpm ワークスペースのビルド成果物を作り直す
+  （実装が依存先のソースを変えると成果物が古くなるため、テストのたびに呼ぶ）
+  - red なら green-fix（同じ `dev-implementer` を sonnet で）を `GREEN_MAX` まで回す。その前に失敗を分類し、diff と無関係で base でも
+    同じように落ちるテストは ENV 項目（advisory）として green 要件から外す（`_lib/base-failure-triage.mjs`）
+  - empty-diff gate — working tree が base と同じ tree なら 1 回だけ差し戻し、Validate をやり直す
+  - repo が `"dev-flow".local_verify` を宣言していれば、ci AC を Validate の green 後・Evaluate の前に pg-broker の使い捨て DB で
+    ローカル実行する（`execLocalVerify`）。失敗は dev-implementer に差し戻す（`AGENT_AC_REIMPL_MAX` を Evaluate と共有）
+- **失敗の扱い**:
+  - `tests:'error'`（起動失敗）は green-fix せずに抜け、`GREEN_MAX` 到達の red はそのまま先へ進む（fail-safe。Final reconcile を
+    skip した run は Merge tier の HOLD 理由になる）
+  - base 失敗の分類材料（`failed_files`・diff の一覧・base での再実行）が欠けた失敗はすべて green-fix の対象（fail-safe。green 要件を緩めない）
+  - workspace-prebuild の失敗はテストを実行せず red（fail-safe）
+  - 差し戻し後も空 diff なら throw（fail-closed）。例外は人間の cross-repo ラベル opt-in と、worktree 外の dirty な成果物の決定論の証拠が
+    揃ったときだけの graceful 終端（`_lib/cross-repo-gate.mjs`）
+  - local-verify が pg-broker に届かない・結果を取れない・Validate が red なら、pr-iterate の CI 待ちに戻す（fail-open。理由は終端サマリーの参考に出す）
+- **コード**: `execValidatePhase`・`runValidateLoop`・`triageBaseFailures`・`execLocalVerify`（`.claude/workflows/dev-flow.js`）、
+  `_lib/run-tests-prompt.mjs`、`_lib/base-failure-triage.mjs`、`_lib/cross-repo-gate.mjs`、`_lib/local-verify.mjs`
 
-Merge tier を pr-iterate の後に置くのは、fix 適用後の最終 tree に対して danger-grep 再実行・danger 再
-reconcile を行い、merge 判定を最新の PR 内容に基づかせるため。pr-iterate が fix を適用した run では
-Final reconcile phase が worktree を PR 最終 HEAD へ同期し test suite を一発再実行する（red / 再検証
-不能は merge tier HOLD。fixes_applied=0 は agent 呼び出しゼロで skip し、PR tree のテスト状態は Validate の結果の
-まま — Validate が GREEN_MAX 後も `tests:'failed'` / `green:false` で PR へ進んだ run は `validate_test_red` で HOLD。
-`tests:'error'`（起動失敗 = テスト未実行）は PR head sha に pin した CI check を 1 回読み、決定論判定で green を
-確認できなければ `validate_tests_not_run` で HOLD）。再検証不能時は PR head sha に
-pin した CI check の決定論判定で代替し、成立しなければ HOLD を維持する。test suite の実行は Validate と
-同じ exec-proxy `run-tests <WT>`（haiku は stdout の JSON 1 行を転写するだけ）で、実行可能な `tests/run-*.sh` を
-全本実行し、全本 exit 0 のときだけ green とする（判定は exit code 由来。詳細は exec-proxy.md の validate-test 行）。
-workflow は `run-tests <WT> --base origin/<PRERUN.base>` で起点を渡し（shape・gate_policy・経路によらず同じ）、
-run-tests は merge-base が解決できたときだけ `tests/run-*.sh` に `DEVFLOW_CHANGED_FILES`（merge-base からの
-差分 — commit 済み・staged・未 stage — と untracked の WT 相対パスを 1 行 1 件・重複なしで書いたファイルの
-絶対パス）と `DEVFLOW_BASE`（merge-base の sha）を渡す。未設定は「全件実行」の意味で、`--base` 無し・
-merge-base 解決失敗・git 失敗のとき（stderr 1 行の警告のみ、status / green は不変）とフォールバック経路では
-設定しない。テストの選択は repo 側のランナーが行い、dev-flow は repo 固有の知識を持たない（skills repo では
-`tests/run-all-bats.sh` が一覧から .bats を絞り、判定できなければ全件に倒す）。
-run-tests と redgreen-verify（red・green の各 test 実行）は、テストの直前に `workspace-prebuild <WT>` で
-pnpm ワークスペースのビルド成果物（ほかの package が `workspace:` で依存し、`scripts.build` を持ち、
-`main` / `module` / `exports` が git 管理外を指す package）を `pnpm --filter <pkg>... run build` の 1 コマンドで
-作り直す。Setup で 1 回だけビルドすると Implement / fix が依存先のソースを変えた時点で成果物が古くなり、
-テストが変更前のコードを読むため、テストのたびに呼ぶ。ビルド失敗ではテストを実行せず red（Validate /
-test#final は `tests:'failed'` + summary に対象パッケージ名、redgreen は当該ペアの `reason`）にする。
-pnpm-workspace.yaml の無い repo と対象の無い repo では何もしない。
+## Diff triage
 
-Validate（`test#i` / `test#retry-i` / `test#post-eval-i`）が `tests:'failed'` を返したら、green-fix の前に失敗を
-分類する（`_lib/base-failure-triage.mjs`）。test proxy が `failed_files`（失敗したテストファイル）を返したときだけ、
-`validate-diff#<iter>`（read-only。base → working tree の tracked 差分 + untracked のファイル一覧）と突き合わせ、
-テストファイル自身もテスト対象のソース（同じディレクトリで stem が同じファイル）も diff に無いものを
-`base-rerun#<iter>` で base tree（`git archive` を worktree 外に展開）に対して同じファイルだけ再実行する。
-base でも同じテストが落ちたものは ENV 項目（`ENV-BASE-FAILING`、minor / advisory）として green 要件から外し、
-失敗がすべてそれなら green-fix を起動せずに green として先へ進む。一部だけなら残りを green-fix に回し、
-既存の失敗のファイルには触らないよう prompt で伝える。diff が触ったテストファイル・base では通る・再実行できない・
-`failed_files` が無い・diff 一覧が取れない失敗は、すべてこれまでどおり green-fix の対象（ENV 判定の材料が欠けたら
-green 要件を緩めない）。外したファイルは終端サマリーの参考セクションに「base でも失敗する既存の失敗」として載る。
-`test#final`（Final reconcile）はこの分類をしない。代わりに red の `failed_files` が非空なら、そのファイルだけを
-`test#final-rerun` で 1 回流し直し、green なら flake として `final_test_green` を true にする（`final_test_flaky` に
-ファイルと 1 回目のログを記録し、終端サマリーのテスト欄は「flake（単体再実行で green）」。`_lib/final-test-rerun.mjs`）。
-再実行も red・`failed_files` が空・再実行の応答が無いときは `final_test_red` で HOLD。
-test#final green（head sha pin）または ci_verified が成立した run では、未 checked の `EVAL-*` blocking
-item（evaluator 由来。escalate は除く）をその決定論 evidence で checked にする（evaluator は fix 後に再実行
-されないため）。SEC seed / TESTSURF / AC-FINAL-* はこの経路で解消せず、LLM 判断（final_resolution）でも
-blocking は解消しない。final test が green/ci_verified
-のときは同じ targeted evaluator 呼び出し（Final AC reconcile）が既存 AC の最終 tree 再検証に加え、
-未解消 advisory / ESCALATE item の fix 後 tree 再評価（item_resolutions。表示専用・checked 不変）も
-回収し、終端サマリーの「現状 / 対応」列に反映する。
+- **判定**: 実装後・PR 前の realized diff を 1 本の exec-proxy（`diff-triage`）で読み、次を決める:
+  - danger-grep（security の危険パターン）と test-surface の hit — hit は SEC seed / TESTSURF として ledger に積む
+  - 実効 shape — `classifyShape` が realized diff の file 数・行数と issue 由来の決定論特徴量（AC 数・`issue_type`・構造化 `breaking_change`）で
+    1 回で決める。数える file は ephemeral・宣言外・format-only を除いたもの。安全 floor（count 欠損・AC 欠落・out-of-enum の
+    `issue_type`・`breaking_change === true` → complex）を通った run だけ、行数で下げ方向にだけ補正する。LLM の事前見積もりは使わない
+  - Evaluate を走らせるか（`runEval`）— micro 以外、または danger-grep / testsurf の hit・green-fix・drop・宣言外変更がある run
+  - 宣言外変更 — implementer が申告しなかった変更を concern に積み、evaluator の重点監査に回す
+  - 敵対的 security review の対象か（security-scope。`security-review.md`）— lite route の入口と nested pr-iterate の引数になる
+- shape は Evaluate の深さと Merge tier の入力になる: micro は evaluator を回さない（`runEval` で強制されたときだけ回す）、standard は
+  差し戻さない（例外は agent AC の未達）、complex は差し戻しループを回す
+- **失敗の扱い**:
+  - danger-grep の失敗・契約外の形は全 SEC seed を unchecked にして HOLD へ（fail-closed。軸A）。proxy の null・例外は abort せず
+    per-field のフォールバックに倒す（abort は終端サマリーと journal を失う）
+  - realized の files 欠落は NaN → complex（fail-safe）。行数が 1 file でも欠けた run は補正しない
+  - security-scope の取得失敗・形の崩れは対象（fail-closed）
+  - structural 分類の欠落は分類なし（fail-open）。diff hash が取れなければ Merge tier で再判定する（fail-open）
+- **コード**: `execDiffTriagePhase`・`parseDiffTriageFields`（`.claude/workflows/dev-flow.js`）、`classifyShape`（`_lib/triviality.mjs`）、
+  `_lib/diff-triage.mjs`、`_lib/testsurf.mjs`、`_lib/declared-paths.mjs`、`_lib/security-scope.mjs`
 
-Evaluate 後に入った変更は、評価済みの台帳と tree を run 内で確かめ直す（`_lib/post-eval-recheck.mjs`）:
+## Evaluate
 
-- **post-eval green-fix の再評価**: Evaluate 差し戻し（reimpl）後の PR 前再テストで `green-fix#post-eval-i` が
-  入った run は、`green-fix-classify`（diff-triage）→ `green-fix-numstat`（評価済み tree → 現在の tree の
-  numstat）で green-fix の差分を決め、差分ファイルに testsurf / danger hit が 0 件かつテストファイルだけなら
-  `assert_only`（assert を弱めていないかだけ）、それ以外は `full`（差分全体・宣言外変更）で evaluator
-  （`eval-green-fix`。model は override しない）に評価させる。評価できたら評価済み tree の hash を green-fix 後の
-  tree へ進めるので、PR 直前の diff-hash と一致すれば `hash_mismatch` にならない。Evaluate round 以降の台帳は
-  critical 以外を受け付けないため、ここでやるのは確認と clear に限る — critical finding は `GF-RECHECK-*`
-  （全 gate_policy で blocking。`EVAL-*` と分けて fix 後の test green では解消しない — テスト弱体化は test
-  green では否定できない）、未 clear の TESTSURF は testsurf_clearance で clear。hash / evaluator 応答が取れなければ
-  評価済み tree を進めず `hash_mismatch`（HOLD）で人間へ回す（fail-safe）。green-fix が新たに触った plan 外の
-  ファイルは full の評価対象に渡し、Final reconcile の宣言外再監査が pr-iterate fix 由来と取り違えないよう
-  宣言外一覧に足す。
-- **解消済み item の再検証**: green-fix / pr-iterate fix が触ったファイルを本文か evidence に含む、LLM 判断で
-  解消済みの item（evaluator / concern 由来。seed・deterministic・AC・ESCALATE・環境ノートは除く）を決定論で
-  再検証対象にする。green-fix 分は `eval-green-fix`、fix 分（PR 作成時の tree → 最終 HEAD の差分。
-  `fix-diff-numstat`、取れなければ最終 diff 全体）は Final AC reconcile が `recheck_resolutions` で判定する。
-  resolved + evidence は evidence を差し替えて解消済みに残し、それ以外（unresolved・未返却・Final AC reconcile が
-  走らない run）は `reopenItem` で未解消へ戻す — 後の変更で崩れたかもしれない解消根拠を終端サマリーの
-  「解消済み」に残さない（critical は blocking に戻る。seed / deterministic item は reopen しない）。
+- **判定**: `evaluator` が diff・AC・PR 本文（PR 作成前に `buildPrBody` で組んだプレビュー）を読み、指摘を ledger に積む。収束は
+  `isConvergedUnderPolicy` だけで判定し（verdict は見ない）、未収束なら `fix_feedback` 付きで同じ `dev-implementer` に差し戻す。
+  - lane は `gate_policy` で決まる（`_lib/gate-policy.mjs`。既定は `DEFAULT_GATE_POLICY`）。critical・決定論 check・seed は全 policy で blocking
+  - 差し戻しの上限は `EVAL_PASSES`（shape から決まる。上限 `EVAL_MAX`）、design 差し戻しは `DESIGN_REPLAN_MAX`、同じ topic の反復は
+    `EVAL_STUCK` で stuck。既出の指摘を渡して蒸し返しを抑える
+  - agent AC の `satisfied:false` は gate_policy に依らず差し戻す（`AGENT_AC_REIMPL_MAX` まで延長）。human AC は差し戻さない。
+    観測型 AC は redgreen-verify で red→green を実証して deterministic 昇格したときだけ checked（`demoteUnprovenObservationalAc`）。
+    ci AC は evaluator に判定させない。実行環境に届かない理由の未達（`unreachable_env`）は人手 AC 待ちに数える
+  - redgreen-verify — AC のテストを実装を外した tree と戻した tree で走らせ、red→green なら AC を deterministic に昇格する
+  - 差し戻し後の PR 前再テストで green-fix が入った run は、その差分を evaluator に評価させ直す（`_lib/post-eval-recheck.mjs`）。
+    テストを弱めた critical は `GF-RECHECK-*`（全 gate_policy で blocking。test green では解消しない）
+- **失敗の扱い**:
+  - evaluator の null は throw（fail-closed。評価していない diff で PR に進まない）
+  - stuck・上限到達は throw せず現状で PR へ進む（未解消の critical は Merge tier の HOLD と人のレビューが持つ）
+  - redgreen-verify の spawn 失敗・結果の欠落は inspection 据え置き（fail-safe。deterministic 昇格しない）
+  - post-eval の再評価で hash・evaluator の応答が取れなければ評価済み tree を進めず、PR 直前の `hash_mismatch`（HOLD）で人に返す（fail-safe）
+- **コード**: `execEvaluatePhase`・`execPostEvalValidate`・`recheckPostEvalGreenFix`（`.claude/workflows/dev-flow.js`）、`_lib/gate-policy.mjs`、
+  `_lib/goal-ledger.mjs`、`_lib/evaluator-contract.mjs`、`_lib/redgreen-targets.mjs`、`_lib/stuck-detector.mjs`、`_lib/vdelta-transitions.mjs`
 
-shape ごとの経路（3 tier）:
+## PR
 
-| shape | Implement 経路 | Evaluate 経路 | merge tier |
-|-------|-----------|---------------|------------|
-| **micro** | Setup 末尾の analyze ゲート通過後に issue から単一 task の plan を合成（`implement#synth-plan`）→ Implement で `dev-implementer`（plan+impl 統合、opus / high）を 1 spawn | skip（evaluator 0 回）。ただし danger-grep hit 時は security path で強制実行 | docs・test-only + danger clean + 収束なら AUTO 推奨ラベル（merge は人間） |
-| **standard** | 同上 | 1 パスのみ（差し戻しなし。未解消 critical は merge tier HOLD + human review で担保）。例外は agent AC の未達で、`AGENT_AC_REIMPL_MAX` 回まで延長して差し戻す | REVIEW |
-| **complex** | 同上 | 差し戻し loop（上限 EVAL_MAX=10、design 差し戻しは `DESIGN_REPLAN_MAX` まで。差し戻し先は同じ `dev-implementer`） | REVIEW、danger・breaking で HOLD |
+- **判定**: commit message と PR 本文を state から純関数で組み（`buildCommitMessage` / `buildPrBody`）、proxy に verbatim で保存・
+  commit・push・`gh pr create` させる。PR 本文の見える部分は人間向けの要約（`behavior_changes` / `review_points` / `out_of_scope` と
+  `Closes #N`）に限り、受入条件・設計判断・検証・`pr_sections` は `<details>` に畳む。builder はどの欄も字数で切らない（1 行要約欄の
+  長さは IMPL schema の `maxLength` で書き手に収めさせる）。ci AC がある run は PR に `ci_verify.label` を付ける。
+  - **micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target`
+    の run は、フル pr-iterate の代わりに `pr-review-lite`（pr-reviewer の 1-pass review）→ `ci-check-lite`（CI の 1 回判定）の 2 spawn で
+    終える。review が null か blocking（critical/major）を返したら CI を読まずにフル pr-iterate へ昇格し、CI が passed / no_checks で
+    なければ（failed・pending・error・null）同じく昇格する。どちらも clean なら lgtm で終える
+  - それ以外の run は nested の `workflow('dev-flow:pr-iterate-run')`（`prIterateArgs()`。`nested.caller: 'dev-flow'`）
+- **失敗の扱い**:
+  - commit・push・PR 作成の中断（`committed:false`・PR 番号なし）は throw せず `pr_phase_failed` の failure で終える（fail-closed。
+    nested pr-iterate・Merge tier は走らせない。成果物・所要・回収コマンドを返り値と journal に残し、回収は wrapper が issue コメントで人間に渡す。
+    push の再発行・force push 等の fallback は持たない）
+  - lite の review・CI が判定できないときはフル pr-iterate へ昇格する（fail-safe。lite route の critical/major で昇格するのは blast-radius）
+- **コード**: `phase('PR')`・`prPhasePrompt`・`prPhaseFailure`・`prIterateArgs`（`.claude/workflows/dev-flow.js`）、`buildPrBody`・
+  `buildCommitMessage`（`_lib/pr-artifacts.mjs`）、`classifyLiteReview`（`_lib/lite-route.mjs`）、`ciEffectiveStatus`（`_lib/ci-check.mjs`）
 
-AC は analyze ゲートで actor（`_lib/ac-actor.mjs`: `（人手）` 表記・staging・本番・外部サービス・issue へのコメントと、
-repo 外の作業だけを書いた AC（`classifyAcScope` が `external`）は `human`、それ以外は `agent`）に分類する。AC の ledger item は LLM major で既定 `gate_policy` では advisory のため、
-ledger 収束だけでは未達 AC がループを回さない。そこで agent AC の `satisfied:false` は gate_policy に依らず
-`fix_feedback`（`topic: "AC-<n> 未達"`）付きで `dev-implementer` へ差し戻す（agent AC を理由にした差し戻しは全 shape で
-`AGENT_AC_REIMPL_MAX` 回まで）。human AC は worktree 外の作業なので差し戻さない。
-観測型 AC（実行して出力・記録を観測しないと確かめられない AC。actor は `human`）は 2 段構えで決める: prerun-analyze.sh が
-正規表現（`isObservationalAc`。絞り込み専用で拾いすぎてよい）に当たった AC だけを Jev に noul で聞いて
-`analyze.ac_observational`（true / false / null）を出し、analyze ゲートが null の AC だけを AC 文面と issue タイトルだけを読む
-分類 agent に渡し、それでも決まらなければ true にする（`resolveAcObservational`。diff・evaluator の結果は渡さない —
-evaluator のコード読みで達成扱いになるのを止める仕組みなので、実装を見た判定は抜け道になる）。観測型 AC は、Evaluate の
-redgreen-verify で red→green を実証して deterministic 昇格したときだけ checked にする。evaluator・final AC reconcile の
-inspection による `satisfied:true` は達成扱いにせず（`demoteUnprovenObservationalAc`）、差し戻さずに人手 AC 待ちへ回す。
-evaluator が agent AC の未達理由を実行環境に届かない（`unreachable_env:true` — DB コンテナ等が sandbox 内で動かない）と
-返したものも差し戻さず人手 AC 待ちに数える（コード上に未達の根拠が無いので終端サマリーは「修正が必要」にせず「実行して確認する」）。
-ci AC（actor `ci`）: repo が `skill-config.json` / `.claude/skill-config.json` の `"dev-flow".ci_verify`
-（`{ label, checks, commands, wait_ceiling_seconds }`。prerun が読み、`normalizeCiVerify` が不正形を fail-closed で止める）で
-宣言した `commands` を inline code に書いた AC、または `label` に言及した AC（`matchesCiVerify`。汎用の E2E 語・Jev は使わない）。
-evaluator・final AC reconcile の判定を使わず差し戻しにも回さない。PR 作成時に `label` を付け、pr-iterate は `checks` を各 round の
-CI 判定から外し（check-ci `--exclude`）、LGTM 後に別ループ（`ci-verify#i.k`、check-ci `--only`）で `wait_ceiling_seconds` まで完了を待つ。
-success は check run の URL を根拠に satisfied、failure は失敗 job の link を fix に渡して直させ次 iteration で再び待つ（MAX に含める）、
-上限まで未完了は LGTM のまま `ci_verify.status='pending'`。
-repo が `"dev-flow".local_verify`（`{ command, db: { engine: "postgres", version }, env, timeout_seconds }`。
-`normalizeLocalVerify` が不正形を fail-closed で止める）も宣言していれば、ci AC は PR の前にローカル実行で判定する
-（`execLocalVerify`。Validate green 後・Evaluate 前。`local-verify start / wait / stop` を `dev-runner-haiku` の exec-proxy で呼び、
-local-verify が pg-broker の使い捨て Postgres の `database_url` を `env` に入れて `command` を実行する）。exit 0 は `log_path` と exit code を
-根拠に satisfied、PR に `label` は付けるが pr-iterate には `ci_verify.wait:false` を渡して check の完了を待たない（full-ci の結果は
-merge 前に人間が確認する — 終端サマリーの「あなたがやること」）。失敗は `log_tail` を付けて dev-implementer に差し戻し
-（`AGENT_AC_REIMPL_MAX` を Evaluate の agent AC 差し戻しと共有）、上限後も失敗なら ci AC を agent の未達に数えて `ac_agent_unsatisfied`。
-pg-broker に届かない・結果を取得できない・Validate が red なら fail-open で上の CI 待ちに戻し、理由を終端サマリーの「参考」に 1 行出す。
-Merge tier の HOLD 理由は
-`ac_agent_unsatisfied`（差し戻し上限後も未達 = ループの取りこぼし）と `ac_human_pending`（人手 AC 待ち）と
-`ac_ci_pending`（ci AC が CI で success にならなかった。「CI の `<check>` 実行中 — 結果を確認して merge」）に分ける。
-PR body（`buildPrBody`）は見える部分を人間向けの短い要約に限り、判定材料は `<details>` に畳む。見える部分は
-結論 1 行 → `## 何が変わるか`（`behavior_changes`）→ `## 人間に見てほしい点`（`review_points`、任意）→
-`## この PR に含めなかったもの`（`out_of_scope`）→ `Closes #N` の順で、材料が空の節は出さない。`<details>` には
-受入条件（AC 全文の checkbox）・設計判断（`design_decisions`）・検証（danger-grep / test-surface の hit と `pr_notes`）・
-`pr_sections`（1 件 1 つ）を載せる。`dev-implementer` の返却は `adoptImplPrNotes` が plan に取り込む。
-builder はどの欄も字数で切らない — 1 行要約欄の長さは IMPL schema の `maxLength`（`behavior_changes` は `maxItems` 3 も）で
-書き手に収めさせ、超過は schema 検証で差し戻す。`pr_sections` の合計が `PR_SECTIONS_MAX_CHARS`（3000 字）を超えたら、
-Implement / reimpl の直後（Evaluate より前）に `dev-implementer` へ要約を 1 回差し戻す（`sections-trim` / `sections-trim#<i>`）。
-判定する LLM の文脈を薄めないための上限で、差し戻し後も超えたら切らずに載せる。
-その後、`behavior_changes` / `review_points` / `out_of_scope` / 設計判断（`title`・`rationale`）/ `pr_notes` の `text` に
-ひらがな・カタカナ・漢字を 1 文字も含まない項目があれば、`prBodyLanguageFeedback` が該当項目を列挙し、builder で訳さずに
-`dev-implementer` へ日本語での書き直しを 1 回差し戻す（`lang-rewrite` / `lang-rewrite-local-verify#<n>` / `lang-rewrite#<i>`）。
-差し戻し後も残っても run は止めず（HOLD 理由にもしない）、本文に載せたまま log に警告を出す。`pr_sections` の markdown（表・識別子で
-誤検出しやすい）と `concerns`（plan に入らない）は検出の対象外で、`dev-implementer.md` の言語の規則だけで扱う。
-evaluator（Evaluate / final-ac-reconcile）には plan の本文材料ではなく `buildPrBody` の出力（Evaluate は PR 作成前に
-同じ builder・同じ材料で組んだプレビュー）を渡し、「PR 本文に書く」型の AC を本文テキスト（`<details>` の中を含む）で判定させる。
-`out_of_scope` は終端サマリーの「この PR に含めなかったもの」節にもそのまま転記する（空なら節ごと出さない）。
+## pr-iterate
 
-pr-iterate の fix（`fix#i`）prompt は必須 5 要素を持ち、Boundary で worktree の外・他 repo への書き込み、ブランチ作成、
-`gh api` での変更を禁止する。`file` が worktree の外（URL・`~`・`..` で出る相対パス・worktree 配下でない絶対パス）を
-指す blocking finding は `excludeOutsideWorktree`（`_lib/review-normalize.mjs`）が fix の対象から外し、reviewSeen にも
-積まない。残りの blocking が 0 件ならその round は CI 判定へ進む。外した finding は返り値 `human_followups` と
-終端サマリーの「人間側 follow-up」節に載る（nested 起動では dev-flow の終端サマリーが表示する）。
+- **判定**: review ⇄ fix を LGTM まで回す（上限 `MAX` は `args.max_iterations`。同じ指摘の反復は `REVIEW_STUCK` で stuck）。LGTM は
+  review の approve・CI gate（passed / no_checks）・conflict なし・security review の clear（対象の run のみ）がそろった round で確定する。
+  終端の status は `STATUS_HEADLINE` が持つ。
+  - delta review — review#i（i ≥ 2）は前 round の review 時点の head から今の head までの fix delta だけを読む（`resolveReviewScope`）。
+    sha が確定できない round は full review。full review が critical を 1 件以上返したら、次の round は delta 範囲を渡さない full review に戻す（`nextCriticalPending`）。
+    critical を返さない full review を経るまで delta review に戻さず LGTM にもしない — critical の fix を
+    delta review が approve しただけでは LGTM にならない（delta review は delta 外の新規指摘を出さないので、critical が出た PR は他にもある前提で扱う）
+  - fix — `pr-fixer` に blocking と CI 失敗をまとめて 1 回で渡す。review の finding の文は決定論でスクラブしてから渡す
+    （`_lib/review-finding-scrub.mjs`）。worktree の外を指す finding は fix から外し、返り値 `human_followups` と終端サマリーの
+    「人間側 follow-up」に載せる（`excludeOutsideWorktree`）
+  - ci AC — 宣言された check を各 round の CI 判定から外し、LGTM 後に別ループで完了を待つ（`waitCiVerify`。local-verify で決着した run は待たない）
+  - base との conflict — LGTM の候補の round で CONFLICTING / DIRTY なら base を merge し、`conflict-autoresolve` が衝突ファイルを型 A
+    （全 hunk の base 側が空 → 和集合）/ 型 B（inline 生成区間内だけ → `sync-inlines --write` で再生成）に分類する。全ファイルが A / B なら
+    push して次 round の review・CI gate を通してから LGTM。それ以外は merge を戻す — base の行を両側が書き換えた hunk は仕様判断なので LLM に解かせない
+  - 敵対的 security review — 対象の run は各 round で review と並べて回す（`securityRound` / `securityGate`。`security-review.md`）
+  - 単体起動 — wrapper（`pr-iterate/SKILL.md`）の `pr-iterate-prerun` が PR head の worktree を用意し `args.nested`
+    （`caller: 'standalone'`）で渡す。`prior_devflow`（HOLD の dev-flow サマリー）があれば code ごとの回収状況を出し、pr-iterate が
+    確かめられない code は未解消として人に返す（`priorHoldRecovery`）。`prior_summary` の head が今の head と違えば、review の前に
+    「再 review 中」コメントを足す（古い LGTM を今の head の根拠にさせない）。`--direction <file>` の修正方針は prerun が PR の worktree の
+    外で読み、fix の prompt にだけ入れる（判定者には渡さない）
+- **失敗の扱い**:
+  - review の null・throw は同じ prompt で 1 回だけ再試行し、だめなら `review_contract_error`、fix の null は 1 回再試行して `fix_failed`、
+    fix の commit・push を保証できなければ `fix_failed`（fail-closed。LGTM にしない）
+  - CI を確定できない・上限まで pending は LGTM にしない（fail-closed）
+  - security review を clear にできない run は LGTM にしない（fail-closed。`security-review.md`）
+  - mergeable の取得失敗は conflict の自動解消を試みない（fail-open。definitive な conflict は Merge tier が HOLD にする）。自動解消できない
+    conflict は LGTM で終え、Merge tier の HOLD に任せる（fail-safe）
+  - `nested.caller` の欠落・out-of-enum（`NESTED_CALLERS`）、`--direction` の不正は throw（fail-closed）
+  - isolation probe の `written:false` は throw（fail-closed）。直前の cleanup と「再 review 中」コメントの投稿の失敗は fail-open
+- **コード**: `.claude/workflows/pr-iterate.js`（`callReviewAgent`・`callFixAgent`・`ensureFixCommitted`・`applyCiFix`・`waitCiVerify`・
+  `autoResolveConflict`・`securityRound`・`buildTerminalSummaryBody`）、`_lib/review-delta.mjs`、`_lib/review-normalize.mjs`、
+  `_lib/ci-check.mjs`、`_lib/conflict-autoresolve.mjs`、`_lib/security-review.mjs`、`_lib/pr-comment-format.mjs`
 
-Implement 経路は shape に関わらず `dev-implementer` 一本（planner ⇄ reviewer ループ・parallel fan-out・
-`pipeline()` は持たない。切替定数は置かず、経路を戻すときは git revert）。`dev-implementer` は issue 本文
-（`req.issue_body`、analyze-issue.sh が 4000 字で切詰め）+ AC + `fix_feedback` を受け取り、AC テスト契約
-（red→green 自己実証）や手順書型 task は受け取らない — テスト全件・red 証明・AC 判定は Validate / redgreen-verify /
-evaluator が担う。合成 task の `file_changes` は空で始まり、IMPL 返却の `files` を宣言として取り込む
-（宣言外監査・実効 shape の realized count・PR body の材料になる）。BLOCKED（`approach_mismatch`）は planner を起動せず、
-blockSeen 累積の findings（過去 BLOCKED アプローチへの回帰禁止）と DONE 成果を prompt に付けて同じ agent を
-`reimpl-blocked#b` で再 spawn する（上限 `BLOCK_MAX`）。`guard_blocked` は再 spawn しないが、その理由がファイル削除
-（`isDeletionGuardBlock`）なら、以降の実装 spawn（`reimpl#i` / green-fix 等）の prompt に削除手段の固定文
-（tracked ファイルは `git rm`、削除後に unstage しない。agent 定義と同じ内容）を足す。Validate の green-fix（`green-fix#i` / `green-fix#retry-i` / Evaluate 差し戻し後の PR 前再テストの `green-fix#post-eval-i`）も
-同じ agent 定義だが `model: 'sonnet'` を明示 override する（green-fix の実態は環境起因の blocker 報告か小さな
-test script 修正で opus 級の推論を要さず、green-fix > 0 の run は Evaluate のテスト弱体化監査が強制されるため）。
-Implement / BLOCKED 再実装 / Evaluate 差し戻しは `opts.model` を渡さず frontmatter の既定（opus / high）で spawn し、
-null 返却は再試行せず drop（`implDroppedCount`）に計上する。
+## Final reconcile
 
-shape は analyze ゲートでは決めない。Diff triage（実装後・PR 前）で `classifyShape(req, realizedCount, lineStats)` が
-realized diff の file 数・file ごとの追加/削除行数 + issue 由来の決定論特徴量（AC 数 / `issue_type` / 構造化 `breaking_change`）で
-1 回で決め、その返り値が `EFFECTIVE_SHAPE`（Evaluate 深さ・LITE gate・merge tier の入力）になる。安全 floor は
-realized count 欠損（diff-triage（danger-grep）の files 欠落 → NaN）・`acceptance_criteria` 欠落・out-of-enum `issue_type`・
-`breaking_change === true` → complex（軸A: 緩めない）。floor を通過した run だけ、diff-triage の `lines`
-（tracked は numstat、untracked は `wc -l`）から差分の中身で下げ方向に補正する: docs（`docs/**` / `*.md`）と
-対応する本番ファイルも変えたテストは数えない、重み付け後の追加行 < 削除行×0.3 なら 1 段下げる、complex は
-重み付け後 file 数 > 5 かつ追加 > 100 行のときだけ。file 数判定より上には上げない。行数が 1 file でも欠けた run と
-変更がテストだけの run は補正しない（file 数判定のまま）。補正前の shape は返り値 `shape_reason` の「file 数判定」に出る。
-LLM の事前見積もり（shape / 見込み file 数）は REQ に
-持たず decision に使わない — micro の LITE 経路に対する意味的リスクの安全網は runEval 強制条件
-（danger-grep / testsurf / green-fix / dropped task / 宣言外変更 / UI 接触）が担う。
-`classifyShape` に渡す数は Diff triage 時点の working tree から ephemeral・宣言外パス・format-only を
-除外したもの（宣言外は size 信号にせず Evaluate 強制 + concern 監査で扱う）。その数は返り値
-`realized_file_count` に、判定根拠は `shape_reason` に載る（journal telemetry には実効 `shape` だけを書く）。danger-grep hit が
-あれば micro でも Evaluate を強制実行（security path）。
+- **判定**: pr-iterate が fix を適用した run（`fixes_applied > 0`）だけ、fix 後の最終 tree で確かめ直す（0 の run は spawn しない）:
+  - worktree を PR の最終 HEAD に同期し、Validate と同じ prompt の `run-tests <WT>` を 1 回だけ実行する（green-fix はしない）。red で
+    落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake として記録する（`_lib/final-test-rerun.mjs`）
+  - テストを実行できなければ、PR head sha に pin した CI check を決定論で判定して代える（`finalCiVerdict`）
+  - 最終の changed-files で宣言外変更を監査し直す
+  - final test が green か CI で確かめられた run は、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
+    解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は決定論の evidence で checked にする
+    （evaluator は fix 後に再実行されないため）。SEC seed・TESTSURF・AC-FINAL は LLM の判断で解消しない
+- skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'` は `validate_test_red`、`tests:'error'` は PR head の
+  CI で green を確かめられなければ `validate_tests_not_run` で HOLD
+- **失敗の扱い**:
+  - 同期失敗・test の null は `unavailable`（fail-safe → Merge tier HOLD）。flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）
+  - CI での代替が成立しない（pending・failure・sha 不一致）は HOLD のまま（fail-closed。判定は LLM にさせない）
+  - Final AC reconcile の応答が検証に通らなければ `unavailable`（fail-closed → HOLD）
+  - changed-files の取得失敗は宣言外の再監査を skip（fail-open。test gate は維持）。PR 本文の AC checkbox の更新失敗も fail-open
+- **コード**: `phase('Final reconcile')`（`.claude/workflows/dev-flow.js`）、`_lib/final-test-rerun.mjs`、`_lib/final-ci.mjs`、
+  `_lib/final-ac-reconcile.mjs`（`finalEvalBlockingResolutions`）、`_lib/post-eval-recheck.mjs`
 
-**micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target`
-（clean-micro かつ contract 準拠かつ danger clean かつ ci の AC — `ci_verify` の check で判定する AC — を持たず、
-Diff triage の merge-base 基準の diff が敵対的 security review の対象外 — 下の「敵対的 security review」— の）を満たす run は、PR phase で dev-implementer 1 spawn → targeted test →
-PR → pr-reviewer 1-pass の縮約経路（lite route、判断系 agent 呼び出し ≤10）を通る。lite の pr-reviewer
-1-pass が `review==null || blocking.length>0`（critical/major finding あり）を検出した場合のみ
-`workflow('dev-flow:pr-iterate-run')` フル loop へ自動昇格し、以降は通常の review⇄fix 経路で処理する。danger-grep
-hit で `runEval=true` になったケースは lite ゲート条件を満たさないため lite に入らず、micro であっても
-現行の security path（Evaluate 強制実行）へ強制昇格する（軸A invariant 不変）。
+## Merge tier
 
-**敵対的 security review**（信頼境界をまたぎうる PR を既定で通す gate。正当化クラスは `.claude/rules/dev-flow.md`「正当化クラス（W7）」、cwd の扱いは capability-bound.md）:
-
-**守る要件と境界**（この gate と、それを支える hook・script はこの 3 つだけを守る。足す検査はどれかに対応させる）:
-
-- R1 PR の内容（diff・PR 本文・コメント・ファイル名）で判定を誘導させない — reviewer は diff をデータとして読み、PR が書いた
-  指示ファイルを読み込まない（read-scope hook・Claude 経路は `reviewer_context_changed` で止める）。clear を決める中継に自由文を
-  読ませない。Codex 経路の中継の Bash と返り値は hook が workflow の prompt の行と実 stdout に縛る（PR の CLAUDE.md を受け取っても偽れない）
-- R2 判定は今の PR head に対するもの — `reviewed_sha` が今の head と一致した clear だけを使い、head が変わりうる時点で cleared を捨てる
-- R3 review の仕組みが、PR に制御される入力を sandbox の外で実行しない — Codex 経路の codex も Claude の sandbox の中で動かす前提にし、
-  中継の Bash は固定形の allowlist に限る（flag を変えた codex・別のコマンドを中継に実行させない）
-- **境界の外（塞がない。issue にもしない）**: sandbox の中で PR のコードが既に実行され、同じ uid のプロセスとして残っている前提の
-  攻撃 — 保存先（`$TMPDIR` 配下）の差し替え、確認と使用の間の競合、hard link・rename での入れ替え、PATH の前方への同名ファイルの設置。
-  同じ権限のプロセスに対する path の検査は必ず競合が残り、検査を積むほど運用（人の手作業・設定項目）だけが重くなる。この段階は
-  sandbox の境界と人間の merge が守る。利用者が文書の前提（codex を sandbox の中で動かす等）と違う環境を作った場合だけの経路も外
-- reviewer の prompt（`SECURITY_REVIEW_BOUNDARY`）は境界の外を critical / major にさせず、fix の prompt（`SECURITY_FIX_GUIDANCE`）は
-  人に手作業を課す修正・同じ入力に同じ種類の検査を重ねる修正をさせない（縛られていない入力元を縛る修正は対象外。できない指摘は
-  `deferred_security_topics` で人に返す）。どちらも `_lib/security-review.mjs` の 1 か所に置く
-
-```
-Diff triage     → security-scope（dev-runner-haiku-ro）: `security-review-scope <WT> origin/<base> --working-tree`
-                  （merge-base と作業ツリーの diff）→ state.securityReview.target → LITE の条件・nested args.security_review
-/pr-iterate     → pr-iterate-prerun が `<base>...<PR head>` の diff を判定 → wrapper が args.security_review で渡す
-pr-iterate      → round の開始時に対象の run は各 round で、review#i（・ci-check#i）と同じ parallel() で review と同じ head に対して
-                  security-scope#i → security-review#i を起動する（review の decision を待たない）。対象でない run は
-                  CI gate を通り conflict も無い round（LGTM の候補）でだけ security-scope#i を取り直す:
-                  security-scope#i: `security-review-scope <wt> origin/<base> <shaNow|HEAD> --save-diff`（Codex 経路の run は
-                    下の「Codex 経路」の形 — GitHub の PR の head と base の sha で取る）
-                    → 起動時・run 中のどれか 1 回でも対象なら run の終わりまで対象（args.security_review が無い run も対象）
-                    → worktree の外の新しい保存先 `dev-flow-security-review-XXXXXX/pr.diff` に diff を書く
-                  対象なら security-review#i（security-reviewer を毎回新しく spawn。pr.diff のパスと head sha と
-                    前回の未解消 critical/major を DATA として渡す）
-                    → critical/major 0 件かつ reviewed_sha が今の head → 同じ round の review approve・CI passed / no_checks がそろえば LGTM
-                    → critical/major あり → review の blocking（と CI failed）と 1 回の fix#i（pr-fixer）にまとめる。review が
-                      approve でも CI を待たない（ci-wait-check なし）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
-                      上限まで残れば max_reached）。security の指摘は history の blocking に載せない
-                      → fix#i の deferred_security_topics（直さずに人へ返した topic）が渡した指摘の topic と 1 件でも一致すれば、
-                        applied を見る前にその round で status: security_unresolved（applied:true なら commit-ensure#i の後。
-                        保証に失敗すれば fix_failed）。次の review・security review は spawn しない
-                    → worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致・
-                      Claude 経路で reviewer_context_changed が false でない（起動時の args.security_review の決定論の値と run 中の判定の
-                      どれか 1 回でも true なら run の終わりまで true）→ LGTM の候補の round で status: security_unresolved
-                      （review が request-changes の round はその fix へ進み、次の round で取り直す）
-                  clear はその round の head についての結果。fix・conflict の自動解消で head が変わりうる時点で返り値の
-                  status を cleared のまま残さず、次の round の security review が新しい head で取り直す
-Merge tier      → 対象（Diff triage か pr-iterate のどちらか）かつ pr-iterate が lgtm + security_review.status 'cleared'
-                  でなければ HOLD（security_review_unresolved）
-```
-
-- 対象かどうかは `_lib/security-review-scope.mjs` の決定論の判定だけで決める（LLM は使わない。コードの diff を外部 API に
-  送らない）。対象外は「ファイルが 1 件以上で、全ファイルが許可リスト（mode 100644 の `.md` / `.mdx` / `.rst` のうち指示
-  ファイルでないもの、テストコードの拡張子の `*.test.*` / `*.spec.*`、`.bats`。ドット始まりの要素の配下は除く）に当たる」
-  diff だけ。指示ファイルは大文字小文字を区別せず `CLAUDE.md`・`CLAUDE.local.md`・`AGENTS.md`・`SKILL.md` と
-  `.claude/`・`references/`・`output-styles/`・`agents/`・`commands/` 配下。diff は
-  `git -c core.quotePath=false diff --no-renames --no-color --no-ext-diff --no-textconv --text --src-prefix=a/ --dst-prefix=b/`
-  で取り、`--name-only -z` の一覧と件数・集合を照合する。取得失敗・空・読めない diff・binary・mode 120000 / 160000・mode の
-  変更・`.gitattributes` / `.gitmodules` は対象
-- security-reviewer（opus / high、tools は Read / Grep だけ）は保存先を作業ディレクトリにし、PR 本文・diff・コード中のコメントを
-  データとして扱う。品質ゲート agent なので `opts.model` を渡さない
-- workflow の `agent()` には cwd を渡せないので、security-reviewer の session の cwd は PR の worktree のまま。保存先の外への
-  Read / Grep と Glob は PreToolUse hook（`hooks/pretool-security-reviewer-read-scope.sh`。入力の `agent_type` が
-  `dev-flow:security-reviewer` のときだけ判定）が拒否する — 許可は対象パスの realpath が basename `dev-flow-security-review-[A-Za-z0-9]{6}`
-  のディレクトリの配下で、そのディレクトリと対象パスが session の cwd の配下でないときだけ（R1）。PR が reviewer の session に
-  自動で読み込まれる指示ファイル（basename が `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`、または repo 直下の `.claude/` 配下）を
-  変える run は、security-scope#i の `reviewer_context_changed` で検出して review を spawn せず `security_unresolved`（人間が
-  `security-review-isolated <PR>` で確かめる）。Codex 経路はこの停止をせずに Codex で review する（下の Codex 経路）
-- security-scope の CLI は stdout・stderr に PR 由来の文字列（ファイルパス・git の stderr）を出さない。reasons は固定 code と
-  件数、error は固定 code（`usage` / `git_failed`）だけ。stdout を写す exec-proxy の agent に判定を書き換える文を渡さないため
-- 公開の PR コメント（pr-iterate・dev-flow の終端サマリー）には指摘の件数だけを載せ、本文（攻撃経路）は fix の prompt にだけ渡す。
-  security の指摘は `history` / `human_followups` に入れない。返り値 `security_review` は `{target, status, stop_reason, rounds, critical, major, minor, deferred}`
-  （`deferred` は fix が直さずに人の判断に返した指摘の件数。終端サマリーには件数だけを出し、topic は載せない）
-- `stop_reason` は review の前提チェックで clear にできずに止めた理由の閉じた enum（`diff_unavailable` / `head_unknown` /
-  `head_mismatch` / `review_dir_invalid` / `reviewer_context_changed` / `reviewer_context_codex_unavailable`）。review を実行した・
-  止めていない run は null。
-  `reviewer_context_changed` の run は終端サマリーで「指示ファイルを変える PR なので自動 review をしていない」と出し分ける
-  （HOLD は変えない。変わったファイルのパスは PR が決めた文字列なので載せず、固定の確認コマンドに PR 番号だけを差し込む）
-
-**Codex 経路**（opt-in。`"dev-flow".security_reviewer = "codex"`）:
-
-```
-/pr-iterate     → pr-iterate-prerun が base branch（origin/<base>）の skill-config.json / .claude/skill-config.json、無ければ user 設定
-                  （$SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）から読み、
-                  args.security_review.reviewer で渡す（PR head の設定ファイルは読まない。無ければ "claude"）
-/dev-flow       → dev-flow-prerun が同じ規則（_shared/scripts/security-reviewer-config.sh を共有）で解決した base から読み、
-                  setup.security_reviewer に載せる（claude / codex 以外・欠落は prerun-setup.mjs が明示 error）
-                  → prIterateArgs() が nested pr-iterate の args.security_review.reviewer で渡す
-pr-iterate      → security-pr-head#i（security-codex-relay）: `gh pr view <PR> --repo <repo> --json baseRefOid,headRefOid`
-                    → 返り値（stdout に縛られる）の 2 つの sha が review の基準。取れなければ stop_reason `pr_head_unknown`
-                  security-pr-fetch#i（security-codex-relay）: `git fetch origin <base> refs/pull/<PR>/head`（返り値は `{"done":true}` だけ）
-                  security-scope#i（security-codex-relay）: `security-review-scope <wt> <base の sha> <head の sha> --save-diff`
-                    → head_sha が GitHub の PR head か shaNow と食い違えば `head_mismatch`
-                  の前提チェックを通った round で（指示ファイルを変える PR も止めずに review する — 判定者の codex は空の cwd で動き、
-                  中継のコマンドと返り値は hook が縛るので、中継が PR の CLAUDE.md を受け取っても判定を偽れない）:
-                  security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`
-                    → 保存先に prompt.md（prompt + diff）・strict 形の schema.json・空の cwd/ を作る（どれかか result.json が既にあれば作らない）
-                  security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... -C <保存先>/cwd ... -o <保存先>/result.json "<固定文>"`
-                    （先頭トークンが codex の単文。返り値は使わない）
-                  security-codex-verdict#i（security-codex-relay）: `security-review-codex-result <保存先> <head>`（自由文を出さない判定）
-                    → clear でなければ security-codex-issues#i: 同じ引数に ` --issues`（指摘の本文）
-                    → script と workflow の両方が securityReviewVerdict と同じ規則で clear のときだけ LGTM（以降は Claude 経路と同じ）
-                    → clear を決める中継に自由文（codex の出力・指摘の本文）を読ませない — 引用された PR の文で偽の clear を作らせない
-                    → Codex で判定できない（prep の失敗・codex が無い・hook の拒否・結果ファイルが読めない）→ その round は security-review#i
-                      （reviewer_context_changed の run は security-reviewer を spawn せず stop_reason `reviewer_context_codex_unavailable`
-                      で止める — その reviewer は PR の指示ファイルを受け取る）
-```
-
-- Codex 経路の前提: codex は Claude の sandbox の中で動かす（`excludedCommands` に入れない）。sandbox の通信許可に Codex の
-  API のホスト、書き込み許可に Codex の設定ディレクトリ（`CODEX_HOME`）が要る — 手順は `pr-iterate/SKILL.md`。plugin は
-  codex の実体の置き場所や出力先を検査しない（sandbox の外で動かす経路を持たないので、検査する理由が無い）
-- codex の起動形は `_lib/security-review.mjs` の `codexSecurityReviewCommand` が固定で持つ: `codex exec -s read-only --ephemeral
-  --ignore-user-config --ignore-rules --skip-git-repo-check -C <保存先>/cwd -c web_search="disabled" --disable shell_tool --disable unified_exec
-  --disable apps --disable browser_use --disable computer_use -c model_instructions_file=<保存先>/prompt.md
-  --output-schema <保存先>/schema.json -o <保存先>/result.json "<固定文>"`。可変部は保存先のパスだけ。空の `-C` で cwd の AGENTS.md を
-  読ませず、shell 等を外して diff の外を読む手段を無くす
-- PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`）は `security-codex-relay` の Bash を `gh pr view` / `git fetch` / `security-review-scope` /
-  `security-review-codex-prep` / `codex exec`（上の固定形）/ `security-review-codex-result` の固定形の allowlist に限る（語を探す判定は
-  引用の分割・`$` 展開で組み立てた語をすり抜けるので使わない）。起動形を変えるときは `codexSecurityReviewCommand` と hook を同時に変える
-- 同じ hook（matcher `Bash` と `StructuredOutput`。入力の `agent_type` が `dev-flow:security-codex-relay` のときだけ判定）は、
-  `_lib/scripts/security-relay-bind.mjs` で中継の入出力をその spawn の transcript（`<transcript_path から .jsonl を除いたもの>/subagents/`
-  配下の `agent-<agent_id>.jsonl`）に縛る（R1・R2）: Bash は最初の user 行の harness の枠の後の最終行（2 字下げを外したもの）と完全一致、
-  返り値は直前にそのコマンドを実行した Bash の実 stdout の 1 行目の JSON か、prompt が定める失敗時の JSON（`SECURITY_SCOPE_RELAY_FAILED` 等。
-  Bash を実行していなくてよい。codex の起動は `{"done":true}` だけ）と一致するときだけ通す。transcript は Claude Code の設定ディレクトリに
-  harness が書き、sandbox の中の中継・PR のプロセスからは書けない。transcript・prompt が無い・枠の形が違う・コマンド行が取れないときは deny
-- review する head と base は GitHub の PR の値（縛った `gh pr view` の stdout）で決まる。手元の HEAD・`origin/<base>` は PR の worktree で
-  動く fix#i・commit-ensure#i（PR の CLAUDE.md を受け取り得る）が push しない commit や ref の書き換えで変えられるので基準にしない。
-  `commit-ensure#i` 等の中継が返した `shaNow` が GitHub の PR head と食い違えば `head_mismatch` で止める（push されていない commit・
-  古い commit の sha を返されても、GitHub に無い tree・古い tree で clear にしない）。exec-proxy の規約どおり script は通信しない
-  （sha の取得と fetch は中継の bare の gh / git の単文）
-- `--output-schema` は OpenAI の strict 形（全 object が `additionalProperties:false`・全 property が required・`maxLength` 無し）
-  でないと 400 になる。結果ファイルの schema 適合は `security-review-codex-result` が判定し、適合しない結果は clear にしない
-- 返り値 `rounds` は Claude の security-reviewer と、結果を読めた Codex の review の合計
-
-- **`agent()` へ渡す agentType は plugin namespace 必須** — subagent の実体は plugin 配下
-  (`plugins/dev-flow/agents/`) にあり、harness は `dev-flow:<name>` の namespaced id でしか解決しない
-  (bare 名は `agent type '<name>' not found` で run 全体が起動直後に abort する)。workflow 本体・
-  pr-iterate の返り値 `subagent_invocations` の by_type キー・agent 名を静的検査する routing test は論理名 (bare) を保持し、
-  namespace は `agent()` を呼ぶ直前の `nsAgentOpts()` (canonical `_lib/agent-namespace.mjs`。dev-flow.js /
-  pr-iterate.js へ inline 生成) でのみ付与する。dev-flow-canary.js は inline bridge 非依存
-  (self-contained) を保つため例外で、namespaced id を直接書く。新しい call site はこの経路に乗せる。
-- **判断系 leaf は subagent** (`.claude/agents/{dev-implementer,evaluator,pr-reviewer,security-reviewer,security-codex-relay,pr-fixer,dev-runner,dev-runner-haiku,dev-runner-haiku-ro,dev-runner-haiku-wo}.md`)。
-  effort は subagent frontmatter で決める。`agent()` の `opts.effort` は frontmatter より優先して実効値に反映される
-  （transcript で確認済み。dev-flow-canary の `agent_opts_effort_accepted` probe は受理の有無だけを見る）が、
-  dev-flow.js / pr-iterate.js の call site は opts で effort を渡さない（`_lib/agent-frontmatter.test.mjs` が pin）。
-  model は subagent frontmatter で決める。品質ゲート agent の call site は `opts.model` を渡さない —
-  evaluator（`eval#i` / `eval-green-fix` / `final-ac-reconcile` / `security-clearance-final`）と pr-reviewer（`review#i` /
-  schema-retry / `pr-review-lite`）はともに frontmatter（evaluator は opus / medium、pr-reviewer は opus / high）で spawn し、workflow 側に model 定数・
-  null 時の model fallback 機構は持たない（`_lib/review-model-frontmatter.test.mjs` が call site と telemetry
-  `eval_model_config` / `review_model_config` / `impl_model_config` = frontmatter 値の一致を pin）。同一入力での paired 比較で
-  opus-high は fable-high と verdict・major 検出が同等以上かつコストが 2/3 だったため、両 gate とも override を外している。
-  `dev-implementer` も frontmatter（opus / high）で spawn する（complex の盲検 replay で fable-high と品質同等・
-  所要時間とコストが約 −45% だったため）。override は green-fix の `model: 'sonnet'` だけ
-  （call site 別の挙動は `_lib/impl-model-opus.test.mjs` が pin）。
-  pr-iterate の fix（`fix#i` / `fix#i-retry`）は専用 agent `pr-fixer`（frontmatter opus / medium / `maxTurns: 100`）で
-  起動し、opts で model / effort を渡さない
-  （reviewer 指摘は設計判断を伴う修正が中心で、失敗 6 ケースの盲検 replay で opus は sonnet に対し完走 5/6 対 3/6・
-  品質同等以上だった。effort は paired replay で high と完走率・品質同等のまま所要・コストが下がった。
-  maxTurns は API リクエスト数で数え、opts では変えられないので frontmatter に置く。50 では大きめの指摘の fix が
-  結果を返さずに打ち切られ fix-null-retry に回っていた。call site は `_lib/priterate-fix-retry.test.mjs`、
-  frontmatter は `_lib/agent-frontmatter.test.mjs` が pin）。
-  `_lib/plugin-version.mjs` の `PLUGIN_VERSION` は inline 生成方式（dev-flow.js / pr-iterate.js）。
-  model を恒久的に別系統へ固定したい leaf には専用 agent 定義
-  （例: `dev-runner-haiku.md`、`model: haiku`）を用意し `agentType` を切り替える。
-  pr-reviewer は `effort: high`（max と精度同等で高速。medium は major を minor に下げ decision が甘くなる）、
-  evaluator は `effort: medium`（paired replay で high と verdict・major/critical 検出が同等のまま所要・コストが下がる）、
-  dev-implementer / dev-runner は
-  `effort: high`、dev-runner-haiku / dev-runner-haiku-ro は `effort: low`（mechanical exec-proxy は
-  low が high に schema 成功率で劣後しない）。
-- **`agent()` の cwd 指定は `dev-flow-canary` の `agent_opts_cwd_applied` で判定する** — canary は
-  `agent()` に `opts.cwd: '/tmp'`（repo 外の一時ディレクトリ。read-only のため作らず既存のものを使う）を渡して
-  `dev-runner-haiku-ro` を 1 回 spawn し、agent が `pwd` だけで報告した作業ディレクトリと比べる
-  （macOS の実パス `/private/tmp` も一致とみなす）。読み方: `pass` = cwd 指定が効く（security-reviewer を PR の
-  worktree の外で起動する形へ移す後続 issue の着手条件）、`fail` = throw は
-  しないが作業ディレクトリが変わらない（opts.cwd は無視されたか別名で受け付けられている）、`unsupported` =
-  `agent()` が opts.cwd 指定で throw した。pass でも canary は report を出すだけで、起動形は変えない。
-- **1 issue = 1 PR**。Implement は全 shape で `dev-implementer` を単一 worktree に 1 spawn する（parallel fan-out / `pipeline()` は持たない）。
-- **merge は手動** (LGTM 後にユーザーが merge)。
-- worktree の後片付けは `_shared/scripts/worktree-teardown.sh <worktree-path>` を使う。
-- **bg-isolation guard と isolation probe**: bg 起動セッションが呼び出し元 cwd を worktree へ
-  isolate しないまま dev-flow / pr-iterate を起動すると、harness の bg-isolation guard が
-  subagent の Write/Edit を共有 checkout への書き込みとして拒否する。dev-flow は Setup 末尾の analyze
-  ゲート通過後・Implement 直前（needs_clarification 経路では spawn しない）、pr-iterate は review loop 進入前（fix stage
-  不到達の保証）に probe を配置する。probe は worktree 直下 `.devflow-tmp/.isolation-probe-<token>`
-  （token は run 毎に一意 — dev-flow は wrapper（dev-flow-prerun、top-level Bash）が渡す
-  `args.setup.epoch`（`date +%s`、必須キーのため fallback 経路は無い）、pr-iterate は
-  `args.nested.epoch` — dev-flow からの nested 起動は PR phase の commit+PR 応答 epoch、`/pr-iterate` wrapper
-  経由の単体起動は `pr-iterate-prerun` の epoch — で供給し pr-meta probe 自体を起動しない。nested 無しで
-  直接起動した場合だけ pr-meta probe の epoch（fallback: PR 番号）。
-  `Date.now()` / `Math.random()` は canonical の generator 制約上使わない）への Write で
-  isolation 成立を検証する。probe agent は
-  tools を `[Write]` のみに絞った専任 agent `dev-runner-haiku-wo`
-  （model: haiku, effort: low, maxTurns: 5）— Write 以外の経路（Bash リダイレクト等）では
-  ファイルを作れないため、「implementer と同じ Write tool 経路の検証」という probe の意味が
-  harness レベルで保証される。`written:false` は fail-closed（確定回避手順つき throw）で、
-  throw メッセージは決定論の error 文字列分類（`isolationErrorKind`: `overwrite_refused`
-  / `isolation` / `unknown`）で「isolation 不成立」と「その他の書き込み失敗（前 run の残置物への
-  上書き拒否等）」を区別して報告する — fail-closed（throw）自体は全分類で不変。回避手順は
-  1. 書き込みに失敗した cwd とは別の worktree を `git worktree add`、2. `EnterWorktree({path})`、
-  3. Workflow 再実行（dev-flow は `dev-flow-prerun --issue <N> --worktree <path>` の後、別の Bash 呼び出しで
-  `ensure-worktree-deps --setup <path>/.devflow-tmp/prerun-setup.json` を実行し、その stdout JSON を `args.setup` に
-  渡し直す。prerun の生 JSON は `deps` / `epoch_end` を持たず Setup で即 throw する）。probe 自体の失敗（null）は fail-open（警告 log のみ）で扱う。
-  canonical は `_lib/isolation-probe.mjs` の `isolationCleanupPrompt` / `isolationProbePrompt`
-  （token 引数必須。関数側にデフォルトを置かず呼び出し元が明示的に渡す） / `isolationFailureMessage` を
-  dev-flow.js・pr-iterate.js 双方へ inline 生成して流用する（両 workflow で同一の文言・手順を
-  使うためのもので、片側専用の canonical 関数は追加しない）。
-  probe の直前の cleanup は dev-flow / pr-iterate で経路が分かれる。**dev-flow は wrapper の
-  prerun が run 開始前に `.devflow-tmp` 全体を `git clean -fdx` 済み**（agent 呼び出しではなく
-  決定論スクリプト内で完結する）——前 run の残置物（probe artifact / journal payload / local-verify
-  state 等）の持ち越し防止（run 間衛生）を prerun が担う。**pr-iterate の `/pr-iterate` wrapper 経由の
-  単体起動は `pr-iterate-prerun` が** canonical `_lib/isolation-probe.mjs` の exported 定数
-  `ISOLATION_PROBE_CLEANUP_GLOB` と同じ `.devflow-tmp/.isolation-probe*`（probe の token 形ファイル名
-  `.isolation-probe-<token>` と legacy 無 token 形の両方にマッチする）だけを `git clean -fdx` する
-  （`.devflow-tmp` 全体は消さない — 再利用した dev-flow の `df-<N>` に PR phase 失敗の回収用 commit message /
-  PR body が残っていることがある）。nested 無しの直接起動だけが isolation-cleanup subagent を呼ぶ。dev-flow からの
-  nested 起動では probe 対象が実行中 dev-flow run の worktree 自身になり、`.devflow-tmp` 全体を消すと当該 run が
-  既に書いた run 専用 scratch（journal payload 等の `.devflow-tmp` 配下生成物）を run 途中で失うため、pr-iterate 側の
-  isolation-cleanup 呼び出しを skip する（dev-flow 側の prerun cleanup が同一 worktree の run 間衛生を
-  既に担保済みのため、nested run でも二重に走らせる必要がない）。
-  isolation-probe（Write 検証本体）は nested でも skip しない。pr-iterate 側 cleanup は fail-open
-  （失敗しても一意パス化により直後の probe は通常どおり成立する）。
-  probe prompt / throw メッセージは、実行制御の名称（sandbox・permission・excludedCommands・guard 等）を
-  「だからこの経路を使え」という形の理由として述べない — exec-proxy 節の規範と同一で、canonical と
-  2 つの inline 生成区間の双方を `_lib/isolation-control-reason.test.mjs` が pin する。
-  失敗の診断としての `bg-isolation guard の可能性` は別（何が起きたかの説明であり経路指示ではない）。
-  (a) `EnterWorktree({path})` は bg 起動セッションからも成立する — repo 内
-  `.claude/worktrees/`（throw メッセージが提示する既定の先）・repo 外 worktree の双方で実測済み。
-  したがって bg 経由でも上記の確定回避手順が正規経路として機能する。
-  (b) `worktree.bgIsolation:"none"` 設定による guard 無効化は採らない —
-  guard は共有 checkout への意図しない書き込みを防ぐ safety であり、設定で無効化すると
-  保護ごと失われる（W7 分類: blast-radius。共有 checkout 汚染は blast-radius が大きく、
-  guard 緩和ではなく fail-closed 検知 + 正規 isolation 経路で解決する。設定緩和による
-  sunset はしない）。
-- Claude 専用 (workflow 依存)。cross-vendor portability は dev-flow / pr-iterate のみ放棄する例外扱い。
-- **gate_policy**: trust 昇順の 4 値 enum — `deterministic-only` / `llm-major-advisory`（既定）/ `llm-major-blocking` / `llm-autonomous`。
-  **軸A invariant 不変** — deterministic oracle / seed / critical アイテムは全 policy で blocking のまま（danger-grep の fail-closed / 決定論ゲートは policy で緩めない）。
-  **既定同一挙動** — 既定 `llm-major-advisory` は軸A invariant（critical / deterministic / seed = blocking）+ LLM major/minor = advisory の既定 lane 分類と全アイテムで一致し、非 default policy のみ gating が変わる（enum で境界を滑らせる設計）。
-  out-of-enum 値は明示 error（legacy fallback / version 分岐なし）。canonical は `_lib/gate-policy.mjs`、dev-flow.js への inline は tools/sync-inlines.mjs で生成・`_lib/workflow-inlines.sync.test.mjs` が全文一致保証。
-- **block_class**: dev-implementer 返り値 `status:'BLOCKED'` の `blocking_reason` は閉じた 2 値 enum
-  `approach_mismatch` / `guard_blocked` を持つ構造化 object（`{block_class, detail, guard_id}`）で、
-  string（free text）は受理せず schema error になる。`guard_blocked` は guard/hook 由来の BLOCKED
-  （inline-edit-guard deny / sandbox EPERM / safety classifier block / bg-isolation 等）を指し、
-  Implement phase の再実装ループ（blockSeen 登録・`approach_mismatch` findings 化・dev-implementer
-  再 spawn）から除外され、blockedConcerns 経由で evaluator focus へ直行する。out-of-enum の
-  `block_class` は明示 error（legacy fallback / version 分岐なし）。canonical は
-  `_lib/block-routing.mjs`、dev-flow.js への inline は tools/sync-inlines.mjs で生成する。
+- **判定**: fix 後の最終 tree に対して `merge-tier-facts`（danger-grep の再実行・changed-files・PR の mergeable・CI checks・Closes 行）を 1 回で
+  読み、danger を reconcile し直して `classifyMergeTier` が tier を決める。micro + docs/test-only + danger clean + 収束は AUTO 推奨ラベル、
+  標準は REVIEW、blocking が残れば HOLD。HOLD 理由の code は `_lib/merge-tier.mjs` の `pushBlocking` が持つ（一覧は
+  `docs/dev-flow-atlas.md` の HOLD 理由表）。どの tier でも merge は人間
+  - 敵対的 security review の対象の run（Diff triage か pr-iterate のどちらかで対象）は、pr-iterate が lgtm かつ security review が
+    今の head で cleared でなければ HOLD（`security_review_unresolved`。gate_policy に依らない）
+  - PR 本文に `Closes #N` が無ければ、run が決定論で組んだ最新の本文で入れ直す
+  - 終端サマリーを PR に投稿する。末尾の marker（`<!-- dev-flow:<tier> head=<sha> -->`、HOLD は code 付き）は単体 pr-iterate の
+    `prior_devflow` が読む
+- **失敗の扱い**:
+  - `merge-tier-facts` の null・例外・契約外の形は per-field のフォールバックで続け、danger は fail-closed（HOLD を強制）。転記欠落と
+    実行不能は HOLD 理由を出し分ける。abort はしない（終端サマリーと journal を失う）
+  - diff hash の取得失敗は Diff triage の結果を再利用せず再判定する（fail-safe）
+  - mergeable が確定しないときは HOLD しない（fail-open。definitive な CONFLICTING / DIRTY だけ HOLD）
+  - Closes 行の取得失敗は未検証（fail-open）。欠落は入れ直し、入れ直せなければ HOLD（fail-closed）
+  - CI checks の取得失敗・終端サマリーの投稿失敗・journal handoff の失敗は fail-open（gate・tier に影響しない）
+- **コード**: `phase('Merge tier')`（`.claude/workflows/dev-flow.js`）、`classifyMergeTier`（`_lib/merge-tier.mjs`）、`_lib/merge-tier-facts.mjs`、
+  `_lib/devflow-summary-format.mjs`、`_lib/journal-handoff.mjs`

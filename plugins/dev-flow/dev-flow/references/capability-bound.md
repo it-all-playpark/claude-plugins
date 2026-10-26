@@ -104,6 +104,20 @@ report と比べて読む。
 - **次のモデル世代での測り直し方**: plugin を更新した後、更新前から動いているセッションで `command -v` の解決先が新しい
   version を指すかを見る。指すなら「新しいセッションで確かめる」手順を外す
 
+### subagent の model・effort の割り当て
+
+- **何をするか**: 各 subagent の model・effort・`maxTurns` は `agents/` の frontmatter で決める（値は `_lib/agent-frontmatter.test.mjs` が
+  pin）。call site は effort を opts で渡さず、品質ゲート agent（evaluator・pr-reviewer・security-reviewer）には `opts.model` も渡さない
+  （rules）。override は Validate の green-fix だけで、`dev-implementer` を sonnet で起動する（`_lib/impl-model-opus.test.mjs` が pin）。
+  pr-iterate の fix は専用の `pr-fixer` の frontmatter で起動する
+- **なぜ**: 判定の精度・完走率と所要・コストの釣り合いは、モデル世代ごとに変わる。green-fix は環境起因の blocker 報告か小さな
+  test script の修正が中心で implementer と同じ推論を要さず、green-fix が入った run は Evaluate のテスト弱体化監査が強制される。
+  `maxTurns` は API リクエスト数で数え、opts では変えられないので frontmatter に置く
+- **sunset トリガ**: major モデルリリースごとの dry-run
+- **次のモデル世代での測り直し方**: 変える agent の frontmatter だけを新しい model・effort にして merge 済みの過去 run を同じ入力で
+  回し直し、verdict と critical/major 指摘の再現・結果を返さずに打ち切られた spawn の数・所要とコストを比べる。品質を落とさずに
+  所要かコストが下がるなら frontmatter を変える issue を立てる。品質ゲート agent に `opts.model` を渡さない不変条件は変えない
+
 ### security-reviewer の cwd
 
 - **何をするか**: `agent()` が cwd を受け付けないので、security-reviewer は worktree の cwd で起動する。PR が reviewer の

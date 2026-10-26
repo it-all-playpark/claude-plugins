@@ -18,7 +18,7 @@
 #   6. 対象パスの realpath T が、basename が `dev-flow-security-review-[A-Za-z0-9]{6}` のディレクトリ D
 #      （T 自身かその祖先。T が realpath なので D も realpath）の配下で、D と T が入力の cwd の realpath の配下でないこと。
 #      cwd の配下かは、パスとその各祖先が cwd と同じ inode か（[[ -ef ]]）で判定する（firmlink・大文字小文字の別表記に依らない）
-#   保存先の中身を sandbox に残った PR のプロセスが書き換える攻撃は守る範囲の外（pipeline.md の「守る要件と境界」）なので、
+#   保存先の中身を sandbox に残った PR のプロセスが書き換える攻撃は守る範囲の外（dev-flow/references/security-review.md の「守る要件と境界」）なので、
 #   保存先の中のどのファイルかは問わない
 #
 # fail-closed: exit 2 以外の非 0 終了は tool を通すので、security-reviewer の判定中に想定外で終わったら

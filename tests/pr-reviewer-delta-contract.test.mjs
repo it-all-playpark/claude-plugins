@@ -62,9 +62,13 @@ test('[pr-reviewer-delta] delta 外の regression は CI / Final reconcile が�
   assert.ok(iterSection.includes('範囲を広げない'), 'reviewer の判断で範囲を広げない旨が無い');
 });
 
-test('[pr-reviewer-delta] 反復レビュー節と pipeline.md に、full review の critical 後は full review に戻る条件がある', () => {
-  const pipeline = readFileSync(path.join(REPO_ROOT, 'plugins', 'dev-flow', 'dev-flow', 'references', 'pipeline.md'), 'utf8');
-  for (const [name, text] of [['pr-reviewer.md 反復レビュー節', iterSection], ['pipeline.md', pipeline]]) {
+test('[pr-reviewer-delta] 反復レビュー節と pipeline.md の pr-iterate 節に、full review の critical 後は full review に戻る条件がある', () => {
+  const pipelineMd = readFileSync(path.join(REPO_ROOT, 'plugins', 'dev-flow', 'dev-flow', 'references', 'pipeline.md'), 'utf8');
+  const start = pipelineMd.indexOf('\n## pr-iterate\n');
+  assert.ok(start >= 0, 'pipeline.md に pr-iterate 節が無い');
+  const next = pipelineMd.indexOf('\n## ', start + 1);
+  const pipeline = next >= 0 ? pipelineMd.slice(start, next) : pipelineMd.slice(start);
+  for (const [name, text] of [['pr-reviewer.md 反復レビュー節', iterSection], ['pipeline.md pr-iterate 節', pipeline]]) {
     assert.ok(/full review[^\n]*が critical を 1 件以上返したら/.test(text), `${name} に「full review が critical を返したら」の条件が無い`);
     assert.ok(text.includes('critical を返さない full review を経るまで'), `${name} に full review へ戻す期間（critical を返さない full review を経るまで）が無い`);
     assert.ok(text.includes('delta review が approve しただけでは LGTM にならない'), `${name} に delta review の approve だけでは LGTM にならない旨が無い`);

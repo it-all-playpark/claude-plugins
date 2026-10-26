@@ -13,7 +13,7 @@
 #   分類: incentive-structural（中継が攻撃者の文を読める限り誘導を否定できない。sunset しない）。
 #
 #   守る範囲は「PR の文に誘導された中継」まで。sandbox に残った PR のプロセスによる保存先の書き換えや PATH の前方への同名ファイルの
-#   設置は守る範囲の外（dev-flow/references/pipeline.md の「守る要件と境界」）なので、パスの実体や bare 名の解決先は確かめない。
+#   設置は守る範囲の外（dev-flow/references/security-review.md の「守る要件と境界」）なので、パスの実体や bare 名の解決先は確かめない。
 #
 # 判定フロー:
 #   1. 入力に `security-codex-relay` の文字列が無い → 無出力 exit 0（他の agent・メイン session の高速経路）

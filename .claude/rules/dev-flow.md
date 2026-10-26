@@ -15,11 +15,12 @@ paths:
 
 モデル世代で変わらない不変条件だけを置く。詳細は `plugins/dev-flow/dev-flow/references/`:
 
-- `pipeline.md` — phase 経路 / shape / model / isolation probe / gate_policy
+- `pipeline.md` — phase ごとの判定・失敗の扱い
+- `security-review.md` — security review の境界と経路
 - `telemetry.md` — telemetry キー一覧
 - `exec-proxy.md` — 起動形・argv 転写・失敗ポリシー表
-- `analyze-issue.md` — analyze-issue の出力キー
-- `capability-bound.md` — モデル・harness の能力しだいの判断と sunset トリガ
+- `analyze-issue.md` — analyze の出力キー
+- `capability-bound.md` — 能力しだいの判断と sunset トリガ
 
 ## 構造
 

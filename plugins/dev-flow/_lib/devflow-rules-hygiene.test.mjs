@@ -41,6 +41,7 @@ test('(c) rules の references 一覧が references ディレクトリの .md �
   );
   const listed = [...rulesSrc.matchAll(/^- `([\w.-]+\.md)` — /gm)].map((m) => m[1]).sort();
   assert.ok(REFERENCE_FILES.includes('capability-bound.md'), 'references/capability-bound.md が存在しない');
+  assert.ok(REFERENCE_FILES.includes('security-review.md'), 'references/security-review.md が存在しない');
   assert.deepEqual(listed, REFERENCE_FILES, 'rules の references 一覧（"- `x.md` — 説明"）とディレクトリの実体が食い違う');
 });
 
@@ -112,13 +113,19 @@ const codeSrc = [...collectFiles(PLUGIN_ROOT), ...collectFiles(join(REPO_ROOT, '
   .map((p) => readFileSync(p, 'utf8'))
   .join('\n');
 
-test('(h) rules と capability-bound.md が挙げる定数・識別子・パスはコードに実在し、値を書き写さない', () => {
+// pipeline.md / security-review.md も値の写しを持たず定数名・ファイルで指すので、同じ検査を掛ける
+const pipelineSrc = readFileSync(join(REFERENCES_ABS, 'pipeline.md'), 'utf8');
+const securityReviewSrc = readFileSync(join(REFERENCES_ABS, 'security-review.md'), 'utf8');
+const NAMED_DOCS = [['rules', rulesSrc], ['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc]];
+
+test('(h) rules と references（capability-bound.md / pipeline.md / security-review.md）が挙げる定数・識別子・パスはコードに実在し、値を書き写さない', () => {
   const missing = [];
-  for (const [name, src] of [['rules', rulesSrc], ['capability-bound.md', capSrc]]) {
+  for (const [name, src] of NAMED_DOCS) {
     for (const [, raw] of src.matchAll(/`([^`\n]+)`/g)) {
       const tok = raw.trim().split(/\s+/)[0].replace(/\(\)$/, '');
       if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(tok)) {
-        if (!new RegExp(`\\bconst ${tok}\\b`).test(codeSrc)) missing.push(`${name}: 定数 ${tok}`);
+        // 定数（const 宣言）か、script が値を代入する環境変数（`X=`）
+        if (!new RegExp(`\\bconst ${tok}\\b|\\b${tok}=`).test(codeSrc)) missing.push(`${name}: 定数 ${tok}`);
       } else if (/^[a-z]+[A-Z]\w*$/.test(tok)) {
         if (!new RegExp(`\\b${tok}\\b`).test(codeSrc)) missing.push(`${name}: 識別子 ${tok}`);
       } else if (tok.includes('/') && /\.(mjs|js|sh|md|json)$/.test(tok) && !/[<*]/.test(tok)) {
@@ -131,12 +138,31 @@ test('(h) rules と capability-bound.md が挙げる定数・識別子・パス�
   assert.deepEqual(missing, [], `コードに実在しないものを挙げている:\n${missing.join('\n')}`);
 });
 
-test('(i) capability-bound.md に経緯記述（禁止辞書ヒット）が存在しない', () => {
-  const hits = capSrc.split('\n').flatMap((line, i) => {
-    const terms = findHistoryTerms(line);
-    return terms.length > 0 ? [`${i + 1}: ${line} (${terms.join(',')})`] : [];
-  });
+test('(i) capability-bound.md / pipeline.md / security-review.md に経緯記述（禁止辞書ヒット）が存在しない', () => {
+  const hits = [['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc]].flatMap(([name, src]) =>
+    src.split('\n').flatMap((line, i) => {
+      const terms = findHistoryTerms(line);
+      return terms.length > 0 ? [`${name}:${i + 1}: ${line} (${terms.join(',')})`] : [];
+    }));
   assert.equal(hits.length, 0, `経緯記述を含む行が見つかった:\n${hits.join('\n')}`);
+});
+
+test('(j) pipeline.md は model・effort の選定根拠を書かず、model の割り当ては capability-bound.md の項目に置く', () => {
+  const rationale = pipelineSrc.match(/replay|盲検|paired|A\/B|完走[0-9 ]|同等|劣後|コストが/);
+  assert.equal(rationale, null, `pipeline.md に model・effort の選定根拠が残っている: ${rationale?.[0]}`);
+  const item = capItems.find(({ title }) => title.includes('model') && title.includes('effort'));
+  assert.ok(item, 'capability-bound.md に subagent の model・effort の項目が無い');
+  assert.ok(item.fields['何をするか']?.includes('green-fix'), 'capability-bound.md の model・effort の項目が green-fix の override を書いていない');
+  assert.ok(pipelineSrc.includes('`capability-bound.md`'), 'pipeline.md が capability-bound.md を指していない');
+});
+
+test('(k) pipeline.md の effort は「frontmatter で決め、call site は opts で渡さない」だけを書き、harness の扱いを書かない', () => {
+  const lines = pipelineSrc.split('\n').filter((l) => /effort/.test(l));
+  assert.ok(
+    lines.some((l) => l.includes('effort は frontmatter で決め、call site は opts で渡さない（`_lib/agent-frontmatter.test.mjs` が pin）')),
+    `pipeline.md に effort の決め方が無い:\n${lines.join('\n')}`,
+  );
+  assert.ok(!/opts\.effort|実効値|agent_opts_effort_accepted/.test(pipelineSrc), 'pipeline.md が harness の opts.effort の扱いを書いている');
 });
 
 const INVARIANT_ANCHORS = [
