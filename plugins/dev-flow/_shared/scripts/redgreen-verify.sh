@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # red→green 実証: 実装だけ退避して base に戻し、test が red→green に転じるか決定論判定する。
 # untracked(新規)・tracked-modified いずれの impl ファイルにも対応する。
-# 使い方: redgreen-verify.sh <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]
+# 使い方: redgreen-verify.sh [--base <ref>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]
 #   (test_files, impl_files) ペアを複数受け、引数順に 1 ペアずつ退避→red→復元→green を実行する。
+#   退避先の base は既定で HEAD(implementer は commit しないので、Evaluate の変更は HEAD との差分にある)。
+#   --base <ref> を渡すと HEAD と <ref> の merge-base を base にする。Final reconcile は PR の commit 済み tree を
+#   判定するので、HEAD 基準では impl が全件 HEAD と同一になり何も外せない(PR の差分 = merge-base からの差分)。
+#   merge-base が解決できなければ判定せず {"results":[]} で exit 2。
 #   ペアごとの red 意味論は 1 ペア呼び出しと同一(当該ペアの impl だけを外す)。worktree を書き換えるため
 #   ペア間の並列化は不可で、Evaluate の全 AC を 1 呼び出しにまとめるのは spawn 数削減のため(issue #683)。
 # テストは repo の任意コードなので sandbox 内で走らせる(bin/redgreen-verify を excludedCommands に登録しない。
@@ -23,16 +27,22 @@
 # ビルドが失敗した phase ではテストを実行せず、当該ペアを reason "workspace build failed: <pkgs> (red|green)"
 # の入力・分離エラーと同じ形で返す(テスト未実行を red / green と判定しない)。
 # headdiff は vdelta run 経路が走らなかったペア(testcmd_ran=false)でのみ付く。
-# test_files を HEAD 基準で new(HEAD に無い)/modified(HEAD にあり差分あり)/unchanged(HEAD と同一)
+# test_files を base(既定 HEAD)基準で new(base に無い)/modified(base にあり差分あり)/unchanged(base と同一)
 # に三分類した件数で、runner の種類・拡張子に依存しない fallback 信号。red/green の判定には影響しない。
 # exit 0 = 1 ペア以上が判定完了(red/green は JSON 参照) / exit 2 = 全ペアが入力・分離エラー、
 # または引数不正(stdout は {"results":[]})(= deterministic 昇格しないこと)
 set -uo pipefail
 
+BASE_REF=""
+if [ "${1:-}" = "--base" ]; then
+  [ -n "${2:-}" ] || { echo "--base requires a ref" >&2; echo '{"results":[]}'; exit 2; }
+  BASE_REF="$2"
+  shift 2
+fi
 WT="${1:?worktree required}"
 shift
 if [ "$#" -lt 2 ] || [ $(( $# % 2 )) -ne 0 ]; then
-  echo "usage: redgreen-verify.sh <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]" >&2
+  echo "usage: redgreen-verify.sh [--base <ref>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]" >&2
   echo '{"results":[]}'; exit 2
 fi
 
@@ -41,6 +51,13 @@ PREBUILD="$SCRIPT_DIR/workspace-prebuild.sh"
 DETECT="$SCRIPT_DIR/detect-test-runner.sh"
 
 cd "$WT" 2>/dev/null || { echo "cd failed: $WT" >&2; echo '{"results":[]}'; exit 2; }
+
+# impl の退避・headdiff の比較先(commit)。--base 無しは HEAD
+BASE="HEAD"
+if [ -n "$BASE_REF" ]; then
+  BASE="$(git merge-base HEAD "$BASE_REF" 2>/dev/null)" || BASE=""
+  [ -n "$BASE" ] || { echo "merge-base failed: HEAD $BASE_REF" >&2; echo '{"results":[]}'; exit 2; }
+fi
 
 # vdelta 経路の有効化は repo の package.json の依存だけで決める(dev-flow 専用の設定ファイルは読まない)
 VDELTA=false
@@ -61,12 +78,12 @@ RUN_CMDS=()
 VDELTA_TESTCMD_RAN=false
 # vdelta run 経路で使った PM の exec prefix(vdelta compare も同じ prefix で起動する)
 VDELTA_PREFIX=()
-# impl ファイルを HEAD 基準で三分類する。共有 stash スタック(main checkout・全 worktree・
+# impl ファイルを $BASE(既定 HEAD)基準で三分類する。共有 stash スタック(main checkout・全 worktree・
 # 全セッションで共有)には一切読み書きしない — 位置指定 pop は「自分が積んだ entry」を
 # 保証せず、他セッションの WIP を worktree に適用する(issue #630)。
-#   UNTRACKED_IMPLS: HEAD に無い(未追跡 / git add のみの新規) → cp -p 退避 + rm
-#   TRACKED_IMPLS  : HEAD にあり worktree と差分あり → cp -p 退避 + write_head_blob で base 化(index は書かない)
-#   UNCHANGED_IMPLS: HEAD と同一 → 退避対象外(base 化しても red 判定に寄与しない)
+#   UNTRACKED_IMPLS: $BASE に無い(未追跡 / git add のみの新規 / --base 以降に commit された新規) → cp -p 退避 + rm
+#   TRACKED_IMPLS  : $BASE にあり worktree と差分あり → cp -p 退避 + write_head_blob で base 化(index は書かない)
+#   UNCHANGED_IMPLS: $BASE と同一 → 退避対象外(base 化しても red 判定に寄与しない)
 TMPDIR_IMPL=""
 UNTRACKED_IMPLS=()
 TRACKED_IMPLS=()
@@ -121,17 +138,17 @@ restore_saved() {
   fi
 }
 
-# tracked impl 1 件を HEAD の内容と実行ビットに戻す。git checkout HEAD -- は index も書き換える(index.lock を
+# tracked impl 1 件を $BASE の内容と実行ビットに戻す。git checkout HEAD -- は index も書き換える(index.lock を
 # 取る)ので使わない — テストを sandbox 内で回すこのスクリプトからは、checkout の .git が sandbox から書けない
 # 場合に .git/worktrees/*/index.lock が書けない。blob の読み出し(filter 適用済み)と ls-tree は index に触れない。通常ファイル以外(symlink 等)は失敗扱い。
 write_head_blob() {
   local f="$1" mode
-  mode="$(git ls-tree HEAD -- "$f" 2>/dev/null | awk '{print $1}')"
+  mode="$(git ls-tree "$BASE" -- "$f" 2>/dev/null | awk '{print $1}')"
   case "$mode" in
     100644|100755) : ;;
     *) return 1 ;;
   esac
-  git cat-file --filters "HEAD:$f" > "$f" 2>/dev/null || return 1
+  git cat-file --filters "$BASE:$f" > "$f" 2>/dev/null || return 1
   if [ "$mode" = 100755 ]; then chmod +x "$f"; else chmod -x "$f"; fi
 }
 
@@ -180,9 +197,9 @@ verify_pair() {
 
   TMPDIR_IMPL="$(mktemp -d)"
   for f in "${IMPLS[@]}"; do
-    # cat-file -e は HEAD に無いと rc 128 + stderr メッセージ → 抑止して成否だけ使う
-    if git cat-file -e "HEAD:$f" >/dev/null 2>&1; then
-      if git diff --quiet HEAD -- "$f"; then
+    # cat-file -e は $BASE に無いと rc 128 + stderr メッセージ → 抑止して成否だけ使う
+    if git cat-file -e "$BASE:$f" >/dev/null 2>&1; then
+      if git diff --quiet "$BASE" -- "$f"; then
         UNCHANGED_IMPLS+=("$f")
       else
         TRACKED_IMPLS+=("$f")
@@ -207,7 +224,7 @@ verify_pair() {
 
   # 有効 impl が 0 件 = 何も外せないので red 判定に意味が無い → 判定せず 2(deterministic 昇格しない契約)
   if [ "${#UNTRACKED_IMPLS[@]}" -eq 0 ] && [ "${#TRACKED_IMPLS[@]}" -eq 0 ]; then
-    PAIR_JSON="\"red\":false,\"green\":false,\"reason\":\"no impl changed vs HEAD: $impl_csv\""; return 2
+    PAIR_JSON="\"red\":false,\"green\":false,\"reason\":\"no impl changed vs ${BASE_REF:-HEAD}: $impl_csv\""; return 2
   fi
 
   # 1. untracked impl: cp -p 退避 → rm
@@ -220,7 +237,7 @@ verify_pair() {
     UNTRACKED_SAVED=true
   fi
 
-  # 2. 変更あり tracked impl: 全件 cp -p 退避 → TRACKED_SAVED=true(以降の失敗は restore_impl が戻す) → HEAD の内容で base 化
+  # 2. 変更あり tracked impl: 全件 cp -p 退避 → TRACKED_SAVED=true(以降の失敗は restore_impl が戻す) → $BASE の内容で base 化
   if [ "${#TRACKED_IMPLS[@]}" -gt 0 ]; then
     for f in "${TRACKED_IMPLS[@]}"; do
       mkdir -p "$TMPDIR_IMPL/$(dirname "$f")"
@@ -254,12 +271,12 @@ verify_pair() {
   fi
 
   # headdiff: vdelta run 経路が走らなかったペア(VDELTA_TESTCMD_RAN=false)でのみ、
-  # test_files を HEAD 基準で三分類する(拡張子非依存の fallback 信号。判定には使わない)。
+  # test_files を $BASE(既定 HEAD)基準で三分類する(拡張子非依存の fallback 信号。判定には使わない)。
   local headdiff_json="" hd_new=0 hd_mod=0 hd_unch=0
-  if [ "$VDELTA_TESTCMD_RAN" = false ] && git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  if [ "$VDELTA_TESTCMD_RAN" = false ] && git rev-parse --verify -q "$BASE" >/dev/null 2>&1; then
     for t in "${TESTS[@]}"; do
-      if git cat-file -e "HEAD:$t" >/dev/null 2>&1; then
-        if git diff --quiet HEAD -- "$t"; then hd_unch=$((hd_unch+1)); else hd_mod=$((hd_mod+1)); fi
+      if git cat-file -e "$BASE:$t" >/dev/null 2>&1; then
+        if git diff --quiet "$BASE" -- "$t"; then hd_unch=$((hd_unch+1)); else hd_mod=$((hd_mod+1)); fi
       else
         hd_new=$((hd_new+1))
       fi

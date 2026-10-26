@@ -101,6 +101,13 @@ test('[redgreen-targets] prompt は Bash timeout: 600000 指定・run_in_backgro
   assert.ok(lines[0].includes('timeout: 600000'));
 });
 
+test('[redgreen-targets] base を渡すとコマンド行に --base <base> を worktree の前に付け、ペアの解釈は変わらない', () => {
+  const pairs = [{ test_files: ['t.test.mjs'], impl_files: ['src/x.ts'] }];
+  const p = redgreenVerifyPrompt('/tmp/wt', pairs, 'origin/main');
+  assert.equal(p.split('\n')[1], "redgreen-verify --base origin/main /tmp/wt 't.test.mjs' 'src/x.ts'");
+  assert.deepEqual(parseRedgreenPairs(p), [{ test_csv: 't.test.mjs', impl_csv: 'src/x.ts' }]);
+});
+
 // ---- dev-flow.js 配線（VM sandbox） ----
 
 function evalResponse(acResults) {

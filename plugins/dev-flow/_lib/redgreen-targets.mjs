@@ -1,5 +1,5 @@
-// Evaluate の redgreen-verify（label 'redgreen'、1 iteration 1 spawn）に渡すペアの構築・結果の配布・
-// exec-proxy prompt の canonical。issue #822。
+// redgreen-verify（Evaluate の label 'redgreen'、1 iteration 1 spawn / Final reconcile の 'redgreen-final'）に渡す
+// ペアの構築・結果の配布・exec-proxy prompt の canonical。issue #822。
 //
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
@@ -66,15 +66,19 @@ export function distributeRedgreenResults(pairIndex, results) {
 }
 
 /**
+ * base を渡すと `--base <base>` を付け、HEAD と base の merge-base まで impl を戻して red を測らせる
+ * （Final reconcile の commit 済み tree 用。Evaluate は未 commit の変更なので省略 = HEAD 基準）。
+ *
  * @param {string} wt worktree の絶対パス
  * @param {Array<{test_files: string[], impl_files: string[]}>} pairs buildRedgreenPairs の pairs
+ * @param {string|null} [base] 比較先の ref（例 `origin/main`）
  * @returns {string}
  */
-export function redgreenVerifyPrompt(wt, pairs) {
+export function redgreenVerifyPrompt(wt, pairs, base = null) {
   return `cd ${wt} で作業。次のコマンドを 1 回だけ実行して **stdout の JSON 1 行だけ** を verbatim で返せ(判定や脚色をしない)。`
     + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。`
     + `コマンドを再発行しない（timeout・background 化した場合も含む）。`
     + `timeout に達した・stdout に JSON 1 行が無い場合だけは、{"results":[]} を一字一句そのまま返せ:\n`
-    + `redgreen-verify ${wt} `
+    + `redgreen-verify ${base ? `--base ${base} ` : ''}${wt} `
     + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' ');
 }

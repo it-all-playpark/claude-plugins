@@ -7,6 +7,7 @@ import {
   FINAL_ITEM_RESOLUTIONS,
   validateFinalItemResolutions,
   finalEvalBlockingResolutions,
+  finalRedgreenTargets,
 } from './final-ac-reconcile.mjs';
 
 // ---- (1) FINAL_AC_RECONCILE_VALUES ----
@@ -581,4 +582,31 @@ test('finalEvalBlockingResolutions: 入力 item を mutate しない', () => {
   const copy = JSON.parse(JSON.stringify(input));
   finalEvalBlockingResolutions({ ...GREEN_RUN, blockingItems: input });
   assert.deepEqual(input, copy);
+});
+
+// ---- finalRedgreenTargets（issue #1146）----
+
+const byTestAc = (i, extra = {}) => ({ ac_index: i, satisfied: true, verified_by: 'test', evidence: 'ok', test_files: ['t.test.mjs'], impl_files: ['x.mjs'], ...extra });
+
+test('finalRedgreenTargets: 観測型・未昇格・ci 以外で satisfied:true + verified_by:test + 空でない test_files / impl_files の要素だけを順に返す', () => {
+  const results = [
+    byTestAc(0),                                            // 対象
+    byTestAc(1),                                            // 観測型でない
+    byTestAc(2),                                            // Evaluate で昇格済み
+    byTestAc(3),                                            // ci の AC
+    byTestAc(4, { verified_by: 'inspection' }),             // inspection
+    byTestAc(5, { satisfied: false }),                      // 未達
+    byTestAc(6, { test_files: [] }),                        // test_files 空
+    byTestAc(7, { impl_files: undefined }),                 // impl_files 欠落
+    byTestAc(8),                                            // 対象
+  ];
+  const observational = [true, false, true, true, true, true, true, true, true];
+  const out = finalRedgreenTargets({ results, observational, provenIndexes: [2], ciIndexes: [3] });
+  assert.deepEqual(out.map((r) => r.ac_index), [0, 8]);
+  assert.equal(out[0], results[0], '要素は写さずそのまま返す（buildRedgreenPairs に渡す ac_results 要素）');
+});
+
+test('finalRedgreenTargets: observational / results が配列でなければ空', () => {
+  assert.deepEqual(finalRedgreenTargets({ results: [byTestAc(0)], observational: null, provenIndexes: [], ciIndexes: [] }), []);
+  assert.deepEqual(finalRedgreenTargets({ results: null, observational: [true], provenIndexes: [], ciIndexes: [] }), []);
 });
