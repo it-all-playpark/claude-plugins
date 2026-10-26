@@ -88,8 +88,9 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - `security_review` を省くと workflow は対象として扱う（fail-closed）。対象の PR は、LGTM の前に PR 全 diff を
      敵対的 security review（security-reviewer）が読み、critical / major が 0 件になるまで LGTM にしない。
      終端サマリーには指摘の件数だけが載る。`reviewer:"codex"` なら Codex CLI が review する（Codex を起動できなければ
-     security-reviewer の判定に戻る）。指示ファイルを変える PR はどちらの経路でも自動の review で clear にせず止める
-     （`security-review-isolated` で人が確かめる）
+     security-reviewer の判定に戻る）。指示ファイルを変える PR は、Claude 経路では自動の review で clear にせず止める
+     （`security-review-isolated` で人が確かめる）。Codex 経路では止めずに Codex で review し、Codex を起動できない round だけ
+     security-reviewer に戻さずに止める
 
    - Codex 経路の前提: codex は Claude Code の sandbox の中で動かす（PR に制御される入力を sandbox の外で実行しない —
      `dev-flow/references/pipeline.md` の「守る要件と境界」の R3）。Claude Code の設定（settings.json）で:

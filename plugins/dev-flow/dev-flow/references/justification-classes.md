@@ -57,6 +57,8 @@ trust-layer（SurfaceProof / EvalSeal / EffectDelta）の sunset path —
   判定者・判定の中継者が攻撃者の書いた文を指示として受け取る経路を、prompt の文ではなく構造で断つ。cwd の扱いは
   **harness-capability-bound** な面もあり、`agent()` が cwd を受け付けるようになった時点で reviewer を worktree の外の cwd で
   起動する形に移す（`/dev-flow-canary` の report で判定）。それでも `reviewer_context_changed` の停止は残す。
+  Codex 経路はこの停止をせず、中継の Bash を workflow の prompt の行に、返り値を実 stdout に hook で縛る（**incentive-structural**・永続。
+  中継が攻撃者の文を読める限り prompt の文では誘導を否定できない）。Codex で判定できない round は Claude 経路に倒さずに止める。
 - sunset しない。許可リストを広げるときは、広げる種類が agent の指示として読まれず実行もされないことを示してからにする。
 
 逆に incentive-structural / blast-radius はモデル更新で撤去してはならない（軸A 保持）。

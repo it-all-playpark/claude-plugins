@@ -393,17 +393,124 @@ const codexRound = (i, issues = [], { cleared, reviewedSha } = {}) => {
 };
 const contextScope = ({ prompt }) => securityScopeResponse({ head: securityScopeHeadOf(prompt), contextChanged: true });
 
-test('[security-review][F] Codex 経路も reviewer_context_changed なら Codex の prep・起動・判定の中継も security-reviewer も spawn せずに止める', async () => {
-  // 起動時の決定論の値・run 中の判定のどちらで立っても、Codex が clear を返す設定でも止める
+test('[security-review][F] Codex 経路は reviewer_context_changed でも止めずに Codex で review し、clear で lgtm（security-reviewer は spawn しない）', async () => {
+  // 起動時の決定論の値・run 中の判定のどちらで立っても、Codex の prep・起動・判定の中継を通す
   for (const [name, opts] of [
     ['起動時の決定論の値', { args: codexArgs(true), overrides: {} }],
     ['run 中の判定', { args: codexArgs(false), overrides: { 'security-scope#1': contextScope } }],
   ]) {
     const { result, calls } = await run({ args: opts.args, overrides: { ...opts.overrides, ...codexRound(1, []) } });
-    assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1'], name);
-    assert.equal(result.status, 'security_unresolved', name);
-    assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0, major: 0, minor: 0 }, name);
+    assert.deepEqual(labelsOf(calls, 'security-'), ['security-pr-head#1', 'security-pr-fetch#1', 'security-scope#1', 'security-codex-prep#1', 'security-review-codex#1', 'security-codex-verdict#1'], name);
+    assert.equal(result.status, 'lgtm', name);
+    assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0 }, name);
   }
+});
+
+test('[security-review][F] Claude 経路（reviewer が claude・省略・dev-flow の nested 起動）は reviewer_context_changed なら今までどおり review を spawn せずに止める', async () => {
+  const NESTED = { caller: 'dev-flow', cwd: '/tmp/wt', head_ref: 'feature/x', head_sha: SHA_A, base_ref: 'main' };
+  for (const [name, args] of [
+    ['reviewer: claude', { pr: '5', security_review: { target: true, reasons: [], reviewer_context_changed: true, reviewer: 'claude' } }],
+    ['reviewer 省略', { pr: '5', security_review: { target: true, reasons: [], reviewer_context_changed: true } }],
+    ['dev-flow の nested 起動', { pr: '5', nested: NESTED, security_review: { target: true, reasons: [], reviewer_context_changed: true } }],
+  ]) {
+    const { result, calls } = await run({ args, overrides: codexRound(1, []) });
+    assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1'], name);
+    assert.equal(calls.find((c) => c.label === 'security-scope#1').agentType, 'dev-flow:dev-runner-haiku-ro', name);
+    assert.equal(result.status, 'security_unresolved', name);
+    assert.equal(result.security_review.stop_reason, 'reviewer_context_changed', name);
+  }
+});
+
+test('[security-review][F] reviewer_context_changed の round で Codex が判定できない（null）なら security-reviewer を spawn せず reviewer_context_codex_unavailable で止める', async () => {
+  for (const [name, overrides] of [
+    ['prep が null', { 'security-codex-prep#1': null }],
+    ['prep が ok:false', { 'security-codex-prep#1': { ok: false, error: 'relay_failed' } }],
+    ['判定の中継が ok:false', { 'security-codex-prep#1': { ok: true }, 'security-codex-verdict#1': { ok: false, cleared: false, error: 'relay_failed' } }],
+    ['判定の中継が throw', { 'security-codex-prep#1': { ok: true }, 'security-codex-verdict#1': () => { throw new Error('StructuredOutput 未返却'); } }],
+  ]) {
+    const { result, calls } = await run({
+      args: codexArgs(true),
+      overrides: { ...overrides, 'security-review#1': { reviewed_sha: SECURITY_SCOPE_DEFAULT_HEAD, issues: [], summary: 'clear' } },
+    });
+    assert.ok(!calls.some((c) => c.label.startsWith('security-review#')), `${name}: Claude 経路の security-reviewer を spawn した`);
+    assert.equal(result.status, 'security_unresolved', name);
+    assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: 'reviewer_context_codex_unavailable', rounds: 0, critical: 0, major: 0, minor: 0 }, name);
+  }
+});
+
+const SHA_BASE = 'e'.repeat(40);
+const STANDALONE = { caller: 'standalone', cwd: '/tmp/wt', head_ref: 'feature/x', head_sha: SHA_A, base_ref: 'main', repo: 'acme/skills' };
+const prHead = (head) => ({ baseRefOid: SHA_BASE, headRefOid: head });
+
+test('[security-review][F] Codex 経路は GitHub の PR の head と base の sha を縛った中継で取り、scope はその 2 つの sha で取る（手元の HEAD・origin/<base> を使わない）', async () => {
+  const { calls } = await run({
+    args: { ...codexArgs(false), nested: STANDALONE },
+    overrides: { 'security-pr-head#1': prHead(SHA_A), ...codexRound(1, []) },
+  });
+  const [head, fetch, scope] = ['security-pr-head#1', 'security-pr-fetch#1', 'security-scope#1'].map((l) => calls.find((c) => c.label === l));
+  for (const c of [head, fetch, scope]) assert.equal(c.agentType, 'dev-flow:security-codex-relay', c.label);
+  assert.ok(head.prompt.endsWith('\ngh pr view 5 --repo acme/skills --json baseRefOid,headRefOid'), head.prompt);
+  assert.ok(fetch.prompt.endsWith('\ngit fetch origin main refs/pull/5/head'), fetch.prompt);
+  assert.ok(scope.prompt.endsWith(`\nsecurity-review-scope /tmp/wt ${SHA_BASE} ${SHA_A} --save-diff`), scope.prompt);
+});
+
+test('[security-review][F] Codex 経路で GitHub の PR の sha を取れない（repo 不明・中継の失敗）なら scope も Codex も起動せず pr_head_unknown で止める', async () => {
+  for (const [name, args, overrides] of [
+    ['repo が不明', { ...codexArgs(true), nested: { ...STANDALONE, repo: undefined } }, {}],
+    ['中継の失敗時の JSON', { ...codexArgs(true), nested: STANDALONE }, { 'security-pr-head#1': { ok: false, error: 'relay_failed' } }],
+    ['sha が 40 桁でない', { ...codexArgs(true), nested: STANDALONE }, { 'security-pr-head#1': prHead('abc') }],
+    ['中継が null', { ...codexArgs(true), nested: STANDALONE }, { 'security-pr-head#1': null }],
+  ]) {
+    const { result, calls } = await run({ args, overrides: { ...overrides, ...codexRound(1, []) } });
+    assert.ok(!calls.some((c) => c.label.startsWith('security-scope#') || c.label.startsWith('security-codex-prep#') || c.label.startsWith('security-review#')), name);
+    assert.equal(result.status, 'security_unresolved', name);
+    assert.equal(result.security_review.stop_reason, 'pr_head_unknown', name);
+  }
+});
+
+test('[security-review][F] Codex 経路で commit-ensure が古い commit の sha を返しても、古い tree の review で clear にしない', async () => {
+  const { result, calls } = await run({
+    args: { ...codexArgs(false), nested: STANDALONE },
+    overrides: {
+      'security-pr-head#1': prHead(SHA_A),
+      ...codexRound(1, [finding('hardlink-write')]),
+      // fix#1 は SHA_B を push したが、汚染された commit-ensure は fix 前の SHA_A を返す
+      'commit-ensure#1': { dirty: false, committed: false, pushed: false, head_sha: SHA_A },
+      'security-pr-head#2': prHead(SHA_B),
+      ...codexRound(2),
+    },
+  });
+  assert.ok(!calls.some((c) => c.label === 'security-codex-prep#2'), '食い違ったまま Codex に review させた');
+  assert.notEqual(result.status, 'lgtm');
+  assert.equal(result.security_review.stop_reason, 'head_mismatch');
+});
+
+test('[security-review][F] Codex 経路で push されていない手元の commit の sha が返っても、GitHub に無い tree で clear にしない', async () => {
+  const { result, calls } = await run({
+    args: { ...codexArgs(false), nested: STANDALONE },
+    overrides: {
+      'security-pr-head#1': prHead(SHA_A),
+      ...codexRound(1, [finding('hardlink-write')]),
+      // 誘導された fix#1 は無害な commit SHA_B を手元にだけ作り、push しない。GitHub の PR head は SHA_A のまま
+      'commit-ensure#1': { dirty: false, committed: true, pushed: false, head_sha: SHA_B },
+      'security-pr-head#2': prHead(SHA_A),
+      ...codexRound(2),
+    },
+  });
+  const scope2 = calls.find((c) => c.label === 'security-scope#2');
+  assert.ok(scope2 == null || !scope2.prompt.includes(SHA_B), '手元の commit の diff を取らせた');
+  assert.ok(!calls.some((c) => c.label === 'security-codex-prep#2'), 'GitHub に無い tree を Codex に review させた');
+  assert.notEqual(result.status, 'lgtm');
+  assert.equal(result.security_review.stop_reason, 'head_mismatch');
+});
+
+test('[security-review][F] Codex 経路で scope の head_sha が GitHub の PR head と食い違えば clear にしない', async () => {
+  const { result, calls } = await run({
+    args: { ...codexArgs(false), nested: { ...STANDALONE, head_sha: undefined } },
+    overrides: { 'security-pr-head#1': prHead(SHA_A), 'security-scope#1': () => securityScopeResponse({ head: SHA_B }), ...codexRound(1, []) },
+  });
+  assert.ok(!calls.some((c) => c.label === 'security-codex-prep#1'));
+  assert.equal(result.security_review.stop_reason, 'head_mismatch');
 });
 
 test('[security-review][F] Codex 経路は prep・固定の codex exec・判定・指摘の取得を別の security-codex-relay に写させ、clear を決める中継は自由文を読まない', async () => {
@@ -450,7 +557,7 @@ test('[security-review][F] Codex を起動できない（prep / 起動 / 結果�
 
 test('[security-review][F] Codex を起動できず指示ファイルも変えていない PR は、Claude 経路の security-reviewer の判定で clear にできる', async () => {
   const fallback = await run({ args: codexArgs(false), overrides: { 'security-codex-prep#1': null } });
-  assert.deepEqual(labelsOf(fallback.calls, 'security-'), ['security-scope#1', 'security-codex-prep#1', 'security-review#1']);
+  assert.deepEqual(labelsOf(fallback.calls, 'security-'), ['security-pr-head#1', 'security-pr-fetch#1', 'security-scope#1', 'security-codex-prep#1', 'security-review#1']);
   assert.equal(fallback.result.status, 'lgtm');
   assert.equal(fallback.result.security_review.rounds, 1);
 });
@@ -461,9 +568,11 @@ test('[security-review][F] Codex の critical/major は fix に回し、次の r
   const { result, calls } = await run({
     args: codexArgs(false),
     overrides: {
+      'security-pr-head#1': { baseRefOid: 'e'.repeat(40), headRefOid: SHA_A },
       'security-scope#1': () => securityScopeResponse({ head: SHA_A, reviewDir: dir1 }),
       ...codexRound(1, [finding('hardlink-write'), finding('hardening', 'minor')]),
       'commit-ensure#1': { dirty: false, committed: false, pushed: false, head_sha: SHA_B },
+      'security-pr-head#2': { baseRefOid: 'e'.repeat(40), headRefOid: SHA_B },
       'security-scope#2': () => securityScopeResponse({ head: SHA_B, reviewDir: dir2 }),
       ...codexRound(2),
     },

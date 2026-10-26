@@ -5202,13 +5202,46 @@ const SECURITY_SCOPE_SCHEMA = {
   },
 };
 
+const SECURITY_SCOPE_RELAY_FAILED = { ok: false, target: true, reasons: [], reviewer_context_changed: true, error: 'relay_failed' };
+
 function securityScopePrompt({ worktree, base, head = null, saveDiff = false }) {
   const tail = head == null ? '--working-tree' : `${head}${saveDiff ? ' --save-diff' : ''}`;
   return '次のコマンドを 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ（判定・要約・脚色をしない。'
-    + 'exit 非0・stdout 空・JSON 不正なら {"ok":false,"target":true,"reasons":[],"reviewer_context_changed":true,"error":"relay_failed"} で返せ。'
+    + `exit 非0・stdout 空・JSON 不正なら ${JSON.stringify(SECURITY_SCOPE_RELAY_FAILED)} で返せ。`
     + '失敗時に target:false を生成してはならない）。先頭トークンが bare 名の単文で実行し、cd 前置・`bash` 前置・'
     + '環境変数代入前置・&& 連結・パイプ・リダイレクトは付けない:\n'
     + `security-review-scope ${worktree} ${base} ${tail}`;
+}
+
+const SECURITY_PR_HEAD_SCHEMA = {
+  type: 'object',
+  properties: {
+    baseRefOid: { type: 'string' },
+    headRefOid: { type: 'string' },
+    ok: { type: 'boolean' },
+    error: { type: 'string' },
+  },
+};
+
+const SECURITY_PR_HEAD_RELAY_FAILED = { ok: false, error: 'relay_failed' };
+
+function securityPrHeadPrompt({ pr, repo }) {
+  return '次のコマンドを 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ（判定・要約・脚色をしない。'
+    + `exit 非0・stdout 空・JSON 不正なら ${JSON.stringify(SECURITY_PR_HEAD_RELAY_FAILED)} で返せ）。先頭トークンが gh の単文で実行し、cd 前置・`
+    + '`bash` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは付けない:\n'
+    + `gh pr view ${pr} --repo ${repo} --json baseRefOid,headRefOid`;
+}
+
+function securityPrFetchPrompt({ base, pr }) {
+  return '次のコマンドを 1 回だけ実行せよ。一字一句そのままの単文で実行し、cd 前置・`bash` 前置・環境変数代入前置・&& 連結・パイプ・'
+    + 'リダイレクトを付けない。exit code・出力に関わらず（失敗・拒否されても）{"done":true} だけを返す。出力を要約・転記しない:\n'
+    + `git fetch origin ${base} refs/pull/${pr}/head`;
+}
+
+function prHeadOf(res) {
+  const sha = (v) => typeof v === 'string' && /^[0-9a-f]{40}$/i.test(v);
+  if (res == null || typeof res !== 'object' || !sha(res.baseRefOid) || !sha(res.headRefOid)) return null;
+  return { base: res.baseRefOid.toLowerCase(), head: res.headRefOid.toLowerCase() };
 }
 
 function isSecurityScopeExempt(res) {
