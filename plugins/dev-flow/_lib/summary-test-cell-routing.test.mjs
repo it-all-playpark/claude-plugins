@@ -8,7 +8,8 @@
 //   (a) Validate tests:'error'（起動失敗）→ テスト欄は未実行・未検証 + 結論行で CI 確認 + merge tier は PR head の CI が
 //       全 pass でも validate_tests_not_run（human_judgment）で HOLD
 //   (d) Validate tests:'failed'（green-fix の上限後も red）— 落ちたファイルだけの 1 回の再実行（test#validate-rerun）で:
-//       (d1) flake あり（再実行 green）→ テスト欄 '⚠️ flake（単体再実行で green）' + validate_test_red なし + final_test_flaky 記録
+//       (d1) 再実行 green → テスト欄 '❌ red（単体再実行は green — flake 候補）' + validate_test_red で HOLD のまま + final_test_flaky 記録
+//            （単体再実行の成功は PR が書き換えられるテストの出力なので、HOLD を解除する根拠にしない）
 //       (d2) flake なし（再実行も red）→ テスト欄 '❌ red' + merge tier HOLD（validate_test_red）
 //   (e) test#validate-rerun の 4 経路: flake / 再実行しない（failed_files が空・欠落・安全に渡せないパス）/
 //       再実行の結果を使わない（throw / null / red / error）/ 対象外の run（Final reconcile 実行・Validate が red でない）
@@ -27,7 +28,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const devFlowSrc = readFileSync(join(here, '..', '.claude', 'workflows', 'dev-flow.js'), 'utf8');
 
 const SCENARIO = DEV_FLOW_SCENARIOS['validate-tests-error'];
-const FLAKY_CELL = '⚠️ flake（単体再実行で green）';
+const VALIDATE_FLAKY_CELL = '❌ red（単体再実行は green — flake 候補）';
 
 async function run(overrides = {}, workflow, extra) {
   const { ctx, calls } = makeDevFlowSandbox({ overrides: { ...SCENARIO.overrides, ...overrides }, workflow, extra });
@@ -84,7 +85,7 @@ const validateRed = (extra = {}) => {
   return { 'test#1': red, 'test#2': red, 'test#3': red };
 };
 
-test('[summary-test-cell] (d1) Validate red + 落ちたファイルだけの再実行が green（flake あり）→ テスト欄 flake・validate_test_red なし・final_test_flaky 記録', async () => {
+test('[summary-test-cell] (d1) Validate red + 落ちたファイルだけの再実行が green → テスト欄 red（flake 候補）・validate_test_red で HOLD のまま・final_test_flaky 記録', async () => {
   const { result, calls, body, testCell } = await run({ ...validateRed(), 'test#validate-rerun': { tests: 'passed', green: true, summary: 'passed' } });
   const reruns = calls.filter((c) => c.label === 'test#validate-rerun');
   assert.equal(reruns.length, 1, 'test#validate-rerun は 1 回だけ');
@@ -94,10 +95,10 @@ test('[summary-test-cell] (d1) Validate red + 落ちたファイルだけの再�
   assert.equal(result?.validate_tests, 'failed');
   assert.equal(result?.test_green, false, 'test_green は Validate の green のまま');
   assert.deepEqual(JSON.parse(JSON.stringify(result?.final_test_flaky)), { files: [RED_FILE], logs: ['/tmp/run-tests-v/0.log'] });
-  assert.equal(testCell, FLAKY_CELL);
-  assert.ok(!holdCodes(result).includes('validate_test_red'), tierFacts(result));
-  assert.equal(result?.merge_tier, 'REVIEW', tierFacts(result));
-  assert.ok(body.includes(`Validate test flake（単体再実行で green）: ${RED_FILE}`), '参考に Validate flake の開示行（ファイル）が出る');
+  assert.equal(testCell, VALIDATE_FLAKY_CELL);
+  assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'validate_test_red' && r.kind === 'human_judgment'), tierFacts(result));
+  assert.equal(result?.merge_tier, 'HOLD', tierFacts(result));
+  assert.ok(body.includes(`Validate test flake 候補（単体再実行で green）: ${RED_FILE}`), '参考に Validate flake 候補の開示行（ファイル）が出る');
   // telemetry: flake の run だけ final_test_flaky を載せる
   const handoff = calls.find((c) => c.label === 'journal-log');
   const m = handoff?.prompt.match(/<<<JOURNAL_HANDOFF_BODY_BEGIN>>>\n([\s\S]*?)\n<<<JOURNAL_HANDOFF_BODY_END>>>/);

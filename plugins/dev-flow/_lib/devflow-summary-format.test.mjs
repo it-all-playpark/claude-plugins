@@ -2054,8 +2054,8 @@ test.each([
   { name: '#865: reverified, finalTestGreen=true + finalTestFlaky', input: { finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: { files: ['a.bats'], logs: [] } }, want: '⚠️ flake（単体再実行で green）' },
   { name: '#865: reverified, finalTestGreen=true + finalTestFlaky.files 空', input: { finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: { files: [], logs: [] } }, want: '✅ green' },
   { name: 'AC2: skipped, testGreen=false', input: { finalReconcile: 'skipped', testGreen: false }, want: '❌ red' },
-  // issue #1138: Final reconcile が skip の run の Validate red が単体再実行で green（flake）なら test#final の flake と同じ表記
-  { name: '#1138: skipped, Validate failed + finalTestFlaky', input: { finalReconcile: 'skipped', validateTests: 'failed', testGreen: false, finalTestFlaky: { files: ['a.bats'], logs: [] } }, want: '⚠️ flake（単体再実行で green）' },
+  // issue #1138: Final reconcile が skip の run の Validate red は単体再実行で green でも red のまま flake 候補を添える
+  { name: '#1138: skipped, Validate failed + finalTestFlaky', input: { finalReconcile: 'skipped', validateTests: 'failed', testGreen: false, finalTestFlaky: { files: ['a.bats'], logs: [] } }, want: '❌ red（単体再実行は green — flake 候補）' },
   { name: '#1138: skipped, Validate failed + finalTestFlaky なし', input: { finalReconcile: 'skipped', validateTests: 'failed', testGreen: false, finalTestFlaky: null }, want: '❌ red' },
   { name: 'AC2: skipped, testGreen=true', input: { finalReconcile: 'skipped', testGreen: true }, want: '✅ green' },
   { name: 'AC2: unavailable, finalTestGreen=null, testGreen=false', input: { finalReconcile: 'unavailable', finalTestGreen: null, testGreen: false }, want: '❌ red' },

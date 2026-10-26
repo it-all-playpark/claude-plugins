@@ -159,7 +159,8 @@ Final reconcile が skipped の run で `validate_tests === 'error'` は、テ�
 merge tier は HOLD（`validate_tests_not_run`。Setup の deps が `ok:false` ならその note が理由に載る）になる。
 PR の CI の success では解除しない（`pull_request` の CI は PR head の workflow で動き、CI が呼ぶスクリプトも
 PR が書き換えられる）。その旨を報告してテストの実行・確認を人間に委ねる。`validate_tests === 'failed'` は、
-`final_test_flaky` が non-null なら flake（HOLD 理由にしない）、null なら本物の red（`validate_test_red` で HOLD）。
+`final_test_flaky` の有無に依らず `validate_test_red` で HOLD する。non-null は flake 候補の開示だけ（単体再実行の
+成功は PR が書き換えられるテストの出力で、全件実行のときだけ落ちるテストなら決定的な失敗でも green になる）。
 
 ## PR phase 失敗の扱い（`error_category: "pr_phase_failed"`）
 

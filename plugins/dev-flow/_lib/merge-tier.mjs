@@ -239,7 +239,9 @@ export function classifyMergeableState(meta) {
 //   再検証していない）かつ tests:'failed' + green:false のとき 'validate_test_red'（human_judgment）で HOLD —
 //   GREEN_MAX 到達で red のまま PR へ進んだ run で、この Validate の結果が PR tree のテスト状態そのもの
 //   （base でも落ちる既存失敗は Validate が green:true にして抜けるので、ここに来る red は diff 起因）。
-//   ただし s.finalTestFlaky がある（落ちたファイルだけの 1 回の再実行が green = flake）run は積まない。
+//   s.finalTestFlaky がある（落ちたファイルだけの 1 回の再実行が green）run でも積む — 単体再実行の成功は PR が
+//   書き換えられるテストの出力で、全件実行のときだけ落ちるテストを書けば決定的な失敗でも green になる。
+//   再実行の結果は flake 候補の開示行にだけ使う。
 //   tests:'error'（起動失敗 = テストが 1 件も実行されていない）は常に 'validate_tests_not_run'（human_judgment）で
 //   HOLD — テストを 1 件も確かめないまま REVIEW にしない。PR が書き換えられる CI の success では解除しない。
 //   finalReconcile が skipped 以外のときは最終 tree の判定（final_test_red / final_reconcile_unavailable）が
@@ -321,8 +323,8 @@ export function classifyMergeableState(meta) {
 //   - Final reconcile の test#final（finalReconcile !== 'skipped'）: workflow は finalTestGreen を true にするので
 //     final_test_red は積まれない。
 //   - Final reconcile が skip の run の Validate red（finalReconcile === 'skipped' かつ validateResult が
-//     tests:'failed' / green:false。issue #1138）: validate_test_red を積まない。
-//   flake は HOLD 理由にせず開示行（finalTestFlakyDisclosure）だけを disclosures に積む。未指定 = 開示なし。
+//     tests:'failed' / green:false。issue #1138）: validate_test_red は積んだまま、flake 候補として開示するだけ。
+//   開示行（finalTestFlakyDisclosure）を disclosures に積む。未指定 = 開示なし。
 //   files が非空の string[] でない / logs が string[] でない / どちらの経路の red にも当たらない
 //   （red でないまま flake を名乗る矛盾）は明示 error。
 // s.securityReviewUnresolved (optional boolean): 敵対的 security review の対象の run（Diff triage か pr-iterate の
@@ -427,7 +429,7 @@ export function classifyMergeTier(s) {
     pushBlocking('final_reconcile_unavailable', 'Final reconcile 再検証不能（pr-iterate fix 適用後の最終 tree の test 状態を確認できず）— 人間確認必須', 'human_judgment');
   }
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
-  if (validateRed && s.finalTestFlaky == null) {
+  if (validateRed) {
     pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   }
   if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'error') {
@@ -476,7 +478,7 @@ export function classifyMergeTier(s) {
   const flakyLogs = s.finalTestFlaky != null && s.finalTestFlaky.logs.length ? s.finalTestFlaky.logs.join(', ') : '不明';
   const finalTestFlakyDisclosure = s.finalTestFlaky == null ? null
     : validateRed
-      ? `Validate test flake（単体再実行で green）: ${s.finalTestFlaky.files.join(', ')} — Validate の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green（HOLD 理由にしない。1 回目のログ: ${flakyLogs}）`
+      ? `Validate test flake 候補（単体再実行で green）: ${s.finalTestFlaky.files.join(', ')} — Validate の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green（PR が書き換えられるテストの出力なので validate_test_red は解除しない。1 回目のログ: ${flakyLogs}）`
       : `final test flake（単体再実行で green）: ${s.finalTestFlaky.files.join(', ')} — 最終 tree の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green（HOLD 理由にしない。1 回目のログ: ${flakyLogs}）`;
   const disclosures = [keywordAloneDisclosure, evalFailDisclosure, ciIncompleteDisclosure, finalTestFlakyDisclosure].filter(Boolean);
   if (blockingReasons.length) {

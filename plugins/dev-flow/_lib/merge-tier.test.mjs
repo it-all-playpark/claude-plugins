@@ -1550,23 +1550,24 @@ test('classifyMergeTier: finalReconcile が reverified / unavailable なら Vali
   }
 });
 
-test('classifyMergeTier: finalReconcile skipped + Validate red でも落ちたファイルだけの再実行が green（flake）なら validate_test_red を出さず、Validate flake の開示行を出す', () => {
+test('classifyMergeTier: finalReconcile skipped + Validate red は落ちたファイルだけの再実行が green でも validate_test_red で HOLD し、flake 候補の開示行だけを足す', () => {
+  // 単体再実行の成功は PR が書き換えられるテストの出力（全件実行のときだけ落ちるテストで決定的な失敗も green になる）
   const r = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_RED, finalTestFlaky: FLAKY }));
-  assert.equal(r.tier, 'REVIEW', JSON.stringify(r));
-  assert.deepEqual(r.holdReasons, []);
+  assert.equal(r.tier, 'HOLD', JSON.stringify(r));
+  assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['validate_test_red', 'human_judgment']]);
   assert.equal(r.disclosures.length, 1);
-  assert.ok(r.disclosures[0].startsWith('Validate test flake（単体再実行で green）'), r.disclosures[0]);
+  assert.ok(r.disclosures[0].startsWith('Validate test flake 候補（単体再実行で green）'), r.disclosures[0]);
   assert.ok(r.disclosures[0].includes('plugins/x/a.bats') && r.disclosures[0].includes('/tmp/run-tests-abc/0.log'), r.disclosures[0]);
   assert.ok(r.reasons.includes(r.disclosures[0]));
 
-  // 他の理由で HOLD の run でも validate_test_red は積まず、開示行は reasons に残る
+  // 他の理由の HOLD と並ぶ
   const hold = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_RED, finalTestFlaky: FLAKY, iterateStatus: 'stuck' }));
-  assert.deepEqual(codesOf(hold), ['iterate_non_lgtm']);
-  assert.ok(hold.reasons.some((x) => x.startsWith('Validate test flake')));
+  assert.deepEqual(codesOf(hold), ['validate_test_red', 'iterate_non_lgtm']);
 
-  // flake でない（finalTestFlaky なし）run は今のまま validate_test_red（human_judgment）
+  // 開示行の有無だけが違い、HOLD 理由は finalTestFlaky なしの run と同じ
   const red = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_RED, finalTestFlaky: null }));
-  assert.deepEqual(red.holdReasons.map((x) => [x.code, x.kind]), [['validate_test_red', 'human_judgment']]);
+  assert.deepEqual(red.holdReasons, r.holdReasons);
+  assert.deepEqual(red.disclosures, []);
 });
 
 test('classifyMergeTier: Validate が red でない skip の run の finalTestFlaky は明示 error', () => {

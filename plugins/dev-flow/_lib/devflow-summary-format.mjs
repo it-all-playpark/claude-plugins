@@ -132,9 +132,9 @@ function resolvedCell(v) {
  * @param {string|null|undefined} opts.finalReconcile - Final reconcile 結果（'skipped'|'reverified'|'unavailable'。issue #320）
  * @param {boolean|null|undefined} opts.finalTestGreen - Final reconcile 時の test green フラグ（issue #320）
  * @param {{files:string[], logs:string[]}|null|undefined} [opts.finalTestFlaky] - 全件実行で落ち、落ちたファイルだけの
- *   単体再実行が green だった記録（issue #865）。finalReconcile==='reverified' かつ finalTestGreen===true（test#final の flake）、
- *   または finalReconcile==='skipped' かつ validateTests==='failed'（Validate の flake。issue #1138）のとき、テスト欄を
- *   flake 表記にする（前者は Final reconcile 行も。表示専用。merge tier の開示行は disclosures 側で出る）
+ *   単体再実行が green だった記録（issue #865）。finalReconcile==='reverified' かつ finalTestGreen===true（test#final の flake）
+ *   のときテスト欄（と Final reconcile 行）を flake 表記にする。finalReconcile==='skipped' かつ validateTests==='failed'
+ *   （Validate の単体再実行 green。issue #1138）は red のまま flake 候補を添える（表示専用。merge tier の開示行は disclosures 側で出る）
  * @param {string|null|undefined} opts.finalAcReconcile - Final AC reconcile 結果（'skipped'|'reverified'|'unavailable'。issue #331）
  * @param {{decision:string|null, ci:string, summary:string|null}|null|undefined} [opts.liteReview] - dev-flow lite 経路の pr-review-lite 結果。非 null の場合のみ「lite レビュー」セクションを描画する（issue #392 AC-6）
  * @param {string|null|undefined} [opts.iterateStatus] - pr-iterate 終端 status（'lgtm'|'stuck'|'fix_failed'|'max_reached'|'ci_error'|'ci_pending'|'review_contract_error'。非 'lgtm' のときのみ未解消指摘セクションを描画する。issue #602）
@@ -453,15 +453,18 @@ export function buildDevflowSummaryBody({
   const baseFailing = Array.isArray(baseFailingTests) ? baseFailingTests.filter((f) => typeof f === 'string' && f.length > 0) : [];
   // flake: 全件実行で落ち、落ちたファイルだけの単体再実行で green（issue #865）。green 扱いだが「一度落ちた」事実を
   // テスト欄（test#final の flake は Final reconcile 行にも）に残す（ファイルとログは merge tier の開示行に出る）。
-  // test#final の flake（reverified）と、Final reconcile が skip の run の Validate red の flake（issue #1138）の 2 経路。
+  // Final reconcile が skip の run の Validate red の単体再実行 green（issue #1138）は red のまま flake 候補として添える
+  // （PR が書き換えられるテストの出力なので green 扱いにしない。merge tier も validate_test_red で HOLD）。
   const hasFlakyFiles = Array.isArray(finalTestFlaky?.files) && finalTestFlaky.files.length > 0;
   const finalFlaky = finalReconcile === 'reverified' && finalTestGreen === true && hasFlakyFiles;
   const validateFlaky = finalReconcile === 'skipped' && validateTests === 'failed' && hasFlakyFiles;
   const FLAKY_CELL = '⚠️ flake（単体再実行で green）';
   let testCell;
   let testUnverified = false;
-  if (finalFlaky || validateFlaky) {
+  if (finalFlaky) {
     testCell = FLAKY_CELL;
+  } else if (validateFlaky) {
+    testCell = '❌ red（単体再実行は green — flake 候補）';
   } else if (finalReconcile === 'reverified') {
     testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? '❌ red' : '不明';
   } else if (validateTests === 'error') {

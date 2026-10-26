@@ -233,8 +233,9 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - test#final が green か no_tests なら、Final AC reconcile に test#final の `tests` / `green` と各 script のログパスを渡し、
     実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）。red の flake 判定ではログを渡さない
 - skip した run の PR tree のテスト状態は Validate の結果のまま。`tests:'failed'` は落ちたファイルだけを 1 回流し直し
-  （`test#validate-rerun`。test#final と同じ `_lib/final-test-rerun.mjs`）、green なら flake として `final_test_flaky` に記録して
-  HOLD 理由にしない。それ以外は `validate_test_red`。`tests:'error'` は常に `validate_tests_not_run` で HOLD
+  （`test#validate-rerun`。test#final と同じ `_lib/final-test-rerun.mjs`）、green なら flake 候補として `final_test_flaky` に記録・開示するが、
+  `validate_test_red` の HOLD は解除しない（単体再実行の成功は PR が書き換えられるテストの出力で、全件実行のときだけ落ちる
+  テストなら決定的な失敗でも green になる）。`tests:'error'` は常に `validate_tests_not_run` で HOLD
 - **失敗の扱い**:
   - 同期失敗・test の null は `unavailable`（fail-safe → Merge tier HOLD）。flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）。
     `failed_files` が空・安全に渡せないパスを含む red は再実行せず、再実行の throw / null / red は red のまま

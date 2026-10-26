@@ -431,7 +431,7 @@ flowchart TD
 | `danger_fail_closed` | danger-grep 実行不能 | fail-closed |
 | `final_reconcile_unavailable` | Final reconcile 再検証不能（同期失敗・test#final の null / `tests:'error'`） | PR の CI の success では解除しない |
 | `final_test_red` | final test red | 落ちたファイルだけの 1 回の再実行で green なら flake として HOLD にしない |
-| `validate_test_red` | Validate test red のまま PR へ進行し、pr-iterate の fix が 0 件で Final reconcile が skip された | PR tree のテスト状態は Validate の結果のまま。落ちたファイルだけの 1 回の再実行で green なら flake として HOLD にしない。gate_policy に依らず人間確認 |
+| `validate_test_red` | Validate test red のまま PR へ進行し、pr-iterate の fix が 0 件で Final reconcile が skip された | PR tree のテスト状態は Validate の結果のまま。落ちたファイルだけの 1 回の再実行で green でも flake 候補として開示するだけで HOLD は解除しない（PR が書き換えられるテストの出力）。gate_policy に依らず人間確認 |
 | `validate_tests_not_run` | Validate が `tests:'error'`（テストが 1 件も実行されていない）で Final reconcile が skip された | PR の CI の success では解除しない。Setup(deps) が `ok:false` なら note を理由に載せる |
 | `final_ac_unavailable` | Final AC reconcile 判定不能 | |
 | `iterate_non_lgtm` | pr-iterate が `lgtm` 以外で終端 | |
