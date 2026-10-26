@@ -185,9 +185,19 @@ AC_NEAR_MISS_RE='受け入れ|受入|acceptance|完了条件|完了基準'
 # `# comment` in a shell snippet) are never mistaken for markdown headings (issue #388 review).
 FENCE_LINE_RE='^[[:space:]]{0,3}(```+|~~~+)'
 
-is_ac_heading_line() { grep -qiE "$AC_HEADING_LINE_RE" <<<"$1"; }
-is_heading_line() { grep -qE "$HEADING_LINE_RE" <<<"$1"; }
-is_fence_line() { grep -qE "$FENCE_LINE_RE" <<<"$1"; }
+# 本文の全行で何度も呼ばれるので、grep を fork せず bash の [[ =~ ]]（同じ POSIX ERE）で判定する
+# （fork は 1 回数 ms かかり、本文の行数に比例して analyze が秒単位で延びる）。
+# -i 相当は nocasematch をこの判定の間だけ立てる。
+matches_ci() {
+    local rc=1
+    shopt -s nocasematch
+    [[ "$1" =~ $2 ]] && rc=0
+    shopt -u nocasematch
+    return "$rc"
+}
+is_ac_heading_line() { matches_ci "$1" "$AC_HEADING_LINE_RE"; }
+is_heading_line() { [[ "$1" =~ $HEADING_LINE_RE ]]; }
+is_fence_line() { [[ "$1" =~ $FENCE_LINE_RE ]]; }
 
 # Emits (verbatim, one per line) every fence-external heading line that looks
 # AC-like (matches AC_NEAR_MISS_RE) but is NOT an accepted AC heading form
@@ -203,7 +213,7 @@ collect_ac_near_miss() {
             continue
         fi
         if [[ "$in_fence" != true ]] && is_heading_line "$line"; then
-            if grep -qiE "$AC_NEAR_MISS_RE" <<<"$line" && ! is_ac_heading_line "$line"; then
+            if matches_ci "$line" "$AC_NEAR_MISS_RE" && ! is_ac_heading_line "$line"; then
                 printf '%s\n' "$line"
             fi
         fi

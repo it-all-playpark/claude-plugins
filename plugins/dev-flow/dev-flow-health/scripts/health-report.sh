@@ -324,11 +324,13 @@ REPORT="$(printf '%s\n' "$ENTRIES" | jq -s \
 
 # --- signature id と候補 commit ---------------------------------------------------
 sig_id() {
+    local h
     if command -v shasum >/dev/null 2>&1; then
-        printf '%s' "$1" | shasum -a 1 | cut -c1-12
+        h="$(printf '%s' "$1" | shasum -a 1)"
     else
-        printf '%s' "$1" | sha1sum | cut -c1-12
+        h="$(printf '%s' "$1" | sha1sum)"
     fi
+    printf '%s\n' "${h:0:12}"
 }
 
 list_candidates() {
@@ -338,14 +340,21 @@ list_candidates() {
     printf '%s\n' "$log" | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") | {sha: .[0], subject: (.[1:] | join("\t"))})'
 }
 
+# signature ごとに REPORT 全体を jq で書き換えると signature 数の 2 乗で重くなる。
+# id と候補 commit は 1 signature 1 行の更新として集め、最後の jq 1 回で反映する
 COUNT="$(printf '%s' "$REPORT" | jq '.signatures | length')"
+UPDATES=""
 i=0
 while [[ "$i" -lt "$COUNT" ]]; do
-    sig="$(printf '%s' "$REPORT" | jq -r --argjson i "$i" '.signatures[$i].signature')"
-    REPORT="$(printf '%s' "$REPORT" | jq --argjson i "$i" --arg id "$(sig_id "$sig")" '.signatures[$i].id = $id')"
+    # 1 行目に候補 pair（commit sha 2 つ・単一行）、2 行目以降に signature をそのまま出す
+    row="$(printf '%s' "$REPORT" | jq -r --argjson i "$i" \
+        '.signatures[$i] | (.candidates | if . != null and .error == null then "\(.last_good_commit) \(.first_bad_commit)" else "" end), .signature')"
+    pair="${row%%$'\n'*}"
+    # signature が空なら $(...) が末尾の改行ごと落とすので、改行が無ければ空として扱う
+    sig=""
+    [[ "$row" == *$'\n'* ]] && sig="${row#*$'\n'}"
+    update="{\"i\":$i,\"id\":\"$(sig_id "$sig")\""
 
-    pair="$(printf '%s' "$REPORT" | jq -r --argjson i "$i" \
-        '.signatures[$i].candidates | if . != null and .error == null then "\(.last_good_commit) \(.first_bad_commit)" else "" end')"
     if [[ -n "$pair" ]]; then
         good="${pair% *}"
         bad="${pair#* }"
@@ -357,13 +366,20 @@ while [[ "$i" -lt "$COUNT" ]]; do
             commits="[]"
             err="git_log_failed"
         fi
-        REPORT="$(printf '%s' "$REPORT" | jq --argjson i "$i" --argjson c "$commits" --arg err "$err" \
-            '.signatures[$i].candidates.commits = $c
-             | .signatures[$i].candidates.error = (if $err == "" then null else $err end)')"
+        update+=",\"commits\":$commits,\"error\":${err:+\"$err\"}"
+        [[ -n "$err" ]] || update+="null"
     fi
+    UPDATES+="$update}"$'\n'
     i=$((i + 1))
 done
 
-printf '%s\n' "$REPORT" | jq --arg issue_repo "$ISSUE_REPO" \
-    '{generated_at, window, resolve_after_runs, runs, summary, needs_llm,
-      issue_repo: (if $issue_repo == "" then null else $issue_repo end), signatures}'
+# 入力の 1 件目が REPORT、2 件目以降が signature ごとの更新
+printf '%s\n%s' "$REPORT" "$UPDATES" | jq -s --arg issue_repo "$ISSUE_REPO" \
+    'reduce .[1:][] as $u (.[0];
+        .signatures[$u.i].id = $u.id
+        | if $u | has("commits") then
+            .signatures[$u.i].candidates.commits = $u.commits
+            | .signatures[$u.i].candidates.error = $u.error
+          else . end)
+     | {generated_at, window, resolve_after_runs, runs, summary, needs_llm,
+        issue_repo: (if $issue_repo == "" then null else $issue_repo end), signatures}'
