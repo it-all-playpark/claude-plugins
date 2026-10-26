@@ -19,7 +19,7 @@ paths:
 - `telemetry.md` — telemetry キー一覧
 - `exec-proxy.md` — 起動形・argv 転写・失敗ポリシー表
 - `analyze-issue.md` — analyze-issue の出力キー
-- `capability-bound.md` — モデル・harness の能力しだいで見直す判断と sunset トリガ
+- `capability-bound.md` — モデル・harness の能力しだいの判断と sunset トリガ
 
 ## 構造
 
@@ -27,7 +27,7 @@ paths:
 - skill wrapper が isolation preflight → `Workflow({ name: 'dev-flow:dev-flow-run' })`。orchestration と中間 state は workflow script の JS 変数のみ
 - `meta.name` は `dev-flow-run` でも telemetry handoff の `skill` は `'dev-flow'` 固定（集計連続性）
 - `agent()` の agentType は `nsAgentOpts()` でのみ namespace 付与（bare 名は起動直後 abort）。routing test は論理名（bare）を保持。dev-flow-canary.js のみ namespaced id 直書き
-- 1 issue = 1 PR。Implement は全 shape で `dev-implementer`（plan+impl 統合）を単一 worktree に 1 spawn（Plan phase・planner ⇄ reviewer ループ・parallel fan-out は持たない）。BLOCKED 再実装・green-fix（`model: 'sonnet'`）・Evaluate 差し戻しも同じ agent。複数 issue 分割は使わない
+- 1 issue = 1 PR。Implement は全 shape で `dev-implementer`（plan+impl 統合）を単一 worktree に 1 spawn（Plan phase・planner ⇄ reviewer ループ・parallel fan-out は持たない）。BLOCKED 再実装・green-fix・Evaluate 差し戻しも同じ agent
 - model 既定は frontmatter。override は green-fix（`'sonnet'`）のみ（pr-iterate の fix は `pr-fixer` の frontmatter）。品質ゲート agent には渡さない — gate の判定モデルを credit で黙って変えない
 - merge は常に人間（全 tier）
 - 後方互換 scaffolding を作らない — out-of-enum は明示 error
@@ -48,9 +48,10 @@ paths:
 
 - distrust 機構と agent への指示は下のクラスか capability-bound を宣言する（無いと撤去判断ができない）
 - **incentive-structural**（永続。勝利宣言の self-judge と moving target を断つ。賢いモデルほど巧妙に逸脱する）: frozen target（`evalSeen` / `blockSeen` / `reviewSeen`）・stuck 打ち切り（`EVAL_STUCK` / `REVIEW_STUCK`）・critical の append と severity `floor`・hard cap（`EVAL_MAX` / `GREEN_MAX` / `BLOCK_MAX` / `DESIGN_REPLAN_MAX` / `AGENT_AC_REIMPL_MAX`）・guard_blocked の replan 除外・blocking_reason 決定論スクラバー（`scrubBlockingDetail`）・review-finding 決定論スクラバー（`scrubReviewFindingText`。finding の文を fix prompt へ verbatim に流さない）
+- **指示の incentive-structural**（永続。逸脱が optimization pressure・context 分断由来）: self-judge 禁止・feedback 全件対応・self-contained 記述・topic 反復でアプローチ変更
 - **blast-radius**（永続。不可逆性・accountability で正当化）: human merge・danger-grep → security path・seeded SEC と HOLD・pr-iterate の critical/major-always-blocks・Final reconcile・TESTSURF seeding・lite route の critical/major で昇格・health の status 判定は `health-report.sh` だけ・sunset 昇格は人間 merge 経由
 - **contract**（永続・指示）: 出力 schema・StructuredOutput 義務・Boundary など呼び出し側が依存する指示
-- 敵対的 security review: 今の head で critical / major 0 件まで LGTM にしない gate は blast-radius（gate_policy で緩めない）。incentive-structural: 許可リストだけの対象判定（判定不能は対象・一度対象なら最後まで）・毎回新 spawn・`reviewed_sha` 一致で clear・PR 由来の文はデータ・公開は件数だけ・`reviewer_context_changed` で停止・Codex 中継は hook で縛り判定不能なら止める。許可リストは広げる種類が読まれず実行もされないと示してから広げる
+- 敵対的 security review: critical/major 0 件まで LGTM にしない gate は blast-radius。incentive-structural: 許可リストで対象判定（判定不能・一度対象は対象）・毎回新 spawn・`reviewed_sha` 一致で clear・PR の文はデータ・公開は件数・`reviewer_context_changed`・Codex 中継（hook で縛る）の判定不能で停止。許可リスト拡大は非読込・非実行を示してから
 - 上の 3 クラスはモデル更新で撤去しない。capability-bound の判断は `capability-bound.md` にだけ置く
 
 ## exec-proxy（起動形の制約）
