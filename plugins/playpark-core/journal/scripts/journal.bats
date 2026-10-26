@@ -21,7 +21,7 @@ latest_entry() {
     ls -t "$CLAUDE_JOURNAL_DIR"/*.json 2>/dev/null | head -n 1
 }
 
-# dev-flow / pr-iterate が書く telemetry キー（dev-flow/references/telemetry.md のキー一覧と同じ 12 個）
+# dev-flow / pr-iterate が書く telemetry キーの例（キー一覧は dev-flow/references/telemetry.md）
 KEPT_TELEMETRY='{
   "plugin_commit": "0123456789ab",
   "plugin_version": "1.2.3",
