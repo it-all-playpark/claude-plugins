@@ -562,6 +562,83 @@ STUBEOF
     printf '%s\n' "$output" | jq -e '.results | any(.ecosystem == "node" and .pm == "pnpm" and .status == "cache_hit")'
 }
 
+# ============================================================================
+# Global virtual store (issue #1118).
+#
+# pnpm は global virtual store で install する（node_modules/.pnpm に展開すると .gitmodules を含む
+# パッケージが worktree の sandbox で EPERM になる）。node_modules/<pkg> は worktree 外の store への
+# 相対 symlink になるので、深さの違う worktree へ共有キャッシュから復元すると解決しない。
+# ============================================================================
+
+# stub pnpm: global virtual store と同じく、node_modules/vitest を $TMP_DIR/store/links/vitest への
+# 相対 symlink にする（install した worktree の深さから ../ の数を決める）。呼び出しは STUB_LOG に残す。
+make_stub_pnpm_gvs() {
+    STUB_DIR="$TMP_DIR/.stubbin"
+    mkdir -p "$STUB_DIR" "$TMP_DIR/store/links/vitest"
+    echo '{"name":"vitest"}' > "$TMP_DIR/store/links/vitest/package.json"
+    STUB_LOG="$TMP_DIR/pnpm-invocations.log"
+    : > "$STUB_LOG"
+    cat > "$STUB_DIR/pnpm" <<STUBEOF
+#!/usr/bin/env bash
+echo "\$@" >> "$STUB_LOG"
+up="../"
+IFS=/ read -ra parts <<< "\${PWD#$TMP_DIR/}"
+for _ in "\${parts[@]}"; do up+="../"; done
+mkdir -p "\$PWD/node_modules"
+ln -s "\${up}store/links/vitest" "\$PWD/node_modules/vitest"
+exit 0
+STUBEOF
+    chmod +x "$STUB_DIR/pnpm"
+}
+
+make_pnpm_project() {
+    mkdir -p "$1"
+    echo '{"name":"app","devDependencies":{"vitest":"^3.0.0"}}' > "$1/package.json"
+    printf 'lockfileVersion: 9.0\n' > "$1/pnpm-lock.yaml"
+}
+
+@test "(ab) pnpm の install は global virtual store を有効にして実行する (issue #1118)" {
+    WT_A="$TMP_DIR/wt-a"
+    make_pnpm_project "$WT_A"
+    make_stub_pnpm_gvs
+
+    PATH="$STUB_DIR:$PATH" run "$SCRIPT" --path "$WT_A" --lockfile-only
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | jq -e '.results | any(.ecosystem == "node" and .pm == "pnpm" and .status == "installed")'
+    [ "$(cat "$STUB_LOG")" = "install --frozen-lockfile --config.enable-global-virtual-store=true" ]
+    [ -f "$WT_A/node_modules/vitest/package.json" ]
+}
+
+@test "(ac) 共有キャッシュから深さの違う worktree へ復元して symlink が解決しなければ、復元せず install する (issue #1118)" {
+    WT_A="$TMP_DIR/wt-a"
+    WT_SAME="$TMP_DIR/wt-same"
+    WT_DEEP="$TMP_DIR/nested/wt-deep"
+    make_pnpm_project "$WT_A"
+    make_pnpm_project "$WT_SAME"
+    make_pnpm_project "$WT_DEEP"
+    make_stub_pnpm_gvs
+    export DEVFLOW_DEPS_CACHE_DIR="$TMP_DIR/shared-cache"
+
+    PATH="$STUB_DIR:$PATH" run "$SCRIPT" --path "$WT_A" --lockfile-only
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | jq -e '.results | any(.ecosystem == "node" and .pm == "pnpm" and .status == "installed")'
+    : > "$STUB_LOG"
+
+    # 同じ深さなら相対 symlink は解決するので復元する
+    PATH="$STUB_DIR:$PATH" run "$SCRIPT" --path "$WT_SAME" --lockfile-only
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | jq -e '.results | any(.ecosystem == "node" and .pm == "pnpm" and .status == "cross_worktree_restore")'
+    [ ! -s "$STUB_LOG" ]
+
+    # 深さが違うと復元した symlink が解決しない → 復元を捨てて install する
+    PATH="$STUB_DIR:$PATH" run "$SCRIPT" --path "$WT_DEEP" --lockfile-only
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | jq -e '.status == "success"'
+    printf '%s\n' "$output" | jq -e '.results | any(.ecosystem == "node" and .pm == "pnpm" and .status == "installed")'
+    [ -s "$STUB_LOG" ]
+    [ -f "$WT_DEEP/node_modules/vitest/package.json" ]
+}
+
 @test "(aa) npm workspaces（package.json workspaces）でも package の node_modules を共有キャッシュ経由で復元する" {
     WT_A="$TMP_DIR/wt-a"
     WT_B="$TMP_DIR/wt-b"
