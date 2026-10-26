@@ -279,11 +279,11 @@ test('[ci-check] ciWaitCheckPrompt は slept:true でなければ取得へ進ま
 // docs
 // ============================================================
 
-test('[ci-check] exec-proxy.md と .claude/rules/dev-flow.md は「1 spawn = 1 判定・ループは script 側」で、sleep を別 exec-proxy と書かない（issue #805）', () => {
+test('[ci-check] exec-proxy.md と capability-bound.md は「1 spawn = 1 判定・ループは script 側」で、sleep を別 exec-proxy と書かない（issue #805）', () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const docs = {
     'exec-proxy.md': join(here, '..', 'dev-flow', 'references', 'exec-proxy.md'),
-    '.claude/rules/dev-flow.md': join(here, '..', '..', '..', '.claude', 'rules', 'dev-flow.md'),
+    'capability-bound.md': join(here, '..', 'dev-flow', 'references', 'capability-bound.md'),
   };
   for (const [name, p] of Object.entries(docs)) {
     const flat = readFileSync(p, 'utf8').replace(/\n>\s?/g, '');

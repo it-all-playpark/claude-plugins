@@ -111,21 +111,19 @@ test('[execproxy-justification] 対象段落に実体的正当化のアンカー
 });
 
 // ============================================================
-// W7 表: incentive-structural 行に review-finding 決定論スクラバーが存在する
-// （移設先 references/justification-classes.md を pin する）
+// W7: incentive-structural の機構一覧に review-finding 決定論スクラバーが存在する
+// （正当化クラスは .claude/rules/dev-flow.md「正当化クラス（W7）」に置く）
 // ============================================================
-test('[execproxy-justification] references/justification-classes.md の W7 incentive-structural 行に review-finding 決定論スクラバーが存在する', () => {
-  const justificationPath = join(here, '..', 'dev-flow', 'references', 'justification-classes.md');
-  const justificationSrc = readFileSync(justificationPath, 'utf8');
-  const incentiveLine = justificationSrc
+test('[execproxy-justification] dev-flow.md の W7 incentive-structural 行に review-finding 決定論スクラバーが存在する', () => {
+  const incentiveLine = src
     .split('\n')
-    .find((line) => line.startsWith('| **incentive-structural**'));
+    .find((line) => line.startsWith('- **incentive-structural**'));
   assert.ok(
     incentiveLine,
-    'references/justification-classes.md に "| **incentive-structural**" で始まる行が見つからない',
+    'dev-flow.md に "- **incentive-structural**" で始まる行が見つからない',
   );
   assert.ok(
     incentiveLine.includes('review-finding 決定論スクラバー'),
-    `W7 incentive-structural 表の代表機構列に "review-finding 決定論スクラバー" が存在しない: ${incentiveLine}`,
+    `W7 incentive-structural の機構一覧に "review-finding 決定論スクラバー" が存在しない: ${incentiveLine}`,
   );
 });
