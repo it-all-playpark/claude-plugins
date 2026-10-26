@@ -393,17 +393,83 @@ const codexRound = (i, issues = [], { cleared, reviewedSha } = {}) => {
 };
 const contextScope = ({ prompt }) => securityScopeResponse({ head: securityScopeHeadOf(prompt), contextChanged: true });
 
-test('[security-review][F] Codex 経路も reviewer_context_changed なら Codex の prep・起動・判定の中継も security-reviewer も spawn せずに止める', async () => {
-  // 起動時の決定論の値・run 中の判定のどちらで立っても、Codex が clear を返す設定でも止める
+test('[security-review][F] Codex 経路は reviewer_context_changed でも止めずに Codex で review し、clear で lgtm（security-reviewer は spawn しない）', async () => {
+  // 起動時の決定論の値・run 中の判定のどちらで立っても、Codex の prep・起動・判定の中継を通す
   for (const [name, opts] of [
     ['起動時の決定論の値', { args: codexArgs(true), overrides: {} }],
     ['run 中の判定', { args: codexArgs(false), overrides: { 'security-scope#1': contextScope } }],
   ]) {
     const { result, calls } = await run({ args: opts.args, overrides: { ...opts.overrides, ...codexRound(1, []) } });
-    assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1'], name);
-    assert.equal(result.status, 'security_unresolved', name);
-    assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0, major: 0, minor: 0 }, name);
+    assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1', 'security-codex-prep#1', 'security-review-codex#1', 'security-codex-verdict#1'], name);
+    assert.equal(result.status, 'lgtm', name);
+    assert.deepEqual(plain(result.security_review), { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0 }, name);
   }
+});
+
+test('[security-review][F] Claude 経路（reviewer が claude・省略・dev-flow の nested 起動）は reviewer_context_changed なら今までどおり review を spawn せずに止める', async () => {
+  const NESTED = { caller: 'dev-flow', cwd: '/tmp/wt', head_ref: 'feature/x', head_sha: SHA_A, base_ref: 'main' };
+  for (const [name, args] of [
+    ['reviewer: claude', { pr: '5', security_review: { target: true, reasons: [], reviewer_context_changed: true, reviewer: 'claude' } }],
+    ['reviewer 省略', { pr: '5', security_review: { target: true, reasons: [], reviewer_context_changed: true } }],
+    ['dev-flow の nested 起動', { pr: '5', nested: NESTED, security_review: { target: true, reasons: [], reviewer_context_changed: true } }],
+  ]) {
+    const { result, calls } = await run({ args, overrides: codexRound(1, []) });
+    assert.deepEqual(labelsOf(calls, 'security-'), ['security-scope#1'], name);
+    assert.equal(calls.find((c) => c.label === 'security-scope#1').agentType, 'dev-flow:dev-runner-haiku-ro', name);
+    assert.equal(result.status, 'security_unresolved', name);
+    assert.equal(result.security_review.stop_reason, 'reviewer_context_changed', name);
+  }
+});
+
+test('[security-review][F] reviewer_context_changed の round で Codex が判定できない（null）なら security-reviewer を spawn せず reviewer_context_codex_unavailable で止める', async () => {
+  for (const [name, overrides] of [
+    ['prep が null', { 'security-codex-prep#1': null }],
+    ['prep が ok:false', { 'security-codex-prep#1': { ok: false, error: 'relay_failed' } }],
+    ['判定の中継が ok:false', { 'security-codex-prep#1': { ok: true }, 'security-codex-verdict#1': { ok: false, cleared: false, error: 'relay_failed' } }],
+    ['判定の中継が throw', { 'security-codex-prep#1': { ok: true }, 'security-codex-verdict#1': () => { throw new Error('StructuredOutput 未返却'); } }],
+  ]) {
+    const { result, calls } = await run({
+      args: codexArgs(true),
+      overrides: { ...overrides, 'security-review#1': { reviewed_sha: SECURITY_SCOPE_DEFAULT_HEAD, issues: [], summary: 'clear' } },
+    });
+    assert.ok(!calls.some((c) => c.label.startsWith('security-review#')), `${name}: Claude 経路の security-reviewer を spawn した`);
+    assert.equal(result.status, 'security_unresolved', name);
+    assert.deepEqual(plain(result.security_review), { target: true, status: 'unresolved', stop_reason: 'reviewer_context_codex_unavailable', rounds: 0, critical: 0, major: 0, minor: 0 }, name);
+  }
+});
+
+test('[security-review][F] Codex 経路の security-scope#i は security-codex-relay に写させ、diff は HEAD で取る（中継が返した head の sha を使わない）', async () => {
+  const { calls } = await run({
+    args: { ...codexArgs(false), nested: { caller: 'standalone', cwd: '/tmp/wt', head_ref: 'feature/x', head_sha: SHA_A, base_ref: 'main' } },
+    overrides: codexRound(1, []),
+  });
+  const scope = calls.find((c) => c.label === 'security-scope#1');
+  assert.equal(scope.agentType, 'dev-flow:security-codex-relay');
+  assert.ok(scope.prompt.endsWith('\nsecurity-review-scope /tmp/wt origin/main HEAD --save-diff'), scope.prompt);
+});
+
+test('[security-review][F] Codex 経路で commit-ensure が古い commit の sha を返しても、古い tree の review で clear にしない', async () => {
+  // 実 script の挙動を写す scope: 引数の head（HEAD なら今の HEAD = SHA_B）の diff を取り、その sha を head_sha に返す
+  const realScope = ({ prompt }) => {
+    const head = prompt.match(/security-review-scope \S+ \S+ (\S+) --save-diff$/)[1];
+    return securityScopeResponse({ head: head === 'HEAD' ? SHA_B : head });
+  };
+  const { result, calls } = await run({
+    args: { ...codexArgs(false), nested: { caller: 'standalone', cwd: '/tmp/wt', head_ref: 'feature/x', head_sha: SHA_A, base_ref: 'main' } },
+    overrides: {
+      'security-scope#1': () => securityScopeResponse({ head: SHA_A }),
+      ...codexRound(1, [finding('hardlink-write')]),
+      // fix#1 は SHA_B を push したが、汚染された commit-ensure は fix 前の SHA_A を返す
+      'commit-ensure#1': { dirty: false, committed: false, pushed: false, head_sha: SHA_A },
+      'security-scope#2': realScope,
+      ...codexRound(2),
+    },
+  });
+  assert.ok(calls.find((c) => c.label === 'security-scope#2').prompt.endsWith(' HEAD --save-diff'), '古い sha の tree の diff を取らせた');
+  assert.ok(!calls.some((c) => c.label === 'security-codex-prep#2' && c.prompt.includes(SHA_A)), '古い tree を Codex に review させた');
+  assert.notEqual(result.status, 'lgtm');
+  assert.notEqual(result.security_review.status, 'cleared');
+  assert.equal(result.security_review.stop_reason, 'head_mismatch');
 });
 
 test('[security-review][F] Codex 経路は prep・固定の codex exec・判定・指摘の取得を別の security-codex-relay に写させ、clear を決める中継は自由文を読まない', async () => {

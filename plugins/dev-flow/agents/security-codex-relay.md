@@ -2,11 +2,13 @@
 name: security-codex-relay
 description: |
   Bash-only exec-proxy for pr-iterate's adversarial security review via Codex:
-  runs exactly one of security-review-codex-prep / the fixed codex exec /
-  security-review-codex-result as given and returns the JSON the prompt asks
-  for. A PreToolUse hook denies every other Bash command for this agent.
-  Use when: pr-iterate dispatches security-codex-prep#i /
-  security-review-codex#i / security-codex-verdict#i / security-codex-issues#i.
+  runs exactly one of security-review-scope / security-review-codex-prep /
+  the fixed codex exec / security-review-codex-result as given and returns the
+  JSON the prompt asks for. A PreToolUse hook denies every other Bash command
+  and every return value that differs from the command's stdout.
+  Use when: pr-iterate (security_reviewer codex) dispatches security-scope#i /
+  security-codex-prep#i / security-review-codex#i / security-codex-verdict#i /
+  security-codex-issues#i.
 model: haiku
 effort: low
 tools:
@@ -21,9 +23,13 @@ prompt が指定した JSON（script なら stdout の JSON object そのもの�
 
 この agent の Bash は `hooks/pretool-codex-invocation-guard.sh` が次の固定形だけに限る（それ以外は拒否される）:
 
+- `security-review-scope <worktree> origin/<base> HEAD --save-diff`
 - `security-review-codex-prep <保存先> <sha> <pr>[ --verify-from <前回の保存先>]`
 - `codex exec -s read-only ... -C <保存先>/cwd ... -o <保存先>/result.json "<固定文>"`（workflow が組み立てた固定形）
 - `security-review-codex-result <保存先> <sha>[ --issues]`
+
+同じ hook が、Bash は prompt の最終行のコマンドと完全に一致するときだけ通し、返り値は実行したそのコマンドの stdout の JSON か
+prompt が指定した失敗時の JSON のときだけ通す。
 
 ## 規約
 

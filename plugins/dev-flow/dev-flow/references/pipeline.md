@@ -286,7 +286,8 @@ hit で `runEval=true` になったケースは lite ゲート条件を満たさ
 **守る要件と境界**（この gate と、それを支える hook・script はこの 3 つだけを守る。足す検査はどれかに対応させる）:
 
 - R1 PR の内容（diff・PR 本文・コメント・ファイル名）で判定を誘導させない — reviewer は diff をデータとして読み、PR が書いた
-  指示ファイルを読み込まない（read-scope hook・`reviewer_context_changed` で止める）。clear を決める中継に自由文を読ませない
+  指示ファイルを読み込まない（read-scope hook・Claude 経路は `reviewer_context_changed` で止める）。clear を決める中継に自由文を
+  読ませない。Codex 経路の中継の Bash と返り値は hook が workflow の prompt の行と実 stdout に縛る（PR の CLAUDE.md を受け取っても偽れない）
 - R2 判定は今の PR head に対するもの — `reviewed_sha` が今の head と一致した clear だけを使い、head が変わりうる時点で cleared を捨てる
 - R3 review の仕組みが、PR に制御される入力を sandbox の外で実行しない — Codex 経路の codex も Claude の sandbox の中で動かす前提にし、
   中継の Bash は固定形の allowlist に限る（flag を変えた codex・別のコマンドを中継に実行させない）
@@ -304,7 +305,8 @@ Security floor  → security-scope（dev-runner-haiku-ro）: `security-review-sc
 pr-iterate      → round の開始時に対象の run は各 round で、review#i（・ci-check#i）と同じ parallel() で review と同じ head に対して
                   security-scope#i → security-review#i を起動する（review の decision を待たない）。対象でない run は
                   CI gate を通り conflict も無い round（LGTM の候補）でだけ security-scope#i を取り直す:
-                  security-scope#i: `security-review-scope <wt> origin/<base> <shaNow|HEAD> --save-diff`
+                  security-scope#i: `security-review-scope <wt> origin/<base> <shaNow|HEAD> --save-diff`（Codex 経路の run は
+                    security-codex-relay に写させ、head は常に HEAD — 中継が返した shaNow の tree を review させない）
                     → 起動時・run 中のどれか 1 回でも対象なら run の終わりまで対象（args.security_review が無い run も対象）
                     → worktree の外の新しい保存先 `dev-flow-security-review-XXXXXX/pr.diff` に diff を書く
                   対象なら security-review#i（security-reviewer を毎回新しく spawn。pr.diff のパスと head sha と
@@ -314,7 +316,7 @@ pr-iterate      → round の開始時に対象の run は各 round で、review
                       approve でも CI を待たない（ci-wait-check なし）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
                       上限まで残れば max_reached）。security の指摘は history の blocking に載せない
                     → worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致・
-                      reviewer_context_changed が false でない（起動時の args.security_review の決定論の値と run 中の判定の
+                      Claude 経路で reviewer_context_changed が false でない（起動時の args.security_review の決定論の値と run 中の判定の
                       どれか 1 回でも true なら run の終わりまで true）→ LGTM の候補の round で status: security_unresolved
                       （review が request-changes の round はその fix へ進み、次の round で取り直す）
                   clear はその round の head についての結果。fix・conflict の自動解消で head が変わりうる時点で返り値の
@@ -339,13 +341,14 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
   のディレクトリの配下で、そのディレクトリと対象パスが session の cwd の配下でないときだけ（R1）。PR が reviewer の session に
   自動で読み込まれる指示ファイル（basename が `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`、または repo 直下の `.claude/` 配下）を
   変える run は、security-scope#i の `reviewer_context_changed` で検出して review を spawn せず `security_unresolved`（人間が
-  `security-review-isolated <PR>` で確かめる）
+  `security-review-isolated <PR>` で確かめる）。Codex 経路はこの停止をせずに Codex で review する（下の Codex 経路）
 - security-scope の CLI は stdout・stderr に PR 由来の文字列（ファイルパス・git の stderr）を出さない。reasons は固定 code と
   件数、error は固定 code（`usage` / `git_failed`）だけ。stdout を写す exec-proxy の agent に判定を書き換える文を渡さないため
 - 公開の PR コメント（pr-iterate・dev-flow の終端サマリー）には指摘の件数だけを載せ、本文（攻撃経路）は fix の prompt にだけ渡す。
   security の指摘は `history` / `human_followups` に入れない。返り値 `security_review` は `{target, status, stop_reason, rounds, critical, major, minor}`
 - `stop_reason` は review の前提チェックで clear にできずに止めた理由の閉じた enum（`diff_unavailable` / `head_unknown` /
-  `head_mismatch` / `review_dir_invalid` / `reviewer_context_changed`）。review を実行した・止めていない run は null。
+  `head_mismatch` / `review_dir_invalid` / `reviewer_context_changed` / `reviewer_context_codex_unavailable`）。review を実行した・
+  止めていない run は null。
   `reviewer_context_changed` の run は終端サマリーで「指示ファイルを変える PR なので自動 review をしていない」と出し分ける
   （HOLD は変えない。変わったファイルのパスは PR が決めた文字列なので載せず、固定の確認コマンドに PR 番号だけを差し込む）
 
@@ -355,8 +358,9 @@ Merge tier      → 対象（Security floor か pr-iterate のどちらか）か
 /pr-iterate     → pr-iterate-prerun が base branch（origin/<base>）の skill-config.json / .claude/skill-config.json、無ければ user 設定
                   （$SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）から読み、
                   args.security_review.reviewer で渡す（PR head の設定ファイルは読まない。無ければ "claude"）
-pr-iterate      → security-scope#i の前提チェックを通った round で（指示ファイルを変える PR は Codex の agent を spawn せず、Claude 経路と
-                  同じ reviewer_context_changed で止める — 中継も PR の worktree で起動し、PR の CLAUDE.md を受け取れば clear の JSON を捏造できる）:
+pr-iterate      → security-scope#i（security-codex-relay）: `security-review-scope <wt> origin/<base> HEAD --save-diff`
+                  の前提チェックを通った round で（指示ファイルを変える PR も止めずに review する — 判定者の codex は空の cwd で動き、
+                  中継のコマンドと返り値は hook が縛るので、中継が PR の CLAUDE.md を受け取っても判定を偽れない）:
                   security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`
                     → 保存先に prompt.md（prompt + diff）・strict 形の schema.json・空の cwd/ を作る（どれかか result.json が既にあれば作らない）
                   security-review-codex#i（security-codex-relay）: 固定形の `codex exec ... -C <保存先>/cwd ... -o <保存先>/result.json "<固定文>"`
@@ -366,6 +370,8 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
                     → script と workflow の両方が securityReviewVerdict と同じ規則で clear のときだけ LGTM（以降は Claude 経路と同じ）
                     → clear を決める中継に自由文（codex の出力・指摘の本文）を読ませない — 引用された PR の文で偽の clear を作らせない
                     → Codex で判定できない（prep の失敗・codex が無い・hook の拒否・結果ファイルが読めない）→ その round は security-review#i
+                      （reviewer_context_changed の run は security-reviewer を spawn せず stop_reason `reviewer_context_codex_unavailable`
+                      で止める — その reviewer は PR の指示ファイルを受け取る）
 ```
 
 - Codex 経路の前提: codex は Claude の sandbox の中で動かす（`excludedCommands` に入れない）。sandbox の通信許可に Codex の
@@ -376,9 +382,17 @@ pr-iterate      → security-scope#i の前提チェックを通った round で
   --disable apps --disable browser_use --disable computer_use -c model_instructions_file=<保存先>/prompt.md
   --output-schema <保存先>/schema.json -o <保存先>/result.json "<固定文>"`。可変部は保存先のパスだけ。空の `-C` で cwd の AGENTS.md を
   読ませず、shell 等を外して diff の外を読む手段を無くす
-- PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`）は `security-codex-relay` の Bash を `security-review-codex-prep` /
-  `codex exec`（上の固定形）/ `security-review-codex-result` の固定形の allowlist に限る（語を探す判定は引用の分割・`$` 展開で
-  組み立てた語をすり抜けるので使わない）。起動形を変えるときは `codexSecurityReviewCommand` と hook を同時に変える
+- PreToolUse hook（`hooks/pretool-codex-invocation-guard.sh`）は `security-codex-relay` の Bash を `security-review-scope` /
+  `security-review-codex-prep` / `codex exec`（上の固定形）/ `security-review-codex-result` の固定形の allowlist に限る（語を探す判定は
+  引用の分割・`$` 展開で組み立てた語をすり抜けるので使わない）。起動形を変えるときは `codexSecurityReviewCommand` と hook を同時に変える
+- 同じ hook（matcher `Bash` と `StructuredOutput`。入力の `agent_type` が `dev-flow:security-codex-relay` のときだけ判定）は、
+  `_lib/scripts/security-relay-bind.mjs` で中継の入出力をその spawn の transcript（`<transcript_path から .jsonl を除いたもの>/subagents/`
+  配下の `agent-<agent_id>.jsonl`）に縛る（R1・R2）: Bash は最初の user 行の harness の枠の後の最終行（2 字下げを外したもの）と完全一致、
+  返り値は直前にそのコマンドを実行した Bash の実 stdout の 1 行目の JSON か、prompt が定める失敗時の JSON（`SECURITY_SCOPE_RELAY_FAILED` 等。
+  Bash を実行していなくてよい。codex の起動は `{"done":true}` だけ）と一致するときだけ通す。transcript は Claude Code の設定ディレクトリに
+  harness が書き、sandbox の中の中継・PR のプロセスからは書けない。transcript・prompt が無い・枠の形が違う・コマンド行が取れないときは deny
+- review する head は縛った scope の stdout の `head_sha` で決まる。`commit-ensure#i` 等の中継が返した `shaNow` と食い違えば
+  `head_mismatch` で止める（古い commit の sha を返されても古い tree で clear にしない）
 - `--output-schema` は OpenAI の strict 形（全 object が `additionalProperties:false`・全 property が required・`maxLength` 無し）
   でないと 400 になる。結果ファイルの schema 適合は `security-review-codex-result` が判定し、適合しない結果は clear にしない
 - 返り値 `rounds` は Claude の security-reviewer と、結果を読めた Codex の review の合計

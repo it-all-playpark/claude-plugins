@@ -21,13 +21,17 @@ export const SECURITY_SCOPE_SCHEMA = {
   },
 };
 
+// 中継が stdout を写せないときに返す JSON（prompt が定める fail-closed の形）。Codex 経路の run では
+// hooks/pretool-codex-invocation-guard.sh が、中継の返り値を stdout の JSON かこの形のどちらかに限る。
+export const SECURITY_SCOPE_RELAY_FAILED = { ok: false, target: true, reasons: [], reviewer_context_changed: true, error: 'relay_failed' };
+
 // head が null なら作業ツリー（未コミット・untracked を含む）と merge-base の diff（dev-flow の Security floor —
 // implementer は commit しない）、head があれば `<base>...<head>` の diff。saveDiff は diff 全文を worktree の外の
 // 新しい一時ディレクトリの pr.diff に書かせる（pr-iterate の security-reviewer・Codex 経路の prep が読む）。
 export function securityScopePrompt({ worktree, base, head = null, saveDiff = false }) {
   const tail = head == null ? '--working-tree' : `${head}${saveDiff ? ' --save-diff' : ''}`;
   return '次のコマンドを 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ（判定・要約・脚色をしない。'
-    + 'exit 非0・stdout 空・JSON 不正なら {"ok":false,"target":true,"reasons":[],"reviewer_context_changed":true,"error":"relay_failed"} で返せ。'
+    + `exit 非0・stdout 空・JSON 不正なら ${JSON.stringify(SECURITY_SCOPE_RELAY_FAILED)} で返せ。`
     + '失敗時に target:false を生成してはならない）。先頭トークンが bare 名の単文で実行し、cd 前置・`bash` 前置・'
     + '環境変数代入前置・&& 連結・パイプ・リダイレクトは付けない:\n'
     + `security-review-scope ${worktree} ${base} ${tail}`;

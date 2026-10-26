@@ -124,10 +124,10 @@ PLUGIN_NAMES=(dev-flow playpark-core)
     [ "$output" = "1" ]
 }
 
-@test "dev-flow の .hooks.PreToolUse[].matcher 集合が Bash と Edit|Write と Read|Grep|Glob である" {
+@test "dev-flow の .hooks.PreToolUse[].matcher 集合が Bash と Edit|Write と Read|Grep|Glob と StructuredOutput である" {
     run jq -r '[.hooks.PreToolUse[].matcher] | sort | join(",")' "$(hooks_json_path dev-flow)"
     [ "$status" -eq 0 ]
-    [ "$output" = "Bash,Edit|Write,Read|Grep|Glob" ]
+    [ "$output" = "Bash,Edit|Write,Read|Grep|Glob,StructuredOutput" ]
 }
 
 # --- 5. playpark-core: 参照集合・配線 ---------------------------------------
