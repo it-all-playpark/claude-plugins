@@ -113,12 +113,13 @@ const codeSrc = [...collectFiles(PLUGIN_ROOT), ...collectFiles(join(REPO_ROOT, '
   .map((p) => readFileSync(p, 'utf8'))
   .join('\n');
 
-// pipeline.md / security-review.md も値の写しを持たず定数名・ファイルで指すので、同じ検査を掛ける
+// pipeline.md / security-review.md / exec-proxy.md も値の写しを持たず定数名・ファイルで指すので、同じ検査を掛ける
 const pipelineSrc = readFileSync(join(REFERENCES_ABS, 'pipeline.md'), 'utf8');
 const securityReviewSrc = readFileSync(join(REFERENCES_ABS, 'security-review.md'), 'utf8');
-const NAMED_DOCS = [['rules', rulesSrc], ['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc]];
+const execProxySrc = readFileSync(join(REFERENCES_ABS, 'exec-proxy.md'), 'utf8');
+const NAMED_DOCS = [['rules', rulesSrc], ['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc], ['exec-proxy.md', execProxySrc]];
 
-test('(h) rules と references（capability-bound.md / pipeline.md / security-review.md）が挙げる定数・識別子・パスはコードに実在し、値を書き写さない', () => {
+test('(h) rules と references（capability-bound.md / pipeline.md / security-review.md / exec-proxy.md）が挙げる定数・識別子・パスはコードに実在し、値を書き写さない', () => {
   const missing = [];
   for (const [name, src] of NAMED_DOCS) {
     for (const [, raw] of src.matchAll(/`([^`\n]+)`/g)) {
@@ -138,8 +139,8 @@ test('(h) rules と references（capability-bound.md / pipeline.md / security-re
   assert.deepEqual(missing, [], `コードに実在しないものを挙げている:\n${missing.join('\n')}`);
 });
 
-test('(i) capability-bound.md / pipeline.md / security-review.md に経緯記述（禁止辞書ヒット）が存在しない', () => {
-  const hits = [['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc]].flatMap(([name, src]) =>
+test('(i) capability-bound.md / pipeline.md / security-review.md / exec-proxy.md に経緯記述（禁止辞書ヒット）が存在しない', () => {
+  const hits = [['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc], ['exec-proxy.md', execProxySrc]].flatMap(([name, src]) =>
     src.split('\n').flatMap((line, i) => {
       const terms = findHistoryTerms(line);
       return terms.length > 0 ? [`${name}:${i + 1}: ${line} (${terms.join(',')})`] : [];
@@ -163,6 +164,76 @@ test('(k) pipeline.md の effort は「frontmatter で決め、call site は opt
     `pipeline.md に effort の決め方が無い:\n${lines.join('\n')}`,
   );
   assert.ok(!/opts\.effort|実効値|agent_opts_effort_accepted/.test(pipelineSrc), 'pipeline.md が harness の opts.effort の扱いを書いている');
+});
+
+// exec-proxy.md は proxy ごとの失敗ポリシー表だけを持つ。label は workflow に実在し、agent の担当・tools・maxTurns は書き写さない
+const EXEC_PROXY_MAX_BYTES = 30 * 1024;
+const EXEC_PROXY_HEADER = '| proxy と label | 失敗の検出 | ポリシー | 理由 |';
+const WORKFLOWS_ABS = join(PLUGIN_ROOT, '.claude', 'workflows');
+const workflowSrc = readdirSync(WORKFLOWS_ABS)
+  .filter((f) => f.endsWith('.js'))
+  .map((f) => readFileSync(join(WORKFLOWS_ABS, f), 'utf8'))
+  .join('\n');
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function execProxyRows(src) {
+  const lines = src.split('\n');
+  const start = lines.indexOf(EXEC_PROXY_HEADER);
+  assert.ok(start >= 0, `exec-proxy.md に表の見出し行 "${EXEC_PROXY_HEADER}" が無い`);
+  return lines.slice(start + 2).filter((l) => l.startsWith('| ')).map((l) => l.split('|').slice(1, -1).map((c) => c.trim()));
+}
+
+// `<i>` 等の実行時の値は template literal の `${...}` に当たる
+function labelInWorkflow(label) {
+  const parts = label.split(/<[^>]+>/);
+  if (parts.length === 1) return new RegExp(`['"\`]${escapeRe(label)}['"\`]`).test(workflowSrc);
+  return new RegExp(`\`${parts.map(escapeRe).join('\\$\\{[^}]+\\}')}\``).test(workflowSrc);
+}
+
+test('(l) exec-proxy.md は 30KB 以下の失敗ポリシー表で、各行のポリシーが fail-closed / fail-safe / fail-open のどれかから始まる', () => {
+  const size = Buffer.byteLength(execProxySrc, 'utf8');
+  assert.ok(size <= EXEC_PROXY_MAX_BYTES, `exec-proxy.md が ${size} bytes（上限 ${EXEC_PROXY_MAX_BYTES} bytes）`);
+  const rows = execProxyRows(execProxySrc);
+  assert.ok(rows.length > 0, 'exec-proxy.md の失敗ポリシー表に行が無い');
+  for (const cells of rows) {
+    assert.equal(cells.length, 4, `列数が 4 でない行: ${cells[0]}`);
+    assert.match(cells[2], /^fail-(closed|safe|open)/, `ポリシー列が fail-closed / fail-safe / fail-open で始まらない: ${cells[0]}`);
+    assert.ok(cells[3].length > 0, `理由が空: ${cells[0]}`);
+  }
+});
+
+test('(m) exec-proxy.md の表の label はすべて .claude/workflows/*.js に実在し、agent の tools・maxTurns を書き写さない', () => {
+  const missing = [];
+  for (const [first] of execProxyRows(execProxySrc)) {
+    const seg = first.split('<br>').find((s) => s.startsWith('label:'));
+    assert.ok(seg, `1 列目に "label:" の段が無い: ${first}`);
+    const labels = [...seg.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+    if (labels.length === 0) assert.equal(seg, 'label: なし', `label を backtick で挙げていない: ${seg}`);
+    for (const label of labels) if (!labelInWorkflow(label)) missing.push(`${first.split('<br>')[0]}: ${label}`);
+  }
+  assert.deepEqual(missing, [], `workflow に無い label を挙げている:\n${missing.join('\n')}`);
+  const copied = execProxySrc.match(/maxTurns\D{0,4}\d|tools:\s*\[|\[Bash\b/);
+  assert.equal(copied, null, `exec-proxy.md に agent の frontmatter を書き写している: ${copied?.[0]}`);
+  assert.ok(execProxySrc.includes('`agents/*.md` の frontmatter'), 'exec-proxy.md が agent の担当を agents/*.md の frontmatter で指していない');
+});
+
+test('(n) 起動形と GitHub I/O の規範は rules にだけ置き、exec-proxy.md はそれを指す', () => {
+  const anchor = 'sandbox / excludedCommands / 特定パス起動の理由を書いてはならない';
+  const holders = [['rules', rulesSrc], ...REFERENCE_FILES.map((f) => [f, readFileSync(join(REFERENCES_ABS, f), 'utf8')])]
+    .filter(([, src]) => src.replace(/\n>?\s*/g, '').includes(anchor))
+    .map(([name]) => name);
+  assert.deepEqual(holders, ['rules'], `GitHub I/O の規範が rules 以外にもある: ${holders.join(', ')}`);
+  const exec = rulesSrc.split('\n## exec-proxy')[1] ?? '';
+  for (const s of ['`git push origin HEAD`', '`origin/<branch>`', 'index を書く git', 'prerun は repo の任意コードを実行しない', '`security-review-isolated`']) {
+    assert.ok(exec.includes(s), `rules の exec-proxy 節に「${s}」が無い`);
+  }
+  assert.ok(execProxySrc.includes('`.claude/rules/dev-flow.md`'), 'exec-proxy.md が rules を指していない');
+});
+
+test('(o) harness に依存する判断（bin/ PATH の version 固定・長い sleep・GIT_OPTIONAL_LOCKS）は capability-bound.md の項目にある', () => {
+  for (const s of ['command -v', '`ci-wait <秒>`', '`GIT_OPTIONAL_LOCKS=0`']) {
+    assert.ok(capItems.some(({ fields }) => fields['何をするか']?.includes(s)), `capability-bound.md に「${s}」を扱う項目が無い`);
+  }
 });
 
 const INVARIANT_ANCHORS = [

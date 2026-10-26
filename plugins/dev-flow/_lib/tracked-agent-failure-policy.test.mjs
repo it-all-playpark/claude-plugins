@@ -540,16 +540,17 @@ test("pr-iterate.js: isolation-probe が {written:false} を返すと throw し 
 });
 
 // ── drift pin: dev-flow/references/exec-proxy.md の diff-hash 行 ↔ 実装 ──────
-test('dev-flow/references/exec-proxy.md の diff-hash 行の失敗検出セルに agent throw が明記されている', () => {
+test('dev-flow/references/exec-proxy.md の diff-hash 行は失敗検出に agent throw を挙げ、fail-open にする', () => {
   const rulesPath = join(HERE, '..', 'dev-flow', 'references', 'exec-proxy.md');
   const rulesSrc = readFileSync(rulesPath, 'utf8');
-  const diffHashLine = rulesSrc.split('\n').find((line) => line.startsWith('| diff-hash |'));
-  assert.ok(diffHashLine, 'dev-flow/references/exec-proxy.md に `| diff-hash |` で始まる行が見つからない');
+  const diffHashLine = rulesSrc.split('\n').find((line) => line.startsWith('| diff-hash<br>'));
+  assert.ok(diffHashLine, 'dev-flow/references/exec-proxy.md に `| diff-hash<br>` で始まる行が見つからない');
   const cols = diffHashLine.split('|').map((c) => c.trim());
-  // cols[0] は空文字（先頭 `|` の前）、cols[1] は 'diff-hash'、cols[2] が失敗検出セル
+  // cols[0] は空文字（先頭 `|` の前）、cols[1] は proxy と label、cols[2] が失敗検出セル、cols[3] がポリシー
   const failureDetectionCell = cols[2];
   assert.ok(
     failureDetectionCell && failureDetectionCell.includes('agent throw'),
     `diff-hash 行の失敗検出セルに 'agent throw' が含まれない: ${JSON.stringify(failureDetectionCell)}`,
   );
+  assert.ok(cols[3]?.startsWith('fail-open'), `diff-hash 行のポリシーが fail-open でない: ${JSON.stringify(cols[3])}`);
 });

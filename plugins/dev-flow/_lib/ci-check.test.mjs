@@ -279,18 +279,26 @@ test('[ci-check] ciWaitCheckPrompt は slept:true でなければ取得へ進ま
 // docs
 // ============================================================
 
-test('[ci-check] exec-proxy.md と capability-bound.md は「1 spawn = 1 判定・ループは script 側」で、sleep を別 exec-proxy と書かない（issue #805）', () => {
+test('[ci-check] capability-bound.md は「1 spawn = 1 判定・ループは script 側」で、sleep を別 exec-proxy と書かない（issue #805）', () => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const docs = {
-    'exec-proxy.md': join(here, '..', 'dev-flow', 'references', 'exec-proxy.md'),
-    'capability-bound.md': join(here, '..', 'dev-flow', 'references', 'capability-bound.md'),
-  };
-  for (const [name, p] of Object.entries(docs)) {
-    const flat = readFileSync(p, 'utf8').replace(/\n>\s?/g, '');
-    assert.ok(flat.includes('1 spawn = 1 判定・ループは'), `${name} に「1 spawn = 1 判定・ループは script 側」の記述が無い`);
-    assert.ok(flat.includes('ci-wait-check'), `${name} に ci-wait-check の記述が無い`);
+  const refs = join(here, '..', 'dev-flow', 'references');
+  const cap = readFileSync(join(refs, 'capability-bound.md'), 'utf8');
+  assert.ok(cap.includes('1 spawn = 1 判定・ループは'), 'capability-bound.md に「1 spawn = 1 判定・ループは script 側」の記述が無い');
+  assert.ok(cap.includes('ci-wait-check'), 'capability-bound.md に ci-wait-check の記述が無い');
+  for (const name of ['exec-proxy.md', 'capability-bound.md']) {
+    const flat = readFileSync(join(refs, name), 'utf8').replace(/\n>\s?/g, '');
     assert.ok(!/sleep は[^。]*別 exec-proxy/.test(flat), `${name} に「sleep は別 exec-proxy」の旧記述が残っている`);
   }
+});
+
+test('[ci-check] exec-proxy.md の ci-wait-check 行は slept が true でない応答を fail-closed で ci_pending 終端にする', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const md = readFileSync(join(here, '..', 'dev-flow', 'references', 'exec-proxy.md'), 'utf8');
+  const row = md.split('\n').find((l) => l.startsWith('| ci-wait-check<br>'));
+  assert.ok(row, 'exec-proxy.md に ci-wait-check の行が無い');
+  const [, , detect, policy] = row.split('|').map((c) => c.trim());
+  assert.ok(detect.includes('`slept`'), `ci-wait-check 行の失敗検出が slept を見ていない: ${detect}`);
+  assert.ok(policy.startsWith('fail-closed') && policy.includes('`ci_pending`'), `ci-wait-check 行のポリシーが fail-closed の ci_pending 終端でない: ${policy}`);
 });
 
 test('[ci-check] ci-check と ci-wait-check は gh fetch → check-ci の手順本文を ciFetchSteps で共有する', () => {

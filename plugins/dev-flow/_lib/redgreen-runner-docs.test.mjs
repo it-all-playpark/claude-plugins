@@ -27,4 +27,5 @@ test('exec-proxy.md: redgreen 行が受理判定の元に detect-test-runner.sh 
   assert.ok(line.includes('detect-test-runner.sh'));
   assert.ok(line.includes('ランナー未検出'));
   assert.ok(!line.includes('受理 glob'));
+  assert.ok(line.split('|')[3].trim().startsWith('fail-safe'), 'redgreen 行のポリシーが fail-safe でない');
 });
