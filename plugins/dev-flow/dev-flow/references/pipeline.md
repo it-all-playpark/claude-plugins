@@ -90,6 +90,18 @@ pr-iterate の終了レポート**。LGTM サマリーの後に push して再�
 失敗しても review は止めない（advisory）。食い違いが無い・終端サマリーが無い PR、dev-flow からの nested 起動では投稿しない。
 pr-iterate を経ない push（人手の push のみ）は検知しない。
 
+**人が決めた修正方針**: `/pr-iterate <PR> --direction <file>` は、fix が判断を人に返した指摘（`deferred_security_topics` の
+`security_unresolved`・同じ指摘での `stuck` 等）を、人が方針を決めて回し直すための入力。wrapper は `--direction <file>` を
+`pr-iterate-prerun` に渡し、prerun が EnterWorktree の前（launch dir）でそのファイルを読む。実体（symlink は辿る）が PR の
+worktree の中・読めない・空・4000 字超なら exit 2 で止まり、通れば本文を加工せずに `fix_direction` に載せる。wrapper はそれを
+`args.fix_direction` に転記し、workflow は文字列でない・空・4000 字超を throw する。方針は共通の `fixPrompt` の
+「人が決めた修正方針」節に入り、その run のすべての fix#i（review・CI・security の fix。retry は同じ prompt）に届く。
+`SECURITY_FIX_GUIDANCE` と食い違えば方針を優先し、`fixPrompt` の Boundary は優先させない。pr-reviewer・security-reviewer・
+Codex の中継の prompt には入れない（判定者に人の方針を渡さない — R1・review の判定規則は変えない）。終端サマリーには方針を
+渡したことだけを 1 行出し、本文は載せない。PR コメント・PR 本文・issue コメント・PR の worktree の中のファイルからは読まない
+（PR の作者が書ける — security review の脅威モデルでは攻撃者）。wrapper は workflow の起動前に PR の worktree へ入るので、
+読むのはその前の prerun に限る。dev-flow の nested 起動は渡さない。
+
 pr-iterate の review#i（i ≥ 2）は fix delta（前 round の review 時点の head .. 今の head）だけを読む delta review
 （`_lib/review-delta.mjs` の `resolveReviewScope`）。sha が確定できない round は full review にフォールバックする。
 **full review が critical を 1 件以上返したら、次の round は `delta_range` を渡さない full review に戻す**

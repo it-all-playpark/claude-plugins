@@ -675,6 +675,92 @@ comment_json() {
     echo "$output" | jq -e '.ok == true and .security_review.reviewer == "gemini"'
 }
 
+# ---- (9) 人が決めた修正方針（--direction。issue #1122）----
+
+@test "(9a) --direction のファイルを launch dir で読み、本文を加工せずに fix_direction に載せる（無ければ・ok:false では載せない）" {
+    cd "$ROOT"
+    printf '方針: 指摘 A は入力を受け取らない形で塞ぐ。\n  B は直さない。\n' > "$BATS_TEST_TMPDIR/direction.md"
+    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/direction.md"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true'
+    echo "$output" | jq -e --rawfile d "$BATS_TEST_TMPDIR/direction.md" '.fix_direction == $d'
+
+    # launch dir からの相対パスも読む
+    cp "$BATS_TEST_TMPDIR/direction.md" "$ROOT/direction.md"
+    run --separate-stderr bash "$SCRIPT" 5 --direction direction.md
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --rawfile d "$BATS_TEST_TMPDIR/direction.md" '.fix_direction == $d'
+
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and has("fix_direction") == false'
+
+    GH_STUB_FAIL=1 run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/direction.md"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and has("fix_direction") == false'
+}
+
+@test "(9b) --direction の実体が PR の worktree の中（symlink 経由を含む）なら exit 2・stdout 空" {
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    wt="$(echo "$output" | jq -r '.worktree')"
+    echo "PR の作者が書いた方針" > "$wt/direction.md"
+
+    run --separate-stderr bash "$SCRIPT" 5 --direction "$wt/direction.md"
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"PR の worktree"* ]]
+
+    ln -s "$wt/direction.md" "$BATS_TEST_TMPDIR/link.md"
+    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/link.md"
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+}
+
+@test "(9c) --direction のファイルが読めない（無い・ディレクトリ・パス無し）なら exit 2・stdout 空で gh を呼ばない" {
+    cd "$ROOT"
+    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/missing.md"
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"読めない"* ]]
+    mkdir -p "$BATS_TEST_TMPDIR/dir.md"
+    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/dir.md"
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    run --separate-stderr bash "$SCRIPT" 5 --direction
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    [ ! -e "$GH_STUB_LOG" ]
+}
+
+@test "(9d) --direction のファイルが空・空白だけなら exit 2・stdout 空" {
+    cd "$ROOT"
+    : > "$BATS_TEST_TMPDIR/empty.md"
+    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/empty.md"
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"空"* ]]
+    printf ' \n\t\n' > "$BATS_TEST_TMPDIR/blank.md"
+    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/blank.md"
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+}
+
+@test "(9e) --direction の本文が 4000 字を超えれば exit 2・stdout 空（4000 字ちょうどは通す。字数はバイトでなく文字で数える）" {
+    cd "$ROOT"
+    printf 'あ%.0s' $(seq 4000) > "$BATS_TEST_TMPDIR/max.md"
+    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/max.md"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and (.fix_direction | length) == 4000'
+
+    printf 'あ%.0s' $(seq 4001) > "$BATS_TEST_TMPDIR/over.md"
+    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/over.md"
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"4001 字"* ]]
+}
+
 # ---- (6) 静的 pin ----
 
 @test "(6a) 静的pin: push しない・gh は読み取り（pr view / run list）のみ" {

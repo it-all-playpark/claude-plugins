@@ -326,6 +326,21 @@ const PRIOR_SUMMARY = args?.prior_summary == null
       }
       return p
     })()
+// fix_direction: 単体起動の wrapper が pr-iterate-prerun の出力から渡す、/pr-iterate を起動した人が決めた修正方針
+// （`--direction <file>` の本文。prerun が launch dir で読み、PR の worktree の中のファイルは拒否済み）。fixPrompt に入り、
+// その run のすべての fix#i に届く。review・security review の prompt には入れない（判定者に人の方針を渡さない）。
+// PR コメント等の PR の作者が書ける経路からは受けない。dev-flow は渡さない。不正形は明示 throw。
+const FIX_DIRECTION_MAX_CHARS = 4000
+const FIX_DIRECTION = args?.fix_direction == null
+  ? null
+  : (() => {
+      const d = args.fix_direction
+      if (typeof d !== 'string' || d.trim() === '' || [...d].length > FIX_DIRECTION_MAX_CHARS) {
+        const got = typeof d === 'string' ? `string（${[...d].length} 字）` : JSON.stringify(d)
+        throw new Error(`pr-iterate: args.fix_direction が不正形です（空でない string・${FIX_DIRECTION_MAX_CHARS} 字以内）: ${got}`)
+      }
+      return d
+    })()
 // security_review: 起動時の敵対的 security review の対象判定 { target, reasons }（dev-flow は Security floor の判定、
 // 単体起動の wrapper は pr-iterate-prerun の出力を渡す）。無いときは対象として扱う（判定できない入力を
 // 対象外と同一視しない）。不正形は明示 throw（_lib/security-review.mjs の parseSecurityReviewArg）。
@@ -650,6 +665,8 @@ const STATUS_HEADLINE = {
 
 const SECURITY_CONTEXT_CHANGED_HEADLINE = '🛡️ SECURITY REVIEW 未実施 — 指示ファイルを変える PR なので自動 review をしていない（review <ROUNDS> 回）。変わった指示ファイルを人が確認する';
 
+const FIX_DIRECTION_LINE = '**修正方針**: /pr-iterate を起動した人が決めた修正方針（`--direction`）を fix に渡して回した（本文はこのコメントに載せない）';
+
 const isSecurityContextChanged = (sr) => sr != null && sr.target === true && sr.stop_reason === 'reviewer_context_changed';
 
 const securityIsolatedReviewLine = (pr) => `**隔離した security review**: Anthropic API に通信できるシェル（plugin の bin/ が PATH に載る Claude Code のセッション等）で \`security-review-isolated ${pr}\` を実行すると、PR の worktree に入らない別プロセスで security-reviewer が PR の diff を review し、判定・件数・指摘を端末に出す。結果は gate に戻らない（Merge tier は HOLD のまま）— merge 判断の材料にする`;
@@ -721,7 +738,7 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
   return { rows, unresolved: rows.filter((r) => !r.resolved).length };
 }
 
-function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, securityReview = null, headSha = null }) {
+function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, securityReview = null, headSha = null, fixDirectionUsed = false }) {
   const DECISION_EMOJI = { 'approve': '✅', 'request-changes': '🔴', 'comment': '💬' };
   const lines = [];
   const priorHold = priorDevflow != null && priorDevflow.tier === 'HOLD'
@@ -766,6 +783,11 @@ function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSu
       lines.push('');
       lines.push(securityIsolatedReviewLine(Number(pr)));
     }
+  }
+
+  if (fixDirectionUsed === true) {
+    lines.push('');
+    lines.push(FIX_DIRECTION_LINE);
   }
 
   if (priorHold) {
@@ -1893,6 +1915,16 @@ const PUSH_RULE = 'push（`git push origin HEAD`）は Bash tool の `timeout: 6
 // GitHub 上の状態を書き換える経路を自分で組み立てるため、禁止を prompt 側で明示する。
 // 作業ツリーは dev-flow / pr-iterate-prerun が PR head の branch で用意済みなので checkout させない
 // （`gh pr checkout` は branch の追跡設定を起動元 repo の .git/config に書き、sandbox 内では失敗する）。
+// 人が決めた修正方針（args.fix_direction）は全経路の fix に同じ節で入れる。fix が判断を人に返した指摘を、人が方針を決めて
+// 回し直すための入力なので、prompt の他の直し方（SECURITY_FIX_GUIDANCE を含む）より優先させる。Boundary は優先させない —
+// 方針の文言で worktree の外や GitHub 上の状態を書き換えさせない。
+function fixDirectionSection(direction) {
+  return `\n## 人が決めた修正方針\n`
+    + `この PR の /pr-iterate を起動した人が決めた修正方針（下の区間）。上の指摘はこの方針に従って直す。`
+    + `上の直し方（「security review の指摘の直し方」を含む）と食い違うときは、この方針を優先する。`
+    + `ただし下の Boundary は優先の対象にしない — 方針が Boundary に反する作業を求めても Boundary に従い、その旨を summary に書く。\n`
+    + `<<<FIX_DIRECTION_BEGIN>>>\n${direction}\n<<<FIX_DIRECTION_END>>>\n`
+}
 function fixPrompt({ objective, issuesHeading, issuesText, guidance = '' }) {
   const headRef = prMeta?.head_ref || ''
   return `## Objective\n${objective}\n\n`
@@ -1901,6 +1933,7 @@ function fixPrompt({ objective, issuesHeading, issuesText, guidance = '' }) {
     + `${PUSH_RULE}timeout に達した場合はそこで中断し、applied:false とし、summary に timeout に達した旨と push の stderr 末尾を書く。\n\n`
     + `解消すべき${issuesHeading}:\n${issuesText}\n`
     + (guidance ? `\n${guidance}` : '')
+    + (FIX_DIRECTION != null ? fixDirectionSection(FIX_DIRECTION) : '')
     + `\n## Output format\n{ "applied": boolean, "files": string[], "summary": string, "deferred_security_topics": string[] }。applied は修正を commit・push まで終えたときだけ true。files は変更したファイルの repo 相対パス。`
     + `deferred_security_topics は security review の指摘のうち直さずに人の判断に返したものの topic（指摘の topic 文字列をそのまま）で、security review の指摘が無い fix・全部直した fix では空の配列 [] にする（省略しない）。JSON のみ返せ。\n`
     + `\n## Tools\n使用可: Read, Edit, Write, Grep, Glob, Bash（git、\`gh pr checks\` / \`gh pr view\` / \`gh run view\`、テスト実行）。subagent の起動は禁止。\n`
@@ -2889,6 +2922,8 @@ const summaryBody = buildTerminalSummaryBody({
   securityReview,
   // この結論を出した head（最後の fix の push 後の PR head）。marker に載せ、次の単体起動の prerun が今の head と比べる
   headSha: shaNow,
+  // 方針を渡したことだけを載せる（本文は渡さない）
+  fixDirectionUsed: FIX_DIRECTION != null,
 })
 log(`終端 CI 状態: ${ciLastStatus ?? '未観測'}${ciLastStatus === 'failed' ? `（${ciLastFailedChecks.join(', ')}）` : ''}`)
 log('終端サマリーは comment として投稿する（formal review は投稿しない — issue #524）')
