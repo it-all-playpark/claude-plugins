@@ -146,6 +146,73 @@ KEPT_TELEMETRY='{
 }
 
 # ---------------------------------------------------------------------------
+# pipe buffer（64KB）を超える入力でも、早く終わる reader（grep -q / head）の SIGPIPE で
+# 分類を誤ったり hook-capture が落ちたりしない
+# ---------------------------------------------------------------------------
+
+# hook-capture 経由だと classify_error には 3 行 × 300 文字の snippet しか届かないので、
+# 関数定義だけを切り出して journal.sh と同じ set -euo pipefail の下で呼ぶ
+classify_error_of_file() {
+    local fn_file="$BATS_TEST_TMPDIR/classify_error.sh"
+    sed -n '/^classify_error() {/,/^}/p' "$SCRIPT" > "$fn_file"
+    bash -c 'set -euo pipefail; source "$1"; classify_error "$(<"$2")"' _ "$fn_file" "$1"
+}
+
+# error に $1 のファイル内容を入れた PostToolUseFailure payload で hook-capture を走らせる
+hook_capture_with_error_file() {
+    local payload="$BATS_TEST_TMPDIR/payload.json"
+    jq -n --rawfile e "$1" \
+        '{tool_name: "Bash", tool_input: {command: "x"}, error: $e, session_id: "s1"}' > "$payload"
+    run bash -c "'$SCRIPT' hook-capture < '$payload'"
+}
+
+@test "classify_error: 1 行目が lint に一致し後ろに 64KB 超が続いても lint を返す" {
+    msg_file="$BATS_TEST_TMPDIR/msg.txt"
+    { echo "eslint error x"; awk 'BEGIN { for (i = 0; i < 4000; i++) printf "filler line %05d\n", i }'; } > "$msg_file"
+    [ "$(wc -c < "$msg_file")" -gt 65536 ]
+
+    run classify_error_of_file "$msg_file"
+    [ "$status" -eq 0 ]
+    [ "$output" = "lint" ]
+}
+
+# 100KB 程度では grep が入力を読み切ってから終わり SIGPIPE が再現しないので、数 MB にする
+@test "hook-capture: 一致行を多数含む数 MB の error でも 1 件記録し、message は一致行の先頭 3 行（各 300 文字まで）" {
+    err_file="$BATS_TEST_TMPDIR/err.txt"
+    long_line="error $(printf 'x%.0s' $(seq 1 400))"
+    {
+        echo "header without keyword"
+        echo "$long_line"
+        awk 'BEGIN { for (i = 0; i < 200000; i++) printf "error line %06d\n", i }'
+    } > "$err_file"
+    [ "$(wc -c < "$err_file")" -gt 3000000 ]
+
+    hook_capture_with_error_file "$err_file"
+    [ "$status" -eq 0 ]
+
+    count=$(ls "$CLAUDE_JOURNAL_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ')
+    [ "$count" -eq 1 ]
+
+    expected="${long_line:0:300}"$'\n'"error line 000000"$'\n'"error line 000001"
+    [ "$(jq -r '.error.message' "$(latest_entry)")" = "$expected" ]
+}
+
+@test "hook-capture: 一致行を含まない 64KB 超の error でも 1 件記録し、message は先頭 3 行" {
+    err_file="$BATS_TEST_TMPDIR/err.txt"
+    awk 'BEGIN { for (i = 0; i < 6000; i++) printf "plain line %05d\n", i }' > "$err_file"
+    [ "$(wc -c < "$err_file")" -gt 65536 ]
+
+    hook_capture_with_error_file "$err_file"
+    [ "$status" -eq 0 ]
+
+    count=$(ls "$CLAUDE_JOURNAL_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ')
+    [ "$count" -eq 1 ]
+
+    expected=$'plain line 00000\nplain line 00001\nplain line 00002'
+    [ "$(jq -r '.error.message' "$(latest_entry)")" = "$expected" ]
+}
+
+# ---------------------------------------------------------------------------
 # Test (c): 同一秒 2 回書き込みで 2 ファイル存在し両方 jq empty を通る
 # (現実装: ファイル名衝突で 1 ファイルに上書きされ red)
 # ---------------------------------------------------------------------------
