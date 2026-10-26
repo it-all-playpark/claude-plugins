@@ -154,7 +154,9 @@ function resolvePositiveIntArg(args, name) {
 // ==== END inline: _lib/resolve-arg.mjs ====
 // ==== BEGIN inline: _lib/prerun-setup.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
-const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds'];
+const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer'];
+
+const SECURITY_REVIEWERS = ['claude', 'codex'];
 
 const PRERUN_MISSING_MSG = 'dev-flow: args.setup が無い — /dev-flow wrapper（dev-flow/SKILL.md の preflight）で `dev-flow-prerun --issue <N> --worktree <path>` を実行し、続けて別の Bash 呼び出しで `ensure-worktree-deps --setup <worktree>/.devflow-tmp/prerun-setup.json` を実行して、その stdout JSON を Workflow の args.setup に渡せ（workflow 内 fallback は無い）';
 
@@ -224,6 +226,9 @@ function validatePrerunSetup(raw, issue) {
   if (!(Number.isInteger(raw.epoch) && raw.epoch > 0)) fail('epoch', raw.epoch);
   if (!(Number.isInteger(raw.epoch_end) && raw.epoch_end > 0)) fail('epoch_end', raw.epoch_end);
   if (!(Number.isInteger(raw.ci_wait_ceiling_seconds) && raw.ci_wait_ceiling_seconds > 0)) fail('ci_wait_ceiling_seconds', raw.ci_wait_ceiling_seconds);
+  if (!SECURITY_REVIEWERS.includes(raw.security_reviewer)) {
+    throw new Error(`dev-flow: args.setup の必須キーが欠落/型不正: security_reviewer（${SECURITY_REVIEWERS.join(' | ')}。受信: ${stringifyForError(raw.security_reviewer)}）— skill-config の "dev-flow".security_reviewer を直して dev-flow-prerun を再実行せよ`);
+  }
 
   const repo = isNonEmptyString(raw.repo) ? raw.repo : null;
   const branch = isNonEmptyString(raw.branch) ? raw.branch : `feature/issue-${issue}`;
@@ -245,6 +250,7 @@ function validatePrerunSetup(raw, issue) {
     epoch: raw.epoch,
     epoch_end: raw.epoch_end,
     ci_wait_ceiling_seconds: raw.ci_wait_ceiling_seconds,
+    security_reviewer: raw.security_reviewer,
     ci_verify: ciVerify,
     local_verify: localVerify,
   };
@@ -7106,8 +7112,9 @@ const prIterateArgs = () => ({
   plugin_commit: PLUGIN_COMMIT,
   // CI 待ちの上限（秒）。dev-flow-prerun が base の CI 所要時間から決めた値（単体起動の pr-iterate-prerun と同じ求め方）
   ci_wait_ceiling_seconds: PRERUN.ci_wait_ceiling_seconds,
-  // 敵対的 security review の起動時の判定（Security floor）。pr-iterate は LGTM の前に PR head の diff で判定し直す
-  security_review: { target: state.securityReview.target, reasons: state.securityReview.reasons, reviewer_context_changed: state.securityReview.reviewer_context_changed },
+  // 敵対的 security review の起動時の判定（Security floor）。pr-iterate は LGTM の前に PR head の diff で判定し直す。
+  // reviewer は review を回す CLI の opt-in（dev-flow-prerun が base branch か user 設定から読んだ値。単体起動の pr-iterate-prerun と同じ規則）
+  security_review: { target: state.securityReview.target, reasons: state.securityReview.reasons, reviewer_context_changed: state.securityReview.reviewer_context_changed, reviewer: PRERUN.security_reviewer },
   ...(CI_AC_INDEXES.length ? { ci_verify: { label: CI_VERIFY.label, checks: CI_VERIFY.checks, wait_ceiling_seconds: CI_VERIFY.wait_ceiling_seconds, ...(LOCAL_VERIFY_DECIDED ? { wait: false } : {}) } } : {}),
   nested: {
     caller: 'dev-flow', cwd: WT, head_ref: state.setup.branch,

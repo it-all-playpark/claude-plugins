@@ -36,6 +36,7 @@ function validRaw(overrides = {}) {
     epoch: 1787000000,
     epoch_end: 1787000060,
     ci_wait_ceiling_seconds: 515,
+    security_reviewer: 'claude',
     ...overrides,
   };
 }
@@ -70,7 +71,30 @@ test('validatePrerunSetup: 正常な setup は各値をそのまま返し framew
   assert.equal(result.epoch, 1787000000);
   assert.equal(result.epoch_end, 1787000060);
   assert.equal(result.ci_wait_ceiling_seconds, 515);
+  assert.equal(result.security_reviewer, 'claude');
   assert.deepEqual(result.analyze, validAnalyze());
+});
+
+// ── validatePrerunSetup: security_reviewer（issue #1125）─────────────────────
+
+const MISSING = Symbol('missing');
+
+test('validatePrerunSetup: security_reviewer の claude / codex をそのまま返す', () => {
+  assert.equal(validatePrerunSetup(validRaw({ security_reviewer: 'codex' }), 641).security_reviewer, 'codex');
+  assert.equal(validatePrerunSetup(validRaw({ security_reviewer: 'claude' }), 641).security_reviewer, 'claude');
+});
+
+test.each([
+  ['欠落', MISSING],
+  ['null', null],
+  ['out-of-enum("gemini")', 'gemini'],
+  ['大文字("Codex")', 'Codex'],
+  ['非文字列(1)', 1],
+])('validatePrerunSetup: security_reviewer が %s なら "claude" に倒さず明示 error で throw する', (_name, value) => {
+  const raw = validRaw();
+  if (value === MISSING) delete raw.security_reviewer;
+  else raw.security_reviewer = value;
+  assert.throws(() => validatePrerunSetup(raw, 641), /必須キーが欠落\/型不正: security_reviewer（claude \| codex/);
 });
 
 // ── validatePrerunSetup: analyze（issue #690）────────────────────────────────
@@ -213,7 +237,7 @@ test('validatePrerunSetup: 未知キーがあっても throw しない', () => {
 // ── PRERUN_SETUP_REQUIRED ───────────────────────────────────────────────────
 
 test('PRERUN_SETUP_REQUIRED: 必須キー一覧を定義する', () => {
-  assert.deepEqual(PRERUN_SETUP_REQUIRED, ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds']);
+  assert.deepEqual(PRERUN_SETUP_REQUIRED, ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer']);
 });
 
 // ── rejectLegacyBaseArg ──────────────────────────────────────────────────────

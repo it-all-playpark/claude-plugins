@@ -26,7 +26,10 @@
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
 // 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。
 
-export const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds'];
+export const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer'];
+
+// security_reviewer の閉じた enum（pr-iterate の parseSecurityReviewArg と同じ値）
+export const SECURITY_REVIEWERS = ['claude', 'codex'];
 
 export const PRERUN_MISSING_MSG = 'dev-flow: args.setup が無い — /dev-flow wrapper（dev-flow/SKILL.md の preflight）で `dev-flow-prerun --issue <N> --worktree <path>` を実行し、続けて別の Bash 呼び出しで `ensure-worktree-deps --setup <worktree>/.devflow-tmp/prerun-setup.json` を実行して、その stdout JSON を Workflow の args.setup に渡せ（workflow 内 fallback は無い）';
 
@@ -107,6 +110,12 @@ export function validatePrerunSetup(raw, issue) {
   // ci_wait_ceiling_seconds は nested pr-iterate の CI 待ちの上限（秒）。prerun が base branch の CI 所要時間から
   // 決め（_shared/scripts/ci-wait-ceiling.sh）、dev-flow は加工せず pr-iterate の args.ci_wait_ceiling_seconds へ渡す
   if (!(Number.isInteger(raw.ci_wait_ceiling_seconds) && raw.ci_wait_ceiling_seconds > 0)) fail('ci_wait_ceiling_seconds', raw.ci_wait_ceiling_seconds);
+  // security_reviewer は nested pr-iterate の security review を回す CLI の opt-in（"dev-flow".security_reviewer）。prerun が
+  // base branch か user 設定から読み（未設定は "claude"）、dev-flow は pr-iterate の args.security_review.reviewer へ渡す。
+  // 品質ゲートの判定者なので、欠落・out-of-enum を "claude" に倒さず明示 error にする
+  if (!SECURITY_REVIEWERS.includes(raw.security_reviewer)) {
+    throw new Error(`dev-flow: args.setup の必須キーが欠落/型不正: security_reviewer（${SECURITY_REVIEWERS.join(' | ')}。受信: ${stringifyForError(raw.security_reviewer)}）— skill-config の "dev-flow".security_reviewer を直して dev-flow-prerun を再実行せよ`);
+  }
 
   const repo = isNonEmptyString(raw.repo) ? raw.repo : null;
   const branch = isNonEmptyString(raw.branch) ? raw.branch : `feature/issue-${issue}`;
@@ -128,6 +137,7 @@ export function validatePrerunSetup(raw, issue) {
     epoch: raw.epoch,
     epoch_end: raw.epoch_end,
     ci_wait_ceiling_seconds: raw.ci_wait_ceiling_seconds,
+    security_reviewer: raw.security_reviewer,
     ci_verify: ciVerify,
     local_verify: localVerify,
   };
