@@ -2439,6 +2439,9 @@ test('issue #1082: security_review_unresolved は stop_reason=reviewer_context_c
     `| ${REASON} | security review が今の PR head で clear になっていない（敵対的 review 0 回・最終 critical 0 / major 0） | ${ACTION} |`);
   assert.equal(rowOf({ target: true, status: 'not_run', stop_reason: null, rounds: 0, critical: 0, major: 0, minor: 0 }),
     `| ${REASON} | security review が今の PR head で clear になっていない（LGTM の前の review に到達していない） | ${ACTION} |`);
+  // fix が直さずに人の判断に返した指摘は件数だけを出す（issue #1121）
+  assert.equal(rowOf({ target: true, status: 'unresolved', stop_reason: null, rounds: 1, critical: 1, major: 1, minor: 0, deferred: 2 }),
+    `| ${REASON} | security review が今の PR head で clear になっていない（敵対的 review 1 回・最終 critical 1 / major 1）— security の指摘 2 件を fix が直さずに人の判断に返した | ${ACTION} |`);
 });
 
 test('issue #834: 「CI 未完了」の開示（disclosures）は REVIEW の終端サマリの参考に出る', () => {

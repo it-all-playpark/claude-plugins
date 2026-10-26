@@ -171,9 +171,10 @@ function resolvedCell(v) {
  * @param {Array<{iteration:number, status:string, reason?:string, files?:Array<{path:string,type:string}>, merge_sha?:string|null}>|null|undefined} [opts.conflictAutoresolve] -
  *   pr-iterate の返り値 conflict_autoresolve（base との conflict の自動解消の試行。issue #916）。自動解消した試行は「参考」に型とファイルを、
  *   解消しなかった試行は mergeable_conflicting の HOLD 理由の「現状」に止めたファイルと型を出す（表示専用）
- * @param {{target:boolean, status:string, stop_reason?:string|null, rounds?:number, critical?:number, major?:number, minor?:number}|null|undefined} [opts.securityReview] -
+ * @param {{target:boolean, status:string, stop_reason?:string|null, rounds?:number, critical?:number, major?:number, minor?:number, deferred?:number}|null|undefined} [opts.securityReview] -
  *   敵対的 security review の結果（issue #1063）。security_review_unresolved の「現状」に回数と件数だけを出す — 指摘の本文
- *   （攻撃経路）は公開コメントに載せない（表示専用）。stop_reason が 'reviewer_context_changed' なら「自動 review をしていない」と
+ *   （攻撃経路）は公開コメントに載せない（表示専用）。deferred（fix が直さずに人の判断に返した指摘の件数）が 1 以上ならその件数も出す。
+ *   stop_reason が 'reviewer_context_changed' なら「自動 review をしていない」と
  *   変わった指示ファイルを一覧する固定の確認コマンドと、`security-review-isolated <PR>` の実行案内を出す
  * @param {string|null|undefined} [opts.headSha] - merge tier の結論を出した PR head の commit sha（merge-tier-facts の headRefOid）。
  *   40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる（issue #1065）
@@ -1200,8 +1201,9 @@ function holdReasonDisplay(code, kind, ctx) {
       const counts = s && s.status !== 'not_run' && Number.isFinite(s.rounds)
         ? `（敵対的 review ${s.rounds} 回・最終 critical ${s.critical ?? 0} / major ${s.major ?? 0}）`
         : '（LGTM の前の review に到達していない）';
+      const deferred = s && s.deferred > 0 ? `— security の指摘 ${s.deferred} 件を fix が直さずに人の判断に返した` : '';
       return {
-        current: `security review が今の PR head で clear になっていない${counts}`,
+        current: `security review が今の PR head で clear になっていない${counts}${deferred}`,
         action: `\`/pr-iterate ${ctx.pr}\` で回収するか、人が diff を確認する（指摘の本文は公開コメントに載せない）`,
       };
     }

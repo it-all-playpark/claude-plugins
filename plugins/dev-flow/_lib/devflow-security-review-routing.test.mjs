@@ -6,6 +6,7 @@
 //   (c) 対象で clear・対象外の run はこの code を積まない
 //   (d) 公開の終端サマリーには security review の件数だけが載る
 //   (e) pr-iterate が review 前に止めた理由（security_review.stop_reason）を引き継ぎ、終端サマリーを出し分ける（issue #1082）
+//   (f) fix が人の判断に返した security の指摘の件数（security_review.deferred）を引き継ぎ、終端サマリーに件数を出す（issue #1121）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -96,4 +97,16 @@ test('[devflow-security-review] (d) 終端サマリーの HOLD 理由には secu
   const body = calls.find((c) => c.label === 'post-summary').prompt;
   assert.ok(body.includes('security review が今の PR head で clear になっていない（敵対的 review 3 回・最終 critical 1 / major 2）'), body.slice(0, 3000));
   assert.ok(body.includes('codes=') && body.includes('security_review_unresolved'), 'HOLD marker に code が無い');
+});
+
+test('[devflow-security-review] (f) securityReviewFinal は nested pr-iterate の security_review.deferred（fix が人の判断に返した指摘の件数）を受け取り、HOLD 理由の「現状」に件数を出す', async () => {
+  const deferred = await run({ iterate: { status: 'security_unresolved', iterations: 1, fixes_applied: 1, security_review: sr('unresolved', { rounds: 1, critical: 1, deferred: 1 }) } });
+  assert.equal(deferred.result.security_review.deferred, 1);
+  assert.equal(deferred.result.merge_tier, 'HOLD');
+  assert.ok(codes(deferred.result).includes('security_review_unresolved'));
+  const body = deferred.calls.find((c) => c.label === 'post-summary').prompt;
+  assert.ok(body.includes('security review が今の PR head で clear になっていない（敵対的 review 1 回・最終 critical 1 / major 0）— security の指摘 1 件を fix が直さずに人の判断に返した'), body.slice(0, 3000));
+  // deferred の無い返り値は 0
+  const none = await run({ iterate: { status: 'max_reached', iterations: 2, fixes_applied: 1, security_review: sr('unresolved') } });
+  assert.equal(none.result.security_review.deferred, 0);
 });

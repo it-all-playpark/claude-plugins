@@ -63,7 +63,8 @@ const securityIsolatedReviewLine = (pr) => `**隔離した security review**: An
 /**
  * 敵対的 security review の結果行（issue #1063）。公開の PR コメントに載るので、指摘の本文（攻撃経路）は載せず件数だけを出す。
  * 変わった指示ファイルのパスも PR が決めた文字列なので載せない（stop_reason の固定 code で出し分けるだけ）。
- * @param {{target: boolean, status: string, stop_reason?: string|null, rounds: number, critical?: number, major?: number, minor?: number}} sr
+ * deferred（fix が直さずに人の判断に返した security の指摘の件数）が 1 以上なら、その件数を出す（topic は載せない）。
+ * @param {{target: boolean, status: string, stop_reason?: string|null, rounds: number, critical?: number, major?: number, minor?: number, deferred?: number}} sr
  *   status: 'cleared' | 'unresolved' | 'not_run' | 'not_target'
  * @returns {string}
  */
@@ -74,7 +75,8 @@ function formatSecurityReviewLine(sr) {
   }
   const counts = `敵対的 review ${sr.rounds ?? 0} 回・最終 critical ${sr.critical ?? 0} / major ${sr.major ?? 0} / minor ${sr.minor ?? 0}`;
   if (sr.status === 'cleared') return `**Security review**: ✅ clear（${counts}）`;
-  return `**Security review**: ❌ 未完了（${sr.status === 'not_run' ? 'LGTM の前の review に到達していない' : counts}）— 指摘の本文は公開コメントに載せない。merge 前に人が diff を確認する`;
+  const deferred = sr.deferred > 0 ? `security の指摘 ${sr.deferred} 件を fix が直さずに人の判断に返した。` : '';
+  return `**Security review**: ❌ 未完了（${sr.status === 'not_run' ? 'LGTM の前の review に到達していない' : counts}）— ${deferred}指摘の本文は公開コメントに載せない。merge 前に人が diff を確認する`;
 }
 
 // 最終 CI 状態行のラベル。null（未観測）は「CI を判定していない」ことを明示する —
@@ -175,7 +177,7 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
  * @param {Array} [opts.conflictAutoresolve] - base との conflict の自動解消の試行（_lib/conflict-autoresolve.mjs の conflictAutoresolveRecord の配列）
  * @param {{tier: string, codes: string[], url: string|null}|null} [opts.priorDevflow] - 単体起動の前に PR に載っていた
  *   dev-flow サマリー（pr-iterate-prerun の prior_devflow）。tier が HOLD のときだけ HOLD 理由の回収状況を出す
- * @param {{target: boolean, status: string, stop_reason?: string|null, rounds: number, critical?: number, major?: number, minor?: number}|null} [opts.securityReview] -
+ * @param {{target: boolean, status: string, stop_reason?: string|null, rounds: number, critical?: number, major?: number, minor?: number, deferred?: number}|null} [opts.securityReview] -
  *   敵対的 security review の結果（pr-iterate の返り値 security_review）。件数だけを 1 行出す（null なら出さない）。
  *   stop_reason が 'reviewer_context_changed' なら見出しと行を「自動 review をしていない」に出し分け、`security-review-isolated <PR>` の実行案内を足す
  * @param {string|null} [opts.headSha] - この結論を出した PR head の commit sha。40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる

@@ -694,6 +694,9 @@ test('buildTerminalSummaryBody: security review の行は件数だけを出す�
   assert.equal(line('lgtm', { target: false, status: 'not_target', rounds: 0 }), '**Security review**: 対象外（変更が許可リスト — 指示ファイルでない文書・テスト — だけ）');
   assert.equal(line('lgtm', { target: true, status: 'cleared', rounds: 2, critical: 0, major: 0, minor: 1 }), '**Security review**: ✅ clear（敵対的 review 2 回・最終 critical 0 / major 0 / minor 1）');
   assert.equal(line('max_reached', { target: true, status: 'unresolved', rounds: 3, critical: 1, major: 2, minor: 0 }), '**Security review**: ❌ 未完了（敵対的 review 3 回・最終 critical 1 / major 2 / minor 0）— 指摘の本文は公開コメントに載せない。merge 前に人が diff を確認する');
+  // fix が直さずに人の判断に返した指摘は件数だけを出す（issue #1121）
+  assert.equal(line('security_unresolved', { target: true, status: 'unresolved', rounds: 1, critical: 2, major: 0, minor: 0, deferred: 2 }), '**Security review**: ❌ 未完了（敵対的 review 1 回・最終 critical 2 / major 0 / minor 0）— security の指摘 2 件を fix が直さずに人の判断に返した。指摘の本文は公開コメントに載せない。merge 前に人が diff を確認する');
+  assert.equal(line('max_reached', { target: true, status: 'unresolved', rounds: 3, critical: 1, major: 2, minor: 0, deferred: 0 }), line('max_reached', { target: true, status: 'unresolved', rounds: 3, critical: 1, major: 2, minor: 0 }), 'deferred 0 は件数を出さない');
   assert.equal(line('lgtm', null), undefined, 'securityReview が無ければ行を出さない');
   assert.equal(buildTerminalSummaryBody({ ...opts, status: 'security_unresolved', securityReview: { target: true, status: 'unresolved', rounds: 1 } }).split('\n').find((l) => l.startsWith('### ')), '### 🛡️ SECURITY REVIEW 未完了 — 敵対的 security review が今の head で clear にならなかった。人間へエスカレーション');
 });

@@ -661,7 +661,8 @@ function formatSecurityReviewLine(sr) {
   }
   const counts = `敵対的 review ${sr.rounds ?? 0} 回・最終 critical ${sr.critical ?? 0} / major ${sr.major ?? 0} / minor ${sr.minor ?? 0}`;
   if (sr.status === 'cleared') return `**Security review**: ✅ clear（${counts}）`;
-  return `**Security review**: ❌ 未完了（${sr.status === 'not_run' ? 'LGTM の前の review に到達していない' : counts}）— 指摘の本文は公開コメントに載せない。merge 前に人が diff を確認する`;
+  const deferred = sr.deferred > 0 ? `security の指摘 ${sr.deferred} 件を fix が直さずに人の判断に返した。` : '';
+  return `**Security review**: ❌ 未完了（${sr.status === 'not_run' ? 'LGTM の前の review に到達していない' : counts}）— ${deferred}指摘の本文は公開コメントに載せない。merge 前に人が diff を確認する`;
 }
 
 const CI_LAST_STATUS_LABEL = {
@@ -1230,13 +1231,16 @@ const REVIEW = {
   },
 }
 
+// deferred_security_topics: security review の指摘のうち、fix が直さずに人の判断に返したものの topic（無ければ []）。
+// workflow はその round で渡した指摘の topic と照合して run を終える（summary の自由文では区別できない）。
 const FIX = {
   type: 'object',
-  required: ['applied', 'summary'],
+  required: ['applied', 'summary', 'deferred_security_topics'],
   properties: {
     applied: { type: 'boolean' },
     files: { type: 'array', items: { type: 'string' } },
     summary: { type: 'string' },
+    deferred_security_topics: { type: 'array', items: { type: 'string' } },
   },
 }
 
@@ -1307,9 +1311,13 @@ const SECURITY_FIX_GUIDANCE = 'security review の指摘の直し方:\n'
   + '- 指摘の経路を、守る要件（PR の内容で判定や実行を誘導させない・PR に制御される入力を sandbox の外で実行しない・'
   + 'review の判定は今の head に対するもの）に立ち返って、最も単純な形で塞ぐ。危ない機能を使わない・その入力を受け取らない形に'
   + 'できるなら、検査を足すより優先する\n'
-  + '- 人に手作業を課す修正（hash の固定・所有者や権限を指定した配置・新しい設定項目とその手順書）や、同じ経路に検査の層を重ねる修正はしない\n'
-  + '- その形でしか塞げない指摘と、sandbox の中に残った PR のプロセスを前提にした指摘（守る範囲の外）は直さない。'
-  + '直さなかった指摘と理由を summary に書き、1 件も直さなかったときは applied:false にする（人が判断する）\n';
+  + '- 人に手作業を課す修正（hash の固定・所有者や権限を指定した配置・新しい設定項目とその手順書）はしない。'
+  + '既に検査している同じ入力に、同じ種類の検査を重ねる修正（同じ値を別の形でもう一度確かめる等）もしない\n'
+  + '- 縛られていない入力元を縛る修正は、上の禁止の対象外である（例: 自由な返り値や手元の状態から取っていた値を、'
+  + '縛った中継で取り直し、hook でその中継の実 stdout に縛る）。指摘の経路がそれで塞がるなら直す\n'
+  + '- 上の禁止に当たる形でしか塞げない指摘と、sandbox の中に残った PR のプロセスを前提にした指摘（守る範囲の外）は直さない。'
+  + '直さなかった指摘は topic（指摘の topic 文字列をそのまま）を deferred_security_topics に入れ、理由を summary に書く（人が判断する）。'
+  + '直した指摘の topic は入れない\n';
 
 function parseSecurityReviewArg(raw) {
   if (raw == null) return null;
@@ -1893,7 +1901,8 @@ function fixPrompt({ objective, issuesHeading, issuesText, guidance = '' }) {
     + `${PUSH_RULE}timeout に達した場合はそこで中断し、applied:false とし、summary に timeout に達した旨と push の stderr 末尾を書く。\n\n`
     + `解消すべき${issuesHeading}:\n${issuesText}\n`
     + (guidance ? `\n${guidance}` : '')
-    + `\n## Output format\n{ "applied": boolean, "files": string[], "summary": string }。applied は修正を commit・push まで終えたときだけ true。files は変更したファイルの repo 相対パス。JSON のみ返せ。\n`
+    + `\n## Output format\n{ "applied": boolean, "files": string[], "summary": string, "deferred_security_topics": string[] }。applied は修正を commit・push まで終えたときだけ true。files は変更したファイルの repo 相対パス。`
+    + `deferred_security_topics は security review の指摘のうち直さずに人の判断に返したものの topic（指摘の topic 文字列をそのまま）で、security review の指摘が無い fix・全部直した fix では空の配列 [] にする（省略しない）。JSON のみ返せ。\n`
     + `\n## Tools\n使用可: Read, Edit, Write, Grep, Glob, Bash（git、\`gh pr checks\` / \`gh pr view\` / \`gh run view\`、テスト実行）。subagent の起動は禁止。\n`
     + `\n## Boundary\n`
     + `- 書き込みは worktree（${isoWt}）の中だけ。worktree の外のファイル・他 repo（別の clone や worktree を含む）を変更しない\n`
@@ -1942,11 +1951,18 @@ async function waitCiVerify(iteration) {
 // 失敗（fix の null / applied:false / commit 保証の失敗）は terminal='fix_failed' を立てて false を返す（呼び出し側が break）。
 // 成功は shaNow / pendingDeltaLines を進め fixesApplied を数えて true を返す（呼び出し側が次 iteration へ continue）。
 // 呼び出しは review ⇄ fix ループの中だけで、fix#i / commit-ensure#i の i はループの現在の iteration。
-// security review の critical/major の fix（securityGate）も同じ手順で、issuesHeading だけを変えて使う。
-async function applyCiFix({ round, objective, issuesText, guidance, issuesHeading = ' CI 失敗' }) {
+// security review の critical/major の fix（securityGate）も同じ手順で、issuesHeading と securityBlocking（fix に渡した
+// security の指摘）を渡して使う。fix がそのどれかを人の判断に返したら、applied を見る前に endWithDeferredSecurity で終える。
+async function applyCiFix({ round, objective, issuesText, guidance, issuesHeading = ' CI 失敗', securityBlocking = [] }) {
   const ciFixPrompt = fixPrompt({ objective, issuesHeading, issuesText, guidance })
   const { fix, retried } = await callFixAgent(ciFixPrompt, i)
   if (retried) round.fix_retried = true
+
+  const deferred = deferredSecurityCount(fix, securityBlocking)
+  if (deferred > 0) {
+    await endWithDeferredSecurity(fix, deferred)
+    return false
+  }
 
   if (fix == null || fix.applied !== true) {
     fixTerminalReason = fix == null ? 'null_after_retry' : 'applied_false'
@@ -2166,6 +2182,7 @@ let securityRounds = 0      // review の回数（security-reviewer の spawn �
 // review を実行してから止めた・止めていないときは null
 let securityStopReason = null
 let securityCounts = { critical: 0, major: 0, minor: 0 }  // 最後の review の件数
+let securityDeferred = 0    // fix が直さずに人の判断に返した security の指摘の件数（endWithDeferredSecurity で終えた run だけ 1 以上）
 let securityOpen = []       // 前回の review で未解消の critical/major（次の spawn に「直ったか確かめる項目」として渡す）
 const securitySeen = makeSeenTracker(REVIEW_STUCK)  // security の指摘の stuck 検出（review の reviewSeen とは分ける — pr-reviewer の既出 findings に混ぜない）
 // 前回の round を Codex で review した保存先（次の round の prep がその result.json の critical/major を verify_items にする）。
@@ -2213,6 +2230,34 @@ async function codexSecurityReview(iteration, { reviewDir, headSha }) {
   ))
   if (issues == null) log(`⚠️ iteration ${iteration}: security-codex-issues#${iteration} が Codex の指摘を返さない`)
   return { review: issues == null ? null : { reviewed_sha: verdict.reviewed_sha, issues }, cleared: false, counts: verdict.counts }
+}
+// fix が直さずに人の判断に返した security の指摘の件数。返り値の deferred_security_topics を、その fix に渡した指摘の topic と
+// stuckTopicKey（stuck 検出と同じ比べ方）で照合し、一致した topic だけを数える（渡していない topic で run を終えさせない）。
+function deferredSecurityCount(fix, passed) {
+  const deferred = Array.isArray(fix?.deferred_security_topics) ? fix.deferred_security_topics : []
+  const keys = new Set(passed.map(stuckTopicKey))
+  return new Set(deferred.map(stuckTopicKey).filter((k) => keys.has(k))).size
+}
+// fix が security の指摘を人の判断に返した round の終わり方。次の review・security review を spawn しない — 同じ指摘をもう一度
+// review しても fix は同じ理由で直さず、stuck まで 1 round 余計に使うだけになる。applied:true なら commit 保証と fixesApplied の
+// 加算をしてから終え（保証に失敗すれば fix_failed）、applied:false でも fix_failed にしない（人の判断が要ることを示す）。
+async function endWithDeferredSecurity(fix, deferred) {
+  securityDeferred = deferred
+  securityStatus = 'unresolved'
+  if (fix.applied === true) {
+    const ensure = await ensureFixCommitted(i, shaPrev)
+    if (!ensure.ensured) {
+      fixTerminalReason = 'commit_unensured'
+      terminal = 'fix_failed'
+      log(`⚠️ fix#${i} 適用後の commit 保証に失敗（未コミット変更の残存または commit/push 失敗/状態不明）— 未コミットのまま次 iteration へ進まず人間へエスカレーション`)
+      return
+    }
+    shaNow = ensure.headSha
+    pendingDeltaLines = ensure.deltaLines
+    fixesApplied++
+  }
+  terminal = 'security_unresolved'
+  log(`⚠️ fix#${i} が security review の指摘 ${deferred} 件を直さずに人の判断に返した（applied=${fix.applied}）— 次の review を回さず人間へエスカレーション`)
 }
 // head を変えうる操作（fix・conflict の自動解消）の前に呼ぶ。clear は review した head についての結果なので、head が
 // 変わりうる時点で返り値の status を cleared のまま残さない（LGTM はその round の review と同じ head の clear でだけ確定する）
@@ -2365,7 +2410,8 @@ async function securityGate(iteration, round, sec) {
     objective: `PR #${PR} の security review の指摘を修正し、PR ブランチへ commit・push する。`,
     issuesHeading: ' security review の指摘',
     issuesText: buildFixIssuesText(res.blocking),
-    guidance: '',
+    guidance: SECURITY_FIX_GUIDANCE,
+    securityBlocking: res.blocking,
   })
   return fixed ? 'fix' : 'stop'
 }
@@ -2766,6 +2812,13 @@ for (i = 1; i <= MAX; i++) {
     const { fix, retried } = await callFixAgent(reviewFixPrompt, i)
     if (retried) round.fix_retried = true
 
+    // fix がこの round の security の指摘を人の判断に返したら、applied を見る前にその場で終える（次の review・security review を回さない）。
+    const deferred = deferredSecurityCount(fix, secBlocking?.blocking ?? [])
+    if (deferred > 0) {
+      await endWithDeferredSecurity(fix, deferred)
+      break
+    }
+
     // fix の applied:false を検出して人間へエスカレーション（無言で MAX 回燃やさない）。
     if (fix == null || fix.applied !== true) {
       fixTerminalReason = fix == null ? 'null_after_retry' : 'applied_false'
@@ -2792,6 +2845,7 @@ const status = lgtm ? 'lgtm' : (terminal ?? 'max_reached')
 log(`pr-iterate 終端: status=${status}（iterations=${Math.min(i, MAX)}）`)
 // 敵対的 security review の結果（件数だけ。指摘の本文は載せない）。status: 'not_target' / 'cleared' / 'unresolved' /
 // 'not_run'（対象だが最後の head の review に到達しなかった — clear の後の fix で head が変わりうる run を含む）。stop_reason: review の前提チェックで止めた理由（securityStopReason）。
+// deferred: fix が直さずに人の判断に返した security の指摘の件数（topic は載せない）。
 // dev-flow は target かつ status が cleared でない run を Merge tier の security_review_unresolved で HOLD にする。
 const securityReview = {
   target: securityTarget,
@@ -2799,6 +2853,7 @@ const securityReview = {
   stop_reason: securityStopReason,
   rounds: securityRounds,
   ...securityCounts,
+  deferred: securityDeferred,
 }
 if (securityTarget && securityReview.status !== 'cleared') log(`⚠️ security review: 対象だが今の head で clear になっていない（status=${securityReview.status}）`)
 
@@ -2920,7 +2975,7 @@ return {
   human_followups: humanFollowups,  // worktree の外を指すとして fix から外した blocking finding（nested では dev-flow の終端サマリーが表示する）
   // base との conflict の自動解消の試行（_lib/conflict-autoresolve.mjs の conflictAutoresolveRecord。nested では dev-flow の終端サマリーが表示する）
   conflict_autoresolve: conflictAttempts,
-  // 敵対的 security review の結果 {target, status, rounds, critical, major, minor}（件数だけ）。dev-flow の Merge tier が使う
+  // 敵対的 security review の結果 {target, status, stop_reason, rounds, critical, major, minor, deferred}（件数だけ）。dev-flow の Merge tier が使う
   security_review: securityReview,
   // LGTM 後の CI_VERIFY.checks の待ち結果（args.ci_verify を受けた run だけ）。dev-flow が ci の AC の判定に使う
   ...(CI_VERIFY ? {
