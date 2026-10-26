@@ -203,6 +203,7 @@ run_raw "command が文字列でない" deny "{\"agent_type\":\"${RELAY}\",\"too
 echo "[Bash は transcript の workflow の prompt の最終行と完全一致するときだけ通す]"
 new_transcript "$(framed "$(relay_prompt "$SCOPE_CMD")")"
 run_cmd "prompt の行と一致する scope は通す" silent "$SCOPE_CMD"
+run_raw "一致するコマンドでも dangerouslyDisableSandbox:true なら deny" deny "$(hook_input Bash "$RELAY" "$(jq -cn --arg cmd "$SCOPE_CMD" '{command:$cmd, dangerouslyDisableSandbox:true}')")"
 run_cmd "scope の base を差し替えたら deny（固定形には当たる）" deny "security-review-scope ${WT} origin/feature/x HEAD --save-diff"
 run_cmd "scope の worktree を差し替えたら deny" deny "security-review-scope /tmp/other origin/main HEAD --save-diff"
 new_transcript "$(framed "$(relay_prompt "$PREP_CMD")")"

@@ -144,6 +144,8 @@ const failed = failedOutputOf(prompt.command)
 if (failed == null) deny('workflow の prompt のコマンドが中継の形でない')
 
 if (tool === 'Bash') {
+  // 一致するコマンドでも sandbox の外では実行させない（PR の指示を受けた中継が sandbox を外して PR の diff を処理できてしまう）
+  if (input?.tool_input?.dangerouslyDisableSandbox === true) deny('security-codex-relay は sandbox の外でコマンドを実行しない')
   if (input?.tool_input?.command === prompt.command) decide(true)
   deny('security-codex-relay は workflow の prompt のコマンドを一字一句そのまま実行する')
 }
