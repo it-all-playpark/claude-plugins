@@ -21,18 +21,10 @@ generate-thumbnail content/blog/<file>.mdx --optimize
 
 Options: `--optimize` converts to WebP and deletes original PNG.
 
-## 絶対に守る制約
+cwd は対象 project の git root（`<mdx-path>` は git root 相対で渡せる）。Claude Code の sandbox の中でそのまま動く。
 
-**必ず bare 名 `generate-thumbnail` を先頭トークンにして単独で呼ぶ**（plugin の `bin/` が PATH に載っている）。
-sandbox 除外は呼び出しコマンドの先頭トークンのテキスト一致で判定され、前提として `generate-thumbnail` /
-`generate-thumbnail *` が `sandbox.excludedCommands` に入っている。`cd "$ROOT" && generate-thumbnail …`、
-`VAR=… generate-thumbnail …`、`$(…)` で包む形は excludedCommands に一致せず sandbox 内実行に落ち、
-内部の `codex exec` が app-server 初期化で `Operation not permitted` になって死ぬ。
-
-- cwd は対象 project の git root でよい（`<mdx-path>` は git root 相対で渡せる）。`cd` を前置しない
-- 素の `codex exec "echo hi"` が通ることは、この skill が動く証拠にならない（`codex:*` は先頭トークンが `codex` のときだけ除外される）
-
-Requires: `codex` CLI（ログイン済み）, `python3`, `jq`. `--optimize` 使用時は `vips`, `rip` も必要。
+Requires: `codex` CLI（`CODEX_HOME` でログイン済み）, `python3`, `jq`. `--optimize` 使用時は `vips`, `rip` も必要。
+sandbox の中で動かすときは `CODEX_HOME` を sandbox から書ける場所にし、ChatGPT / OpenAI API のホストを sandbox の通信許可に入れておく。
 
 ## Config
 
@@ -68,15 +60,15 @@ Requires: `codex` CLI（ログイン済み）, `python3`, `jq`. `--optimize` 使
 
 ## 動作の補足
 
-- Codex は画像を `$CODEX_HOME/generated_images/<session-id>/` 以下に保存後、エージェントが指定パスにコピーする
-- `codex exec --skip-git-repo-check` を内部で使用。自動承認は `--approve-for-me`（codex 0.147.0 以降が前提）。sandbox-write を維持したままの自動承認で、書き込み範囲は `output_dir` のみを想定。sandbox を外す `--dangerously-bypass-approvals-and-sandbox` は使わない
+- Codex は `-s read-only --disable shell_tool --disable unified_exec` で起動する。Codex 自身の sandbox は Claude Code の sandbox の中で入れ子にできず shell が動かないので、shell を切って画像生成だけをさせる
+- image_gen は画像を `$CODEX_HOME/generated_images/<thread_id>/` に保存する。script が `--json` の `thread.started` から thread_id を取り、そこから `output_dir` にコピーする
 - Codex usage limits は通常ターンより 3-5x 早く消費されるため、量産時は注意
 
 ## 失敗の見分け方
 
 | 症状 | 意味と対処 |
 | --- | --- |
-| `could not create PATH aliases: Operation not permitted` / `failed to initialize in-process app-server client: Operation not permitted` | sandbox 内から実行している。bare 名 `generate-thumbnail` で呼んでいない（`cd … &&`・変数の前置・`$( )` で包むと excludedCommands に一致せず sandbox 内実行に落ちる）。**環境ブロッカーと断定せず、bare 名 `generate-thumbnail` で呼び直す**。素の `codex exec` が通ることは反証にならない |
+| `could not create PATH aliases: Operation not permitted` / `failed to initialize in-process app-server client: Operation not permitted` | `CODEX_HOME` が sandbox から書けない場所（既定の `~/.codex` 等）を指している。sandbox から書ける `CODEX_HOME` を設定する |
 | `codex model '<name>' is not available for this account.` | ChatGPT アカウントの Codex が提供終了モデルを 400 で拒否した。`skill-config.json` の `codex_model` を利用可能なモデルにする。未設定なら script の既定値が古いので既定値を更新する。一覧は `jq -r '.. \| .slug? // empty' ~/.codex/models_cache.json \| sort -u` |
-| `Codex completed but output file not found` | codex は完走したが画像を書かなかった（agent がコピーを省いた等）。ログ末尾 30 行を確認する |
+| `Codex completed but no generated image found` | codex は完走したが image_gen を呼ばなかった。ログ末尾 30 行を確認する |
 | `codex exec failed` + usage limit 系のメッセージ | Codex サブスクリプションの quota 切れ。時間を置いて再試行する |

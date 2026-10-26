@@ -3,7 +3,9 @@
 #
 # Strategy: stub `codex` via THUMBNAIL_CODEX_BIN. The stub logs the argv of
 # `codex exec`, and its behaviour is switched by CODEX_STUB_MODE:
-#   ok                 write a valid PNG at the path named in the prompt, exit 0
+#   ok                 emit thread.started and write a valid PNG under
+#                      $CODEX_HOME/generated_images/<thread_id>/ (as image_gen does), exit 0
+#   no_image           emit thread.started but write no image, exit 0
 #   model_unsupported  emit the real 400 invalid_request_error JSON, exit 1
 #   fail               emit nothing useful, exit 3
 # HOME is redirected so the global skill-config layer never leaks in; the
@@ -34,18 +36,23 @@ EOF
     rm -f "$CALLS_LOG"
     export CALLS_LOG
     export CODEX_STUB_MODE=ok
+    export CODEX_HOME="$BATS_TEST_TMPDIR/codex-home"
 
     STUB="$BATS_TEST_TMPDIR/codex_stub.sh"
     cat > "$STUB" << 'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >> "$CALLS_LOG"
-printf '%s\n' "${CODEX_HOME-<unset>}" > "$CALLS_LOG.codex_home"
-prompt="${@: -1}"
 case "$CODEX_STUB_MODE" in
     ok)
-        out="$(printf '%s\n' "$prompt" | grep -E '^  /.*\.png$' | sed 's/^  //')"
-        mkdir -p "$(dirname "$out")"
-        printf 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' | base64 -d > "$out"
+        echo 'Reading additional input from stdin...'
+        echo '{"type":"thread.started","thread_id":"t-1"}'
+        mkdir -p "$CODEX_HOME/generated_images/t-1"
+        printf 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' | base64 -d > "$CODEX_HOME/generated_images/t-1/exec-1.png"
+        echo '{"type":"turn.completed"}'
+        exit 0
+        ;;
+    no_image)
+        echo '{"type":"thread.started","thread_id":"t-2"}'
         echo '{"type":"turn.completed"}'
         exit 0
         ;;
@@ -80,10 +87,27 @@ model_arg() {
     [ -f "$PROJECT/public/blog/2026-09-15-example.png" ]
 }
 
-@test "CODEX_HOME from the environment (the sandbox-only home) is not passed to codex" {
-    CODEX_HOME="$BATS_TEST_TMPDIR/sandbox-home" run bash "$SCRIPT" "$MDX"
+@test "the image image_gen saved under CODEX_HOME is copied to output_dir" {
+    run bash "$SCRIPT" "$MDX"
     [ "$status" -eq 0 ]
-    [ "$(cat "$CALLS_LOG.codex_home")" = "<unset>" ]
+    cmp "$CODEX_HOME/generated_images/t-1/exec-1.png" "$PROJECT/public/blog/2026-09-15-example.png"
+}
+
+@test "codex runs read-only with the shell tools disabled" {
+    run bash "$SCRIPT" "$MDX"
+    [ "$status" -eq 0 ]
+    grep -qx -- '-s' "$CALLS_LOG"
+    grep -qx -- 'read-only' "$CALLS_LOG"
+    grep -qx -- 'shell_tool' "$CALLS_LOG"
+    grep -qx -- 'unified_exec' "$CALLS_LOG"
+}
+
+@test "codex success without a generated image fails with the searched directory" {
+    export CODEX_STUB_MODE=no_image
+    run bash "$SCRIPT" "$MDX"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no generated image found: $CODEX_HOME/generated_images/t-2/"* ]]
+    [ ! -e "$PROJECT/public/blog/2026-09-15-example.png" ]
 }
 
 @test "project skill-config codex_model overrides the default" {

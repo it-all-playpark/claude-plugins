@@ -17,10 +17,9 @@ source "$(dirname "$_CORE_BIN")/../_lib/common.sh"
 # so the requirement check must look at the resolved binary, not the bare name.
 CODEX_BIN="${THUMBNAIL_CODEX_BIN:-codex}"
 require_cmd "$CODEX_BIN" "codex CLI not found: $CODEX_BIN"
-# この script は sandbox の外で動く（excludedCommands）。Claude Code の設定が sandbox の中の codex 用に渡す CODEX_HOME は
-# sandbox から書ける場所なので使わず、既定の ~/.codex で動かす（sandbox の中から書き換えた設定・skills を sandbox の外の codex に読ませない）
-unset CODEX_HOME
 require_cmds jq python3
+# image_gen は画像を $CODEX_HOME/generated_images/<thread_id>/ に保存する。そこから script が output_dir へコピーする
+CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 
 CONFIG=$(load_skill_config "generate-thumbnail")
 OUTPUT_DIR=$(echo "$CONFIG" | jq -r '.output_dir // "public/blog"')
@@ -29,9 +28,8 @@ BRAND_PROMPT_PATH=$(echo "$CONFIG" | jq -r '.brand_prompt_path // ""')
 CODEX_MODEL=$(echo "$CONFIG" | jq -r '.codex_model // "gpt-6-luna"')
 CODEX_EFFORT=$(echo "$CONFIG" | jq -r '.codex_reasoning_effort // "low"')
 
-# NOTE: requires codex >= 0.147.0 (--approve-for-me = auto-approve while KEEPING the
-# workspace-write sandbox). Never use --dangerously-bypass-approvals-and-sandbox here:
-# thumbnail generation has no need to escape the sandbox.
+# Claude Code の sandbox の中で動かす。Codex 自身の sandbox（sandbox-exec）は入れ子にできず shell が全部失敗するので、
+# shell を切って read-only で起動し、ファイルの書き込みは script だけが行う。MDX の文面が渡る agent に shell を持たせない
 
 PROJECT_ROOT="$(git_root)"
 [[ -n "$PROJECT_ROOT" ]] || die_json "Not in a git repository" 128
@@ -143,7 +141,7 @@ mkdir -p "$OUTPUT_ABS"
 # Build prompt for Codex
 # ----------------------------------------------------------------------------
 PROMPT=$(cat << EOF
-あなたはブログ記事のサムネイル生成エージェントです。以下のブランドガイドラインと記事情報を踏まえ、built-in image_gen ツールでサムネイル画像を1枚生成し、指定パスにコピーしてください。
+あなたはブログ記事のサムネイル生成エージェントです。以下のブランドガイドラインと記事情報を踏まえ、built-in image_gen ツールでサムネイル画像を1枚生成してください。
 
 # ブランドガイドライン
 
@@ -160,9 +158,7 @@ $([[ -n "$TAGS" ]] && echo "- タグ: $TAGS")
 
 - アスペクト比は ${ASPECT_RATIO}（横長）
 - image_gen の呼び出しは1回のみ。再生成・iteration は不要
-- 生成後、画像を以下の絶対パスにコピーしてください（既存ファイルは上書き可）:
-  $PNG_PATH
-- コピー後、最終出力として保存先パスのみを1行で報告してください
+- 生成後は何もせず、最終出力として DONE とだけ報告してください
 EOF
 )
 
@@ -179,7 +175,9 @@ trap 'rm -f "$LOG_FILE"' EXIT
 CODEX_EXIT=0
 "$CODEX_BIN" exec \
     --skip-git-repo-check \
-    --approve-for-me \
+    -s read-only \
+    --disable shell_tool \
+    --disable unified_exec \
     -m "$CODEX_MODEL" \
     -c "model_reasoning_effort=$CODEX_EFFORT" \
     --json \
@@ -205,14 +203,20 @@ if [[ "$CODEX_EXIT" -ne 0 ]]; then
 fi
 
 # ----------------------------------------------------------------------------
-# Verify output
+# Copy the generated image out of CODEX_HOME
 # ----------------------------------------------------------------------------
-if [[ ! -f "$PNG_PATH" ]]; then
-    err "Codex completed but output file not found: $PNG_PATH"
+THREAD_ID=$(grep '^{' "$LOG_FILE" | jq -r 'select(.type == "thread.started") | .thread_id' | head -n 1 || true)
+GENERATED=""
+if [[ -n "$THREAD_ID" ]]; then
+    GENERATED=$(ls -t "$CODEX_HOME_DIR/generated_images/$THREAD_ID"/*.png 2>/dev/null | head -n 1 || true)
+fi
+if [[ -z "$GENERATED" ]]; then
+    err "Codex completed but no generated image found: $CODEX_HOME_DIR/generated_images/${THREAD_ID:-<no thread id>}/"
     err "Last 30 lines of log:"
     tail -n 30 "$LOG_FILE" >&2
     exit 1
 fi
+cp "$GENERATED" "$PNG_PATH"
 
 if ! file "$PNG_PATH" | grep -q "PNG image"; then
     err "Output is not a PNG: $(file "$PNG_PATH")"
