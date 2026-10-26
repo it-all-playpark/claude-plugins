@@ -59,11 +59,22 @@ export function scrubReviewFindingText(text) {
   return scrubbed === '' ? '[REDACTED]' : scrubbed
 }
 
-// pr-iterate.js の fix_loop 経路（issue #503 対象）で issuesText を組み立てる。現行フォーマット
-// （`- [${severity}] ${file}:${line} ${description} → ${suggestion}`）を維持しつつ、description/
-// suggestion のみをスクラブする。severity/file/line は構造フィールドなので素通しする。
+// fix prompt の指摘行に `[topic: <値>]` で出す topic（topic が無ければ null）。topic は PR の作者が影響しうる
+// reviewer の出力なので description/suggestion と同じくスクラブする。fix はこの値を deferred_security_topics に
+// 写して返し、pr-iterate.js の deferredSecurityCount は同じ関数の値と完全一致で照合する（prompt に出す値と
+// 照合に使う値を 1 か所で決め、スクラブで両者がずれないようにする）。
+export function fixIssueTopic(x) {
+  return typeof x?.topic === 'string' && x.topic.trim() ? scrubReviewFindingText(x.topic) : null
+}
+
+// pr-iterate.js の fix_loop 経路（issue #503 対象）で issuesText を組み立てる。フォーマットは
+// `- [${severity}] [topic: ${topic}] ${file}:${line} ${description} → ${suggestion}`（topic の無い指摘は
+// `[topic: …]` を出さない）。topic/description/suggestion はスクラブし、severity/file/line は構造フィールドなので素通しする。
 export function buildFixIssuesText(blocking) {
   return blocking
-    .map((x) => `- [${x.severity}] ${x.file ?? ''}${x.line ? ':' + x.line : ''} ${scrubReviewFindingText(x.description)}${x.suggestion ? ' → ' + scrubReviewFindingText(x.suggestion) : ''}`)
+    .map((x) => {
+      const topic = fixIssueTopic(x)
+      return `- [${x.severity}] ${topic ? `[topic: ${topic}] ` : ''}${x.file ?? ''}${x.line ? ':' + x.line : ''} ${scrubReviewFindingText(x.description)}${x.suggestion ? ' → ' + scrubReviewFindingText(x.suggestion) : ''}`
+    })
     .join('\n')
 }

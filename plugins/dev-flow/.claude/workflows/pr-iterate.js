@@ -530,9 +530,16 @@ function scrubReviewFindingText(text) {
   return scrubbed === '' ? '[REDACTED]' : scrubbed
 }
 
+function fixIssueTopic(x) {
+  return typeof x?.topic === 'string' && x.topic.trim() ? scrubReviewFindingText(x.topic) : null
+}
+
 function buildFixIssuesText(blocking) {
   return blocking
-    .map((x) => `- [${x.severity}] ${x.file ?? ''}${x.line ? ':' + x.line : ''} ${scrubReviewFindingText(x.description)}${x.suggestion ? ' → ' + scrubReviewFindingText(x.suggestion) : ''}`)
+    .map((x) => {
+      const topic = fixIssueTopic(x)
+      return `- [${x.severity}] ${topic ? `[topic: ${topic}] ` : ''}${x.file ?? ''}${x.line ? ':' + x.line : ''} ${scrubReviewFindingText(x.description)}${x.suggestion ? ' → ' + scrubReviewFindingText(x.suggestion) : ''}`
+    })
     .join('\n')
 }
 // ==== END inline: _lib/review-finding-scrub.mjs ====
@@ -1344,7 +1351,7 @@ const SECURITY_FIX_GUIDANCE = 'security review の指摘の直し方:\n'
   + '- 縛られていない入力元を縛る修正は、上の禁止の対象外である（例: 自由な返り値や手元の状態から取っていた値を、'
   + '縛った中継で取り直し、hook でその中継の実 stdout に縛る）。指摘の経路がそれで塞がるなら直す\n'
   + '- 上の禁止に当たる形でしか塞げない指摘と、sandbox の中に残った PR のプロセスを前提にした指摘（守る範囲の外）は直さない。'
-  + '直さなかった指摘は topic（指摘の topic 文字列をそのまま）を deferred_security_topics に入れ、理由を summary に書く（人が判断する）。'
+  + '直さなかった指摘は、その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに deferred_security_topics に入れ、理由を summary に書く（人が判断する）。'
   + '直した指摘の topic は入れない\n';
 
 function parseSecurityReviewArg(raw) {
@@ -1941,7 +1948,7 @@ function fixPrompt({ objective, issuesHeading, issuesText, guidance = '' }) {
     + (guidance ? `\n${guidance}` : '')
     + (FIX_DIRECTION != null ? fixDirectionSection(FIX_DIRECTION) : '')
     + `\n## Output format\n{ "applied": boolean, "files": string[], "summary": string, "deferred_security_topics": string[] }。applied は修正を commit・push まで終えたときだけ true。files は変更したファイルの repo 相対パス。`
-    + `deferred_security_topics は security review の指摘のうち直さずに人の判断に返したものの topic（指摘の topic 文字列をそのまま）で、security review の指摘が無い fix・全部直した fix では空の配列 [] にする（省略しない）。JSON のみ返せ。\n`
+    + `deferred_security_topics は security review の指摘のうち直さずに人の判断に返したものの topic（その指摘行の \`[topic: <topic>]\` の <topic> を一字も変えずに）で、security review の指摘が無い fix・全部直した fix では空の配列 [] にする（省略しない）。JSON のみ返せ。\n`
     + `\n## Tools\n使用可: Read, Edit, Write, Grep, Glob, Bash（git、\`gh pr checks\` / \`gh pr view\` / \`gh run view\`、テスト実行）。subagent の起動は禁止。\n`
     + `\n## Boundary\n`
     + `- 書き込みは worktree（${isoWt}）の中だけ。worktree の外のファイル・他 repo（別の clone や worktree を含む）を変更しない\n`
@@ -2270,12 +2277,13 @@ async function codexSecurityReview(iteration, { reviewDir, headSha }) {
   if (issues == null) log(`⚠️ iteration ${iteration}: security-codex-issues#${iteration} が Codex の指摘を返さない`)
   return { review: issues == null ? null : { reviewed_sha: verdict.reviewed_sha, issues }, cleared: false, counts: verdict.counts }
 }
-// fix が直さずに人の判断に返した security の指摘の件数。返り値の deferred_security_topics を、その fix に渡した指摘の topic と
-// stuckTopicKey（stuck 検出と同じ比べ方）で照合し、一致した topic だけを数える（渡していない topic で run を終えさせない）。
+// fix が直さずに人の判断に返した security の指摘の件数。返り値の deferred_security_topics を、その fix に渡した指摘の
+// prompt の指摘行に出した topic（fixIssueTopic。スクラブ後の値）と完全一致で照合し、一致した topic だけを数える
+// （渡していない topic で run を終えさせない。部分一致にすると渡していない指摘を人に返したことにできる）。
 function deferredSecurityCount(fix, passed) {
   const deferred = Array.isArray(fix?.deferred_security_topics) ? fix.deferred_security_topics : []
-  const keys = new Set(passed.map(stuckTopicKey))
-  return new Set(deferred.map(stuckTopicKey).filter((k) => keys.has(k))).size
+  const keys = new Set(passed.map(fixIssueTopic).filter((k) => k != null))
+  return new Set(deferred.filter((k) => keys.has(k))).size
 }
 // fix が security の指摘を人の判断に返した round の終わり方。次の review・security review を spawn しない — 同じ指摘をもう一度
 // review しても fix は同じ理由で直さず、stuck まで 1 round 余計に使うだけになる。applied:true なら commit 保証と fixesApplied の
