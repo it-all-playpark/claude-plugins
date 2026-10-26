@@ -242,8 +242,8 @@ const PR = resolvePositiveIntArg(args, 'pr')
 // issue context を持たないため未指定になり、acceptanceCriteriaBlock が空文字を返して
 // AC 無しでレビューする（fail-open — AC 取得のために gh 呼び出しを増やさない）。
 const ACCEPTANCE_CRITERIA = args?.acceptance_criteria
-// plugin の commit（12 桁 hex）。dev-flow が nested 起動時に prerun の値を渡す。単体起動は prerun を
-// 経ないので未指定 → null（取得のために exec-proxy を増やさない）。telemetry 記録専用で gate の入力にしない
+// plugin の commit（12 桁 hex）。dev-flow は dev-flow-prerun の値を、単体起動の wrapper は pr-iterate-prerun の値を渡す。
+// nested 無しの直接起動は未指定 → null（取得のために exec-proxy を増やさない）。telemetry 記録専用で gate の入力にしない
 const PLUGIN_COMMIT = normalizePluginCommit(args?.plugin_commit)
 const MAX = args?.max_iterations == null
   ? 10
@@ -2970,6 +2970,13 @@ const telemetryHandoff = buildJournalHandoffPayload({
     ci_wait_seconds: totalCiWaitSeconds,  // 全 round の CI 待ちの nominal 累積秒
     security_review_target: securityTarget,  // 敵対的 security review の対象だったか（起動時・run 中の判定のどれか 1 回でも対象なら true）
     security_review_rounds: securityRounds,  // security-reviewer の spawn 回数（既定で対象にしたことによる run 時間・コストの増分を見る）
+    // dev-flow-health が非 LGTM の終わり方を signature の細目に分けるための値（件数・指摘の本文は載せない）。
+    // null（fix_failed 以外の fix_terminal_reason・前提チェックで止めていない stop_reason）は Stop hook が落とす
+    security_review_status: securityReview.status,
+    security_review_stop_reason: securityReview.stop_reason,
+    fix_terminal_reason: fixTerminalReason,
+    // 起動元（'dev-flow' / 'standalone' / 'direct' = nested 無しの直接起動）。nested の entry は dev-flow の entry の側で数える
+    iterate_caller: NESTED?.caller ?? 'direct',
     review_model_config: 'opus',  // pr-reviewer の model。override を渡さないので agents/pr-reviewer.md frontmatter の値（一致は review-model-frontmatter.test.mjs が pin）
     plugin_version: PLUGIN_VERSION,  // _lib/plugin-version.mjs の定数。plugin.json との一致は plugin-version.sync.test.mjs が pin
     plugin_commit: PLUGIN_COMMIT,  // plugin の commit（12 桁 hex / null）。記録専用

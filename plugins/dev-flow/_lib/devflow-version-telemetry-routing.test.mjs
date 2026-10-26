@@ -145,16 +145,22 @@ test('dev-flow.js: plugin_commit は gate の入力にしない（値の有無�
   assert.deepEqual(withCommit, withoutCommit);
 });
 
-test('pr-iterate.js: nested 起動で受けた args.plugin_commit を journal entry に載せ、単体起動（未指定）は null', async () => {
+test('pr-iterate.js: 受けた args.plugin_commit（dev-flow の nested・単体起動の wrapper）を journal entry に載せ、未指定の直接起動は null', async () => {
   const nested = makePrIterateSandbox({ args: { pr: 5, plugin_commit: COMMIT } });
   const r1 = await runWorkflowCapture(prIterateSrc, nested.ctx, '.claude/workflows/pr-iterate.js');
   assert.equal(r1.error, null, `pr-iterate はエラーなく完走するべき: ${r1.error?.message}`);
   assertPluginCommit(nested.calls, COMMIT, 'pr-iterate with plugin_commit');
 
-  const standalone = makePrIterateSandbox();
+  // 単体起動: wrapper が pr-iterate-prerun の plugin_commit を nested（caller:'standalone'）と一緒に渡す
+  const standalone = makePrIterateSandbox({ args: { pr: 5, plugin_commit: COMMIT, nested: { caller: 'standalone', cwd: '/tmp/wt', head_ref: 'feature/x', base_ref: 'main' } } });
   const r2 = await runWorkflowCapture(prIterateSrc, standalone.ctx, '.claude/workflows/pr-iterate.js');
   assert.equal(r2.error, null, `pr-iterate 単体起動はエラーなく完走するべき: ${r2.error?.message}`);
-  assertPluginCommit(standalone.calls, null, 'pr-iterate standalone');
+  assertPluginCommit(standalone.calls, COMMIT, 'pr-iterate standalone');
+
+  const direct = makePrIterateSandbox();
+  const r3 = await runWorkflowCapture(prIterateSrc, direct.ctx, '.claude/workflows/pr-iterate.js');
+  assert.equal(r3.error, null, `pr-iterate 直接起動はエラーなく完走するべき: ${r3.error?.message}`);
+  assertPluginCommit(direct.calls, null, 'pr-iterate direct');
 });
 
 test('pr-iterate.js abort run の journal entry にも plugin_commit が載る', async () => {

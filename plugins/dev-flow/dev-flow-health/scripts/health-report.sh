@@ -12,13 +12,20 @@
 #      人間の回収が要る失敗なので abort と同じく signature にする（phase は PR）。
 #      merge tier が HOLD の dev-flow run（outcome は success）は、telemetry.hold_reason_codes のうち dev-flow 自身や
 #      実行環境の不具合で出る HOLD 理由を 1 つずつ signature にする（skill | hold | Merge tier | <code>）:
-#        - HOLD_SIGNATURE_CODES の code
+#        - HOLD_SIGNATURE_CODES の code。security_review_unresolved の template は止めた理由の細目を足した
+#          "security_review_unresolved status=<security_review_status> stop=<security_review_stop_reason>"
 #        - iterate_non_lgtm のうち telemetry.iterate_status が HOLD_SIGNATURE_ITERATE_STATUSES のもの
-#          （template は "iterate_non_lgtm status=<iterate_status>"）
+#          （template は "iterate_non_lgtm status=<iterate_status>"、fix_failed は " fix=<fix_terminal_reason>" を足す。
+#          security_unresolved は security_review_unresolved の template）。hold_reason_codes に security_review_unresolved が
+#          ある run からは作らない（同じ run をその signature が表す）
 #        - ac_human_pending のうち telemetry.hold_ac_human_judged が true のもの（観測型の判定か evaluator の
 #          unreachable_env で人手になった AC が未達）
+#      単体起動の pr-iterate run（telemetry.iterate_caller == "standalone"。outcome は success）も、iterate_status が
+#      HOLD_SIGNATURE_ITERATE_STATUSES のものを同じ template で signature にする（skill | hold | Iterate | <template>）。
+#      iterate_caller == "dev-flow" の pr-iterate entry は発生にも resolved の判定・最後の成功 run にも入れない — その run は
+#      dev-flow entry の HOLD の側で数える。値の無い細目は none と書く。
 #      再現率を優先する（誤って拾ったものは LLM の分類で dev_flow 以外になり起票されない）。
-#      hold_reason_codes を持たない entry は拾わない。
+#      hold_reason_codes を持たない dev-flow entry と iterate_caller を持たない pr-iterate entry は拾わない。
 #   2. signature ごとに first_seen / last_seen（timestamp と telemetry.plugin_commit）を出し、状態を決める:
 #        resolved  : last_seen 以後に、last_seen と別の plugin_commit で同じ skill が N 回以上成功し、再発していない
 #                    （別の失敗で止まった run はその phase まで到達した証拠にならないので数えない）
@@ -59,9 +66,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CANDIDATE_PATH="plugins/dev-flow/"
 
 # 異常とする HOLD 理由（dev-flow 自身や実行環境の不具合で出るもの）。一覧はここだけに持ち、health-report.bats と
-# skill-docs.bats がこの 2 行を読んで参照する。iterate_non_lgtm と ac_human_pending は条件付き（上の 1.）
-HOLD_SIGNATURE_CODES='["final_reconcile_unavailable","final_ac_unavailable","pr_closes_missing","merge_facts_dropped","danger_fail_closed","ac_agent_unsatisfied","final_test_red","validate_test_red"]'
-HOLD_SIGNATURE_ITERATE_STATUSES='["ci_pending","ci_error","review_contract_error"]'
+# skill-docs.bats がこの 2 行を読んで参照する。iterate_non_lgtm と ac_human_pending は条件付き（上の 1.）。
+# HOLD_SIGNATURE_ITERATE_STATUSES は単体起動の pr-iterate run の終端 status にも使う
+HOLD_SIGNATURE_CODES='["final_reconcile_unavailable","final_ac_unavailable","pr_closes_missing","merge_facts_dropped","danger_fail_closed","ac_agent_unsatisfied","final_test_red","validate_test_red","security_review_unresolved"]'
+HOLD_SIGNATURE_ITERATE_STATUSES='["ci_pending","ci_error","review_contract_error","stuck","fix_failed","max_reached","security_unresolved"]'
 
 die_json() {
     jq -n --arg e "$1" '{error: $e}' >&2
@@ -127,6 +135,10 @@ ENTRY_FILTER='select(type == "object")
      hold_codes: (.telemetry.hold_reason_codes // null),
      hold_ac_human_judged: (.telemetry.hold_ac_human_judged // null),
      iterate_status: (.telemetry.iterate_status // null),
+     iterate_caller: (.telemetry.iterate_caller // null),
+     fix_terminal_reason: (.telemetry.fix_terminal_reason // null),
+     security_review_status: (.telemetry.security_review_status // null),
+     security_review_stop_reason: (.telemetry.security_review_stop_reason // null),
      issue: (.context.issue // null),
      pr_number: (.context.pr_number // null),
      repo: (.context.repo // null),
@@ -177,16 +189,40 @@ def template:
 
 def point: {timestamp, plugin_commit: .commit, file};
 
-# HOLD の dev-flow run 1 件から、異常とする HOLD 理由ごとに 1 つの発生を作る（1 run に複数あれば別々の signature）
+# security review が clear にならなかった run の template。止めた理由の細目で分ける（指摘の件数・本文は入れない —
+# 件数を入れると run ごとに signature が割れる）
+def security_template:
+  "security_review_unresolved status=\(.security_review_status // "none") stop=\(.security_review_stop_reason // "none")";
+
+# pr-iterate の非 LGTM の終端 status の template（dev-flow の iterate_non_lgtm と単体起動の pr-iterate で同じ形）
+def iterate_template:
+  if .iterate_status == "security_unresolved" then security_template
+  elif .iterate_status == "fix_failed" then "iterate_non_lgtm status=fix_failed fix=\(.fix_terminal_reason // "none")"
+  else "iterate_non_lgtm status=\(.iterate_status)" end;
+
+# HOLD の dev-flow run 1 件から、異常とする HOLD 理由ごとに 1 つの発生を作る（1 run に複数あれば別々の signature）。
+# security_review_unresolved のある run の iterate_non_lgtm は数えない（同じ終わり方を 2 つの signature にしない）
 def hold_occurrences:
   select(.skill == "dev-flow" and (.hold_codes | type) == "array")
   | . as $e
-  | ($e.hold_codes | map(select(type == "string")) | unique)[]
+  | ($e.hold_codes | map(select(type == "string")) | unique) as $codes
+  | $codes[]
   | select(IN($hold_codes[])
-           or (. == "iterate_non_lgtm" and ($e.iterate_status | IN($hold_iterate_statuses[])))
+           or (. == "iterate_non_lgtm" and ($e.iterate_status | IN($hold_iterate_statuses[]))
+               and ("security_review_unresolved" | IN($codes[]) | not))
            or (. == "ac_human_pending" and $e.hold_ac_human_judged == true))
-  | (if . == "iterate_non_lgtm" then "iterate_non_lgtm status=\($e.iterate_status)" else . end) as $t
+  | (if . == "iterate_non_lgtm" then ($e | iterate_template)
+     elif . == "security_review_unresolved" then ($e | security_template)
+     else . end) as $t
   | $e + {category: "hold", phase: "Merge tier", template: $t, message: $t};
+
+# 単体起動の pr-iterate run 1 件（outcome は success）から、LGTM に届かなかった終わり方の発生を作る。
+# nested（iterate_caller == "dev-flow"）の run は dev-flow entry の HOLD の側で数える
+def iterate_occurrences:
+  select(.skill == "pr-iterate" and .iterate_caller == "standalone" and .outcome == "success")
+  | select(.iterate_status | IN($hold_iterate_statuses[]))
+  | iterate_template as $t
+  | . + {category: "hold", phase: "Iterate", template: $t, message: $t};
 
 # run r の後（until より前）に、commit が分かっていて c と異なる成功 run が何回あったか。
 # 失敗 run は該当 phase まで到達した証拠にならないので数えない（last_good と同じ規則）
@@ -210,14 +246,16 @@ def clean_runs($runs; $after; $until; $c):
       | select(.error.category != "needs_clarification")
       | . + {category: (.error.category // ""), phase: (.error.phase // ""),
              template: ((.error.message // "") | tostring | template), message: .error.message}),
-    ($all[] | hold_occurrences)
+    ($all[] | hold_occurrences),
+    ($all[] | iterate_occurrences)
     | . + {signature: ([.skill, .category, .phase, .template] | join(" | "))}
   ] as $fails
 | ($fails | group_by(.signature)
    | map(
        sort_by(.idx) as $occ
        | ($occ[0].skill) as $skill
-       | [ $all[] | select(.skill == $skill) ] as $runs
+       # nested の pr-iterate entry は成功 run にも数えない（その run の結果は dev-flow entry が持つ）
+       | [ $all[] | select(.skill == $skill and .iterate_caller != "dev-flow") ] as $runs
        | ($occ | last) as $last
        # 一度 resolved の条件を満たした後の再発（直前の発生から N 回以上の別 commit run を挟んだ発生）
        | [ range(1; $occ | length) as $i

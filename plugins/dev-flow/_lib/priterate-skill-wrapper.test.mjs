@@ -57,6 +57,17 @@ test('[priterate-skill-wrapper] Workflow の args に prerun の prior_summary �
   assert.ok(steps.includes('の結論はこの head に当てはまらない') && steps.includes('merge の根拠にしない'), '再 review 中コメントの意味が書かれていない');
 });
 
+test('[priterate-skill-wrapper] Workflow の args に prerun の plugin_commit を渡す（単体起動の journal entry にも plugin の commit が載る）', () => {
+  const launch = steps.slice(steps.indexOf("Workflow({ name: 'dev-flow:pr-iterate-run'"));
+  const args = launch.slice(0, launch.indexOf('} })'));
+  assert.ok(args.includes('plugin_commit: <plugin_commit>'), `Workflow の args に plugin_commit が無い: ${args}`);
+  const prerunOutput = steps.match(/JSON 1 行（`\{([^}]*)\}`）/);
+  assert.ok(prerunOutput && prerunOutput[1].split(/,\s*/).includes('plugin_commit'), `prerun 出力の一覧に plugin_commit が無い: ${prerunOutput?.[1]}`);
+  // pr-iterate-prerun.sh の Output 欄（スクリプトの出力契約）も同じキーを持つ
+  const prerunSrc = readFileSync(join(pluginRoot, '_shared/scripts/pr-iterate-prerun.sh'), 'utf8');
+  assert.match(prerunSrc, /^#\s+\{ok, pr, [^}]*\bplugin_commit\b[^}]*\}$/m, 'pr-iterate-prerun.sh の Output 欄に plugin_commit が無い');
+});
+
 test('[priterate-skill-wrapper] Workflow の args に prerun の ci_wait_ceiling_seconds を渡す（単体起動も base の CI 所要時間から決めた上限で待つ。issue #1046）', () => {
   const launch = steps.slice(steps.indexOf("Workflow({ name: 'dev-flow:pr-iterate-run'"));
   const args = launch.slice(0, launch.indexOf('} })'));

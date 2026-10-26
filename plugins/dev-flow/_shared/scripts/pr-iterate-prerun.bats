@@ -761,6 +761,47 @@ comment_json() {
     [[ "$stderr" == *"4001 字"* ]]
 }
 
+# ---- (10) plugin_commit（dev-flow-prerun と同じ plugin-commit.sh で決める）----
+
+@test "(10a) link mode: plugin_commit は plugin root を含む checkout の HEAD 先頭 12 桁" {
+    plugin_root="$(cd "$(dirname "$SCRIPT")/../.." && pwd)"
+    expected="$(git -C "$plugin_root" rev-parse HEAD)"
+    cd "$ROOT"
+    run --separate-stderr bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --arg c "${expected:0:12}" '.ok == true and .plugin_commit == $c'
+}
+
+@test "(10b) cache mode: plugin_commit は plugin root のディレクトリ名（commit SHA 先頭 12 桁）" {
+    plugin_root="$(cd "$(dirname "$SCRIPT")/../.." && pwd)"
+    cache_root="$BATS_TEST_TMPDIR/cache/playpark/dev-flow/1ef2e0ab6254"
+    mkdir -p "$cache_root"
+    for d in dev-flow _lib _shared bin; do
+        ln -s "$plugin_root/$d" "$cache_root/$d"
+    done
+    cd "$ROOT"
+    run --separate-stderr bash "$cache_root/_shared/scripts/pr-iterate-prerun.sh" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .plugin_commit == "1ef2e0ab6254"'
+}
+
+@test "(10c) plugin_commit を決められなくても止まらず plugin_commit:null を返し、ok:false の出力にも載せる" {
+    plugin_root="$(cd "$(dirname "$SCRIPT")/../.." && pwd)"
+    cache_root="$BATS_TEST_TMPDIR/nogit/dev-flow/unknown"
+    mkdir -p "$cache_root"
+    for d in dev-flow _lib _shared bin; do
+        ln -s "$plugin_root/$d" "$cache_root/$d"
+    done
+    cd "$ROOT"
+    GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR" run --separate-stderr bash "$cache_root/_shared/scripts/pr-iterate-prerun.sh" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and has("plugin_commit") and .plugin_commit == null'
+
+    GH_STUB_FAIL=1 run --separate-stderr bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and (.plugin_commit | test("^[0-9a-f]{12}$"))'
+}
+
 # ---- (6) 静的 pin ----
 
 @test "(6a) 静的pin: push しない・gh は読み取り（pr view / run list）のみ" {

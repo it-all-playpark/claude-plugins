@@ -30,7 +30,9 @@
 # 再利用した worktree が書けない場合は退避しない（branch がそこで checkout 済み）— ok:false で人間に返す。
 #
 # Output (stdout, JSON 1 行):
-#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, fix_direction?, error?}
+#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, plugin_commit, fix_direction?, error?}
+#   plugin_commit: 実行中の dev-flow plugin の commit（12 桁 hex）。dev-flow-prerun と同じ dev-flow/scripts/plugin-commit.sh で
+#     plugin root から決める（telemetry 記録専用で gate の入力にしない）。決められなければ null（ok:false でも載せる）
 #   fix_direction: --direction のファイルの本文（ok:true で --direction を渡したときだけ載せる）
 #   worktree_status: created / reused / unwritable / error / skipped
 #   skip_worktree: 作成時に取り出せず skip-worktree を付けたパス（worktree-checkout.sh。full checkout できれば []）
@@ -144,6 +146,11 @@ fi
 # 再起動のたびに prerun を通せば新しい値になり、前 run の probe ファイルと衝突しない
 epoch="$(date +%s)"
 
+# plugin_commit: 実行中の dev-flow plugin の commit（12 桁 hex）。telemetry 記録専用で gate の入力にしない。
+# 決められなければ null（fail-open）
+PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+plugin_commit="$(bash "$PLUGIN_ROOT/dev-flow/scripts/plugin-commit.sh" "$PLUGIN_ROOT" 2>/dev/null)" || plugin_commit=""
+
 repo="$REPO_ARG"
 url=""
 head_ref=""
@@ -178,6 +185,7 @@ emit() {
         --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
         --argjson security_review "$security_review" \
         --argjson fix_direction "${DIRECTION_JSON:-null}" \
+        --arg plugin_commit "$plugin_commit" \
         --arg error "$error" \
         '
         def nz: if . == "" then null else . end;
@@ -185,7 +193,8 @@ emit() {
          head_sha: ($head_sha | nz), repo: ($repo | nz), epoch: $epoch,
          worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree,
          prior_devflow: $prior_devflow, prior_summary: $prior_summary, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds,
-         security_review: $security_review}
+         security_review: $security_review,
+         plugin_commit: (if ($plugin_commit | test("^[0-9a-f]{12}$")) then $plugin_commit else null end)}
         + (if $ok and $fix_direction != null then {fix_direction: $fix_direction} else {} end)
         + (if $error == "" then {} else {error: $error} end)
         '

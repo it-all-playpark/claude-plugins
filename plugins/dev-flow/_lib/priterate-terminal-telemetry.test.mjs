@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { PLUGIN_VERSION } from './plugin-version.mjs';
-import { makePrIterateSandbox, prIterateRounds, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { makePrIterateSandbox, prIterateRounds, runWorkflowCapture, securityScopeResponse } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude/workflows/pr-iterate.js'), 'utf8');
@@ -111,9 +111,14 @@ test('[terminal-telemetry] 即 lgtm: fix_terminal_reason null / terminal_path=re
   const telemetry = extractJournalPayload(journalCall.prompt).telemetry;
   assert.deepEqual(
     Object.keys(telemetry).sort(),
-    ['ci_wait_ceiling_seconds', 'ci_wait_seconds', 'iterate_status', 'merge_tier', 'plugin_commit', 'plugin_version', 'review_model_config', 'security_review_rounds', 'security_review_target'],
+    ['ci_wait_ceiling_seconds', 'ci_wait_seconds', 'fix_terminal_reason', 'iterate_caller', 'iterate_status', 'merge_tier', 'plugin_commit', 'plugin_version', 'review_model_config', 'security_review_rounds', 'security_review_status', 'security_review_stop_reason', 'security_review_target'],
     `pr-iterate の成功 telemetry キーが想定外: ${JSON.stringify(telemetry)}`,
   );
+  // 値の無いキーは null のまま handoff に載せる（Stop hook が null を落とす — plugin_commit 以外はキー欠落になる）
+  assert.equal(telemetry.fix_terminal_reason, null, 'lgtm 終端の fix_terminal_reason は null');
+  assert.equal(telemetry.security_review_stop_reason, null, '前提チェックで止めていない run の stop_reason は null');
+  assert.equal(telemetry.security_review_status, 'cleared');
+  assert.equal(telemetry.iterate_caller, 'direct', 'nested 無しの直接起動は direct');
   // args.security_review の無い単体起動は対象（fail-closed）で、LGTM の前に security-reviewer を 1 回 spawn する
   assert.equal(telemetry.security_review_target, true);
   assert.equal(telemetry.security_review_rounds, 1);
@@ -123,7 +128,44 @@ test('[terminal-telemetry] 即 lgtm: fix_terminal_reason null / terminal_path=re
   assert.equal(telemetry.iterate_status, 'lgtm');
   assert.equal(telemetry.review_model_config, 'opus', 'pr-reviewer は override 無し → frontmatter の opus');
   assert.equal(telemetry.plugin_version, PLUGIN_VERSION);
-  assert.equal(telemetry.plugin_commit, null, '単体起動は prerun を経ないので plugin_commit は null');
+  assert.equal(telemetry.plugin_commit, null, 'nested 無しの直接起動は plugin_commit を受けないので null');
+});
+
+test('[terminal-telemetry] fix_failed 終端は journal handoff の telemetry に fix_terminal_reason を載せる', async () => {
+  const { ctx, getAgentCalls } = makeSandbox({
+    reviewerStub: () => ({ decision: 'request-changes', issues: [{ severity: 'major', topic: 't1', description: 'd', suggestion: 's' }], summary: 'ng' }),
+    fixSequence: [null, null],
+  });
+  const { result, error } = await runPrIterateCapture(src, ctx);
+  assertNoCrash(error);
+  assert.equal(result?.status, 'fix_failed');
+  const telemetry = extractJournalPayload(getAgentCalls().find((c) => c.label === 'journal-log').prompt).telemetry;
+  assert.equal(telemetry.iterate_status, 'fix_failed');
+  assert.equal(telemetry.fix_terminal_reason, 'null_after_retry');
+});
+
+test('[terminal-telemetry] security review の前提チェックで止めた run は security_review_status / security_review_stop_reason を返り値と同じ値で載せる', async () => {
+  const { ctx, calls } = makePrIterateSandbox({ overrides: { 'security-scope#1': () => securityScopeResponse({ head: '' }) } });
+  const { result, error } = await runPrIterateCapture(src, ctx);
+  assertNoCrash(error);
+  assert.equal(result?.status, 'security_unresolved');
+  const telemetry = extractJournalPayload(calls.find((c) => c.label === 'journal-log').prompt).telemetry;
+  assert.equal(telemetry.security_review_status, 'unresolved');
+  assert.equal(telemetry.security_review_stop_reason, 'head_unknown');
+  assert.equal(telemetry.security_review_status, result.security_review.status);
+  assert.equal(telemetry.security_review_stop_reason, result.security_review.stop_reason);
+});
+
+test('[terminal-telemetry] iterate_caller は args.nested.caller（dev-flow / standalone）、nested 無しは direct', async () => {
+  const nested = (caller) => ({ pr: 5, nested: { caller, cwd: '/tmp/wt', head_ref: 'feature/x', base_ref: 'main' } });
+  for (const [args, expected] of [[nested('dev-flow'), 'dev-flow'], [nested('standalone'), 'standalone'], ['5', 'direct']]) {
+    const { ctx, calls } = makePrIterateSandbox({ args });
+    const { error } = await runPrIterateCapture(src, ctx);
+    assertNoCrash(error);
+    const journal = calls.find((c) => c.label === 'journal-log');
+    assert.ok(journal, `${expected}: journal-log が無い: ${calls.map((c) => c.label).join(', ')}`);
+    assert.equal(extractJournalPayload(journal.prompt).telemetry.iterate_caller, expected);
+  }
 });
 
 test('[terminal-telemetry] CI failed→fix→passed の 2 round: history に synthetic ci:: finding / terminal_path=review、per-round 投稿なしで終端 post-summary に反映される', async () => {

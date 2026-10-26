@@ -11,8 +11,9 @@ dev-flow.js / pr-iterate.js は run の終端（成功・失敗・abort）で te
 `~/.claude/logs/stop-devflow-telemetry.log` に記録され pending file が残るため記録漏れに気づける。
 
 telemetry の読み手は `dev-flow-health` だけ。`health-report.sh` がプログラムから読むのは `plugin_commit` と、HOLD の run の `hold_reason_codes` / `hold_ac_human_judged` / `iterate_status`、
+非 LGTM の細目の `fix_terminal_reason` / `security_review_status` / `security_review_stop_reason`、pr-iterate entry の `iterate_caller`、
 LLM ステップは原因推定のときに該当 run の telemetry を手で読む。読み手の無いキーは書かない — 書くキーは下の
-19 個に限り、`_lib/telemetry-keys.test.mjs` が workflow の telemetry object literal（成功・失敗・abort）と
+23 個に限り、`_lib/telemetry-keys.test.mjs` が workflow の telemetry object literal（成功・失敗・abort）と
 VM 実行の handoff の両方で pin する。キーを足すときは読み手を先に決め、この一覧と同テストを同時に更新する。
 いずれも記録専用で、gate・merge tier・ledger・shape 判定の入力にはしない（軸A 非抵触）。
 
@@ -39,6 +40,10 @@ VM 実行の handoff の両方で pin する。キーを足すときは読み手
 | `hold_ac_human_judged` | dev-flow | 成功（merge tier が `HOLD` の run のみ） | 人手 AC 待ちの未達 AC に、文面で人手になった AC（`HUMAN_AC_PATTERNS` に当たる・`classifyAcScope` が `external`）ではない AC が 1 件以上あるか（boolean） |
 | `security_review_target` | pr-iterate | 成功（nested・単体起動とも） | 敵対的 security review の対象だったか（boolean。起動時の判定 `args.security_review` と LGTM 前の `security-scope#i` のどれか 1 回でも対象なら true、`args.security_review` が無い run も true） |
 | `security_review_rounds` | pr-iterate | 成功（nested・単体起動とも） | security-reviewer を spawn した回数（LGTM の候補になった round ごとに 1 回） |
+| `security_review_status` | dev-flow / pr-iterate | 成功 | pr-iterate の返り値 `security_review.status`（`not_target` / `cleared` / `unresolved` / `not_run`）。dev-flow は nested pr-iterate が返した値で、返さない run（lite の clean 終端）ではキー欠落 |
+| `security_review_stop_reason` | dev-flow / pr-iterate | 成功 | pr-iterate の返り値 `security_review.stop_reason`（review の前提チェックで止めた理由の固定 code。`reviewer_context_changed` 等）。止めていない run ではキー欠落 |
+| `fix_terminal_reason` | dev-flow / pr-iterate | 成功 | pr-iterate の返り値 `fix_terminal_reason`（`fix_failed` の分岐 `null_after_retry` / `applied_false` / `commit_unensured`）。`fix_failed` 以外の run ではキー欠落 |
+| `iterate_caller` | pr-iterate | 成功（nested・単体起動とも） | pr-iterate の起動元。`args.nested.caller` の `dev-flow` / `standalone`、nested 無しの直接起動は `direct` |
 
 nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の entry が 1 件ずつ残る。集計は dev-flow entry
 を使う。
@@ -74,7 +79,8 @@ nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の e
 - `plugin_commit`: 「どの commit から失敗し始めたか / 修正後に再発していないか」を割り出すための値。
   `dev-flow-prerun` が `dev-flow/scripts/plugin-commit.sh` で plugin root から決め（cache mode はディレクトリ名、
   link mode は checkout の HEAD）、`args.setup.plugin_commit` → nested pr-iterate へは `args.plugin_commit` で渡る。
-  単体起動の pr-iterate は `pr-iterate-prerun` が plugin_commit を出さないので `null`。12 桁 hex 以外は `normalizePluginCommit`
+  単体起動の pr-iterate は `pr-iterate-prerun` が同じ `plugin-commit.sh` で決め、wrapper が `args.plugin_commit` で渡す。
+  nested 無しで Workflow を直接起動した run は `null`。12 桁 hex 以外は `normalizePluginCommit`
   （`_lib/plugin-version.mjs`）が `null` に倒し run を止めない。キー欠落は本キー導入前の entry を意味する。
 - `final_test_flaky`: Final reconcile が `_lib/final-test-rerun.mjs` で flake と判定した記録（issue #865）。test#final が
   red で `failed_files` が非空のとき、そのファイルだけを `run-tests <WT> --files …` で 1 回流し直し、green なら
@@ -97,6 +103,12 @@ nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の e
   `duration_seconds`（dev-flow entry）を比べ、`security_review_rounds` が多い run の型（critical/major が残り続ける・
   `security_unresolved` で終わる）を原因推定で読む。指摘の件数・本文は telemetry に書かない（件数は返り値の
   `security_review`、本文は fix の prompt にだけ渡る）。
+- `security_review_status` / `security_review_stop_reason` / `fix_terminal_reason` / `iterate_caller`: pr-iterate が LGTM に
+  届かなかった run（`security_review_unresolved` の HOLD と `iterate_status` の `stuck` / `fix_failed` / `max_reached` /
+  `security_unresolved`）を、`health-report.sh` が止めた理由・fix の終わり方の細目で signature に分けるための値。
+  ハーネスのループで止まった run（`stop=reviewer_context_changed` 等）と本物の指摘で止まった run を別の signature にする。
+  `iterate_caller` が `dev-flow` の pr-iterate entry は signature にも resolved の判定にも入れない（その run は dev-flow
+  entry の HOLD の側で数える）。値が無いとき workflow は `null` を handoff に載せ、Stop hook が落とす（キー欠落）。
 
 ## 失敗・abort entry
 

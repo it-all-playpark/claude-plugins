@@ -30,7 +30,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 1. **prerun 実行**: launch dir（リポジトリルートか、その worktree）で Bash 1 コマンドとして
    `pr-iterate-prerun <PR>` を実行する（PR が cwd の repo と別なら `--repo owner/name` を付ける）。前置形
    （`cd X && ...` / `VAR=x ...` / `bash <path>` 等）は使わず、bare 名を先頭トークンにする。stdout の
-   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, fix_direction?, error?}`）
+   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, plugin_commit, fix_direction?, error?}`）
    をそのまま保持する。
 
    `/pr-iterate <PR> --direction <file>` で起動されたら、prerun に `--direction <file>` を付ける（`<file>` は人が渡した
@@ -65,6 +65,8 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      `security_review`（`{target, reasons, reviewer_context_changed, reviewer}`）に載せる。判定できないときは `target:true`・
      `reviewer_context_changed:true`。`reviewer` は review を回す CLI の opt-in（`"dev-flow".security_reviewer`。base branch の
      `skill-config.json` か user 設定から読み、PR head の設定は読まない。無ければ `"claude"`）
+   - 実行中の dev-flow plugin の commit（12 桁 hex）を `dev-flow-prerun` と同じ方法で決め、`plugin_commit` に載せる
+     （決められなければ null）。journal entry の世代の記録専用
    - `--direction` を渡したときだけ、そのファイルの本文を加工せずに `fix_direction` に載せる（`ok:false` では載せない）
 
    結果に応じて分岐する:
@@ -79,7 +81,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    worktree なら不要）。別の worktree に入っている場合は先に `ExitWorktree`（worktree は keep）で launch dir へ
    戻ってから入る。
 
-3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`prior_summary`・`ci_wait_ceiling_seconds`・`security_review`・`fix_direction` の値は prerun 出力をそのまま転記し、加工・要約しない:
+3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`prior_summary`・`ci_wait_ceiling_seconds`・`security_review`・`plugin_commit`・`fix_direction` の値は prerun 出力をそのまま転記し、加工・要約しない:
 
    ```
    Workflow({ name: 'dev-flow:pr-iterate-run', args: {
@@ -90,9 +92,13 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      prior_summary: <prior_summary>,
      ci_wait_ceiling_seconds: <ci_wait_ceiling_seconds>,
      security_review: <security_review>,
+     plugin_commit: <plugin_commit>,
      fix_direction: <fix_direction>,
    } })
    ```
+
+   - `plugin_commit` は null でもそのまま渡す（workflow は journal entry の `telemetry.plugin_commit` に載せる。dev-flow-health が
+     失敗し始めた commit と直った後の再発を割り出すのに使う）
 
    - `fix_direction` は prerun 出力の `fix_direction` を加工・要約・翻訳せずにそのまま転記する。prerun 出力に `fix_direction` が
      無ければキーごと省く。workflow はそれを「人が決めた修正方針」としてその run のすべての fix#i（review・CI・security review の
