@@ -44,9 +44,24 @@ run_tests() {
     [ "$status" -eq 0 ]
     echo "$JSON" | jq -e '.status == "passed" and .tests == "passed" and .green == true'
     echo "$JSON" | jq -e --arg a "$WT/tests/run-a.sh" --arg b "$WT/tests/run-b.sh" \
-        '.scripts == [{path: $a, exit: 0, launch_failed: false}, {path: $b, exit: 0, launch_failed: false}]'
+        '[.scripts[] | del(.log)] == [{path: $a, exit: 0, launch_failed: false}, {path: $b, exit: 0, launch_failed: false}]'
     echo "$JSON" | jq -e '.failed_files == [] and (.epoch | type == "number")'
     [ -f "$WT/tests/b.marker" ]
+}
+
+@test "scripts[].log: 各 script の stdout / stderr を書いた worktree 外の実在ファイルの絶対パス" {
+    make_script run-a.sh 'echo "ok 1 alpha-out"; echo "alpha-err" >&2'
+    make_script run-b.sh 'echo "not ok 1 beta-out"; exit 1'
+    run_tests
+    log_a=$(jq -r '.scripts[0].log' <<< "$JSON")
+    log_b=$(jq -r '.scripts[1].log' <<< "$JSON")
+    [[ "$log_a" == /* && "$log_b" == /* && "$log_a" != "$log_b" ]]
+    [ -f "$log_a" ] && [ -f "$log_b" ]
+    [[ "$log_a" != "$WT"/* && "$log_a" != "$(cd "$WT" && pwd -P)"/* ]]
+    grep -qx 'ok 1 alpha-out' "$log_a"
+    grep -qx 'alpha-err' "$log_a"
+    grep -qx 'not ok 1 beta-out' "$log_b"
+    ! grep -q 'alpha' "$log_b"
 }
 
 @test "exit 1: 1 本でも exit 1 なら failed / green false、残りの script も実行する" {
@@ -165,7 +180,7 @@ EOF
     export PATH="$STUB_DIR:$PATH"
     run_tests
     echo "$JSON" | jq -e '.status == "passed" and .tests == "passed" and .green == true'
-    echo "$JSON" | jq -e '.scripts == [{path: "npm test", exit: 0, launch_failed: false}]'
+    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "npm test", exit: 0, launch_failed: false}]'
     [ "$(cat "$TMP_DIR/npm.log")" = "$WT test" ]
 }
 
@@ -176,7 +191,7 @@ EOF
     chmod +x "$STUB_DIR/pnpm"
     export PATH="$STUB_DIR:$PATH"
     run_tests
-    echo "$JSON" | jq -e '.status == "failed" and .scripts == [{path: "pnpm test", exit: 1, launch_failed: false}]'
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
     echo "$JSON" | jq -e '.failed_files == ["src/a.test.ts"]'
 }
 
@@ -188,7 +203,7 @@ EOF
     export PATH="$STUB_DIR:$PATH"
     run_tests
     echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false'
-    echo "$JSON" | jq -e '.scripts == [{path: "pnpm test", exit: 1, launch_failed: true}] and .failed_files == []'
+    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: true}] and .failed_files == []'
     echo "$JSON" | jq -e '.summary | contains("launch failed: pnpm test")'
 }
 
@@ -200,7 +215,7 @@ EOF
     export PATH="$STUB_DIR:$PATH"
     run_tests
     echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false'
-    echo "$JSON" | jq -e '.scripts == [{path: "pnpm test", exit: 1, launch_failed: true}] and .failed_files == []'
+    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: true}] and .failed_files == []'
     echo "$JSON" | jq -e '.summary | contains("launch failed: pnpm test")'
 }
 
@@ -211,7 +226,7 @@ EOF
     chmod +x "$STUB_DIR/pnpm"
     export PATH="$STUB_DIR:$PATH"
     run_tests
-    echo "$JSON" | jq -e '.status == "failed" and .scripts == [{path: "pnpm test", exit: 1, launch_failed: false}]'
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
 }
 
 @test "run-*.sh 無し: pnpm のエラー見出し行が無ければ起動の痕跡が無くても（--silent 等）red のまま" {
@@ -221,7 +236,7 @@ EOF
     chmod +x "$STUB_DIR/pnpm"
     export PATH="$STUB_DIR:$PATH"
     run_tests
-    echo "$JSON" | jq -e '.status == "failed" and .scripts == [{path: "pnpm test", exit: 1, launch_failed: false}]'
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
 }
 
 @test "run-*.sh 無し: フォールバックの exit 126 も起動失敗として error" {
@@ -247,13 +262,13 @@ make_runner_stub() {
     export PATH="$STUB_DIR:$PATH"
     run_tests
     echo "$JSON" | jq -e '.status == "passed" and .green == true'
-    echo "$JSON" | jq -e '.scripts == [{path: "bundle exec rspec", exit: 0, launch_failed: false}]'
+    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "bundle exec rspec", exit: 0, launch_failed: false}]'
     [ "$(cat "$TMP_DIR/calls.log")" = "$WT bundle exec rspec" ]
 
     rm "$TMP_DIR/calls.log"
     printf 'GEM\n  specs:\n    minitest (5.25.1)\n' > "$WT/Gemfile.lock"
     run_tests
-    echo "$JSON" | jq -e '.status == "failed" and .scripts == [{path: "bin/rails test", exit: 1, launch_failed: false}]'
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "bin/rails test", exit: 1, launch_failed: false}]'
     [ "$(cat "$TMP_DIR/calls.log")" = "$WT bin/rails test" ]
 }
 
@@ -263,13 +278,13 @@ make_runner_stub() {
     make_runner_stub "$WT/vendor/bin/phpunit" vendor/bin/phpunit 1
     run_tests
     echo "$JSON" | jq -e '.status == "passed" and .green == true'
-    echo "$JSON" | jq -e '.scripts == [{path: "vendor/bin/pest", exit: 0, launch_failed: false}]'
+    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "vendor/bin/pest", exit: 0, launch_failed: false}]'
     [ "$(cat "$TMP_DIR/calls.log")" = "$WT vendor/bin/pest" ]
 
     rm "$TMP_DIR/calls.log"
     echo '{"require":{"phpunit/phpunit":"^11.0"}}' > "$WT/composer.json"
     run_tests
-    echo "$JSON" | jq -e '.status == "failed" and .scripts == [{path: "vendor/bin/phpunit", exit: 1, launch_failed: false}]'
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "vendor/bin/phpunit", exit: 1, launch_failed: false}]'
     [ "$(cat "$TMP_DIR/calls.log")" = "$WT vendor/bin/phpunit" ]
 }
 
@@ -484,7 +499,7 @@ git_commit() {
     chmod +x "$STUB_DIR/npm"
     export PATH="$STUB_DIR:$PATH"
     run_tests_base HEAD
-    echo "$JSON" | jq -e '.status == "passed" and .scripts == [{path: "npm test", exit: 0, launch_failed: false}]'
+    echo "$JSON" | jq -e '.status == "passed" and [.scripts[] | del(.log)] == [{path: "npm test", exit: 0, launch_failed: false}]'
     [ "$(cat "$TMP_DIR/env.out")" = "$(printf 'unset\nunset')" ]
 }
 
@@ -493,7 +508,7 @@ git_commit() {
     make_script run-b.sh 'echo "not ok 1 b"; echo "# (in test file '"$WT"'/plugins/b.bats, line 2)"; exit 1'
     init_repo
     echo new > "$WT/added.txt"
-    normalize='del(.epoch) | .summary |= gsub("log: [^)]*"; "log: X")'
+    normalize='del(.epoch) | .summary |= gsub("log: [^)]*"; "log: X") | .scripts[].log = "X"'
     run_tests
     without=$(jq -c "$normalize" <<< "$JSON")
     run_tests_base HEAD

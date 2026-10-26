@@ -3,6 +3,14 @@
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
 
+// テストログ（run-tests が各 script の出力を残したファイル）が渡されたときの指示。eval#N（Validate と同じ tree）と
+// final-ac-reconcile（test#final と同じ tree）の prompt に、ログがあるときだけ testLogsPromptBlock が入れる。
+// 同じ tree で決定論ランナーが実行済みのテストファイルを evaluator が再実行すると、重い bats を触る run で
+// 評価の所要時間の大半を占めるため、ログの行を根拠にさせる。ログに無いファイルは実行させる（判定材料を減らさない）。
+export const TEST_LOG_REUSE = 'テストログに AC に関係するテストファイルの実行結果が載っていれば、そのファイルは再実行せず、'
+  + 'ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とせよ。'
+  + 'ログに載っていない AC に関係するテストファイルだけを実行せよ。ログが読めなければ AC に関係するテストファイルを実行せよ。'
+
 export const EVALUATOR_OPERATIONAL_CONTRACT = {
   critical_resolutions: [
     'critical_resolutions 契約:',
@@ -54,6 +62,7 @@ export const EVALUATOR_OPERATIONAL_CONTRACT = {
     '- ac_index は渡された AC の index をそのまま返す。AC の追加・分割・言い換え・index の欠落や重複は禁止。',
     '- 新規 finding の報告・feedback の付与・コード修正・追加検証 loop の要求は禁止（出力は ac_results のみが使われる）。',
     '- satisfied:true / false のいずれでも非空 evidence 必須（file:line / テスト名 / 実行結果）。index 不完全・evidence 欠落は出力全体が unavailable 扱いとなり merge tier が HOLD になる。',
+    '- prompt に「テストログ」が渡された場合、ログに実行結果が載っている AC 関連テストファイルは再実行せず、ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とする。ログに載っていない AC 関連テストファイルだけを実行する。テストログが渡されない・読めない場合は AC に関係するテストファイルを実行して根拠にする。',
     '- prompt に「final 再評価対象 item 一覧」が渡された場合、各 item を fix 後の最終 PR tree で再検証し、item_resolutions:[{id, resolution, evidence}] で全件返す。resolution は resolved（指摘内容が最終 tree で解消されている — revert / 修正済み等）/ ci_delegated（ローカルでは実行不能だが PR CI が同等の検証を実行する — build / compose / e2e 等）/ unresolved の 3 値のみ。',
     '- id は渡された id をそのまま返す。resolved / ci_delegated は具体的 evidence 必須（commit / file:line / 該当 CI check 名）。evidence のない resolved / ci_delegated は無視され未解消のまま表示される。',
     '- item_resolutions は表示専用で checked / merge tier / HOLD 判定は変えない（ESCALATE は解消済みでも HOLD のまま人がマージ可否を判断する）。',
@@ -95,11 +104,32 @@ export const EVAL_FULL_SUITE = '全件スイート（tests/run-*.sh・run-all-ba
 // eval prompt に足す Validate の結果と、全件スイートを走らせない指示。呼び出し側は Validate 終了時と
 // eval 直前の diff hash が一致するとき（Validate と同じ tree）だけ足す。Validate が返した値をそのまま渡し、
 // 「全件 green」とは断定しない — Validate は変更に関係するテストだけを回すことがある。
+// ログがあるときは、AC に関係するテストファイルを一律に実行させる指示の代わりに testLogsPromptBlock を入れる。
 export function validateResultPromptBlock(val) {
   const v = val ?? {}
+  const logs = testLogsPromptBlock(v)
   return `validate_result（Validate がこの tree で実行したテストの結果。Validate の返り値をそのまま渡す）:\n`
     + `${JSON.stringify({ green: v.green ?? null, tests: v.tests ?? null, summary: v.summary ?? '' })}\n`
-    + `${EVAL_FULL_SUITE}は走らせず、AC に関係するテストファイルだけを実行して根拠にせよ。\n`
+    + (logs
+      ? `${EVAL_FULL_SUITE}は走らせない。\n${logs}`
+      : `${EVAL_FULL_SUITE}は走らせず、AC に関係するテストファイルだけを実行して根拠にせよ。\n`)
+}
+
+// run-tests の返り値（GREEN schema）の scripts[] から、出力ログのパスを持つ要素を {path, log} で返す。
+// tests:'error'（起動失敗）はテストの実行結果を含まないので返さない。log が非空 string でない要素は落とす。
+export function testRunLogs(res) {
+  if (!res || res.tests === 'error' || !Array.isArray(res.scripts)) return []
+  return res.scripts
+    .filter((s) => s && typeof s.log === 'string' && s.log.length > 0)
+    .map((s) => ({ path: typeof s.path === 'string' ? s.path : null, log: s.log }))
+}
+
+// テストログのパスと TEST_LOG_REUSE。ログが 1 件も無ければ空文字（呼び出し側は再実行抑止の指示を入れない）。
+export function testLogsPromptBlock(res) {
+  const logs = testRunLogs(res)
+  if (logs.length === 0) return ''
+  return `テストログ（run-tests が各 script の出力を残したファイル。Read / Grep で読む）:\n${JSON.stringify(logs)}\n`
+    + `${TEST_LOG_REUSE}\n`
 }
 
 // concern_resolutions[].resolution の closed enum（issue #614）。out-of-enum / 旧 boolean キー resolved は

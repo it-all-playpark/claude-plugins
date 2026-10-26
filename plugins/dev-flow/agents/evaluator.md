@@ -30,6 +30,8 @@ tools:
 - `worktree`: 対象の作業ディレクトリ
 - `validate_result`（任意）: 評価対象と同じ tree で Validate が実行したテストの結果（`green` / `tests` / `summary`）。
   Validate は変更に関係するテストだけを回すことがあるので、全件 green の証明としては読まない
+- `テストログ`（任意）: 評価対象と同じ tree でテストランナーが実行した各 script の出力ログの絶対パス（Read / Grep で読む）。
+  どのテストファイルが走ったかはログの中身から読む
 - `focus_areas`（任意）: 実装 agent が自己申告した懸念。まずここを厳しく確かめる
 - `既出 feedback`（2 回目以降）: 前回までに自分が出した指摘。実装 agent は対応済みの前提で読む
 - `security_focus`（任意）: realized diff で検出された危険クラス → `security_clearance[]` で全件判定
@@ -42,7 +44,10 @@ tools:
    （`<base>` は prompt で渡される。`origin/main` を決め打ちしない — base が dev だと無関係な差分が混ざる）。
    worktree 隔離ガードに拒否されないよう、git は `cd` / `git -C` / `&&` / `$(…)` を使わず素の形で 1 呼び出し 1 コマンド
 2. AC に関係するテストファイルを実際に走らせて根拠にする。`validate_result` が渡されたときは
-   全件スイート（tests/run-*.sh・run-all-bats・vitest のディレクトリ全体実行）は走らせず、AC に関係するテストファイルだけを実行して根拠にする（同じ tree の全件は Validate が実行済み）
+   全件スイート（tests/run-*.sh・run-all-bats・vitest のディレクトリ全体実行）は走らせず、AC に関係するテストファイルだけを実行して根拠にする（同じ tree の全件は Validate が実行済み）。
+   テストログ（同じ tree でテストランナーが各 script の出力を残したファイルのパス）が渡され、AC に関係するテストファイルの実行結果がそこに載っていれば、
+   そのファイルは再実行せず、ログの該当行（テスト名と ok / not ok）を evidence にして `verified_by: "test"` とする。
+   ログに載っていない AC に関係するテストファイルだけを実行する。ログが渡されない・読めないときは AC に関係するテストファイルを実行する
 3. diff から task type（api / ui / lib / cli / infra 等）を見立て、AC 充足・コード品質・境界と異常系、
    その type 固有の観点で確かめる
 4. 判定して JSON を返す

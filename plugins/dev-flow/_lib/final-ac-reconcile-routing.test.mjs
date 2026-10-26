@@ -18,6 +18,8 @@
 //        + result.final_unsatisfied_ac===true + critical AC-FINAL-2 append が reasons の
 //        'ledger 未収束' に反映
 //   (r6) fixes=1 + test#final red → 'final-ac-reconcile' 不発 + skipped + HOLD（'final test red'）
+//   (r7) fixes=1 + test#final green → prompt に test#final の tests / green・各 script のログパス・再実行しない指示
+//   (r8) fixes=1 + test#final error（CI 委譲）/ red の flake 判定 → prompt にログパスも再実行しない指示も入らない
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -26,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
 import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
+import { TEST_LOG_REUSE } from './evaluator-contract.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -273,4 +276,48 @@ test("[final-ac-reconcile] (r6) fixes=1 + test#final red → final-ac-reconcile 
 
   // AC 判定が stale であることの証拠: final test red により final-ac-reconcile 自体が不発
   // （返り値 final_ac_reconcile:'skipped'）+ 返り値 merge_tier===HOLD（上で確認済み）
+});
+
+// ============================================================
+// (r7)〜(r8) test#final のログを final-ac-reconcile に渡し、同じ tree で実行済みのテストを再実行させない（issue #1144）
+// ============================================================
+
+const FINAL_LOG = '/tmp/run-tests-Zz99/0.log';
+const FINAL_GREEN_LOGS = {
+  tests: 'passed', green: true, summary: 'passed: /tmp/wt/tests/run-all-bats.sh',
+  scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: FINAL_LOG }],
+};
+
+test('[final-ac-reconcile] (r7) test#final green → prompt に test#final の tests / green・ログパス・再実行しない指示が入る', async () => {
+  const { ctx, calls } = makeSandbox({ fixesApplied: 1, overrides: { 'test#final': FINAL_GREEN_LOGS } });
+  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  assertNoCrash(error, 'r7');
+  const p = calls.find((c) => c.label === 'final-ac-reconcile')?.prompt ?? '';
+  assert.ok(p.includes(`test#final 結果: ${JSON.stringify({ finalReconcile: 'reverified', finalTestGreen: true, tests: 'passed', green: true })}`), `(r7) test#final の tests / green が無い: ${p.slice(0, 600)}`);
+  assert.ok(p.includes(FINAL_LOG), '(r7) test#final のログパスが無い');
+  assert.ok(p.includes(TEST_LOG_REUSE), '(r7) ログの行を根拠にして再実行しない指示が無い');
+});
+
+test('[final-ac-reconcile] (r8) test#final が error（CI 委譲）・red の flake 判定 → prompt にログパスも再実行しない指示も入らない', async () => {
+  const sha = 'a'.repeat(40);
+  const rollup = [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }];
+  for (const [name, overrides] of [
+    ['tests:error → ci_verified', {
+      'reconcile-sync': { ok: true, head: sha },
+      'test#final': { tests: 'error', green: false, summary: 'launch failed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 127, launch_failed: true, log: FINAL_LOG }] },
+      'ci-final': { ok: true, headRefOid: sha, statusCheckRollup: rollup },
+    }],
+    ['red → 単体再実行 green（flake）', {
+      'test#final': { tests: 'failed', green: false, summary: 'not ok 1 x', failed_files: ['plugins/a.bats'], scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 1, launch_failed: false, log: FINAL_LOG }] },
+      'test#final-rerun': { tests: 'passed', green: true, summary: 'passed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-Zz99/rerun.log' }] },
+    }],
+  ]) {
+    const { ctx, calls } = makeSandbox({ fixesApplied: 1, overrides });
+    const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+    assertNoCrash(error, `r8 ${name}`);
+    const fac = calls.find((c) => c.label === 'final-ac-reconcile');
+    assert.ok(fac, `(r8) ${name}: final-ac-reconcile が呼ばれていない (labels: ${calls.map((c) => c.label).join(', ')})`);
+    assert.ok(!fac.prompt.includes(TEST_LOG_REUSE), `(r8) ${name}: 再実行しない指示が入っている`);
+    assert.ok(!fac.prompt.includes('/tmp/run-tests-Zz99/'), `(r8) ${name}: ログパスが入っている`);
+  }
 });
