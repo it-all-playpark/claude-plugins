@@ -294,7 +294,7 @@ PR → pr-reviewer 1-pass の縮約経路（lite route、判断系 agent 呼び�
 hit で `runEval=true` になったケースは lite ゲート条件を満たさないため lite に入らず、micro であっても
 現行の security path（Evaluate 強制実行）へ強制昇格する（軸A invariant 不変）。
 
-**敵対的 security review**（信頼境界をまたぎうる PR を既定で通す gate。正当化クラスは justification-classes.md）:
+**敵対的 security review**（信頼境界をまたぎうる PR を既定で通す gate。正当化クラスは `.claude/rules/dev-flow.md`「正当化クラス（W7）」、cwd の扱いは capability-bound.md）:
 
 **守る要件と境界**（この gate と、それを支える hook・script はこの 3 つだけを守る。足す検査はどれかに対応させる）:
 

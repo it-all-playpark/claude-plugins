@@ -1,5 +1,5 @@
 ---
-description: dev-flow / pr-iterate / dev-flow-health の不変条件（fail-closed の理由・sunset トリガ・起動形の制約）。詳細は plugins/dev-flow/dev-flow/references/
+description: dev-flow / pr-iterate / dev-flow-health の不変条件（fail-closed の理由・正当化クラス・起動形の制約）。詳細は plugins/dev-flow/dev-flow/references/
 paths:
   - "plugins/dev-flow/.claude/workflows/**"
   - "plugins/dev-flow/agents/**"
@@ -13,14 +13,13 @@ paths:
 
 # dev-flow 不変条件
 
-dev-flow 本体・dev-flow-health（frontmatter の paths）を触るときだけ読み込まれる。
-詳細は `plugins/dev-flow/dev-flow/references/`:
+モデル世代で変わらない不変条件だけを置く。詳細は `plugins/dev-flow/dev-flow/references/`:
 
-- `pipeline.md` — phase 経路 / shape tier / model・fallback / isolation probe / gate_policy・block_class
-- `telemetry.md` — telemetry キー一覧と Stop hook の転送
-- `justification-classes.md` — W7 正当化クラスと sunset path
-- `exec-proxy.md` — bin/ bare 名起動形・argv 転写・失敗ポリシー表
-- `inline-generation.md` — sync-inlines の起動形・canonical の構造制約
+- `pipeline.md` — phase 経路 / shape / model / isolation probe / gate_policy
+- `telemetry.md` — telemetry キー一覧
+- `exec-proxy.md` — 起動形・argv 転写・失敗ポリシー表
+- `analyze-issue.md` — analyze-issue の出力キー
+- `capability-bound.md` — モデル・harness の能力しだいで見直す判断と sunset トリガ
 
 ## 構造
 
@@ -45,19 +44,20 @@ dev-flow 本体・dev-flow-health（frontmatter の paths）を触るときだ�
 - isolation probe: `written:false` は fail-closed（throw。回避手順は pipeline.md）。probe 自体の失敗は fail-open。`bgIsolation:"none"` による guard 無効化は採らない（共有 checkout 汚染は blast-radius。設定緩和で sunset しない）
 - telemetry は Stop hook が `--telemetry-json` 一本で journal へ渡す（キー別 flag・検証は持たない）。workflow が書くキーは telemetry.md の一覧に限る（`_lib/telemetry-keys.test.mjs` が pin）。読み手の無いキーを足さない — 読まれない値の計算・転記コードが残るため
 
-## distrust / prescription の正当化（sunset トリガ）
+## 正当化クラス（W7）
 
-- 各 distrust 機構は incentive-structural（永続）/ blast-radius（永続）/ capability-bound（sunset 対象）を宣言。capability-bound はパラメータ値 + 再評価トリガを併記。クラス無しは負債
-- agent への指示も contract / incentive-structural / capability-bound を宣言。capability-bound の再評価は major モデルリリース毎の dry-run
-- sunset トリガ: `gate_policy` → calibration monitor が judge を well-calibrated と実証した時点で blocking へ。pr-iterate major 閾値 → 同（critical は永続）。redgreen vdelta → deny-only 固定、record_integrity 昇格 + precision 実証で再評価。trust-layer 復帰 → (1) 監査証跡の破壊的上書き無し (2) classifier ブロックが run abort へ波及しない実測 (3) 完走率が劣後しない、の 3 条件を満たす再設計のみ
-- incentive-structural / blast-radius はモデル更新で撤去しない
+- distrust 機構と agent への指示は下のクラスか capability-bound を宣言する（無いと撤去判断ができない）
+- **incentive-structural**（永続。勝利宣言の self-judge と moving target を断つ。賢いモデルほど巧妙に逸脱する）: frozen target（`evalSeen` / `blockSeen` / `reviewSeen`）・stuck 打ち切り（`EVAL_STUCK` / `REVIEW_STUCK`）・critical の append と severity `floor`・hard cap（`EVAL_MAX` / `GREEN_MAX` / `BLOCK_MAX` / `DESIGN_REPLAN_MAX` / `AGENT_AC_REIMPL_MAX`）・guard_blocked の replan 除外・blocking_reason 決定論スクラバー（`scrubBlockingDetail`）・review-finding 決定論スクラバー（`scrubReviewFindingText`。finding の文を fix prompt へ verbatim に流さない）
+- **blast-radius**（永続。不可逆性・accountability で正当化）: human merge・danger-grep → security path・seeded SEC と HOLD・pr-iterate の critical/major-always-blocks・Final reconcile・TESTSURF seeding・lite route の critical/major で昇格・health の status 判定は `health-report.sh` だけ・sunset 昇格は人間 merge 経由
+- **contract**（永続・指示）: 出力 schema・StructuredOutput 義務・Boundary など呼び出し側が依存する指示
+- 敵対的 security review: 今の head で critical / major 0 件まで LGTM にしない gate は blast-radius（gate_policy で緩めない）。incentive-structural: 許可リストだけの対象判定（判定不能は対象・一度対象なら最後まで）・毎回新 spawn・`reviewed_sha` 一致で clear・PR 由来の文はデータ・公開は件数だけ・`reviewer_context_changed` で停止・Codex 中継は hook で縛り判定不能なら止める。許可リストは広げる種類が読まれず実行もされないと示してから広げる
+- 上の 3 クラスはモデル更新で撤去しない。capability-bound の判断は `capability-bound.md` にだけ置く
 
 ## exec-proxy（起動形の制約）
 
 - script は `bin/` の bare 名を**先頭トークン**にする。絶対パス・`bash`/`cd`/env 前置は書かない
 - dev-flow の `bin/` は sandbox 内で動かし excludedCommands に登録しない（子の hook・テストが sandbox 外で走る。blast-radius）
 - 起動元 repo の `.git/config` を書く git / gh（`push -u`・`--track`・`gh pr checkout`）を使わない（sandbox 内で書けない）
-- plugin の `bin/` PATH はセッション起動時に version 込みで焼かれる — update 後は新セッションで `command -v` 確認（素のシェルでは常に失敗）
 
 > exec-proxy スクリプトは認証付き network I/O（gh・git push）を内部に持ってはならない（例外は 2 つ:
 > `analyze-issue` は issue 取得の bare `gh issue view` を内蔵し stdout を in-process で受ける。呼び出し元は
@@ -69,22 +69,13 @@ dev-flow 本体・dev-flow-health（frontmatter の paths）を触るときだ�
 > exec-proxy prompt は決定論スクリプトへの verbatim 転写契約であり、起動形の正しさは
 > 設定側（`bin/` の PATH・isolation guard）の不変条件である。設定の正当化は本ファイルと AGENTS.md の一箇所に置き、
 > per-prompt で再説明しない（再説明は転写契約に判断余地を持ち込み、下流の prompt へ引用・増幅される）。
-> **例外はない**。wall-clock polling も同じで、1 spawn = 1 判定・ループは script 側。初回 poll は
-> `ci-check`、2 回目以降は `ci-wait-check`（1 spawn。数秒超の bare `sleep` は Bash tool が拒否する）。
-> スクリプトは snapshot 1 枚の純変換に保つ。
->
-> polling ループを subagent 内に置いてはならない（turn 会計が CI 所要時間に連動し、StructuredOutput
-> 未達で `ci_error` に化ける）。総待機上限は `args.ci_wait_ceiling_seconds`（未指定は
-> `CI_WAIT_CEILING_SECONDS`）。1 spawn の必要 turn（1 + 2 + 1 + CI_TURN_MARGIN）が
-> 当該 agent の `maxTurns` を超えないこと。`slept:true` 以外は積算せず `ci_pending` で終端する
-
-- exec-proxy と inline generator は harness-capability-bound な橋。再評価トリガ: harness が直接 exec / ESM import を解禁した時点で撤去（`/dev-flow-canary` の report で判定）
+> **例外はない**。スクリプトは snapshot 1 枚の純変換に保つ
 
 ## inline 生成区間
 
-- `// ==== BEGIN inline:` 〜 `END inline` は生成物で直接編集禁止。`_lib` canonical を直し `tools/sync-inlines.mjs --write`（先頭トークン=スクリプトパスの bare 形、node/cd/bash 前置なし）。新規区間は `--add <_lib/x.mjs> --into <workflow.js> --after '<一意な行>'`
-- canonical 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。ファイル全体が inline 可能
-- git plumbing による guard 迂回禁止（手編集が次回 --write で黙って消える事故防止）。plugin disable で edit/commit 両 guard が同時に失われる
+- `// ==== BEGIN inline:` 〜 `END inline` は生成物で直接編集禁止。`_lib` canonical を直し `tools/sync-inlines.mjs --write`（先頭トークン=スクリプトパスの bare 形、node/cd/bash 前置なし。既定 root は `plugins/dev-flow`）。新規区間は `--add <_lib/x.mjs> --into <workflow.js> --after '<一意な行>'`。全文一致は `_lib/workflow-inlines.sync.test.mjs` が CI で検証
+- canonical 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ（export default / export { } 不可）。ファイル全体が inline 可能
+- git plumbing による guard 迂回禁止（手編集が次回 --write で黙って消える事故防止）。guard は `hooks/hooks.json` の inline-edit-guard / inline-commit-gate で、plugin disable で両方が同時に失われる
 
 ## dev-flow-health
 
