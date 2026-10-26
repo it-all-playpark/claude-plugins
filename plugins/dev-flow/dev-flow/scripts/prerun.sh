@@ -90,7 +90,8 @@ WTLIST_RAW="$(git worktree list --porcelain 2>&1)" || {
     echo "not a git repository (git worktree list failed): ${WTLIST_RAW}" >&2
     exit 2
 }
-ROOT="$(printf '%s\n' "$WTLIST_RAW" | awk '/^worktree /{print substr($0,10); exit}')"
+# here-string で渡す（awk の exit へ pipe すると残りの write が SIGPIPE になり pipefail で非 0 になる）
+ROOT="$(awk '/^worktree /{print substr($0,10); exit}' <<<"$WTLIST_RAW")"
 [[ -n "$ROOT" ]] || { echo "failed to resolve git root from worktree list" >&2; exit 2; }
 
 # git worktree list --porcelain はディレクトリの物理パス (シンボリックリンク解決済み) を報告する
@@ -171,7 +172,8 @@ if FETCH_OUT="$(git -C "$ROOT" fetch origin --quiet 2>&1)"; then
             base_source="origin/dev"
             BASE_OK=true
         else
-            HEAD_REF="$(git -C "$ROOT" ls-remote --symref origin HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2; exit}')"
+            SYMREF_OUT="$(git -C "$ROOT" ls-remote --symref origin HEAD 2>/dev/null)"
+            HEAD_REF="$(awk '/^ref:/{sub("refs/heads/","",$2); print $2; exit}' <<<"$SYMREF_OUT")"
             if [[ -n "$HEAD_REF" ]]; then
                 base="$HEAD_REF"
                 base_source="origin/HEAD"

@@ -90,7 +90,9 @@ deny() {
 contains_marker_line() {
   local text="$1"
   [[ -z $text ]] && return 1
-  printf '%s' "$text" | grep -qE "$MARKER_RE"
+  # here-string で渡す: 早く終わる grep -q へ pipe すると、一致の後ろが 64KB を超えたとき
+  # 残りの write が SIGPIPE になり pipefail で偽（= deny 漏れ）になる
+  grep -qE "$MARKER_RE" <<<"$text"
 }
 
 # needle（old_string）の、file_path 内での一致位置が
@@ -167,7 +169,7 @@ if [[ $TOOL == "Write" ]]; then
   fi
 
   CONTENT=$(echo "$INPUT" | jq -r '.tool_input.content // empty')
-  if [[ -n $CONTENT ]] && echo "$CONTENT" | grep -qE "$MARKER_RE"; then
+  if contains_marker_line "$CONTENT"; then
     deny "$FILE_PATH"
   fi
 

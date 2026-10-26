@@ -308,7 +308,8 @@ for i in "${!TARGETS[@]}"; do
         [[ -n "$p" && "$p" != $'\t' ]] || continue
         FAILED_LIST+="$(to_rel "$p")"$'\n'
     done <<< "$found"
-    fail_lines=$(LC_ALL=C sed $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$log" | LC_ALL=C grep -E '^(not ok |[[:space:]]*FAIL[[:space:]])' | head -n "$LINES_MAX")
+    # 件数は最後まで読む awk で絞る（head へ pipe すると先に終わり、上流が SIGPIPE で pipefail が非 0 になる）
+    fail_lines=$(LC_ALL=C sed $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$log" | LC_ALL=C grep -E '^(not ok |[[:space:]]*FAIL[[:space:]])' | awk -v max="$LINES_MAX" 'NR <= max')
     [[ -n "$fail_lines" ]] || fail_lines=$(tail -n "$LINES_MAX" "$log")
     SUMMARY_BODY+="--- $target"$'\n'"$fail_lines"$'\n'
 done

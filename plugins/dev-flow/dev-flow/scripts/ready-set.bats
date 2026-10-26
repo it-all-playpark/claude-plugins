@@ -383,6 +383,20 @@ pr_heads() {
     grep -q '^pr list --repo acme/skills --state open --limit 1000 --json headRefName$' "$GH_LOG"
 }
 
+@test "ready-set: --with-in-flight は一致した head の後ろに 64KB を超える head が続いても in_flight open_pr にする" {
+    # 一致行の後ろが pipe buffer を超えると、早く終わる reader への pipe は pipefail で偽になる
+    jq -n '[{headRefName: "feature/issue-115"}]
+        + [range(3000) | {headRefName: "renovate/some-long-dependency-name-\(.)"}]' >"$WORK/prs.json"
+    export GH_STUB_PR_LIST_FIXTURE="$WORK/prs.json"
+    issue 115 "pkg/a"
+    issue 116 "pkg/a/x.sh"
+    issue 117 "pkg/b"
+    ready_set --with-in-flight 116 117
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.in_flight == [{number: 115, reason: "open_pr"}] and [.launch[].number] == [117]
+        and .waiting == [{number: 116, reason: "path_conflict", detail: "#115"}]'
+}
+
 @test "ready-set: --with-in-flight は feature/issue-<N> の local branch と df-<N> の worktree も拾う" {
     git branch feature/issue-120
     git worktree add -q -b wip "$WORK/df-121"
