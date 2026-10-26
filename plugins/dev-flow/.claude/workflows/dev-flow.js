@@ -126,7 +126,7 @@ const EVAL_FULL_SUITE = '全件スイート（tests/run-*.sh・run-all-bats・vi
 
 function validateResultPromptBlock(val, changedFiles) {
   const v = val ?? {}
-  const logs = testLogsPromptBlock(v, changedFiles)
+  const logs = v.green === true ? testLogsPromptBlock(v, changedFiles) : ''
   return `validate_result（Validate がこの tree で実行したテストの結果。Validate の返り値をそのまま渡す）:\n`
     + `${JSON.stringify({ green: v.green ?? null, tests: v.tests ?? null, summary: v.summary ?? '' })}\n`
     + (logs

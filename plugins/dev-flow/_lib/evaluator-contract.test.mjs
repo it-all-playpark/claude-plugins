@@ -124,6 +124,8 @@ test('[evaluator-contract][#1144] validateResultPromptBlock はログと変更�
     // 変更ファイルが取れない・空なら、ログを根拠にできるファイルが無いので再実行抑止の指示を入れない
     ['変更ファイル null', { tests: 'passed', green: true, summary: 's', scripts }, null],
     ['変更ファイル空', { tests: 'passed', green: true, summary: 's', scripts }, []],
+    // red のまま Evaluate に進んだ Validate のログは渡さない
+    ['Validate red', { tests: 'failed', green: false, summary: 'not ok 1 x', scripts }, changed],
   ]) {
     const block = validateResultPromptBlock(val, files);
     assert.ok(!block.includes(TEST_LOG_REUSE) && !block.includes('/tmp/run-tests-q/'), `${name}: ${block}`);

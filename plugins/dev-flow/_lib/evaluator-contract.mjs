@@ -114,9 +114,11 @@ export const EVAL_FULL_SUITE = '全件スイート（tests/run-*.sh・run-all-ba
 // eval 直前の diff hash が一致するとき（Validate と同じ tree）だけ足す。Validate が返した値をそのまま渡し、
 // 「全件 green」とは断定しない — Validate は変更に関係するテストだけを回すことがある。
 // ログがあるときは、AC に関係するテストファイルを一律に実行させる指示の代わりに testLogsPromptBlock を入れる。
+// Validate が green でない（GREEN_MAX に達して red のまま進んだ）ときはログを渡さない — final 側が red の flake 判定で
+// ログを渡さないのと揃え、負荷で落ちた行を not ok の根拠にさせない。
 export function validateResultPromptBlock(val, changedFiles) {
   const v = val ?? {}
-  const logs = testLogsPromptBlock(v, changedFiles)
+  const logs = v.green === true ? testLogsPromptBlock(v, changedFiles) : ''
   return `validate_result（Validate がこの tree で実行したテストの結果。Validate の返り値をそのまま渡す）:\n`
     + `${JSON.stringify({ green: v.green ?? null, tests: v.tests ?? null, summary: v.summary ?? '' })}\n`
     + (logs
