@@ -7899,6 +7899,11 @@ const telemetryHandoff = buildJournalHandoffPayload({
     shape: state.EFFECTIVE_SHAPE,
     ...(state.evalResult?.verdict ? { eval_verdict: state.evalResult.verdict } : {}),
     ...(iterate?.status ? { iterate_status: iterate.status } : {}),
+    // nested pr-iterate の fix の終わり方と security review の結果（dev-flow-health が HOLD の signature の細目にする）。
+    // nested が返さない（lite の clean 終端・fix_failed 以外の fix_terminal_reason）null は Stop hook が落とす
+    fix_terminal_reason: iterate?.fix_terminal_reason ?? null,
+    security_review_status: iterate?.security_review?.status ?? null,
+    security_review_stop_reason: iterate?.security_review?.stop_reason ?? null,
     route,  // PR phase 経路識別子（'lite'|'full'）。常時出力
     eval_model_config: 'opus',  // evaluator 系 3 call site（eval#i / final-ac-reconcile / security-clearance-final）の model。override を渡さないので agents/evaluator.md frontmatter の値（一致は review-model-frontmatter.test.mjs が pin）
     review_model_config: 'opus',  // pr-reviewer（pr-review-lite / nested pr-iterate の review#i）の model。override を渡さないので agents/pr-reviewer.md frontmatter の値（一致は review-model-frontmatter.test.mjs が pin）

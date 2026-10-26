@@ -141,14 +141,42 @@ hold_sig_count() {
     [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.template | contains("danger_unresolved"))] | length')" = "0" ]
 }
 
-@test "HOLD: iterate_non_lgtm は終端 status が ci_pending なら signature（template に status を含む）、fix_failed ならならない" {
+@test "HOLD: iterate_non_lgtm は template に終端 status を含み、fix_failed は fix_terminal_reason も含む" {
     load_fixture hold.jsonl
     run report
     [ "$status" -eq 0 ]
     [ "$(hold_sig_count 'iterate_non_lgtm status=ci_pending')" = "1" ]
     [ "$(sig_field 'status=ci_pending' .signature)" = "dev-flow | hold | Merge tier | iterate_non_lgtm status=ci_pending" ]
     [ "$(sig_field 'status=ci_pending' '.recent_runs[0].issue')" = "33" ]
-    [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.template | contains("fix_failed"))] | length')" = "0" ]
+    [ "$(hold_sig_count 'iterate_non_lgtm status=fix_failed fix=applied_false')" = "1" ]
+    [ "$(sig_field 'status=fix_failed' '.recent_runs[0].issue')" = "34" ]
+}
+
+# security review が clear にならなかった HOLD の dev-flow run（pr-iterate の終端は security_unresolved）
+write_security_hold() {
+    # $1 = timestamp, $2 = issue, $3 = security_review_status, $4 = security_review_stop_reason（"" ならキー無し）
+    jq -n --arg ts "$1" --argjson issue "$2" --arg st "$3" --arg stop "$4" \
+        '{skill:"dev-flow", outcome:"success", source:"skill", timestamp:$ts,
+          telemetry:({plugin_commit:"ddddddddddd4", merge_tier:"HOLD", iterate_status:"security_unresolved",
+                      security_review_status:$st, hold_reason_codes:["security_review_unresolved","iterate_non_lgtm"],
+                      hold_ac_human_judged:false}
+                     + (if $stop == "" then {} else {security_review_stop_reason:$stop} end)),
+          context:{issue:$issue, pr_number:($issue + 400)}}' \
+        > "$JOURNAL/$(printf '%s' "$1" | tr 'T:' '--' | tr -d 'Z')-dev-flow-9${2}.json"
+}
+
+@test "HOLD: security_review_unresolved は status と stop の細目で分かれ、その run からは iterate_non_lgtm を作らない（1 run = 1 signature）" {
+    write_security_hold 2026-10-04T12:00:00Z 51 unresolved reviewer_context_changed
+    write_security_hold 2026-10-04T13:00:00Z 52 unresolved ""
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.signatures | length')" = "2" ]
+    [ "$(hold_sig_count 'security_review_unresolved status=unresolved stop=reviewer_context_changed')" = "1" ]
+    [ "$(sig_field 'stop=reviewer_context_changed' .signature)" = "dev-flow | hold | Merge tier | security_review_unresolved status=unresolved stop=reviewer_context_changed" ]
+    [ "$(sig_field 'stop=reviewer_context_changed' '[.recent_runs[].issue] | join(",")')" = "51" ]
+    [ "$(hold_sig_count 'security_review_unresolved status=unresolved stop=none')" = "1" ]
+    [ "$(sig_field 'stop=none' '[.recent_runs[].issue] | join(",")')" = "52" ]
+    [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.template | startswith("iterate_non_lgtm"))] | length')" = "0" ]
 }
 
 @test "HOLD: ac_human_pending は hold_ac_human_judged が false ならならず、true ならなる" {
@@ -169,10 +197,10 @@ hold_sig_count() {
     [ "$(hold_sig_count pr_closes_missing)" = "1" ]
     [ "$(sig_field final_test_red '.recent_runs[0].issue')" = "38" ]
     [ "$(sig_field pr_closes_missing '.recent_runs[0].issue')" = "38" ]
-    # fixture 全体: final_reconcile_unavailable / ci_pending / ac_human_pending / final_test_red / pr_closes_missing /
-    # validate_test_red の 6 つ
-    [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.category == "hold")] | length')" = "6" ]
-    [ "$(printf '%s' "$output" | jq -c '.summary')" = '{"new":6,"regressed":0,"ongoing":0,"resolved":0}' ]
+    # fixture 全体: final_reconcile_unavailable / ci_pending / fix_failed / ac_human_pending / final_test_red /
+    # pr_closes_missing / validate_test_red の 7 つ
+    [ "$(printf '%s' "$output" | jq '[.signatures[] | select(.category == "hold")] | length')" = "7" ]
+    [ "$(printf '%s' "$output" | jq -c '.summary')" = '{"new":7,"regressed":0,"ongoing":0,"resolved":0}' ]
 }
 
 @test "HOLD: Final reconcile skip の run の Validate red（validate_test_red）は signature になる" {
@@ -225,11 +253,18 @@ hold_sig_count() {
     run report
     [ "$status" -eq 0 ]
     for code in $(printf '%s' "$codes" | jq -r '.[]'); do
-        [ "$(hold_sig_count "$code")" = "1" ]
+        [ "$code" = security_review_unresolved ] || [ "$(hold_sig_count "$code")" = "1" ]
     done
     for st in $(printf '%s' "$statuses" | jq -r '.[]'); do
-        [ "$(hold_sig_count "iterate_non_lgtm status=$st")" = "1" ]
+        case "$st" in
+            security_unresolved) ;;
+            fix_failed) [ "$(hold_sig_count 'iterate_non_lgtm status=fix_failed fix=none')" = "1" ] ;;
+            *) [ "$(hold_sig_count "iterate_non_lgtm status=$st")" = "1" ] ;;
+        esac
     done
+    # security review の 2 つ（code と終端 status）は細目の無い entry なので none の 1 つの signature に 2 回の発生でまとまる
+    [ "$(hold_sig_count 'security_review_unresolved status=none stop=none')" = "1" ]
+    [ "$(sig_field 'security_review_unresolved' .count)" = "2" ]
 }
 
 @test "HOLD: 定数の code は merge tier の HOLD_REASON_CODES に実在する（rename で黙って拾わなくならない）" {
@@ -241,6 +276,82 @@ hold_sig_count() {
     for code in $(printf '%s' "$codes" | jq -r '.[]') iterate_non_lgtm ac_human_pending; do
         [[ "$known" == *"'$code'"* ]]
     done
+}
+
+# --- 単体起動の pr-iterate の非 LGTM -------------------------------------------------
+# pr-iterate entry の outcome は非 LGTM でも success。telemetry.iterate_caller が standalone の run だけを signature にし、
+# dev-flow（nested）の run は dev-flow entry の HOLD の側で数える。
+
+write_iterate() {
+    # $1 = timestamp, $2 = iterate_caller, $3 = iterate_status, $4 = plugin_commit, $5 = telemetry に足す JSON（省略可）
+    local extra="${5:-}"
+    [[ -n "$extra" ]] || extra='{}'
+    jq -n --arg ts "$1" --arg caller "$2" --arg st "$3" --arg c "$4" --argjson extra "$extra" \
+        '{skill:"pr-iterate", outcome:"success", source:"skill", timestamp:$ts,
+          telemetry:({merge_tier:"PR_ITERATE", plugin_commit:$c, iterate_caller:$caller, iterate_status:$st} + $extra),
+          context:{pr_number:500}}' \
+        > "$JOURNAL/$(printf '%s' "$1" | tr 'T:' '--' | tr -d 'Z')-pr-iterate-$RANDOM.json"
+}
+
+@test "pr-iterate: 単体起動の非 LGTM は HOLD と同じ template の signature になり、security_unresolved は security review の template" {
+    write_iterate 2026-10-04T12:00:00Z standalone stuck "ddddddddddd4"
+    write_iterate 2026-10-04T12:10:00Z standalone fix_failed "ddddddddddd4" '{"fix_terminal_reason":"commit_unensured"}'
+    write_iterate 2026-10-04T12:20:00Z standalone max_reached "ddddddddddd4"
+    write_iterate 2026-10-04T12:30:00Z standalone security_unresolved "ddddddddddd4" \
+        '{"security_review_status":"unresolved","security_review_stop_reason":"reviewer_context_changed"}'
+    write_iterate 2026-10-04T12:40:00Z standalone lgtm "ddddddddddd4"
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.signatures | length')" = "4" ]
+    [ "$(sig_field 'status=stuck' .signature)" = "pr-iterate | hold | Iterate | iterate_non_lgtm status=stuck" ]
+    [ "$(sig_field 'status=fix_failed' .template)" = "iterate_non_lgtm status=fix_failed fix=commit_unensured" ]
+    [ "$(sig_field 'status=max_reached' .skill)" = "pr-iterate" ]
+    [ "$(sig_field 'security_review_unresolved' .signature)" = "pr-iterate | hold | Iterate | security_review_unresolved status=unresolved stop=reviewer_context_changed" ]
+    [ "$(printf '%s' "$output" | jq -r '[.signatures[].status] | unique | join(",")')" = "new" ]
+}
+
+@test "pr-iterate: iterate_caller の無い entry・direct の entry は signature にしない" {
+    write_iterate 2026-10-04T12:00:00Z direct stuck "ddddddddddd4"
+    jq -n '{skill:"pr-iterate", outcome:"success", source:"skill", timestamp:"2026-10-04T12:10:00Z",
+            telemetry:{merge_tier:"PR_ITERATE", plugin_commit:"ddddddddddd4", iterate_status:"stuck"}}' \
+        > "$JOURNAL/2026-10-04-12-10-00-pr-iterate-700.json"
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.signatures | length')" = "0" ]
+}
+
+@test "pr-iterate: nested の非 LGTM は単体の signature の発生に入れず、dev-flow の HOLD と二重に数えない" {
+    # 同じ run の dev-flow entry（HOLD）と nested pr-iterate entry
+    jq -n '{skill:"dev-flow", outcome:"success", source:"skill", timestamp:"2026-10-04T12:00:10Z",
+            telemetry:{plugin_commit:"ddddddddddd4", merge_tier:"HOLD", iterate_status:"stuck",
+                       hold_reason_codes:["iterate_non_lgtm"], hold_ac_human_judged:false},
+            context:{issue:61, pr_number:461}}' \
+        > "$JOURNAL/2026-10-04-12-00-10-dev-flow-961.json"
+    write_iterate 2026-10-04T12:00:00Z dev-flow stuck "ddddddddddd4"
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.signatures | length')" = "1" ]
+    [ "$(printf '%s' "$output" | jq -r '.signatures[0].signature')" = "dev-flow | hold | Merge tier | iterate_non_lgtm status=stuck" ]
+    [ "$(printf '%s' "$output" | jq '.signatures[0].count')" = "1" ]
+}
+
+@test "pr-iterate: nested の成功 run は単体の signature を resolved にせず、単体の成功 run なら resolved になる" {
+    write_iterate 2026-10-01T00:00:00Z standalone stuck "ccccccccccc3"
+    for n in 1 2 3 4 5 6; do
+        write_iterate "2026-10-02T00:00:0${n}Z" dev-flow lgtm "ddddddddddd4"
+    done
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(sig_field 'status=stuck' .status)" = "ongoing" ]
+    [ "$(sig_field 'status=stuck' .clean_runs_since_last_seen)" = "0" ]
+
+    for n in 1 2 3 4 5; do
+        write_iterate "2026-10-03T00:00:0${n}Z" standalone lgtm "ddddddddddd4"
+    done
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(sig_field 'status=stuck' .status)" = "resolved" ]
+    [ "$(sig_field 'status=stuck' .clean_runs_since_last_seen)" = "5" ]
 }
 
 # --- 解消済みの判定 -------------------------------------------------------------
@@ -455,6 +566,40 @@ write_run() {
     [ "$(sig_field 'verdict missing' .status)" = "regressed" ]
     [ "$(sig_field 'verdict missing' .candidates.last_good_commit)" = "$C2" ]
     [ "$(sig_field 'verdict missing' '[.candidates.commits[].subject] | join(",")')" = "feat: change y,fix: change x" ]
+}
+
+@test "単体起動の pr-iterate の signature も new → resolved → regressed になり、new と regressed で候補 commit を列挙する" {
+    make_repo
+    echo z > "$REPO/plugins/dev-flow/z.mjs"
+    git -C "$REPO" add -A && git -C "$REPO" commit -q -m "fix: change z"
+    C5="$(git -C "$REPO" rev-parse --short=12 HEAD)"
+
+    write_iterate 2026-09-20T00:00:00Z standalone lgtm "$C1"
+    # nested の成功 run は最後の成功 run にしない（C2 は候補の起点にならない）
+    write_iterate 2026-09-20T12:00:00Z dev-flow lgtm "$C2"
+    write_iterate 2026-09-21T00:00:00Z standalone stuck "$C3"
+    run report --repo "$REPO" --since 2026-09-20T18:00:00Z --now 2026-09-21T00:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(sig_field 'status=stuck' .status)" = "new" ]
+    [ "$(sig_field 'status=stuck' .candidates.last_good_commit)" = "$C1" ]
+    [ "$(sig_field 'status=stuck' .candidates.first_bad_commit)" = "$C3" ]
+    [ "$(sig_field 'status=stuck' '[.candidates.commits[].subject] | join(",")')" = "fix: change x" ]
+
+    for d in 22 23 24 25 26; do
+        write_iterate "2026-09-${d}T00:00:00Z" standalone lgtm "$C4"
+    done
+    run report --repo "$REPO" --since 2026-09-26T00:00:00Z --now 2026-09-27T00:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(sig_field 'status=stuck' .status)" = "resolved" ]
+
+    write_iterate 2026-10-04T12:00:00Z standalone stuck "$C5"
+    run report --repo "$REPO"
+    [ "$status" -eq 0 ]
+    [ "$(sig_field 'status=stuck' .status)" = "regressed" ]
+    [ "$(sig_field 'status=stuck' .regressed_at.plugin_commit)" = "$C5" ]
+    [ "$(sig_field 'status=stuck' .candidates.last_good_commit)" = "$C4" ]
+    [ "$(sig_field 'status=stuck' .candidates.first_bad_commit)" = "$C5" ]
+    [ "$(sig_field 'status=stuck' '[.candidates.commits[].subject] | join(",")')" = "fix: change z" ]
 }
 
 @test "repo が git checkout でなければ候補は列挙せず repo_unavailable" {

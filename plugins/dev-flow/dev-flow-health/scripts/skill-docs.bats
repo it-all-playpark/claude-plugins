@@ -156,6 +156,16 @@ extract_report_step() {
     done
     [[ "$row" == *'再現率を優先'* ]]
     [[ "$row" == *'精度は手順の分類'* ]]
+    # 細目の template（health-report.sh の security_template / iterate_template と同じ形）
+    [[ "$row" == *'`security_review_unresolved status=<security_review_status> stop=<security_review_stop_reason>`'* ]]
+    [[ "$row" == *'`iterate_non_lgtm status=fix_failed fix=<fix_terminal_reason>`'* ]]
+    grep -qF '"security_review_unresolved status=\(.security_review_status // "none") stop=\(.security_review_stop_reason // "none")"' "$script"
+    grep -qF '"iterate_non_lgtm status=fix_failed fix=\(.fix_terminal_reason // "none")"' "$script"
+    # 単体起動の pr-iterate の signature の行
+    iter_row="$(printf '%s\n' "$reading" | grep -F '| 単体の pr-iterate の signature |')"
+    [[ "$iter_row" == *'`pr-iterate \| hold \| Iterate \| <template>`'* ]]
+    [[ "$iter_row" == *'iterate_caller` が `standalone`'* ]]
+    [[ "$iter_row" == *'`iterate_caller` が `dev-flow`'*'発生にも resolved の判定にも入れない'* ]]
 }
 
 @test "HOLD 由来の signature は該当 PR の dev-flow 終端サマリーを gh pr view で読んでから振り分ける" {
