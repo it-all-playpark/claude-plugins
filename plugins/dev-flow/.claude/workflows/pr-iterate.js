@@ -745,7 +745,7 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
     if (code === 'iterate_non_lgtm') return { code, resolved: status === 'lgtm', detail: `この run の終了状態: ${status}` };
     if (code === 'security_review_unresolved') {
       const sr = securityReview?.status ?? '未実施';
-      return { code, resolved: status === 'lgtm' && (sr === 'cleared' || sr === 'not_target'), detail: `この run の security review: ${sr}` };
+      return { code, resolved: sr === 'cleared' || sr === 'not_target', detail: `この run の security review: ${sr}` };
     }
     if (code === 'ci_checks_failed' || code === 'ac_ci_pending') {
       return { code, resolved: ciLastStatus === 'passed', detail: `最終 CI 状態: ${ciLastStatus ?? '未観測'}` };

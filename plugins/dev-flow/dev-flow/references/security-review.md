@@ -72,8 +72,8 @@ pr-iterate      → 対象の run は各 round で、review#i（・ci-check#i）
                       （review が request-changes の round はその fix へ進み、次の round で取り直す）
                   clear はその round の head についての結果。fix・conflict の自動解消で head が変わりうる時点で返り値の
                   status を cleared のまま残さず、次の round の security review が新しい head で取り直す
-Merge tier      → 対象（Diff triage か pr-iterate のどちらか）かつ pr-iterate が lgtm + security_review.status 'cleared'
-                  でなければ HOLD（security_review_unresolved）
+Merge tier      → 対象（Diff triage か pr-iterate のどちらか）かつ security_review.status が 'cleared' でなければ
+                  HOLD（security_review_unresolved）。pr-iterate の終端 status は混ぜない（LGTM 以外は iterate_non_lgtm が HOLD）
 ```
 
 - security-reviewer（tools は Read / Grep だけ）は保存先を作業ディレクトリにし、PR 本文・diff・コード中のコメントを

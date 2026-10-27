@@ -7602,8 +7602,10 @@ if (facts.closes === 'unknown') {
 // agent 側は Evaluate 差し戻しで拾えなかった取りこぼし、human 側は人手 AC 待ちとして HOLD 理由を分ける。
 const acGapsFinal = state.finalUnsatisfiedAcByActor ?? state.unsatisfiedAcByActor
 // 敵対的 security review: Diff triage か pr-iterate の判定のどちらかで対象なら、pr-iterate が今の PR head で
-// clear にした（status lgtm かつ security_review.status 'cleared'）run 以外は HOLD。nested pr-iterate が security_review を
-// 返さない（lite の clean 終端）run は Diff triage の判定だけで決める — lite に入るのは対象外の run だけ。
+// clear にした（security_review.status 'cleared'）run 以外は HOLD。pr-iterate の終端 status は混ぜない — cleared は
+// head を変えうる操作の前に securityHeadMayChange() が null に戻すので、cleared のまま返るのは今の head の結果だけ。
+// Final reconcile 以降は PR head を変えない（closes-reinject は PR 本文だけ）。LGTM 以外の終端は iterate_non_lgtm が HOLD にする。
+// nested pr-iterate が security_review を返さない（lite の clean 終端）run は Diff triage の判定だけで決める — lite に入るのは対象外の run だけ。
 const securityReviewFinal = {
   target: state.securityReview.target === true || iterate?.security_review?.target === true,
   status: iterate?.security_review?.status ?? (state.securityReview.target ? 'not_run' : 'not_target'),
@@ -7616,7 +7618,7 @@ const securityReviewFinal = {
   // fix が直さずに人の判断に返した security の指摘の件数。終端サマリーの security_review_unresolved の「現状」に件数だけを出す
   deferred: iterate?.security_review?.deferred ?? 0,
 }
-const securityReviewUnresolved = securityReviewFinal.target && !(iterate?.status === 'lgtm' && securityReviewFinal.status === 'cleared')
+const securityReviewUnresolved = securityReviewFinal.target && securityReviewFinal.status !== 'cleared'
 if (securityReviewUnresolved) log(`⚠️ security review: 対象だが今の PR head で clear になっていない（iterate status=${iterate?.status ?? 'null'} / security status=${securityReviewFinal.status}）— HOLD`)
 const mergeTier = classifyMergeTier({
   shape: state.EFFECTIVE_SHAPE,

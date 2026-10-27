@@ -2,8 +2,9 @@
 // dev-flow の敵対的 security review の配線（issue #1063）を VM 実行で pin する。
 //   (a) Diff triage の対象判定を nested pr-iterate へ args.security_review で渡す
 //   (b) 対象の run で pr-iterate が今の head で clear にしない（critical/major が上限まで残る・worktree の外を指す・
-//       LGTM 以外で終わる）と、Merge tier は専用の hold code security_review_unresolved で HOLD
-//   (c) 対象で clear・対象外の run はこの code を積まない
+//       review に到達しない）と、Merge tier は専用の hold code security_review_unresolved で HOLD
+//   (c) 対象で clear・対象外の run はこの code を積まない（clear なら pr-iterate の終端 status に依らない。
+//       LGTM 以外の終端は iterate_non_lgtm が HOLD にする — issue #1171）
 //   (d) 公開の終端サマリーには security review の件数だけが載る
 //   (e) pr-iterate が review 前に止めた理由（security_review.stop_reason）を引き継ぎ、終端サマリーを出し分ける（issue #1082）
 //   (f) fix が人の判断に返した security の指摘の件数（security_review.deferred）を引き継ぎ、終端サマリーに件数を出す（issue #1121）
@@ -95,6 +96,16 @@ test('[devflow-security-review] (c) 対象で clear、または対象外の run 
   const notTarget = await run({ overrides: {}, iterate: { status: 'lgtm', fixes_applied: 0, security_review: { target: false, status: 'not_target', rounds: 0, critical: 0, major: 0, minor: 0 } } });
   assert.equal(notTarget.result.merge_tier, 'REVIEW');
   assert.equal(notTarget.result.security_review.target, false);
+});
+
+test('[devflow-security-review] (c) 対象で今の head が clear なら、pr-iterate が LGTM 以外で終わっても security_review_unresolved を積まず、iterate_non_lgtm で HOLD のまま', async () => {
+  for (const status of ['stuck', 'max_reached']) {
+    const { result } = await run({ iterate: { status, iterations: 2, fixes_applied: 0, security_review: sr('cleared', { critical: 0 }) } });
+    assert.equal(result.merge_tier, 'HOLD', status);
+    assert.ok(!codes(result).includes('security_review_unresolved'), `${status}: ${JSON.stringify(codes(result))}`);
+    assert.ok(codes(result).includes('iterate_non_lgtm'), `${status}: ${JSON.stringify(codes(result))}`);
+    assert.equal(result.security_review.status, 'cleared', status);
+  }
 });
 
 test('[devflow-security-review] (e) securityReviewFinal は nested pr-iterate の security_review.stop_reason を引き継ぎ、HOLD 理由の「現状」を出し分ける', async () => {

@@ -145,10 +145,11 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
   const lastConflict = attempts.length > 0 ? attempts[attempts.length - 1].status : null;
   const rows = (codes || []).map((code) => {
     if (code === 'iterate_non_lgtm') return { code, resolved: status === 'lgtm', detail: `この run の終了状態: ${status}` };
-    // 敵対的 security review はこの run が今の head で判定し直す（対象外か、対象で clear のまま LGTM なら解消）
+    // 敵対的 security review はこの run が今の head で判定し直す（対象外か、対象で clear なら終端 status に依らず解消）。
+    // cleared は head を変えうる操作の前に securityHeadMayChange() が null に戻すので、cleared のまま返るのは今の head の結果だけ
     if (code === 'security_review_unresolved') {
       const sr = securityReview?.status ?? '未実施';
-      return { code, resolved: status === 'lgtm' && (sr === 'cleared' || sr === 'not_target'), detail: `この run の security review: ${sr}` };
+      return { code, resolved: sr === 'cleared' || sr === 'not_target', detail: `この run の security review: ${sr}` };
     }
     if (code === 'ci_checks_failed' || code === 'ac_ci_pending') {
       return { code, resolved: ciLastStatus === 'passed', detail: `最終 CI 状態: ${ciLastStatus ?? '未観測'}` };
