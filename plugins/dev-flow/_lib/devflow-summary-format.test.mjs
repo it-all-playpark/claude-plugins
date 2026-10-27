@@ -921,11 +921,11 @@ test.each([
   assert.ok(!body.includes('件の fix を適用して LGTM 終端'), 'iterate_fixed 情報行を含まない');
 });
 
-// out-of-enum は validation error（evalStaleness は hash_reconverged、finalReconcile は ci_verified を足した後も閉じた enum のまま）
+// out-of-enum は validation error（finalReconcile の撤去した ci_verified も enum 外。issue #1168）
 test.each([
   { field: 'evalStaleness', value: 'bogus' },
   { field: 'finalReconcile', value: 'bogus' },
-  { field: 'finalReconcile', value: 'bogus2' },
+  { field: 'finalReconcile', value: 'ci_verified' },
   { field: 'finalAcReconcile', value: 'stale' },
 ])('$field=$value -> out-of-enum は validation error', ({ field, value }) => {
   assert.throws(() => {
@@ -1262,9 +1262,7 @@ test.each([
   { finalReconcile: 'reverified', finalTestGreen: false, includes: ['❌ red'], excludes: [] },
   // issue #865: 単体再実行で green の flake
   { finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: { files: ['a.bats'], logs: [] }, includes: ['flake（単体再実行で green）'], excludes: ['✅ green', '❌ red'] },
-  { finalReconcile: 'unavailable', finalTestGreen: null, includes: ['不明'], excludes: [] },
-  // issue #599: ci_verified は test を CI へ委譲した結果なので「不明」ではなく CI 委譲と表示する
-  { finalReconcile: 'ci_verified', finalTestGreen: null, includes: ['ci_verified', 'CI 委譲'], excludes: ['不明'] },
+  { finalReconcile: 'unavailable', finalTestGreen: null, includes: ['unavailable', '不明'], excludes: [] },
 ])('finalReconcile=$finalReconcile, finalTestGreen=$finalTestGreen -> 「- Final reconcile」行の表示', ({ finalReconcile, finalTestGreen, finalTestFlaky, includes, excludes }) => {
   const line = finalReconcileLine(buildDevflowSummaryBody({ ...BASE_INPUT, finalReconcile, finalTestGreen, finalTestFlaky }));
   assert.ok(line, 'Final reconcile 行を含む');
@@ -1274,11 +1272,10 @@ test.each([
 
 // （finalReconcile の out-of-enum は上の validation error 表）
 
-// ─── Final AC reconcile 表示 (issue #331。ci_verified は issue #599) ─────────
+// ─── Final AC reconcile 表示 (issue #331) ─────────
 
 test.each([
   { finalReconcile: 'reverified', finalTestGreen: true },
-  { finalReconcile: 'ci_verified', finalTestGreen: null },
 ])('finalReconcile=$finalReconcile, finalAcReconcile=reverified -> 「, final AC: reverified」と再検証済み注記を含み stale 注記は出ない', ({ finalReconcile, finalTestGreen }) => {
   const body = buildDevflowSummaryBody({
     ...BASE_INPUT,
@@ -2047,13 +2044,11 @@ function glanceCells(body) {
 }
 
 // テスト列（glanceCells[2]）の表示を finalReconcile × finalTestGreen × testGreen の表で見る:
-//   AC1: finalReconcile='ci_verified' は testGreen の値に関わらず CI 表記へ統一する
 //   AC2: finalReconcile='reverified' は finalTestGreen（最終 tree の再検証結果）を優先する
-//        （finalTestGreen=null は 5c の Final reconcile 行と同じ「不明」）。skipped / unavailable / 未指定は testGreen そのまま
+//        （finalTestGreen=null は 5c の Final reconcile 行と同じ「不明」）。skipped / 未指定は testGreen そのまま
+//   #1168: finalReconcile='unavailable' は fix 後の最終 tree を再検証できていないので、testGreen に依らず unavailable の表示
+const UNAVAILABLE_CELL = '⚠️ unavailable（最終 tree で再検証不能）・未検証';
 test.each([
-  { name: 'AC1: ci_verified かつ testGreen=false', input: { finalReconcile: 'ci_verified', testGreen: false }, want: '✅ green (CI)' },
-  { name: 'AC1: ci_verified かつ testGreen=true', input: { finalReconcile: 'ci_verified', testGreen: true }, want: '✅ green (CI)' },
-  { name: 'AC1: ci_verified かつ testGreen=null', input: { finalReconcile: 'ci_verified', testGreen: null }, want: '✅ green (CI)' },
   { name: 'AC2: reverified, finalTestGreen=true, testGreen=false', input: { finalReconcile: 'reverified', finalTestGreen: true, testGreen: false }, want: '✅ green' },
   { name: 'AC2: reverified, finalTestGreen=false, testGreen=true', input: { finalReconcile: 'reverified', finalTestGreen: false, testGreen: true }, want: '❌ red' },
   { name: 'AC2: reverified, finalTestGreen=null, testGreen=true', input: { finalReconcile: 'reverified', finalTestGreen: null, testGreen: true }, want: '不明' },
@@ -2062,13 +2057,20 @@ test.each([
   { name: '#865: reverified, finalTestGreen=true + finalTestFlaky.files 空', input: { finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: { files: [], logs: [] } }, want: '✅ green' },
   { name: 'AC2: skipped, testGreen=false', input: { finalReconcile: 'skipped', testGreen: false }, want: '❌ red' },
   { name: 'AC2: skipped, testGreen=true', input: { finalReconcile: 'skipped', testGreen: true }, want: '✅ green' },
-  { name: 'AC2: unavailable, finalTestGreen=null, testGreen=false', input: { finalReconcile: 'unavailable', finalTestGreen: null, testGreen: false }, want: '❌ red' },
-  { name: 'AC2: unavailable, finalTestGreen=null, testGreen=true', input: { finalReconcile: 'unavailable', finalTestGreen: null, testGreen: true }, want: '✅ green' },
-  { name: 'AC2: unavailable, finalTestGreen=null, testGreen=null', input: { finalReconcile: 'unavailable', finalTestGreen: null, testGreen: null }, want: '不明' },
+  { name: '#1168: unavailable, finalTestGreen=null, testGreen=false', input: { finalReconcile: 'unavailable', finalTestGreen: null, testGreen: false }, want: UNAVAILABLE_CELL },
+  { name: '#1168: unavailable, finalTestGreen=null, testGreen=true', input: { finalReconcile: 'unavailable', finalTestGreen: null, testGreen: true }, want: UNAVAILABLE_CELL },
+  { name: '#1168: unavailable, finalTestGreen=null, testGreen=null', input: { finalReconcile: 'unavailable', finalTestGreen: null, testGreen: null }, want: UNAVAILABLE_CELL },
+  { name: '#1168: unavailable, validateTests=error', input: { finalReconcile: 'unavailable', finalTestGreen: null, testGreen: false, validateTests: 'error' }, want: UNAVAILABLE_CELL },
   { name: '未指定（既存挙動不変）, testGreen=false', input: { testGreen: false }, want: '❌ red' },
 ])('issue #625 $name → テスト列は $want', ({ input, want }) => {
   const body = buildDevflowSummaryBody({ ...BASE_INPUT, ...input });
   assert.equal(glanceCells(body)[2], want);
+});
+
+test('issue #1168: finalReconcile=unavailable の run は結論行で CI の test 結果の確認を促す', () => {
+  const body = buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: true, finalReconcile: 'unavailable', finalTestGreen: null });
+  const conclusion = body.split('\n').find((l) => l.startsWith('**結論: '));
+  assert.ok(conclusion.includes('CI の test 結果を確認してからマージ'), conclusion);
 });
 
 // AC3: evalVerdict='fail' は evalStaleness/iterateStatus/finalAcReconcile の 4 条件 AND が
@@ -2139,20 +2141,14 @@ test('issue #625 確定仕様5+AC4: merge tier は不変のまま at-a-glance �
     breakingStructured: false, breakingKeyword: false,
     docsOrTestOnly: false, escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'iterate_fixed', evalVerdictFail: true,
-    finalReconcile: 'ci_verified', finalAcReconcile: 'reverified',
-    finalCi: { verified: true, reason: 'ok', kind: null, checkNames: ['Bats', 'Node'], headRefOid: 'a'.repeat(40) },
+    finalReconcile: 'reverified', finalTestGreen: true, finalAcReconcile: 'reverified',
   };
   const r = classifyMergeTier(tierInput);
-  // 実装前（F1 時点）に実測した literal。merge-tier.mjs は F1〜F3 のいずれでも変更しないため
-  // この値は変更前後で不変であるはずのものを固定している。
   assert.equal(r.tier, 'REVIEW');
   assert.deepEqual(r.holdReasons, []);
   assert.deepEqual(r.reasons, [
     '標準 — 人間が LGTM して merge',
     'evaluator verdict=fail のまま PR へ進行 — 未解消 findings は ledger/HOLD 条件が別途担保するため tier 判定は不変（可視化のみ。issue #536）',
-    'Final reconcile はローカル再検証不能だったが PR head sha ' + 'a'.repeat(40)
-      + ' の CI check 全 success を決定論確認（final_reconcile=ci_verified: Bats, Node）'
-      + '— test gate は CI 委譲で充足（issue #599）',
   ]);
 
   const frozenReasons = Object.freeze([...r.reasons]);
@@ -2165,13 +2161,13 @@ test('issue #625 確定仕様5+AC4: merge tier は不変のまま at-a-glance �
     evalStaleness: 'iterate_fixed',
     iterateFixesApplied: 1,
     iterateStatus: 'lgtm',
-    finalReconcile: 'ci_verified',
-    finalTestGreen: null,
+    finalReconcile: 'reverified',
+    finalTestGreen: true,
     finalAcReconcile: 'reverified',
     acResults: [{ ac_index: 0, satisfied: true, evidence: 'ok', verified_by: 'evaluator' }],
   });
 
-  assert.equal(glanceCells(body)[2], '✅ green (CI)');
+  assert.equal(glanceCells(body)[2], '✅ green');
   assert.equal(glanceCells(body)[3], '✅ pass (fix 後 LGTM)');
 
   // issue #658: Final reconcile 行は「参考」セクションへ移動したため、Merge tier 理由の直後には
@@ -2184,9 +2180,8 @@ test('issue #625 確定仕様5+AC4: merge tier は不変のまま at-a-glance �
     '理由欄は byte そのまま echo される（消えない）',
   );
 
-  assert.ok(body.includes('test gate は CI 委譲で充足（issue #599）'), 'ローカル未検証の事実は理由欄に残る');
   assert.ok(body.includes('**参考（可視化のみ — merge tier 判定に不使用）**:'), '参考セクション見出しを含む');
-  assert.ok(body.includes('- Final reconcile (pr-iterate fix 後の最終 tree 再検証): ci_verified — final test: ✅ CI 委譲（PR head sha 一致・check 全 success）, final AC: reverified'));
+  assert.ok(body.includes('- Final reconcile (pr-iterate fix 後の最終 tree 再検証): reverified — final test: ✅ green, final AC: reverified'));
   assert.ok(body.includes('- ✅ AC は最終 PR tree で再検証済み'));
 });
 
@@ -2196,8 +2191,7 @@ test('issue #625: 決定性 — 確定仕様5+AC4 と同一入力で 2 回呼ん
     breakingStructured: false, breakingKeyword: false,
     docsOrTestOnly: false, escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'iterate_fixed', evalVerdictFail: true,
-    finalReconcile: 'ci_verified', finalAcReconcile: 'reverified',
-    finalCi: { verified: true, reason: 'ok', kind: null, checkNames: ['Bats', 'Node'], headRefOid: 'a'.repeat(40) },
+    finalReconcile: 'reverified', finalTestGreen: true, finalAcReconcile: 'reverified',
   };
   const r = classifyMergeTier(tierInput);
   const frozenReasons = Object.freeze([...r.reasons]);
@@ -2210,8 +2204,8 @@ test('issue #625: 決定性 — 確定仕様5+AC4 と同一入力で 2 回呼ん
     evalStaleness: 'iterate_fixed',
     iterateFixesApplied: 1,
     iterateStatus: 'lgtm',
-    finalReconcile: 'ci_verified',
-    finalTestGreen: null,
+    finalReconcile: 'reverified',
+    finalTestGreen: true,
     finalAcReconcile: 'reverified',
     acResults: [{ ac_index: 0, satisfied: true, evidence: 'ok', verified_by: 'evaluator' }],
   };
@@ -2245,7 +2239,7 @@ test('issue #658 AC-1: 結論行が見出し直後・at-a-glance 表より前に
     advisoryItems: [
       { id: 'A1', text: 'needs escalation', severity: 'major', checked: true, dimension: 'design', escalate: true, final_resolution: 'resolved', final_evidence: 'verified in fix tree' },
     ],
-    finalReconcile: 'ci_verified',
+    finalReconcile: 'reverified',
   });
   const headingIdx = body.indexOf('## dev-flow 終端サマリー');
   const conclusionIdx = body.indexOf('**結論:');
@@ -2265,7 +2259,7 @@ test('issue #658 AC-2: HOLD+ESCALATE 全件解消 -> 要対応表の escalate �
     holdReasons: [{ code: 'escalate', reason: 'ESCALATE-TO-HUMAN 項目 1 件', kind: 'human_judgment' }],
     holdKind: 'human_judgment',
     advisoryItems: [resolvedItem],
-    finalReconcile: 'ci_verified',
+    finalReconcile: 'reverified',
   });
   assert.ok(body.includes('### ✅ 要対応事項なし'), '見出しは要対応事項なし');
   assert.ok(!body.includes('### ⚠️ 要対応'), '⚠️ 要対応見出しは出ない');
@@ -2280,20 +2274,6 @@ test('issue #658 AC-2: HOLD+ESCALATE 全件解消 -> 要対応表の escalate �
   });
   assert.ok(bodyEmptyEvidence.includes('⚠️ 要判断'), 'final_evidence が空なら ⚠️ 要判断 のまま');
   assert.ok(!bodyEmptyEvidence.includes('✅ 解消済み'), 'final_evidence が空なら解消済み表示にならない');
-});
-
-test('issue #658: final_resolution=ci_delegated は finalReconcile=ci_verified のときだけ解消扱いになる', () => {
-  const item = {
-    id: 'A1', text: 'ci delegated item', severity: 'major', checked: false, dimension: 'design',
-    escalate: true, final_resolution: 'ci_delegated', final_evidence: 'CI check X success',
-  };
-  for (const fr of ['reverified', null, 'unavailable']) {
-    const body = buildDevflowSummaryBody({ ...BASE_INPUT, advisoryItems: [item], finalReconcile: fr });
-    assert.ok(body.includes('⚠️ 要判断'), `finalReconcile=${fr} では未解消のまま`);
-    assert.ok(!body.includes('✅ 解消済み'), `finalReconcile=${fr} では解消済み表示にならない`);
-  }
-  const bodyVerified = buildDevflowSummaryBody({ ...BASE_INPUT, advisoryItems: [item], finalReconcile: 'ci_verified' });
-  assert.ok(bodyVerified.includes('✅ 解消済み'), 'finalReconcile=ci_verified のときだけ解消扱い');
 });
 
 test('issue #658: blocking lane の final_resolution は無視される（byte 一致）', () => {
@@ -2322,7 +2302,7 @@ test('issue #658 AC-3: HOLD 理由と現状テーブルに holdReasons の reaso
     advisoryItems: [
       { id: 'A1', text: 'needs escalation', severity: 'major', checked: true, dimension: 'design', escalate: true, final_resolution: 'resolved', final_evidence: 'verified' },
     ],
-    finalReconcile: 'ci_verified',
+    finalReconcile: 'reverified',
   });
   assert.ok(body.includes('### HOLD になった理由と現状'), 'HOLD 理由テーブル見出しを含む');
   assert.ok(body.includes('| 理由 | 現状 | 対応 |'), 'HOLD 理由テーブルヘッダーを含む');
@@ -2406,17 +2386,20 @@ test('issue #1086: validate_test_red 単独 HOLD は final_test_red と同じく
   assert.ok(!body.includes('修正作業は不要'), '結論行は「修正作業は不要」ではない');
 });
 
-test('issue #1117: validate_tests_not_run 単独 HOLD は現状に「テストが 1 件も実行されていない」、対応は kind で CI 完了待ちか手元実行・CI 確認に分かれる', () => {
-  const REASON = 'テストが 1 件も実行されていない（Validate tests:error = テスト起動失敗）';
-  const rowOf = (kind) => buildDevflowSummaryBody({
+test('issue #1117 / #1168: validate_tests_not_run / final_reconcile_unavailable 単独 HOLD の現状・対応は人が確かめる 1 通り（CI 完了待ちで解消しうる扱いにしない）', () => {
+  const rowOf = (code, reason, kind) => buildDevflowSummaryBody({
     ...BASE_INPUT,
     mergeTier: 'HOLD',
-    mergeTierReasons: [REASON],
-    holdReasons: [{ code: 'validate_tests_not_run', reason: REASON, kind }],
+    mergeTierReasons: [reason],
+    holdReasons: [{ code, reason, kind }],
     holdKind: kind,
-  }).split('\n').find((l) => l.startsWith(`| ${REASON} |`));
-  assert.equal(rowOf('deterministic_recheck'), `| ${REASON} | テストが 1 件も実行されていない（ローカルは起動失敗・PR head の CI は未完了か取得できず） | CI 完了後に \`gh pr checks 42\` で test の結果を確認する |`);
-  assert.equal(rowOf('human_judgment'), `| ${REASON} | テストが 1 件も実行されていない（ローカルは起動失敗・PR head の CI でも green を確認できず） | テストを手元で実行するか、CI の test 結果を確認する |`);
+  }).split('\n').find((l) => l.startsWith(`| ${reason} |`));
+  const NOT_RUN = 'テストが 1 件も実行されていない（Validate tests:error = テスト起動失敗）';
+  const UNAVAILABLE = 'Final reconcile 再検証不能（pr-iterate fix 適用後の最終 tree の test 状態を確認できず）— 人間確認必須';
+  for (const kind of ['human_judgment', 'deterministic_recheck']) {
+    assert.equal(rowOf('validate_tests_not_run', NOT_RUN, kind), `| ${NOT_RUN} | テストが 1 件も実行されていない（ローカルは起動失敗） | テストを手元で実行するか、CI の test 結果を確認する |`, kind);
+    assert.equal(rowOf('final_reconcile_unavailable', UNAVAILABLE, kind), `| ${UNAVAILABLE} | 最終 tree のテスト状態が未確認 | 最終 tree でテストを手動実行する |`, kind);
+  }
 });
 
 test('issue #1082: security_review_unresolved は stop_reason=reviewer_context_changed なら「自動 review をしていない」と変わった指示ファイルを一覧する固定コマンド、それ以外は従来の文面', () => {
@@ -2505,19 +2488,17 @@ test('issue #658 AC-3: disclosures は Merge tier 理由から除外され「参
   assert.ok(!bodyNoRef.includes('**参考（可視化のみ'), 'disclosures/Final reconcile が無ければ参考セクション自体が出ない');
 });
 
-test('issue #658 AC-4: あなたがやること に danger class 由来のマージ後確認が入力順・重複除去で並び、未知 class は汎用文、ci_verified は追加行になる', () => {
+test('issue #658 AC-4: あなたがやること に danger class 由来のマージ後確認が入力順・重複除去で並び、未知 class は汎用文になる', () => {
   const body = buildDevflowSummaryBody({
     ...BASE_INPUT,
     mergeTier: 'REVIEW',
     dangerHits: ['data-migration', 'dependency', 'data-migration', 'unknown-future-class'],
-    finalReconcile: 'ci_verified',
   });
   const youDoLines = body.split('\n').filter(l => l.includes('マージ後:'));
-  assert.equal(youDoLines.length, 4, 'data-migration / dependency / unknown-future-class / ci_verified 委譲行の計4行（重複除去）');
+  assert.equal(youDoLines.length, 3, 'data-migration / dependency / unknown-future-class の計3行（重複除去）');
   assert.ok(youDoLines[0].includes('migration を含む'), '1件目は data-migration の定型文（入力順）');
   assert.ok(youDoLines[1].includes('依存関係の変更を含む'), '2件目は dependency の定型文');
   assert.ok(youDoLines[2].includes('danger class "unknown-future-class" の変更箇所の初回動作を確認する'), '未知 class は汎用文');
-  assert.ok(youDoLines[3].includes('PR CI に委譲済み'), '4件目は ci_verified 追加行');
 });
 
 // ─── issue #858: security clearance で cleared の danger class は未解決の危険として出さない ─────
@@ -2616,7 +2597,7 @@ test('決定性: issue #658 の新フィールド込み入力でも 2回呼ん�
     advisoryItems: [
       { id: 'A1', text: 'needs escalation', severity: 'major', checked: true, dimension: 'design', escalate: true, final_resolution: 'resolved', final_evidence: 'verified', escalate_description: 'detail text' },
     ],
-    finalReconcile: 'ci_verified',
+    finalReconcile: 'reverified',
   };
   const body1 = buildDevflowSummaryBody(input);
   const body2 = buildDevflowSummaryBody(input);
@@ -2629,36 +2610,26 @@ function conclusionLine(body) {
   return body.split('\n').find((l) => l.startsWith('**結論: '));
 }
 
-test("issue #707 AC1: Validate tests:'error' + CI 未確認 → テスト欄は ❌ red ではなく未実行/未検証、結論行で CI 確認を促す", () => {
-  for (const finalReconcile of ['skipped', 'unavailable', undefined]) {
-    for (const ciTestVerified of [false, null, undefined]) {
-      const body = buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false, validateTests: 'error', finalReconcile, ciTestVerified });
-      const cell = glanceCells(body)[2];
-      assert.equal(cell, '⚠️ 未実行（環境）・未検証', `finalReconcile=${finalReconcile} ciTestVerified=${ciTestVerified}`);
-      assert.ok(!cell.includes('❌'), 'テスト欄に ❌ を含まない');
-      assert.ok(conclusionLine(body).includes('CI の test 結果を確認してからマージ'), '結論行に CI 確認を含む');
-    }
+test("issue #707 / #1168 AC1: Validate tests:'error' + Final reconcile skipped / 未指定 → テスト欄は ❌ red ではなく未実行/未検証、結論行で CI 確認を促す", () => {
+  for (const finalReconcile of ['skipped', undefined]) {
+    const body = buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false, validateTests: 'error', finalReconcile });
+    const cell = glanceCells(body)[2];
+    assert.equal(cell, '⚠️ 未実行（環境）・未検証', `finalReconcile=${finalReconcile}`);
+    assert.ok(!cell.includes('❌'), 'テスト欄に ❌ を含まない');
+    assert.ok(conclusionLine(body).includes('CI の test 結果を確認してからマージ'), '結論行に CI 確認を含む');
   }
 });
 
-test("issue #707 AC2: Validate tests:'error' でも同一 sha の CI test success 確認済みなら Final reconcile skipped で ✅ green (CI)", () => {
-  const body = buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false, validateTests: 'error', finalReconcile: 'skipped', ciTestVerified: true });
-  assert.equal(glanceCells(body)[2], '✅ green (CI)');
-  assert.ok(!conclusionLine(body).includes('CI の test 結果を確認してから'), '確認済みなら結論行に CI 確認を出さない');
-});
-
-test("issue #707 AC3: 実際にテストが失敗した場合（tests:'failed'）は CI 確認の有無に関わらず従来どおり ❌ red", () => {
-  for (const ciTestVerified of [true, false, null]) {
-    const body = buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false, validateTests: 'failed', finalReconcile: 'skipped', ciTestVerified });
-    assert.equal(glanceCells(body)[2], '❌ red', `ciTestVerified=${ciTestVerified}`);
-    assert.ok(!conclusionLine(body).includes('CI の test 結果を確認してから'), 'red は未検証扱いしない');
-  }
+test("issue #707 AC3: 実際にテストが失敗した場合（tests:'failed'）は従来どおり ❌ red", () => {
+  const body = buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false, validateTests: 'failed', finalReconcile: 'skipped' });
+  assert.equal(glanceCells(body)[2], '❌ red');
+  assert.ok(!conclusionLine(body).includes('CI の test 結果を確認してから'), 'red は未検証扱いしない');
   // Final reconcile の reverified red は Validate の tests:'error' より優先（最終状態）
-  const bodyFinalRed = buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false, validateTests: 'error', finalReconcile: 'reverified', finalTestGreen: false, ciTestVerified: true });
+  const bodyFinalRed = buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false, validateTests: 'error', finalReconcile: 'reverified', finalTestGreen: false });
   assert.equal(glanceCells(bodyFinalRed)[2], '❌ red');
   // validateTests 未指定の既定出力は tests:'failed' 指定時と同じ（❌ red）
   assert.equal(glanceCells(buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: false }))[2], '❌ red');
-  assert.equal(glanceCells(buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: true, validateTests: 'passed', ciTestVerified: true }))[2], '✅ green');
+  assert.equal(glanceCells(buildDevflowSummaryBody({ ...BASE_INPUT, testGreen: true, validateTests: 'passed' }))[2], '✅ green');
 });
 
 test('issue #707: validateTests の enum 外は明示 error', () => {

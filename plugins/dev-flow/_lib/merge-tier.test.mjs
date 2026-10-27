@@ -16,7 +16,6 @@ import {
 } from './merge-tier.mjs';
 import { PR_CLOSES_STATUS_VALUES } from './pr-artifacts.mjs';
 import { parseMergeTierFacts } from './merge-tier-facts.mjs';
-import { finalCiVerdict } from './final-ci.mjs';
 
 // ---- Task 1: DANGER_CLASSES + seedSecurityLedger ----
 
@@ -673,14 +672,16 @@ test('classifyMergeTier: micro+docsOrTestOnly の AUTO ケースに finalReconci
   assert.ok(!r.reasons.some((x) => /final/i.test(x)), `reasons に final 関連文言を含むべきでないが: ${JSON.stringify(r.reasons)}`);
 });
 
-test('classifyMergeTier: finalReconcile:"bogus"(out-of-enum) → throw', () => {
-  assert.throws(() => classifyMergeTier({
-    shape: 'standard', converged: true, unresolvedDanger: false,
-    breakingStructured: false, breakingKeyword: false,
-    docsOrTestOnly: false, escalateCount: 0,
-    iterateStatus: 'lgtm', evalStaleness: 'none',
-    finalReconcile: 'bogus',
-  }), /invalid finalReconcile/);
+test('classifyMergeTier: finalReconcile が out-of-enum（"bogus" / 撤去した "ci_verified"）→ throw', () => {
+  for (const finalReconcile of ['bogus', 'ci_verified']) {
+    assert.throws(() => classifyMergeTier({
+      shape: 'standard', converged: true, unresolvedDanger: false,
+      breakingStructured: false, breakingKeyword: false,
+      docsOrTestOnly: false, escalateCount: 0,
+      iterateStatus: 'lgtm', evalStaleness: 'none',
+      finalReconcile,
+    }), /invalid finalReconcile/, finalReconcile);
+  }
 });
 
 // ---- issue #319: iterateStatus / evalStaleness ----
@@ -981,7 +982,7 @@ test('classifyMergeTier: evalVerdictFail:true + micro AUTO 条件 → AUTO の�
   assert.ok(r.reasons.some((x) => x.includes('evaluator verdict=fail')), `AUTO reasons に開示文言を含むべきだが: ${JSON.stringify(r.reasons)}`);
 });
 
-// ---- classifyMergeTier: finalCi / ci_verified / holdReasons（issue #599）----
+// ---- classifyMergeTier: holdReasons / holdKind（issue #599）----
 // 共通ベース入力（#320 セクションと同一の clean 側）。
 
 function baseCleanInput(overrides) {
@@ -1021,117 +1022,29 @@ test('aggregateHoldKind: human_judgment が 1 件でも混在すれば human_jud
   assert.equal(aggregateHoldKind([{ reason: 'a', kind: 'human_judgment' }]), 'human_judgment');
 });
 
-test('classifyMergeTier: finalReconcile:"ci_verified" + finalCi.verified:true → REVIEW、再検証不能を含まず ci_verified 可視化行を含む、holdReasons=[]/holdKind=null', () => {
-  const r = classifyMergeTier(baseCleanInput({
-    finalReconcile: 'ci_verified',
-    finalCi: { verified: true, reason: 'ok', kind: null, checkNames: ['Bats', 'Node'], headRefOid: 'a'.repeat(40) },
-  }));
-  assert.equal(r.tier, 'REVIEW');
-  assert.ok(!r.reasons.some((x) => x.includes('確認できず')), `reasons に HOLD blocking 文言（'確認できず'）を含むべきでないが: ${JSON.stringify(r.reasons)}`);
-  assert.ok(r.reasons.some((x) => x.includes('ci_verified')), `reasons に 'ci_verified' 可視化行を含むべきだが: ${JSON.stringify(r.reasons)}`);
-  assert.deepEqual(r.holdReasons, []);
-  assert.equal(r.holdKind, null);
-});
+// PR の CI は PR head の workflow・スクリプトで動き PR 自身が書き換えられるため、CI の success の形をした
+// 入力が来ても unavailable / tests:'error' の HOLD は外れない（issue #1168）。
+const CI_SUCCESS_LIKE = { verified: true, reason: 'ok', kind: null, checkNames: ['Bats', 'Node'], headRefOid: 'a'.repeat(40) };
 
-test('classifyMergeTier: shape micro + docsOrTestOnly + finalReconcile:"ci_verified" → AUTO のまま + 可視化行あり', () => {
-  const r = classifyMergeTier(baseCleanInput({
-    shape: 'micro', docsOrTestOnly: true,
-    finalReconcile: 'ci_verified',
-    finalCi: { verified: true, reason: 'ok', kind: null, checkNames: ['Bats', 'Node'], headRefOid: 'a'.repeat(40) },
-  }));
-  assert.equal(r.tier, 'AUTO');
-  assert.ok(r.reasons.some((x) => x.includes('ci_verified')), `reasons に 'ci_verified' 可視化行を含むべきだが: ${JSON.stringify(r.reasons)}`);
-  assert.deepEqual(r.holdReasons, []);
-  assert.equal(r.holdKind, null);
-});
-
-test('classifyMergeTier: finalReconcile:"unavailable" + finalCi sha-mismatch(kind human_judgment) → HOLD + reason に "Final reconcile 再検証不能" と "reason=sha-mismatch"、holdKind human_judgment', () => {
-  const r = classifyMergeTier(baseCleanInput({
-    finalReconcile: 'unavailable',
-    finalCi: { verified: false, reason: 'sha-mismatch', kind: 'human_judgment', checkNames: [], headRefOid: 'b'.repeat(40) },
-  }));
-  assert.equal(r.tier, 'HOLD');
-  assert.ok(r.reasons.some((x) => x.includes('Final reconcile 再検証不能') && x.includes('reason=sha-mismatch')),
-    `reasons に該当文言を含むべきだが: ${JSON.stringify(r.reasons)}`);
-  assert.equal(r.holdKind, 'human_judgment');
-});
-
-test('classifyMergeTier: finalReconcile:"unavailable" + finalCi pending(kind deterministic_recheck, checkNames [Bats]) → HOLD + "reason=pending: Bats" + "決定論再チェック"、holdReasons 1件 kind deterministic_recheck、holdKind deterministic_recheck', () => {
-  const r = classifyMergeTier(baseCleanInput({
-    finalReconcile: 'unavailable',
-    finalCi: { verified: false, reason: 'pending', kind: 'deterministic_recheck', checkNames: ['Bats'], headRefOid: 'c'.repeat(40) },
-  }));
-  assert.equal(r.tier, 'HOLD');
-  assert.ok(r.reasons.some((x) => x.includes('reason=pending: Bats') && x.includes('決定論再チェック')),
-    `reasons に該当文言を含むべきだが: ${JSON.stringify(r.reasons)}`);
-  assert.equal(r.holdReasons.length, 1);
-  assert.equal(r.holdReasons[0].kind, 'deterministic_recheck');
-  assert.equal(r.holdKind, 'deterministic_recheck');
-});
-
-test('classifyMergeTier: finalReconcile:"unavailable" + finalCi failure(kind human_judgment) → HOLD、holdKind human_judgment', () => {
-  const r = classifyMergeTier(baseCleanInput({
-    finalReconcile: 'unavailable',
-    finalCi: { verified: false, reason: 'failure', kind: 'human_judgment', checkNames: ['Bats'], headRefOid: 'd'.repeat(40) },
-  }));
-  assert.equal(r.tier, 'HOLD');
-  assert.equal(r.holdKind, 'human_judgment');
-});
-
-test('classifyMergeTier: finalReconcile:"unavailable" + finalCi fetch-failed(kind deterministic_recheck) → HOLD、holdKind deterministic_recheck', () => {
-  const r = classifyMergeTier(baseCleanInput({
-    finalReconcile: 'unavailable',
-    finalCi: { verified: false, reason: 'fetch-failed', kind: 'deterministic_recheck', checkNames: [], headRefOid: 'e'.repeat(40) },
-  }));
-  assert.equal(r.tier, 'HOLD');
-  assert.equal(r.holdKind, 'deterministic_recheck');
-});
-
-test('classifyMergeTier: finalReconcile:"unavailable" + finalCi 未指定 → 従来文言（regression）、holdKind human_judgment', () => {
-  const r = classifyMergeTier(baseCleanInput({ finalReconcile: 'unavailable' }));
-  assert.equal(r.tier, 'HOLD');
-  assert.ok(r.reasons.some((x) => x.includes('Final reconcile 再検証不能') && x.endsWith('— 人間確認必須')),
-    `reasons に従来文言（'— 人間確認必須' で終わる）を含むべきだが: ${JSON.stringify(r.reasons)}`);
-  assert.equal(r.holdKind, 'human_judgment');
-});
-
-test('classifyMergeTier: finalCi(kind deterministic_recheck) + converged:false を同時に与える → holdKind human_judgment（human が1件でもあれば human）', () => {
-  const r = classifyMergeTier(baseCleanInput({
-    converged: false,
-    finalReconcile: 'unavailable',
-    finalCi: { verified: false, reason: 'pending', kind: 'deterministic_recheck', checkNames: ['Bats'], headRefOid: 'f'.repeat(40) },
-  }));
-  assert.equal(r.tier, 'HOLD');
-  assert.equal(r.holdKind, 'human_judgment');
-  assert.equal(r.holdReasons.length, 2);
-});
-
-test('classifyMergeTier: finalReconcile:"ci_verified" だが finalCi 未指定/verified:false → throw', () => {
-  assert.throws(() => classifyMergeTier(baseCleanInput({ finalReconcile: 'ci_verified' })),
-    /requires finalCi\.verified===true/);
-  assert.throws(() => classifyMergeTier(baseCleanInput({
-    finalReconcile: 'ci_verified',
-    finalCi: { verified: false, reason: 'sha-mismatch', kind: null, checkNames: [], headRefOid: 'a'.repeat(40) },
-  })), /requires finalCi\.verified===true/);
-});
-
-test('classifyMergeTier: finalCi.kind が不正値("bogus") → throw', () => {
-  assert.throws(() => classifyMergeTier(baseCleanInput({
-    finalReconcile: 'unavailable',
-    finalCi: { verified: false, reason: 'sha-mismatch', kind: 'bogus', checkNames: [], headRefOid: 'a'.repeat(40) },
-  })), /invalid finalCi\.kind/);
-});
-
-test('classifyMergeTier: finalCi.verified が非 boolean → throw', () => {
-  for (const bad of ['true', 1, null]) {
-    assert.throws(() => classifyMergeTier(baseCleanInput({
-      finalReconcile: 'unavailable',
-      finalCi: { verified: bad, reason: 'sha-mismatch', kind: null, checkNames: [], headRefOid: 'a'.repeat(40) },
-    })), /invalid finalCi/);
+test('classifyMergeTier: finalReconcile:"unavailable" は CI の success の形をした入力があっても常に final_reconcile_unavailable（human_judgment）の HOLD', () => {
+  for (const extra of [{}, { finalCi: CI_SUCCESS_LIKE }, { finalCi: CI_SUCCESS_LIKE, validateCi: CI_SUCCESS_LIKE }]) {
+    const r = classifyMergeTier(baseCleanInput({ finalReconcile: 'unavailable', ...extra }));
+    assert.equal(r.tier, 'HOLD', JSON.stringify(extra));
+    assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['final_reconcile_unavailable', 'human_judgment']], JSON.stringify(extra));
+    assert.ok(r.reasons[0].includes('Final reconcile 再検証不能') && r.reasons[0].endsWith('— 人間確認必須'), r.reasons[0]);
+    assert.equal(r.holdKind, 'human_judgment');
+    assert.ok(!r.reasons.some((x) => x.includes('CI')), `CI 委譲の文言を含むべきでないが: ${JSON.stringify(r.reasons)}`);
   }
 });
 
-test('classifyMergeTier: finalCi 未指定の既存 HOLD/AUTO/REVIEW ケースで holdReasons/holdKind が期待どおり', () => {
+test('classifyMergeTier: finalReconcile:"unavailable" + converged:false → holdReasons 2 件、holdKind human_judgment', () => {
+  const r = classifyMergeTier(baseCleanInput({ converged: false, finalReconcile: 'unavailable' }));
+  assert.equal(r.tier, 'HOLD');
+  assert.equal(r.holdKind, 'human_judgment');
+  assert.deepEqual(r.holdReasons.map((x) => x.code), ['ledger_unconverged', 'final_reconcile_unavailable']);
+});
+
+test('classifyMergeTier: 既存 HOLD/AUTO/REVIEW ケースで holdReasons/holdKind が期待どおり', () => {
   // HOLD（unsatisfiedAgentAc）
   const hold = classifyMergeTier(baseCleanInput({ unsatisfiedAgentAc: true }));
   assert.equal(hold.tier, 'HOLD');
@@ -1333,20 +1246,8 @@ test('classifyMergeTier: holdReasons[].code — ac_human_pending', () => {
   assert.ok(HOLD_REASON_CODES.includes(item.code));
 });
 
-test('classifyMergeTier: holdReasons[].code — final_reconcile_unavailable (finalCi 未指定)', () => {
+test('classifyMergeTier: holdReasons[].code — final_reconcile_unavailable', () => {
   const r = classifyMergeTier(baseCleanInput({ finalReconcile: 'unavailable' }));
-  assert.equal(r.tier, 'HOLD');
-  const item = r.holdReasons.find((x) => x.reason.includes('Final reconcile 再検証不能'));
-  assert.ok(item);
-  assert.equal(item.code, 'final_reconcile_unavailable');
-  assert.ok(HOLD_REASON_CODES.includes(item.code));
-});
-
-test('classifyMergeTier: holdReasons[].code — final_reconcile_unavailable (finalCi あり)', () => {
-  const r = classifyMergeTier(baseCleanInput({
-    finalReconcile: 'unavailable',
-    finalCi: { verified: false, reason: 'pending', kind: 'deterministic_recheck', checkNames: ['Bats'], headRefOid: 'c'.repeat(40) },
-  }));
   assert.equal(r.tier, 'HOLD');
   const item = r.holdReasons.find((x) => x.reason.includes('Final reconcile 再検証不能'));
   assert.ok(item);
@@ -1475,30 +1376,6 @@ test('disclosures: evalVerdictFail:true → HOLD/AUTO/REVIEW いずれも disclo
   assert.equal(review.tier, 'REVIEW');
   assert.equal(review.disclosures.length, 1);
   assert.ok(review.disclosures[0].includes('evaluator verdict=fail'));
-  assert.equal(review.reasons[review.reasons.length - 1], review.disclosures[0]);
-});
-
-test('disclosures: finalReconcile:"ci_verified" → HOLD/AUTO/REVIEW いずれも disclosures に開示 1 件、reasons 末尾にも同文が残る', () => {
-  const finalCi = { verified: true, reason: 'ok', kind: null, checkNames: ['Bats', 'Node'], headRefOid: 'a'.repeat(40) };
-
-  const hold = classifyMergeTier(baseCleanInput({ unsatisfiedAgentAc: true, finalReconcile: 'ci_verified', finalCi }));
-  assert.equal(hold.tier, 'HOLD');
-  assert.equal(hold.disclosures.length, 1);
-  assert.ok(hold.disclosures[0].includes('ci_verified'));
-  assert.equal(hold.reasons[hold.reasons.length - 1], hold.disclosures[0]);
-
-  const auto = classifyMergeTier(baseCleanInput({
-    shape: 'micro', docsOrTestOnly: true, finalReconcile: 'ci_verified', finalCi,
-  }));
-  assert.equal(auto.tier, 'AUTO');
-  assert.equal(auto.disclosures.length, 1);
-  assert.ok(auto.disclosures[0].includes('ci_verified'));
-  assert.equal(auto.reasons[auto.reasons.length - 1], auto.disclosures[0]);
-
-  const review = classifyMergeTier(baseCleanInput({ finalReconcile: 'ci_verified', finalCi }));
-  assert.equal(review.tier, 'REVIEW');
-  assert.equal(review.disclosures.length, 1);
-  assert.ok(review.disclosures[0].includes('ci_verified'));
   assert.equal(review.reasons[review.reasons.length - 1], review.disclosures[0]);
 });
 
@@ -1674,12 +1551,10 @@ test('classifyMergeTier: finalReconcile skipped で Validate が green / no_test
   assert.deepEqual(codesOf(classifyMergeTier(cases[2][1])), ['ac_human_pending', 'iterate_non_lgtm']);
 });
 
-test('classifyMergeTier: finalReconcile が reverified / ci_verified / unavailable なら Validate red でも validate_test_red を出さない（最終 tree の判定に任せる）', () => {
-  const finalCi = { verified: true, reason: 'ok', kind: null, checkNames: ['test'], headRefOid: 'a'.repeat(40) };
+test('classifyMergeTier: finalReconcile が reverified / unavailable なら Validate red でも validate_test_red を出さない（最終 tree の判定に任せる）', () => {
   const cases = [
     [{ finalReconcile: 'reverified', finalTestGreen: true }, []],
     [{ finalReconcile: 'reverified', finalTestGreen: false }, ['final_test_red']],
-    [{ finalReconcile: 'ci_verified', finalCi }, []],
     [{ finalReconcile: 'unavailable' }, ['final_reconcile_unavailable']],
   ];
   for (const [fr, wantCodes] of cases) {
@@ -1696,53 +1571,28 @@ test('classifyMergeTier: validateResult の契約外形状は明示 error', () =
   }
 });
 
-// ---- validateCi（Final reconcile skipped + Validate tests:error の run の CI 確認、issue #1117）----
+// ---- validate_tests_not_run（Final reconcile skipped + Validate tests:error の run、issue #1117 / #1168）----
 
 const VALIDATE_ERROR = { tests: 'error', green: false, summary: 'pnpm install failed — テストは 1 件も実行されていない' };
-const PR_SHA = 'a'.repeat(40);
-const rollup = (conclusion, status = 'COMPLETED') => [{ __typename: 'CheckRun', name: 'test', status, conclusion }];
-// ci-test-display の応答を finalCiVerdict に通した実際の判定（verified:false の各経路）
-const UNVERIFIED_CI = {
-  '未取得（PR head sha 無し）': null,
-  '取得失敗': finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: false, error: 'gh failed' } }),
-  pending: finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: true, headRefOid: PR_SHA, statusCheckRollup: rollup(null, 'IN_PROGRESS') } }),
-  failure: finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: true, headRefOid: PR_SHA, statusCheckRollup: rollup('FAILURE') } }),
-  'sha 不一致': finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: true, headRefOid: 'b'.repeat(40), statusCheckRollup: rollup('SUCCESS') } }),
-  'check 0 件': finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: true, headRefOid: PR_SHA, statusCheckRollup: [] } }),
-};
-const VERIFIED_CI = finalCiVerdict({ expectedSha: PR_SHA, meta: { ok: true, headRefOid: PR_SHA, statusCheckRollup: rollup('SUCCESS') } });
 const DEPS_FAILED = { ok: false, note: 'pnpm install failed: EPERM .gitmodules' };
 
-test('classifyMergeTier: finalReconcile skipped + Validate tests:error で PR head sha の CI 確認が成立していない → HOLD 理由 validate_tests_not_run を 1 件積む', () => {
-  for (const [name, validateCi] of Object.entries(UNVERIFIED_CI)) {
+test('classifyMergeTier: finalReconcile skipped + Validate tests:error は CI の success の形をした入力があっても常に validate_tests_not_run（human_judgment）を 1 件積む', () => {
+  for (const extra of [{}, { validateCi: CI_SUCCESS_LIKE }, { validateCi: CI_SUCCESS_LIKE, finalCi: CI_SUCCESS_LIKE }]) {
     for (const base of [baseCleanInput({}), { ...autoBase(), iterateStatus: 'lgtm', evalStaleness: 'none' }]) {
-      const r = classifyMergeTier({ ...base, finalReconcile: 'skipped', validateResult: VALIDATE_ERROR, validateCi });
-      assert.equal(r.tier, 'HOLD', `${name}: ${JSON.stringify(r)}`);
-      // kind は CI 判定の kind（pending / 取得失敗は再チェックで解消しうる）。未取得は人間確認
-      assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['validate_tests_not_run', validateCi?.kind ?? 'human_judgment']], name);
-      if (validateCi != null) assert.ok(r.reasons[0].includes('reason=' + validateCi.reason), `${name}: ${r.reasons[0]}`);
+      const r = classifyMergeTier({ ...base, finalReconcile: 'skipped', validateResult: VALIDATE_ERROR, setupDeps: DEPS_FAILED, ...extra });
+      assert.equal(r.tier, 'HOLD', `${JSON.stringify(extra)}: ${JSON.stringify(r)}`);
+      assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['validate_tests_not_run', 'human_judgment']], JSON.stringify(extra));
+      assert.ok(r.reasons[0].endsWith('— 人間確認必須'), r.reasons[0]);
+      assert.equal(r.holdKind, 'human_judgment');
     }
   }
   // 他の HOLD 理由と並んでも積まれる
-  const both = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_ERROR, validateCi: null, iterateStatus: 'stuck' }));
+  const both = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_ERROR, iterateStatus: 'stuck' }));
   assert.deepEqual(codesOf(both), ['validate_tests_not_run', 'iterate_non_lgtm']);
 });
 
-test('classifyMergeTier: finalReconcile skipped + Validate tests:error でも PR head sha の CI が verified:true なら validate_tests_not_run を積まず、Validate 未指定時と完全一致', () => {
-  const cases = [
-    ['REVIEW', baseCleanInput({ finalReconcile: 'skipped' })],
-    ['AUTO', { ...autoBase(), iterateStatus: 'lgtm', evalStaleness: 'none', finalReconcile: 'skipped' }],
-    ['HOLD（既存理由）', baseCleanInput({ finalReconcile: 'skipped', iterateStatus: 'stuck' })],
-  ];
-  for (const [name, input] of cases) {
-    const r = classifyMergeTier({ ...input, validateResult: VALIDATE_ERROR, validateCi: VERIFIED_CI, setupDeps: DEPS_FAILED });
-    assert.deepEqual(r, classifyMergeTier(input), name);
-    assert.ok(!codesOf(r).includes('validate_tests_not_run'), name);
-  }
-});
-
 test('classifyMergeTier: validate_tests_not_run の文言は「テストが 1 件も実行されていない」で始まり、Setup(deps) が ok:false の run だけ note を含む', () => {
-  const reasonOf = (setupDeps) => classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_ERROR, validateCi: UNVERIFIED_CI['check 0 件'], setupDeps }))
+  const reasonOf = (setupDeps) => classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_ERROR, setupDeps }))
     .holdReasons.find((x) => x.code === 'validate_tests_not_run').reason;
   const failed = reasonOf(DEPS_FAILED);
   assert.ok(failed.startsWith('テストが 1 件も実行されていない'), failed);
@@ -1755,12 +1605,10 @@ test('classifyMergeTier: validate_tests_not_run の文言は「テストが 1 �
   }
 });
 
-test('classifyMergeTier: finalReconcile が skipped 以外 / Validate tests が error 以外なら validateCi・setupDeps を見ず、未指定時と完全一致', () => {
-  const finalCi = { verified: true, reason: 'ok', kind: null, checkNames: ['test'], headRefOid: PR_SHA };
+test('classifyMergeTier: finalReconcile が skipped 以外 / Validate tests が error 以外なら setupDeps を見ず、未指定時と完全一致', () => {
   const inputs = [
     baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: true, validateResult: VALIDATE_ERROR }),
     baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: false, validateResult: VALIDATE_ERROR }),
-    baseCleanInput({ finalReconcile: 'ci_verified', finalCi, validateResult: VALIDATE_ERROR }),
     baseCleanInput({ finalReconcile: 'unavailable', validateResult: VALIDATE_ERROR }),
     baseCleanInput({ validateResult: VALIDATE_ERROR }),
     baseCleanInput({ finalReconcile: 'skipped', validateResult: { tests: 'passed', green: true } }),
@@ -1770,17 +1618,14 @@ test('classifyMergeTier: finalReconcile が skipped 以外 / Validate tests が 
   ];
   for (const input of inputs) {
     const baseline = classifyMergeTier(input);
-    const r = classifyMergeTier({ ...input, validateCi: UNVERIFIED_CI.failure, setupDeps: DEPS_FAILED });
+    const r = classifyMergeTier({ ...input, setupDeps: DEPS_FAILED });
     assert.deepEqual(r, baseline, JSON.stringify(input));
     assert.ok(!codesOf(r).includes('validate_tests_not_run'), JSON.stringify(input));
   }
 });
 
-test('classifyMergeTier: validateCi / setupDeps の契約外形状は明示 error', () => {
+test('classifyMergeTier: setupDeps の契約外形状は明示 error', () => {
   const base = { finalReconcile: 'skipped', validateResult: VALIDATE_ERROR };
-  for (const validateCi of [{ verified: 'false' }, { reason: 'ok' }, { verified: false, kind: 'unknown' }]) {
-    assert.throws(() => classifyMergeTier(baseCleanInput({ ...base, validateCi })), /invalid validateCi/, JSON.stringify(validateCi));
-  }
   for (const setupDeps of [{ ok: 'false', note: '' }, { ok: false }, { note: 'x' }]) {
     assert.throws(() => classifyMergeTier(baseCleanInput({ ...base, setupDeps })), /invalid setupDeps/, JSON.stringify(setupDeps));
   }

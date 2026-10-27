@@ -52,8 +52,6 @@ const EXPECTED_DEV_FLOW = {
   'diff-hash-local-verify-final': RO,
   'merge-tier-facts': RO,
   'changed-files-final': RO,
-  'ci-final': RO,
-  'ci-test-display': RO,
   'tree-diff-numstat': RO,
   // post-eval green-fix 再評価（diff-triage / green-fix 差分の numstat）と Final reconcile の fix 差分 numstat
   'green-fix-classify': RO,

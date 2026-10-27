@@ -76,12 +76,13 @@ test('[evaluator-contract] evaluator.md does NOT mirror the final_ac_reconcile c
   );
 });
 
-// issue #658: final_ac_reconcile 契約に item_resolutions（ESCALATE/advisory item の fix 後 tree
-// 再評価。ci_delegated を含む 3 値 enum）が追加されていることを pin する。
-test('[evaluator-contract][#658] final_ac_reconcile 契約が item_resolutions と ci_delegated を含む', () => {
+// issue #658 / #1168: final_ac_reconcile 契約に item_resolutions（ESCALATE/advisory item の fix 後 tree
+// 再評価。resolved / unresolved の 2 値 enum）があり、最終 tree で確かめられない item は unresolved にすることを pin する。
+test('[evaluator-contract][#1168] final_ac_reconcile 契約の item_resolutions は resolved / unresolved の 2 値で、確かめられない item は unresolved', () => {
   const contract = EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile;
   assert.ok(contract.includes('item_resolutions'), 'final_ac_reconcile 契約に item_resolutions の説明が必要です');
-  assert.ok(contract.includes('ci_delegated'), 'final_ac_reconcile 契約に ci_delegated の説明が必要です');
+  assert.ok(contract.includes('resolved（指摘内容が最終 tree で解消されている — revert / 修正済み等）/ unresolved の 2 値のみ'), contract);
+  assert.ok(contract.includes('最終 tree で確かめられない item（ローカルで実行できない build / compose / e2e 等）は unresolved にする'), contract);
 });
 
 // issue #1144: テストログに載っている AC 関連テストファイルは再実行せずログの行を根拠にし、載っていないものだけ実行する
@@ -350,6 +351,8 @@ test('[evaluator-contract][#842] eval#i の EVAL schema と final-ac-reconcile �
   const finalSchema = calls.find((c) => c.label === 'final-ac-reconcile')?.schema;
   assert.ok(finalSchema, 'final-ac-reconcile の schema が取れない');
   assert.equal(finalSchema.properties.item_resolutions.items.properties.evidence.maxLength, EVAL_EVIDENCE_MAX);
+  // resolution の enum は FINAL_ITEM_RESOLUTIONS（resolved / unresolved の 2 値。issue #1168）
+  assert.equal(JSON.stringify(finalSchema.properties.item_resolutions.items.properties.resolution.enum), JSON.stringify(['resolved', 'unresolved']));
 });
 
 test('[evaluator-contract][#842] evaluator.md の「書き方」の字数は schema の maxLength と一致する', () => {

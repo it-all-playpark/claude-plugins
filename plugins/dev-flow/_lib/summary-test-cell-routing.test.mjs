@@ -1,36 +1,37 @@
-// summary-test-cell-routing: VM sandbox routing test for dev-flow の終端サマリー・テスト欄（issue #707）。
+// summary-test-cell-routing: VM sandbox routing test for dev-flow の終端サマリー・テスト欄（issue #707 / #1168）。
 //
-// Validate が tests:'error'（起動失敗 = テスト未実行）で pr-iterate の fix が無く Final reconcile が
-// skipped の run は、PR phase の head sha に pin した CI check を ci-test-display（finalCiPrompt +
-// finalCiVerdict の再利用）で 1 回読み、その判定を終端サマリーのテスト欄と merge tier（validateCi）の
-// 両方に使う。CI 確認が成立しなければ merge tier は validate_tests_not_run で HOLD（issue #1117）。
+// テストを 1 件も確かめていない run は、PR の CI が success でもテスト欄を検証済みにせず merge tier を HOLD にする
+// （pull_request の CI は PR head の workflow・スクリプトで動き、PR 自身が書き換えられる）。
 //
 // テストケース:
-//   (a) sha 一致 + 全 success → テスト欄 '✅ green (CI)'
-//   (b) sha 不一致 / check failure / 取得失敗 / throw → テスト欄 '⚠️ 未実行（環境）・未検証' + 結論行で CI 確認
-//   (c) (b) と PR head sha 無し（未取得）は merge tier HOLD（validate_tests_not_run）、(a) は積まない。final_reconcile は skipped のまま
-//   (d) Validate が tests:'failed'（本物の red）→ ci-test-display 不発 + テスト欄 '❌ red' + merge tier HOLD（validate_test_red、issue #1086）
-//   (e) fixes_applied>0（Final reconcile 実行）→ ci-test-display 不発
-//   (f) PR head sha が取れていない → ci-test-display 不発 + 未検証表示
-//   (g) CI の読み取りは ci-test-display の 1 回だけで、その判定がテスト欄と merge tier の validateCi に渡る。
-//       merge-tier.mjs は表示用入力（validateTests / ciTestVerified / ci-test-display）を参照しない
-//   (h) 返り値 validate_tests / ci_test_verified がテスト欄と同じ入力を返し、test_green / final_test_green は不変（issue #731）
-//   (i) Setup(deps) が ok:false の run では validate_tests_not_run の文言に deps の note が載る
+//   (a) Validate tests:'error' + fixes_applied=0（Final reconcile skipped）+ PR head の CI 全 success
+//       → テスト欄 '⚠️ 未実行（環境）・未検証' + 結論行で CI 確認 + merge tier HOLD（validate_tests_not_run・human_judgment）
+//   (b) Final reconcile unavailable（test#final tests:'error'）+ PR head の CI 全 success
+//       → テスト欄 unavailable の表示 + merge tier HOLD（final_reconcile_unavailable・human_judgment）
+//   (c) Validate が tests:'failed'（本物の red）→ テスト欄 '❌ red' + merge tier HOLD（validate_test_red、issue #1086）
+//   (d) 返り値 validate_tests がテスト欄と同じ入力を返し、test_green / final_test_green は不変（issue #731）
+//   (e) Setup(deps) が ok:false の run では validate_tests_not_run の文言に deps の note が載る
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
 import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const devFlowSrc = readFileSync(join(here, '..', '.claude', 'workflows', 'dev-flow.js'), 'utf8');
-const mergeTierSrc = readFileSync(join(here, 'merge-tier.mjs'), 'utf8');
 
-const SCENARIO = DEV_FLOW_SCENARIOS['ci-test-display'];
+const SCENARIO = DEV_FLOW_SCENARIOS['validate-tests-error'];
 const SHA40 = 'a'.repeat(40);
+// PR head の CI が全 success の応答。merge-tier-facts の checks と、CI を読む経路があれば返る head sha 一致の rollup
+const CI_GREEN = {
+  'merge-tier-facts': mergeTierFacts({ checks: [{ name: 'test', bucket: 'pass' }] }),
+  'ci-final': { ok: true, headRefOid: SHA40, statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }] },
+  'ci-test-display': { ok: true, headRefOid: SHA40, statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }] },
+};
+const UNAVAILABLE_CELL = '⚠️ unavailable（最終 tree で再検証不能）・未検証';
 
 async function run(overrides = {}, workflow, extra) {
   const { ctx, calls } = makeDevFlowSandbox({ overrides: { ...SCENARIO.overrides, ...overrides }, workflow, extra });
@@ -57,132 +58,69 @@ function tierFacts(result) {
   });
 }
 
-test('[summary-test-cell] (a) Validate tests:error + fixes_applied=0 + 同一 sha の CI 全 success → テスト欄 ✅ green (CI)', async () => {
-  const { result, calls, testCell, conclusion } = await run();
-  const probe = calls.filter((c) => c.label === 'ci-test-display');
-  assert.equal(probe.length, 1, 'ci-test-display は 1 回呼ばれる');
-  assert.equal(probe[0].agentType, 'dev-flow:dev-runner-haiku-ro');
-  assert.ok(probe[0].prompt.includes('gh pr view 1 --json headRefOid,statusCheckRollup'), 'ci-final と同じ finalCiPrompt を使う');
-  assert.ok(!calls.some((c) => c.label === 'ci-final'), 'Final reconcile の ci-final は起動しない');
+const holdOf = (result, code) => (result?.merge_tier_hold_reasons ?? []).filter((r) => r.code === code);
+
+test('[summary-test-cell] (a) Validate tests:error + fixes_applied=0 は PR head の CI が全 success でもテスト欄を未実行・未検証にし、merge tier HOLD（validate_tests_not_run）', async () => {
+  const { result, testCell, conclusion } = await run(CI_GREEN);
   assert.equal(result?.final_reconcile, 'skipped', 'final_reconcile は skipped のまま');
-  assert.equal(testCell, '✅ green (CI)');
-  assert.ok(!conclusion.includes('CI の test 結果を確認してから'), '確認済みなので結論行に CI 確認を出さない');
+  assert.equal(testCell, '⚠️ 未実行（環境）・未検証');
+  assert.ok(conclusion.includes('CI の test 結果を確認してからマージ'), '結論行で CI 確認を促す');
+  assert.equal(result?.merge_tier, 'HOLD', tierFacts(result));
+  assert.equal(holdOf(result, 'validate_tests_not_run').map((r) => r.kind).join(','), 'human_judgment', tierFacts(result));
 });
 
-const UNVERIFIED = {
-  'sha 不一致': { ok: true, headRefOid: 'b'.repeat(40), statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }] },
-  'check failure': { ok: true, headRefOid: SHA40, statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE' }] },
-  '取得失敗': { ok: false, error: 'gh failed' },
-  throw: () => { throw new Error('injected'); },
-};
-
-test('[summary-test-cell] (b) CI 未確認（sha 不一致 / failure / 取得失敗 / throw）→ テスト欄は ❌ red ではなく未実行・未検証 + 結論行で CI 確認', async () => {
-  for (const [name, resp] of Object.entries(UNVERIFIED)) {
-    const { result, testCell, conclusion } = await run({ 'ci-test-display': resp });
-    assert.equal(testCell, '⚠️ 未実行（環境）・未検証', `${name}: テスト欄`);
-    assert.ok(conclusion.includes('CI の test 結果を確認してからマージ'), `${name}: 結論行に CI 確認`);
-    assert.equal(result?.validate_tests, 'error', `${name}: 返り値 validate_tests`);
-    assert.equal(result?.ci_test_verified, false, `${name}: 返り値 ci_test_verified は未検証`);
-  }
+test('[summary-test-cell] (b) Final reconcile unavailable（test#final tests:error）は PR head の CI が全 success でもテスト欄を unavailable にし、merge tier HOLD（final_reconcile_unavailable）', async () => {
+  const { result, testCell, conclusion } = await run({
+    ...CI_GREEN,
+    'test#1': { tests: 'passed', green: true, summary: '' },
+    'reconcile-sync': { ok: true, head: SHA40 },
+    'test#final': { tests: 'error', green: false, summary: 'startup failed' },
+  }, async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }));
+  assert.equal(result?.final_reconcile, 'unavailable', tierFacts(result));
+  assert.equal(testCell, UNAVAILABLE_CELL);
+  assert.ok(conclusion.includes('CI の test 結果を確認してからマージ'), '結論行で CI 確認を促す');
+  assert.equal(result?.merge_tier, 'HOLD', tierFacts(result));
+  assert.equal(holdOf(result, 'final_reconcile_unavailable').map((r) => r.kind).join(','), 'human_judgment', tierFacts(result));
+  assert.equal(result?.final_test_green, null);
 });
 
-const notRunCodes = (result) => (result?.merge_tier_hold_reasons ?? []).filter((r) => r.code === 'validate_tests_not_run');
-
-test('[summary-test-cell] (c) CI 確認が成立しない run（未確認 / PR head sha 無しで未取得）は merge tier HOLD（validate_tests_not_run）、成立した run は積まない', async () => {
-  const verified = await run();
-  assert.equal(notRunCodes(verified.result).length, 0, 'CI green の run は validate_tests_not_run を積まない');
-  assert.equal(verified.result?.merge_tier, 'REVIEW', tierFacts(verified.result));
-  for (const [name, resp] of Object.entries(UNVERIFIED)) {
-    const other = await run({ 'ci-test-display': resp });
-    assert.equal(other.result?.merge_tier, 'HOLD', `${name}: ${tierFacts(other.result)}`);
-    assert.equal(notRunCodes(other.result).length, 1, `${name}: ${tierFacts(other.result)}`);
-    assert.equal(other.result?.final_reconcile, 'skipped', `${name}: final_reconcile は skipped のまま`);
-  }
-  // probe を起動しない run（PR head sha 無し）は CI 未取得として HOLD
-  const noProbe = await run({ 'pr#1': { pr_url: 'http://x', pr_number: 1, committed: true } });
-  assert.ok(!noProbe.calls.some((c) => c.label === 'ci-test-display'));
-  assert.equal(noProbe.result?.merge_tier, 'HOLD', tierFacts(noProbe.result));
-  assert.ok(notRunCodes(noProbe.result)[0]?.reason.includes('PR head sha の CI を取得していない'), tierFacts(noProbe.result));
-});
-
-test("[summary-test-cell] (d) Validate tests:'failed'（本物の red）→ ci-test-display 不発 + テスト欄 ❌ red", async () => {
+test("[summary-test-cell] (c) Validate tests:'failed'（本物の red）→ テスト欄 ❌ red + merge tier HOLD（validate_test_red）", async () => {
   // green-fix 後も red のまま（GREEN_MAX 到達）にする
   const red = { tests: 'failed', green: false, summary: 'assert mismatch' };
-  const { result, calls, testCell } = await run({ 'test#1': red, 'test#2': red, 'test#3': red });
-  assert.ok(!calls.some((c) => c.label === 'ci-test-display'), '本物の red では CI 表示確認を起動しない');
+  const { result, testCell } = await run({ 'test#1': red, 'test#2': red, 'test#3': red });
   assert.equal(testCell, '❌ red');
   assert.equal(result?.validate_tests, 'failed');
-  assert.equal(result?.ci_test_verified, null, 'CI 表示確認を起動しない run は null');
   assert.equal(result?.test_green, false);
   // テスト欄 ❌ red の run は merge tier も HOLD（validate_test_red。Final reconcile skipped で Validate の red が残る。issue #1086）
   assert.equal(result?.final_reconcile, 'skipped');
   assert.equal(result?.merge_tier, 'HOLD');
-  assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'validate_test_red'), JSON.stringify(result?.merge_tier_hold_reasons));
+  assert.equal(holdOf(result, 'validate_test_red').length, 1, JSON.stringify(result?.merge_tier_hold_reasons));
 });
 
-test('[summary-test-cell] (e) fixes_applied>0（Final reconcile 実行）→ ci-test-display 不発', async () => {
-  const { calls } = await run({ 'reconcile-sync': { ok: true, head: SHA40 } }, async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }));
-  assert.ok(!calls.some((c) => c.label === 'ci-test-display'), 'Final reconcile が test 状態を扱う run では起動しない');
-});
-
-test('[summary-test-cell] (f) PR head sha が取れていない → ci-test-display 不発 + 未検証表示', async () => {
-  const { calls, testCell } = await run({ 'pr#1': { pr_url: 'http://x', pr_number: 1, committed: true, head_sha: '' } });
-  assert.ok(!calls.some((c) => c.label === 'ci-test-display'));
-  assert.equal(testCell, '⚠️ 未実行（環境）・未検証');
-});
-
-test('[summary-test-cell] (g) CI の 1 回の取得の判定がテスト欄と merge tier の validateCi に渡り、merge-tier.mjs は表示用入力を参照しない', () => {
-  for (const token of ['validateTests', 'ciTestVerified', 'ci-test-display', 'summaryCiTestVerified']) {
-    assert.ok(!mergeTierSrc.includes(token), `merge-tier.mjs に ${token} を含まない`);
-  }
-  const code = (token) => devFlowSrc.split('\n').filter((l) => l.includes(token) && !l.trim().startsWith('//')).map((l) => l.trim());
-  // ci-test-display の判定 displayCi は finalCiVerdict で 1 回だけ作り、テスト欄（summaryCiTestVerified）と
-  // merge tier（validateCi）にだけ渡る — merge tier 用に CI を読み直さない
-  assert.deepEqual(code('displayCi '), [
-    'let displayCi = null',
-    'displayCi = finalCiVerdict({ expectedSha: prHeadShaForDisplay, meta: displayCiMeta })',
-  ]);
-  assert.deepEqual(code('validateCi:'), ['validateCi: displayCi,']);
-  assert.equal(code("label: 'ci-test-display'").length, 1, 'ci-test-display の取得は 1 か所');
-  // 表示確認の結果は終端サマリーの引数と run 返り値にだけ渡る（telemetry には渡らない）
-  assert.deepEqual(code('summaryCiTestVerified'), [
-    'let summaryCiTestVerified = null',
-    'summaryCiTestVerified = displayCi.verified',
-    'ciTestVerified: summaryCiTestVerified,',
-    'ci_test_verified: summaryCiTestVerified,',
-  ]);
-});
-
-test("[summary-test-cell] (h) 返り値: Validate tests:'error' + CI 照合成功 → validate_tests:'error' + ci_test_verified:true、test_green / final_test_green は不変", async () => {
-  const { result } = await run();
+test("[summary-test-cell] (d) 返り値: Validate tests:'error' → validate_tests:'error'、test_green / final_test_green は不変", async () => {
+  const { result } = await run(CI_GREEN);
   assert.equal(result?.validate_tests, 'error');
-  assert.equal(result?.ci_test_verified, true);
-  assert.equal(result?.test_green, false, 'test_green は Validate の green のまま（CI 照合で true にしない）');
+  assert.equal(result?.test_green, false, 'test_green は Validate の green のまま');
   assert.equal(result?.final_test_green, null, 'Final reconcile skipped の run は final_test_green null のまま');
+  const passed = await run({ 'test#1': { tests: 'passed', green: true, summary: '' } });
+  assert.equal(passed.result?.validate_tests, 'passed');
+  assert.equal(passed.result?.test_green, true);
+  assert.equal(passed.result?.final_test_green, null);
 });
 
-test('[summary-test-cell] (i) Setup(deps) が ok:false の run は validate_tests_not_run の文言に deps の note が載る', async () => {
+test('[summary-test-cell] (e) Setup(deps) が ok:false の run は validate_tests_not_run の文言に deps の note が載る', async () => {
   const note = 'pnpm install failed: EPERM .gitmodules';
-  const { result } = await run({ 'ci-test-display': UNVERIFIED['取得失敗'] }, undefined, { args: devFlowArgs(1, { deps: { ok: false, note } }) });
+  const { result } = await run({}, undefined, { args: devFlowArgs(1, { deps: { ok: false, note } }) });
   assert.equal(result?.merge_tier, 'HOLD');
-  assert.ok(notRunCodes(result)[0]?.reason.includes('Setup(deps) ok:false: ' + note), tierFacts(result));
+  assert.ok(holdOf(result, 'validate_tests_not_run')[0]?.reason.includes('Setup(deps) ok:false: ' + note), tierFacts(result));
 });
 
-test("[summary-test-cell] (h) 返り値: Validate tests:'passed' → validate_tests:'passed' + ci_test_verified null + test_green true", async () => {
-  const { result, calls } = await run({ 'test#1': { tests: 'passed', green: true, summary: '' } });
-  assert.ok(!calls.some((c) => c.label === 'ci-test-display'), 'passed の run では CI 表示確認を起動しない');
-  assert.equal(result?.validate_tests, 'passed');
-  assert.equal(result?.ci_test_verified, null);
-  assert.equal(result?.test_green, true);
-  assert.equal(result?.final_test_green, null);
-});
-
-test('[summary-test-cell] (h) dev-flow SKILL.md に返り値 validate_tests / ci_test_verified の読み方が載っている', () => {
+test('[summary-test-cell] (d) dev-flow SKILL.md に返り値 validate_tests の読み方が載っている', () => {
   const skillMd = readFileSync(join(here, '..', 'dev-flow', 'SKILL.md'), 'utf8');
   const section = skillMd.slice(skillMd.indexOf('## 完了後の返り値の読み方'));
   assert.ok(skillMd.includes('## 完了後の返り値の読み方'), '「完了後の返り値の読み方」節がある');
   assert.ok(skillMd.indexOf('## 完了後の返り値の読み方') > skillMd.indexOf('4. **Workflow 起動**'), '手順 4 の後に置く');
-  for (const token of ['`validate_tests`', '`ci_test_verified`', "`validate_tests === 'error' && ci_test_verified === true`", '再検証せず', '`validate_tests_not_run`']) {
+  for (const token of ['`validate_tests`', "`validate_tests === 'error'`", '`validate_tests_not_run`', '`final_reconcile_unavailable`']) {
     assert.ok(section.includes(token), `節に ${token} を含む`);
   }
 });
