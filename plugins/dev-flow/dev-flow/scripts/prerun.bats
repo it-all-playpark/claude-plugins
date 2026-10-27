@@ -291,6 +291,42 @@ make_issue_fixture() {
     [ ! -f "$WT/.devflow-tmp/stale.txt" ]
 }
 
+# ---- (5b) run の scratch を commit から外す（issue #1178） ----
+# fixture の repo は .gitignore に .devflow-tmp/ を持たない。prerun は追跡ファイルを書かず、worktree 共有の
+# info/exclude（git rev-parse --git-path で解決）に 1 行足す。2 回目・ignore 済みの repo では足さない。
+
+@test "(5b) .devflow-tmp/ を ignore しない repo -> info/exclude に 1 行だけ足し、prerun-setup.json 等が status・stage に載らない" {
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true'
+    [ -f "$WT/.devflow-tmp/prerun-setup.json" ]
+    excl="$(git -C "$WT" rev-parse --path-format=absolute --git-path info/exclude)"
+    [ "$(grep -cxF '/.devflow-tmp/' "$excl")" -eq 1 ]
+    # 追跡ファイル（.gitignore）は書かず、scratch は status にも stage にも載らない
+    [ -z "$(git -C "$WT" status --porcelain --untracked-files=all)" ]
+    [ -z "$(git -C "$WT" add -A --dry-run)" ]
+
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    [ "$(grep -cxF '/.devflow-tmp/' "$excl")" -eq 1 ]
+}
+
+@test "(5c) .gitignore で .devflow-tmp/ を ignore 済みの repo -> info/exclude に足さない" {
+    git -C "$SEED" checkout -q dev
+    echo ".devflow-tmp/" > "$SEED/.gitignore"
+    git -C "$SEED" add .gitignore
+    git -C "$SEED" commit -q -m "ignore scratch"
+    git -C "$SEED" push -q origin dev
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true'
+    excl="$(git -C "$WT" rev-parse --path-format=absolute --git-path info/exclude)"
+    run grep -qF 'devflow-tmp' "$excl"
+    [ "$status" -ne 0 ]
+}
+
 # ---- (6) 既存 worktree の起点が origin/main（期待は origin/dev）-> 不一致 ----
 
 @test "(6) 既存worktreeの起点が不一致 -> ok:false, reused, worktree_errorに詳細" {
@@ -521,9 +557,8 @@ track_unwritable_githooks() {
     echo "$output" | jq -e --arg h "$(git -C "$ROOT" rev-parse origin/dev)" '.head == $h'
     [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "feature/issue-1" ]
     [ -f "$WT/README.md" ]
-    # .devflow-tmp（prerun-setup.json）は fixture では ignore されていないので除いて見る
-    [ -z "$(git -C "$WT" status --porcelain -- . ':(exclude).devflow-tmp')" ]
-    [ -z "$(git -C "$WT" add -A --dry-run -- . ':(exclude).devflow-tmp')" ]
+    [ -z "$(git -C "$WT" status --porcelain)" ]
+    [ -z "$(git -C "$WT" add -A --dry-run)" ]
 
     # 作り直した worktree の再利用は ok:true（skip-worktree のパスは未ステージの削除に数えない）
     run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"

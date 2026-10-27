@@ -385,7 +385,7 @@ test('[abort-telemetry] (8) PR phase 失敗: 回収コマンドは committed に
   assert.equal(result2.committed, false);
   assert.ok(!('head_sha' in result2), `head_sha が取れなかった run に head_sha キーがある: ${result2.head_sha}`);
   assert.ok(!('push_log' in result2), 'commit 失敗に push_log が載っている');
-  assert.deepEqual([...result2.recovery_commands.slice(0, 3)], ['git add -A', 'git commit -F .devflow-tmp/commit-msg.txt', 'git push origin HEAD']);
+  assert.deepEqual([...result2.recovery_commands.slice(0, 4)], ['git add -A', 'git reset -q -- .devflow-tmp', 'git commit -F .devflow-tmp/commit-msg.txt', 'git push origin HEAD']);
 });
 
 test('[abort-telemetry] (8) PR phase 失敗: abort entry ではなく outcome=failure / error_category=pr_phase_failed の handoff を 1 件書き、nested pr-iterate・Merge tier・終端サマリは実行しない', async () => {

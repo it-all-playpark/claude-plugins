@@ -1,5 +1,8 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import {
   buildCommitMessage,
   buildPrBody,
@@ -566,7 +569,7 @@ test('[pr-artifacts] prompt: 本文を verbatim 転写させ bare 単文の git 
   assert.ok(p.includes('<<<PR_BODY_BEGIN>>>') && p.includes('<<<PR_BODY_END>>>'));
   assert.ok(p.includes('/tmp/wt/.devflow-tmp/commit-msg.txt') && p.includes('/tmp/wt/.devflow-tmp/pr-body.md'));
   // git は cwd（worktree）で実行する bare 単文
-  assert.ok(p.includes('`git add -A`'), '手順 1 の add が bare 形でない');
+  assert.ok(p.includes('1. `git add -A` → `git reset -q -- .devflow-tmp`'), '手順 1 の add が bare 形でない');
   assert.ok(p.includes('`git commit -F /tmp/wt/.devflow-tmp/commit-msg.txt`'), '手順 2 の commit が bare 形でない');
   assert.ok(p.includes('3. `pr-push /tmp/wt/.devflow-tmp/push-output.log`'), '手順 3 の push が bare 名 pr-push でない');
   assert.ok(p.includes('`git rev-parse HEAD`'), '手順 6 の rev-parse が bare 形でない');
@@ -764,7 +767,7 @@ test('[pr-artifacts] prPhaseRecoveryCommands: committed と失敗段に応じて
   const common = { base: 'main', branch: 'feature/issue-9', repo: 'o/r', commitMessage: 'fix(x): "q" (#9)\n\nbody' };
   const create = 'gh pr create --draft --body-file .devflow-tmp/pr-body.md --repo o/r --base main --head feature/issue-9 --title "fix(x): \\"q\\" (#9)"';
   assert.deepEqual(prPhaseRecoveryCommands({ ...common, committed: false, failedStep: 'commit' }),
-    ['git add -A', 'git commit -F .devflow-tmp/commit-msg.txt', 'git push origin HEAD', create, '/pr-iterate <N>']);
+    ['git add -A', 'git reset -q -- .devflow-tmp', 'git commit -F .devflow-tmp/commit-msg.txt', 'git push origin HEAD', create, '/pr-iterate <N>']);
   assert.deepEqual(prPhaseRecoveryCommands({ ...common, committed: true, failedStep: 'push' }),
     ['git push origin HEAD', create, '/pr-iterate <N>']);
   // pr-create で落ちた run は push 済み
@@ -774,6 +777,63 @@ test('[pr-artifacts] prPhaseRecoveryCommands: committed と失敗段に応じて
   // repo 不明なら --repo を付けない
   assert.ok(!prPhaseRecoveryCommands({ ...common, repo: null, committed: true, failedStep: 'push' })[1].includes('--repo'));
 });
+
+// ---- `.devflow-tmp/` を ignore していない対象 repo で scratch を commit しない（issue #1178） ----
+// `.gitignore` に `.devflow-tmp/` を持たない fixture に run の scratch と実装の変更を置き、PR phase の手順 1〜2 と
+// 回収コマンドの stage → commit を実 git で走らせる。commit に scratch が入らず、実装の変更（untracked の新規ファイル・
+// 変更・削除）は従来どおり入ることを確かめる。`.devflow-tmp/` を ignore 済みの repo（prerun が info/exclude に足した後を
+// 含む）でも同じコマンド列がどれも exit 0 で通ることを ignored:true で確かめる（sh は exit 非0 で throw する）。
+function withScratchFixture({ ignored }, fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'pr-stage-'));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+  const sh = (cmd) => execFileSync('sh', ['-c', cmd], { cwd: dir, env, encoding: 'utf8' });
+  try {
+    sh('git init -q && git config user.name t && git config user.email t@example.com');
+    if (ignored) {
+      mkdirSync(join(dir, '.git', 'info'), { recursive: true });
+      writeFileSync(join(dir, '.git', 'info', 'exclude'), '/.devflow-tmp/\n');
+    }
+    writeFileSync(join(dir, '.gitignore'), 'node_modules/\n');
+    writeFileSync(join(dir, 'README.md'), 'before\n');
+    writeFileSync(join(dir, 'old.txt'), 'old\n');
+    sh('git add -A && git commit -q -m init');
+    mkdirSync(join(dir, '.devflow-tmp'));
+    for (const f of ['prerun-setup.json', 'pr-body.md', '.isolation-probe-1700000000']) writeFileSync(join(dir, '.devflow-tmp', f), 'scratch\n');
+    writeFileSync(join(dir, '.devflow-tmp', 'commit-msg.txt'), 'feat(x): add feature (#1)\n');
+    mkdirSync(join(dir, 'src'));
+    writeFileSync(join(dir, 'src', 'feature.mjs'), 'export const x = 1;\n');
+    writeFileSync(join(dir, 'README.md'), 'after\n');
+    unlinkSync(join(dir, 'old.txt'));
+    fn({ dir, sh });
+    const committed = sh('git show --name-only --format= HEAD').split('\n').filter(Boolean).sort();
+    assert.deepEqual(committed, ['README.md', 'old.txt', 'src/feature.mjs'], `commit の中身: ${committed.join(', ')}`);
+    assert.ok(!sh('git ls-tree -r --name-only HEAD').split('\n').some((p) => p.startsWith('.devflow-tmp/')), '.devflow-tmp/ 配下が commit された');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+for (const ignored of [false, true]) {
+  const repoKind = ignored ? 'ignore 済みの' : 'ignore しない';
+
+  test(`[pr-artifacts][#1178 AC-1/AC-4] .devflow-tmp/ を${repoKind} repo で PR phase の手順 1〜2 は scratch を commit せず、実装の新規ファイルは commit する`, () => {
+    withScratchFixture({ ignored }, ({ dir, sh }) => {
+      const p = prPhasePrompt({ wt: dir, base: 'main', branch: 'b', repo: 'o/r', issue: 1, commitMessage: 'feat(x): add feature (#1)\n', prBody: 'Closes #1' });
+      const cmds = ['1', '2'].flatMap((n) => [...(p.split('\n').find((l) => l.startsWith(`${n}. \``)) ?? '').matchAll(/`(git [^`]+)`/g)].map((m) => m[1]));
+      assert.ok(cmds[0]?.startsWith('git add') && cmds.at(-1)?.startsWith('git commit -F'), `手順 1〜2 が stage → commit でない: ${cmds.join(' | ')}`);
+      for (const cmd of cmds) sh(cmd);
+    });
+  });
+
+  test(`[pr-artifacts][#1178 AC-2/AC-4] .devflow-tmp/ を${repoKind} repo で回収コマンドの stage → commit は scratch を commit せず、実装の新規ファイルは commit する`, () => {
+    withScratchFixture({ ignored }, ({ sh }) => {
+      const all = prPhaseRecoveryCommands({ committed: false, failedStep: 'commit', base: 'main', branch: 'b', repo: 'o/r', commitMessage: 'feat(x): add feature (#1)' });
+      const cmds = all.slice(0, all.findIndex((c) => c.startsWith('git commit -F')) + 1);
+      assert.ok(cmds[0]?.startsWith('git add') && cmds.at(-1)?.startsWith('git commit -F'), `回収コマンドの先頭が stage → commit でない: ${all.join(' | ')}`);
+      for (const cmd of cmds) sh(cmd);
+    });
+  });
+}
 
 test('[pr-artifacts] prPhaseFailureComment: 失敗段・理由・commit 状態・branch・worktree・push log・回収コマンドを載せ、理由中の fence に負けない', () => {
   const facts = { failed_step: 'push', failure_reason: 'hook said ```boom```', committed: true, head_sha: 'f'.repeat(40), push_log: '/wt/.devflow-tmp/push-output.log' };

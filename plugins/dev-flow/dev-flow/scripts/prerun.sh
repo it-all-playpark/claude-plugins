@@ -7,7 +7,8 @@
 # `Workflow({ args: { issue, setup: <JSON> } })` の args.setup へそのまま渡す。
 #
 # 行う処理: base 解決 (origin/dev → origin/HEAD フォールバック) → worktree 作成/再利用 +
-# 起点(base)一致検証 + 独自コミット無しの再利用 worktree を base へ fast-forward + 書き込み probe →.devflow-tmp の git clean -fdx → analyze
+# 起点(base)一致検証 + 独自コミット無しの再利用 worktree を base へ fast-forward + 書き込み probe →.devflow-tmp を info/exclude に足す
+# （対象 repo が ignore していなければ）→ .devflow-tmp の git clean -fdx → analyze
 # （issue 取得 + contract parse + Jev 有界判定。prerun-analyze.sh。detect-stack と並列）‖
 # detect-stack（+ detect-test-runner の受理パターンを stack.test_runners に載せる）。各段は独立に ok/error を報告し、後続段を巻き込まない。
 # worktree 作成で取り出せないパスには skip-worktree を付け（出力の skip_worktree）、未ステージの削除が残る再利用 worktree は
@@ -383,6 +384,8 @@ fi
 # ============================================================================
 
 if [[ "$SEG2_OK" == true ]]; then
+    # scratch を対象 repo の .gitignore に依らず commit から外す（worktree-checkout.sh）。失敗は stderr に出して進む
+    exclude_devflow_tmp "$WT" || true
     if CLEAN_ERR="$(git -C "$WT" clean -fdx -- .devflow-tmp 2>&1)"; then
         clean_json='{"ok":true}'
     else

@@ -19,7 +19,8 @@
 # 無ければ origin/<head> から作成。作成時は取り出せないパスに skip-worktree を付け、再利用時は未ステージの
 # 削除が残っていれば fail-closed — worktree-checkout.sh）→ worktree の HEAD を PR head に合わせる（遅れていて未コミット変更が
 # 無ければ fast-forward、独自コミット・分岐があれば fail-closed）→ 書き込み probe →
-# `.devflow-tmp/.isolation-probe*` の git clean（前 run の probe 残置物。workflow の isolation-cleanup の代替）。
+# `.devflow-tmp/.isolation-probe*` の git clean（前 run の probe 残置物。workflow の isolation-cleanup の代替）→
+# `.devflow-tmp/` を worktree 共有の info/exclude に足す（対象 repo が ignore していなければ）。
 #
 # worktree の置き場所は dev-flow-prerun と同じ規則: 候補は既定 `<repo>/.claude/worktrees/pr-<N>` と
 # repo 外 `<repo>-wt/pr-<N>`。既定候補が存在すればそれ、無ければ repo 外候補が存在すればそれ、どちらも
@@ -457,6 +458,9 @@ fi
 # `.devflow-tmp` 全体は消さない（dev-flow の df-<N> を再利用したとき、PR phase 失敗の回収用 commit
 # message / PR body 等が残っている）
 git -C "$WT" clean -fdx -- '.devflow-tmp/.isolation-probe*' >/dev/null 2>&1 || true
+
+# scratch を対象 repo の .gitignore に依らず fix の commit から外す（worktree-checkout.sh）。失敗は stderr に出して進む
+exclude_devflow_tmp "$WT" || true
 
 # ============================================================================
 # Segment 5: 敵対的 security review の起動時の判定

@@ -74,7 +74,7 @@ Claude Code runtime によって frontmatter レベルで適用されるため�
 | Evaluate | redgreen 検証（`redgreen-verify <WT> <T1> <I1> [<T2> <I2> …]` — 対象 AC の全ペアを 1 spawn で判定。出力 `{results:[{index,…}]}` を verbatim で返す） | `{results:[…]}` |
 | Final reconcile | reconcile-sync（worktree を PR 最終 HEAD へ同期）・test 再実行・観測型 AC の redgreen 検証（`redgreen-verify --base origin/<base> <WT> <T1> <I1> …`。出力は Evaluate と同じく verbatim） | `{...}` / `{tests, green, summary}` / `{results:[…]}` |
 | Evaluate / Merge tier | journal 書き込み等その他決定論スクリプト | 各 schema |
-| PR | PR 作成（pr#<issue> — 確定済み commit message / PR body の verbatim 保存 + bare 単文 `git add -A` / `git commit -F` / `pr-push <log>`（push はこれだけで行う）/ `gh pr create --draft --body-file`） | `{pr_url, pr_number, committed, push_header}` |
+| PR | PR 作成（pr#<issue> — 確定済み commit message / PR body の verbatim 保存 + bare 単文 `git add -A` / `git reset -q -- .devflow-tmp`（scratch を stage から外す）/ `git commit -F` / `pr-push <log>`（push はこれだけで行う）/ `gh pr create --draft --body-file`） | `{pr_url, pr_number, committed, push_header}` |
 | Iterate / Merge tier | PR コメント投稿（post-review#i / post-summary — 確定済み本文の verbatim 転写 + gh pr comment/review 実行） | `{posted, method, url}` |
 | Iterate | base との conflict の自動解消（conflict-resolve#i — bare 単文 `git fetch origin <base>` → `conflict-autoresolve --worktree <WT> --base-ref origin/<base>` の stdout を verbatim で result に入れる → `resolved` のときだけ `git push origin HEAD`。merge・解消・abort は script が行い、agent は手で解かない） | `{fetched, result, pushed}` |
 
