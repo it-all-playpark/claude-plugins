@@ -206,6 +206,18 @@ sandbox:launch_services:osascript 1 1" ]
   [ "$(printf '%s' "$output" | ids)" = "request:request:touch 1 1" ]
 }
 
+@test "collect: 依頼の文言と別の文にあるインラインコードは依頼として数えず、同じ文にあるものは数える" {
+  local f=proj-a/s1.jsonl
+  # 完了報告の「手元でも」と、別の行の `Closes #740`（コードブロックも `! cmd` も無い）
+  say $f S1 2026-09-10T00:00:00Z m1 $'PR を作成しました。\n\n- 手元でもテストは通っています\n- `Closes #740` で issue を閉じます'
+  say $f S1 2026-09-10T00:01:00Z m2 $'手元でもテストは通っています。PR 本文に `Closes #740` を書きました。'
+  # 依頼の文言と同じ文にあるインラインコード
+  say $f S1 2026-09-10T00:02:00Z m3 $'認証が切れています。手元で `gh auth login` を実行してください。'
+  run collect
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | ids)" = "request:request:gh auth 1 1" ]
+}
+
 @test "collect: host-exec の実行を結末とコマンドで型にし、直前の Bash が拒否されていたかを数える" {
   local f=proj-a/s1.jsonl
   # Bash が sandbox に拒否された直後の host-exec
