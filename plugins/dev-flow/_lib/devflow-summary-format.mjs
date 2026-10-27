@@ -87,6 +87,17 @@ function conflictStoppedNote(conflictAutoresolve) {
   return `（自動解消せず: ${mdCell(last.reason || last.status)}${shown.length ? ` — ${shown.map(conflictFileCell).join(' / ')}` : ''}）`;
 }
 
+// final_test_red / validate_test_red の HOLD 理由の「現状」に添える、全件実行（test#final / Validate）で落ちたテストファイル
+// （issue #1181）。単体再実行の結果では増減させない。テストの出力本文は載せない（ファイル名だけ）。空なら何も添えない。
+const HOLD_FAILED_FILES_MAX = 20;
+function failedFilesNote(files) {
+  const list = (Array.isArray(files) ? files : []).filter((f) => typeof f === 'string' && f !== '');
+  if (list.length === 0) return '';
+  const shown = list.slice(0, HOLD_FAILED_FILES_MAX).map((f) => `\`${mdCell(f)}\``).join(', ');
+  const rest = list.length - HOLD_FAILED_FILES_MAX;
+  return `（落ちたファイル: ${shown}${rest > 0 ? ` ほか ${rest} 件` : ''}）`;
+}
+
 function resolvedCell(v) {
   if (v == null) return '';
   const chars = Array.from(String(v).replace(/\s+/g, ' ').trim());
@@ -133,6 +144,10 @@ function resolvedCell(v) {
  * @param {{files:string[], logs:string[]}|null|undefined} [opts.finalTestFlaky] - 全件実行（test#final / skip の run の
  *   Validate）が red で、落ちたファイルだけの単体再実行が green だった記録。red のテスト欄と Final reconcile 行に
  *   flake 候補であることを添える（表示専用。merge tier の開示行は disclosures 側で出る）
+ * @param {string[]|null|undefined} [opts.finalTestFailedFiles] - test#final が tests:'failed' を返したときの failed_files
+ *   （normalizeTestPaths 済み）。final_test_red の HOLD 理由の「現状」に先頭 20 件までを添える（空なら添えない。表示専用。issue #1181）
+ * @param {string[]|null|undefined} [opts.validateTestFailedFiles] - Validate が tests:'failed' のときの failed_files
+ *   （normalizeTestPaths 済み）。validate_test_red の HOLD 理由の「現状」に同じ規則で添える（表示専用。issue #1181）
  * @param {string|null|undefined} opts.finalAcReconcile - Final AC reconcile 結果（'skipped'|'reverified'|'unavailable'。issue #331）
  * @param {{decision:string|null, ci:string, summary:string|null}|null|undefined} [opts.liteReview] - dev-flow lite 経路の pr-review-lite 結果。非 null の場合のみ「lite レビュー」セクションを描画する（issue #392 AC-6）
  * @param {string|null|undefined} [opts.iterateStatus] - pr-iterate 終端 status（'lgtm'|'stuck'|'fix_failed'|'max_reached'|'ci_error'|'ci_pending'|'review_contract_error'。非 'lgtm' のときのみ未解消指摘セクションを描画する。issue #602）
@@ -201,6 +216,8 @@ export function buildDevflowSummaryBody({
   finalReconcile,
   finalTestGreen,
   finalTestFlaky,
+  finalTestFailedFiles,
+  validateTestFailedFiles,
   finalAcReconcile,
   liteReview,
   iterateStatus,
@@ -681,6 +698,8 @@ export function buildDevflowSummaryBody({
         ciVerify,
         conflictAutoresolve,
         securityReview,
+        finalTestFailedFiles,
+        validateTestFailedFiles,
       });
       lines.push(`| ${mdCell(hr && hr.reason)} | ${current} | ${action} |`);
     }
@@ -1143,9 +1162,9 @@ function holdReasonDisplay(code, ctx) {
     case 'final_reconcile_unavailable':
       return { current: '最終 tree のテスト状態が未確認', action: '最終 tree でテストを手動実行する' };
     case 'final_test_red':
-      return { current: 'fix 後の最終 tree でテスト失敗', action: '修正が必要' };
+      return { current: `fix 後の最終 tree でテスト失敗${failedFilesNote(ctx.finalTestFailedFiles)}`, action: '修正が必要' };
     case 'validate_test_red':
-      return { current: 'Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', action: '修正が必要（落ちたテストを直して push する）' };
+      return { current: `Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）${failedFilesNote(ctx.validateTestFailedFiles)}`, action: '修正が必要（落ちたテストを直して push する）' };
     case 'validate_tests_not_run':
       return { current: 'テストが 1 件も実行されていない（ローカルは起動失敗）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
     case 'final_ac_unavailable':

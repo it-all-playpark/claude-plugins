@@ -2288,6 +2288,15 @@ function conflictStoppedNote(conflictAutoresolve) {
   return `（自動解消せず: ${mdCell(last.reason || last.status)}${shown.length ? ` — ${shown.map(conflictFileCell).join(' / ')}` : ''}）`;
 }
 
+const HOLD_FAILED_FILES_MAX = 20;
+function failedFilesNote(files) {
+  const list = (Array.isArray(files) ? files : []).filter((f) => typeof f === 'string' && f !== '');
+  if (list.length === 0) return '';
+  const shown = list.slice(0, HOLD_FAILED_FILES_MAX).map((f) => `\`${mdCell(f)}\``).join(', ');
+  const rest = list.length - HOLD_FAILED_FILES_MAX;
+  return `（落ちたファイル: ${shown}${rest > 0 ? ` ほか ${rest} 件` : ''}）`;
+}
+
 function resolvedCell(v) {
   if (v == null) return '';
   const chars = Array.from(String(v).replace(/\s+/g, ' ').trim());
@@ -2319,6 +2328,8 @@ function buildDevflowSummaryBody({
   finalReconcile,
   finalTestGreen,
   finalTestFlaky,
+  finalTestFailedFiles,
+  validateTestFailedFiles,
   finalAcReconcile,
   liteReview,
   iterateStatus,
@@ -2715,6 +2726,8 @@ function buildDevflowSummaryBody({
         ciVerify,
         conflictAutoresolve,
         securityReview,
+        finalTestFailedFiles,
+        validateTestFailedFiles,
       });
       lines.push(`| ${mdCell(hr && hr.reason)} | ${current} | ${action} |`);
     }
@@ -3119,9 +3132,9 @@ function holdReasonDisplay(code, ctx) {
     case 'final_reconcile_unavailable':
       return { current: '最終 tree のテスト状態が未確認', action: '最終 tree でテストを手動実行する' };
     case 'final_test_red':
-      return { current: 'fix 後の最終 tree でテスト失敗', action: '修正が必要' };
+      return { current: `fix 後の最終 tree でテスト失敗${failedFilesNote(ctx.finalTestFailedFiles)}`, action: '修正が必要' };
     case 'validate_test_red':
-      return { current: 'Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', action: '修正が必要（落ちたテストを直して push する）' };
+      return { current: `Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）${failedFilesNote(ctx.validateTestFailedFiles)}`, action: '修正が必要（落ちたテストを直して push する）' };
     case 'validate_tests_not_run':
       return { current: 'テストが 1 件も実行されていない（ローカルは起動失敗）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
     case 'final_ac_unavailable':
@@ -7143,6 +7156,9 @@ let finalTestGreen = null        // true|false|null（null = 未実行/no_tests/
 // final_test_red / validate_test_red の HOLD は変えない（単体再実行の green は PR が書いたテストの出力 — 全件実行の
 // ときだけ落ちるテストを書けば決定的な失敗でも green になる）。null = 再実行していない / 再実行も red
 let finalTestFlaky = null
+// test#final が tests:'failed' を返したときの failed_files（normalizeTestPaths 済み）。final_test_red の HOLD 理由の行に
+// ファイル名を出すだけに使う。全件実行の結果だけを持ち、test#final-rerun の結果では増減させない
+let finalTestFailedFiles = []
 // test#final が green か no_tests のときの返り値。final-ac-reconcile は同期後の同じ tree を判定するので、tests / green と
 // 各 script のログパスを渡して実行済みのテストファイルを再実行させない。red（flake を含む）・error・未実行は null
 // （1 回目のログに AC の根拠が揃っていない — evaluator は AC に関係するテストファイルを実行する）
@@ -7199,6 +7215,7 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
       finalReconcile = 'reverified'
       finalTestGreen = ft.tests === 'no_tests' ? null : ft.green === true
       if (ft.tests === 'no_tests' || (ft.tests === 'passed' && ft.green === true)) finalTestForEval = ft
+      if (ft.tests === 'failed') finalTestFailedFiles = normalizeTestPaths(ft.failed_files)
       log(`Final reconcile: test#final tests=${ft.tests} green=${ft.green}`)
       // Step2b 落ちたファイルだけを 1 回流し直し、green なら flake 候補として開示する（final_test_red は外さない）。
       // 全件は流し直さない（並列負荷の flake は全件で再発する）。failed_files が空・安全に渡せないパスを含む red は再実行しない。
@@ -7734,6 +7751,9 @@ const summaryBody = buildDevflowSummaryBody({
   finalReconcile,
   finalTestGreen,
   finalTestFlaky,
+  finalTestFailedFiles,
+  // skip の run の validate_test_red の行に出す Validate の全件実行の failed_files（test#validate-rerun の結果では増減させない）
+  validateTestFailedFiles: state.val?.tests === 'failed' ? normalizeTestPaths(state.val.failed_files) : [],
   finalAcReconcile,
   liteReview: state.liteReview ?? null,
   holdReasons: mergeTier.holdReasons,

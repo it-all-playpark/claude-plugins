@@ -496,6 +496,8 @@ test("[final-reconcile] (n) test#final red + failed_files の単体再実行 gre
   assert.ok(body.includes('test flake 候補（単体再実行は green）: plugins/dev-flow/_shared/scripts/diff-risk-classify.bats'), '(n) 参考に flake 候補の開示行（ファイル）が出る');
   assert.ok(body.includes('HOLD は解除しない（final_test_red のまま'), '(n) 開示行に HOLD を解除しない旨が出る');
   assert.ok(body.includes('修正が必要'), '(n) final_test_red の HOLD は「修正が必要」のまま');
+  // HOLD 理由の行の「現状」に test#final の failed_files が出る（単体再実行の green で消さない。issue #1181）
+  assert.ok(body.includes('| fix 後の最終 tree でテスト失敗（落ちたファイル: `plugins/dev-flow/_shared/scripts/diff-risk-classify.bats`） | 修正が必要 |'), body);
 
   // telemetry: flake 候補の run だけ final_test_flaky を載せる
   const handoff = calls.find((c) => c.label === 'journal-log');
@@ -509,7 +511,8 @@ test("[final-reconcile] (n) test#final red + failed_files の単体再実行 gre
 
 test("[final-reconcile] (o) 単体再実行でも red / 応答なし / throw → 従来どおり final_test_red で HOLD", async () => {
   const variants = {
-    red: { tests: 'failed', green: false, summary: 'still red', failed_files: FLAKY_FIRST.failed_files },
+    // 再実行の failed_files に別のファイルが混ざっても HOLD 理由の行のファイル名は test#final のまま（issue #1181）
+    red: { tests: 'failed', green: false, summary: 'still red', failed_files: [...FLAKY_FIRST.failed_files, 'tests/rerun-only.bats'] },
     null: null,
     throw: () => { throw new Error('EPERM'); },
     error: { tests: 'error', green: false, summary: 'run-tests did not return JSON' },
@@ -527,12 +530,18 @@ test("[final-reconcile] (o) 単体再実行でも red / 応答なし / throw →
     assert.equal(result?.final_test_flaky, null, `(o-${name}) final_test_flaky は null のはず`);
     assert.equal(result?.merge_tier, 'HOLD', `(o-${name}) merge_tier は HOLD のはず`);
     assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'final_test_red'), `(o-${name}) ${JSON.stringify(result?.merge_tier_hold_reasons)}`);
-    assert.ok(summaryBodyOf(calls).includes('修正が必要'), `(o-${name}) final_test_red の HOLD は「修正が必要」のまま`);
+    assert.ok(summaryBodyOf(calls).includes('| fix 後の最終 tree でテスト失敗（落ちたファイル: `plugins/dev-flow/_shared/scripts/diff-risk-classify.bats`） | 修正が必要 |'), `(o-${name}) ${summaryBodyOf(calls)}`);
   }
 });
 
 test("[final-reconcile] (p) failed_files が空（ビルド失敗・結び付かない失敗）/ 安全に渡せないパスの red は再実行せず final_test_red で HOLD", async () => {
-  for (const [name, failed_files] of Object.entries({ empty: [], missing: undefined, unsafe: ['a.bats', 'b c.bats'] })) {
+  // HOLD 理由の行: 空・欠落は従来の文言のまま、安全に渡せないパスも再実行の可否に依らず ./ を外して出す（issue #1181）
+  const currents = {
+    empty: '| fix 後の最終 tree でテスト失敗 | 修正が必要 |',
+    missing: '| fix 後の最終 tree でテスト失敗 | 修正が必要 |',
+    unsafe: '| fix 後の最終 tree でテスト失敗（落ちたファイル: `a.bats`, `b c.bats`） | 修正が必要 |',
+  };
+  for (const [name, failed_files] of Object.entries({ empty: [], missing: undefined, unsafe: ['./a.bats', 'b c.bats', 'a.bats'] })) {
     const first = { tests: 'failed', green: false, summary: 'workspace build failed', ...(failed_files ? { failed_files } : {}) };
     const { ctx, calls } = makeSandbox({ fixesApplied: 1, overrides: { 'test#final': first } });
     const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
@@ -542,5 +551,6 @@ test("[final-reconcile] (p) failed_files が空（ビルド失敗・結び付か
     assert.equal(result?.final_test_flaky, null);
     assert.equal(result?.merge_tier, 'HOLD');
     assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'final_test_red'), `(p-${name}) ${JSON.stringify(result?.merge_tier_hold_reasons)}`);
+    assert.ok(summaryBodyOf(calls).includes(currents[name]), `(p-${name}) ${summaryBodyOf(calls)}`);
   }
 });
