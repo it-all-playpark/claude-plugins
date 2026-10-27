@@ -869,13 +869,14 @@ function classifyMergeTier(s) {
     || !isStringArray(s.finalTestFlaky.logs))) {
     throw new Error('classifyMergeTier: invalid finalTestFlaky');
   }
-  if (s.finalTestFlaky != null && s.finalTestGreen !== true) {
-    throw new Error('classifyMergeTier: finalTestFlaky requires finalTestGreen===true');
-  }
   if (s.validateResult != null && (typeof s.validateResult !== 'object'
     || !['passed', 'failed', 'no_tests', 'error'].includes(s.validateResult.tests)
     || typeof s.validateResult.green !== 'boolean')) {
     throw new Error('classifyMergeTier: invalid validateResult');
+  }
+  const validateRed = s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false;
+  if (s.finalTestFlaky != null && s.finalTestGreen !== false && !validateRed) {
+    throw new Error('classifyMergeTier: finalTestFlaky requires finalTestGreen===false or a skipped run with Validate red');
   }
   if (s.setupDeps != null && (typeof s.setupDeps.ok !== 'boolean' || typeof s.setupDeps.note !== 'string')) {
     throw new Error('classifyMergeTier: invalid setupDeps');
@@ -907,7 +908,7 @@ function classifyMergeTier(s) {
     pushBlocking('final_reconcile_unavailable', 'Final reconcile 再検証不能（pr-iterate fix 適用後の最終 tree の test 状態を確認できず）— 人間確認必須', 'human_judgment');
   }
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
-  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false) {
+  if (validateRed) {
     pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   }
   if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'error') {
@@ -954,7 +955,7 @@ function classifyMergeTier(s) {
       ? `CI 未完了（checks を取得できず: ${ci.error ?? 'unknown'}）— CI 結果は未確認（fail-open。HOLD 理由にしない）。merge 前に gh pr checks で結果を確認する`
       : null;
   const finalTestFlakyDisclosure = s.finalTestFlaky != null
-    ? `final test flake（単体再実行で green）: ${s.finalTestFlaky.files.join(', ')} — 最終 tree の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green（HOLD 理由にしない。1 回目のログ: ${s.finalTestFlaky.logs.length ? s.finalTestFlaky.logs.join(', ') : '不明'}）`
+    ? `test flake 候補（単体再実行は green）: ${s.finalTestFlaky.files.join(', ')} — ${s.finalTestGreen === false ? '最終 tree' : 'Validate'} の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green。HOLD は解除しない（${s.finalTestGreen === false ? 'final_test_red' : 'validate_test_red'} のまま — 単体再実行の green は PR が書いたテストの出力）。1 回目のログ: ${s.finalTestFlaky.logs.length ? s.finalTestFlaky.logs.join(', ') : '不明'}`
     : null;
   const disclosures = [keywordAloneDisclosure, evalFailDisclosure, ciIncompleteDisclosure, finalTestFlakyDisclosure].filter(Boolean);
   if (blockingReasons.length) {
@@ -971,14 +972,12 @@ function classifyMergeTier(s) {
     if (keywordAloneDisclosure) autoReasons.push(keywordAloneDisclosure);
     if (evalFailDisclosure) autoReasons.push(evalFailDisclosure);
     if (ciIncompleteDisclosure) autoReasons.push(ciIncompleteDisclosure);
-    if (finalTestFlakyDisclosure) autoReasons.push(finalTestFlakyDisclosure);
     return { tier: 'AUTO', reasons: autoReasons, holdReasons: [], holdKind: null, disclosures };
   }
   const reviewReasons = ['標準 — 人間が LGTM して merge'];
   if (keywordAloneDisclosure) reviewReasons.push(keywordAloneDisclosure);
   if (evalFailDisclosure) reviewReasons.push(evalFailDisclosure);
   if (ciIncompleteDisclosure) reviewReasons.push(ciIncompleteDisclosure);
-  if (finalTestFlakyDisclosure) reviewReasons.push(finalTestFlakyDisclosure);
   return { tier: 'REVIEW', reasons: reviewReasons, holdReasons: [], holdKind: null, disclosures };
 }
 // ==== END inline: _lib/merge-tier.mjs ====
@@ -2510,15 +2509,12 @@ function buildDevflowSummaryBody({
   else fixPhrase = '修正作業は不要です';
 
   const baseFailing = Array.isArray(baseFailingTests) ? baseFailingTests.filter((f) => typeof f === 'string' && f.length > 0) : [];
-  const finalFlaky = finalReconcile === 'reverified' && finalTestGreen === true
-    && Array.isArray(finalTestFlaky?.files) && finalTestFlaky.files.length > 0;
-  const FLAKY_CELL = '⚠️ flake（単体再実行で green）';
+  const flakeCandidate = Array.isArray(finalTestFlaky?.files) && finalTestFlaky.files.length > 0;
+  const RED_CELL = flakeCandidate ? '❌ red（単体再実行は green — flake 候補）' : '❌ red';
   let testCell;
   let testUnverified = false;
-  if (finalFlaky) {
-    testCell = FLAKY_CELL;
-  } else if (finalReconcile === 'reverified') {
-    testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? '❌ red' : '不明';
+  if (finalReconcile === 'reverified') {
+    testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? RED_CELL : '不明';
   } else if (finalReconcile === 'unavailable') {
     testCell = '⚠️ unavailable（最終 tree で再検証不能）・未検証';
     testUnverified = true;
@@ -2530,7 +2526,7 @@ function buildDevflowSummaryBody({
   } else if (testGreen === true) {
     testCell = baseFailing.length > 0 ? `✅ green（base でも失敗する既存の失敗 ${baseFailing.length} 件を除く）` : '✅ green';
   } else {
-    testCell = '❌ red';
+    testCell = RED_CELL;
   }
 
   const testPhrase = testUnverified ? 'テストはローカル未実行・CI 未確認のため、CI の test 結果を確認してからマージ。' : '';
@@ -3034,7 +3030,7 @@ function buildDevflowSummaryBody({
   }
   referenceLines.push(...conflictResolvedLines(conflictAutoresolve));
   if (finalReconcile != null && finalReconcile !== 'skipped') {
-    const t = finalFlaky ? FLAKY_CELL : finalTestGreen === true ? '✅ green' : finalTestGreen === false ? '❌ red' : '不明';
+    const t = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? RED_CELL : '不明';
     referenceLines.push(`- Final reconcile (pr-iterate fix 後の最終 tree 再検証): ${finalReconcile} — final test: ${t}` + (finalAcReconcile != null ? `, final AC: ${finalAcReconcile}` : ''));
     if (finalAcReconcile === 'reverified') {
       referenceLines.push('- ✅ AC は最終 PR tree で再検証済み（Final AC reconcile — AC テーブルは final snapshot）');
@@ -7114,13 +7110,37 @@ if (state.runEval && evalStaleness === 'none') {
 // Phase Final reconcile: pr-iterate が fix を適用した run（fixes_applied>0）のみ、
 // worktree を PR 最終 HEAD へ ff-sync → test suite 一発再実行 → 最終 changed-files から
 // 宣言外パスを再判定する。
-// fixes_applied=0 は新規 agent 呼び出しゼロ（zero-overhead routing）。
+// fixes_applied=0 は Validate の red のまま PR へ進んだ run の落ちたファイルの単体再実行（test#validate-rerun）だけで、
+// それ以外は新規 agent 呼び出しゼロ（zero-overhead routing）。
 // ============================================================
 phase('Final reconcile')
+
+// 全件実行（test#final / skip の run の Validate）で落ちたテストファイルだけを 1 回流し直す。flaky は
+// finalTestRerunVerdict の記録（exit code で green のときだけ非 null）で、flake 候補の開示にだけ使う —
+// holdCode（final_test_red / validate_test_red）の HOLD は再実行の結果に依らず変えない。
+async function rerunFailedTestFiles(first, label, holdCode) {
+  const files = finalTestRerunFiles(first)
+  if (!files.length) {
+    log(`Final reconcile: failed_files が空か安全に渡せないパスを含む（ビルド失敗・ファイルに結び付かない失敗）— ${label} を実行せず ${holdCode}`)
+    return { result: null, flaky: null }
+  }
+  let result = null
+  try {
+    result = await trackedAgent(runTestFilesPrompt(WT, files), { agentType: 'dev-runner-haiku', schema: GREEN, label, phase: 'Final reconcile' })
+  } catch (e) {
+    log(`⚠️ Final reconcile: ${label} が throw（${e && e.message ? e.message : e}）— flake 候補にしない（${holdCode}）`)
+  }
+  const flaky = finalTestRerunVerdict(first, result, files)
+  if (flaky) log(`Final reconcile: ${label} green — flake 候補（${files.join(', ')}）。${holdCode} の HOLD は外さない（1 回目のログ: ${flaky.logs.join(', ') || '不明'}）`)
+  else log(`Final reconcile: ${label} も red（tests=${result?.tests ?? 'null'}）— ${holdCode}`)
+  return { result, flaky }
+}
 let finalReconcile = 'skipped'   // 'skipped'|'reverified'|'unavailable'
 let finalTestGreen = null        // true|false|null（null = 未実行/no_tests/取得不能/tests:error の起動失敗）
-// test#final が red で、落ちたファイルだけの単体再実行（test#final-rerun）が green だった記録 {files, logs}。
-// このとき finalTestGreen は true（flake）。null = 再実行していない / 再実行も red
+// 全件実行（test#final / skip の run の Validate）が red で、落ちたファイルだけの単体再実行（test#final-rerun /
+// test#validate-rerun）が green だった記録 {files, logs}。flake 候補の開示にだけ使い、finalTestGreen と
+// final_test_red / validate_test_red の HOLD は変えない（単体再実行の green は PR が書いたテストの出力 — 全件実行の
+// ときだけ落ちるテストを書けば決定的な失敗でも green になる）。null = 再実行していない / 再実行も red
 let finalTestFlaky = null
 // test#final が green か no_tests のときの返り値。final-ac-reconcile は同期後の同じ tree を判定するので、tests / green と
 // 各 script のログパスを渡して実行済みのテストファイルを再実行させない。red（flake を含む）・error・未実行は null
@@ -7179,25 +7199,13 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
       finalTestGreen = ft.tests === 'no_tests' ? null : ft.green === true
       if (ft.tests === 'no_tests' || (ft.tests === 'passed' && ft.green === true)) finalTestForEval = ft
       log(`Final reconcile: test#final tests=${ft.tests} green=${ft.green}`)
-      // Step2b 落ちたファイルだけを 1 回流し直し、flake と本物の red を分ける。全件は流し直さない
-      // （並列負荷の flake は全件で再発する）。failed_files が空・安全に渡せないパスを含む red は再実行せず HOLD。
-      // 判定は finalTestRerunVerdict（exit code 由来の tests / green）だけ。再実行の throw / null は red のまま。
-      const rerunFiles = finalTestGreen === false ? finalTestRerunFiles(ft) : []
-      if (rerunFiles.length) {
-        try {
-          ftRerun = await trackedAgent(runTestFilesPrompt(WT, rerunFiles), { agentType: 'dev-runner-haiku', schema: GREEN, label: 'test#final-rerun', phase: 'Final reconcile' })
-        } catch (e) {
-          log(`⚠️ Final reconcile: test#final-rerun が throw（${e && e.message ? e.message : e}）— red のまま（final_test_red）`)
-        }
-        finalTestFlaky = finalTestRerunVerdict(ft, ftRerun, rerunFiles)
-        if (finalTestFlaky) {
-          finalTestGreen = true
-          log(`Final reconcile: test#final-rerun green — flake（${rerunFiles.join(', ')}）。final_test_green=true（1 回目のログ: ${finalTestFlaky.logs.join(', ') || '不明'}）`)
-        } else {
-          log(`Final reconcile: test#final-rerun も red（tests=${ftRerun?.tests ?? 'null'}）— final_test_red`)
-        }
-      } else if (finalTestGreen === false) {
-        log('Final reconcile: failed_files が空（ビルド失敗・ファイルに結び付かない失敗）— 再実行せず final_test_red')
+      // Step2b 落ちたファイルだけを 1 回流し直し、green なら flake 候補として開示する（final_test_red は外さない）。
+      // 全件は流し直さない（並列負荷の flake は全件で再発する）。failed_files が空・安全に渡せないパスを含む red は再実行しない。
+      // 判定は finalTestRerunVerdict（exit code 由来の tests / green）だけ。再実行の throw / null / red は記録しない。
+      if (finalTestGreen === false) {
+        const rerun = await rerunFailedTestFiles(ft, 'test#final-rerun', 'final_test_red')
+        ftRerun = rerun.result
+        finalTestFlaky = rerun.flaky
       }
     }
     finalEpochRes = maxEpochRes([sync, ft, ftRerun])
@@ -7243,7 +7251,12 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
     }
   }
 } else {
-  log('Final reconcile: fixes_applied=0 — skip（zero-overhead。新規 agent 呼び出しなし）')
+  log('Final reconcile: fixes_applied=0 — skip（最終 tree は Validate の tree のまま）')
+  // Validate の red（tests:'failed' / green:false）のまま PR へ進んだ run だけ、落ちたファイルを 1 回流し直して
+  // flake 候補を validate_test_red の HOLD に添える（HOLD は外さない）。ENV で green にした run・error・green は対象外。
+  if (state.val?.tests === 'failed' && state.val.green === false) {
+    finalTestFlaky = (await rerunFailedTestFiles(state.val, 'test#validate-rerun', 'validate_test_red')).flaky
+  }
 }
 
 // ============================================================
@@ -7791,7 +7804,8 @@ const telemetryHandoff = buildJournalHandoffPayload({
       hold_reason_codes: mergeTier.holdReasons.map((r) => r.code),
       hold_ac_human_judged: hasJudgedHumanAcGap(acGapsFinal.human, req.acceptance_criteria, { repo: REPO }),
     } : {}),
-    // final_test_flaky: test#final で落ち、単体再実行で green だったファイルと 1 回目のログ。flake の run だけ載せる
+    // final_test_flaky: 全件実行（test#final / skip の run の Validate）で落ち、単体再実行で green だったファイルと
+    // 1 回目のログ。flake 候補の run だけ載せる（その run は final_test_red / validate_test_red で HOLD のまま）
     ...(finalTestFlaky ? { final_test_flaky: finalTestFlaky } : {}),
     // shape: 実効 shape（realized diff の file 数・行数から classifyShape が決めた値）
     shape: state.EFFECTIVE_SHAPE,

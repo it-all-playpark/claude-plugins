@@ -243,9 +243,9 @@ nested context（cwd / head_ref / repo / epoch）と、Diff triage の敵対的 
 ```mermaid
 flowchart TD
     IN["pr-iterate 終端"] --> F0{"fixes_applied が 1 以上 ?"}
-    F0 -->|no| FSKIP["skipped<br/>agent 呼び出しゼロ"]
+    F0 -->|no| FSKIP["skipped<br/>Validate red なら落ちたファイルだけ 1 回再実行<br/>(flake 候補の開示のみ。HOLD は外さない)"]
     F0 -->|yes| F1["worktree を PR 最終 HEAD へ ff-sync"]
-    F1 --> F2["test suite 再実行"]
+    F1 --> F2["test suite 再実行<br/>red なら落ちたファイルだけ 1 回再実行<br/>(flake 候補の開示のみ。HOLD は外さない)"]
     F2 --> F3["changed-files-final で<br/>宣言外を再判定"]
     F3 --> F4["final AC reconcile"]
     FSKIP --> OUT["Merge tier へ"]
@@ -430,8 +430,8 @@ flowchart TD
 | `merge_facts_dropped` | merge-tier-facts の応答から danger-grep の結果（`risk.value`）が落ちた | danger-grep 自体は実行済みの可能性あり。security 未検証として扱う |
 | `danger_fail_closed` | danger-grep 実行不能 | fail-closed |
 | `final_reconcile_unavailable` | Final reconcile 再検証不能（同期失敗・test の null・`tests:'error'`） | PR の CI の success では解除しない |
-| `final_test_red` | final test red | 落ちたファイルだけの 1 回の再実行で green なら flake として HOLD にしない |
-| `validate_test_red` | Validate test red のまま PR へ進行し、pr-iterate の fix が 0 件で Final reconcile が skip された | PR tree のテスト状態は Validate の結果のまま。gate_policy に依らず人間確認 |
+| `final_test_red` | final test red | 落ちたファイルだけの 1 回の再実行で green でも HOLD のまま（flake 候補として `final_test_flaky` に記録・開示するだけ） |
+| `validate_test_red` | Validate test red のまま PR へ進行し、pr-iterate の fix が 0 件で Final reconcile が skip された | PR tree のテスト状態は Validate の結果のまま。gate_policy に依らず人間確認。落ちたファイルだけの 1 回の再実行で green なら flake 候補として開示する |
 | `validate_tests_not_run` | Validate が `tests:'error'`（テストが 1 件も実行されていない）で Final reconcile が skip された | PR の CI の success では解除しない。Setup(deps) が `ok:false` なら note を理由に載せる |
 | `final_ac_unavailable` | Final AC reconcile 判定不能 | |
 | `iterate_non_lgtm` | pr-iterate が `lgtm` 以外で終端 | |

@@ -221,9 +221,10 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 
 ## Final reconcile
 
-- **判定**: pr-iterate が fix を適用した run（`fixes_applied > 0`）だけ、fix 後の最終 tree で確かめ直す（0 の run は spawn しない）:
+- **判定**: pr-iterate が fix を適用した run（`fixes_applied > 0`）だけ、fix 後の最終 tree で確かめ直す:
   - worktree を PR の最終 HEAD に同期し、Validate と同じ prompt の `run-tests <WT>` を 1 回だけ実行する（green-fix はしない）。red で
-    落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake として記録する（`_lib/final-test-rerun.mjs`）
+    落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake 候補として開示する（HOLD・`EVAL-*` は外さない。
+    PR が書いたテストの出力。`_lib/final-test-rerun.mjs`）
   - テストを実行できなければ（同期失敗・test の null・`tests:'error'`）`unavailable`。PR の CI の success では代えない
     （PR が CI の workflow・スクリプトを書き換えうる）
   - 最終の changed-files で宣言外変更を監査し直す
@@ -235,9 +236,9 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
     vdelta が deny しなければ deterministic に昇格する（`finalRedgreenTargets`）。fix がテストを直した run を人手 AC 待ちにしないため。
     inspection の観測型 AC と Evaluate で昇格済みの AC には spawn しない
   - test#final が green か no_tests なら、Final AC reconcile に test#final の `tests` / `green` と各 script のログパスを渡し、
-    実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）。red の flake 判定ではログを渡さない
-- skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'` は `validate_test_red`、`tests:'error'` は
-  `validate_tests_not_run` で HOLD（PR の CI の success では解除しない）
+    実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）
+- skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'` は `validate_test_red`（上と同じ再実行で開示）、
+  `tests:'error'` は `validate_tests_not_run` で HOLD（PR の CI の success では解除しない）
 - **失敗の扱い**:
   - 同期失敗・test の null・`tests:'error'` は `unavailable`（fail-safe → HOLD `final_reconcile_unavailable`）。
     flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）
