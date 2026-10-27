@@ -130,9 +130,9 @@ function resolvedCell(v) {
  * @param {number|null|undefined} opts.iterateFixesApplied - pr-iterate の適用 fix 件数（iterate_fixed 表示用）
  * @param {string|null|undefined} opts.finalReconcile - Final reconcile 結果（'skipped'|'reverified'|'unavailable'。issue #320）
  * @param {boolean|null|undefined} opts.finalTestGreen - Final reconcile 時の test green フラグ（issue #320）
- * @param {{files:string[], logs:string[]}|null|undefined} [opts.finalTestFlaky] - test#final が red で、落ちたファイルだけの
- *   単体再実行が green だった記録（issue #865）。finalReconcile==='reverified' かつ finalTestGreen===true のとき、
- *   テスト欄と Final reconcile 行を flake 表記にする（表示専用。merge tier の開示行は disclosures 側で出る）
+ * @param {{files:string[], logs:string[]}|null|undefined} [opts.finalTestFlaky] - 全件実行（test#final / skip の run の
+ *   Validate）が red で、落ちたファイルだけの単体再実行が green だった記録。red のテスト欄と Final reconcile 行に
+ *   flake 候補であることを添える（表示専用。merge tier の開示行は disclosures 側で出る）
  * @param {string|null|undefined} opts.finalAcReconcile - Final AC reconcile 結果（'skipped'|'reverified'|'unavailable'。issue #331）
  * @param {{decision:string|null, ci:string, summary:string|null}|null|undefined} [opts.liteReview] - dev-flow lite 経路の pr-review-lite 結果。非 null の場合のみ「lite レビュー」セクションを描画する（issue #392 AC-6）
  * @param {string|null|undefined} [opts.iterateStatus] - pr-iterate 終端 status（'lgtm'|'stuck'|'fix_failed'|'max_reached'|'ci_error'|'ci_pending'|'review_contract_error'。非 'lgtm' のときのみ未解消指摘セクションを描画する。issue #602）
@@ -449,17 +449,15 @@ export function buildDevflowSummaryBody({
   // 未検証として出す。Validate の tests:'error' はテストが 1 件も実行されていない起動失敗で red ではない（issue #707）。
   // どちらも PR の CI の success では検証済みにしない（PR の CI は PR 自身が書き換えられる）— 結論行で CI 確認を促す。
   const baseFailing = Array.isArray(baseFailingTests) ? baseFailingTests.filter((f) => typeof f === 'string' && f.length > 0) : [];
-  // flake: 最終 tree の全件実行で落ち、落ちたファイルだけの単体再実行で green（issue #865）。green 扱いだが
-  // 「一度落ちた」事実をテスト欄と Final reconcile 行に残す（ファイルとログは merge tier の開示行に出る）。
-  const finalFlaky = finalReconcile === 'reverified' && finalTestGreen === true
-    && Array.isArray(finalTestFlaky?.files) && finalTestFlaky.files.length > 0;
-  const FLAKY_CELL = '⚠️ flake（単体再実行で green）';
+  // flake 候補: 全件実行（test#final / skip の run の Validate）で落ち、落ちたファイルだけの単体再実行で green。
+  // red のまま出し、flake 候補であることだけを添える（単体再実行の green は HOLD を外す根拠にしない。
+  // ファイルとログは merge tier の開示行に出る）。
+  const flakeCandidate = Array.isArray(finalTestFlaky?.files) && finalTestFlaky.files.length > 0;
+  const RED_CELL = flakeCandidate ? '❌ red（単体再実行は green — flake 候補）' : '❌ red';
   let testCell;
   let testUnverified = false;
-  if (finalFlaky) {
-    testCell = FLAKY_CELL;
-  } else if (finalReconcile === 'reverified') {
-    testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? '❌ red' : '不明';
+  if (finalReconcile === 'reverified') {
+    testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? RED_CELL : '不明';
   } else if (finalReconcile === 'unavailable') {
     testCell = '⚠️ unavailable（最終 tree で再検証不能）・未検証';
     testUnverified = true;
@@ -471,7 +469,7 @@ export function buildDevflowSummaryBody({
   } else if (testGreen === true) {
     testCell = baseFailing.length > 0 ? `✅ green（base でも失敗する既存の失敗 ${baseFailing.length} 件を除く）` : '✅ green';
   } else {
-    testCell = '❌ red';
+    testCell = RED_CELL;
   }
 
   const testPhrase = testUnverified ? 'テストはローカル未実行・CI 未確認のため、CI の test 結果を確認してからマージ。' : '';
@@ -1043,7 +1041,7 @@ export function buildDevflowSummaryBody({
   }
   referenceLines.push(...conflictResolvedLines(conflictAutoresolve));
   if (finalReconcile != null && finalReconcile !== 'skipped') {
-    const t = finalFlaky ? FLAKY_CELL : finalTestGreen === true ? '✅ green' : finalTestGreen === false ? '❌ red' : '不明';
+    const t = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? RED_CELL : '不明';
     referenceLines.push(`- Final reconcile (pr-iterate fix 後の最終 tree 再検証): ${finalReconcile} — final test: ${t}` + (finalAcReconcile != null ? `, final AC: ${finalAcReconcile}` : ''));
     if (finalAcReconcile === 'reverified') {
       referenceLines.push('- ✅ AC は最終 PR tree で再検証済み（Final AC reconcile — AC テーブルは final snapshot）');

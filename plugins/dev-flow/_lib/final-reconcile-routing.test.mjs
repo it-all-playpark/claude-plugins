@@ -28,9 +28,10 @@
 //       + 'final test red' を含まない + changed-files-final は呼ばれる（issue #619）
 //   (m) fixes=1 + test#final tests:'failed'（本物の red）→ final_reconcile==='reverified' + final_test_green===false
 //       + HOLD + reasons に 'final test red'（issue #619 回帰: 'error' 分離後も failed 経路は不変）
-//   (n) test#final red + failed_files の単体再実行（test#final-rerun）green → flake: final_test_green true・
-//       final_test_flaky 記録・final_test_red なし・サマリーのテスト欄が flake で「修正が必要」なし（issue #865）
-//   (o) 単体再実行も red / null / throw / error → final_test_red で HOLD（issue #865）
+//   (n) test#final red + failed_files の単体再実行（test#final-rerun）green → flake 候補の記録だけ: final_test_green false・
+//       final_test_flaky 記録・final_test_red（human_judgment）で HOLD・EVAL-* blocking は解消しない・テスト欄は
+//       red に flake 候補を添える（issue #1138）
+//   (o) 単体再実行も red / null / throw / error → final_test_flaky を記録せず final_test_red で HOLD（issue #865）
 //   (p) failed_files が空・欠落・安全に渡せないパスの red → 再実行せず final_test_red で HOLD（issue #865）
 
 import { test } from 'vitest';
@@ -426,7 +427,7 @@ test("[final-reconcile] (m) fixes=1 + test#final tests:'failed'（本物の red�
 });
 
 // ============================================================
-// (n)〜(p) test#final の red を落ちたファイルだけの単体再実行で flake と本物の red に分ける（issue #865）
+// (n)〜(p) test#final の red で落ちたファイルだけを単体再実行し、green なら flake 候補として開示する（HOLD は外さない）
 // ============================================================
 
 const FLAKY_FIRST = {
@@ -441,10 +442,24 @@ function summaryBodyOf(calls) {
   return post.prompt.slice(post.prompt.indexOf('<<<DEV_FLOW_BODY_BEGIN>>>'), post.prompt.indexOf('<<<DEV_FLOW_BODY_END>>>'));
 }
 
-test("[final-reconcile] (n) test#final red + failed_files の単体再実行 green → flake: final_test_red なし・final_test_flaky 記録・サマリーに「修正が必要」なし", async () => {
-  const { ctx, calls } = makeSandbox({
+// eval#1 が critical を 1 件返す → EVAL-1-* が blocking lane に未 checked で残ったまま PR へ進む
+// （test#final green なら finalEvalBlockingResolutions が checked にする状態）
+const EVAL_CRITICAL = {
+  verdict: 'fail', total: 40, threshold: 80,
+  feedback: [{ severity: 'critical', topic: 'summary format regression', description: 'summary の整形が壊れている', dimension: 'correctness' }],
+  feedback_level: 'implementation',
+  ac_results: [
+    { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
+    { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
+  ],
+  security_clearance: [], concern_resolutions: [], critical_resolutions: [],
+};
+
+test("[final-reconcile] (n) test#final red + failed_files の単体再実行 green → flake 候補の記録だけ: final_test_green false のまま final_test_red で HOLD・EVAL-* blocking は解消しない", async () => {
+  const { ctx, calls, logs } = makeSandbox({
     fixesApplied: 1,
     overrides: {
+      'eval#1': EVAL_CRITICAL,
       'test#final': FLAKY_FIRST,
       'test#final-rerun': { tests: 'passed', green: true, summary: 'passed' },
     },
@@ -461,25 +476,28 @@ test("[final-reconcile] (n) test#final red + failed_files の単体再実行 gre
   assert.equal(calls.filter((c) => c.label === 'test#final').length, 1, '(n) test#final 自体は 1 回のまま');
 
   assert.equal(result?.final_reconcile, 'reverified');
-  assert.equal(result?.final_test_green, true, `(n) final_test_green は true のはずだが ${JSON.stringify(result?.final_test_green)}`);
+  assert.equal(result?.final_test_green, false, `(n) 単体再実行の green で final_test_green を true にしてはならない: ${JSON.stringify(result?.final_test_green)}`);
   assert.deepEqual(JSON.parse(JSON.stringify(result?.final_test_flaky)), {
     files: ['plugins/dev-flow/_shared/scripts/diff-risk-classify.bats'],
     logs: ['/tmp/run-tests-x/0.log'],
   });
-  assert.equal(result?.merge_tier, 'REVIEW', `(n) merge_tier は REVIEW のはずだが ${JSON.stringify(result?.merge_tier_reasons)}`);
-  assert.ok(!(result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'final_test_red'), JSON.stringify(result?.merge_tier_hold_reasons));
-  assert.ok(!(result?.merge_tier_reasons ?? []).some((r) => r.includes('final test red')), JSON.stringify(result?.merge_tier_reasons));
+  assert.equal(result?.merge_tier, 'HOLD', `(n) merge_tier は HOLD のはずだが ${JSON.stringify(result?.merge_tier_reasons)}`);
+  assert.deepEqual((result?.merge_tier_hold_reasons ?? []).filter((r) => r.code === 'final_test_red').map((r) => r.kind).join(','), 'human_judgment', JSON.stringify(result?.merge_tier_hold_reasons));
 
-  // 終端サマリー: 結論行・HOLD 理由欄に「修正が必要」が出ず、テスト欄が flake を示す
+  // EVAL-* blocking は単体再実行の green を根拠に解消しない（finalEvalBlockingResolutions は finalTestGreen===true だけ）
+  assert.ok(!logs.some((l) => /^EVAL-1-/.test(l) && l.includes('checked（issue #720）')), `(n) EVAL-* が checked になってはならない: ${JSON.stringify(logs.filter((l) => l.includes('EVAL-')))}`);
+  assert.equal(result?.ledger_converged, false, '(n) ledger は未収束のまま');
+  assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'ledger_unconverged'), JSON.stringify(result?.merge_tier_hold_reasons));
+
+  // 終端サマリー: テスト欄は red に flake 候補を添え、参考に再実行したファイルと HOLD を解除しない旨が出る
   const body = summaryBodyOf(calls);
-  const conclusion = body.split('\n').find((l) => l.startsWith('**結論: '));
-  assert.ok(conclusion && !conclusion.includes('修正作業が必要'), `(n) 結論行: ${conclusion}`);
-  assert.ok(!body.includes('修正が必要'), `(n) サマリーに「修正が必要」が出てはならない:\n${body}`);
   const glance = body.split('\n').find((l) => l.startsWith('| ') && /\*\*(HOLD|REVIEW|AUTO)\*\*/.test(l));
-  assert.equal(glance.split('|').slice(1, -1).map((s) => s.trim())[2], '⚠️ flake（単体再実行で green）');
-  assert.ok(body.includes('final test flake（単体再実行で green）: plugins/dev-flow/_shared/scripts/diff-risk-classify.bats'), '(n) 参考に flake の開示行（ファイル）が出る');
+  assert.equal(glance.split('|').slice(1, -1).map((s) => s.trim())[2], '❌ red（単体再実行は green — flake 候補）');
+  assert.ok(body.includes('test flake 候補（単体再実行は green）: plugins/dev-flow/_shared/scripts/diff-risk-classify.bats'), '(n) 参考に flake 候補の開示行（ファイル）が出る');
+  assert.ok(body.includes('HOLD は解除しない（final_test_red のまま'), '(n) 開示行に HOLD を解除しない旨が出る');
+  assert.ok(body.includes('修正が必要'), '(n) final_test_red の HOLD は「修正が必要」のまま');
 
-  // telemetry: flake の run だけ final_test_flaky を載せる
+  // telemetry: flake 候補の run だけ final_test_flaky を載せる
   const handoff = calls.find((c) => c.label === 'journal-log');
   const m = handoff?.prompt.match(/<<<JOURNAL_HANDOFF_BODY_BEGIN>>>\n([\s\S]*?)\n<<<JOURNAL_HANDOFF_BODY_END>>>/);
   assert.ok(m, "(n) 'journal-log' の handoff body が見つからない");

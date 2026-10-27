@@ -11,6 +11,9 @@
 //   (c) Validate が tests:'failed'（本物の red）→ テスト欄 '❌ red' + merge tier HOLD（validate_test_red、issue #1086）
 //   (d) 返り値 validate_tests がテスト欄と同じ入力を返し、test_green / final_test_green は不変（issue #731）
 //   (e) Setup(deps) が ok:false の run では validate_tests_not_run の文言に deps の note が載る
+//   (f) Validate red（failed_files 非空）+ fixes_applied=0 + 単体再実行（test#validate-rerun）green → final_test_flaky に記録・
+//       validate_test_red の HOLD は不変・テスト欄は '❌ red（単体再実行は green — flake 候補）'（issue #1138）
+//   (g) Validate red でもファイルが空・安全に渡せないパス・再実行の throw / null / red は記録しない（HOLD 不変）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -113,6 +116,61 @@ test('[summary-test-cell] (e) Setup(deps) が ok:false の run は validate_test
   const { result } = await run({}, undefined, { args: devFlowArgs(1, { deps: { ok: false, note } }) });
   assert.equal(result?.merge_tier, 'HOLD');
   assert.ok(holdOf(result, 'validate_tests_not_run')[0]?.reason.includes('Setup(deps) ok:false: ' + note), tierFacts(result));
+});
+
+// (f)〜(g) Final reconcile skipped の run の Validate red は、落ちたファイルだけを 1 回流し直して flake 候補を
+// validate_test_red の HOLD に添える（HOLD は外さない。issue #1138）
+const VALIDATE_RED_FILES = {
+  tests: 'failed', green: false,
+  summary: 'failed: /tmp/wt/tests/run-all-bats.sh (exit 1, log: /tmp/run-tests-v/0.log)\nnot ok 3 ready-set',
+  failed_files: ['plugins/dev-flow/_lib/ready-set.bats'],
+};
+const validateRedRun = (first, rerun) => {
+  // green-fix 後も red のまま（GREEN_MAX 到達）にする
+  const o = { 'test#1': first, 'test#2': first, 'test#3': first };
+  if (rerun !== undefined) o['test#validate-rerun'] = rerun;
+  return run(o);
+};
+const validateReruns = (calls) => calls.filter((c) => c.label === 'test#validate-rerun');
+
+test('[summary-test-cell] (f) Validate red + 単体再実行 green → final_test_flaky に記録、validate_test_red の HOLD は変えずテスト欄は red に flake 候補を添える', async () => {
+  const { result, calls, body, testCell } = await validateRedRun(VALIDATE_RED_FILES, { tests: 'passed', green: true, summary: 'passed' });
+  assert.equal(result?.final_reconcile, 'skipped');
+  const reruns = validateReruns(calls);
+  assert.equal(reruns.length, 1, `test#validate-rerun は 1 回だけ: ${reruns.length}`);
+  assert.equal(reruns[0].agentType, 'dev-flow:dev-runner-haiku');
+  assert.equal(reruns[0].prompt.split('\n').at(-1), 'run-tests /tmp/wt --files plugins/dev-flow/_lib/ready-set.bats');
+  assert.ok(!calls.some((c) => c.label === 'test#final' || c.label === 'test#final-rerun'), 'skip の run は test#final を回さない');
+  assert.deepEqual(JSON.parse(JSON.stringify(result?.final_test_flaky)), {
+    files: ['plugins/dev-flow/_lib/ready-set.bats'],
+    logs: ['/tmp/run-tests-v/0.log'],
+  });
+  assert.equal(result?.merge_tier, 'HOLD', tierFacts(result));
+  assert.deepEqual(holdOf(result, 'validate_test_red').map((r) => r.kind).join(','), 'human_judgment', tierFacts(result));
+  assert.equal(testCell, '❌ red（単体再実行は green — flake 候補）');
+  assert.ok(body.includes('test flake 候補（単体再実行は green）: plugins/dev-flow/_lib/ready-set.bats'), '参考に flake 候補の開示行が出る');
+  assert.ok(body.includes('HOLD は解除しない（validate_test_red のまま'), '開示行に HOLD を解除しない旨が出る');
+});
+
+test('[summary-test-cell] (g) Validate red でもファイルが空・安全に渡せないパス・再実行の throw / null / red は記録せず、validate_test_red の HOLD のまま', async () => {
+  const variants = {
+    empty: { first: { ...VALIDATE_RED_FILES, failed_files: [] }, rerun: undefined, reruns: 0 },
+    unsafe: { first: { ...VALIDATE_RED_FILES, failed_files: ['a.bats', 'b c.bats'] }, rerun: undefined, reruns: 0 },
+    throw: { first: VALIDATE_RED_FILES, rerun: () => { throw new Error('EPERM'); }, reruns: 1 },
+    null: { first: VALIDATE_RED_FILES, rerun: null, reruns: 1 },
+    red: { first: VALIDATE_RED_FILES, rerun: { tests: 'failed', green: false, summary: 'still red', failed_files: VALIDATE_RED_FILES.failed_files }, reruns: 1 },
+  };
+  for (const [name, { first, rerun, reruns }] of Object.entries(variants)) {
+    const { result, calls, testCell } = await validateRedRun(first, rerun);
+    assert.equal(validateReruns(calls).length, reruns, `(g-${name}) test#validate-rerun の回数`);
+    assert.equal(result?.final_test_flaky, null, `(g-${name}) final_test_flaky は null のはず`);
+    assert.equal(result?.merge_tier, 'HOLD', `(g-${name}) ${tierFacts(result)}`);
+    assert.deepEqual(holdOf(result, 'validate_test_red').map((r) => r.kind).join(','), 'human_judgment', `(g-${name}) ${tierFacts(result)}`);
+    assert.equal(testCell, '❌ red', `(g-${name})`);
+  }
+  // Validate が red でない run（tests:'error'）は再実行しない
+  const { calls } = await run(CI_GREEN);
+  assert.equal(validateReruns(calls).length, 0, 'Validate tests:error の run は test#validate-rerun を呼ばない');
 });
 
 test('[summary-test-cell] (d) dev-flow SKILL.md に返り値 validate_tests の読み方が載っている', () => {

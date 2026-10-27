@@ -1260,8 +1260,8 @@ test.each([
 test.each([
   { finalReconcile: 'reverified', finalTestGreen: true, includes: ['reverified', '✅ green'], excludes: [] },
   { finalReconcile: 'reverified', finalTestGreen: false, includes: ['❌ red'], excludes: [] },
-  // issue #865: 単体再実行で green の flake
-  { finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: { files: ['a.bats'], logs: [] }, includes: ['flake（単体再実行で green）'], excludes: ['✅ green', '❌ red'] },
+  // issue #1138: 単体再実行で green の flake 候補は red のまま、flake 候補であることを添える
+  { finalReconcile: 'reverified', finalTestGreen: false, finalTestFlaky: { files: ['a.bats'], logs: [] }, includes: ['❌ red（単体再実行は green — flake 候補）'], excludes: ['✅ green'] },
   { finalReconcile: 'unavailable', finalTestGreen: null, includes: ['unavailable', '不明'], excludes: [] },
 ])('finalReconcile=$finalReconcile, finalTestGreen=$finalTestGreen -> 「- Final reconcile」行の表示', ({ finalReconcile, finalTestGreen, finalTestFlaky, includes, excludes }) => {
   const line = finalReconcileLine(buildDevflowSummaryBody({ ...BASE_INPUT, finalReconcile, finalTestGreen, finalTestFlaky }));
@@ -2052,9 +2052,10 @@ test.each([
   { name: 'AC2: reverified, finalTestGreen=true, testGreen=false', input: { finalReconcile: 'reverified', finalTestGreen: true, testGreen: false }, want: '✅ green' },
   { name: 'AC2: reverified, finalTestGreen=false, testGreen=true', input: { finalReconcile: 'reverified', finalTestGreen: false, testGreen: true }, want: '❌ red' },
   { name: 'AC2: reverified, finalTestGreen=null, testGreen=true', input: { finalReconcile: 'reverified', finalTestGreen: null, testGreen: true }, want: '不明' },
-  // issue #865: test#final の単体再実行で green（flake）は green と区別して出す
-  { name: '#865: reverified, finalTestGreen=true + finalTestFlaky', input: { finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: { files: ['a.bats'], logs: [] } }, want: '⚠️ flake（単体再実行で green）' },
-  { name: '#865: reverified, finalTestGreen=true + finalTestFlaky.files 空', input: { finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: { files: [], logs: [] } }, want: '✅ green' },
+  // issue #1138: 落ちたファイルの単体再実行が green（flake 候補）でも red のまま出し、flake 候補であることを添える
+  { name: '#1138: reverified, finalTestGreen=false + finalTestFlaky', input: { finalReconcile: 'reverified', finalTestGreen: false, finalTestFlaky: { files: ['a.bats'], logs: [] } }, want: '❌ red（単体再実行は green — flake 候補）' },
+  { name: '#1138: skipped, Validate red + finalTestFlaky', input: { finalReconcile: 'skipped', testGreen: false, validateTests: 'failed', finalTestFlaky: { files: ['a.bats'], logs: [] } }, want: '❌ red（単体再実行は green — flake 候補）' },
+  { name: '#1138: reverified, finalTestGreen=false + finalTestFlaky.files 空', input: { finalReconcile: 'reverified', finalTestGreen: false, finalTestFlaky: { files: [], logs: [] } }, want: '❌ red' },
   { name: 'AC2: skipped, testGreen=false', input: { finalReconcile: 'skipped', testGreen: false }, want: '❌ red' },
   { name: 'AC2: skipped, testGreen=true', input: { finalReconcile: 'skipped', testGreen: true }, want: '✅ green' },
   { name: '#1168: unavailable, finalTestGreen=null, testGreen=false', input: { finalReconcile: 'unavailable', finalTestGreen: null, testGreen: false }, want: UNAVAILABLE_CELL },

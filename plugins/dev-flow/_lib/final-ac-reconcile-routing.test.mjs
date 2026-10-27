@@ -19,7 +19,7 @@
 //        'ledger 未収束' に反映
 //   (r6) fixes=1 + test#final red → 'final-ac-reconcile' 不発 + skipped + HOLD（'final test red'）
 //   (r7) fixes=1 + test#final green → prompt に test#final の tests / green・各 script のログパス・再実行しない指示
-//   (r8) fixes=1 + test#final red の flake 判定 → prompt にログパスも再実行しない指示も入らない
+//   (r8) fixes=1 + test#final red で単体再実行が green（flake 候補）→ 'final-ac-reconcile' 不発 + skipped + HOLD（final_test_red）
 //   (r9) fixes=1 + test#final error（unavailable）+ PR head の CI 全 success → 'final-ac-reconcile' 不発 + skipped +
 //        HOLD（final_reconcile_unavailable）
 
@@ -303,7 +303,7 @@ test('[final-ac-reconcile] (r7) test#final green → prompt に test#final の t
   assert.ok(p.includes(TEST_LOG_REUSE), '(r7) ログの行を根拠にして再実行しない指示が無い');
 });
 
-test('[final-ac-reconcile] (r8) test#final が red の flake 判定 → prompt にログパスも再実行しない指示も入らない', async () => {
+test('[final-ac-reconcile] (r8) test#final が red で単体再実行が green（flake 候補）→ final-ac-reconcile 不発 + skipped + final_test_red の HOLD', async () => {
   const { ctx, calls } = makeSandbox({
     fixesApplied: 1,
     overrides: {
@@ -311,12 +311,12 @@ test('[final-ac-reconcile] (r8) test#final が red の flake 判定 → prompt �
       'test#final-rerun': { tests: 'passed', green: true, summary: 'passed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-Zz99/rerun.log' }] },
     },
   });
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'r8');
-  const fac = calls.find((c) => c.label === 'final-ac-reconcile');
-  assert.ok(fac, `(r8) final-ac-reconcile が呼ばれていない (labels: ${calls.map((c) => c.label).join(', ')})`);
-  assert.ok(!fac.prompt.includes(TEST_LOG_REUSE), '(r8) 再実行しない指示が入っている');
-  assert.ok(!fac.prompt.includes('/tmp/run-tests-Zz99/'), '(r8) ログパスが入っている');
+  assert.ok(calls.some((c) => c.label === 'test#final-rerun'), '(r8) 前提: 単体再実行が走る');
+  assert.ok(!calls.some((c) => c.label === 'final-ac-reconcile'), `(r8) 単体再実行の green で final-ac-reconcile を起動してはならない (labels: ${calls.map((c) => c.label).join(', ')})`);
+  assert.equal(result?.final_ac_reconcile, 'skipped');
+  assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'final_test_red'), JSON.stringify(result?.merge_tier_hold_reasons));
 });
 
 test('[final-ac-reconcile] (r9) test#final が error（unavailable）→ PR head の CI が全 success でも final-ac-reconcile 不発 + skipped + HOLD（final_reconcile_unavailable）', async () => {

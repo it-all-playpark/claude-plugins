@@ -314,11 +314,13 @@ export function classifyMergeableState(meta) {
 //   完了を待たない）。判定は bucket だけで行い mergeStateStatus（UNSTABLE 等）は見ない。
 //   未指定 = reason・開示とも追加なし。object でない / ok が boolean でない / ok:true で checks が配列で
 //   ないものは明示 error。
-// s.finalTestFlaky (optional { files: string[], logs: string[] }): test#final が red で、落ちたファイルだけの
-//   単体再実行が green だった記録（_lib/final-test-rerun.mjs の finalTestRerunVerdict。issue #865）。このとき
-//   workflow は finalTestGreen を true にするので final_test_red は積まれない。flake は HOLD 理由にせず
-//   開示行（finalTestFlakyDisclosure）だけを disclosures に積む。未指定 = 開示なし。files が非空の string[]
-//   でない / logs が string[] でない / finalTestGreen !== true（red のまま flake を名乗る矛盾）は明示 error。
+// s.finalTestFlaky (optional { files: string[], logs: string[] }): 全件実行（Final reconcile の test#final か、
+//   Final reconcile skipped の run の Validate）が red で、落ちたファイルだけの単体再実行が green だった記録
+//   （_lib/final-test-rerun.mjs の finalTestRerunVerdict）。flake 候補の開示行（finalTestFlakyDisclosure）を
+//   disclosures に積むだけで、final_test_red / validate_test_red は積んだまま — 単体再実行の green は PR が書いた
+//   テストの出力で、全件実行のときだけ落ちるテストを書けば決定的な失敗でも green になるので HOLD を外す根拠にしない。
+//   未指定 = 開示なし。files が非空の string[] でない / logs が string[] でない / finalTestGreen === false の run にも
+//   skip の run の Validate red にも当たらない（落ちていない run が flake を名乗る矛盾）は明示 error。
 // s.securityReviewUnresolved (optional boolean): 敵対的 security review の対象の run（Diff triage か pr-iterate の
 //   判定のどちらかで対象）で、pr-iterate が今の PR head で security review を clear にしていない（LGTM 以外で終端した・
 //   critical/major が残った・worktree の外を指す指摘がある・review を回せなかった。issue #1063）。true なら
@@ -380,13 +382,14 @@ export function classifyMergeTier(s) {
     || !isStringArray(s.finalTestFlaky.logs))) {
     throw new Error('classifyMergeTier: invalid finalTestFlaky');
   }
-  if (s.finalTestFlaky != null && s.finalTestGreen !== true) {
-    throw new Error('classifyMergeTier: finalTestFlaky requires finalTestGreen===true');
-  }
   if (s.validateResult != null && (typeof s.validateResult !== 'object'
     || !['passed', 'failed', 'no_tests', 'error'].includes(s.validateResult.tests)
     || typeof s.validateResult.green !== 'boolean')) {
     throw new Error('classifyMergeTier: invalid validateResult');
+  }
+  const validateRed = s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false;
+  if (s.finalTestFlaky != null && s.finalTestGreen !== false && !validateRed) {
+    throw new Error('classifyMergeTier: finalTestFlaky requires finalTestGreen===false or a skipped run with Validate red');
   }
   if (s.setupDeps != null && (typeof s.setupDeps.ok !== 'boolean' || typeof s.setupDeps.note !== 'string')) {
     throw new Error('classifyMergeTier: invalid setupDeps');
@@ -419,7 +422,7 @@ export function classifyMergeTier(s) {
     pushBlocking('final_reconcile_unavailable', 'Final reconcile 再検証不能（pr-iterate fix 適用後の最終 tree の test 状態を確認できず）— 人間確認必須', 'human_judgment');
   }
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
-  if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'failed' && s.validateResult.green === false) {
+  if (validateRed) {
     pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   }
   if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'error') {
@@ -465,8 +468,9 @@ export function classifyMergeTier(s) {
     : ci?.state === 'unavailable'
       ? `CI 未完了（checks を取得できず: ${ci.error ?? 'unknown'}）— CI 結果は未確認（fail-open。HOLD 理由にしない）。merge 前に gh pr checks で結果を確認する`
       : null;
+  // finalTestFlaky は final_test_red か validate_test_red の run にだけ来る（上の検証）ので、開示行は HOLD の分岐にだけ載る
   const finalTestFlakyDisclosure = s.finalTestFlaky != null
-    ? `final test flake（単体再実行で green）: ${s.finalTestFlaky.files.join(', ')} — 最終 tree の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green（HOLD 理由にしない。1 回目のログ: ${s.finalTestFlaky.logs.length ? s.finalTestFlaky.logs.join(', ') : '不明'}）`
+    ? `test flake 候補（単体再実行は green）: ${s.finalTestFlaky.files.join(', ')} — ${s.finalTestGreen === false ? '最終 tree' : 'Validate'} の全件実行で落ち、落ちたファイルだけの 1 回の再実行で green。HOLD は解除しない（${s.finalTestGreen === false ? 'final_test_red' : 'validate_test_red'} のまま — 単体再実行の green は PR が書いたテストの出力）。1 回目のログ: ${s.finalTestFlaky.logs.length ? s.finalTestFlaky.logs.join(', ') : '不明'}`
     : null;
   const disclosures = [keywordAloneDisclosure, evalFailDisclosure, ciIncompleteDisclosure, finalTestFlakyDisclosure].filter(Boolean);
   if (blockingReasons.length) {
@@ -486,7 +490,6 @@ export function classifyMergeTier(s) {
     if (keywordAloneDisclosure) autoReasons.push(keywordAloneDisclosure);
     if (evalFailDisclosure) autoReasons.push(evalFailDisclosure);
     if (ciIncompleteDisclosure) autoReasons.push(ciIncompleteDisclosure);
-    if (finalTestFlakyDisclosure) autoReasons.push(finalTestFlakyDisclosure);
     return { tier: 'AUTO', reasons: autoReasons, holdReasons: [], holdKind: null, disclosures };
   }
   // REVIEW / AUTO の既定文は終端サマリーが「理由の節を出さない」判定に使う（devflow-summary-format.mjs の
@@ -495,6 +498,5 @@ export function classifyMergeTier(s) {
   if (keywordAloneDisclosure) reviewReasons.push(keywordAloneDisclosure);
   if (evalFailDisclosure) reviewReasons.push(evalFailDisclosure);
   if (ciIncompleteDisclosure) reviewReasons.push(ciIncompleteDisclosure);
-  if (finalTestFlakyDisclosure) reviewReasons.push(finalTestFlakyDisclosure);
   return { tier: 'REVIEW', reasons: reviewReasons, holdReasons: [], holdKind: null, disclosures };
 }

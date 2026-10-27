@@ -1481,31 +1481,45 @@ test('classifyMergeTier: ciChecks の契約外形状は明示 error', () => {
   assert.throws(() => classifyMergeTier(baseCleanInput({ ciChecks: { ok: true } })), /invalid ciChecks/);
 });
 
-// ---- finalTestFlaky（test#final の単体再実行が green、issue #865）----
+// ---- finalTestFlaky（全件実行で落ちたファイルの単体再実行が green — flake 候補の開示だけ、issue #1138）----
 
 const FLAKY = { files: ['plugins/x/a.bats'], logs: ['/tmp/run-tests-abc/0.log'] };
 
-test('classifyMergeTier: finalTestFlaky は HOLD にせず、落ちたファイルと 1 回目のログを開示行に出す', () => {
-  const r = classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: FLAKY }));
-  assert.equal(r.tier, 'REVIEW');
-  assert.deepEqual(r.holdReasons, []);
-  assert.equal(r.disclosures.length, 1);
-  assert.ok(r.disclosures[0].startsWith('final test flake（単体再実行で green）'), r.disclosures[0]);
-  assert.ok(r.disclosures[0].includes('plugins/x/a.bats') && r.disclosures[0].includes('/tmp/run-tests-abc/0.log'), r.disclosures[0]);
-  assert.ok(r.reasons.includes(r.disclosures[0]));
-
-  // 他の理由で HOLD の run でも final_test_red は積まず、開示行は reasons に残る
-  const hold = classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: true, finalTestFlaky: FLAKY, iterateStatus: 'stuck' }));
-  assert.equal(hold.tier, 'HOLD');
-  assert.ok(!hold.holdReasons.some((x) => x.code === 'final_test_red'), JSON.stringify(hold.holdReasons));
-  assert.ok(hold.reasons.some((x) => x.startsWith('final test flake')));
+test('classifyMergeTier: finalTestFlaky があっても final_test_red / validate_test_red で HOLD し、再実行したファイル・1 回目のログ・HOLD を解除しない旨を開示行に出す', () => {
+  const paths = {
+    final: { input: { finalReconcile: 'reverified', finalTestGreen: false }, code: 'final_test_red', where: '最終 tree' },
+    validate: { input: { finalReconcile: 'skipped', validateResult: { tests: 'failed', green: false } }, code: 'validate_test_red', where: 'Validate' },
+  };
+  for (const [name, { input, code, where }] of Object.entries(paths)) {
+    const r = classifyMergeTier(baseCleanInput({ ...input, finalTestFlaky: FLAKY }));
+    assert.equal(r.tier, 'HOLD', `(${name}) ${JSON.stringify(r)}`);
+    assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [[code, 'human_judgment']], `(${name})`);
+    assert.equal(r.disclosures.length, 1, `(${name}) ${JSON.stringify(r.disclosures)}`);
+    const d = r.disclosures[0];
+    assert.ok(d.startsWith('test flake 候補（単体再実行は green）: plugins/x/a.bats'), `(${name}) ${d}`);
+    assert.ok(d.includes(`${where} の全件実行で落ち`), `(${name}) ${d}`);
+    assert.ok(d.includes(`HOLD は解除しない（${code} のまま`), `(${name}) ${d}`);
+    assert.ok(d.includes('1 回目のログ: /tmp/run-tests-abc/0.log'), `(${name}) ${d}`);
+    assert.ok(r.reasons.includes(d), `(${name}) HOLD の reasons にも開示行が載る`);
+  }
 });
 
-test('classifyMergeTier: finalTestFlaky の契約外形状・red のままの flake は明示 error', () => {
-  const green = { finalReconcile: 'reverified', finalTestGreen: true };
-  assert.throws(() => classifyMergeTier(baseCleanInput({ ...green, finalTestFlaky: { files: [], logs: [] } })), /invalid finalTestFlaky/);
-  assert.throws(() => classifyMergeTier(baseCleanInput({ ...green, finalTestFlaky: { files: ['a.bats'] } })), /invalid finalTestFlaky/);
-  assert.throws(() => classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: false, finalTestFlaky: FLAKY })), /requires finalTestGreen===true/);
+test('classifyMergeTier: finalTestFlaky の契約外形状・落ちていない run の flake は明示 error', () => {
+  const red = { finalReconcile: 'reverified', finalTestGreen: false };
+  assert.throws(() => classifyMergeTier(baseCleanInput({ ...red, finalTestFlaky: { files: [], logs: [] } })), /invalid finalTestFlaky/);
+  assert.throws(() => classifyMergeTier(baseCleanInput({ ...red, finalTestFlaky: { files: ['a.bats'] } })), /invalid finalTestFlaky/);
+  const notRed = {
+    finalGreen: { finalReconcile: 'reverified', finalTestGreen: true },
+    finalNoTests: { finalReconcile: 'reverified', finalTestGreen: null },
+    unavailable: { finalReconcile: 'unavailable', finalTestGreen: null },
+    skippedValidateGreen: { finalReconcile: 'skipped', validateResult: { tests: 'passed', green: true } },
+    skippedValidateEnvGreen: { finalReconcile: 'skipped', validateResult: { tests: 'failed', green: true } },
+    skippedValidateError: { finalReconcile: 'skipped', validateResult: { tests: 'error', green: false } },
+    reverifiedValidateRed: { finalReconcile: 'reverified', finalTestGreen: true, validateResult: { tests: 'failed', green: false } },
+  };
+  for (const [name, input] of Object.entries(notRed)) {
+    assert.throws(() => classifyMergeTier(baseCleanInput({ ...input, finalTestFlaky: FLAKY })), /finalTestFlaky requires/, name);
+  }
 });
 
 // ---- validateResult（Final reconcile skipped の run の Validate red、issue #1086）----

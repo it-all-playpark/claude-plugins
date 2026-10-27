@@ -159,6 +159,11 @@ Final reconcile が `unavailable`（fix 後の最終 tree を再検証できな�
 workflow・スクリプトで動き、PR 自身が書き換えられるため、テストを走らせた証拠にならない。呼び出し元は
 その旨を報告し、テストの確認を人間に委ねる。`validate_tests === 'failed'` は本物の red。
 
+`final_test_flaky`（`{files, logs}`）は、全件実行（Final reconcile の test#final、skipped の run では Validate の最終結果）で
+落ちたファイルだけを 1 回流し直して green だった flake 候補の記録。`final_test_green` は false のままで、merge tier は
+`final_test_red` / `validate_test_red` の HOLD を外さない（単体再実行の green は PR が書いたテストの出力で、HOLD を外す根拠に
+ならない）。呼び出し元は HOLD のまま、flake 候補であることと `files` / `logs` を添えて人間に報告する。
+
 ## PR phase 失敗の扱い（`error_category: "pr_phase_failed"`）
 
 PR phase（commit / push / `gh pr create`）が失敗した run は throw せず、`status` / `error_category` が

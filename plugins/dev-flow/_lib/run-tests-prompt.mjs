@@ -28,7 +28,8 @@ export function runTestsPrompt(wt, base) {
   return runTestsCommandPrompt(wt, `run-tests ${wt} --base ${base}`);
 }
 
-// Final reconcile の test#final-rerun（issue #865）: test#final が落ちたファイルだけを 1 回流し直す。
+// Final reconcile の test#final-rerun / test#validate-rerun: 全件実行（test#final / skip の run の Validate）が落ちた
+// ファイルだけを 1 回流し直す。結果は flake 候補の開示にだけ使う（HOLD は外さない）。
 // 全件を再実行しない — 並列負荷による flake は全件を回すと再発する。files は呼び出し側（finalTestRerunFiles）が
 // シェルで分割・展開されない文字だけのパスに絞ってから渡す。転写の契約は runTestsPrompt と同じ。
 /**
