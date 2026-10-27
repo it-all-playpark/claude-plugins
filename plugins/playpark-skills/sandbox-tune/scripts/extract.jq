@@ -160,7 +160,10 @@ def permission_events($l; $r; $tu; $txt):
   | ($tu.name // ([ $txt | capture("Permission to use (?<t>\\S+)") ] | .[0].t) // "unknown") as $tool
   | ($tu.command // ([ $txt | capture("with command (?<c>[\\s\\S]*) has been denied") ] | .[0].c)) as $cmd
   # worktree-guard はコマンド名でなく形（ループ・-C・複文）で拒否するので、コマンド名で割らず 1 つの型にする
+  # hook はコマンド名でなくエラー文の 1 行目（最初の 。か改行まで）で割る。どの hook が止めたかで型が分かれ、
+  # その文は hook のファイルに書かれているので、needle にすると hook を消した・文言を変えた commit の差分に現れる
   | (if $kind == "worktree-guard" then "*"
+     elif $kind == "hook" then ([ $txt | capture("\\APreToolUse:\\S+ hook error: (?<m>[^\\n。]*)") ] | .[0].m // "" | sub("\\s+\\z"; ""))
      elif $tool == "Bash" and $cmd != null then ($cmd | cmd_head)
      elif $tu.file_path then ($tu.file_path | norm_path)
      else $tool end) as $target
