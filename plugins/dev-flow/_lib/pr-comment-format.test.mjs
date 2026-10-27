@@ -673,13 +673,16 @@ test('buildTerminalSummaryBody: 回収状況の写像 — 条件を満たさな�
   ]);
 });
 
-test('buildTerminalSummaryBody: security_review_unresolved はこの run が lgtm で security review が clear / 対象外なら解消、それ以外は未解消', () => {
+test('buildTerminalSummaryBody: security_review_unresolved はこの run の security review が clear / 対象外なら終端 status に依らず解消、それ以外は未解消', () => {
   const opts = { pr: 5, iterations: 2, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed' };
   const prior = { tier: 'HOLD', codes: ['security_review_unresolved'], url: PRIOR_URL };
   const sr = (status) => ({ target: status !== 'not_target', status, rounds: 1, critical: 0, major: 0, minor: 0 });
   for (const [status, review, want] of [
     ['lgtm', sr('cleared'), '- `security_review_unresolved` — ✅ 解消 — この run の security review: cleared'],
     ['lgtm', sr('not_target'), '- `security_review_unresolved` — ✅ 解消 — この run の security review: not_target'],
+    // cleared は今の head の結果（head を変えうる操作の前に pr-iterate が null に戻す）。LGTM に届かないことは iterate_non_lgtm が扱う
+    ['stuck', sr('cleared'), '- `security_review_unresolved` — ✅ 解消 — この run の security review: cleared'],
+    ['max_reached', sr('not_target'), '- `security_review_unresolved` — ✅ 解消 — この run の security review: not_target'],
     ['security_unresolved', sr('unresolved'), `- \`security_review_unresolved\` — ${UNRESOLVED} — この run の security review: unresolved`],
     ['max_reached', sr('not_run'), `- \`security_review_unresolved\` — ${UNRESOLVED} — この run の security review: not_run`],
   ]) {
