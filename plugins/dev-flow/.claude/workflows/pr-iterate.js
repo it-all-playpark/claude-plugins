@@ -743,13 +743,14 @@ const PRIOR_HOLD_HUMAN = '未解消（人の判断が要る — pr-iterate は�
 const PRIOR_HOLD_FINAL_TEST = '未解消（HOLD は外さない — 下の事実で確認範囲を絞って人が確認する）';
 
 const shortShaCell = (s) => `\`${String(s).slice(0, 7)}\``;
-const shellPathArg = (p) => (/^[A-Za-z0-9_.@+\/-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`);
+const isPlainPath = (p) => /^[A-Za-z0-9_.@+\/-]+$/.test(p);
+const pathCell = (p) => (p.includes('`') ? mdCell(p).replace(/`/g, '\\`') : `\`${mdCell(p)}\``);
 
 function finalTestRunLabel(t) {
   if (t != null && t.tests === 'passed' && t.green === true) return 'passed';
   if (t != null && t.tests === 'failed') {
     const files = Array.isArray(t.failed_files) ? t.failed_files.filter((f) => typeof f === 'string' && f !== '') : [];
-    return `failed — 失敗ファイル: ${files.length ? files.map((f) => `\`${mdCell(f)}\``).join(' / ') : '不明（ファイルに結び付かない失敗）'}`;
+    return `failed — 失敗ファイル: ${files.length ? files.map(pathCell).join(' / ') : '不明（ファイルに結び付かない失敗）'}`;
   }
   if (t != null && t.tests === 'no_tests') return 'no_tests（実行対象のテストが無い）';
   return '実行できなかった';
@@ -768,8 +769,10 @@ function finalTestRedFacts(check) {
   if (changes.status === 'none') {
     facts.push('テスト関連の変更（テストとテストの実行を変えうる設定）: なし');
   } else if (changes.status === 'changed') {
-    facts.push(`テスト関連の変更（テストとテストの実行を変えうる設定）: あり ${changes.files.length} 件 — ${changes.files.map((f) => `\`${mdCell(f)}\``).join(' / ')}`);
-    facts.push(`その diff: \`${mdCell(`git diff ${check.holdHead}..${check.endHead} -- ${changes.files.map(shellPathArg).join(' ')}`)}\``);
+    facts.push(`テスト関連の変更（テストとテストの実行を変えうる設定）: あり ${changes.files.length} 件 — ${changes.files.map(pathCell).join(' / ')}`);
+    facts.push(changes.files.every(isPlainPath)
+      ? `その diff: \`git diff ${check.holdHead}..${check.endHead} -- ${changes.files.join(' ')}\``
+      : 'その diff: シェルに貼れないファイル名を含むのでコマンドは出さない — PR 全体の diff を確認する');
   } else {
     facts.push('テスト関連の変更（テストとテストの実行を変えうる設定）: 不明（変更ファイル一覧を取れなかったか、HOLD 時の head が終端 head の祖先でない — PR 全体の diff を確認する）');
   }

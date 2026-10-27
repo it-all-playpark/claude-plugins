@@ -800,9 +800,15 @@ const RUN_FACT = '  - 最終 tree の全件テスト（run-tests 1 回）: ';
 test('buildTerminalSummaryBody: final_test_red の行は変更の有無（なし / あり + git diff コマンド / 不明）と最終 tree の全件テストの結果を出し、どれでも未解消', () => {
   const cases = [
     [ranCheck({ status: 'none', files: [] }, PASSED), [`${CHANGES_FACT}なし`, `${RUN_FACT}passed`]],
-    [ranCheck({ status: 'changed', files: ['tests/a|b.test.js', 'package.json', "it's.bats"] }, PASSED), [
-      `${CHANGES_FACT}あり 3 件 — \`tests/a\\|b.test.js\` / \`package.json\` / \`it's.bats\``,
-      `  - その diff: \`git diff ${HOLD_HEAD}..${END_HEAD} -- 'tests/a\\|b.test.js' package.json 'it'\\''s.bats'\``,
+    [ranCheck({ status: 'changed', files: ['tests/a.test.js', 'package.json'] }, PASSED), [
+      `${CHANGES_FACT}あり 2 件 — \`tests/a.test.js\` / \`package.json\``,
+      `  - その diff: \`git diff ${HOLD_HEAD}..${END_HEAD} -- tests/a.test.js package.json\``,
+      `${RUN_FACT}passed`,
+    ]],
+    // シェルや Markdown で意味を持つ文字を含む名前が 1 件でもあればコマンドは出さない。backtick を含む名前は code span に入れない
+    [ranCheck({ status: 'changed', files: ['tests/a|b.test.js', 'package.json', "tests/a`';touch pwn;'`b.bats"] }, PASSED), [
+      `${CHANGES_FACT}あり 3 件 — \`tests/a\\|b.test.js\` / \`package.json\` / tests/a\\\`';touch pwn;'\\\`b.bats`,
+      '  - その diff: シェルに貼れないファイル名を含むのでコマンドは出さない — PR 全体の diff を確認する',
       `${RUN_FACT}passed`,
     ]],
     [ranCheck({ status: 'unknown', files: [] }, PASSED), [
