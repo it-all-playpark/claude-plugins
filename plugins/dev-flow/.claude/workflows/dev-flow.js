@@ -1190,12 +1190,20 @@ function matchesCiVerify(ac, ciVerify) {
   return label !== '' && mentionsLabel(text, label)
 }
 
+const TEST_FILE_PATH_RE = /(^|\/)([^/*\s]+\.(test|spec)\.[A-Za-z0-9]+|[^/*\s]+\.bats|__tests__\/[^*\s]+\.[A-Za-z0-9]+|test_[^/*\s]+\.py|[^/*\s]+_test\.(py|go|rb)|[^/*\s]+_spec\.rb|[^/*\s]+Test\.php|tests\/[^/*\s]+\.rs)$/
+const INLINE_CODE_TOKEN_SEP_RE = /[\s\x27\x22]+/
+
+function namesTestFile(ac) {
+  const codes = (String(ac ?? '').match(INLINE_CODE_RE) ?? []).map((m) => m.slice(1, -1))
+  return codes.some((code) => code.split(INLINE_CODE_TOKEN_SEP_RE).some((tok) => TEST_FILE_PATH_RE.test(tok)))
+}
+
 function classifyAcActor(ac, opts = {}) {
   const text = String(ac ?? '').replace(INLINE_CODE_RE, ' ')
   if (HUMAN_AC_PATTERNS.some((re) => re.test(text))) return 'human'
   if (matchesCiVerify(ac, opts?.ciVerify)) return 'ci'
   if (classifyAcScope(ac, opts) === 'external') return 'human'
-  return opts?.observational === true ? 'human' : 'agent'
+  return opts?.observational === true && !namesTestFile(ac) ? 'human' : 'agent'
 }
 
 function acActorsOf(acceptanceCriteria, opts = {}) {
@@ -6794,7 +6802,8 @@ async function execEvaluatePhase(state) {
       }
     }
     // 実証の無い観測型 AC の satisfied:true を未達（observational:true）に倒した結果を以降の判定・終端サマリーに使う。
-    // 観測型 AC の actor は human なので、未達は差し戻し（agentAcFeedback）に入らず Merge tier の ac_human_pending へ回る。
+    // 観測型 AC の actor は human なので、未達は差し戻し（agentAcFeedback）に入らず Merge tier の ac_human_pending へ回る
+    // （テストファイルを名指しした観測型 AC は actor agent なので、未達は差し戻しに入る — classifyAcActor）。
     // ci の AC は evaluator の判定を使わず「CI で未判定」（satisfied:false・actor ci）に置き換える — unsatisfiedByActor.ci に
     // 入り、agent の差し戻し（agentAcFeedback）にも人手 AC 待ちにも数えない。CI の結果は pr-iterate の後で反映する。
     const acResultsEff = applyCiAcResults(demoteUnprovenObservationalAc(ev.ac_results, req.ac_observational, deterministicAcIndexes(ledger.items)), req.ac_actors, null)

@@ -10,6 +10,8 @@
 //   (H) final evaluator が verified_by:test を返した観測型 AC → 最終 tree の red→green 実証で deterministic 昇格、HOLD しない
 //   (I) red→green 不成立・vdelta deny・spawn 失敗・results 欠落 → 昇格せず ac_human_pending の HOLD
 //   (J) inspection の観測型 AC / (K) Evaluate で昇格済みの AC → redgreen-final を spawn しない
+// テストファイルを inline code で名指しした観測型 AC（issue #1147。actor agent）:
+//   (L) inspection の satisfied:true → 未達に倒れて dev-implementer へ差し戻し、上限後も未達なら ac_agent_unsatisfied の HOLD
 // 観測型判定の確定（issue #859。prerun の ac_observational が null の AC だけを分類 agent に回す）:
 //   (F) 回帰（acme/webapp）: null の AC だけを title と AC 文面で 1 回渡し、確定値が evaluator と actor に効く
 //       （prerun が全 AC を確定していれば spawn しないことは (A) で見る）
@@ -22,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
 import { APP_REPO_REGRESSION_ACS } from './test-helpers/observational-ac-controls.mjs';
+import { AGENT_AC_REIMPL_MAX } from './ac-actor.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude/workflows/dev-flow.js'), 'utf8');
@@ -179,6 +182,22 @@ test('[observational-ac] (E) Evaluate で red→green 実証済みの観測型 A
   assert.equal(result?.final_ac_reconcile, 'reverified');
   assert.equal(result?.merge_tier, 'REVIEW', `red→green 実証済みなので HOLD しない: ${JSON.stringify(result?.merge_tier_reasons)}`);
   assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [], ci: [] });
+});
+
+test('[observational-ac] (L) テストファイルを名指しした観測型 AC の inspection 判定 → 差し戻し、上限後も未達なら ac_agent_unsatisfied の HOLD（人手 AC 待ちにしない）', async () => {
+  const TEST_OBS_AC = '`journal.bats` に足すテストで、実 run の journal に `duration_seconds` が記録されることを確かめる';
+  const evals = Object.fromEntries(Array.from({ length: AGENT_AC_REIMPL_MAX + 1 }, (_, k) => [`eval#${k + 1}`, evalWith([inspection(0), inspection(1)])]));
+  const { result, calls } = await run(evals, {
+    analyze: prerunAnalyze({ acceptance_criteria: [TEST_OBS_AC, CODE_AC], ac_observational: [true, false], ac_observational_evidence: ['Jev noul 観測型 p=0.97', '正規表現の絞り込みに当たらない'] }),
+  });
+  const reimpl = reimplCalls(calls);
+  assert.equal(reimpl.length, AGENT_AC_REIMPL_MAX, `差し戻しは上限 ${AGENT_AC_REIMPL_MAX} 回: ${calls.map((c) => c.label).join(', ')}`);
+  assert.match(reimpl[0].prompt, /AC-1 未達/);
+  assert.equal(result?.merge_tier, 'HOLD');
+  assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_agent_unsatisfied']);
+  assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [0], human: [], ci: [] });
+  const prCall = calls.find((c) => c.label === 'pr#1');
+  assert.ok(prCall.prompt.includes(`- [ ] ${TEST_OBS_AC}`), `PR 本文で red→green 実証の無い観測型 AC が checked になった: ${prCall.prompt}`);
 });
 
 // 回帰（issue #859）: acme/webapp の AC。prerun の判定は prerun-analyze.bats の Jev スタブと同じ値
