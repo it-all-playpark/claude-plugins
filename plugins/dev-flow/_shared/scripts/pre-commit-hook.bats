@@ -113,6 +113,22 @@ json_field() {
     [ "$(git -C "$REPO" ls-files --others --exclude-standard -- new.txt)" = "new.txt" ]
 }
 
+@test "skip-worktree を付けて取り出していないパスは hook の stage 内容に削除として出ない" {
+    printf 'kept\n' > "$REPO/skipped.txt"
+    git -C "$REPO" add skipped.txt
+    git -C "$REPO" commit -q -m skipped
+    git -C "$REPO" update-index --skip-worktree skipped.txt
+    rm "$REPO/skipped.txt"
+    put_hook 'git diff --cached --name-status; exit 1'
+    printf 'changed\n' > "$REPO/file.txt"
+
+    run bash "$SCRIPT" "$REPO"
+    [ "$status" -ne 0 ]
+    tail_out="$(json_field "$output" .tail)"
+    [[ "$tail_out" == *"file.txt"* ]]
+    [[ "$tail_out" != *"skipped.txt"* ]]
+}
+
 @test "末尾だけを tail に入れる（長い出力の先頭は落ちる）" {
     put_hook 'i=1; while [ $i -le 100 ]; do echo "line-$i"; i=$((i+1)); done; exit 1'
 

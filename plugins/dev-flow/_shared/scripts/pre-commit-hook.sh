@@ -6,8 +6,9 @@
 # リトライも green-fix も無いまま pr_phase_failed で終わる。同じ hook を Validate で先に回し、失敗を green-fix に渡す。
 #
 # stage 内容: PR phase の stage（PR_STAGE_COMMANDS = add -A → .devflow-tmp を外す）と同じものを一時 index に作り、
-# GIT_INDEX_FILE で hook に渡す（hook 内の `git diff --cached` 等はこの index を読む）。一時 index は HEAD の tree から
-# 作る。実 index は書かない — Validate の後の run-tests / redgreen-verify / diff-hash が見る index を変えないため。
+# GIT_INDEX_FILE で hook に渡す（hook 内の `git diff --cached` 等はこの index を読む）。一時 index は実 index の
+# コピーから作る（HEAD の tree から作ると skip-worktree ビットが落ち、取り出していないパスを add -A が削除として
+# stage する。PR phase の実 index ではその削除は stage されない）。実 index は書かない — Validate の後の run-tests / redgreen-verify / diff-hash が見る index を変えないため。
 # HEAD は動かさない（ここでは何も記録しない）。
 #
 # hook の解決と起動は git に任せる: 有無は `git hook list pre-commit` の exit code（0 = ある / 1 = 無い）で決め、
@@ -62,7 +63,9 @@ elif [[ $list_rc -ne 0 ]]; then
     exit 2
 fi
 
-if ! { GIT_INDEX_FILE="$INDEX" git read-tree HEAD \
+REAL_INDEX=$(git rev-parse --path-format=absolute --git-path index 2>/dev/null) \
+    || { emit error null "" "" "cannot resolve the index path"; exit 2; }
+if ! { cp "$REAL_INDEX" "$INDEX" \
         && GIT_INDEX_FILE="$INDEX" git add -A \
         && GIT_INDEX_FILE="$INDEX" git reset -q -- .devflow-tmp; } >"$LOG_DIR/stage.log" 2>&1; then
     emit error null "$(tail -n 3 "$LOG_DIR/stage.log")" "$LOG_DIR/stage.log" "cannot build the temporary index"
