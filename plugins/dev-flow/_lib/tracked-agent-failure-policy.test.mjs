@@ -52,14 +52,6 @@ const DF_B2 = {
   workflow: async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }),
   overrides: { 'reconcile-sync': { ok: true, head: 'a'.repeat(40) } },
 };
-// B4: Final reconcile が unavailable（test#final tests:'error'）→ ci-final の CI 委譲へ到達する。
-const DF_B4 = {
-  workflow: async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }),
-  overrides: {
-    'reconcile-sync': { ok: true, head: 'a'.repeat(40) },
-    'test#final': { tests: 'error', summary: 'startup failed', green: false },
-  },
-};
 // B5: Merge tier の merge-tier-facts が Diff triage と異なる hash（reuse miss）かつ risk に新規 hit
 // （auth）を報告 → one-shot security-clearance-final へ到達する。
 const DF_B5 = {
@@ -181,15 +173,6 @@ const EXPECTED_DEV_FLOW = {
   'test#final': { config: DF_B2, policy: 'continue', reason: 'try/catchで吸収しunavailable扱い（merge tier HOLD）へ倒すfail-safe経路' },
   'changed-files-final': { config: DF_B2, policy: 'abort', reason: 'bare据え置き。最終changed-files取得失敗のfail-open化は別issueの検討対象' },
   'final-ac-reconcile': { config: DF_B2, policy: 'abort', reason: 'bare据え置き。最終AC再検証不能のままmerge tierを確定しない契約' },
-  'ci-final': { config: DF_B4, policy: 'continue', reason: 'try/catchで吸収しunavailable維持（fail-closed）へ倒す既存経路' },
-  'ci-test-display': {
-    config: DEV_FLOW_SCENARIOS['ci-test-display'],
-    policy: 'continue',
-    reason: 'try/catchで吸収しテスト欄を未検証表示へ倒す表示専用経路（merge tier 不変）',
-    extra: async ({ result }) => {
-      assert.equal(result?.final_reconcile, 'skipped', 'ci-test-display throw でも final_reconcile は skipped のまま（表示専用）');
-    },
-  },
   'security-clearance-final': { config: DF_B5, policy: 'abort', reason: 'bare据え置き。security clearance不能をclearと同一視しない契約' },
   'closes-reinject': {
     config: DF_CLOSES,
@@ -356,7 +339,7 @@ for (const [label, spec] of Object.entries(EXPECTED_DEV_FLOW)) {
 // 集合）の全 scenario を含める（issue #605 review, PR #645）。観測範囲はこの configs 集合が
 // 到達する label に限られる — dev-flow.js の bare trackedAgent( 出現を静的に全走査するわけではない。
 test('dev-flow.js: 本ファイルの baseline + DEV_FLOW_SCENARIOS 全 scenario で観測される label は EXPECTED_DEV_FLOW に登録されている', async () => {
-  const configs = [DF_B1, DF_B2, DF_B4, DF_B5, DF_DANGER, DF_CLOSES, ...Object.values(DEV_FLOW_SCENARIOS)];
+  const configs = [DF_B1, DF_B2, DF_B5, DF_DANGER, DF_CLOSES, ...Object.values(DEV_FLOW_SCENARIOS)];
   const observed = new Set();
   for (const config of configs) {
     const { calls } = await runDevFlowBaseline(config);

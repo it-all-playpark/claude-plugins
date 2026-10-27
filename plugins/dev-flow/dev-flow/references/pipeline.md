@@ -224,27 +224,27 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 - **判定**: pr-iterate が fix を適用した run（`fixes_applied > 0`）だけ、fix 後の最終 tree で確かめ直す（0 の run は spawn しない）:
   - worktree を PR の最終 HEAD に同期し、Validate と同じ prompt の `run-tests <WT>` を 1 回だけ実行する（green-fix はしない）。red で
     落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake として記録する（`_lib/final-test-rerun.mjs`）
-  - テストを実行できなければ、PR head sha に pin した CI check を決定論で判定して代える（`finalCiVerdict`）
+  - テストを実行できなければ（同期失敗・test の null・`tests:'error'`）`unavailable`。PR の CI の success では代えない
+    （PR が CI の workflow・スクリプトを書き換えうる）
   - 最終の changed-files で宣言外変更を監査し直す
-  - final test が green か CI で確かめられた run は、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
-    解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は決定論の evidence で checked にする
-    （evaluator は fix 後に再実行されないため）。SEC seed・TESTSURF・AC-FINAL は LLM の判断で解消しない
+  - final test が green（no_tests を含む）の run（`reverified`）だけ、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
+    解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は test#final green を head sha に pin した
+    evidence で checked にする（evaluator は fix 後に再実行されないため。`finalEvalBlockingResolutions`）。SEC seed・TESTSURF・AC-FINAL は LLM の判断で解消しない
   - Evaluate で red→green を実証していない観測型 AC に Final AC reconcile が `verified_by:'test'` と `test_files` / `impl_files` を返したら、
     最終 tree で redgreen-verify（`redgreen-final`。impl は `origin/<base>` との merge-base まで戻す）を 1 spawn で実行し、red→green が成立して
     vdelta が deny しなければ deterministic に昇格する（`finalRedgreenTargets`）。fix がテストを直した run を人手 AC 待ちにしないため。
     inspection の観測型 AC と Evaluate で昇格済みの AC には spawn しない
   - test#final が green か no_tests なら、Final AC reconcile に test#final の `tests` / `green` と各 script のログパスを渡し、
-    実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）。error（CI 委譲）・
-    red の flake 判定ではログを渡さない
-- skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'` は `validate_test_red`、`tests:'error'` は PR head の
-  CI で green を確かめられなければ `validate_tests_not_run` で HOLD
+    実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）。red の flake 判定ではログを渡さない
+- skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'` は `validate_test_red`、`tests:'error'` は
+  `validate_tests_not_run` で HOLD（PR の CI の success では解除しない）
 - **失敗の扱い**:
-  - 同期失敗・test の null は `unavailable`（fail-safe → Merge tier HOLD）。flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）
-  - CI での代替が成立しない（pending・failure・sha 不一致）は HOLD のまま（fail-closed。判定は LLM にさせない）
+  - 同期失敗・test の null・`tests:'error'` は `unavailable`（fail-safe → HOLD `final_reconcile_unavailable`）。
+    flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）
   - Final AC reconcile の応答が検証に通らなければ `unavailable`（fail-closed → HOLD）
   - `redgreen-final` の spawn 失敗（throw・null）・結果の欠落・red→green 不成立・vdelta の deny は昇格せず、観測型 AC は人手 AC 待ちのまま（fail-safe）
   - changed-files の取得失敗は宣言外の再監査を skip（fail-open。test gate は維持）。PR 本文の AC checkbox の更新失敗も fail-open
-- **コード**: `phase('Final reconcile')`（`.claude/workflows/dev-flow.js`）、`_lib/final-test-rerun.mjs`、`_lib/final-ci.mjs`、
+- **コード**: `phase('Final reconcile')`（`.claude/workflows/dev-flow.js`）、`_lib/final-test-rerun.mjs`、
   `_lib/final-ac-reconcile.mjs`（`finalEvalBlockingResolutions`・`finalRedgreenTargets`）、`_lib/redgreen-targets.mjs`、`_lib/post-eval-recheck.mjs`
 
 ## Merge tier

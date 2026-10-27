@@ -146,15 +146,17 @@ test('setFinalResolution: evidence 省略時は final_evidence が null に正�
 });
 test('setFinalResolution: 元 ledger を mutate しない', () => {
   const { ledger } = appendItem(makeLedger(), ac({ id: 'A' }));
-  setFinalResolution(ledger, 'A', 'ci_delegated', 'CI check X で検証');
+  setFinalResolution(ledger, 'A', 'resolved', 'commit abc で修正');
   assert.equal(ledger.items[0].final_resolution, undefined);
 });
 test('setFinalResolution: 未知 id は throw', () => {
   assert.throws(() => setFinalResolution(makeLedger(), 'X', 'resolved', 'e'), /未知の item id/);
 });
-test('setFinalResolution: enum 外 resolution は throw', () => {
+test('setFinalResolution: enum 外 resolution（撤去した ci_delegated を含む）は throw', () => {
   const { ledger } = appendItem(makeLedger(), ac({ id: 'A' }));
-  assert.throws(() => setFinalResolution(ledger, 'A', 'partially', 'e'), /不正な final_resolution/);
+  for (const resolution of ['partially', 'ci_delegated']) {
+    assert.throws(() => setFinalResolution(ledger, 'A', resolution, 'e'), /不正な final_resolution/, resolution);
+  }
 });
 
 test('U2: 単調不可逆性（決定論 item の checked を true→false に戻す経路が無い）', () => {

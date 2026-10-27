@@ -7,7 +7,7 @@
 //   floor:    boolean  (true = 決定論 floor が注入。LLM は severity を lower できない)
 //   triaged:  boolean | undefined  (表示専用。checked とは独立。gate/収束/merge tier には不使用)
 //   triaged_evidence: string | null | undefined  (triaged:true のときの根拠)
-//   final_resolution: 'resolved'|'ci_delegated'|'unresolved'|undefined（表示専用。Final AC reconcile
+//   final_resolution: 'resolved'|'unresolved'|undefined（表示専用。Final AC reconcile
 //     時の fix 後 tree 再評価結果。checked とは独立で gate/収束/merge tier には不使用）
 //   final_evidence: string|null|undefined
 //
@@ -82,7 +82,7 @@ export function triageItem(ledger, id, evidence) {
 // （canonical は import 不可のため重複定義）。checked / evidence / triaged は変えない（純粋関数）。
 export function setFinalResolution(ledger, id, resolution, evidence) {
   // FINAL_ITEM_RESOLUTIONS は _lib/final-ac-reconcile.mjs（canonical は import 不可のため重複定義）
-  if (!['resolved', 'ci_delegated', 'unresolved'].includes(resolution)) throw new Error(`goal-ledger: 不正な final_resolution "${resolution}"`);
+  if (!['resolved', 'unresolved'].includes(resolution)) throw new Error(`goal-ledger: 不正な final_resolution "${resolution}"`);
   const idx = ledger.items.findIndex((it) => it.id === id);
   if (idx < 0) throw new Error(`goal-ledger: 未知の item id "${id}"`);
   const items = ledger.items.slice();

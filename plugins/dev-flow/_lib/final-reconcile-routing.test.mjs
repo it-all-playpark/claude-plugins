@@ -154,7 +154,7 @@ test('[final-reconcile] (a) fixes_applied=0 → 新規 agent 呼び出しゼロ 
   assertNoCrash(error, 'a');
   assert.ok(result !== null, '(a) workflow は return object を返すべきだが null だった');
 
-  const finalLabels = ['reconcile-sync', 'test#final', 'changed-files-final', 'ci-final'];
+  const finalLabels = ['reconcile-sync', 'test#final', 'changed-files-final'];
   for (const l of finalLabels) {
     assert.ok(!calls.some((c) => c.label === l), `(a) fixes_applied=0 では label==='${l}' の呼び出しが存在してはならない`);
   }
@@ -408,7 +408,7 @@ test("[final-reconcile] (l) fixes=1 + test#final tests:'error'（起動失敗）
 // ============================================================
 
 test("[final-reconcile] (m) fixes=1 + test#final tests:'failed'（本物の red）→ reverified + final_test_green false + HOLD + 'final test red'（回帰）", async () => {
-  const { ctx, calls } = makeSandbox({
+  const { ctx } = makeSandbox({
     fixesApplied: 1,
     overrides: { 'test#final': { tests: 'failed', green: false, summary: '3 tests failed' } },
   });
@@ -423,7 +423,6 @@ test("[final-reconcile] (m) fixes=1 + test#final tests:'failed'（本物の red�
     (result?.merge_tier_reasons ?? []).some((r) => r.includes('final test red')),
     `(m) merge_tier_reasons に 'final test red' が含まれるはずだが ${JSON.stringify(result?.merge_tier_reasons)}`,
   );
-  assert.ok(!calls.some((c) => c.label === 'ci-final'), "(m) 本物の red（reverified 経路）では CI 委譲 'ci-final' を起動してはならない（fail-closed 維持）");
 });
 
 // ============================================================

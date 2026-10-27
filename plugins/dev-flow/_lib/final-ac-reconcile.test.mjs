@@ -150,61 +150,17 @@ test('shouldRunFinalAcReconcile: finalTestGreen=true → run:true', () => {
   assert.deepEqual(result, { run: true, reason: 'ok' });
 });
 
-// ---- (2b) shouldRunFinalAcReconcile: finalReconcile='ci_verified' (issue #599) ----
+// ---- (2b) shouldRunFinalAcReconcile: 'reverified' 以外は final_test_unavailable (issue #1168) ----
+// PR の CI の success で最終 tree の test 状態を代替しない — 撤去した 'ci_verified' を含め、
+// 最終 tree を再検証していない値はどれも AC 再検証へ進まない。
 
-test('shouldRunFinalAcReconcile: finalReconcile=ci_verified + finalTestGreen=null → run:true', () => {
-  const result = shouldRunFinalAcReconcile({
-    fixesApplied: 1,
-    finalReconcile: 'ci_verified',
-    finalTestGreen: null,
-    runEval: true,
-    acCount: 2,
-  });
-  assert.deepEqual(result, { run: true, reason: 'ok' });
-});
-
-test('shouldRunFinalAcReconcile: finalReconcile=ci_verified + finalTestGreen=false → final_test_red（判定順5が引き続き効く）', () => {
-  const result = shouldRunFinalAcReconcile({
-    fixesApplied: 1,
-    finalReconcile: 'ci_verified',
-    finalTestGreen: false,
-    runEval: true,
-    acCount: 2,
-  });
-  assert.deepEqual(result, { run: false, reason: 'final_test_red' });
-});
-
-test('shouldRunFinalAcReconcile: finalReconcile=unavailable → final_test_unavailable 不変（ci_verified 追加後も回帰なし）', () => {
-  const result = shouldRunFinalAcReconcile({
-    fixesApplied: 1,
-    finalReconcile: 'unavailable',
-    finalTestGreen: null,
-    runEval: true,
-    acCount: 2,
-  });
-  assert.deepEqual(result, { run: false, reason: 'final_test_unavailable' });
-});
-
-test('shouldRunFinalAcReconcile: finalReconcile=ci_verified でも fixesApplied=0 → no_fixes（判定順が先）', () => {
-  const result = shouldRunFinalAcReconcile({
-    fixesApplied: 0,
-    finalReconcile: 'ci_verified',
-    finalTestGreen: null,
-    runEval: true,
-    acCount: 2,
-  });
-  assert.deepEqual(result, { run: false, reason: 'no_fixes' });
-});
-
-test('shouldRunFinalAcReconcile: finalReconcile=ci_verified でも runEval=false → eval_skipped（判定順が先）', () => {
-  const result = shouldRunFinalAcReconcile({
-    fixesApplied: 1,
-    finalReconcile: 'ci_verified',
-    finalTestGreen: null,
-    runEval: false,
-    acCount: 2,
-  });
-  assert.deepEqual(result, { run: false, reason: 'eval_skipped' });
+test('shouldRunFinalAcReconcile: finalReconcile が reverified 以外（ci_verified / unavailable / skipped / null）→ finalTestGreen に依らず final_test_unavailable', () => {
+  for (const finalReconcile of ['ci_verified', 'unavailable', 'skipped', null, undefined]) {
+    for (const finalTestGreen of [true, null]) {
+      const result = shouldRunFinalAcReconcile({ fixesApplied: 1, finalReconcile, finalTestGreen, runEval: true, acCount: 2 });
+      assert.deepEqual(result, { run: false, reason: 'final_test_unavailable' }, `${finalReconcile} / ${finalTestGreen}`);
+    }
+  }
 });
 
 // ---- (3) validateFinalAcResults ----
@@ -415,8 +371,8 @@ test('validateFinalAcResults: 全件 satisfied:true → unsatisfiedIndexes は�
 
 // ---- (4) FINAL_ITEM_RESOLUTIONS / validateFinalItemResolutions (issue #658) ----
 
-test('FINAL_ITEM_RESOLUTIONS は resolved/ci_delegated/unresolved の 3 値配列', () => {
-  assert.deepEqual(FINAL_ITEM_RESOLUTIONS, ['resolved', 'ci_delegated', 'unresolved']);
+test('FINAL_ITEM_RESOLUTIONS は resolved/unresolved の 2 値配列', () => {
+  assert.deepEqual(FINAL_ITEM_RESOLUTIONS, ['resolved', 'unresolved']);
 });
 
 test('validateFinalItemResolutions: null 入力 → accepted:[] rejected:[]', () => {
@@ -461,20 +417,22 @@ test('validateFinalItemResolutions: 同 id 2 回目以降 → duplicate_id', () 
   assert.deepEqual(result.accepted, [{ id: 'ESCALATE-1', resolution: 'resolved', evidence: 'commit abc' }]);
   assert.deepEqual(result.rejected, [{ index: 1, reason: 'duplicate_id' }]);
 });
-test('validateFinalItemResolutions: enum 外 resolution → invalid_resolution', () => {
-  const result = validateFinalItemResolutions(
-    [{ id: 'A', resolution: 'partially', evidence: 'e' }],
-    ['A'],
-  );
-  assert.deepEqual(result, { accepted: [], rejected: [{ index: 0, reason: 'invalid_resolution' }] });
+test('validateFinalItemResolutions: enum 外 resolution（撤去した ci_delegated を含む）→ invalid_resolution', () => {
+  for (const resolution of ['partially', 'ci_delegated']) {
+    const result = validateFinalItemResolutions(
+      [{ id: 'A', resolution, evidence: 'PR CI の e2e check' }],
+      ['A'],
+    );
+    assert.deepEqual(result, { accepted: [], rejected: [{ index: 0, reason: 'invalid_resolution' }] }, resolution);
+  }
 });
 test('validateFinalItemResolutions: resolved で evidence 欠落 → empty_evidence', () => {
   const result = validateFinalItemResolutions([{ id: 'A', resolution: 'resolved' }], ['A']);
   assert.deepEqual(result, { accepted: [], rejected: [{ index: 0, reason: 'empty_evidence' }] });
 });
-test('validateFinalItemResolutions: ci_delegated で evidence 空白のみ → empty_evidence', () => {
+test('validateFinalItemResolutions: resolved で evidence 空白のみ → empty_evidence', () => {
   const result = validateFinalItemResolutions(
-    [{ id: 'A', resolution: 'ci_delegated', evidence: '   ' }],
+    [{ id: 'A', resolution: 'resolved', evidence: '   ' }],
     ['A'],
   );
   assert.deepEqual(result, { accepted: [], rejected: [{ index: 0, reason: 'empty_evidence' }] });
@@ -490,14 +448,14 @@ test('validateFinalItemResolutions: unresolved で evidence に非 string を渡
 test('validateFinalItemResolutions: accepted は入力順（複数件・混在）', () => {
   const result = validateFinalItemResolutions(
     [
-      { id: 'B', resolution: 'ci_delegated', evidence: 'PR CI の e2e check' },
+      { id: 'B', resolution: 'unresolved', evidence: 'ローカルで e2e を実行できず' },
       { id: 'A', resolution: 'resolved', evidence: 'commit abc revert 済み' },
       { id: 'C', resolution: 'unknown-enum', evidence: 'x' },
     ],
     ['A', 'B', 'C'],
   );
   assert.deepEqual(result.accepted, [
-    { id: 'B', resolution: 'ci_delegated', evidence: 'PR CI の e2e check' },
+    { id: 'B', resolution: 'unresolved', evidence: 'ローカルで e2e を実行できず' },
     { id: 'A', resolution: 'resolved', evidence: 'commit abc revert 済み' },
   ]);
   assert.deepEqual(result.rejected, [{ index: 2, reason: 'invalid_resolution' }]);
@@ -522,18 +480,13 @@ const MIXED_BLOCKING = [
   { id: 'AC-FINAL-1', source: 'evaluator', dimension: 'ac', severity: 'critical', checked: false },
   { id: 'AC-1', source: 'ac', dimension: 'ac', severity: 'critical', checked: false },
 ];
-const GREEN_RUN = { fixesApplied: 1, finalReconcile: 'reverified', finalTestGreen: true, headSha: SHA, finalCi: null };
+const GREEN_RUN = { fixesApplied: 1, finalReconcile: 'reverified', finalTestGreen: true, headSha: SHA };
+// PR の CI の success の形をした入力。解消の根拠にならない（issue #1168）
 const CI_OK = { verified: true, reason: 'ok', kind: null, checkNames: ['bats', 'vitest'], headRefOid: SHA };
 
 test('finalEvalBlockingResolutions: reverified + test#final green → 未 checked EVAL-* のみ test#final green @ sha で解消', () => {
   const r = finalEvalBlockingResolutions({ ...GREEN_RUN, blockingItems: MIXED_BLOCKING });
   assert.deepEqual(r, { reason: 'ok', evidence: `test#final green @ ${SHA}`, ids: ['EVAL-1-vitest-regression'] });
-});
-test('finalEvalBlockingResolutions: ci_verified → ci_verified: <check 名> で解消', () => {
-  const r = finalEvalBlockingResolutions({
-    fixesApplied: 2, finalReconcile: 'ci_verified', finalTestGreen: null, headSha: SHA, finalCi: CI_OK, blockingItems: MIXED_BLOCKING,
-  });
-  assert.deepEqual(r, { reason: 'ok', evidence: 'ci_verified: bats, vitest', ids: ['EVAL-1-vitest-regression'] });
 });
 test('finalEvalBlockingResolutions: SEC seed / TESTSURF / AC-FINAL-* / AC-* / escalate / checked 済みは対象外', () => {
   const r = finalEvalBlockingResolutions({ ...GREEN_RUN, blockingItems: MIXED_BLOCKING });
@@ -565,16 +518,12 @@ test('finalEvalBlockingResolutions: reverified + green でも head sha 不明 �
     assert.equal(r.reason, 'not_verified', `headSha=${JSON.stringify(headSha)}`);
   }
 });
-test('finalEvalBlockingResolutions: unavailable / skipped → not_verified', () => {
-  for (const finalReconcile of ['unavailable', 'skipped']) {
-    const r = finalEvalBlockingResolutions({ ...GREEN_RUN, finalReconcile, finalCi: CI_OK, blockingItems: [EVAL_OPEN] });
-    assert.equal(r.reason, 'not_verified', `finalReconcile=${finalReconcile}`);
-  }
-});
-test('finalEvalBlockingResolutions: ci_verified でも finalCi.verified!==true → not_verified', () => {
-  for (const finalCi of [null, { verified: false, checkNames: [] }]) {
-    const r = finalEvalBlockingResolutions({ ...GREEN_RUN, finalReconcile: 'ci_verified', finalCi, blockingItems: [EVAL_OPEN] });
-    assert.equal(r.reason, 'not_verified');
+test('finalEvalBlockingResolutions: reverified 以外（unavailable / skipped / ci_verified）は PR の CI の success の形をした入力があっても not_verified', () => {
+  for (const finalReconcile of ['unavailable', 'skipped', 'ci_verified']) {
+    for (const finalTestGreen of [true, null]) {
+      const r = finalEvalBlockingResolutions({ ...GREEN_RUN, finalReconcile, finalTestGreen, finalCi: CI_OK, blockingItems: [EVAL_OPEN] });
+      assert.deepEqual(r, { reason: 'not_verified', evidence: null, ids: [] }, `finalReconcile=${finalReconcile} finalTestGreen=${finalTestGreen}`);
+    }
   }
 });
 test('finalEvalBlockingResolutions: 入力 item を mutate しない', () => {

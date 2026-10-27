@@ -148,18 +148,16 @@ Jev のクライアントは plugin に同梱せず、公開された参照実�
 ## 完了後の返り値の読み方
 
 `test_green` は Validate の最終 test 結果の `green` そのもので、テストが起動できず 0 件実行
-（`tests:'error'`）の run でも `false` になる。本物の red と区別するには次の 2 キーを併せて読む:
+（`tests:'error'`）の run でも `false` になる。本物の red と区別するには `validate_tests` を併せて読む:
 
 - `validate_tests`: Validate の最終 test 状態（`'passed' | 'failed' | 'no_tests' | 'error' | null`）
-- `ci_test_verified`: 終端サマリーのテスト欄と merge tier に使った CI 照合結果（`true | false | null`）。
-  Validate が `'error'` かつ Final reconcile が skipped の run だけ、PR head sha に pin した CI check を読んで決まる
 
-`validate_tests === 'error' && ci_test_verified === true` は「ローカルではテスト未実行、同じ head sha の
-CI test は green」を意味する。呼び出し元は journal・`gh pr checks`・`gh run view` で再検証せず、
-その旨をそのまま報告する。Final reconcile が skipped の run で `validate_tests === 'error'` かつ
-`ci_test_verified` が `true` でなければ（`null` は PR head sha が無く CI を読んでいない）、テストは
-1 件も実行されていないので merge tier は HOLD（`validate_tests_not_run`。Setup の deps が `ok:false` なら
-その note が理由に載る）になる。その旨を報告して CI の確認を人間に委ねる。`validate_tests === 'failed'` は本物の red。
+Final reconcile が skipped の run で `validate_tests === 'error'` は「テストが 1 件も実行されていない」を意味し、
+merge tier は常に HOLD（`validate_tests_not_run`。Setup の deps が `ok:false` ならその note が理由に載る）になる。
+Final reconcile が `unavailable`（fix 後の最終 tree を再検証できなかった）の run も常に HOLD
+（`final_reconcile_unavailable`）。どちらも PR の CI が success でも解除しない — `pull_request` の CI は PR head の
+workflow・スクリプトで動き、PR 自身が書き換えられるため、テストを走らせた証拠にならない。呼び出し元は
+その旨を報告し、テストの確認を人間に委ねる。`validate_tests === 'failed'` は本物の red。
 
 ## PR phase 失敗の扱い（`error_category: "pr_phase_failed"`）
 

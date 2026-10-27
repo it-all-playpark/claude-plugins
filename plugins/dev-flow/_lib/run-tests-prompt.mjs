@@ -14,7 +14,7 @@
 // timeout / background: 全テストを 1 回の Bash で走らせるため Bash tool の既定 timeout（120 秒）を超える repo がある。
 // timeout 未指定だと background に回され、agent が待った後に同じコマンドを再発行して二重実行になるので、
 // timeout: 600000 を明示し background 化・再実行を禁じる。JSON が返らなかった場合の応答は固定文字列にして
-// agent に結果を組み立てさせない（tests:"error" は green-fix を回さず Final reconcile では CI 委譲へ進む経路）。
+// agent に結果を組み立てさせない（tests:"error" は green-fix を回さず merge tier で HOLD になる経路）。
 //
 // --base: run-tests は merge-base からの変更ファイル一覧を DEVFLOW_CHANGED_FILES / DEVFLOW_BASE で tests/run-*.sh に渡す
 // （issue #835）。何を回すかは repo 側のランナーが決める。全 test spawn・全 shape・全 gate_policy で同じ ref を渡す。
