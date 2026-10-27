@@ -759,6 +759,49 @@ EOF
 }
 
 # -----------------------------------------------------------------------
+# M: --base <ref>(Final reconcile の commit 済み tree。issue #1146)
+# impl・test は全部 commit 済みで worktree は HEAD と同一。HEAD 基準では何も外せないので、
+# HEAD と <ref> の merge-base を base にして red→green を測る。
+# -----------------------------------------------------------------------
+@test "M1: --base は commit 済みの impl(base で変更 + base 以降の新規)を merge-base に戻して red→green を測り、tree は HEAD のまま" {
+  echo "export const ok = false;" > "$REPO/impl.mjs"
+  git -C "$REPO" add impl.mjs && git -C "$REPO" commit -q -m "add impl base"
+  git -C "$REPO" branch base-ref
+  echo "export const ok = true;" > "$REPO/impl.mjs"
+  echo "export const extra = 1;" > "$REPO/extra.mjs"
+  cat > "$REPO/feature.test.mjs" <<'EOF'
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { ok } from './impl.mjs';
+import { extra } from './extra.mjs';
+test('ok is true', () => { assert.equal(ok, true); assert.equal(extra, 1); });
+EOF
+  git -C "$REPO" add -A && git -C "$REPO" commit -q -m "pr commit"
+  [ -z "$(git -C "$REPO" status --porcelain)" ]
+
+  run bash "$SCRIPT" --base base-ref "$REPO" "feature.test.mjs" "impl.mjs,extra.mjs"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].headdiff.new')" -eq 1 ]
+  [ -z "$(git -C "$REPO" status --porcelain)" ]
+  grep -q "ok = true" "$REPO/impl.mjs"
+  grep -q "extra = 1" "$REPO/extra.mjs"
+}
+
+@test "M2: --base の merge-base が解決できなければ exit 2・空配列・テスト未実行" {
+  use_package_json '{"devDependencies":{"vitest":"^3.0.0"}}'
+  echo "export const ok = true;" > "$REPO/impl.mjs"
+  make_test
+  make_mock_pm npx '' impl.mjs
+
+  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" --base no-such-ref "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 2 ]
+  [ "${lines[${#lines[@]}-1]}" = '{"results":[]}' ]
+  [ ! -f "$REPO/calls.log" ]
+  [ -f "$REPO/impl.mjs" ]
+}
+
+# -----------------------------------------------------------------------
 # K: pnpm ワークスペースのビルド成果物(issue #754)
 # packages/shared の exports は git 管理外の ./dist を指し、packages/backend が workspace:* で依存する。
 # impl は shared のソース(base: v1 → worktree: v2)。テストランナー(root は vitest・lockfile 無しなので npx の stub)は

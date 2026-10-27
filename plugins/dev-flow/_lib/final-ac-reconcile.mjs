@@ -96,6 +96,29 @@ export function validateFinalAcResults(acResults, acCount) {
   return { ok: true, results, unsatisfiedIndexes };
 }
 
+// Final AC reconcile の後に最終 tree で redgreen-verify（label 'redgreen-final'）にかける ac_results 要素を返す純粋関数
+// （issue #1146）。入力を mutate しない。
+//
+// 観測型 AC は red→green 実証（deterministic 昇格）でしか達成扱いにしない。Evaluate で実証できなかった AC でも、
+// pr-iterate の fix がテストを直して最終 tree で red→green が成立していれば実証の機会を与える。inspection の
+// satisfied:true は対象にしない（evaluator のコード読みで観測型 AC を達成扱いにしない）。
+//
+// 対象（全条件を満たす要素。ac_index 昇順の validateFinalAcResults の results 順を保つ）:
+//   - ac_index が整数で ciIndexes に含まれない（ci の AC は CI の結果で決める）
+//   - observational[ac_index] === true かつ provenIndexes に含まれない（Evaluate で昇格済みの AC は再実行しない）
+//   - satisfied === true・verified_by === 'test'・test_files / impl_files が空でない配列
+export function finalRedgreenTargets({ results, observational, provenIndexes, ciIndexes }) {
+  const obs = Array.isArray(observational) ? observational : [];
+  const proven = Array.isArray(provenIndexes) ? provenIndexes : [];
+  const ci = Array.isArray(ciIndexes) ? ciIndexes : [];
+  return (Array.isArray(results) ? results : []).filter((r) => r
+    && Number.isInteger(r.ac_index) && !ci.includes(r.ac_index)
+    && obs[r.ac_index] === true && !proven.includes(r.ac_index)
+    && r.satisfied === true && r.verified_by === 'test'
+    && Array.isArray(r.test_files) && r.test_files.length > 0
+    && Array.isArray(r.impl_files) && r.impl_files.length > 0);
+}
+
 // goal-ledger item の final_resolution の 3 値 enum（issue #658）。
 export const FINAL_ITEM_RESOLUTIONS = ['resolved', 'ci_delegated', 'unresolved'];
 

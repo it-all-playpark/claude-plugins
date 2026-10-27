@@ -6,6 +6,10 @@
 //   (C) verified_by:test でも red→green 不成立 → (A) と同じく人手 AC 待ち（差し戻さない）
 //   (D) Final reconcile の inspection pass（final reconcile pass）でも観測型 AC を checked にしない
 //   (E) Evaluate で red→green 実証済みの観測型 AC は Final reconcile 後も達成のまま
+// Final reconcile の redgreen-final（issue #1146。Evaluate で実証できず pr-iterate の fix がテストを直した run）:
+//   (H) final evaluator が verified_by:test を返した観測型 AC → 最終 tree の red→green 実証で deterministic 昇格、HOLD しない
+//   (I) red→green 不成立・vdelta deny・spawn 失敗・results 欠落 → 昇格せず ac_human_pending の HOLD
+//   (J) inspection の観測型 AC / (K) Evaluate で昇格済みの AC → redgreen-final を spawn しない
 // 観測型判定の確定（issue #859。prerun の ac_observational が null の AC だけを分類 agent に回す）:
 //   (F) 回帰（acme/webapp）: null の AC だけを title と AC 文面で 1 回渡し、確定値が evaluator と actor に効く
 //       （prerun が全 AC を確定していれば spawn しないことは (A) で見る）
@@ -104,6 +108,65 @@ test('[observational-ac] (D) Final reconcile の inspection pass でも観測型
   assert.equal(result?.merge_tier, 'HOLD');
   assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
   assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });
+});
+
+// Final reconcile の redgreen-final（issue #1146）: Evaluate では red→green 不成立（テストが弱かった）、pr-iterate の fix で
+// テストを直した run。final evaluator が verified_by:test + test_files / impl_files を返した観測型 AC だけ最終 tree で実証する。
+const RG_DENY = { results: [{ index: 0, red: true, green: true, verdict: { comparability: 'exact', transitions: { repaired_with_test_change: ['t1'] }, verification_surface: { status: 'changed' } } }] };
+const rgFinalCalls = (calls) => calls.filter((c) => c.label === 'redgreen-final');
+const runFinalRedgreen = (finalAc, rgFinal, evalAc = [byTest(0), inspection(1)], evalRg = RG_NOT_RED) => run({
+  'eval#1': evalWith(evalAc),
+  redgreen: evalRg,
+  ...FINAL_OK,
+  'final-ac-reconcile': { ac_results: finalAc },
+  ...(rgFinal === undefined ? {} : { 'redgreen-final': rgFinal }),
+}, { workflow: FIXED_ITERATE });
+
+test('[observational-ac] (H) fix 後の final evaluator が test で確かめた観測型 AC は最終 tree の redgreen-final（1 spawn・--base origin/main）で red→green 実証 → deterministic 昇格で HOLD しない', async () => {
+  const { result, calls, logs } = await runFinalRedgreen([byTest(0), inspection(1)], RG_PROVEN);
+  const rg = rgFinalCalls(calls);
+  assert.equal(rg.length, 1, `redgreen-final が 1 回走らない: ${calls.map((c) => c.label).join(', ')}`);
+  assert.equal(rg[0].agentType, 'dev-flow:dev-runner-haiku');
+  assert.equal(rg[0].prompt.split('\n')[1], "redgreen-verify --base origin/main /tmp/wt 'src/x.test.ts' 'src/x.ts'");
+  // final evaluator に観測型 AC の扱いと test_files の受理条件を渡す
+  const fa = calls.find((c) => c.label === 'final-ac-reconcile');
+  assert.ok(fa.prompt.includes('観測型 AC（ac_index [0]。'), fa.prompt);
+  assert.ok(logs.some((l) => l.includes('AC-1: 観測型 AC を最終 tree で red→green 実証 → deterministic 昇格 + checked')), logs.join('\n'));
+  assert.equal(result?.final_ac_reconcile, 'reverified');
+  assert.equal(result?.merge_tier, 'REVIEW', `最終 tree で red→green 実証済みなので HOLD しない: ${JSON.stringify(result?.merge_tier_hold_reasons)}`);
+  assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [], ci: [] });
+});
+
+for (const [name, rgFinal] of [
+  ['red→green 不成立', RG_NOT_RED],
+  ['vdelta deny', RG_DENY],
+  ['spawn が null', null],
+  ['spawn が throw', () => { throw new Error('injected'); }],
+  ['results 欠落', { results: [] }],
+]) {
+  test(`[observational-ac] (I) redgreen-final が ${name} → 昇格せず ac_human_pending の HOLD のまま`, async () => {
+    const { result, calls } = await runFinalRedgreen([byTest(0), inspection(1)], rgFinal);
+    assert.equal(rgFinalCalls(calls).length, 1);
+    assert.equal(reimplCalls(calls).length, 0);
+    assert.equal(result?.final_ac_reconcile, 'reverified');
+    assert.equal(result?.merge_tier, 'HOLD');
+    assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
+    assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });
+  });
+}
+
+test('[observational-ac] (J) final evaluator が inspection で返した観測型 AC は redgreen-final を spawn せず人手 AC 待ち', async () => {
+  const { result, calls } = await runFinalRedgreen([inspection(0), inspection(1)], RG_PROVEN);
+  assert.equal(rgFinalCalls(calls).length, 0, `inspection の観測型 AC で redgreen-final が走った: ${calls.map((c) => c.label).join(', ')}`);
+  assert.equal(result?.merge_tier, 'HOLD');
+  assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
+});
+
+test('[observational-ac] (K) Evaluate で red→green 実証済みの観測型 AC は final evaluator が test で返しても redgreen-final を spawn しない', async () => {
+  const { result, calls } = await runFinalRedgreen([byTest(0), inspection(1)], RG_NOT_RED, [byTest(0), inspection(1)], RG_PROVEN);
+  assert.equal(rgFinalCalls(calls).length, 0, `昇格済みの AC で redgreen-final が走った: ${calls.map((c) => c.label).join(', ')}`);
+  assert.equal(result?.merge_tier, 'REVIEW', JSON.stringify(result?.merge_tier_hold_reasons));
+  assert.ok(!calls.find((c) => c.label === 'final-ac-reconcile').prompt.includes('観測型 AC（ac_index'), '昇格済みの AC を未実証として final evaluator に渡している');
 });
 
 test('[observational-ac] (E) Evaluate で red→green 実証済みの観測型 AC は Final reconcile 後も達成のまま', async () => {

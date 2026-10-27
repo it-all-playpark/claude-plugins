@@ -229,6 +229,10 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - final test が green か CI で確かめられた run は、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
     解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は決定論の evidence で checked にする
     （evaluator は fix 後に再実行されないため）。SEC seed・TESTSURF・AC-FINAL は LLM の判断で解消しない
+  - Evaluate で red→green を実証していない観測型 AC に Final AC reconcile が `verified_by:'test'` と `test_files` / `impl_files` を返したら、
+    最終 tree で redgreen-verify（`redgreen-final`。impl は `origin/<base>` との merge-base まで戻す）を 1 spawn で実行し、red→green が成立して
+    vdelta が deny しなければ deterministic に昇格する（`finalRedgreenTargets`）。fix がテストを直した run を人手 AC 待ちにしないため。
+    inspection の観測型 AC と Evaluate で昇格済みの AC には spawn しない
   - test#final が green か no_tests なら、Final AC reconcile に test#final の `tests` / `green` と各 script のログパスを渡し、
     実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）。error（CI 委譲）・
     red の flake 判定ではログを渡さない
@@ -238,9 +242,10 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - 同期失敗・test の null は `unavailable`（fail-safe → Merge tier HOLD）。flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）
   - CI での代替が成立しない（pending・failure・sha 不一致）は HOLD のまま（fail-closed。判定は LLM にさせない）
   - Final AC reconcile の応答が検証に通らなければ `unavailable`（fail-closed → HOLD）
+  - `redgreen-final` の spawn 失敗（throw・null）・結果の欠落・red→green 不成立・vdelta の deny は昇格せず、観測型 AC は人手 AC 待ちのまま（fail-safe）
   - changed-files の取得失敗は宣言外の再監査を skip（fail-open。test gate は維持）。PR 本文の AC checkbox の更新失敗も fail-open
 - **コード**: `phase('Final reconcile')`（`.claude/workflows/dev-flow.js`）、`_lib/final-test-rerun.mjs`、`_lib/final-ci.mjs`、
-  `_lib/final-ac-reconcile.mjs`（`finalEvalBlockingResolutions`）、`_lib/post-eval-recheck.mjs`
+  `_lib/final-ac-reconcile.mjs`（`finalEvalBlockingResolutions`・`finalRedgreenTargets`）、`_lib/redgreen-targets.mjs`、`_lib/post-eval-recheck.mjs`
 
 ## Merge tier
 
