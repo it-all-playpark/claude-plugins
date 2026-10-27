@@ -402,6 +402,84 @@ jev_reason_label() {
     [ "$(jev_calls)" -eq 0 ]
 }
 
+# ---- 互換性の明記行（issue #1173）----
+# 本文の [[jev:noul:0.5]] は Jev が呼ばれたら低確信で uncertain になる値（明記行で決まれば効かない）
+
+@test "明記行「なし」+「不要」-> Jev を呼ばず breaking_change=false、uncertain・jev_reasons に breaking なし" {
+    fixture "$WORK/i.json" "fix: prisma migration の手順" "$AC_BODY
+
+## 制約
+- 後方互換を保たない API / 形式の変更: なし
+- 既存データの変換: 不要
+[[jev:noul:0.5]]"
+    run_analyze "$WORK/i.json"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.breaking_keyword_scan == true and .breaking_change == false and .breaking_evidence == ""'
+    echo "$output" | jq -e '.uncertain == [] and .jev_reasons == [] and .analyze_path == "contract"'
+    [ "$(jev_calls)" -eq 0 ]
+}
+
+@test "明記行のどちらかが「あり」/「要」-> Jev を呼ばず breaking_change=true、根拠に明記の値" {
+    for pair in "あり:不要" "なし:要"; do
+        : >"$JEV_LOG"
+        fixture "$WORK/i.json" "fix: migration" "$AC_BODY
+
+後方互換を保たない API / 形式の変更: ${pair%%:*}
+既存データの変換: ${pair#*:}
+[[jev:noul:0.5]]"
+        run_analyze "$WORK/i.json"
+        [ "$status" -eq 0 ]
+        echo "$output" | jq -e --arg b "${pair%%:*}" --arg m "${pair#*:}" \
+            '.breaking_change == true and .uncertain == [] and (.breaking_evidence | contains("後方互換を保たない API / 形式の変更: " + $b) and contains("既存データの変換: " + $m))' \
+            || { echo "pair=${pair}: $output"; false; }
+        [ "$(jev_calls)" -eq 0 ]
+    done
+}
+
+@test "明記行が片方だけ / 規定外の値 / 食い違う重複 / 選択肢を写しただけ -> 従来どおり Jev の 2 問で判定する" {
+    for decl in "後方互換を保たない API / 形式の変更: なし" \
+        "後方互換を保たない API / 形式の変更: 多分なし
+既存データの変換: 不要" \
+        "後方互換を保たない API / 形式の変更: なし
+既存データの変換: 不要
+- 既存データの変換: 要" \
+        "後方互換を保たない API / 形式の変更: あり / なし
+既存データの変換: 要 / 不要"; do
+        : >"$JEV_LOG"
+        fixture "$WORK/i.json" "fix: migration" "$AC_BODY
+
+${decl}
+[[jev:noul:0.5]]"
+        run_analyze "$WORK/i.json"
+        [ "$status" -eq 0 ]
+        [ "$(jev_calls)" -eq 1 ] || { echo "decl=${decl}: $output"; false; }
+        echo "$output" | jq -e '.jev_reasons == ["breaking_keyword_scan true"] and (.uncertain | length) == 1 and (.uncertain[0] | test("p=0.5"))'
+    done
+}
+
+@test "明記行は箇条書き記号・全角コロン・値の後ろの補足を問わず認識する" {
+    fixture "$WORK/i.json" "fix: migration" "$AC_BODY
+
+* 後方互換を保たない API / 形式の変更：なし（API の挙動は変えない）
+既存データの変換 ： 不要。読み込み時に捨てるだけ
+[[jev:noul:0.5]]"
+    run_analyze "$WORK/i.json"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.breaking_change == false and .uncertain == []'
+    [ "$(jev_calls)" -eq 0 ]
+}
+
+@test "title の ! marker は明記行（なし / 不要）より優先して breaking_change=true" {
+    fixture "$WORK/i.json" "fix!: migration" "$AC_BODY
+
+- 後方互換を保たない API / 形式の変更: なし
+- 既存データの変換: 不要"
+    run_analyze "$WORK/i.json"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.breaking_change == true and (.breaking_evidence | test("breaking marker")) and .uncertain == []'
+    [ "$(jev_calls)" -eq 0 ]
+}
+
 @test "DEVFLOW_JEV_DISABLE=1 -> Jev を呼ばず breaking 判定は uncertain" {
     fixture "$WORK/i.json" "feat: migration" "$AC_BODY
 

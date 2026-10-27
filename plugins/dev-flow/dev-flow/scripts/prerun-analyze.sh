@@ -28,7 +28,10 @@
 #                                 変更か」と migration「既存データの変換を要するか」。古い値を読み込み時に捨てる
 #                                 だけの項目削除は後方互換・変換不要として扱う（1 問に束ねると境界ケースで割れる）。
 #                                 どちらかが p>=0.9 で breaking_change=true、両方 p<=0.1 で false、それ以外は
-#                                 uncertain。title の `!` marker は決定論で true
+#                                 uncertain。title の `!` marker は決定論で true。issue body に明記行
+#                                 「後方互換を保たない API / 形式の変更: あり|なし」「既存データの変換: 要|不要」が
+#                                 2 行とも規定の値で 1 通りに読めれば Jev に聞かずその値で決める（`!` marker が優先。
+#                                 片方だけ・規定外・食い違う重複は従来どおり Jev）
 #   comments present            → comment ごとに choice {override, conflict, resolved, unrelated}（確信 = choice の
 #                                 確率）。state には comment の created_at・最新 comment の created_at・issue の
 #                                 updated_at を並べ、comment 後に body で決着したかの前後関係を渡す。
@@ -209,9 +212,56 @@ BREAKING_CHANGE=false
 BREAKING_EVIDENCE=""
 
 # ---- breaking ----
+# issue body の明記行（COMPAT_ASK が求める 2 行）。issue body は dev-flow の要件の出所で、PR の作者が書き換えられる
+# 入力ではないので、作者の宣言として Jev より優先して採る（明記どおりに書いても Jev が低確信のまま止まるため）
+COMPAT_B_LABEL="後方互換を保たない API / 形式の変更"
+COMPAT_M_LABEL="既存データの変換"
+DECL_B=""
+DECL_M=""
+
+# compat_value <値の部分> <語>... → 値の先頭に一致した語（後ろは空・空白・括弧・句読点の補足だけ許す）。無ければ invalid。
+# 語の直後が `/` / `|` 区切りなら指示文の選択肢（「あり / なし」）を写しただけの未記入とみなして invalid
+compat_value() {
+    local rest="$1" word tail_re='^([[:space:]]|（|\(|。|、|,)' choice_re='^[[:space:]]*(/|\||／|｜)'
+    shift
+    for word in "$@"; do
+        if [[ "$rest" == "$word"* && "${rest#"$word"}" =~ $choice_re ]]; then
+            break
+        fi
+        if [[ "$rest" == "$word" ]] || { [[ "$rest" == "$word"* ]] && [[ "${rest#"$word"}" =~ $tail_re ]]; }; then
+            printf '%s' "$word"
+            return
+        fi
+    done
+    printf 'invalid'
+}
+
+# compat_declared → 2 行とも規定の値で 1 通りに読めれば 0（DECL_B / DECL_M に語）。片方だけ・規定外・食い違いは 1
+compat_declared() {
+    local line v
+    local line_re='^[[:space:]]*([-*][[:space:]]+)?'
+    local sep_re='[[:space:]]*(:|：)[[:space:]]*(.*)$'
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        if [[ "$line" =~ ${line_re}"${COMPAT_B_LABEL}"${sep_re} ]]; then
+            v="$(compat_value "${BASH_REMATCH[3]}" あり なし)"
+            [[ -z "$DECL_B" || "$DECL_B" == "$v" ]] && DECL_B="$v" || DECL_B="invalid"
+        elif [[ "$line" =~ ${line_re}"${COMPAT_M_LABEL}"${sep_re} ]]; then
+            v="$(compat_value "${BASH_REMATCH[3]}" 不要 要)"
+            [[ -z "$DECL_M" || "$DECL_M" == "$v" ]] && DECL_M="$v" || DECL_M="invalid"
+        fi
+    done <<<"$ISSUE_BODY"
+    [[ "$DECL_B" == "あり" || "$DECL_B" == "なし" ]] && [[ "$DECL_M" == "要" || "$DECL_M" == "不要" ]]
+}
+
 if [[ "$TITLE_BANG" == "true" ]]; then
     BREAKING_CHANGE=true
     BREAKING_EVIDENCE="title の breaking marker (!): ${TITLE}"
+elif [[ "$BREAKING_KW" == "true" ]] && compat_declared; then
+    if [[ "$DECL_B" == "あり" || "$DECL_M" == "要" ]]; then
+        BREAKING_CHANGE=true
+        BREAKING_EVIDENCE="issue body の明記: ${COMPAT_B_LABEL}: ${DECL_B} / ${COMPAT_M_LABEL}: ${DECL_M}"
+    fi
 elif [[ "$BREAKING_KW" == "true" ]]; then
     JEV_REASONS+=("breaking_keyword_scan true")
     BREAKING_Q='{"breaking":{"type":"noul","instructions":"この issue の実装は、既存の API / schema / データ形式 / 設定形式を、既存の呼び出し側・既存データ・既存設定がそのままでは動かなくなる形（後方互換を保たない形）に変えるか。項目や設定を削除しても、古い値を読み込み時に無視・破棄して従来どおり動くなら後方互換なので no。『breaking を避ける』『非互換にしない』『breaking floor を変更しない』のような回避・不変条件への言及だけなら no。"},"migration":{"type":"noul","instructions":"この issue の実装は、保存済みの既存データ（DB のレコード・ファイル・設定ファイルの値など）を新しい形式へ書き換える変換処理や移行手順を必要とするか。古い値を読み込み時に無視・破棄するだけで既存データを書き換えないなら no。変換が不要と明記されていれば no。"}}'
