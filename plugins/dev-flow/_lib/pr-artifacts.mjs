@@ -479,6 +479,12 @@ export function prBodyEditPrompt({ wt, pr, repo, prBody, fileName }) {
 // 手順 3 には push を行う git コマンドを literal で書かない: 括弧書きの説明に実行可能な形で書くと、haiku が
 // pr-push の代わりにそれを叩き、log も PUSH_TAIL も残らない（issue #852）。pr-push を経たことは stdout 1 行目の
 // `pr-push: exit=<rc> log=<path>` を push_header として verbatim で返させて workflow 側で確かめる（prPhaseFailureFacts）。
+// PR 作成の stage（手順 1 と回収コマンドで共有）。`git add -A` の後に run の scratch（`.devflow-tmp/`）を index から外す:
+// 対象 repo が `.gitignore` に `.devflow-tmp/` を持たないと `git add -A` が prerun-setup.json（作者マシンの絶対パスと
+// issue 本文）・commit-msg.txt・pr-body.md・isolation probe を commit し、PR 履歴に残る。
+// `:(exclude).devflow-tmp` の pathspec は使わない — `.devflow-tmp/` が ignore 済みの repo（prerun が info/exclude に
+// 足した後を含む）では「ignore されたパスを指定した」として exit 1 になり、手順 1 が commit 失敗で中断する。
+export const PR_STAGE_COMMANDS = ['git add -A', 'git reset -q -- .devflow-tmp'];
 export const PR_PUSH_LOG_NAME = 'push-output.log';
 export const PR_PUSH_TAIL_BEGIN = '<<<PUSH_TAIL_BEGIN>>>';
 export const PR_PUSH_TAIL_END = '<<<PUSH_TAIL_END>>>';
@@ -519,7 +525,7 @@ export function prPhasePrompt({ wt, base, branch, repo, issue, commitMessage, pr
     + `git add 等の後続手順を一切実行せず、failed_step:"commit"、failure_reason に \`"cwd branch mismatch: expected ${branch}, got <rev-parse の実際の出力>"\` を入れて中断する`
     + `（pr_url は空文字、pr_number は 0、committed は false、head_sha は空文字）。\n`
     + `一致したら以下を順に bare 単文で実行せよ${bare}。手順 1〜4 のいずれかが失敗（exit 非0）したら**そこで中断**し、後続の手順を実行せず、failed_step にその手順名（1〜2 → "commit"、3 → "push"、4 → "pr-create"）、failure_reason に失敗したコマンドの stderr 末尾 1〜3 行を**一字一句そのまま**（要約・言い換え禁止。手順 3 は手順 3 の指示に従う）入れて返す。中断時は pr_url は空文字、pr_number は 0、committed は手順 2 が成功済みなら true・それ以外は false、head_sha は committed が true なら手順 6 の \`git rev-parse HEAD\` だけを実行してその stdout・それ以外は空文字:\n`
-    + `1. \`git add -A\`（失敗は failed_step:"commit" で中断）\n`
+    + `1. ${PR_STAGE_COMMANDS.map((c) => `\`${c}\``).join(' → ')}（run の一時ファイル置き場を stage から外す。どちらかの失敗は failed_step:"commit" で中断）\n`
     + `2. \`git commit -F ${msgFile}\`（exit 非0 かつ stdout/stderr に "nothing to commit" があれば commit 済みとして続行。それ以外の失敗は failed_step:"commit" で中断）\n`
     + `3. \`pr-push ${pushLog}\`（push はこのコマンドだけで行い、git の push サブコマンドを直接実行しない。`
     + `pr-push は出力全文を \`${pushLog}\` に残し、stdout の 1 行目に \`${PR_PUSH_HEADER_PREFIX}<終了コード> log=<path>\` を出して、出力の末尾行だけを \`${PR_PUSH_TAIL_BEGIN}\` 〜 \`${PR_PUSH_TAIL_END}\` の間に返す。`
@@ -602,7 +608,7 @@ export function prPhaseRecoveryCommands({ committed, failedStep, base, branch, r
   const repoArg = repo ? ` --repo ${repo}` : '';
   const title = str(commitMessage).split('\n')[0].replace(/"/g, '\\"');
   const cmds = [];
-  if (committed !== true) cmds.push('git add -A', 'git commit -F .devflow-tmp/commit-msg.txt');
+  if (committed !== true) cmds.push(...PR_STAGE_COMMANDS, 'git commit -F .devflow-tmp/commit-msg.txt');
   if (committed !== true || failedStep !== 'pr-create') cmds.push('git push origin HEAD');
   cmds.push(`gh pr create --draft --body-file .devflow-tmp/pr-body.md${repoArg} --base ${base} --head ${branch} --title "${title}"${prLabelArg(label)}`);
   cmds.push('/pr-iterate <N>');

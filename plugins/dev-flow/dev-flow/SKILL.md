@@ -180,7 +180,7 @@ pr-push を経ずに push した場合は載らず、`failure_reason` が `pr-pu
 2. top-level の Bash で bare 単文 `gh issue comment <issue> --repo <repo> --body-file <worktree>/.devflow-tmp/pr-phase-failure-comment.md`
    を実行する（`repo` が null なら `--repo` を省く。`cd X &&` / env 前置 / `bash` 前置は付けない）
 
-`issue_comment` の回収コマンドは `committed` と `failed_step` から決まる。commit 未了なら `git add -A` →
+`issue_comment` の回収コマンドは `committed` と `failed_step` から決まる。commit 未了なら `git add -A` → `git reset -q -- .devflow-tmp` →
 `git commit -F .devflow-tmp/commit-msg.txt` から、push で止まった run は `git push origin HEAD` から、
 pr-create で止まった run は `gh pr create --draft --body-file .devflow-tmp/pr-body.md ...` から始まり、最後は
 `/pr-iterate <N>`。commit message と PR body は run が `.devflow-tmp/` に保存済みのものを使い、再生成しない

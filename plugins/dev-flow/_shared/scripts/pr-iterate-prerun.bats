@@ -246,6 +246,28 @@ advance_origin_head() {
     [ -f "$wt/.devflow-tmp/pr-body.md" ]
 }
 
+# ---- (2h) fix の commit に scratch を入れない（issue #1178） ----
+# fixture の repo は .gitignore に .devflow-tmp/ を持たない。prerun が worktree 共有の info/exclude に足すので、
+# pr-fixer の stage（git add -A 等）と commit-ensure の stage（git add --ignore-removal .）・status が scratch を拾わない。
+# info/exclude への追記の形（1 行・2 回目は足さない・ignore 済みなら書かない）は dev-flow/scripts/prerun.bats (5b) が見る。
+
+@test "(2h) .devflow-tmp/ を ignore しない repo -> fix の stage・status に .devflow-tmp/ 配下が載らず、fix の新規ファイルは載る" {
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    wt="$(echo "$output" | jq -r '.worktree')"
+    [ ! -e "$wt/.gitignore" ]
+    mkdir -p "$wt/.devflow-tmp"
+    for f in prerun-setup.json commit-msg.txt pr-body.md .isolation-probe-222; do echo scratch > "$wt/.devflow-tmp/$f"; done
+    echo fix > "$wt/fix.txt"
+
+    [ "$(git -C "$wt" status --porcelain)" = "?? fix.txt" ]
+    git -C "$wt" add --ignore-removal .
+    [ "$(git -C "$wt" diff --cached --name-only)" = "fix.txt" ]
+    git -C "$wt" add -A
+    [ "$(git -C "$wt" diff --cached --name-only)" = "fix.txt" ]
+}
+
 # ---- (3) head の不一致 ----
 
 @test "(3) origin の head が PR の headRefOid と一致しない -> ok:false、worktree を作らない" {

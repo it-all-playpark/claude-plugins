@@ -1,4 +1,4 @@
-# worktree-checkout.sh - worktree の作成と部分 checkout の検査（source 専用。単体では実行しない）
+# worktree-checkout.sh - worktree の作成・部分 checkout の検査・run の scratch の除外（source 専用。単体では実行しない）
 # dev-flow-prerun（dev-flow/scripts/prerun.sh）と pr-iterate-prerun（pr-iterate-prerun.sh）が使う。
 #
 # prerun は sandbox 内で動く。sandbox が書けないパス（`.githooks` 等）を追跡する repo では full checkout が
@@ -78,4 +78,27 @@ partial_checkout_error() {
     printf 'worktree %s に未ステージの削除が %s 件ある（部分 checkout の疑い。例: %s）。commit 時に削除が stage されるので再利用しない。git worktree remove %s で削除してから再実行する（作り直しでは取り出せないパスに skip-worktree を付ける）' \
         "$wt" "$n" "$(printf '%s\n' "$deleted" | head -n 3 | paste -sd ',' -)" "$wt"
     return 1
+}
+
+# exclude_devflow_tmp <wt>
+#   run の scratch（`.devflow-tmp/`）を worktree 共有の info/exclude に足す。対象 repo が `.gitignore` に
+#   `.devflow-tmp/` を持たないと、pr-fixer の commit や commit-ensure の stage（`git add --ignore-removal .`）が
+#   prerun-setup.json（作者マシンの絶対パスと issue 本文）や isolation probe を PR に commit する。
+#   追跡ファイル（`.gitignore`）は書かない。既に ignore されていれば何もしない。書けなければ stderr に出して 1 を返す。
+exclude_devflow_tmp() {
+    local wt="$1" path err
+    git -C "$wt" check-ignore -q .devflow-tmp/ 2>/dev/null && return 0
+    if ! path="$(git -C "$wt" rev-parse --path-format=absolute --git-path info/exclude 2>&1)"; then
+        echo "exclude_devflow_tmp: info/exclude のパスを解決できなかった: ${path}" >&2
+        return 1
+    fi
+    # 末尾に改行の無い既存行へ連結しない
+    if ! err="$( {
+        mkdir -p "$(dirname "$path")" \
+            && { [[ ! -s "$path" || -z "$(tail -c 1 "$path")" ]] || printf '\n' >>"$path"; } \
+            && printf '/.devflow-tmp/\n' >>"$path"
+    } 2>&1 )"; then
+        echo "exclude_devflow_tmp: ${path} に書けなかった: ${err}" >&2
+        return 1
+    fi
 }
