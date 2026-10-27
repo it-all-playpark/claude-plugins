@@ -66,6 +66,8 @@ const EXPECTED_DEV_FLOW = {
   // write/Skill tier
   'test#*': RW,
   'test#final': RW,
+  // Validate の各回の pre-commit hook（hook が working tree を書き換えうる formatter のため write tier）
+  'commit-hook#*': RW,
   // ci の AC のローカル実行（issue #863）。local-verify は worktree のコマンドを実行するので sandbox 内で動かす
   // （excludedCommands に登録しない）。起動形は bin/ の bare 名 `local-verify start|wait|stop`
   'local-verify-start#*': RW,
