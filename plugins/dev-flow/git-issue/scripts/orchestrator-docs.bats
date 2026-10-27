@@ -386,4 +386,6 @@ frontmatter_value() {
 @test "(27) devils-advocate-checklist の Blocking Categories に、PR が書き換えられる入力で gate を外す・検証を省く AC を止める項目がある" {
     section="$(awk '/^## Blocking Categories/ { f = 1; next } f && /^## / { exit } f { print }' "$CHECKLIST")"
     [[ "$section" == *"PR が書き換えられる入力"*"merge gate・HOLD を外す、または検証"*"を省くよう指示している"* ]]
+    [[ "$section" == *"実行する中身（テスト・script）を PR が書けるなら PR が書き換えられる入力に当たる"* ]]
+    [[ "$section" == *"gate 自身の判定より弱い実行"*"その gate を外すのも同じ"* ]]
 }

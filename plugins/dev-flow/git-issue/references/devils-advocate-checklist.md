@@ -9,9 +9,12 @@ Treat findings as `blocking` if any item below is true:
 - No rollback strategy for risky change
 - Security/privacy implications are ignored
 - AC・制約が、PR が書き換えられる入力（CI workflow の結果・テストや script の stdout・AC や PR 本文の文面・PR 内の
-  設定ファイル）を根拠に、merge gate・HOLD を外す、または検証（テストの再実行・evaluator の判定）を省くよう指示している
-  （dev-flow の security review は PR の作者を攻撃者と見るので、実装が指示どおりでも PR が差し戻される。根拠は PR が
-  書き換えられない側（base の tree にある定義・pipeline 自身が実行した結果）に置く）
+  設定ファイル）を根拠に、merge gate・HOLD を外す、または検証（テストの再実行・evaluator の判定）を省くよう指示している。
+  pipeline が自分で実行した結果でも、実行する中身（テスト・script）を PR が書けるなら PR が書き換えられる入力に当たる。
+  gate 自身の判定より弱い実行（落ちたファイルだけの単体再実行など）の green で、その gate を外すのも同じ
+  （dev-flow の security review は PR の作者を攻撃者と見るので、実装が指示どおりでも PR が差し戻される。全件実行のときだけ
+  落ちるテストは単体再実行で green になる。根拠は PR が書き換えられない側（base の tree にある定義）に置くか、gate は
+  外さずに開示だけにする）
 - Migration/data-change plan is missing where required
 - Dependency order is impossible or contradictory
 - Ownership is unclear for critical tasks
