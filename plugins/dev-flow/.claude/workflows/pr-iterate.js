@@ -297,16 +297,17 @@ const CI_VERIFY = args?.ci_verify == null
     })()
 const CI_EXCLUDE = CI_VERIFY ? CI_VERIFY.checks : []
 // prior_devflow: 単体起動の wrapper が pr-iterate-prerun の出力から渡す、PR に載っていた最後の dev-flow サマリー
-// { tier, codes, url }（無ければ null）。tier が HOLD なら終端サマリーに HOLD 理由の回収状況を出す。dev-flow は渡さない。
-// 不正形は明示 throw。
+// { tier, codes, url, head_sha }（無ければ null）。tier が HOLD なら終端サマリーに HOLD 理由の回収状況を出す。dev-flow は渡さない。
+// head_sha は marker の head（その HOLD を付けた PR head。小文字 40 桁 hex、marker に無ければ null）。不正形（head_sha の欠落を含む）は明示 throw。
 const PRIOR_DEVFLOW = args?.prior_devflow == null
   ? null
   : (() => {
       const p = args.prior_devflow
       if (typeof p !== 'object' || typeof p.tier !== 'string' || p.tier === ''
         || !Array.isArray(p.codes) || !p.codes.every((c) => typeof c === 'string')
-        || (p.url !== null && typeof p.url !== 'string')) {
-        throw new Error(`pr-iterate: args.prior_devflow が不正形です（tier: 非空 string / codes: string[] / url: string | null）: ${JSON.stringify(p)}`)
+        || (p.url !== null && typeof p.url !== 'string')
+        || (p.head_sha !== null && !(typeof p.head_sha === 'string' && /^[0-9a-f]{40}$/.test(p.head_sha)))) {
+        throw new Error(`pr-iterate: args.prior_devflow が不正形です（tier: 非空 string / codes: string[] / url: string | null / head_sha: 小文字 40 桁 hex | null）: ${JSON.stringify(p)}`)
       }
       return p
     })()
@@ -737,8 +738,46 @@ function formatConflictAutoresolveLines(list) {
 }
 
 const PRIOR_HOLD_UNRESOLVED = '未解消（pr-iterate は再判定しない — 人が確認する）';
+const PRIOR_HOLD_HUMAN_CODES = ['escalate', 'ac_human_pending'];
+const PRIOR_HOLD_HUMAN = '未解消（人の判断が要る — pr-iterate は判定しない。dev-flow のサマリーの該当項目を確認する）';
+const PRIOR_HOLD_FINAL_TEST = '未解消（HOLD は外さない — 下の事実で確認範囲を絞って人が確認する）';
 
-function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, securityReview }) {
+const shortShaCell = (s) => `\`${String(s).slice(0, 7)}\``;
+const shellPathArg = (p) => (/^[A-Za-z0-9_.@+\/-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`);
+
+function finalTestRunLabel(t) {
+  if (t != null && t.tests === 'passed' && t.green === true) return 'passed';
+  if (t != null && t.tests === 'failed') {
+    const files = Array.isArray(t.failed_files) ? t.failed_files.filter((f) => typeof f === 'string' && f !== '') : [];
+    return `failed — 失敗ファイル: ${files.length ? files.map((f) => `\`${mdCell(f)}\``).join(' / ') : '不明（ファイルに結び付かない失敗）'}`;
+  }
+  if (t != null && t.tests === 'no_tests') return 'no_tests（実行対象のテストが無い）';
+  return '実行できなかった';
+}
+
+function finalTestRedFacts(check) {
+  if (check == null) return [];
+  if (check.ran !== true) {
+    const reason = check.reason === 'same_head'
+      ? `HOLD 時と同じ head（${shortShaCell(check.holdHead)}）で終わった — HOLD 時のテスト結果がそのまま当てはまる`
+      : (check.reason === 'hold_head_unknown' ? 'HOLD 時の head 不明（dev-flow のサマリーの marker に head が無い）' : '終端 head 不明');
+    return [`変更ファイルと最終 tree の全件テストは取っていない: ${reason}`];
+  }
+  const facts = [`HOLD 時の head ${shortShaCell(check.holdHead)} → 終端 head ${shortShaCell(check.endHead)}`];
+  const changes = check.changes ?? { status: 'unknown', files: [] };
+  if (changes.status === 'none') {
+    facts.push('テスト関連の変更（テストとテストの実行を変えうる設定）: なし');
+  } else if (changes.status === 'changed') {
+    facts.push(`テスト関連の変更（テストとテストの実行を変えうる設定）: あり ${changes.files.length} 件 — ${changes.files.map((f) => `\`${mdCell(f)}\``).join(' / ')}`);
+    facts.push(`その diff: \`${mdCell(`git diff ${check.holdHead}..${check.endHead} -- ${changes.files.map(shellPathArg).join(' ')}`)}\``);
+  } else {
+    facts.push('テスト関連の変更（テストとテストの実行を変えうる設定）: 不明（変更ファイル一覧を取れなかったか、HOLD 時の head が終端 head の祖先でない — PR 全体の diff を確認する）');
+  }
+  facts.push(`最終 tree の全件テスト（run-tests 1 回）: ${finalTestRunLabel(check.tests)}`);
+  return facts;
+}
+
+function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, securityReview, finalTestCheck }) {
   const attempts = (conflictAutoresolve || []).filter((r) => r != null);
   const lastConflict = attempts.length > 0 ? attempts[attempts.length - 1].status : null;
   const rows = (codes || []).map((code) => {
@@ -753,17 +792,21 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
     if (code === 'mergeable_conflicting') {
       return { code, resolved: lastConflict === 'resolved', detail: `conflict の自動解消: ${lastConflict ?? '試行なし'}` };
     }
+    if (PRIOR_HOLD_HUMAN_CODES.includes(code)) return { code, resolved: false, detail: null, unresolvedLabel: PRIOR_HOLD_HUMAN };
+    if (code === 'final_test_red') {
+      return { code, resolved: false, detail: null, unresolvedLabel: PRIOR_HOLD_FINAL_TEST, facts: finalTestRedFacts(finalTestCheck) };
+    }
     return { code, resolved: false, detail: null };
   });
   if (rows.length === 0) rows.push({ code: null, resolved: false, detail: 'HOLD 理由の code がサマリーに無い — 元のサマリーで理由を確認する' });
   return { rows, unresolved: rows.filter((r) => !r.resolved).length };
 }
 
-function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, securityReview = null, headSha = null, fixDirectionUsed = false }) {
+function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, finalTestCheck = null, securityReview = null, headSha = null, fixDirectionUsed = false }) {
   const DECISION_EMOJI = { 'approve': '✅', 'request-changes': '🔴', 'comment': '💬' };
   const lines = [];
   const priorHold = priorDevflow != null && priorDevflow.tier === 'HOLD'
-    ? priorHoldRecovery(priorDevflow.codes, { status, ciLastStatus, conflictAutoresolve, securityReview })
+    ? priorHoldRecovery(priorDevflow.codes, { status, ciLastStatus, conflictAutoresolve, securityReview, finalTestCheck })
     : null;
 
   let headline = (STATUS_HEADLINE[status] ?? status).replace('<PR>', String(pr));
@@ -816,9 +859,10 @@ function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSu
     lines.push('### dev-flow の HOLD 理由の回収状況');
     lines.push('');
     for (const r of priorHold.rows) {
-      const label = r.resolved ? '✅ 解消' : `❌ ${PRIOR_HOLD_UNRESOLVED}`;
+      const label = r.resolved ? '✅ 解消' : `❌ ${r.unresolvedLabel ?? PRIOR_HOLD_UNRESOLVED}`;
       const parts = [r.code != null ? `\`${mdCell(r.code)}\`` : null, label, r.detail].filter((p) => p != null);
       lines.push(`- ${parts.join(' — ')}`);
+      for (const fact of r.facts ?? []) lines.push(`  - ${fact}`);
     }
     lines.push('');
     lines.push(priorHold.unresolved > 0
@@ -1290,6 +1334,21 @@ const FIX = {
 
 // 終端 dirty 検出と fix 適用後 commit 保証の exec-proxy スキーマ。
 const DIRTY_STATUS = { type: 'object', required: ['dirty'], properties: { dirty: { type: 'boolean' }, files: { type: 'number' } } }
+// final_test_red の確認範囲の exec-proxy スキーマ。HOLD_TEST_DIFF は HOLD 時の head → 終端 head の変更ファイル一覧
+// （outside は HOLD 時の head にあって終端 head に無い commit 数。testRelatedChanges が読む）、HOLD_TEST_RUN は run-tests の stdout。
+const HOLD_TEST_DIFF = {
+  type: 'object', required: ['ok'],
+  properties: { ok: { type: 'boolean' }, outside: { type: 'number' }, files: { type: 'array', items: { type: 'string' } } },
+}
+const HOLD_TEST_RUN = {
+  type: 'object', required: ['tests', 'green'],
+  properties: {
+    tests: { type: 'string', enum: ['passed', 'failed', 'no_tests', 'error'] },
+    green: { type: 'boolean' },
+    summary: { type: 'string' },
+    failed_files: { type: 'array', items: { type: 'string' } },
+  },
+}
 // head_sha / delta_shortstat は次 round の review を fix delta に絞るための材料（optional。欠落は
 // resolveReviewScope が full review にフォールバックする — 新規 agent spawn を増やさず既存 probe の出力を拡張する）。
 const COMMIT_ENSURE = {
@@ -1690,6 +1749,149 @@ function isReviewerContextChanged(res) {
   return !(res != null && typeof res === 'object' && res.ok === true && res.reviewer_context_changed === false);
 }
 // ==== END inline: _lib/security-scope.mjs ====
+// ==== BEGIN inline: _lib/post-eval-recheck.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+
+const GREEN_FIX_RECHECK_MODES = ['assert_only', 'full'];
+
+const RECHECK_RESOLUTIONS = ['resolved', 'unresolved'];
+
+const TEST_FILE_RES = [
+  /(^|\/)(tests?|__tests__|spec)\//i,
+  /\.(test|spec)\.[^/]+$/i,
+  /_test\.[^/]+$/i,
+  /\.bats$/i,
+];
+
+function isTestFilePath(p) {
+  return typeof p === 'string' && p.length > 0 && TEST_FILE_RES.some((re) => re.test(p));
+}
+
+function classifyGreenFixDiff({ files, truncated, risk }) {
+  if (!Array.isArray(files) || files.length === 0) return { mode: 'full', reason: 'files_unknown', hits: [] };
+  if (truncated === true) return { mode: 'full', reason: 'files_truncated', hits: [] };
+  if (!risk || risk.ok !== true || !Array.isArray(risk.hits)) return { mode: 'full', reason: 'risk_unavailable', hits: [] };
+  const fileSet = new Set(files);
+  const hits = risk.hits.filter((h) => h && fileSet.has(h.file));
+  if (hits.length > 0) return { mode: 'full', reason: 'hits', hits };
+  if (!files.every((f) => isTestFilePath(f))) return { mode: 'full', reason: 'non_test_files', hits };
+  return { mode: 'assert_only', reason: 'test_only_clean', hits };
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function basenameOf(p) {
+  const i = p.lastIndexOf('/');
+  return i >= 0 ? p.slice(i + 1) : p;
+}
+
+function mentions(text, needle) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  return new RegExp(`(^|[^\\w.-])${escapeRegExp(needle)}(?![\\w-])`).test(text);
+}
+
+function isRecheckCandidate(it) {
+  return !!it && it.checked === true
+    && (it.source === 'evaluator' || it.source === 'concern')
+    && it.dimension !== 'environment'
+    && it.escalate !== true
+    && !(it.check && it.check.kind === 'deterministic');
+}
+
+function recheckTargets(ledger, touchedFiles) {
+  const paths = (Array.isArray(touchedFiles) ? touchedFiles : []).filter((p) => typeof p === 'string' && p.length > 0);
+  if (paths.length === 0 || !ledger || !Array.isArray(ledger.items)) return [];
+  const needles = [...new Set([...paths, ...paths.map(basenameOf)])].filter((n) => n.length > 0);
+  return ledger.items.filter((it) => isRecheckCandidate(it)
+    && needles.some((n) => mentions(it.text, n) || mentions(it.evidence, n)));
+}
+
+function planRecheck(targets, resolutions, where) {
+  const byId = new Map();
+  for (const r of Array.isArray(resolutions) ? resolutions : []) {
+    if (!r || typeof r !== 'object' || typeof r.id !== 'string' || byId.has(r.id)) continue;
+    byId.set(r.id, r);
+  }
+  const reconfirm = [];
+  const reopen = [];
+  for (const it of Array.isArray(targets) ? targets : []) {
+    const r = byId.get(it.id);
+    const ev = r && typeof r.evidence === 'string' ? r.evidence.trim() : '';
+    if (r && r.resolution === 'resolved' && ev.length > 0) {
+      reconfirm.push({ id: it.id, evidence: `${where} で再検証済み: ${ev}` });
+    } else if (r && r.resolution === 'unresolved' && ev.length > 0) {
+      reopen.push({ id: it.id, evidence: `${where} で再検証し解消根拠が不成立: ${ev}` });
+    } else {
+      reopen.push({ id: it.id, evidence: `${where} で再検証できず — 解消根拠を取り下げ（要確認）` });
+    }
+  }
+  return { reconfirm, reopen };
+}
+
+function greenFixRecheckItems(findings) {
+  const items = [];
+  for (const f of Array.isArray(findings) ? findings : []) {
+    if (!f || typeof f !== 'object' || f.severity !== 'critical') continue;
+    const topic = typeof f.topic === 'string' && f.topic.trim() ? f.topic.trim() : 'green-fix';
+    const desc = typeof f.description === 'string' && f.description.trim() ? ` — ${f.description.trim()}` : '';
+    items.push({
+      id: `GF-RECHECK-${items.length + 1}`,
+      text: `post-eval green-fix: ${topic}${desc}`.slice(0, 500),
+      dimension: typeof f.dimension === 'string' && f.dimension ? f.dimension : 'test-integrity',
+      severity: 'critical', source: 'evaluator', check: { kind: 'inspection' },
+    });
+  }
+  return items;
+}
+// ==== END inline: _lib/post-eval-recheck.mjs ====
+// ==== BEGIN inline: _lib/test-related-paths.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+
+const TEST_RELATED_RES = [
+  /(^|\/)package\.json$/,
+  /(^|\/)[^/]+\.config\.(js|mjs|cjs|ts|mts|cts)$/,
+  /(^|\/)(pyproject\.toml|setup\.cfg|tox\.ini|pytest\.ini|conftest\.py)$/,
+  /(^|\/)(GNUmakefile|[Mm]akefile)$/,
+  /(^|\/)\.github\/workflows\//,
+  /(^|\/)(fixtures?|__fixtures__|__mocks__|__snapshots__|testdata|test-helpers?|e2e)\//i,
+  /\.snap$/i,
+];
+
+function isTestRelatedPath(p) {
+  return isTestFilePath(p) || (typeof p === 'string' && TEST_RELATED_RES.some((re) => re.test(p)));
+}
+
+function testRelatedChanges(res) {
+  if (res == null || res.ok !== true || res.outside !== 0 || !Array.isArray(res.files)) return { status: 'unknown', files: [] };
+  const files = [];
+  for (const raw of res.files) {
+    if (typeof raw !== 'string') return { status: 'unknown', files: [] };
+    const p = raw.trim();
+    if (p !== '' && isTestRelatedPath(p) && !files.includes(p)) files.push(p);
+  }
+  return { status: files.length > 0 ? 'changed' : 'none', files };
+}
+// ==== END inline: _lib/test-related-paths.mjs ====
+// ==== BEGIN inline: _lib/run-tests-prompt.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+
+function runTestsPrompt(wt, base) {
+  return runTestsCommandPrompt(wt, `run-tests ${wt} --base ${base}`);
+}
+
+function runTestFilesPrompt(wt, files) {
+  return runTestsCommandPrompt(wt, `run-tests ${wt} --files ${files.join(' ')}`);
+}
+
+function runTestsCommandPrompt(wt, command) {
+  return `cd ${wt} で作業。次のコマンドを **先頭トークンが run-tests の bare 単文** で 1 回だけ実行し、`
+    + `**stdout の JSON 1 行だけ** を verbatim で返せ（判定や脚色をしない。キーの追加・削除・値の書き換えをしない）。`
+    + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止。`
+    + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。再実行しない（timeout に達した場合も含む）。`
+    + `timeout に達した・stdout に JSON 1 行が無い場合だけは、`
+    + `{"tests":"error","green":false,"summary":"run-tests did not return JSON"} を一字一句そのまま返せ:\n`
+    + command;
+}
+// ==== END inline: _lib/run-tests-prompt.mjs ====
 
 phase('Iterate')
 
@@ -2935,6 +3137,37 @@ if (status !== 'lgtm') {
   if (worktreeDirty === 'unknown') log('⚠️ worktree-dirty-check probe に失敗 — dirty 状態は不明（fail-open で続行）')
 }
 
+// dev-flow が final_test_red で HOLD にした PR の単体回収: HOLD は外さず、人の確認範囲を PR が操作できない事実で絞る。
+// (a) HOLD 時の head → 終端 head の変更ファイル一覧（read-only）からテスト関連の変更を決め（testRelatedChanges）、
+// (b) 終端 head の worktree で run-tests を全件 1 回だけ実行する。落ちたファイルだけの再実行・2 回目の全件実行・green-fix はしない
+// （結果は開示だけで、どれが green でも final_test_red は未解消のまま）。どちらも fail-open — 取れなければ「不明」「実行できなかった」と出す。
+// HOLD 時と同じ head・head 不明・dev-flow からの nested 起動では (a)(b) を起動しない。
+let finalTestCheck = null
+if (NESTED?.caller !== 'dev-flow' && PRIOR_DEVFLOW?.tier === 'HOLD' && PRIOR_DEVFLOW.codes.includes('final_test_red')) {
+  const holdHead = PRIOR_DEVFLOW.head_sha
+  const endHead = isFullCommitSha(shaNow) ? shaNow.trim().toLowerCase() : null
+  if (holdHead == null) finalTestCheck = { ran: false, reason: 'hold_head_unknown' }
+  else if (endHead == null) finalTestCheck = { ran: false, reason: 'end_head_unknown', holdHead }
+  else if (endHead === holdHead) finalTestCheck = { ran: false, reason: 'same_head', holdHead }
+  else {
+    const diff = await failOpenAgent(
+      `cd ${isoWt} で作業。次の 2 つを **先頭トークンが git の bare 単文**（cd 前置・bash 前置・環境変数代入前置・&& 連結禁止）で順に 1 回ずつ実行し、`
+      + `stdout を判定や脚色をせずに JSON へ写して返せ:\n`
+      + `1. git -C ${isoWt} rev-list --count ${endHead}..${holdHead} → stdout の整数を "outside" に入れる\n`
+      + `2. git -C ${isoWt} -c core.quotePath=false diff --no-renames --name-only ${holdHead}..${endHead} → stdout の各行（ファイルパス）を "files" に入れる（0 行なら []）\n`
+      + `両方 exit 0 なら {"ok": true, "outside": <整数>, "files": [...]}。どちらかが exit 非 0 なら {"ok": false} だけを返す（再試行・原因調査をしない）。`
+      + `ファイル変更・git の書き込み操作は禁止。`,
+      { agentType: 'dev-runner-haiku-ro', schema: HOLD_TEST_DIFF, label: 'hold-test-diff', phase: 'Iterate' },
+    )
+    const base = prMeta?.base_ref || ''
+    const tests = base
+      ? await failOpenAgent(runTestsPrompt(isoWt, `origin/${base}`), { agentType: 'dev-runner-haiku', schema: HOLD_TEST_RUN, label: 'hold-test-run', phase: 'Iterate' })
+      : null
+    finalTestCheck = { ran: true, holdHead, endHead, changes: testRelatedChanges(diff), tests }
+    log(`final_test_red の確認範囲: テスト関連の変更 ${finalTestCheck.changes.status}（${finalTestCheck.changes.files.length} 件）・最終 tree の全件テスト ${tests?.tests ?? '実行できず'} — HOLD は外さない`)
+  }
+}
+
 // 終端サマリーを PR に 1 回だけ投稿する
 const summaryBody = buildTerminalSummaryBody({
   pr: PR,
@@ -2951,6 +3184,7 @@ const summaryBody = buildTerminalSummaryBody({
   humanFollowups,
   conflictAutoresolve: conflictAttempts,
   priorDevflow: PRIOR_DEVFLOW,
+  finalTestCheck,
   securityReview,
   // この結論を出した head（最後の fix の push 後の PR head）。marker に載せ、次の単体起動の prerun が今の head と比べる
   headSha: shaNow,

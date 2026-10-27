@@ -132,15 +132,65 @@ function formatConflictAutoresolveLines(list) {
 }
 
 const PRIOR_HOLD_UNRESOLVED = '未解消（pr-iterate は再判定しない — 人が確認する）';
+// 人の判断待ちの code。pr-iterate に判定する材料が無いので、どこを見るかだけを示す
+const PRIOR_HOLD_HUMAN_CODES = ['escalate', 'ac_human_pending'];
+const PRIOR_HOLD_HUMAN = '未解消（人の判断が要る — pr-iterate は判定しない。dev-flow のサマリーの該当項目を確認する）';
+// final_test_red は HOLD を外さない。テストは PR（fix を含む）が書き換えられるので、全件 green・CI passed・テスト関連の変更なしの
+// どれも解消の根拠にならない。PR が操作できない事実（git の diff・pipeline が実行した run-tests の結果）で人の確認範囲を絞るだけ
+const PRIOR_HOLD_FINAL_TEST = '未解消（HOLD は外さない — 下の事実で確認範囲を絞って人が確認する）';
+
+const shortShaCell = (s) => `\`${String(s).slice(0, 7)}\``;
+// git diff の pathspec に貼れる形にする（シェルで分割・展開されない文字だけならそのまま、他は single quote で包む）
+const shellPathArg = (p) => (/^[A-Za-z0-9_.@+\/-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`);
+
+function finalTestRunLabel(t) {
+  if (t != null && t.tests === 'passed' && t.green === true) return 'passed';
+  if (t != null && t.tests === 'failed') {
+    const files = Array.isArray(t.failed_files) ? t.failed_files.filter((f) => typeof f === 'string' && f !== '') : [];
+    return `failed — 失敗ファイル: ${files.length ? files.map((f) => `\`${mdCell(f)}\``).join(' / ') : '不明（ファイルに結び付かない失敗）'}`;
+  }
+  if (t != null && t.tests === 'no_tests') return 'no_tests（実行対象のテストが無い）';
+  return '実行できなかった';
+}
+
+/**
+ * final_test_red の行の下に出す事実（決定論で取ったものだけ。LLM の要約・判断は載せない）。
+ * @param {{ran: false, reason: 'same_head'|'hold_head_unknown'|'end_head_unknown', holdHead?: string}
+ *   |{ran: true, holdHead: string, endHead: string, changes: {status: 'none'|'changed'|'unknown', files: string[]}, tests: object|null}|null} check
+ * @returns {string[]}
+ */
+function finalTestRedFacts(check) {
+  if (check == null) return [];
+  if (check.ran !== true) {
+    const reason = check.reason === 'same_head'
+      ? `HOLD 時と同じ head（${shortShaCell(check.holdHead)}）で終わった — HOLD 時のテスト結果がそのまま当てはまる`
+      : (check.reason === 'hold_head_unknown' ? 'HOLD 時の head 不明（dev-flow のサマリーの marker に head が無い）' : '終端 head 不明');
+    return [`変更ファイルと最終 tree の全件テストは取っていない: ${reason}`];
+  }
+  const facts = [`HOLD 時の head ${shortShaCell(check.holdHead)} → 終端 head ${shortShaCell(check.endHead)}`];
+  const changes = check.changes ?? { status: 'unknown', files: [] };
+  if (changes.status === 'none') {
+    facts.push('テスト関連の変更（テストとテストの実行を変えうる設定）: なし');
+  } else if (changes.status === 'changed') {
+    facts.push(`テスト関連の変更（テストとテストの実行を変えうる設定）: あり ${changes.files.length} 件 — ${changes.files.map((f) => `\`${mdCell(f)}\``).join(' / ')}`);
+    facts.push(`その diff: \`${mdCell(`git diff ${check.holdHead}..${check.endHead} -- ${changes.files.map(shellPathArg).join(' ')}`)}\``);
+  } else {
+    facts.push('テスト関連の変更（テストとテストの実行を変えうる設定）: 不明（変更ファイル一覧を取れなかったか、HOLD 時の head が終端 head の祖先でない — PR 全体の diff を確認する）');
+  }
+  facts.push(`最終 tree の全件テスト（run-tests 1 回）: ${finalTestRunLabel(check.tests)}`);
+  return facts;
+}
 
 /**
  * 直前の dev-flow サマリーが HOLD のとき、HOLD 理由の code ごとの回収状況を決定論で 1 行ずつ出す（issue #930）。
  * pr-iterate が自分で確かめられるのは review の LGTM・最終 CI・conflict の自動解消・敵対的 security review だけで、
  * AC・ledger・danger-grep の security clearance・最終 tree のテストは再判定しない — それらの code は常に未解消として人に返す。
+ * 未解消の文言は人の判断待ち（escalate / ac_human_pending）・final_test_red・それ以外で分ける。final_test_red は
+ * finalTestCheck の事実を行の下に出す（resolved は常に false）。
  * code が 1 件も無い HOLD（code を marker に載せる前のサマリー）は理由を確かめられないので未解消 1 件にする。
- * @returns {{rows: Array<{code: string|null, resolved: boolean, detail: string|null}>, unresolved: number}}
+ * @returns {{rows: Array<{code: string|null, resolved: boolean, detail: string|null, unresolvedLabel?: string, facts?: string[]}>, unresolved: number}}
  */
-function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, securityReview }) {
+function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, securityReview, finalTestCheck }) {
   const attempts = (conflictAutoresolve || []).filter((r) => r != null);
   const lastConflict = attempts.length > 0 ? attempts[attempts.length - 1].status : null;
   const rows = (codes || []).map((code) => {
@@ -156,6 +206,10 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
     }
     if (code === 'mergeable_conflicting') {
       return { code, resolved: lastConflict === 'resolved', detail: `conflict の自動解消: ${lastConflict ?? '試行なし'}` };
+    }
+    if (PRIOR_HOLD_HUMAN_CODES.includes(code)) return { code, resolved: false, detail: null, unresolvedLabel: PRIOR_HOLD_HUMAN };
+    if (code === 'final_test_red') {
+      return { code, resolved: false, detail: null, unresolvedLabel: PRIOR_HOLD_FINAL_TEST, facts: finalTestRedFacts(finalTestCheck) };
     }
     return { code, resolved: false, detail: null };
   });
@@ -179,8 +233,10 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
  * @param {string[]} [opts.ciLastFailedChecks] - ciLastStatus が failed のとき列挙する check 名
  * @param {Array} [opts.humanFollowups] - worktree の外を指すとして fix から外した blocking finding（severity, file, line, description, suggestion, iter）
  * @param {Array} [opts.conflictAutoresolve] - base との conflict の自動解消の試行（_lib/conflict-autoresolve.mjs の conflictAutoresolveRecord の配列）
- * @param {{tier: string, codes: string[], url: string|null}|null} [opts.priorDevflow] - 単体起動の前に PR に載っていた
+ * @param {{tier: string, codes: string[], url: string|null, head_sha: string|null}|null} [opts.priorDevflow] - 単体起動の前に PR に載っていた
  *   dev-flow サマリー（pr-iterate-prerun の prior_devflow）。tier が HOLD のときだけ HOLD 理由の回収状況を出す
+ * @param {object|null} [opts.finalTestCheck] - final_test_red の確認範囲の事実（形は finalTestRedFacts）。HOLD の codes に
+ *   final_test_red がある単体起動で pr-iterate が渡す。回収状況の final_test_red 行の下に出すだけで、解消にはしない
  * @param {{target: boolean, status: string, stop_reason?: string|null, rounds: number, critical?: number, major?: number, minor?: number, deferred?: number}|null} [opts.securityReview] -
  *   敵対的 security review の結果（pr-iterate の返り値 security_review）。件数だけを 1 行出す（null なら出さない）。
  *   stop_reason が 'reviewer_context_changed' なら見出しと行を「自動 review をしていない」に出し分け、`security-review-isolated <PR>` の実行案内を足す
@@ -189,11 +245,11 @@ function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, s
  *   true なら渡したことだけを 1 行出す（方針の本文は受け取らない — 公開の PR コメントに載せない）
  * @returns {string}
  */
-export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, securityReview = null, headSha = null, fixDirectionUsed = false }) {
+export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, finalTestCheck = null, securityReview = null, headSha = null, fixDirectionUsed = false }) {
   const DECISION_EMOJI = { 'approve': '✅', 'request-changes': '🔴', 'comment': '💬' };
   const lines = [];
   const priorHold = priorDevflow != null && priorDevflow.tier === 'HOLD'
-    ? priorHoldRecovery(priorDevflow.codes, { status, ciLastStatus, conflictAutoresolve, securityReview })
+    ? priorHoldRecovery(priorDevflow.codes, { status, ciLastStatus, conflictAutoresolve, securityReview, finalTestCheck })
     : null;
 
   // dev-flow の HOLD 後の回収では、このレポートが PR の最後のコメント（最新の結論）になる。HOLD 理由が残っているのに
@@ -249,9 +305,10 @@ export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision,
     lines.push('### dev-flow の HOLD 理由の回収状況');
     lines.push('');
     for (const r of priorHold.rows) {
-      const label = r.resolved ? '✅ 解消' : `❌ ${PRIOR_HOLD_UNRESOLVED}`;
+      const label = r.resolved ? '✅ 解消' : `❌ ${r.unresolvedLabel ?? PRIOR_HOLD_UNRESOLVED}`;
       const parts = [r.code != null ? `\`${mdCell(r.code)}\`` : null, label, r.detail].filter((p) => p != null);
       lines.push(`- ${parts.join(' — ')}`);
+      for (const fact of r.facts ?? []) lines.push(`  - ${fact}`);
     }
     lines.push('');
     lines.push(priorHold.unresolved > 0

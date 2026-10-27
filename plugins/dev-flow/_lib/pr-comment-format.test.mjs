@@ -607,6 +607,8 @@ test('buildTerminalSummaryBody: humanFollowups 非空なら人間側 follow-up �
 
 const PRIOR_URL = 'https://github.com/acme/skills/pull/5#issuecomment-1';
 const UNRESOLVED = '❌ 未解消（pr-iterate は再判定しない — 人が確認する）';
+const UNRESOLVED_HUMAN = '❌ 未解消（人の判断が要る — pr-iterate は判定しない。dev-flow のサマリーの該当項目を確認する）';
+const UNRESOLVED_FINAL_TEST = '❌ 未解消（HOLD は外さない — 下の事実で確認範囲を絞って人が確認する）';
 const recoveryLines = (body) => {
   const lines = body.split('\n');
   const start = lines.indexOf('### dev-flow の HOLD 理由の回収状況');
@@ -627,7 +629,7 @@ test('buildTerminalSummaryBody: #870 相当（HOLD codes=ac_human_pending + lgtm
   });
   assert.equal(headlineOf(body), '### LGTM（review）— dev-flow の HOLD 理由 1 件が未解消。merge 前に確認');
   assert.ok(!body.includes('🎉 LGTM'), body);
-  assert.deepEqual(recoveryLines(body), [`- \`ac_human_pending\` — ${UNRESOLVED}`]);
+  assert.deepEqual(recoveryLines(body), [`- \`ac_human_pending\` — ${UNRESOLVED_HUMAN}`]);
   assert.ok(body.includes('**dev-flow の HOLD 理由 1 件が未解消** — merge 前に人が確認する'), body);
   // 冒頭（見出しより前）に元の dev-flow サマリーへのリンク
   assert.ok(body.indexOf(PRIOR_URL) >= 0 && body.indexOf(PRIOR_URL) < body.indexOf('### '), body);
@@ -658,7 +660,7 @@ test('buildTerminalSummaryBody: 回収状況の写像 — 条件を満たさな�
     `- \`ci_checks_failed\` — ${UNRESOLVED} — 最終 CI 状態: failed`,
     `- \`ac_ci_pending\` — ${UNRESOLVED} — 最終 CI 状態: failed`,
     `- \`mergeable_conflicting\` — ${UNRESOLVED} — conflict の自動解消: aborted`,
-    `- \`escalate\` — ${UNRESOLVED}`,
+    `- \`escalate\` — ${UNRESOLVED_HUMAN}`,
   ]);
   // 非 lgtm 終端の見出しは従来どおり
   assert.equal(headlineOf(unresolved), '### ⚠️ STUCK — 人間レビューへエスカレーション');
@@ -766,4 +768,102 @@ test('buildTerminalSummaryBody: priorDevflow が null・HOLD 以外なら終了�
   assert.equal(buildTerminalSummaryBody({ ...opts, priorDevflow: null }), base);
   assert.equal(buildTerminalSummaryBody({ ...opts, priorDevflow: { tier: 'REVIEW', codes: [], url: PRIOR_URL } }), base);
   assert.equal(buildTerminalSummaryBody({ ...opts, priorDevflow: { tier: 'AUTO', codes: [], url: PRIOR_URL } }), base);
+});
+
+// --- final_test_red の確認範囲と未解消の文言の出し分け（issue #1180） ---------------------
+
+const HOLD_HEAD = '1'.repeat(40);
+const END_HEAD = '2'.repeat(40);
+// 回収状況の節の行（code の行と、その下の事実の行）
+const recoverySection = (body) => {
+  const lines = body.split('\n');
+  const start = lines.indexOf('### dev-flow の HOLD 理由の回収状況');
+  if (start < 0) return [];
+  const out = [];
+  for (const l of lines.slice(start + 2)) {
+    if (!l.startsWith('- ') && !l.startsWith('  - ')) break;
+    out.push(l);
+  }
+  return out;
+};
+const finalTestBody = (finalTestCheck, extra = {}) => buildTerminalSummaryBody({
+  pr: 5, status: 'lgtm', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed',
+  priorDevflow: { tier: 'HOLD', codes: ['final_test_red'], url: PRIOR_URL, head_sha: HOLD_HEAD }, finalTestCheck, ...extra,
+});
+const ranCheck = (changes, tests) => ({ ran: true, holdHead: HOLD_HEAD, endHead: END_HEAD, changes, tests });
+const PASSED = { tests: 'passed', green: true, summary: 'ok', failed_files: [] };
+const FINAL_TEST_ROW = `- \`final_test_red\` — ${UNRESOLVED_FINAL_TEST}`;
+const HEADS_FACT = '  - HOLD 時の head `1111111` → 終端 head `2222222`';
+const CHANGES_FACT = '  - テスト関連の変更（テストとテストの実行を変えうる設定）: ';
+const RUN_FACT = '  - 最終 tree の全件テスト（run-tests 1 回）: ';
+
+test('buildTerminalSummaryBody: final_test_red の行は変更の有無（なし / あり + git diff コマンド / 不明）と最終 tree の全件テストの結果を出し、どれでも未解消', () => {
+  const cases = [
+    [ranCheck({ status: 'none', files: [] }, PASSED), [`${CHANGES_FACT}なし`, `${RUN_FACT}passed`]],
+    [ranCheck({ status: 'changed', files: ['tests/a|b.test.js', 'package.json', "it's.bats"] }, PASSED), [
+      `${CHANGES_FACT}あり 3 件 — \`tests/a\\|b.test.js\` / \`package.json\` / \`it's.bats\``,
+      `  - その diff: \`git diff ${HOLD_HEAD}..${END_HEAD} -- 'tests/a\\|b.test.js' package.json 'it'\\''s.bats'\``,
+      `${RUN_FACT}passed`,
+    ]],
+    [ranCheck({ status: 'unknown', files: [] }, PASSED), [
+      `${CHANGES_FACT}不明（変更ファイル一覧を取れなかったか、HOLD 時の head が終端 head の祖先でない — PR 全体の diff を確認する）`,
+      `${RUN_FACT}passed`,
+    ]],
+    [ranCheck({ status: 'none', files: [] }, { tests: 'failed', green: false, failed_files: ['tests/x.bats', 'src/a|b.test.ts'] }), [
+      `${CHANGES_FACT}なし`, `${RUN_FACT}failed — 失敗ファイル: \`tests/x.bats\` / \`src/a\\|b.test.ts\``,
+    ]],
+    [ranCheck({ status: 'none', files: [] }, { tests: 'failed', green: false, failed_files: [] }), [
+      `${CHANGES_FACT}なし`, `${RUN_FACT}failed — 失敗ファイル: 不明（ファイルに結び付かない失敗）`,
+    ]],
+    [ranCheck({ status: 'none', files: [] }, { tests: 'no_tests', green: false }), [`${CHANGES_FACT}なし`, `${RUN_FACT}no_tests（実行対象のテストが無い）`]],
+    [ranCheck({ status: 'none', files: [] }, { tests: 'error', green: false }), [`${CHANGES_FACT}なし`, `${RUN_FACT}実行できなかった`]],
+    [ranCheck({ status: 'none', files: [] }, null), [`${CHANGES_FACT}なし`, `${RUN_FACT}実行できなかった`]],
+  ];
+  for (const [check, facts] of cases) {
+    const body = finalTestBody(check);
+    assert.deepEqual(recoverySection(body), [FINAL_TEST_ROW, HEADS_FACT, ...facts], JSON.stringify(check));
+    assert.equal(headlineOf(body), '### LGTM（review）— dev-flow の HOLD 理由 1 件が未解消。merge 前に確認', JSON.stringify(check));
+    assert.ok(body.includes('**dev-flow の HOLD 理由 1 件が未解消** — merge 前に人が確認する'), JSON.stringify(check));
+  }
+});
+
+test('buildTerminalSummaryBody: final_test_red の事実を取らなかった run は理由（HOLD 時と同じ head / head 不明）を出し、未解消', () => {
+  for (const [check, fact] of [
+    [{ ran: false, reason: 'same_head', holdHead: HOLD_HEAD }, '  - 変更ファイルと最終 tree の全件テストは取っていない: HOLD 時と同じ head（`1111111`）で終わった — HOLD 時のテスト結果がそのまま当てはまる'],
+    [{ ran: false, reason: 'hold_head_unknown' }, '  - 変更ファイルと最終 tree の全件テストは取っていない: HOLD 時の head 不明（dev-flow のサマリーの marker に head が無い）'],
+    [{ ran: false, reason: 'end_head_unknown', holdHead: HOLD_HEAD }, '  - 変更ファイルと最終 tree の全件テストは取っていない: 終端 head 不明'],
+  ]) {
+    const body = finalTestBody(check);
+    assert.deepEqual(recoverySection(body), [FINAL_TEST_ROW, fact], check.reason);
+    assert.equal(headlineOf(body), '### LGTM（review）— dev-flow の HOLD 理由 1 件が未解消。merge 前に確認', check.reason);
+  }
+});
+
+test('buildTerminalSummaryBody: テスト関連の変更なし・全件 green・終端 CI passed でも final_test_red は未解消で、見出しは「HOLD 理由 N 件が未解消」のまま', () => {
+  const body = finalTestBody(ranCheck({ status: 'none', files: [] }, PASSED), { ciLastStatus: 'passed' });
+  assert.equal(headlineOf(body), '### LGTM（review）— dev-flow の HOLD 理由 1 件が未解消。merge 前に確認');
+  assert.ok(body.includes('**dev-flow の HOLD 理由 1 件が未解消** — merge 前に人が確認する'), body);
+  assert.ok(!body.includes('🎉 LGTM'), body);
+  assert.ok(!body.includes('すべて解消'), body);
+  assert.ok(!recoverySection(body).some((l) => l.includes('✅ 解消')), body);
+  // 他の code と並んでも final_test_red の分だけ未解消に数える（ci_checks_failed は CI passed で解消）
+  const mixed = finalTestBody(ranCheck({ status: 'none', files: [] }, PASSED), {
+    priorDevflow: { tier: 'HOLD', codes: ['ci_checks_failed', 'final_test_red'], url: PRIOR_URL, head_sha: HOLD_HEAD },
+  });
+  assert.equal(headlineOf(mixed), '### LGTM（review）— dev-flow の HOLD 理由 1 件が未解消。merge 前に確認');
+});
+
+test('buildTerminalSummaryBody: 未解消の文言は人の判断待ち（escalate / ac_human_pending）・final_test_red・それ以外で互いに異なる', () => {
+  const body = finalTestBody(ranCheck({ status: 'none', files: [] }, PASSED), {
+    priorDevflow: { tier: 'HOLD', codes: ['escalate', 'ac_human_pending', 'final_test_red', 'danger_unresolved'], url: PRIOR_URL, head_sha: HOLD_HEAD },
+  });
+  const rows = recoverySection(body).filter((l) => l.startsWith('- '));
+  assert.deepEqual(rows, [
+    `- \`escalate\` — ${UNRESOLVED_HUMAN}`,
+    `- \`ac_human_pending\` — ${UNRESOLVED_HUMAN}`,
+    FINAL_TEST_ROW,
+    `- \`danger_unresolved\` — ${UNRESOLVED}`,
+  ]);
+  assert.equal(new Set([UNRESOLVED, UNRESOLVED_HUMAN, UNRESOLVED_FINAL_TEST]).size, 3);
+  assert.equal(headlineOf(body), '### LGTM（review）— dev-flow の HOLD 理由 4 件が未解消。merge 前に確認');
 });
