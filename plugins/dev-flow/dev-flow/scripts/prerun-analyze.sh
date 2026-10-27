@@ -219,11 +219,15 @@ COMPAT_M_LABEL="既存データの変換"
 DECL_B=""
 DECL_M=""
 
-# compat_value <値の部分> <語>... → 値の先頭に一致した語（後ろは空・空白・括弧・句読点の補足だけ許す）。無ければ invalid
+# compat_value <値の部分> <語>... → 値の先頭に一致した語（後ろは空・空白・括弧・句読点の補足だけ許す）。無ければ invalid。
+# 語の直後が `/` / `|` 区切りなら指示文の選択肢（「あり / なし」）を写しただけの未記入とみなして invalid
 compat_value() {
-    local rest="$1" word tail_re='^([[:space:]]|（|\(|。|、|,)'
+    local rest="$1" word tail_re='^([[:space:]]|（|\(|。|、|,)' choice_re='^[[:space:]]*(/|\||／|｜)'
     shift
     for word in "$@"; do
+        if [[ "$rest" == "$word"* && "${rest#"$word"}" =~ $choice_re ]]; then
+            break
+        fi
         if [[ "$rest" == "$word" ]] || { [[ "$rest" == "$word"* ]] && [[ "${rest#"$word"}" =~ $tail_re ]]; }; then
             printf '%s' "$word"
             return
