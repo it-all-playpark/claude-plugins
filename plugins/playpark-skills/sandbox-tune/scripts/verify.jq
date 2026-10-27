@@ -46,6 +46,11 @@ def verify_types($by; $repos; $checks):
                        related_commits: [ $cs[0:3][] | {repo, source, hash: .hash[0:12], committed_at: (.epoch | todate), subject} ]}
       end);
 
+# 今も再発している remaining の型: 発生が $min_count 回以上で、最終発生が期間終端（.period.until）から $within_days 日以内
+def recurring_types($min_count; $within_days):
+  ((.period.until | epoch) - $within_days * 86400) as $recent
+  | [.types[] | select(.status == "remaining" and .count >= $min_count and (.last_seen | epoch) >= $recent)];
+
 # 設定の intended（意図した拒否）に id か kind が一致する型は、突き合わせの結果にかかわらず intended にする。
 # remaining から外れるので、修正候補にも recurring にも数えない。先に書いた項目を優先する
 def mark_intended($intended):

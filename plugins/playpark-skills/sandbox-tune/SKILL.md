@@ -4,12 +4,13 @@ description: >-
   Aggregates sandbox denials, permission denials, "please run this in your terminal" requests, and host-exec
   (out-of-sandbox) runs from Claude Code transcripts by type, checks them against the settings repo's git log (resolved / remaining),
   and proposes settings / wrapper / hook fixes with a safety review. Writes a local Markdown report; with --issue, hands
-  human-confirmed drafts to dev-flow:git-issue for filing.
+  human-confirmed drafts to dev-flow:git-issue for filing. The daily job drafts issues for newly recurring types (--daily) and
+  leaves them for a human to confirm.
   Use when: (1) user asks why the agent keeps asking them to run commands, or which sandbox denials still recur,
   (2) user wants settings.json / excludedCommands / allowUnixSockets fix candidates backed by evidence,
   (3) user asks whether host-exec is being used for things settings should fix,
   (4) keywords: sandbox-tune, sandbox 拒否, Operation not permitted, EPERM, 人間に実行依頼, 通常のターミナルで, settings 修正, permission 拒否, host-exec.
-  Accepts args: [--days N] [--no-verify] [--issue] [--allow-public]
+  Accepts args: [--days N] [--no-verify] [--issue] [--allow-public] | --daily --analysis A --ids id[,id] [--config F]
 ---
 
 # Sandbox Tune
@@ -57,6 +58,7 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 ST run [--days N]              # collect → verify → report。書いたパスを JSON で返す
 ST run --no-verify [--days N]  # verify せず collect → report だけ（出力の verified は false）
 ST config                      # 検証済みの設定（criteriaFiles の絶対パスを含む）
+ST recurring <analysis.json>   # recurring に数えた型の id（JSON 配列）
 ```
 
 - `run` は設定（`configRepo`）が無ければ exit 2 で止まり、stderr で `sandbox-tune.json` と `--no-verify` を案内する。
@@ -73,10 +75,22 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
 
 既定では何も登録しない。ユーザーが日次の集計を望んだときだけ、`install-schedule.sh` を手で 1 回実行して
 launchd に登録する。登録すると毎日 06:30 に `scripts/daily.sh` が `run --config <設定> --out ~/.claude/logs/sandbox-tune`
-を走らせ（LLM は呼ばない。`draft` / `handoff` は含まない）、実行ごとに `~/.claude/logs/sandbox-tune/runs.jsonl` へ 1 行追記する。
+を走らせ、実行ごとに `~/.claude/logs/sandbox-tune/runs.jsonl` へ 1 行追記する。
 
-- 成功: `run` の要約 JSON（`report`・`analysis`・`verified`・`types`・`remaining`・`stale_branch`・`resolved`・`intended`・`recurring`）に `ts`（ISO 8601 UTC）を足した行
+- 成功: `run` の要約 JSON（`report`・`analysis`・`verified`・`types`・`remaining`・`stale_branch`・`resolved`・`intended`・`recurring`）に `ts`（ISO 8601 UTC）を足した行。
+  verify した run では下書きの段階の結果 `new_recurring`（判断に回した新しい再発の型の数）・`drafts`（作った下書きの数）・
+  `drafts_root`（下書き置き場）・`draft_error`（失敗の理由。無ければ null）も足す
 - 失敗: `{ts, exit, error}`（`exit` は `run` の終了コード、`error` は stderr の末尾）
+
+verify した run では、続けて新しい再発（recurring の型のうち `~/.claude/logs/sandbox-tune/triaged.json` に無いもの）だけを
+`claude -p "/playpark-skills:sandbox-tune --daily ..."` で判断させ、issue 候補を `draft --issue` で下書きにする。
+
+- 新しい再発が無ければ LLM を呼ばない。`triaged.json` が無い初回は今の recurring を判断済みとして記録するだけ（溜まっている型は手で `--issue` にかける）
+- resolved になった型は `triaged.json` から外す。修正の後に再発したら、また新しい再発として回る
+- 下書き置き場は設定ファイルのディレクトリの `claudedocs/sandbox-tune-drafts/<実行時刻>/`。LLM の出力（`llm.log`）・候補（`triage.json`。
+  issue にしない型の `skipped` を含む）・下書き（`sandbox-tune-issue-<n>.md` と `.meta.json`）が入る
+- 起票はしない。下書きは下の「日次の下書きを処理する」で人が確認してから handoff する
+- LLM の失敗・候補ブロックが無い・draft の失敗では新しい再発を判断済みにせず、翌日に回し直す
 
 ```bash
 bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --print --repo <skills checkout> --config <sandbox-tune.json>    # plist を確認（登録しない）
@@ -196,6 +210,38 @@ sandbox-tune は伏せ字・人の確認・公開範囲の判定までを受け�
    dev-flow:git-issue <material> --repo <repo> --title "<title>" [--labels <labels>]
    ```
    材料はすでに受け入れ基準と変更対象パスを持つ。orchestrator は ac-lint を通して起票する。材料の内容は書き足さずに渡す
+
+## 日次の判断（`--daily`）
+
+`daily.sh` が `claude -p` で `--daily --analysis <A> --ids <id,...> [--config F]` を付けて呼んだときだけ行う。人はいないので
+AskUserQuestion を使わず、ファイルを書かず（`~/.claude/logs` は書けない）、`draft` / `handoff` / git-issue を呼ばない。下書きは daily.sh が作る。
+
+1. `ST config [--config F]` の `criteriaFiles` を全部読む
+2. `--analysis` の JSON から `--ids` の型だけを jq で抜いて読む（JSON は大きいので全読みしない）
+3. 型ごとに「判断手順」の 3・4 と「安全性の基準」で、issue にするか（原因・修正案・安全性が言い切れ、設定 repo の変更で直せる）、
+   しないか（`intended`: 意図した拒否・組み込み保護 / `noise`: 一回限り・誤検知 / `unclear`: 代表例から原因を言い切れない）を決める。
+   同じ原因の型は 1 つの候補にまとめてよい（代表の id で候補を作り、残りの id は skipped に `class: "merged"` と代表の id を reason に書く）
+4. 最後に次の区切り行で挟んだ JSON を 1 つだけ出す。`candidates` の各要素は「issue 化」の 1 と同じ形（`ac`・`paths` 必須）。
+   `--ids` の型はどれも `candidates` か `skipped` のどちらかに入れる（どちらにも無い型は翌日にまた回ってくる）
+
+```
+<!-- sandbox-tune-daily-candidates:begin -->
+{"candidates":[{"id":"...","title":"...","cause":"...","fix":"...","safety":"...","ac":["..."],"paths":["..."],"security":false}],
+ "skipped":[{"id":"...","class":"intended|noise|unclear|merged","reason":"..."}]}
+<!-- sandbox-tune-daily-candidates:end -->
+```
+
+## 日次の下書きを処理する
+
+ユーザーが日次の下書きの確認を求めたとき（status line の `sbx 下書き<N>` 等）に行う。置き場は `ST config` の設定ファイルの
+ディレクトリの `claudedocs/sandbox-tune-drafts/<実行時刻>/`。
+
+1. 各ディレクトリの `sandbox-tune-issue-<n>.md` を読み、`triage.json` の `skipped` と合わせてユーザーに示す
+2. 下書きごとに起票するか見送るかを AskUserQuestion で確かめる。起票するものは「issue 化」の 4・5 と同じく、`.meta.json` の `sha256` を
+   `--digest` にして handoff に通し、git-issue に渡す。内容を直すなら `triage.json` の候補を直して `ST draft --issue` で作り直してから確認を取り直す
+3. `skipped` のうち `intended` に分類された型は、設定の `intended` に足す案（`id` と `reason`）としてユーザーに示す。足すかどうかはユーザーが決める
+4. 起票か見送りが決まった下書きは `.md` と `.meta.json` を `rip` で消す。下書きが残っていないディレクトリはディレクトリごと消す
+   （残っている `sandbox-tune-issue-*.md` の数が未処理の下書きの数になる）
 
 ## Exit
 

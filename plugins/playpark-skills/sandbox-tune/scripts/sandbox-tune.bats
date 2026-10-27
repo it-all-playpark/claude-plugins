@@ -445,6 +445,10 @@ deny_at() {
   run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -c '[.types, .remaining, .resolved, .recurring]')" = '[5,4,1,2]' ]
+  # recurring は要約で数えた型の id を昇順で出す
+  run bash "$SCRIPT" recurring "$(printf '%s' "$output" | jq -r '.analysis')"
+  [ "$status" -eq 0 ]
+  [ "$output" = '["sandbox:network:after.example.test","sandbox:network:edge.example.test"]' ]
 }
 
 @test "verify: 設定の intended に id か kind で一致する型は intended にし、remaining・recurring から外してレポートの別の節に出す" {

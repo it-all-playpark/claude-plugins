@@ -10,6 +10,7 @@
 #   sandbox-tune.sh verify  <analysis.json> [--config F]                       # JSON を stdout へ
 #   sandbox-tune.sh report  <analysis.json> [--out DIR]                        # 書いたパスを stdout へ
 #   sandbox-tune.sh config  [--config F]                                       # 検証済みの設定を stdout へ
+#   sandbox-tune.sh recurring <analysis.json>                                  # recurring の型の id を JSON 配列で stdout へ
 #   sandbox-tune.sh redact                                                     # stdin を伏せ字にして stdout へ
 #   sandbox-tune.sh draft   --issue --analysis A --candidates C --ids id[,id] [--config F] [--out DIR]
 #   sandbox-tune.sh handoff <draft.md> --digest SHA256 [--allow-public]          # {material,repo,title,labels} を stdout へ
@@ -339,14 +340,20 @@ cmd_run() {
   jqs -c --arg report "$md" --arg analysis "$json" \
     --argjson min_count "$RECURRING_MIN_COUNT" --argjson within_days "$RECURRING_WITHIN_DAYS" '
     include "verify";
-    ((.period.until | epoch) - $within_days * 86400) as $recent
-    | {report: $report, analysis: $analysis, verified: (.verify != null),
+    {report: $report, analysis: $analysis, verified: (.verify != null),
     types: (.types | length), remaining: ([.types[] | select(.status == "remaining")] | length),
     stale_branch: ([.types[] | select(.status == "stale_branch")] | length),
     resolved: ([.types[] | select(.status == "resolved")] | length),
     intended: ([.types[] | select(.status == "intended")] | length),
-    recurring: (if .verify == null then null
-                else [.types[] | select(.status == "remaining" and .count >= $min_count and (.last_seen | epoch) >= $recent)] | length end)}' "$json"
+    recurring: (if .verify == null then null else recurring_types($min_count; $within_days) | length end)}' "$json"
+}
+
+# run の要約の recurring に数えた型の id を JSON の配列（昇順）で出す。verify の無い集計は status が無いので空配列
+cmd_recurring() {
+  local analysis="${1:-}"
+  [ -f "$analysis" ] || die 2 "recurring: run が書いた JSON を渡してください"
+  jqs -c --argjson min_count "$RECURRING_MIN_COUNT" --argjson within_days "$RECURRING_WITHIN_DAYS" \
+    'include "verify"; recurring_types($min_count; $within_days) | map(.id) | sort' "$analysis"
 }
 
 cmd_config() {
@@ -505,8 +512,9 @@ case "$sub" in
   verify) cmd_verify "$@" ;;
   report) cmd_report "$@" ;;
   config) cmd_config "$@" ;;
+  recurring) cmd_recurring "$@" ;;
   redact) jqs -R -s -j 'include "redact"; redact' ;;
   draft) cmd_draft "$@" ;;
   handoff) cmd_handoff "$@" ;;
-  *) die 2 "使い方: sandbox-tune.sh {run|collect|verify|report|config|redact|draft|handoff} ...（先頭のコメントを参照）" ;;
+  *) die 2 "使い方: sandbox-tune.sh {run|collect|verify|report|config|recurring|redact|draft|handoff} ...（先頭のコメントを参照）" ;;
 esac
