@@ -363,3 +363,56 @@ test('[ac-observational] demoteUnprovenObservationalAc: 実証の無い観測型
   const actors = ['human', 'human', 'agent', 'human'];
   assert.deepEqual(unsatisfiedAcByActor(out, actors), { agent: [], human: [0, 3], ci: [] });
 });
+
+// issue #1147: テストファイルを inline code で名指しした観測型 AC（#1142 の AC-2）。観測型の判定は true のまま actor だけ agent。
+const AC_1142_2 = 'AC-2 `journal.sh hook-capture` は、64KB を超える error（一致行を多数含むもの・一致行を含まないものの両方）でも exit 0 で終わり、journal に 1 件記録する。記録の `error.message` は現行と同じ規則（一致行の先頭 3 行、一致が無ければ先頭 3 行、各 300 文字まで）で作られる。`journal.bats` に両ケースを足し、そのテストは現行の hook-capture では落ちる';
+// prerun の絞り込みに当たった AC は Jev が決められず null、分類 agent の応答も null の経路を通す
+const resolveActorsViaAnalyze = (acs) => {
+  const prerun = acObservationalOf(acs).map((hit) => (hit ? null : false));
+  const observational = resolveAcObservational(prerun, { results: acs.map((_, i) => ({ ac_index: i, observational: null })) });
+  return { prerun, observational, actors: acActorsOf(acs, { repo: 'it-all-playpark/claude-plugins', observational }) };
+};
+
+test('[ac-observational] テストファイルを inline code で名指しした観測型 AC（#1142 AC-2）は ac_observational:true のまま actor agent', () => {
+  const { prerun, observational, actors } = resolveActorsViaAnalyze([AC_1142_2]);
+  assert.deepEqual(prerun, [null], '正規表現の絞り込みに当たる');
+  assert.deepEqual(observational, [true], '分類 agent が null なら観測型');
+  assert.deepEqual(actors, ['agent']);
+  for (const ac of [
+    '`plugins/dev-flow/_lib/ac-actor.test.mjs` に足すテストで、実 run の journal に記録されることを確かめる',
+    '`src/__tests__/journal.ts` と `pkg/journal_test.go` で run ごとに journal に記録される',
+    'run ごとに journal に記録される（`bats tests/journal.bats` で確認）',
+  ]) assert.deepEqual(resolveActorsViaAnalyze([ac]).actors, ['agent'], ac);
+});
+
+test('[ac-observational] テストファイルを名指しした観測型 AC: red→green の昇格が無い inspection の satisfied:true は未達に倒れ agent（差し戻し）に数え、昇格済みなら達成のまま', () => {
+  const CODE = 'worker 数の上限を設定で変えられる';
+  const { observational, actors } = resolveActorsViaAnalyze([AC_1142_2, CODE]);
+  assert.deepEqual(observational, [true, false]);
+  const results = [
+    { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: '追加テストを読んだ' },
+    { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
+  ];
+  const unproven = demoteUnprovenObservationalAc(results, observational, deterministicAcIndexes([]));
+  assert.equal(unproven[0].satisfied, false);
+  assert.equal(unproven[0].observational, true);
+  assert.deepEqual(unsatisfiedAcByActor(unproven, actors), { agent: [0], human: [], ci: [] });
+  const proven = demoteUnprovenObservationalAc(results, observational, deterministicAcIndexes([{ id: 'AC-1', checked: true, check: { kind: 'deterministic' } }]));
+  assert.equal(proven[0].satisfied, true);
+  assert.deepEqual(unsatisfiedAcByActor(proven, actors), { agent: [], human: [], ci: [] });
+});
+
+test('[ac-observational] テストファイルを inline code で名指ししていない観測型 AC は actor human のまま', () => {
+  for (const ac of [
+    '修正後の dev-flow run で journal に 1 件以上記録される',
+    'A/B 比較表を issue コメントに載せる',
+    'journal.bats で run ごとに journal に記録される',
+    '`journal.sh` の実 run で journal に記録される',
+    '`*.test.mjs` で run ごとに journal に記録される',
+    ...Object.values(KNOWN_OBSERVATIONAL_ACS),
+  ]) {
+    const { observational, actors } = resolveActorsViaAnalyze([ac]);
+    assert.deepEqual(observational, [true], ac);
+    assert.deepEqual(actors, ['human'], ac);
+  }
+});

@@ -53,6 +53,10 @@
 // 正規表現は絞り込み専用で拾いすぎてよい（語の追加で誤判定を直す方式は語彙の違う repo で収束しないため）。
 // 分類 agent に diff・evaluator の結果を渡さないのは、観測型の仕組みが evaluator のコード読みだけで達成扱いになるのを
 // 止めるためのもので、実装や評価を見た判定にすると抜け道になるため（incentive-structural）。
+// 観測型でも、repo 内のテストファイル（test_discovery の受理パターンに当たるパス）を inline code で名指しした AC は
+// actor 'agent' にする（issue #1147）。テストでの検証を AC 自体が指定しており、red→green の実証は worktree 内で作れる
+// 証跡なので、未達は差し戻せば満たせる。観測型の判定は true のまま変えない — 達成は red→green の deterministic 昇格
+// だけで、文面が増やせるのは差し戻しの回数（AGENT_AC_REIMPL_MAX で止まる）だけにするため。
 //
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
@@ -259,7 +263,20 @@ export function matchesCiVerify(ac, ciVerify) {
   return label !== '' && mentionsLabel(text, label)
 }
 
-// opts.observational は analyze ゲートで確定した AC の観測型判定（boolean）。true なら human。
+// test_discovery の受理パターン（_shared/scripts/detect-test-runner.sh の accept）に当たるテストファイルのパス。
+// glob（`*.test.*` 等）はファイルの名指しではないので `*` を含むものは数えない。
+const TEST_FILE_PATH_RE = /(^|\/)([^/*\s]+\.(test|spec)\.[A-Za-z0-9]+|[^/*\s]+\.bats|__tests__\/[^*\s]+\.[A-Za-z0-9]+|test_[^/*\s]+\.py|[^/*\s]+_test\.(py|go|rb)|[^/*\s]+_spec\.rb|[^/*\s]+Test\.php|tests\/[^/*\s]+\.rs)$/
+// 引用符は \x27 / \x22 で書く（INLINE_CODE_RE と同じく、sync-inlines の stripComments は regex literal を解釈しないため）。
+const INLINE_CODE_TOKEN_SEP_RE = /[\s\x27\x22]+/
+
+// AC が inline code でテストファイルを名指ししているか（inline code を空白・引用符で区切った語のどれかがテストファイルのパス）。
+function namesTestFile(ac) {
+  const codes = (String(ac ?? '').match(INLINE_CODE_RE) ?? []).map((m) => m.slice(1, -1))
+  return codes.some((code) => code.split(INLINE_CODE_TOKEN_SEP_RE).some((tok) => TEST_FILE_PATH_RE.test(tok)))
+}
+
+// opts.observational は analyze ゲートで確定した AC の観測型判定（boolean）。true なら human — ただしテストファイルを
+// inline code で名指しした AC は agent（red→green の実証を worktree 内で作れるので差し戻す）。
 // opts.ciVerify は repo の ci_verify 宣言（null / 省略は未設定 — 'ci' を返さない）。
 // （人手）・staging・本番等の明示は ci より優先する（CI の check では満たせない作業を書いた AC のため）。
 // ci は観測型より優先する（実行しないと確かめられない AC を、CI の check が実行して確かめるため）。
@@ -268,7 +285,7 @@ export function classifyAcActor(ac, opts = {}) {
   if (HUMAN_AC_PATTERNS.some((re) => re.test(text))) return 'human'
   if (matchesCiVerify(ac, opts?.ciVerify)) return 'ci'
   if (classifyAcScope(ac, opts) === 'external') return 'human'
-  return opts?.observational === true ? 'human' : 'agent'
+  return opts?.observational === true && !namesTestFile(ac) ? 'human' : 'agent'
 }
 
 // opts.observational は AC ごとの観測型判定の配列（req.ac_observational）。opts.ciVerify は classifyAcActor と同じ。
@@ -350,7 +367,8 @@ export function deterministicAcIndexes(ledgerItems) {
 
 // evaluator / final-ac-reconcile の ac_results で、deterministic 昇格していない観測型 AC を satisfied:false に倒し
 // observational:true を付ける（inspection や red→green 不成立の satisfied:true を達成扱いにしない）。
-// 倒した AC は actor 'human' なので unsatisfiedAcByActor で人手 AC 待ちに数えられ、差し戻しの対象にならない。
+// 倒した AC は actor 'human' なら unsatisfiedAcByActor で人手 AC 待ちに数えられて差し戻さず、テストファイルを名指しした
+// actor 'agent' の AC なら差し戻しの対象になる。
 // 非配列はそのまま返す。
 export function demoteUnprovenObservationalAc(acResults, observational, provenIndexes) {
   if (!Array.isArray(acResults)) return acResults
