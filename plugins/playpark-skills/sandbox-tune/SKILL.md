@@ -90,7 +90,8 @@ verify した run では、続けて新しい再発（recurring の型のうち 
 - 下書き置き場は設定ファイルのディレクトリの `claudedocs/sandbox-tune-drafts/<実行時刻>/`。LLM の出力（`llm.log`）・候補（`triage.json`。
   issue にしない型の `skipped` を含む）・下書き（`sandbox-tune-issue-<n>.md` と `.meta.json`）が入る
 - 起票はしない。下書きは下の「日次の下書きを処理する」で人が確認してから handoff する
-- LLM の失敗・候補ブロックが無い・draft の失敗では新しい再発を判断済みにせず、翌日に回し直す
+- 設定に `issue.repo` が無ければ LLM を呼ばない（draft に要るため）
+- `issue.repo` が無い・LLM の失敗・候補ブロックが無い・draft の失敗では新しい再発を判断済みにせず、翌日に回し直す
 
 ```bash
 bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --print --repo <skills checkout> --config <sandbox-tune.json>    # plist を確認（登録しない）

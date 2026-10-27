@@ -17,7 +17,7 @@ setup() {
     LOGS="$HOME/.claude/logs/sandbox-tune"
     CONFIG="$BATS_TEST_TMPDIR/conf/sandbox-tune.json"
     mkdir -p "$(dirname "$CONFIG")"
-    echo '{}' > "$CONFIG"
+    echo '{"issue":{"repo":"o/r"}}' > "$CONFIG"
 
     STUB="$BATS_TEST_TMPDIR/stub"
     LAUNCHCTL_CALLS="$BATS_TEST_TMPDIR/launchctl-calls"
@@ -68,6 +68,7 @@ case "\$1" in
     echo 'progress line'
     echo '{"report":"r.md","analysis":"$ANALYSIS","verified":true,"types":5,"remaining":3,"stale_branch":1,"resolved":1,"recurring":2}' ;;
   recurring) cat "$REC" ;;
+  config) cat "\$3" ;;
   draft)
     printf '%s\n' "\$@" > "$DRAFT_ARGS"
     echo 'draft: 伏せ字に失敗' >&2
@@ -305,11 +306,27 @@ $CONFIG" ]
     [ "$(tail -n 1 "$LOGS/runs.jsonl" | jq -r '.draft_error')" = "no candidates block in LLM output" ]
     [ "$(jq -c . "$TRIAGED")" = '["a"]' ]
 
+    # 要素が object でない候補ブロックも、jq で落ちずに同じく draft_error にする
+    claude_says '{"candidates":["b"],"skipped":[]}'
+    run bash "$STUB_SCRIPTS/daily.sh" --config "$CONFIG"
+    [ "$status" -eq 0 ]
+    [ "$(tail -n 1 "$LOGS/runs.jsonl" | jq -r '.draft_error')" = "no candidates block in LLM output" ]
+    [ "$(jq -c . "$TRIAGED")" = '["a"]' ]
+
     claude_says "$CAND_B"
     echo 2 > "$DRAFT_RC"
     run bash "$STUB_SCRIPTS/daily.sh" --config "$CONFIG"
     [ "$status" -eq 0 ]
     tail -n 1 "$LOGS/runs.jsonl" | jq -e '.drafts == 0 and (.draft_error | startswith("draft failed:") and contains("伏せ字に失敗"))'
+    [ "$(jq -c . "$TRIAGED")" = '["a"]' ]
+
+    # 設定に issue.repo が無ければ draft は必ず失敗するので、claude を呼ばずに draft_error を出す
+    echo '{}' > "$CONFIG"
+    rm -f "$CLAUDE_ARGS"
+    run bash "$STUB_SCRIPTS/daily.sh" --config "$CONFIG"
+    [ "$status" -eq 0 ]
+    [ ! -e "$CLAUDE_ARGS" ]
+    [ "$(tail -n 1 "$LOGS/runs.jsonl" | jq -r '.draft_error')" = "no issue.repo in config; drafts need it" ]
     [ "$(jq -c . "$TRIAGED")" = '["a"]' ]
 }
 

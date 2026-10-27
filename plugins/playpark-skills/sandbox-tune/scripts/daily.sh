@@ -19,7 +19,8 @@
 #    起票はしない（人が /sandbox-tune で下書きを確認してから handoff する）。下書きを作るのをここで行うのは、
 #    claude -p の Bash は sandbox 内で動き、~/.claude/logs は組み込みの書き込み保護で skill から書けないため。
 #    下書き置き場は設定ファイル（--config。無ければ cwd）のディレクトリの claudedocs/sandbox-tune-drafts。
-#    LLM が失敗した・ブロックが無い・draft が失敗したときは新しい再発を判断済みにせず（翌日に回し直す）、理由を draft_error に出す。
+#    設定に issue.repo が無ければ draft が必ず失敗するので LLM を呼ばない。
+#    issue.repo が無い・LLM が失敗した・ブロックが無い（要素が id を持つ object でないものを含む）・draft が失敗したときは新しい再発を判断済みにせず（翌日に回し直す）、理由を draft_error に出す。
 #
 # Usage:
 #   daily.sh [run の引数...]    # 例: daily.sh --config ~/src/dotfiles/sandbox-tune.json
@@ -88,7 +89,13 @@ if [[ "$(jq -r '.verified' <<<"$LINE")" == "true" ]]; then
             '. - $resolved' "$TRIAGED")"
         NEW="$(jq -cn --argjson rec "$REC" --argjson seen "$SEEN" '$rec - $seen')"
         KEEP="$SEEN"
-        if [[ "$NEW" != "[]" ]]; then
+        config_args=(config)
+        [[ -z "$CONFIG" ]] || config_args+=(--config "$CONFIG")
+        if [[ "$NEW" != "[]" ]] && ! bash "$SCRIPT_DIR/sandbox-tune.sh" "${config_args[@]}" 2>/dev/null \
+            | jq -e '.issue.repo // "" | length > 0' >/dev/null 2>&1; then
+            # draft は issue.repo が無いと必ず失敗するので、LLM を呼ばずに飛ばす（新しい再発は判断済みにしない）
+            DRAFT_ERROR="no issue.repo in config; drafts need it"
+        elif [[ "$NEW" != "[]" ]]; then
             DIR="$DRAFTS_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
             mkdir -p "$DIR"
             prompt="/playpark-skills:sandbox-tune --daily --analysis $ANALYSIS --ids $(jq -r 'join(",")' <<<"$NEW")"
@@ -100,7 +107,9 @@ if [[ "$(jq -r '.verified' <<<"$LINE")" == "true" ]]; then
                     f && line == e { f = 0; last = buf; next }
                     f { buf = buf $0 "\n" }
                     END { printf "%s", last }' "$DIR/llm.log" > "$DIR/triage.json"
-                if ! jq -e '(.candidates | type) == "array" and (.skipped | type) == "array"' "$DIR/triage.json" >/dev/null 2>&1; then
+                if ! jq -e '(.candidates | type) == "array" and (.skipped | type) == "array"
+                    and all(.candidates[], .skipped[]; type == "object" and (.id | type) == "string")' \
+                    "$DIR/triage.json" >/dev/null 2>&1; then
                     DRAFT_ERROR="no candidates block in LLM output"
                 else
                     ids="$(jq -r --argjson new "$NEW" '[.candidates[].id | select(IN($new[]))] | unique | join(",")' "$DIR/triage.json")"
