@@ -90,7 +90,9 @@ test('[summary-test-cell] (b) Final reconcile unavailable（test#final tests:err
 test("[summary-test-cell] (c) Validate tests:'failed'（本物の red）→ テスト欄 ❌ red + merge tier HOLD（validate_test_red）", async () => {
   // green-fix 後も red のまま（GREEN_MAX 到達）にする
   const red = { tests: 'failed', green: false, summary: 'assert mismatch' };
-  const { result, testCell } = await run({ 'test#1': red, 'test#2': red, 'test#3': red });
+  const { result, testCell, body } = await run({ 'test#1': red, 'test#2': red, 'test#3': red });
+  // failed_files が取れない red は validate_test_red の行を従来の文言のまま出す（issue #1181）
+  assert.ok(body.includes('| Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし） | 修正が必要'), body);
   assert.equal(testCell, '❌ red');
   assert.equal(result?.validate_tests, 'failed');
   assert.equal(result?.test_green, false);
@@ -132,6 +134,7 @@ const validateRedRun = (first, rerun) => {
   return run(o);
 };
 const validateReruns = (calls) => calls.filter((c) => c.label === 'test#validate-rerun');
+const VALIDATE_RED_CURRENT = '| Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）';
 
 test('[summary-test-cell] (f) Validate red + 単体再実行 green → final_test_flaky に記録、validate_test_red の HOLD は変えずテスト欄は red に flake 候補を添える', async () => {
   const { result, calls, body, testCell } = await validateRedRun(VALIDATE_RED_FILES, { tests: 'passed', green: true, summary: 'passed' });
@@ -150,18 +153,22 @@ test('[summary-test-cell] (f) Validate red + 単体再実行 green → final_tes
   assert.equal(testCell, '❌ red（単体再実行は green — flake 候補）');
   assert.ok(body.includes('test flake 候補（単体再実行は green）: plugins/dev-flow/_lib/ready-set.bats'), '参考に flake 候補の開示行が出る');
   assert.ok(body.includes('HOLD は解除しない（validate_test_red のまま'), '開示行に HOLD を解除しない旨が出る');
+  // validate_test_red の行の「現状」に Validate の全件実行の failed_files が出る（単体再実行の green で消さない。issue #1181）
+  assert.ok(body.includes(`${VALIDATE_RED_CURRENT}（落ちたファイル: \`plugins/dev-flow/_lib/ready-set.bats\`） | 修正が必要`), body);
 });
 
 test('[summary-test-cell] (g) Validate red でもファイルが空・安全に渡せないパス・再実行の throw / null / red は記録せず、validate_test_red の HOLD のまま', async () => {
   const variants = {
-    empty: { first: { ...VALIDATE_RED_FILES, failed_files: [] }, rerun: undefined, reruns: 0 },
-    unsafe: { first: { ...VALIDATE_RED_FILES, failed_files: ['a.bats', 'b c.bats'] }, rerun: undefined, reruns: 0 },
-    throw: { first: VALIDATE_RED_FILES, rerun: () => { throw new Error('EPERM'); }, reruns: 1 },
-    null: { first: VALIDATE_RED_FILES, rerun: null, reruns: 1 },
-    red: { first: VALIDATE_RED_FILES, rerun: { tests: 'failed', green: false, summary: 'still red', failed_files: VALIDATE_RED_FILES.failed_files }, reruns: 1 },
+    empty: { first: { ...VALIDATE_RED_FILES, failed_files: [] }, rerun: undefined, reruns: 0, files: '' },
+    unsafe: { first: { ...VALIDATE_RED_FILES, failed_files: ['a.bats', 'b c.bats'] }, rerun: undefined, reruns: 0, files: '（落ちたファイル: `a.bats`, `b c.bats`）' },
+    throw: { first: VALIDATE_RED_FILES, rerun: () => { throw new Error('EPERM'); }, reruns: 1, files: '（落ちたファイル: `plugins/dev-flow/_lib/ready-set.bats`）' },
+    null: { first: VALIDATE_RED_FILES, rerun: null, reruns: 1, files: '（落ちたファイル: `plugins/dev-flow/_lib/ready-set.bats`）' },
+    // 再実行の failed_files に別のファイルが混ざっても validate_test_red の行は Validate の failed_files のまま（issue #1181）
+    red: { first: VALIDATE_RED_FILES, rerun: { tests: 'failed', green: false, summary: 'still red', failed_files: [...VALIDATE_RED_FILES.failed_files, 'tests/rerun-only.bats'] }, reruns: 1, files: '（落ちたファイル: `plugins/dev-flow/_lib/ready-set.bats`）' },
   };
-  for (const [name, { first, rerun, reruns }] of Object.entries(variants)) {
-    const { result, calls, testCell } = await validateRedRun(first, rerun);
+  for (const [name, { first, rerun, reruns, files }] of Object.entries(variants)) {
+    const { result, calls, testCell, body } = await validateRedRun(first, rerun);
+    assert.ok(body.includes(`${VALIDATE_RED_CURRENT}${files} | 修正が必要`), `(g-${name}) ${body}`);
     assert.equal(validateReruns(calls).length, reruns, `(g-${name}) test#validate-rerun の回数`);
     assert.equal(result?.final_test_flaky, null, `(g-${name}) final_test_flaky は null のはず`);
     assert.equal(result?.merge_tier, 'HOLD', `(g-${name}) ${tierFacts(result)}`);

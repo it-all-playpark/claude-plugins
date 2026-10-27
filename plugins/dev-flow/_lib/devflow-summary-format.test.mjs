@@ -2387,6 +2387,58 @@ test('issue #1086: validate_test_red 単独 HOLD は final_test_red と同じく
   assert.ok(!body.includes('修正作業は不要'), '結論行は「修正作業は不要」ではない');
 });
 
+test('issue #1181: final_test_red / validate_test_red の現状に全件実行の落ちたファイルを mdCell で escape して先頭 20 件まで出し、残りは件数だけ・空なら従来の文言', () => {
+  const FINAL = 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）';
+  const VALIDATE = 'Validate test red（diff 起因のテスト失敗が残ったまま PR へ進行）';
+  const rowOf = (code, reason, files) => buildDevflowSummaryBody({
+    ...BASE_INPUT,
+    mergeTier: 'HOLD',
+    mergeTierReasons: [reason],
+    holdReasons: [{ code, reason, kind: 'human_judgment' }],
+    holdKind: 'human_judgment',
+    finalTestFailedFiles: code === 'final_test_red' ? files : undefined,
+    validateTestFailedFiles: code === 'validate_test_red' ? files : undefined,
+  }).split('\n').find((l) => l.startsWith(`| ${reason} |`));
+  const FINAL_CUR = 'fix 後の最終 tree でテスト失敗';
+  const VALIDATE_CUR = 'Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）';
+  const VALIDATE_ACT = '修正が必要（落ちたテストを直して push する）';
+
+  // ファイル名は mdCell で escape（| が表の列を壊さない）
+  assert.equal(
+    rowOf('final_test_red', FINAL, ['tests/a.bats', 'x|y.test.mjs']),
+    `| ${FINAL} | ${FINAL_CUR}（落ちたファイル: \`tests/a.bats\`, \`x\\|y.test.mjs\`） | 修正が必要 |`,
+  );
+  assert.equal(
+    rowOf('validate_test_red', VALIDATE, ['plugins/p/_lib/a.test.mjs']),
+    `| ${VALIDATE} | ${VALIDATE_CUR}（落ちたファイル: \`plugins/p/_lib/a.test.mjs\`） | ${VALIDATE_ACT} |`,
+  );
+
+  // 空・取れない（undefined / null）は従来の文言のまま、ファイル名の欄を出さない
+  for (const files of [[], undefined, null]) {
+    assert.equal(rowOf('final_test_red', FINAL, files), `| ${FINAL} | ${FINAL_CUR} | 修正が必要 |`, JSON.stringify(files));
+    assert.equal(rowOf('validate_test_red', VALIDATE, files), `| ${VALIDATE} | ${VALIDATE_CUR} | ${VALIDATE_ACT} |`, JSON.stringify(files));
+  }
+
+  // 20 件までは全件、21 件以上は先頭 20 件 + 「ほか N 件」
+  const many = (n) => Array.from({ length: n }, (_, i) => `t/f${i + 1}.bats`);
+  const listOf = (n) => many(n).map((f) => `\`${f}\``).join(', ');
+  assert.equal(rowOf('final_test_red', FINAL, many(20)), `| ${FINAL} | ${FINAL_CUR}（落ちたファイル: ${listOf(20)}） | 修正が必要 |`);
+  const row23 = rowOf('validate_test_red', VALIDATE, many(23));
+  assert.equal(row23, `| ${VALIDATE} | ${VALIDATE_CUR}（落ちたファイル: ${listOf(20)} ほか 3 件） | ${VALIDATE_ACT} |`);
+  assert.ok(!row23.includes('t/f21.bats'), '21 件目以降のファイル名は出さない');
+
+  // 他方の code の入力は使わない（final_test_red の行に Validate の failed_files を出さない）
+  const crossed = buildDevflowSummaryBody({
+    ...BASE_INPUT,
+    mergeTier: 'HOLD',
+    mergeTierReasons: [FINAL],
+    holdReasons: [{ code: 'final_test_red', reason: FINAL, kind: 'human_judgment' }],
+    holdKind: 'human_judgment',
+    validateTestFailedFiles: ['v.bats'],
+  });
+  assert.ok(crossed.includes(`| ${FINAL} | ${FINAL_CUR} | 修正が必要 |`), crossed);
+});
+
 test('issue #1117 / #1168: validate_tests_not_run / final_reconcile_unavailable 単独 HOLD の現状・対応は人が確かめる 1 通り（CI 完了待ちで解消しうる扱いにしない）', () => {
   const rowOf = (code, reason, kind) => buildDevflowSummaryBody({
     ...BASE_INPUT,
