@@ -285,6 +285,29 @@ sandbox:path:/w/repo/.git/FETCH_HEAD 1 1" ]
   [ "$(printf '%s' "$output" | jq -r '.types[0].target')" = 'https://***:***@git.example.com/r.git' ]
 }
 
+# hook の拒否 1 件: <tool_use_id> <timestamp> <command> <エラー文>
+hook_deny_at() {
+  use proj-a/s1.jsonl S1 "$2" "$1" "$3"
+  result proj-a/s1.jsonl S1 "$2" "$1" "PreToolUse:Bash hook error: $4" '{"toolDenialKind":"permission-rule"}'
+}
+
+@test "collect: hook の拒否はコマンド名でなくエラー文の 1 行目で型にし、伏せ字を通したその文を needle にする" {
+  # 同じ grep を、エラー文の違う 2 つの hook が止める
+  hook_deny_at k1 2026-09-10T00:00:00Z 'grep -r x . | psql -c "select 1"' 'DB CLI は単独の形でしか実行できません。パイプや複文に分けずに実行してください'
+  hook_deny_at k2 2026-09-10T00:01:00Z 'grep -r x . && gh pr view 1' $'gh の複文は止めています\ngh は単独の呼び出しにしてください'
+  # 同じ hook なら、止めたコマンドが違っても 1 つの型
+  hook_deny_at k3 2026-09-10T00:02:00Z 'cat x | psql -c "select 1"' 'DB CLI は単独の形でしか実行できません。別の 2 文目'
+  hook_deny_at k4 2026-09-10T00:03:00Z 'grep x .' 'API_TOKEN=abc123 を含むコマンドは止めています'
+  run collect
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | ids)" = "permission:hook:Bash API_TOKEN=*** を含むコマンドは止めています 1 1
+permission:hook:Bash DB CLI は単独の形でしか実行できません 2 1
+permission:hook:Bash gh の複文は止めています 1 1" ]
+  [ "$(printf '%s' "$output" | jq -c '[.types[] | select(.kind == "hook") | .needle] | sort')" \
+    = '["API_TOKEN=*** を含むコマンドは止めています","DB CLI は単独の形でしか実行できません","gh の複文は止めています"]' ]
+  [[ "$output" != *abc123* ]]
+}
+
 # 設定 repo: 2026-09-15 に example.org と /run/db/x.sock を足す commit がある
 make_config_repo() {
   local repo="$WORK/conf"
@@ -324,6 +347,33 @@ make_config_repo() {
   [ "$(jq -c '.types[] | select(.id == "sandbox:path:/etc/blocked") | [.status, .evidence.commit, .evidence.after_count]' "$json")" = '["remaining",null,3]' ]
   [ "$(jq -c '.types[] | select(.id == "permission:permission-rule:Bash node") | [.status, .evidence.commit]' "$json")" = '["remaining",null]' ]
   grep -q '^## remaining' "$WORK/claudedocs/sandbox-tune-2026-10-01.md"
+}
+
+@test "verify: hook のファイルからエラー文を消した commit より前だけに発生した hook の型は resolved、後にも発生した型は remaining" {
+  local repo="$WORK/conf"
+  mkdir -p "$repo/hooks"
+  printf '%s\n' 'echo "DB CLI は単独の形でしか実行できません。" >&2' 'echo "gh の複文は止めています。" >&2' >"$repo/hooks/guard.sh"
+  git -C "$repo" init -q
+  git -C "$repo" add hooks/guard.sh
+  GIT_AUTHOR_DATE=2026-09-01T00:00:00Z GIT_COMMITTER_DATE=2026-09-01T00:00:00Z \
+    git -C "$repo" -c user.name=t -c user.email=t@example.com commit -q -m init
+  : >"$repo/hooks/guard.sh"
+  git -C "$repo" add hooks/guard.sh
+  GIT_AUTHOR_DATE=2026-09-15T00:00:00Z GIT_COMMITTER_DATE=2026-09-15T00:00:00Z \
+    git -C "$repo" -c user.name=t -c user.email=t@example.com commit -q -m 'hooks: remove guards'
+  fix="$(git -C "$repo" rev-parse HEAD)"
+  echo '{"configRepo":{"path":"conf","paths":["hooks"]}}' >"$WORK/sandbox-tune.json"
+  hook_deny_at k1 2026-09-10T00:00:00Z 'grep -r x .' 'DB CLI は単独の形でしか実行できません。'
+  hook_deny_at k2 2026-09-10T00:01:00Z 'grep -r x .' 'gh の複文は止めています。'
+  hook_deny_at k3 2026-09-20T00:00:00Z 'grep -r y .' 'gh の複文は止めています。'
+  cd "$WORK"
+  run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
+  [ "$status" -eq 0 ]
+  json="$WORK/claudedocs/sandbox-tune-2026-10-01.json"
+  [ "$(jq -c '.types[] | select(.id == "permission:hook:Bash DB CLI は単独の形でしか実行できません") | [.status, .evidence.commit, .evidence.after_count]' "$json")" \
+    = "[\"resolved\",\"$fix\",0]" ]
+  [ "$(jq -c '.types[] | select(.id == "permission:hook:Bash gh の複文は止めています") | [.status, .evidence.commit, .evidence.after_count]' "$json")" \
+    = "[\"remaining\",\"$fix\",1]" ]
 }
 
 # 拒否が起きた repo（$HOME/src/app）: 2026-09-15 に .claude/settings.json へ a〜d.example.test を足す commit がある。
