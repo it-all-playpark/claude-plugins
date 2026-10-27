@@ -54,8 +54,9 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - 再利用した worktree の HEAD が PR head より遅れていて未コミット変更が無ければ fast-forward する。
      PR head に無いコミットを持つ（未 push・分岐）か、遅れていて未コミット変更があれば `ok:false`
    - 前 run の `.devflow-tmp/.isolation-probe*` を除去する（`.devflow-tmp` の他のファイルは残す）
-   - 同じ `gh pr view` で PR コメントも取り、`<!-- dev-flow:<tier>[ codes=...] -->` marker を持つ最後のコメント
-     （dev-flow の終端サマリー）を `prior_devflow`（`{tier, codes, url}`、無ければ null）に載せる
+   - 同じ `gh pr view` で PR コメントも取り、`<!-- dev-flow:<tier>[ codes=...][ head=<sha>] -->` marker を持つ最後のコメント
+     （dev-flow の終端サマリー）を `prior_devflow`（`{tier, codes, url, head_sha}`、無ければ null。`head_sha` は marker の head、
+     無ければ null）に載せる
    - 終端サマリーの marker（`<!-- dev-flow:... head=<sha> -->` / `<!-- pr-iterate:<status>:<n> head=<sha> -->`）を持つ最後の
      コメントを `prior_summary`（`{source, url, head_sha, head_mismatch}`、無ければ null）に載せる。`head_mismatch` は
      marker の head（その結論を出した head）が今の PR head と違うか、marker に head が無いとき true
@@ -124,7 +125,8 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 
    - `prior_devflow` が HOLD の dev-flow サマリーなら、終端サマリーは HOLD 理由の code ごとの回収状況を出し、
      未解消が残れば見出しを「🎉 LGTM」にしない（このレポートが PR の最後のコメント＝最新の結論になるため）。
-     null でもそのまま渡す
+     `final_test_red` は解消にしない。HOLD 時の head と終端 head が違えば、その間のテスト関連の変更（ファイルと `git diff` コマンド）と
+     最終 tree の全件テストの結果を 1 回だけ取って行の下に出し、人の確認範囲を絞る。null でもそのまま渡す
 
    - `prior_summary.head_mismatch` が true なら、workflow は review を始める前に「head `<sha>` で再 review 中。
      <古いサマリーの URL> の結論はこの head に当てはまらない」コメントを PR に足す。意味: その URL の LGTM / tier は今の

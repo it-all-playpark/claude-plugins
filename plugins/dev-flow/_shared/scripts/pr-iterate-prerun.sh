@@ -39,7 +39,8 @@
 #   worktree_status: created / reused / unwritable / error / skipped
 #   skip_worktree: 作成時に取り出せず skip-worktree を付けたパス（worktree-checkout.sh。full checkout できれば []）
 #   prior_devflow: PR コメントのうち `<!-- dev-flow:<tier>[ codes=<code>,...][ head=<sha>] -->` marker を持つ最後のもの
-#     {tier, codes, url}（codes は HOLD 理由の code。HOLD 以外は []）。marker を持つコメントが無ければ null
+#     {tier, codes, url, head_sha}（codes は HOLD 理由の code。HOLD 以外は []。head_sha は marker の head（小文字）、
+#     無ければ null）。marker を持つコメントが無ければ null
 #   prior_summary: PR コメントのうち終端サマリーの marker（`<!-- dev-flow:... -->` / `<!-- pr-iterate:<status>:<n>[ head=<sha>] -->`）を
 #     持つ最後のもの {source: "dev-flow"|"pr-iterate", url, head_sha, head_mismatch}。head_sha は marker の head（無ければ null）、
 #     head_mismatch は head_sha が今の PR head（headRefOid）と違うか、head_sha が null のとき true。終端サマリーが無ければ null
@@ -233,11 +234,12 @@ PR_HEAD_OID="$(printf '%s' "$VIEW_RAW" | jq -r '.headRefOid // "" | strings')"
 prior_devflow="$(printf '%s' "$VIEW_RAW" | jq -c '
     [(.comments // [])[]
      | . as $c
-     | ([(($c.body // "") | match("<!-- dev-flow:([A-Za-z_]+)(?: codes=([a-z_,]*))?(?: head=[0-9a-f]{40})? -->"; "g"))] | last) as $m
+     | ([(($c.body // "") | match("<!-- dev-flow:([A-Za-z_]+)(?: codes=([a-z_,]*))?(?: head=([0-9a-f]{40}))? -->"; "g"))] | last) as $m
      | select($m != null)
      | {tier: $m.captures[0].string,
         codes: (($m.captures[1].string // "") | split(",") | map(select(. != ""))),
-        url: ($c.url // null)}]
+        url: ($c.url // null),
+        head_sha: $m.captures[2].string}]
     | last')"
 # 最後の終端サマリー（dev-flow / pr-iterate の marker を持つ最後のコメント）の head と今の PR head の食い違い。
 # head の無い marker は、どの head に対する結論か分からないので食い違い扱い

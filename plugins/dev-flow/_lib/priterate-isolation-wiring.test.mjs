@@ -289,7 +289,7 @@ test('[isolation-wiring][standalone] caller:standalone は終端サマリーを�
 });
 
 test('[isolation-wiring][standalone] args.prior_devflow が HOLD なら投稿する終端サマリーに回収状況が載り、不正形は agent 起動前に throw する（issue #930）', async () => {
-  const prior = { tier: 'HOLD', codes: ['ac_human_pending'], url: 'https://github.com/acme/skills/pull/5#issuecomment-1' };
+  const prior = { tier: 'HOLD', codes: ['ac_human_pending'], url: 'https://github.com/acme/skills/pull/5#issuecomment-1', head_sha: null };
   const { ctx, calls } = makeSandbox({ isolationProbeResult: { written: true }, args: { ...standaloneArgs(), prior_devflow: prior } });
   const { result, error } = await runPrIterateCapture(src, ctx);
   assert.equal(error, null, `prior_devflow 付きの単体起動: ${error?.message}`);
@@ -300,7 +300,19 @@ test('[isolation-wiring][standalone] args.prior_devflow が HOLD なら投稿す
   assert.ok(post.prompt.includes(prior.url), '元の dev-flow サマリーへのリンクが無い');
   assert.ok(!post.prompt.includes('🎉 LGTM'), 'ac_human_pending が未解消なのに 🎉 LGTM 見出しになっている');
 
-  for (const bad of ['HOLD', { tier: 'HOLD', codes: 'x', url: null }, { tier: '', codes: [], url: null }, { tier: 'HOLD', codes: [], url: 1 }]) {
+  // 40 桁 hex の head_sha も受ける（issue #1180）
+  const withHead = makeSandbox({ isolationProbeResult: { written: true }, args: { ...standaloneArgs(), prior_devflow: { ...prior, head_sha: 'c'.repeat(40) } } });
+  const rHead = await runPrIterateCapture(src, withHead.ctx);
+  assert.equal(rHead.error, null, `head_sha 付きの prior_devflow: ${rHead.error?.message}`);
+
+  for (const bad of [
+    'HOLD', { tier: 'HOLD', codes: 'x', url: null, head_sha: null }, { tier: '', codes: [], url: null, head_sha: null }, { tier: 'HOLD', codes: [], url: 1, head_sha: null },
+    // head_sha は null か小文字 40 桁 hex の string だけ（欠落の旧形も受けない — issue #1180）
+    { tier: 'HOLD', codes: [], url: null },
+    { tier: 'HOLD', codes: [], url: null, head_sha: 'abc1234' },
+    { tier: 'HOLD', codes: [], url: null, head_sha: 'C'.repeat(40) },
+    { tier: 'HOLD', codes: [], url: null, head_sha: 1 },
+  ]) {
     const s = makeSandbox({ isolationProbeResult: { written: true }, args: { ...standaloneArgs(), prior_devflow: bad } });
     const r = await runPrIterateCapture(src, s.ctx);
     assert.ok(r.error != null && /args\.prior_devflow が不正形/.test(r.error.message), `不正な prior_devflow ${JSON.stringify(bad)} で throw していない: ${r.error?.message}`);

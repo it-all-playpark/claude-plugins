@@ -499,7 +499,7 @@ comment_json() {
     jq -n --arg body "$1" --arg url "$2" '{author: {login: "bot"}, body: $body, url: $url}'
 }
 
-@test "(5f) dev-flow marker を持つ最後のコメントから prior_devflow {tier, codes, url} を出し、gh pr view は 1 回だけ" {
+@test "(5f) dev-flow marker を持つ最後のコメントから prior_devflow {tier, codes, url, head_sha} を出し、gh pr view は 1 回だけ" {
     local hold_old hold_new iterate comments
     hold_old="$(comment_json $'## dev-flow\n<!-- gate_policy: llm-major-advisory -->\n<!-- dev-flow:HOLD codes=escalate -->' "https://github.com/acme/skills/pull/5#issuecomment-1")"
     # AC の引用で本文中に marker と同じ形の文字列があっても、末尾の marker を採る
@@ -511,7 +511,7 @@ comment_json() {
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
-    echo "$output" | jq -e '.prior_devflow == {tier: "HOLD", codes: ["iterate_non_lgtm", "ci_checks_failed"], url: "https://github.com/acme/skills/pull/5#issuecomment-2"}'
+    echo "$output" | jq -e '.prior_devflow == {tier: "HOLD", codes: ["iterate_non_lgtm", "ci_checks_failed"], url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: null}'
     [ "$(grep -c '^pr ' "$GH_STUB_LOG")" -eq 1 ]
     grep -qx "pr view 5 --json url,headRefName,baseRefName,headRefOid,comments" "$GH_STUB_LOG"
 }
@@ -525,7 +525,7 @@ comment_json() {
     cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.prior_devflow == {tier: "REVIEW", codes: [], url: "https://github.com/acme/skills/pull/5#issuecomment-2"}'
+    echo "$output" | jq -e '.prior_devflow == {tier: "REVIEW", codes: [], url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: null}'
 }
 
 @test "(5h) dev-flow marker を持つコメントが無ければ prior_devflow は null" {
@@ -536,12 +536,13 @@ comment_json() {
     echo "$output" | jq -e '.ok == true and has("prior_devflow") and .prior_devflow == null'
 }
 
-@test "(5h2) dev-flow marker に head が載っていても prior_devflow の tier / codes を読む" {
-    write_pr_fixture "$HEAD_SHA" "[$(comment_json "<!-- dev-flow:HOLD codes=escalate,ci_checks_failed head=${HEAD_SHA} -->" "https://github.com/acme/skills/pull/5#issuecomment-1")]"
+@test "(5h2) dev-flow marker の head を prior_devflow.head_sha に載せ、tier / codes も読む" {
+    local hold_head="0123456789abcdef0123456789abcdef01234567"
+    write_pr_fixture "$HEAD_SHA" "[$(comment_json "<!-- dev-flow:HOLD codes=escalate,final_test_red head=${hold_head} -->" "https://github.com/acme/skills/pull/5#issuecomment-1")]"
     cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.prior_devflow == {tier: "HOLD", codes: ["escalate", "ci_checks_failed"], url: "https://github.com/acme/skills/pull/5#issuecomment-1"}'
+    echo "$output" | jq -e --arg h "$hold_head" '.prior_devflow == {tier: "HOLD", codes: ["escalate", "final_test_red"], url: "https://github.com/acme/skills/pull/5#issuecomment-1", head_sha: $h}'
 }
 
 # ---- 最後の終端サマリーの head と今の PR head の食い違い（prior_summary。issue #1065） ----
