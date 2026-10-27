@@ -105,6 +105,9 @@ bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --uninstall 
   その例が起きた cwd（`example_cwds`。`examples` と同じ順）、発生ごとの `occurrences`（`ts`・`cwd`（home 相対）・`git_branch`（transcript の `gitBranch`。無ければ null））が付く
 - subagent の transcript と `isSidechain` の行、grep / cat 等の出力やファイル本文に拒否の文言が含まれていただけの行、
   依頼の文に書かれたコマンドやエラー文は数えない
+- `request` は `` `! <cmd>` `` か、依頼の文言（「通常のターミナルで」「手元で」等）を含む発言のコードブロックの最初のコマンド行から数える。
+  コードブロックが無いときのインラインコードは、依頼の文言と同じ文（`。`・`！`・`？`・改行で区切る）にあるものだけを数え、
+  別の文のインラインコード（「手元でもテストは通っています」と `` `Closes #740` `` のような報告文）は依頼として数えない
 - verify の「関係する commit」は、型の対象（ホスト・パスの一部・コマンド名）が差分に現れた commit か、commit message に書かれた commit。
   見るのは `configRepo.paths` と、発生の `cwd` が属する git repo（worktree は本体の repo にまとめる）の `.claude/settings.json`。
   発生した repo は履歴を読むだけで、cwd が存在しない・git repo でない発生はその突き合わせを飛ばす。
