@@ -102,7 +102,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   dev-flow は repo 固有の知識を持たない。テストの直前に `workspace-prebuild <WT>` が pnpm ワークスペースの成果物を作り直す
   （依存先の変更で古くなるため）
   - 各回の test の前に `pre-commit-hook <WT>` が対象 repo の pre-commit hook を PR phase の commit と同じ stage で回し、exit 非 0 は
-    その回を green にせず出力末尾を green-fix に渡す（hook 無し・結果不明は何も足さない。lint の入口は hook だけ）
+    その回を green にせず出力のログのパスだけ green-fix に渡す（hook 無し・結果不明は何も足さない）
   - red なら green-fix（同じ `dev-implementer` を sonnet で）を `GREEN_MAX` まで回す。その前に失敗を分類し、diff と無関係で base でも
     同じように落ちるテストは ENV 項目（advisory）として green 要件から外す（`_lib/base-failure-triage.mjs`）
   - empty-diff gate — working tree が base と同じ tree なら 1 回だけ差し戻し、Validate をやり直す
