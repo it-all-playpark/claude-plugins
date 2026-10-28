@@ -49,6 +49,7 @@ local-verify
 merge-tier-facts
 pr-iterate-prerun
 pr-push
+pre-commit-hook
 redgreen-verify
 run-tests
 security-review-codex-prep
@@ -98,6 +99,7 @@ target_for() {
         worktree-teardown) echo "_shared/scripts/worktree-teardown.sh" ;;
         workspace-prebuild) echo "_shared/scripts/workspace-prebuild.sh" ;;
         run-tests) echo "_shared/scripts/run-tests.sh" ;;
+        pre-commit-hook) echo "_shared/scripts/pre-commit-hook.sh" ;;
         pr-iterate-prerun) echo "_shared/scripts/pr-iterate-prerun.sh" ;;
         check-ci) echo "pr-iterate/scripts/check-ci.sh" ;;
         ci-wait) echo "pr-iterate/scripts/ci-wait.sh" ;;

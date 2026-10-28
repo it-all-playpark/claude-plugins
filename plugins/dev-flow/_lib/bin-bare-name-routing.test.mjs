@@ -49,6 +49,7 @@ const BARE = [
   'pr-push',
   'workspace-prebuild',
   'run-tests',
+  'pre-commit-hook',
   'pr-iterate-prerun',
   'local-verify',
   'conflict-autoresolve',
@@ -109,6 +110,7 @@ const DEV_FLOW_CALL_SITES = [
   ['security-scope', '\nsecurity-review-scope /tmp/wt origin/main --working-tree', {}],
   ['merge-tier-facts', '`merge-tier-facts --worktree /tmp/wt --base origin/main --pr-view-data ', {}],
   ['test#1', '\nrun-tests /tmp/wt', {}],
+  ['commit-hook#1', '\npre-commit-hook /tmp/wt', {}],
   ['pr#', '`pr-push /tmp/wt/.devflow-tmp/push-output.log`', {}],
   ['redgreen', "redgreen-verify /tmp/wt 't.test.mjs' 'src/x.ts'", { 'eval#1': PASS_EVAL_TEST_AC, redgreen: { results: [{ index: 0, red: true, green: true }] } }],
   ['cross-repo-artifacts', 'cross-repo-artifacts /tmp/wt ', {

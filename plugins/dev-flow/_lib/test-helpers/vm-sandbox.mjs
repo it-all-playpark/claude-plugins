@@ -382,6 +382,8 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
       return { status: 'DONE', task_id: `issue-${issue}`, files: [...STANDARD_FILES], summary: 's', concerns: [] };
     }
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
+    // Validate の各回の pre-commit hook（commit-hook#<iter>）。既定は hook の無い repo（何も実行せず成功扱い）
+    if (label.startsWith('commit-hook#')) return { hook: 'none', exit: null, tail: '', log: '' };
     // 実効 shape は realized diff の file 数だけで決まる（issue #676）。既定の 3 件 + AC 2 件 + type=fix →
     // 'standard'（Evaluate 1 pass・full route）。micro / complex に倒したい test は files を override する。
     if (label === 'danger-grep') {

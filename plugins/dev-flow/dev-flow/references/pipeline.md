@@ -96,12 +96,13 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 ## Validate
 
 - **判定**: test が green か。test の実行は exec-proxy `run-tests <WT> --base origin/<base>` の stdout の転写だけで、`tests/run-*.sh` を
-  全本実行し、全本 exit 0 のときだけ green（判定は exit code 由来）。run-tests は merge-base が解決できたときだけ `tests/run-*.sh` に
-  `DEVFLOW_CHANGED_FILES`（merge-base からの差分 — commit 済み・staged・未 stage — と untracked の WT 相対パスを 1 行 1 件・重複なしで
-  書いたファイルの絶対パス）と `DEVFLOW_BASE`（merge-base の sha）を渡す。未設定は「全件実行」の意味で、`--base` 無し・merge-base
-  解決失敗・git 失敗のとき（stderr 1 行の警告のみ、status / green は不変）は設定しない。テストの選択は repo 側のランナーが行い、
-  dev-flow は repo 固有の知識を持たない。テストの直前に `workspace-prebuild <WT>` が pnpm ワークスペースのビルド成果物を作り直す
-  （実装が依存先のソースを変えると成果物が古くなるため、テストのたびに呼ぶ）
+  全本実行し、全本 exit 0 のときだけ green。run-tests は merge-base が解決できたときだけ `tests/run-*.sh` に
+  `DEVFLOW_CHANGED_FILES`（merge-base からの差分と untracked の WT 相対パスを 1 行 1 件で書いたファイルの絶対パス）と `DEVFLOW_BASE`
+  （merge-base の sha）を渡す。未設定（`--base` 無し等）は全件実行。テストの選択は repo 側のランナーが行い、
+  dev-flow は repo 固有の知識を持たない。テストの直前に `workspace-prebuild <WT>` が pnpm ワークスペースの成果物を作り直す
+  （依存先の変更で古くなるため）
+  - 各回の test の前に `pre-commit-hook <WT>` が対象 repo の pre-commit hook を PR phase の commit と同じ stage で回し、exit 非 0 は
+    その回を green にせず出力のログのパスだけ green-fix に渡す（hook 無し・結果不明は何も足さない）
   - red なら green-fix（同じ `dev-implementer` を sonnet で）を `GREEN_MAX` まで回す。その前に失敗を分類し、diff と無関係で base でも
     同じように落ちるテストは ENV 項目（advisory）として green 要件から外す（`_lib/base-failure-triage.mjs`）
   - empty-diff gate — working tree が base と同じ tree なら 1 回だけ差し戻し、Validate をやり直す

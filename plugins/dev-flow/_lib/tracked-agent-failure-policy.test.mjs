@@ -248,6 +248,21 @@ const EXPECTED_DEV_FLOW = {
   'diff-hash-local-verify#2': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。実行treeのhashが取れなければnullとしFinal reconcileで最終treeでの再実行に倒す' },
   'reimpl-local-verify#1:serial:issue-1': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。local-verify差し戻しのdev-implementer失敗はnullとしてdropし再実行で判定する' },
   'test#local-verify-1': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'try/catchで合成redへ変換しgreen-fixループへ継続する既存のfail-safe経路（local-verify差し戻し後）' },
+  // Validate の各回の pre-commit hook（commit-hook#<iter>）。failOpenAgent 経由で、取れない応答は green 条件に何も足さない
+  'commit-hook#1': {
+    config: DF_B1,
+    policy: 'continue',
+    reason: 'failOpenAgent経由。hookの結果が取れなければgreen条件に足さずtestの結果だけで判定する（PR phaseのcommitが同じhookを通る）',
+    extra: async ({ calls }) => {
+      assert.ok(calls.some((c) => c.label === 'test#1'), 'commit-hook#1 throw 後も test#1 を実行すべき');
+      assert.ok(!calls.some((c) => c.label === 'green-fix#1'), 'commit-hook#1 throw だけで green-fix#1 を起動してはならない');
+    },
+  },
+  'commit-hook#2': { config: DF_GREEN_FIX, policy: 'continue', reason: 'failOpenAgent経由。green-fix後の回でhookの結果が取れなければgreen条件に足さず継続する' },
+  'commit-hook#retry-1': { config: DF_DIFF_GATE_RETRY, policy: 'continue', reason: 'failOpenAgent経由。empty-diff差し戻し後の回でhookの結果が取れなければgreen条件に足さず継続する' },
+  'commit-hook#post-eval-1': { config: DF_COMPLEX_FIX, policy: 'continue', reason: 'failOpenAgent経由。Evaluate差し戻し後の回でhookの結果が取れなければgreen条件に足さず継続する' },
+  'commit-hook#post-eval-2': { config: DF_POST_EVAL_GREEN_FIX, policy: 'continue', reason: 'failOpenAgent経由。post-evalの2周目でhookの結果が取れなければgreen条件に足さず継続する' },
+  'commit-hook#local-verify-1': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。local-verify差し戻し後の回でhookの結果が取れなければgreen条件に足さず継続する' },
   'local-verify-start#2': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。差し戻し後のローカル実行の起動結果が無ければfail-openでCIのcheck待ちに回す' },
   'local-verify-wait#2.1': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。差し戻し後のローカル実行の結果が無ければfail-openでCIのcheck待ちに回す' },
   'local-verify-stop#2': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。停止確認の失敗はlogのみでDBの削除はlocal-verifyのtrapに委ねる（差し戻し後）' },

@@ -70,6 +70,7 @@ Claude Code runtime によって frontmatter レベルで適用されるため�
 | フェーズ | 操作 | 返す schema |
 |---------|------|------------|
 | Validate | テストスイート実行・green 判定 | `{tests, green, summary}` |
+| Validate | 対象 repo の pre-commit hook の実行（commit-hook#i — `pre-commit-hook <WT>` の stdout を exit code に関わらず verbatim で返す） | `PRE_COMMIT_HOOK_SCHEMA` |
 | Validate | ci の AC のローカル実行（`local-verify start` / `wait` / `stop` — 常駐化は local-verify 自身が行う。& や nohup を足さない） | `LOCALVERIFY` / `LOCALVERIFY_STOP` |
 | Evaluate | redgreen 検証（`redgreen-verify <WT> <T1> <I1> [<T2> <I2> …]` — 対象 AC の全ペアを 1 spawn で判定。出力 `{results:[{index,…}]}` を verbatim で返す） | `{results:[…]}` |
 | Final reconcile | reconcile-sync（worktree を PR 最終 HEAD へ同期）・test 再実行・観測型 AC の redgreen 検証（`redgreen-verify --base origin/<base> <WT> <T1> <I1> …`。出力は Evaluate と同じく verbatim） | `{...}` / `{tests, green, summary}` / `{results:[…]}` |
