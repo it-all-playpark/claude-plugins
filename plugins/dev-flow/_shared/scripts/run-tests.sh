@@ -38,12 +38,16 @@
 # status は全 script の exit code だけで決まる: 起動失敗（exit 126 / 127）が 1 本でもあれば "error"、
 # それ以外で exit 非 0 が 1 本でもあれば "failed"、全本 0（0 本を含む）なら "passed"。
 # 例外: フォールバックの `pnpm test` が、テストスクリプトを起動する前に pnpm 自身の失敗で非 0 になったときは
-# 起動失敗とする — テストは 1 件も走っておらず、red と報告すると本物の失敗と区別できない。次のどちらか:
+# 起動失敗とする — テストは 1 件も走っておらず、red と報告すると本物の失敗と区別できない。次のいずれか:
 #   - テスト前の依存 install（pnpm の verifyDepsBeforeRun）の失敗（出力に `Command failed with exit code N: '<pnpm>' install`）
 #   - pnpm のエラー見出し行（` ERROR  <msg>` / `ERR_PNPM_<CODE>`）があり、スクリプトを起動した痕跡
 #     （`> <name>@<version> test` の見出し行・`ELIFECYCLE`・テストランナーの `FAIL` / `not ok` 行）が 1 つも無い
 #   痕跡の有無だけでは判定しない — `--silent` 等で見出し行が出ない設定の本物の red を error に倒さないよう、
 #   pnpm 自身のエラー見出し行があるときに限る。
+#   - test スクリプトのコマンドがシェルに見つからない行（`sh: line 1: jest: command not found` /
+#     `sh: 1: jest: not found`）があり、テストランナーの結果行（`FAIL` / `not ok`）が 1 つも無い（依存が入っていない。
+#     シェルの exit 127 は pnpm が `ELIFECYCLE` 付きの exit 1 にくるむので exit code では拾えない）。
+#     結果行が 1 つでもあれば、テストの中で外部コマンドが見つからなかった本物の red として扱う。
 # tests / green は workflow の GREEN schema の必須キーで、status から機械的に写す（agent に組み立てさせない）:
 #   passed → tests "passed" green true / failed → "failed" false / error → "error" false /
 #   実行対象 0 本 → status "passed"・tests "no_tests"・green false（何も走っていないので green を主張しない）
@@ -249,6 +253,14 @@ pnpm_failed_before_script() {
         && ! LC_ALL=C grep -qE '^> |ELIFECYCLE|^(not ok |[[:space:]]*FAIL[[:space:]])' <<< "$plain"
 }
 
+# test スクリプトのコマンド自体がシェルに見つからなかったか（$1 = ログ）。判定規則は冒頭コメントの status 例外
+pnpm_script_command_not_found() {
+    local plain
+    plain=$(LC_ALL=C sed $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$1")
+    LC_ALL=C grep -qE '^sh: .*: (command )?not found[[:space:]]*$' <<< "$plain" \
+        && ! LC_ALL=C grep -qE '^(not ok |[[:space:]]*FAIL[[:space:]])' <<< "$plain"
+}
+
 to_rel() {
     local p="$1"
     p="${p#"$WT"/}"
@@ -289,6 +301,8 @@ for i in "${!TARGETS[@]}"; do
             | LC_ALL=C grep -qE "Command failed with exit code [0-9]+: '[^']*/pnpm[^'/]*' install[[:space:]]*$"; then
         launch=true
     elif [[ $rc -ne 0 && "${COMMANDS[$i]}" == "pnpm test" ]] && pnpm_failed_before_script "$log"; then
+        launch=true
+    elif [[ $rc -ne 0 && "${COMMANDS[$i]}" == "pnpm test" ]] && pnpm_script_command_not_found "$log"; then
         launch=true
     fi
     [[ "$launch" == true ]] && LAUNCH_FAILED_ANY=true
