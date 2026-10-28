@@ -411,6 +411,9 @@ frontmatter_value() {
     step1="$(awk '/^1\. / { f = 1 } /^2\. / { exit } f' <<<"$light")"
     [[ "$step1" == *'`## 変更対象パス` の各パスについて'* ]]
     [[ "$step1" == *'`gh issue list --state closed --search "\"<path>\" in:body"` で close 済みの issue を引き'* ]]
+    # パスはコマンド文字列に置換せず、ファイル経由で 1 つの引数として渡す（パス中の $(…) をシェルに評価させない）
+    [[ "$step1" == *'`<path>` をコマンド文字列に書き込まない'* ]]
+    [[ "$step1" == *'`--search "\"$(cat /tmp/git-issue-path.txt)\" in:body"` の形で 1 つの引数として渡す'* ]]
     [[ "$step1" == *"finding と同じ仕組み（同じ判定・同じ prompt の組み立て・"*"同じガード）を直した issue が直近 30 日に 2 件以上あれば"*"重い経路に切り替える"* ]]
     [[ "$step1" == *"パスが重なるだけでは"*"切り替えない"* ]]
 }

@@ -307,7 +307,9 @@ Phase 4 の devil's-advocate ループを行わない。複数の finding を 1 
    `## 制約・取らないこと`・`## 変更対象パス` を埋める。本文の構成は重い経路と同じ実装 issue テンプレート
    （`references/issue-template.md`）。続けて `## 変更対象パス` の各パスについて
    `gh issue list --state closed --search "\"<path>\" in:body"` で close 済みの issue を引き（close 日と本文は
-   `--json number,title,closedAt,body` を足して読む）、そのうち finding と同じ仕組み（同じ判定・同じ prompt の組み立て・
+   `--json number,title,closedAt,body` を足して読む。`<path>` をコマンド文字列に書き込まない。パスは finding 由来で
+   `$(…)` や引用符を含みうるので、文字列に置換するとシェルが評価する。パスは Write ツールで `/tmp/git-issue-path.txt` に書き、
+   `--search "\"$(cat /tmp/git-issue-path.txt)\" in:body"` の形で 1 つの引数として渡す。置換の結果はシェルに再評価されない）、そのうち finding と同じ仕組み（同じ判定・同じ prompt の組み立て・
    同じガード）を直した issue が直近 30 日に 2 件以上あれば、その finding は重い経路に切り替える。パスが重なるだけでは
    切り替えない（よく触るファイルではほぼ全件の close 済み issue の本文に出るので、パスだけで数えると全 finding が重い経路になる）
 2. 各本文を `references/devils-advocate-checklist.md` の Blocking Categories に 1 回だけ照らし、当たった項目を直す
