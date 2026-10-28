@@ -38,18 +38,12 @@
 # status は全 script の exit code だけで決まる: 起動失敗（exit 126 / 127）が 1 本でもあれば "error"、
 # それ以外で exit 非 0 が 1 本でもあれば "failed"、全本 0（0 本を含む）なら "passed"。
 # 例外: フォールバックの `pnpm test` が、テストスクリプトを起動する前に pnpm 自身の失敗で非 0 になったときは
-# 起動失敗とする — テストは 1 件も走っておらず、red と報告すると本物の失敗と区別できない。次のいずれか:
+# 起動失敗とする — テストは 1 件も走っておらず、red と報告すると本物の失敗と区別できない。次のどちらか:
 #   - テスト前の依存 install（pnpm の verifyDepsBeforeRun）の失敗（出力に `Command failed with exit code N: '<pnpm>' install`）
 #   - pnpm のエラー見出し行（` ERROR  <msg>` / `ERR_PNPM_<CODE>`）があり、スクリプトを起動した痕跡
 #     （`> <name>@<version> test` の見出し行・`ELIFECYCLE`・テストランナーの `FAIL` / `not ok` 行）が 1 つも無い
 #   痕跡の有無だけでは判定しない — `--silent` 等で見出し行が出ない設定の本物の red を error に倒さないよう、
 #   pnpm 自身のエラー見出し行があるときに限る。
-#   - `scripts.test` の先頭のコマンドが、`pnpm test` の実行前に `<WT>/node_modules/.bin` を先頭に足した PATH
-#     （cwd は WT）で解決できない（依存が入っていない。シェルの exit 127 は pnpm が `ELIFECYCLE` 付きの exit 1 に
-#     くるむので exit code では拾えない）。ログの文字列（`command not found` 行・`FAIL` 行）では判定しない —
-#     ログはテストファイル（PR が書ける）も出力できるので、本物の red を起動失敗に見せかけられる。ランナーが
-#     解決できなければテストファイルは 1 本も動かない。実行前に解決するのは、実行中に PATH 上の実体を消して
-#     判定を変えさせないため。先頭が代入（`NODE_ENV=test jest`）等で取り出せない形は判定せず red のまま。
 # tests / green は workflow の GREEN schema の必須キーで、status から機械的に写す（agent に組み立てさせない）:
 #   passed → tests "passed" green true / failed → "failed" false / error → "error" false /
 #   実行対象 0 本 → status "passed"・tests "no_tests"・green false（何も走っていないので green を主張しない）
@@ -255,16 +249,6 @@ pnpm_failed_before_script() {
         && ! LC_ALL=C grep -qE '^> |ELIFECYCLE|^(not ok |[[:space:]]*FAIL[[:space:]])' <<< "$plain"
 }
 
-# test スクリプトの先頭のコマンドが node_modules/.bin を先頭に足した PATH で解決できないか。
-# 判定規則は冒頭コメントの status 例外。先頭のコマンドが取り出せない形は解決できる側（red）に倒す
-pnpm_test_runner_missing() {
-    local script runner
-    script=$(jq -r '.scripts.test' "$WT/package.json" 2>/dev/null) || return 1
-    read -r runner _ <<< "$script"
-    [[ "$runner" =~ ^[A-Za-z0-9._@/+-]+$ ]] || return 1
-    ! (cd "$WT" && PATH="$WT/node_modules/.bin:$PATH" command -v "$runner" >/dev/null 2>&1)
-}
-
 to_rel() {
     local p="$1"
     p="${p#"$WT"/}"
@@ -293,8 +277,6 @@ for i in "${!TARGETS[@]}"; do
         "$target" > "$log" 2>&1 < /dev/null
         rc=$?
     else
-        runner_missing=false
-        [[ "${COMMANDS[$i]}" == "pnpm test" ]] && pnpm_test_runner_missing && runner_missing=true
         read -r -a cmd <<< "${COMMANDS[$i]}"
         "${cmd[@]}" > "$log" 2>&1 < /dev/null
         rc=$?
@@ -307,8 +289,6 @@ for i in "${!TARGETS[@]}"; do
             | LC_ALL=C grep -qE "Command failed with exit code [0-9]+: '[^']*/pnpm[^'/]*' install[[:space:]]*$"; then
         launch=true
     elif [[ $rc -ne 0 && "${COMMANDS[$i]}" == "pnpm test" ]] && pnpm_failed_before_script "$log"; then
-        launch=true
-    elif [[ $rc -ne 0 && "${COMMANDS[$i]}" == "pnpm test" && "$runner_missing" == true ]]; then
         launch=true
     fi
     [[ "$launch" == true ]] && LAUNCH_FAILED_ANY=true
