@@ -305,17 +305,29 @@ Phase 4 の devil's-advocate ループを行わない。複数の finding を 1 
 
 1. finding ごとに対象コード（と既存テスト）を読み、症状・原因・直し方を確かめたうえで、AC・
    `## 制約・取らないこと`・`## 変更対象パス` を埋める。本文の構成は重い経路と同じ実装 issue テンプレート
-   （`references/issue-template.md`）
+   （`references/issue-template.md`）。続けて `## 変更対象パス` の各パスについて
+   `gh issue list --state closed --search "\"<path>\" in:body"` で close 済みの issue を引き（close 日と本文は
+   `--json number,title,closedAt,body` を足して読む。`<path>` をコマンド文字列に書き込まない。パスは finding 由来で
+   `$(…)` や引用符を含みうるので、文字列に置換するとシェルが評価する。パスは Write ツールで `/tmp/git-issue-path.txt` に書き、
+   `--search "\"$(cat /tmp/git-issue-path.txt)\" in:body"` の形で 1 つの引数として渡す。置換の結果はシェルに再評価されない）、そのうち finding と同じ仕組み（同じ判定・同じ prompt の組み立て・
+   同じガード）を直した issue が直近 30 日に 2 件以上あれば、その finding は重い経路に切り替える。パスが重なるだけでは
+   切り替えない（よく触るファイルではほぼ全件の close 済み issue の本文に出るので、パスだけで数えると全 finding が重い経路になる）
 2. 各本文を `references/devils-advocate-checklist.md` の Blocking Categories に 1 回だけ照らし、当たった項目を直す
-   （ループはしない）
+   （ループはしない）。ただし「直し方が症状の条件の分岐・ガード・入力の追加だけ」の項目に当たった finding は、その場で
+   直さずに重い経路に切り替える（他の Blocking 項目はこれまでどおりその場で直す）
 3. Phase 5 と同じく finding ごとに本文ファイルを作り（`/tmp/git-issue-body-1.md`, `-body-2.md` …）、
    本文ファイルごとに AC Lint Self-Check（`ac-lint`）を通す
 4. 本文ファイルごとに Phase 6 の `create_issue.py`（`--kind agent`、`--blocked-by` なし）で起票する。
    ゲート（ac-lint・4000 字・変更対象パス・`executor: human` の検出・AC の人手判定（dev-flow と同じ `ac-actor.mjs` の判定））は重い経路と同じ
 5. Phase 7 は起票した全 issue の番号をまとめて `dev-flow-ready-set` に 1 回だけ渡す（finding ごとに実行しない）
 
-途中で分割・issue 間の依存・human タスクが必要と分かったら、その finding は軽い経路をやめて重い経路
-（Phase 1 から）に切り替える。切り替えた finding と理由は Output Contract の `## Plan Quality Gate` に書く。
+途中で分割・issue 間の依存・human タスクが必要と分かったら、手順 1 で同じ仕組みを直した close 済みの issue が
+直近 30 日に 2 件以上見つかったら、または手順 2 で「直し方が症状の条件の分岐・ガード・入力の追加だけ」の項目に
+当たったら、その finding は軽い経路をやめて重い経路（Phase 1 から）に切り替える。切り替えた finding は、入力の
+症状・原因・直し方を Phase 1 の入力にして、人に質問せずに進む（Preconditions の follow-up 質問はせず、足りない制約は
+入力と対象コードから決める。dev-flow-health は無人の `claude -p` から呼ぶので、質問を待つと止まる）。重い経路では、
+同じ型の別の症状まで消える直し方（削除・統合・一般化を含む）を設計してから起票する。切り替えた finding と理由は
+Output Contract の `## Plan Quality Gate` に書く。
 
 ## Output Contract
 
