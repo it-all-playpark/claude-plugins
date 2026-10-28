@@ -45,7 +45,11 @@
 #   痕跡の有無だけでは判定しない — `--silent` 等で見出し行が出ない設定の本物の red を error に倒さないよう、
 #   pnpm 自身のエラー見出し行があるときに限る。
 #   - `scripts.test` の先頭のコマンドが、`pnpm test` の実行前に WT から `/` までの全祖先の `node_modules/.bin` を
-#     先頭に足した PATH（cwd は WT）で解決できない（依存が入っていない。pnpm が足す workspace ルート等の
+#     先頭に足した PATH（cwd は WT）で解決できず、かつ pnpm が実行前に依存を install しない（`pnpm config list --json`
+#     の verifyDepsBeforeRun が false / warn / error / prompt で、設定を書き換えうる pnpmfile（WT と祖先の
+#     `.pnpmfile.*`・pnpmfile / globalPnpmfile 設定）と configDependencies が無い）。既定値（pnpm 12 では install）・
+#     不明値・設定が読めないときは install しうるとして red のまま — 実行前に無かったランナーを pnpm が入れて
+#     テストを走らせうる（依存が入っていない。pnpm が足す workspace ルート等の
 #     `node_modules/.bin` を含む上位集合にして、テストが走りうる環境を「無い」と判定しない。シェルの exit 127 は
 #     pnpm が `ELIFECYCLE` 付きの exit 1 にくるむので exit code では拾えない）。ログの文字列（`command not found` 行・`FAIL` 行）では判定しない —
 #     ログはテストファイル（PR が書ける）も出力できるので、本物の red を起動失敗に見せかけられる。ランナーが
@@ -274,7 +278,28 @@ pnpm_test_runner_missing() {
             dir=$(dirname "$dir")
         done
     done
-    ! (cd "$WT" && PATH="$bins$PATH" command -v "$runner" >/dev/null 2>&1)
+    (cd "$WT" && PATH="$bins$PATH" command -v "$runner" >/dev/null 2>&1) && return 1
+    pnpm_skips_install_before_run
+}
+
+# pnpm test が実行前に依存を install しないことを pnpm 自身の設定解決で確かめられるか。
+# install しうる（既定値・install・不明値・pnpmfile / configDependencies が設定を書き換えうる・設定が読めない）なら
+# 偽 — 実行前に無かったランナーを pnpm が入れてテストを走らせうるので、無いと判定しない。
+pnpm_skips_install_before_run() {
+    local dir config
+    for dir in "$WT" "$WT_PHYS"; do
+        while :; do
+            compgen -G "${dir%/}/.pnpmfile.*" >/dev/null && return 1
+            [[ "$dir" == / || "$dir" == . ]] && break
+            dir=$(dirname "$dir")
+        done
+    done
+    config=$(cd "$WT" && pnpm config list --json < /dev/null 2>/dev/null) || return 1
+    jq -e '
+        (if has("verifyDepsBeforeRun") then .verifyDepsBeforeRun else .["verify-deps-before-run"] end | tostring) as $v
+        | ($v == "false" or $v == "warn" or $v == "error" or $v == "prompt")
+          and ([.pnpmfile, .globalPnpmfile, .["global-pnpmfile"], .configDependencies, .["config-dependencies"]]
+               | all(. == null))' <<< "$config" >/dev/null 2>&1
 }
 
 to_rel() {

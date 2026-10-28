@@ -238,16 +238,42 @@ EOF
     echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
 }
 
-@test "run-*.sh 無し: pnpm test のテストランナーが node_modules/.bin にも PATH にも無ければ起動失敗として error（failed にしない）" {
+# $1 = `pnpm config list --json` が返す JSON。それ以外の呼び出し（pnpm test）は jest が無い red の出力で exit 1
+make_pnpm_config_stub() {
+    printf '#!/usr/bin/env bash\nif [[ "$1" == config ]]; then echo %q; exit 0; fi\necho\necho "> x@1.0.0 test /wt"\necho "> jest"\necho\necho "sh: line 1: jest: command not found"\necho " ELIFECYCLE  Test failed. See above for more details."\nexit 1\n' "$1" > "$STUB_DIR/pnpm"
+    chmod +x "$STUB_DIR/pnpm"
+}
+
+@test "run-*.sh 無し: pnpm test のテストランナーが node_modules/.bin にも PATH にも無く、pnpm が実行前に install しなければ起動失敗として error（failed にしない）" {
     echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
     : > "$WT/pnpm-lock.yaml"
-    printf '#!/usr/bin/env bash\necho\necho "> x@1.0.0 test /wt"\necho "> jest"\necho\necho "sh: line 1: jest: command not found"\necho " ELIFECYCLE  Test failed. See above for more details."\nexit 1\n' > "$STUB_DIR/pnpm"
-    chmod +x "$STUB_DIR/pnpm"
+    make_pnpm_config_stub '{"verifyDepsBeforeRun":false}'
     export PATH="$STUB_DIR:$PATH"
     run_tests
     echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false'
     echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: true}] and .failed_files == []'
     echo "$JSON" | jq -e '.summary | contains("launch failed: pnpm test")'
+}
+
+@test "run-*.sh 無し: テストランナーが実行前に無くても、pnpm が実行前に install しうるなら red のまま" {
+    echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
+    : > "$WT/pnpm-lock.yaml"
+    for config in '{}' '{"verifyDepsBeforeRun":"install"}' '{"verifyDepsBeforeRun":"warn","pnpmfile":"hooks.cjs"}' \
+        '{"verifyDepsBeforeRun":"warn","configDependencies":{"a":"1.0.0"}}' 'not-json'; do
+        make_pnpm_config_stub "$config"
+        PATH="$STUB_DIR:$PATH" run_tests
+        echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
+    done
+}
+
+@test "run-*.sh 無し: テストランナーが実行前に無くても、WT の祖先に .pnpmfile があれば red のまま" {
+    echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
+    : > "$WT/pnpm-lock.yaml"
+    : > "$TMP_DIR/.pnpmfile.cjs"
+    make_pnpm_config_stub '{"verifyDepsBeforeRun":false}'
+    export PATH="$STUB_DIR:$PATH"
+    run_tests
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
 }
 
 @test "run-*.sh 無し: テストランナーが在れば command not found 行と FAIL 行があっても red のまま" {
