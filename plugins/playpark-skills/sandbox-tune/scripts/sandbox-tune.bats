@@ -507,6 +507,9 @@ deny_at() {
   run bash "$SCRIPT" run --projects-dir "$P" --now "$NOW"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -c '[.types, .remaining, .resolved, .recurring]')" = '[5,4,1,2]' ]
+  # 数えた型は集計 JSON の型に recurring: true が付く（daily.sh の新しい再発はこれを読む）
+  [ "$(jq -c '[.types[] | select(.recurring) | .id] | sort' "$WORK/claudedocs/sandbox-tune-2026-10-01.json")" \
+    = '["sandbox:network:after.example.test","sandbox:network:edge.example.test"]' ]
 }
 
 @test "verify: 設定の intended に id か kind で一致する型は intended にし、remaining・recurring から外してレポートの別の節に出す" {

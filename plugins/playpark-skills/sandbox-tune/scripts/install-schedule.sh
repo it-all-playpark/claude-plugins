@@ -7,7 +7,7 @@
 #     plugin update で旧版のパスが消えても止まらず、checkout の pull に追随する）。
 #   - launchd は `~` を展開しないので、--config は登録時に絶対パスにして plist に書く。
 # launchd の PATH は最小なので、登録時の PATH を EnvironmentVariables に焼き込む
-# （jq / git を daily.sh・sandbox-tune.sh から解決するため）。
+# （jq / git / claude を daily.sh・sandbox-tune.sh から解決するため）。
 #
 # Usage:
 #   install-schedule.sh --print --repo DIR --config FILE     # plist を stdout に出力（登録しない・CI/テスト用）

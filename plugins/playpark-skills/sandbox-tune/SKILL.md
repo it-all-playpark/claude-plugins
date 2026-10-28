@@ -4,11 +4,12 @@ description: >-
   Aggregates sandbox denials, permission denials, "please run this in your terminal" requests, and host-exec
   (out-of-sandbox) runs from Claude Code transcripts by type, checks them against the settings repo's git log (resolved / remaining),
   and proposes settings / wrapper / hook fixes with a safety review. Writes a local Markdown report; with --issue, hands
-  human-confirmed drafts to dev-flow:git-issue for filing.
+  human-confirmed drafts to dev-flow:git-issue for filing. Reviews the issue drafts the daily job left and files only confirmed ones.
   Use when: (1) user asks why the agent keeps asking them to run commands, or which sandbox denials still recur,
   (2) user wants settings.json / excludedCommands / allowUnixSockets fix candidates backed by evidence,
   (3) user asks whether host-exec is being used for things settings should fix,
-  (4) keywords: sandbox-tune, sandbox 拒否, Operation not permitted, EPERM, 人間に実行依頼, 通常のターミナルで, settings 修正, permission 拒否, host-exec.
+  (4) user asks to review the daily sandbox-tune drafts (日次の下書き),
+  (5) keywords: sandbox-tune, sandbox 拒否, Operation not permitted, EPERM, 人間に実行依頼, 通常のターミナルで, settings 修正, permission 拒否, host-exec.
   Accepts args: [--days N] [--no-verify] [--issue] [--allow-public]
 ---
 
@@ -18,7 +19,7 @@ transcript（`~/.claude/projects/<project>/<session>.jsonl`）から、繰り返
 直すべきものだけを根拠付きで出す。`/fewer-permission-prompts` が扱う read-only の allow rule は対象外。
 
 集計（collect）・突き合わせ（verify）・レポートはスクリプトが決定論で行う。あなたの仕事は remaining の型の原因・修正案・安全性の判断と、
-`--issue` のときの下書きと確認。レポートはローカルに書くだけで、外部には何も送らない。
+`--issue` のときの下書きと確認、日次ジョブが残した下書きの確認。レポートはローカルに書くだけで、外部には何も送らない（日次ジョブの判断だけは、新しい再発の型と判断基準を `claude -p` に渡す）。
 
 ## 設定 (`<repo>/sandbox-tune.json`)
 
@@ -66,17 +67,34 @@ ST config                      # 検証済みの設定（criteriaFiles の絶対
 - `run` の最終行は要約 JSON（`report`・`analysis`・`verified`・`types` と status ごとの型の数 `remaining`・`stale_branch`・`resolved`・`intended`、`recurring`）。
   `recurring` は今も再発している remaining の型の数で、status が `remaining`・`count` が 2 以上・`last_seen` が期間終端（`.period.until`）から
   7 日以内（ちょうど 7 日前を含む）の型を数える。閾値は `sandbox-tune.sh` の `RECURRING_MIN_COUNT` / `RECURRING_WITHIN_DAYS`。
-  `--no-verify` の run では status が無いので `null`
+  数えた型には集計結果の `.json` で `recurring: true` が付く。`--no-verify` の run では status が無いので `null`（型にも付かない）
 - 期間は既定 30 日。ユーザーが `--days N` を渡したらそのまま渡す
 
 ### 日次実行（任意・macOS）
 
 既定では何も登録しない。ユーザーが日次の集計を望んだときだけ、`install-schedule.sh` を手で 1 回実行して
 launchd に登録する。登録すると毎日 06:30 に `scripts/daily.sh` が `run --config <設定> --out ~/.claude/logs/sandbox-tune`
-を走らせ（LLM は呼ばない。`draft` / `handoff` は含まない）、実行ごとに `~/.claude/logs/sandbox-tune/runs.jsonl` へ 1 行追記する。
+を走らせ、新しい再発を issue の下書きまでにし、実行ごとに `~/.claude/logs/sandbox-tune/runs.jsonl` へ 1 行追記する。
 
-- 成功: `run` の要約 JSON（`report`・`analysis`・`verified`・`types`・`remaining`・`stale_branch`・`resolved`・`intended`・`recurring`）に `ts`（ISO 8601 UTC）を足した行
+- 成功: `run` の要約 JSON（`report`・`analysis`・`verified`・`types`・`remaining`・`stale_branch`・`resolved`・`intended`・`recurring`）に
+  `ts`（ISO 8601 UTC）と `new_recurring`（新しい再発の数）・`drafts`（作った下書きの数）・`drafts_root`・`draft_error`（下書き段階の失敗の理由。無ければ null）を足した行
 - 失敗: `{ts, exit, error}`（`exit` は `run` の終了コード、`error` は stderr の末尾）
+
+下書き段階（終了コードは `run` のまま。起票はしない — `handoff` / `git-issue` は呼ばない）:
+
+- verify した run の recurring の型のうち、判断済みの記録 `~/.claude/logs/sandbox-tune/triaged.json`（型の id の配列）に無いものが新しい再発。
+  `triaged.json` が無い初回は今の recurring を判断済みとして記録するだけ。resolved になった型は記録から外れる
+- 新しい再発があり、設定に `issue.repo` があるときだけ、`claude -p` を**ツールなし**（`--tools ""` `--safe-mode` `--strict-mcp-config`
+  `--disable-slash-commands`。skill 経由で起動しない）で 1 回起動する。代表例は transcript 由来で外部の文字列（指示文を含みうる）を含み、
+  ツールがあれば代表例経由の指示でファイルを読ませて伏せ字を通らない出力に残せるため。入力は daily.sh が決定論で用意して stdin で渡す:
+  新しい再発の型（analysis JSON の該当型）・`criteriaFiles` の本文・判断基準（`scripts/criteria.md`）。
+  settings や git log は見ずに判断するので、下書きの原因・修正案は人が確かめる前提で読む
+- 置き場は設定ファイルのディレクトリの `claudedocs/sandbox-tune-drafts/<実行時刻>/`。claude の判断 `triage.json`
+  （`{candidates, skipped}`。`skipped` は `{id, class, reason}` で、class は `scripts/criteria.md` の分類）と、`candidates` を
+  `draft --issue` にかけた下書き（`sandbox-tune-issue-<n>.md` と `.meta.json`）を書く。置き場が git に無視されていると
+  確かめられない（`git check-ignore` が 0 で終わらない・git repo でない）ときは claude を呼ばず何も書かない
+- `candidates` か `skipped` に挙がった型だけが判断済みになる。挙がらなかった型と、下書き段階が失敗した（claude の失敗・
+  出力の誤り・draft の失敗）run の新しい再発は、翌日の run で再び渡される
 
 ```bash
 bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --print --repo <skills checkout> --config <sandbox-tune.json>    # plist を確認（登録しない）
@@ -86,7 +104,21 @@ bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --uninstall 
 
 - `--repo` は skills repo の git checkout。plist は checkout 内の `daily.sh` を指す（版付きの plugin cache パスに固定しない）
 - `--config` は `configRepo` を書いた設定。launchd は `~` を展開しないので、登録時に絶対パスにして plist に書く
-- launchd の PATH は最小なので、登録時の PATH を plist に焼き込む（jq / git の解決用）。PATH が変わったら登録し直す
+- launchd の PATH は最小なので、登録時の PATH を plist に焼き込む（jq / git / claude の解決用）。PATH が変わったら登録し直す
+
+### 日次の下書きを処理する
+
+ユーザーが日次の下書きの確認を頼んだとき、または `/sandbox-tune` を実行したときに置き場（`runs.jsonl` の最終行の
+`drafts_root`）に下書きが残っていれば、そのことを伝えてから次を行う。日次の下書きは人の確認を経ていないので、確認なしに起票しない。
+
+1. 置き場の `<実行時刻>/` ごとに、下書き（`sandbox-tune-issue-<n>.md`）の本文と、`triage.json` の `skipped`（型 / class / reason）を
+   そのままユーザーに示す。伏せ字は形での判定なので、秘密が残っていないかもユーザーに見てもらう
+2. 下書きごとに、起票するか見送るかをユーザーに確認する（AskUserQuestion）。確認なしに次へ進まない。
+   直したいときは `triage.json` の候補を直して `draft --issue`（`--out` にその `<実行時刻>/`）からやり直し、表示した下書きで確認を取り直す
+3. 起票する下書きだけを、`.meta.json` の `sha256` を digest にして `ST handoff <下書き> --digest <sha256> [--allow-public]` に通す
+   （終了コードの扱いは「issue 化」の 4 と同じ。0 以外なら 4 に進まない）
+4. handoff が出した JSON で `dev-flow:git-issue` を呼ぶ（「issue 化」の 5 と同じ）
+5. その `<実行時刻>/` の下書きをすべて起票か見送りにしたら、ディレクトリを `rip` で消す（処理済みの下書きを残さない。`rm` は使わない）
 
 ### 集計の決まり（スクリプトが守っていること）
 
@@ -133,29 +165,14 @@ bash ${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/install-schedule.sh --uninstall 
    - `stale_branch` 節の型には原因・修正案を出さない。「修正前の branch での発生」として型と件数を一覧に留める
    - `intended` 節の型にも原因・修正案を出さない。ただし同じ型が多くの session で繰り返すなら、エージェントが拒否を避ける手順
      （RULES 等）を知らない兆候として件数を添えて伝える
-3. 型ごとに次の 3 つを出す
-   - **原因**: 何が何を拒否したか（sandbox の書き込み・socket・ネットワーク、permission rule、hook、classifier）。代表例の文から言い切れることだけ書く
-   - **修正案**: settings のキー（`sandbox.filesystem.allowWrite` / `sandbox.network.allowUnixSockets` / `sandbox.excludedCommands` / `permissions.allow` 等）、
-     wrapper、hook、手順の変更のいずれか。設定 repo のどのファイルのどこを変えるかまで書く
-   - **安全性の評価**: 下の基準それぞれに照らして可否を書く。基準に反する修正案は出さず、手順の変更（作業場所を変える等）を代わりに出す
-4. `host_exec:ran:*` の型は、承認が形骸化しないよう次のどれかに振り分ける（理由は代表例の reason と `after_block` から言える範囲で書く）
-   - **組み込み保護**: 起動元 repo の `.git`・`~/.claude/projects` 等、設定で外せないもの。一回限りなら host-exec のままでよい
-   - **settings で直す**: sandbox の書き込み・socket・ネットワーク許可で Bash から通せるもの。上の修正案・安全性と同じ手順で出す
-   - **手順で直す**: `after_block` が 0 で、同じことが Bash で通る見込みがあるもの（reason が思い込みで、Bash を試していない）や、
-     作業するセッション・場所を変えれば要らないもの。手順・ルールの変更を出す
-   - **一回限り**: repo の移動など再発しないもの。修正案なし
-   同じ型が複数 session で繰り返すなら、組み込み保護以外は直す対象として扱う
-5. 結果をユーザーに表で示す（型 / 件数・最終発生 / 原因 / 修正案 / 安全性）。`stale_branch` の型は別の一覧（型 / 件数・最終発生）にする
+3. 型ごとに原因・修正案・安全性の評価を出す。`host_exec:ran:*` の型は振り分けてから出す。
+   基準は判断基準のファイル（下記）の「型ごとに出すもの」「host_exec:ran:* の振り分け」「安全性の基準」
+4. 結果をユーザーに表で示す（型 / 件数・最終発生 / 原因 / 修正案 / 安全性）。`stale_branch` の型は別の一覧（型 / 件数・最終発生）にする
 
-### 安全性の基準
+### 判断基準のファイル
 
-- sandbox の外で動かす設定（`excludedCommands` 等）に足してよいのは、**sandbox 内から書き換えられない場所にある実体だけ**。
-  書ける場所（repo の作業ツリー・worktree・`$TMPDIR` 等）のスクリプトや、任意のファイルを実行するランナー（`bash <path>`・テストランナー等）は不可。
-  書き換えて sandbox の外で実行できる脱出口になる
-- 前方一致の glob で引数を絞る形（例 `cmd -x *`）は、後ろに option を足して迂回できるので**安全策として扱わない**
-- 他プロセスの環境変数や資格情報を読める経路（`ps e`・`/proc/*/environ`・keychain・資格情報ファイル等）を sandbox の外に開けない
-- Unix socket の許可は個別のパスで行い、全許可（`allowAllUnixSockets` 等）は使わない
-- `criteriaFiles` の基準も同じ重みで適用する
+原因・修正案・安全性の評価・`host_exec:ran:*` の振り分け・安全性の基準・issue の候補の書き方・issue にしない型の分類は
+`${CLAUDE_PLUGIN_ROOT}/sandbox-tune/scripts/criteria.md` にある。判断の前に必ず読む（日次ジョブの claude にも同じファイルを渡す）。
 
 ## issue 化（`--issue` のときだけ）
 
@@ -170,11 +187,7 @@ sandbox-tune は伏せ字・人の確認・公開範囲の判定までを受け�
 
 1. ユーザーに issue にする型を選んでもらい、判断手順の結果を候補ファイルに書く（`$TMPDIR` に置く）:
    `{"candidates":[{"id":"<型の id>","title":"...","cause":"...","fix":"...","safety":"...","ac":["..."],"paths":["..."],"security":true|false}]}`。
-   秘密・資格情報・他プロセスの情報が sandbox の外から読める経路などに関わる候補は `security: true` にする
-   - `ac`（必須・空でない文字列の配列）: 受け入れ基準。1 要素 1 項目で、**検証できる形**に書く
-     （どのコマンドがどう終わるか・設定のどのキーに何があるか等。「改善する」「確認する」のような判定できない書き方はしない）
-   - `paths`（必須・空でない配列）: 修正で触る、設定 repo の root 相対パスか glob（例 `claude/settings.json`・`claude/bin/**`）。
-     `/` 始まりと `..` セグメントは不可
+   各フィールドの書き方（`ac` は検証できる形・`paths` は設定 repo の root 相対・`security` の付け方）は判断基準のファイルの「issue の候補の書き方」に従う
    - 欠けている・形が違うときは draft が理由を出して exit 2 で止まる。直して再実行する
 2. 下書き（材料）を作る。本文は伏せ字を通して `claudedocs/sandbox-tune-issue-<n>.md` に書かれ、本文と digest が表示される
    ```bash
