@@ -307,6 +307,17 @@ EOF
     echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
 }
 
+@test "run-*.sh 無し: scripts.test が複合コマンドなら先頭のコマンドが無くても red のまま（後続がテストを走らせうる）" {
+    echo '{"name":"x","scripts":{"test":"optional-runner || vitest run"}}' > "$WT/package.json"
+    : > "$WT/pnpm-lock.yaml"
+    make_runner vitest
+    printf '#!/usr/bin/env bash\necho "sh: line 1: optional-runner: command not found"\necho " ELIFECYCLE  Test failed. See above for more details."\nexit 1\n' > "$STUB_DIR/pnpm"
+    chmod +x "$STUB_DIR/pnpm"
+    export PATH="$STUB_DIR:$PATH"
+    run_tests
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
+}
+
 @test "run-*.sh 無し: pnpm のエラー見出し行が無ければ起動の痕跡が無くても（--silent 等）red のまま" {
     echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
     : > "$WT/pnpm-lock.yaml"

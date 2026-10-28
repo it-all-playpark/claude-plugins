@@ -50,7 +50,9 @@
 #     pnpm が `ELIFECYCLE` 付きの exit 1 にくるむので exit code では拾えない）。ログの文字列（`command not found` 行・`FAIL` 行）では判定しない —
 #     ログはテストファイル（PR が書ける）も出力できるので、本物の red を起動失敗に見せかけられる。ランナーが
 #     解決できなければテストファイルは 1 本も動かない。実行前に解決するのは、実行中に PATH 上の実体を消して
-#     判定を変えさせないため。先頭が代入（`NODE_ENV=test jest`）等で取り出せない形は判定せず red のまま。
+#     判定を変えさせないため。先頭が代入（`NODE_ENV=test jest`）等で取り出せない形と、`scripts.test` 全体が
+#     単一の単純コマンドでない形（`||` `;` `|` `&` 改行・クォート・展開などシェル構文を含む。`a || vitest run` は
+#     a が無くても後続がテストを走らせる）は判定せず red のまま。
 # tests / green は workflow の GREEN schema の必須キーで、status から機械的に写す（agent に組み立てさせない）:
 #   passed → tests "passed" green true / failed → "failed" false / error → "error" false /
 #   実行対象 0 本 → status "passed"・tests "no_tests"・green false（何も走っていないので green を主張しない）
@@ -261,6 +263,7 @@ pnpm_failed_before_script() {
 pnpm_test_runner_missing() {
     local script runner root dir bins=""
     script=$(jq -r '.scripts.test' "$WT/package.json" 2>/dev/null) || return 1
+    [[ "$script" =~ ^[A-Za-z0-9._@/+=:,%\ -]+$ ]] || return 1
     read -r runner _ <<< "$script"
     [[ "$runner" =~ ^[A-Za-z0-9._@/+-]+$ ]] || return 1
     for root in "$WT" "$WT_PHYS"; do
