@@ -636,6 +636,18 @@ test('[security-review][G] security review の指摘を含む fix#i にだけ修
   assert.ok(SECURITY_FIX_GUIDANCE.includes('直さなかった指摘は、その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに deferred_security_topics に入れ、理由を summary に書く'), SECURITY_FIX_GUIDANCE);
   assert.ok(secFix.includes('topic（その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに）'), 'fix の Output format が指摘行の topic の表記を指していない');
   assert.ok(secFix.includes('- [critical] [topic: hardlink-write] scripts/set-names.sh:3 '), 'fix#1 の指摘行に `[topic: <topic>]` が無い');
+  // 指摘は破れた不変条件と攻撃経路で、suggestion は一案。PR の意図を取り消す変更は修正とみなさず、意図を保って塞ぐ設計を先に探す（issue #1196）
+  for (const s of [
+    '指摘は「破れた不変条件と攻撃経路」として読む',
+    '指摘の suggestion は塞ぎ方の一案にすぎず、そのまま採らなくてよい',
+    'を取り消す変更 — PR の変更を戻す・PR が足した機能を外す — は修正とみなさない',
+    '先に、PR の意図を保ったまま経路を塞ぐ設計を探す',
+    // 人に返す条件: 既存の禁止・守る範囲の外に、意図と不変条件の両方を満たす設計が無い指摘を足し、summary にぶつかる意図と不変条件を書かせる
+    '上の禁止に当たる形でしか塞げない指摘、PR の意図と破れた不変条件の両方を満たす設計が無い指摘、sandbox の中に残った PR のプロセスを前提にした指摘（守る範囲の外）は直さない',
+    '両方を満たす設計が無くて返した指摘は、summary にぶつかる意図（AC の番号、または PR の意図の該当箇所）と破れた不変条件を書く',
+  ]) {
+    assert.ok(SECURITY_FIX_GUIDANCE.includes(s), `SECURITY_FIX_GUIDANCE に「${s}」が無い`);
+  }
 
   const reviewOnly = await run({
     args: { pr: '5', security_review: { target: false, reasons: [], reviewer_context_changed: false } },
@@ -916,5 +928,68 @@ test('[security-review][I] AC がある run で fix が AC とぶつかる secur
     assert.equal(result.security_review.deferred, 1, label);
     assert.equal(result.security_review.major, 1, `${label}: AC とぶつかる指摘の severity を下げた`);
     assert.ok(summaryOf(calls).includes(DEFERRED_LINE), label);
+  }
+});
+
+// ---- (J) security の指摘を含む fix#i に「PR の意図（保つ要件）」を渡す（issue #1196）----
+
+const INTENT_HEADING = 'PR の意図（保つ要件）:\n';
+const PR_INTENT = { title: 'INTENT-TITLE: .husky の deny を深さ固定にする', body: 'INTENT-BODY: node_modules 内の .husky を展開できるようにする', body_omitted: null };
+const intentData = `<<<PR_INTENT_BEGIN>>>\ntitle: ${PR_INTENT.title}\nbody:\n${PR_INTENT.body}\n<<<PR_INTENT_END>>>\n`;
+
+test('[security-review][J] 単体起動の args.pr_intent は、review ⇄ fix の fix#i・securityGate の fix の両方に SECURITY_FIX_GUIDANCE の後・人の修正方針の前の区切りの内側で入る', async () => {
+  const runs = {
+    fix_loop: { pr: '5', nested: NESTED_A, pr_intent: PR_INTENT, fix_direction: '方針: 入力を受け取らない形で塞ぐ' },
+    security_gate: { pr: '5', pr_intent: PR_INTENT, fix_direction: '方針: 入力を受け取らない形で塞ぐ', security_review: { target: false, reasons: [], reviewer_context_changed: false } },
+  };
+  for (const [label, args] of Object.entries(runs)) {
+    const { calls } = await run({
+      args,
+      overrides: { 'security-scope#1': target, 'security-review#1': reviewWith([finding('husky-depth')]), 'fix#1': deferFromPrompt },
+    });
+    const fix1 = calls.find((c) => c.label === 'fix#1').prompt;
+    const at = fix1.indexOf(INTENT_HEADING);
+    assert.ok(at >= 0 && fix1.includes(intentData), `${label}: fix#1 に PR の意図の区切りが無い: ${fix1}`);
+    assert.equal(fix1.split(PR_INTENT.body).length - 1, 1, `${label}: body が区切りの外にも出ている`);
+    assert.ok(fix1.indexOf(SECURITY_FIX_GUIDANCE) < at && at < fix1.indexOf('## 人が決めた修正方針') && at < fix1.indexOf('## Output format'), `${label}: PR の意図の位置が違う`);
+    // 判定者（review・security review）の prompt には入れない
+    for (const c of calls.filter((x) => /^(review#|security-)/.test(x.label))) {
+      assert.ok(!c.prompt.includes('INTENT-TITLE') && !c.prompt.includes('INTENT-BODY'), `${label}: ${c.label} の prompt に PR の title・body が入っている`);
+    }
+  }
+});
+
+test('[security-review][J] AC がある run は AC を PR の意図として使い、args.pr_intent の title・body は入れない', async () => {
+  const { calls } = await run({
+    args: { pr: '5', nested: NESTED_A, acceptance_criteria: AC, pr_intent: PR_INTENT },
+    overrides: { 'security-review#1': reviewWith([finding('rerun-unhold', 'major')]), 'fix#1': deferFromPrompt },
+  });
+  const fix1 = calls.find((c) => c.label === 'fix#1').prompt;
+  assert.ok(fix1.includes(`${INTENT_HEADING}この run では issue の受入条件（AC）を PR の意図として使う。`), fix1);
+  assert.ok(fix1.includes('1. AC-1 flake の HOLD を外す\n2. AC-2 既存の判定を変えない'), fix1);
+  assert.ok(!fix1.includes('PR_INTENT') && !fix1.includes('INTENT-TITLE'), 'AC がある run に PR の title・body を入れた');
+});
+
+test('[security-review][J] security の指摘を含まない fix#i（review の指摘だけ）の prompt には PR の意図を入れない', async () => {
+  const { calls } = await run({
+    args: { pr: '5', pr_intent: PR_INTENT, security_review: { target: false, reasons: [], reviewer_context_changed: false } },
+    overrides: {
+      'security-scope#1': exempt,
+      'review#1': reviewRequestChanges,
+      'commit-ensure#1': pushedTo(SHA_B),
+      'security-scope#2': exempt,
+    },
+  });
+  const fix1 = calls.find((c) => c.label === 'fix#1').prompt;
+  assert.ok(fix1.includes(REVIEW_DESC), 'review の指摘の fix#1 ではない');
+  assert.ok(!fix1.includes(INTENT_HEADING) && !fix1.includes('INTENT-TITLE') && !fix1.includes('INTENT-BODY'), `security の指摘を含まない fix#1 に PR の意図が入っている: ${fix1}`);
+});
+
+test('[security-review][J] args.pr_intent の不正形は agent 起動前に明示 throw', async () => {
+  for (const bad of [{ title: 't', body: 'b' }, { title: 't', body: 'あ'.repeat(4001), body_omitted: null }, { title: 't', body: 'b', body_omitted: 'over_limit' }]) {
+    const { ctx, calls } = makePrIterateSandbox({ args: { pr: '5', pr_intent: bad } });
+    const { error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
+    assert.ok(error && /^pr-iterate: args\.pr_intent が不正形です/.test(error.message), error?.message);
+    assert.equal(calls.length, 0);
   }
 });

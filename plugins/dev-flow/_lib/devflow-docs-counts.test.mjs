@@ -350,10 +350,13 @@ test('security-review.md: 守る要件と境界（R1〜R3）と経路を持ち�
   // AC とぶつかる指摘も fix は直さず人へ返す。security-review.md の人へ返す条件と pr-fixer.md の「security review の指摘」節に書く（issue #1163）
   const fixerSection = sectionOf(readFileSync(join(pluginRoot, 'agents/pr-fixer.md'), 'utf8'), '## security review の指摘');
   for (const [name, doc] of [['security-review.md の守る要件と境界', boundary], ['pr-fixer.md の security review の指摘', fixerSection]]) {
-    for (const s of ['`securityFixAcceptanceCriteriaBlock`', 'AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない', 'summary にぶつかる AC の番号を書']) {
+    for (const s of ['`securityFixAcceptanceCriteriaBlock`', 'AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない', 'summary にぶつかる AC の番号と破れた不変条件を書',
+      // PR の意図と両立する設計を先に探し、両方を満たす設計が無い指摘だけを返す（issue #1196）
+      '`securityFixIntentBlock`', '破れた不変条件と攻撃経路', 'PR の意図を取り消す変更（PR の変更を戻す・PR が足した機能を外す）は修正', '意図を保ったまま経路を塞ぐ設計を先に探す']) {
       assert.ok(doc.replace(/\n\s*/g, '').includes(s), `${name} に ${s} が無い`);
     }
   }
+  assert.ok(boundary.replace(/\n\s*/g, '').includes('PR の意図と破れた不変条件の両方を満たす設計が無い指摘だけ'), 'security-review.md に fix#i が人に返す条件が無い');
   // R1〜R3 を定義するのは security-review.md だけ
   const holders = readdirSync(refDir).filter((f) => f.endsWith('.md')).filter((f) => /^- R1 /m.test(readFileSync(join(refDir, f), 'utf8')));
   assert.deepEqual(holders, ['security-review.md'], `R1〜R3 の定義が security-review.md 以外にもある: ${holders.join(', ')}`);

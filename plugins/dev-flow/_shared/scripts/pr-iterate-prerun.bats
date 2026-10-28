@@ -119,7 +119,7 @@ advance_origin_head() {
     wt="$(echo "$output" | jq -r '.worktree')"
     [ "$(git -C "$wt" rev-parse HEAD)" = "$HEAD_SHA" ]
     [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" = "feature/x" ]
-    grep -qx "pr view 5 --json url,headRefName,baseRefName,headRefOid,comments" "$GH_STUB_LOG"
+    grep -qx "pr view 5 --json url,headRefName,baseRefName,headRefOid,comments,title,body" "$GH_STUB_LOG"
     # 書けないパスが無ければ full checkout で、skip-worktree を付けない
     echo "$output" | jq -e '.skip_worktree == []'
     [ -z "$(git -C "$wt" ls-files -v | grep '^S' || true)" ]
@@ -144,7 +144,7 @@ advance_origin_head() {
     run bash "$SCRIPT" 5 --repo other/name
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .repo == "other/name"'
-    grep -qx "pr view 5 --repo other/name --json url,headRefName,baseRefName,headRefOid,comments" "$GH_STUB_LOG"
+    grep -qx "pr view 5 --repo other/name --json url,headRefName,baseRefName,headRefOid,comments,title,body" "$GH_STUB_LOG"
 }
 
 # ---- (2) 再利用 ----
@@ -513,7 +513,7 @@ comment_json() {
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e '.prior_devflow == {tier: "HOLD", codes: ["iterate_non_lgtm", "ci_checks_failed"], url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: null}'
     [ "$(grep -c '^pr ' "$GH_STUB_LOG")" -eq 1 ]
-    grep -qx "pr view 5 --json url,headRefName,baseRefName,headRefOid,comments" "$GH_STUB_LOG"
+    grep -qx "pr view 5 --json url,headRefName,baseRefName,headRefOid,comments,title,body" "$GH_STUB_LOG"
 }
 
 @test "(5g) HOLD 以外の marker は codes:[]、後に載った dev-flow サマリーを採る" {
@@ -825,6 +825,57 @@ comment_json() {
     [ "$status" -eq 2 ]
     [ -z "$output" ]
     [[ "$stderr" == *"4001 字"* ]]
+}
+
+# ---- (11) PR の意図（title・body。issue #1196）----
+
+# 第 1 引数の title・第 2 引数のファイルの本文を body に持つ fixture にする
+write_pr_fixture_with_intent() {
+    jq -n --arg oid "$HEAD_SHA" --arg t "$1" --rawfile b "$2" \
+        '{url: "https://github.com/acme/skills/pull/5", headRefName: "feature/x", baseRefName: "main", headRefOid: $oid, comments: [], title: $t, body: $b}' \
+        >"$GH_STUB_FIXTURE"
+}
+
+@test "(11a) gh pr view の title・body を加工せずに pr_intent に載せる（4000 字ちょうどの body も載せる。ok:false では載せない）" {
+    cd "$ROOT"
+    printf '.husky の denyWrite を深さ固定にする\n\n- node_modules 内の `.husky` を展開できるようにする\n' > "$BATS_TEST_TMPDIR/body.md"
+    write_pr_fixture_with_intent 'fix(sandbox): .husky の deny を深さ固定にする' "$BATS_TEST_TMPDIR/body.md"
+    run --separate-stderr bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true'
+    echo "$output" | jq -e '.pr_intent.title == "fix(sandbox): .husky の deny を深さ固定にする"'
+    echo "$output" | jq -e --rawfile b "$BATS_TEST_TMPDIR/body.md" '.pr_intent.body == $b and .pr_intent.body_omitted == null'
+
+    printf 'あ%.0s' $(seq 4000) > "$BATS_TEST_TMPDIR/max.md"
+    write_pr_fixture_with_intent 't' "$BATS_TEST_TMPDIR/max.md"
+    run --separate-stderr bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '(.pr_intent.body | length) == 4000 and .pr_intent.body_omitted == null'
+
+    GH_STUB_FAIL=1 run --separate-stderr bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and has("pr_intent") == false'
+}
+
+@test "(11b) body が 4000 字（文字数）を超えれば本文を切らずに渡さず（body:null）、上限を超えたので渡していないことを body_omitted:over_limit で載せる" {
+    cd "$ROOT"
+    printf 'あ%.0s' $(seq 4001) > "$BATS_TEST_TMPDIR/over.md"
+    write_pr_fixture_with_intent 'title は渡す' "$BATS_TEST_TMPDIR/over.md"
+    run --separate-stderr bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true'
+    echo "$output" | jq -e '.pr_intent == {title: "title は渡す", body: null, body_omitted: "over_limit"}'
+    # 本文の一部も出力に載せない
+    [[ "$output" != *"あああ"* ]]
+}
+
+@test "(11c) title・body が空・空白だけ・無いときは null（body_omitted は null）" {
+    cd "$ROOT"
+    printf ' \n\t\n' > "$BATS_TEST_TMPDIR/blank.md"
+    write_pr_fixture_with_intent '' "$BATS_TEST_TMPDIR/blank.md"
+    run --separate-stderr bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .pr_intent == {title: null, body: null, body_omitted: null}'
 }
 
 # ---- (10) plugin_commit（dev-flow-prerun と同じ plugin-commit.sh で決める）----

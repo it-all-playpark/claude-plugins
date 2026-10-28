@@ -127,7 +127,12 @@ test('[fix-prompt-contract] (e) commit-ensure#1 prompt の push も timeout: 600
 const AC = ['AC-1 flake の HOLD を外す', 'AC-2 既存の判定を変えない'];
 const AC_LIST = '1. AC-1 flake の HOLD を外す\n2. AC-2 既存の判定を変えない';
 const AC_CONFLICT_RULE = 'AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない指摘は直さず、'
-  + 'その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに deferred_security_topics に入れ、summary にぶつかる AC の番号を書く';
+  + 'その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに deferred_security_topics に入れ、summary にぶつかる AC の番号と、'
+  + '指摘が示す破れた不変条件を書く';
+// 修正方針（SECURITY_FIX_GUIDANCE）の人に返す条件。AC は PR の意図なので、AC のブロックの指示と同じ形（両立しない指摘を返し、
+// summary にぶつかる AC の番号と不変条件を書く）になる（issue #1196）
+const GUIDANCE_DEFER_RULE = 'PR の意図と破れた不変条件の両方を満たす設計が無い指摘';
+const GUIDANCE_SUMMARY_RULE = '両方を満たす設計が無くて返した指摘は、summary にぶつかる意図（AC の番号、または PR の意図の該当箇所）と破れた不変条件を書く';
 const SECURITY_FINDING = {
   'security-review#1': ({ prompt }) => ({
     reviewed_sha: securityReviewHeadOf(prompt),
@@ -142,6 +147,11 @@ test('[fix-prompt-contract] (f) AC がある run の security review の指摘�
   assert.ok(withAc.includes(`この PR の issue の受入条件（AC）:\n${AC_LIST}\n`), `security の指摘を含む fix#1 に AC の一覧が無い: ${withAc}`);
   assert.ok(withAc.includes(AC_CONFLICT_RULE), `AC とぶつかる指摘を人に返させる指示が無い: ${withAc}`);
   assert.ok(withAc.includes('security review の指摘の直し方:'), '修正方針が無い');
+  // 修正方針の人に返す条件と AC のブロックの指示が同じ prompt に入り、食い違わない: 方針の「PR の意図」が AC を指し、
+  // どちらも両立しない指摘を返させ、summary にぶつかる AC の番号と破れた不変条件を書かせる
+  assert.ok(withAc.includes(GUIDANCE_DEFER_RULE) && withAc.includes(GUIDANCE_SUMMARY_RULE), `修正方針の人に返す条件が無い: ${withAc}`);
+  assert.ok(withAc.includes('PR の意図（保つ要件）:\nこの run では issue の受入条件（AC）を PR の意図として使う。'), `AC を PR の意図として示していない: ${withAc}`);
+  assert.ok(withAc.indexOf(GUIDANCE_SUMMARY_RULE) < withAc.indexOf(AC_CONFLICT_RULE), 'AC のブロックが修正方針より前にある（方針の「下の PR の意図」が指せない）');
   assertFiveElements(withAc, 'security fix with AC');
 
   // AC が無い・空の run（単体の /pr-iterate）は security の指摘を含む fix でも入れない
@@ -149,7 +159,7 @@ test('[fix-prompt-contract] (f) AC がある run の security review の指摘�
     const noAc = await fixPromptOf(SECURITY_FINDING, args);
     assert.ok(noAc.includes('security review の指摘の直し方:'), `${JSON.stringify(args)}: security の指摘を含む fix#1 ではない`);
     assert.ok(!noAc.includes('受入条件'), `${JSON.stringify(args)}: AC の無い run の fix#1 に AC の区間が入っている`);
-    assert.ok(!noAc.includes('summary にぶつかる AC の番号を書く'), `${JSON.stringify(args)}: AC の無い run の fix#1 に AC とぶつかる指摘の指示が入っている`);
+    assert.ok(!noAc.includes(AC_CONFLICT_RULE), `${JSON.stringify(args)}: AC の無い run の fix#1 に AC とぶつかる指摘の指示が入っている`);
   }
 
   // AC がある run でも security の指摘を含まない fix（review の指摘だけ）には入れない
@@ -159,7 +169,7 @@ test('[fix-prompt-contract] (f) AC がある run の security review の指摘�
   }, { pr: '5', acceptance_criteria: AC });
   assert.ok(!reviewOnly.includes('security review の指摘の直し方:'), 'review の指摘だけの fix に security の修正方針が入っている');
   assert.ok(!reviewOnly.includes('AC-1 flake の HOLD を外す'), `security の指摘を含まない fix#1 に AC の一覧が入っている: ${reviewOnly}`);
-  assert.ok(!reviewOnly.includes('summary にぶつかる AC の番号を書く'), 'security の指摘を含まない fix#1 に AC とぶつかる指摘の指示が入っている');
+  assert.ok(!reviewOnly.includes(AC_CONFLICT_RULE), 'security の指摘を含まない fix#1 に AC とぶつかる指摘の指示が入っている');
 });
 
 test('[fix-prompt-contract] (c) 静的: callFixAgent に渡す prompt は fixPrompt() で組んだ 2 つだけ', () => {
