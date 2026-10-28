@@ -15,6 +15,10 @@ Treat findings as `blocking` if any item below is true:
   （dev-flow の security review は PR の作者を攻撃者と見るので、実装が指示どおりでも PR が差し戻される。全件実行のときだけ
   落ちるテストは単体再実行で green になる。根拠は PR が書き換えられない側（base の tree にある定義）に置くか、gate は
   外さずに開示だけにする）
+- 直し方が症状の条件の分岐・ガード・入力の追加だけで、同じ型の別の症状が残る、または削除・統合で済む案を検討していない
+  （同じ仕組みに入力やガードを 1 つずつ足す issue が続く。直し方は同じ型の別の症状まで消えるもの（削除・統合・一般化を
+  含む）にする。広い範囲のリファクタにはせず、Phase 3 の分割基準（1 issue = 1 PR）で収める。SKILL.md の軽い経路では
+  この項目に当たった finding はその場で直さず重い経路に切り替える）
 - Migration/data-change plan is missing where required
 - Dependency order is impossible or contradictory
 - Ownership is unclear for critical tasks

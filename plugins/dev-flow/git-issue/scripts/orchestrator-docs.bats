@@ -36,6 +36,10 @@
 # dev-flow の security review の脅威モデル（PR の作者が攻撃者）:
 # - devils-advocate-checklist.md の Blocking Categories に、PR が書き換えられる入力を根拠に gate を外す・
 #   検証を省く AC を止める項目がある
+#
+# 症状の条件分岐を足すだけの直し方を軽い経路で起票しない（issue #1199）:
+# - devils-advocate-checklist.md の Blocking Categories に、分岐・ガード・入力の追加だけの直し方を止める項目がある
+# - 軽い経路の手順 1 で同じ仕組みを直した close 済み issue を数え、手順 2 でその項目に当たったら重い経路に切り替える
 
 setup() {
     command -v python3 >/dev/null || skip "python3 not available"
@@ -342,9 +346,16 @@ frontmatter_value() {
     [[ "$(extract_section "$SKILL_MD" "### Phase 7")" == *"dev-flow-ready-set [--repo owner/repo]"* ]]
 }
 
-@test "(22) 軽い経路の途中で分割・依存・human タスクが要ると分かったら重い経路に切り替える" {
+@test "(22) 軽い経路の途中で分割・依存・human タスクが要ると分かったら、同じ仕組みの修正が続いたら、分岐を足すだけの直し方なら重い経路に切り替える" {
     light="$(extract_section "$SKILL_MD" "### 軽い経路（Light Path）")"
-    [[ "$light" == *"途中で分割・issue 間の依存・human タスクが必要と分かったら"*"重い経路"*"に切り替える"* ]]
+    switch="$(awk '/^途中で分割/ { f = 1 } f { print } f && /^$/ { exit }' <<<"$light")"
+    [[ "$switch" == *"途中で分割・issue 間の依存・human タスクが必要と分かったら"*"重い経路"*"に切り替える"* ]]
+    # 手順 1 の close 済み issue の数と、手順 2 の Blocking 項目が契機に入る
+    [[ "$switch" == *"手順 1 で同じ仕組みを直した close 済みの issue が"*"直近 30 日に 2 件以上見つかったら"* ]]
+    [[ "$switch" == *"手順 2 で「直し方が症状の条件の分岐・ガード・入力の追加だけ」の項目に"*"当たったら"* ]]
+    # 無人の claude -p から呼ばれても止まらない
+    [[ "$switch" == *"症状・原因・直し方を Phase 1 の入力にして、人に質問せずに進む"* ]]
+    [[ "$switch" == *'切り替えた finding と理由は'*'Output Contract の `## Plan Quality Gate` に書く'* ]]
 }
 
 @test "(23) 軽い経路は複数 finding を 1 回で起票し、本文ファイルごとに ac-lint と create_issue.py、Phase 7 は全 issue で 1 回" {
@@ -388,4 +399,28 @@ frontmatter_value() {
     [[ "$section" == *"PR が書き換えられる入力"*"merge gate・HOLD を外す、または検証"*"を省くよう指示している"* ]]
     [[ "$section" == *"実行する中身（テスト・script）を PR が書けるなら PR が書き換えられる入力に当たる"* ]]
     [[ "$section" == *"gate 自身の判定より弱い実行"*"その gate を外すのも同じ"* ]]
+}
+
+@test "(28) devils-advocate-checklist の Blocking Categories に、症状の条件の分岐・ガード・入力の追加だけの直し方を止める項目がある" {
+    section="$(awk '/^## Blocking Categories/ { f = 1; next } f && /^## / { exit } f { print }' "$CHECKLIST")"
+    [[ "$section" == *"- 直し方が症状の条件の分岐・ガード・入力の追加だけで、同じ型の別の症状が残る、または削除・統合で済む案を検討していない"* ]]
+}
+
+@test "(29) 軽い経路の手順 1 で変更対象パスごとに close 済み issue を引き、同じ仕組みの修正が直近 30 日に 2 件以上なら重い経路に切り替える（パスの重なりだけでは切り替えない）" {
+    light="$(extract_section "$SKILL_MD" "### 軽い経路（Light Path）")"
+    step1="$(awk '/^1\. / { f = 1 } /^2\. / { exit } f' <<<"$light")"
+    [[ "$step1" == *'`## 変更対象パス` の各パスについて'* ]]
+    [[ "$step1" == *'`gh issue list --state closed --search "\"<path>\" in:body"` で close 済みの issue を引き'* ]]
+    [[ "$step1" == *"finding と同じ仕組み（同じ判定・同じ prompt の組み立て・"*"同じガード）を直した issue が直近 30 日に 2 件以上あれば"*"重い経路に切り替える"* ]]
+    [[ "$step1" == *"パスが重なるだけでは"*"切り替えない"* ]]
+}
+
+@test "(30) 軽い経路の手順 2 で、分岐・ガード・入力の追加だけの項目に当たった finding はその場で直さず重い経路に切り替え、他の Blocking 項目はその場で直す" {
+    light="$(extract_section "$SKILL_MD" "### 軽い経路（Light Path）")"
+    step2="$(awk '/^2\. / { f = 1 } /^3\. / { exit } f' <<<"$light")"
+    [[ "$step2" == *"「直し方が症状の条件の分岐・ガード・入力の追加だけ」の項目に当たった finding は、その場で"*"直さずに重い経路に切り替える"* ]]
+    [[ "$step2" == *"他の Blocking 項目はこれまでどおりその場で直す"* ]]
+    # 参照先の項目が Blocking Categories にある
+    section="$(awk '/^## Blocking Categories/ { f = 1; next } f && /^## / { exit } f { print }' "$CHECKLIST")"
+    [[ "$section" == *"直し方が症状の条件の分岐・ガード・入力の追加だけで"* ]]
 }
