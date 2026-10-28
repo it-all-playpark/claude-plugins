@@ -29,6 +29,13 @@ make_script() {
     chmod +x "$WT/tests/$1"
 }
 
+# $1 = テストランナー名。依存が入った worktree を模して node_modules/.bin に実行可能な実体を置く
+make_runner() {
+    mkdir -p "$WT/node_modules/.bin"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$WT/node_modules/.bin/$1"
+    chmod +x "$WT/node_modules/.bin/$1"
+}
+
 # stdout（stderr は分ける）が JSON 1 行であることを確かめ、その行を $JSON に入れる。
 # 追加の環境変数（PATH の stub 差し替え等）は呼び出し側で export する
 run_tests() {
@@ -187,6 +194,7 @@ EOF
 @test "run-*.sh 無し: pnpm-lock.yaml があれば pnpm test、exit 1 → failed" {
     echo '{"name":"x","scripts":{"test":"vitest run"}}' > "$WT/package.json"
     : > "$WT/pnpm-lock.yaml"
+    make_runner vitest
     printf '#!/usr/bin/env bash\necho " FAIL  src/a.test.ts > x"\necho "[ELIFECYCLE] Test failed. See above for more details."\necho "Error: ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL"\nexit 1\n' > "$STUB_DIR/pnpm"
     chmod +x "$STUB_DIR/pnpm"
     export PATH="$STUB_DIR:$PATH"
@@ -222,6 +230,7 @@ EOF
 @test "run-*.sh 無し: pnpm test がスクリプトを起動した後の ERROR 行は red のまま（launch_failed にしない）" {
     echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
     : > "$WT/pnpm-lock.yaml"
+    make_runner jest
     printf '#!/usr/bin/env bash\necho\necho "> x@1.0.0 test /wt"\necho "> jest"\necho\necho " ERROR  db connection refused"\nexit 1\n' > "$STUB_DIR/pnpm"
     chmod +x "$STUB_DIR/pnpm"
     export PATH="$STUB_DIR:$PATH"
@@ -229,7 +238,7 @@ EOF
     echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
 }
 
-@test "run-*.sh 無し: pnpm test のテストランナーがシェルに見つからなければ起動失敗として error（failed にしない）" {
+@test "run-*.sh 無し: pnpm test のテストランナーが node_modules/.bin にも PATH にも無ければ起動失敗として error（failed にしない）" {
     echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
     : > "$WT/pnpm-lock.yaml"
     printf '#!/usr/bin/env bash\necho\necho "> x@1.0.0 test /wt"\necho "> jest"\necho\necho "sh: line 1: jest: command not found"\necho " ELIFECYCLE  Test failed. See above for more details."\nexit 1\n' > "$STUB_DIR/pnpm"
@@ -241,9 +250,10 @@ EOF
     echo "$JSON" | jq -e '.summary | contains("launch failed: pnpm test")'
 }
 
-@test "run-*.sh 無し: command not found 行があってもテストランナーの FAIL 行があれば red のまま" {
+@test "run-*.sh 無し: テストランナーが在れば command not found 行と FAIL 行があっても red のまま" {
     echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
     : > "$WT/pnpm-lock.yaml"
+    make_runner jest
     printf '#!/usr/bin/env bash\necho\necho "> x@1.0.0 test /wt"\necho "> jest"\necho\necho "sh: line 1: jest: command not found"\necho " FAIL  src/a.test.ts > x"\necho " ELIFECYCLE  Test failed. See above for more details."\nexit 1\n' > "$STUB_DIR/pnpm"
     chmod +x "$STUB_DIR/pnpm"
     export PATH="$STUB_DIR:$PATH"
@@ -252,9 +262,42 @@ EOF
     echo "$JSON" | jq -e '.failed_files == ["src/a.test.ts"]'
 }
 
+@test "run-*.sh 無し: テストランナーが在れば、テストが command not found 行だけを出して落ちても red のまま（出力で起動失敗に見せかけられない）" {
+    echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
+    : > "$WT/pnpm-lock.yaml"
+    make_runner jest
+    printf '#!/usr/bin/env bash\necho\necho "> x@1.0.0 test /wt"\necho "> jest"\necho\necho "sh: line 1: jest: command not found"\necho " ELIFECYCLE  Test failed. See above for more details."\nexit 1\n' > "$STUB_DIR/pnpm"
+    chmod +x "$STUB_DIR/pnpm"
+    export PATH="$STUB_DIR:$PATH"
+    run_tests
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
+}
+
+@test "run-*.sh 無し: テストランナーが実行中に消されても、実行前に在れば red のまま" {
+    echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
+    : > "$WT/pnpm-lock.yaml"
+    make_runner jest
+    printf '#!/usr/bin/env bash\nrm -f "%s/node_modules/.bin/jest"\necho "sh: line 1: jest: command not found"\nexit 1\n' "$WT" > "$STUB_DIR/pnpm"
+    chmod +x "$STUB_DIR/pnpm"
+    export PATH="$STUB_DIR:$PATH"
+    run_tests
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
+}
+
+@test "run-*.sh 無し: scripts.test の先頭が代入で先頭のコマンドを取り出せなければ red のまま" {
+    echo '{"name":"x","scripts":{"test":"NODE_ENV=test jest"}}' > "$WT/package.json"
+    : > "$WT/pnpm-lock.yaml"
+    printf '#!/usr/bin/env bash\necho "sh: line 1: jest: command not found"\nexit 1\n' > "$STUB_DIR/pnpm"
+    chmod +x "$STUB_DIR/pnpm"
+    export PATH="$STUB_DIR:$PATH"
+    run_tests
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
+}
+
 @test "run-*.sh 無し: pnpm のエラー見出し行が無ければ起動の痕跡が無くても（--silent 等）red のまま" {
     echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
     : > "$WT/pnpm-lock.yaml"
+    make_runner jest
     printf '#!/usr/bin/env bash\necho "Tests: 1 failed, 1 total"\nexit 1\n' > "$STUB_DIR/pnpm"
     chmod +x "$STUB_DIR/pnpm"
     export PATH="$STUB_DIR:$PATH"
