@@ -13,8 +13,8 @@
 # PR の作者が書けるファイルを人の方針として fix に届けないよう、実体（symlink は辿る）が PR の worktree の中にあれば拒否する。
 # 読めない・空（空白だけを含む）・FIX_DIRECTION_MAX_CHARS 字を超えるときも拒否する。拒否は引数不正と同じ exit 2・stdout 空。
 #
-# 行う処理: gh pr view で url / headRefName / baseRefName / headRefOid / comments を取得（comments からは直前の
-# dev-flow サマリーと最後の終端サマリーの marker を読む）→ git fetch origin →
+# 行う処理: gh pr view で url / headRefName / baseRefName / headRefOid / comments / title / body を取得（comments からは直前の
+# dev-flow サマリーと最後の終端サマリーの marker を読み、title・body は pr_intent に載せる）→ git fetch origin →
 # origin/<head> が PR の headRefOid と一致することを検証 → PR head の worktree を用意（既存なら再利用、
 # 無ければ origin/<head> から作成。作成時は取り出せないパスに skip-worktree を付け、再利用時は未ステージの
 # 削除が残っていれば fail-closed — worktree-checkout.sh）→ worktree の HEAD を PR head に合わせる（遅れていて未コミット変更が
@@ -32,10 +32,14 @@
 # 再利用する worktree の basename が git / git-* のときも ok:false で人間に返す（worktree 分離ガードの拒否。移動はしない）。
 #
 # Output (stdout, JSON 1 行):
-#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, plugin_commit, fix_direction?, error?}
+#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, plugin_commit, pr_intent?, fix_direction?, error?}
 #   plugin_commit: 実行中の dev-flow plugin の commit（12 桁 hex）。dev-flow-prerun と同じ dev-flow/scripts/plugin-commit.sh で
 #     plugin root から決める（telemetry 記録専用で gate の入力にしない）。決められなければ null（ok:false でも載せる）
 #   fix_direction: --direction のファイルの本文（ok:true で --direction を渡したときだけ載せる）
+#   pr_intent: gh pr view で取った PR の {title, body, body_omitted}（ok:true のときだけ載せる）。workflow が security review の
+#     指摘を含む fix#i にだけ「PR の意図（保つ要件）」としてデータで渡す。body が FIX_DIRECTION_MAX_CHARS 字を超えたら切らずに
+#     渡さず（body:null）、body_omitted:"over_limit"（上限を超えたので渡していない）を載せる。それ以外の body_omitted は null。
+#     title・body が空（空白だけ）なら null
 #   worktree_status: created / reused / unwritable / error / skipped
 #   skip_worktree: 作成時に取り出せず skip-worktree を付けたパス（worktree-checkout.sh。full checkout できれば []）
 #   prior_devflow: PR コメントのうち `<!-- dev-flow:<tier>[ codes=<code>,...][ head=<sha>] -->` marker を持つ最後のもの
@@ -166,6 +170,7 @@ worktree_status="skipped"
 worktree_removed=false
 prior_devflow="null"
 prior_summary="null"
+pr_intent="null"
 ci_wait_ceiling_seconds="$CI_WAIT_CEILING_DEFAULT"
 # 敵対的 security review の起動時の判定。判定できるまで（ok:false の早期終端を含む）は対象（fail-closed）
 security_review='{"target":true,"reasons":["not_determined"],"reviewer_context_changed":true}'
@@ -190,6 +195,7 @@ emit() {
         --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
         --argjson security_review "$security_review" \
         --argjson fix_direction "${DIRECTION_JSON:-null}" \
+        --argjson pr_intent "$pr_intent" \
         --arg plugin_commit "$plugin_commit" \
         --arg error "$error" \
         '
@@ -200,6 +206,7 @@ emit() {
          prior_devflow: $prior_devflow, prior_summary: $prior_summary, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds,
          security_review: $security_review,
          plugin_commit: (if ($plugin_commit | test("^[0-9a-f]{12}$")) then $plugin_commit else null end)}
+        + (if $ok and $pr_intent != null then {pr_intent: $pr_intent} else {} end)
         + (if $ok and $fix_direction != null then {fix_direction: $fix_direction} else {} end)
         + (if $error == "" then {} else {error: $error} end)
         '
@@ -217,7 +224,7 @@ fail() {
 
 GH_ARGS=(pr view "$PR")
 [[ -n "$REPO_ARG" ]] && GH_ARGS+=(--repo "$REPO_ARG")
-GH_ARGS+=(--json url,headRefName,baseRefName,headRefOid,comments)
+GH_ARGS+=(--json url,headRefName,baseRefName,headRefOid,comments,title,body)
 
 if ! VIEW_RAW="$(gh "${GH_ARGS[@]}" 2>&1)"; then
     fail "gh pr view ${PR} failed: ${VIEW_RAW}"
@@ -254,6 +261,14 @@ prior_summary="$(printf '%s' "$VIEW_RAW" | jq -c --arg head "$PR_HEAD_OID" '
         head_sha: $sha,
         head_mismatch: ($sha == null or $sha != ($head | ascii_downcase))}]
     | last')"
+# PR の意図（title・body）。security review の指摘を含む fix#i に「保つ要件」としてデータで渡す。body が fix_direction と
+# 同じ上限を超えたら切らずに渡さない（切った本文は意図を取り違えさせる。渡していないことは body_omitted で明示する）
+pr_intent="$(printf '%s' "$VIEW_RAW" | jq -c --argjson max "$FIX_DIRECTION_MAX_CHARS" '
+    def text: if type == "string" and test("[^[:space:]]") then . else null end;
+    (.title | text) as $t
+    | (.body | text) as $b
+    | if $b != null and ($b | length) > $max then {title: $t, body: null, body_omitted: "over_limit"}
+      else {title: $t, body: $b, body_omitted: null} end')"
 
 if [[ -z "$repo" && "$url" =~ ^https://github\.com/([^/]+)/([^/]+)/pull/[0-9]+$ ]]; then
     repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"

@@ -86,6 +86,17 @@ test('[priterate-skill-wrapper] /pr-iterate <PR> --direction <file> を受け、
   assert.match(steps, /prerun 出力に `fix_direction` が\s+無ければキーごと省く/, 'fix_direction が無いときに省く指示が無い');
 });
 
+test('[priterate-skill-wrapper] Workflow の args に prerun の pr_intent（PR の title・body）を加工せずに渡す（issue #1196）', () => {
+  const launch = steps.slice(steps.indexOf("Workflow({ name: 'dev-flow:pr-iterate-run'"));
+  const args = launch.slice(0, launch.indexOf('} })'));
+  assert.ok(args.includes('pr_intent: <pr_intent>'), `Workflow の args に pr_intent が無い: ${args}`);
+  assert.ok(steps.includes('`pr_intent` は prerun 出力の `pr_intent` を加工・要約・翻訳せずにそのまま転記する'), 'pr_intent を加工せずに転記する指示が無い');
+  const prerunOutput = steps.match(/JSON 1 行（`\{([^}]*)\}`）/);
+  assert.ok(prerunOutput && prerunOutput[1].split(/,\s*/).includes('pr_intent?'), `prerun 出力の一覧に pr_intent が無い: ${prerunOutput?.[1]}`);
+  const prerunSrc = readFileSync(join(pluginRoot, '_shared/scripts/pr-iterate-prerun.sh'), 'utf8');
+  assert.match(prerunSrc, /^#\s+\{ok, pr, [^}]*\bpr_intent\?[^}]*\}$/m, 'pr-iterate-prerun.sh の Output 欄に pr_intent が無い');
+});
+
 test('[priterate-skill-wrapper] 旧名 pr-iterate での Workflow 起動・自前の git worktree add・前回 prerun 出力の使い回しを書かない', () => {
   assert.doesNotMatch(src, /Workflow\(\{ name: '(dev-flow:)?pr-iterate'/, '旧名 pr-iterate での起動記述が残っている（alias は作らない）');
   assert.ok(!src.includes('git worktree add'), 'worktree 作成は pr-iterate-prerun に一本化する');

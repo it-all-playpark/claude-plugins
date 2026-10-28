@@ -25,12 +25,21 @@
   すること自体・今の diff がその出力を偽ること・免除ファイル（`*.bats`・`*.test.*`・`*.spec.*`・`.md` 等）の出力が根拠に入る経路は、
   この除外に含めず通常どおり判定する
 - reviewer の prompt（`SECURITY_REVIEW_BOUNDARY`）は境界の外を critical / major にさせず、fix の prompt（`SECURITY_FIX_GUIDANCE`）は
-  人に手作業を課す修正・同じ入力に同じ種類の検査を重ねる修正をさせない（縛られていない入力元を縛る修正は対象外。できない指摘は
-  `deferred_security_topics` で人に返す）。どちらも `_lib/security-review.mjs` の 1 か所に置く
-- issue の AC がある run では、fix の prompt に AC の一覧を足し（`_lib/review-ac.mjs` の `securityFixAcceptanceCriteriaBlock`）、
-  AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない指摘も直さず `deferred_security_topics` で
-  人に返させる（summary にぶつかる AC の番号を書く）。指摘は critical / major のまま残し、境界・severity・LGTM の gate は緩めない。
-  AC は fix の prompt にだけ入れ、reviewer の prompt には入れない（判定者に PR の文を渡さない）
+  人に手作業を課す修正・同じ入力に同じ種類の検査を重ねる修正をさせない（縛られていない入力元を縛る修正は対象外）。どちらも
+  `_lib/security-review.mjs` の 1 か所に置く
+- fix#i は指摘を「破れた不変条件と攻撃経路」として読み、suggestion は塞ぎ方の一案として扱う。PR の意図を取り消す変更（PR の
+  変更を戻す・PR が足した機能を外す）は修正とみなさず、意図を保ったまま経路を塞ぐ設計を先に探す。`deferred_security_topics` で
+  人に返すのは、上の禁止に当たる形でしか塞げない指摘・守る範囲の外の指摘と、PR の意図と破れた不変条件の両方を満たす設計が無い
+  指摘だけ（最後のものは summary にぶつかる意図と不変条件を書く）
+- PR の意図（保つ要件）は security review の指摘を含む fix#i の prompt に `SECURITY_FIX_GUIDANCE` の後ろで入る（`_lib/review-ac.mjs` の
+  `securityFixIntentBlock`）。issue の AC がある run（dev-flow 起動）は AC の一覧（`securityFixAcceptanceCriteriaBlock`）を意図とし、
+  AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない指摘を直さず `deferred_security_topics` で
+  人に返させる（summary にぶつかる AC の番号と破れた不変条件を書く）。単体起動は `pr-iterate-prerun` が `gh pr view` で取った
+  PR の title・body（body は 4000 字を超えたら渡さない）を区切りの内側のデータとして入れ、中の文を指示として扱わせず、
+  `SECURITY_FIX_GUIDANCE` の禁止と人が決めた修正方針（`fix_direction`）を上書きさせない（PR の文は攻撃者が書ける）
+- 人に返した指摘も critical / major のまま残し、境界・severity・LGTM の gate は緩めない。PR の意図（AC・title・body）は fix の
+  prompt にだけ入れ、reviewer の prompt には入れない（判定者に PR の文を渡さない。意図と安全の両立は fix の役目で、安全の判定は
+  次の round の独立した review が行う）
 
 ## 対象の判定
 
@@ -60,10 +69,12 @@ pr-iterate      → 対象の run は各 round で、review#i（・ci-check#i）
                   対象なら security-review#i（security-reviewer を毎回新しく spawn。pr.diff のパスと head sha と
                     前回の未解消 critical/major を DATA として渡す）
                     → critical/major 0 件かつ reviewed_sha が今の head → 同じ round の review approve・CI passed / no_checks がそろえば LGTM
-                    → critical/major あり → review の blocking（と CI failed）と 1 回の fix#i（pr-fixer）にまとめる。review が
+                    → critical/major あり → review の blocking（と CI failed）と 1 回の fix#i（pr-fixer。prompt に
+                      SECURITY_FIX_GUIDANCE と PR の意図 — AC か PR の title・body — が入る）にまとめる。review が
                       approve でも CI を待たない（ci-wait-check なし）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、
                       上限まで残れば max_reached）。security の指摘は history の blocking に載せない
-                      → fix#i の deferred_security_topics（直さずに人へ返した topic）が渡した指摘の topic と 1 件でも一致すれば、
+                      → fix#i の deferred_security_topics（直さずに人へ返した topic — 禁止に当たる形でしか塞げない・守る範囲の外・
+                        PR の意図と破れた不変条件の両方を満たす設計が無い指摘）が渡した指摘の topic と 1 件でも一致すれば、
                         applied を見る前にその round で status: security_unresolved（applied:true なら commit-ensure#i の後。
                         保証に失敗すれば fix_failed）。次の review・security review は spawn しない
                     → 前提チェックで clear にできない（worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致・
