@@ -332,21 +332,24 @@ cmd_run() {
   fi
   mkdir -p "$out"
   json="$out/sandbox-tune-$(jq -r '.period.until[0:10]' "$tmp").json"
-  jqs --argjson cfg "$cfg" 'include "redact"; .criteria_files = ($cfg.criteriaFiles // []) | redact_all' "$tmp" >"$json"
+  # 型の recurring（今も再発している remaining の型か）は要約の数と daily.sh の新しい再発の判定が共通で読む。
+  # verify が無ければ status が無いので付けない
+  jqs --argjson cfg "$cfg" --argjson min_count "$RECURRING_MIN_COUNT" --argjson within_days "$RECURRING_WITHIN_DAYS" '
+    include "redact"; include "verify";
+    ((.period.until | epoch) - $within_days * 86400) as $recent
+    | .criteria_files = ($cfg.criteriaFiles // [])
+    | (if .verify == null then .
+       else .types |= map(.recurring = (.status == "remaining" and .count >= $min_count and (.last_seen | epoch) >= $recent)) end)
+    | redact_all' "$tmp" >"$json"
   rm -f "$tmp"
   md="$(cmd_report "$json" --out "$out")"
-  # recurring は verify が無ければ status が無いので数えない（null）
-  jqs -c --arg report "$md" --arg analysis "$json" \
-    --argjson min_count "$RECURRING_MIN_COUNT" --argjson within_days "$RECURRING_WITHIN_DAYS" '
-    include "verify";
-    ((.period.until | epoch) - $within_days * 86400) as $recent
-    | {report: $report, analysis: $analysis, verified: (.verify != null),
+  jqs -c --arg report "$md" --arg analysis "$json" '
+    {report: $report, analysis: $analysis, verified: (.verify != null),
     types: (.types | length), remaining: ([.types[] | select(.status == "remaining")] | length),
     stale_branch: ([.types[] | select(.status == "stale_branch")] | length),
     resolved: ([.types[] | select(.status == "resolved")] | length),
     intended: ([.types[] | select(.status == "intended")] | length),
-    recurring: (if .verify == null then null
-                else [.types[] | select(.status == "remaining" and .count >= $min_count and (.last_seen | epoch) >= $recent)] | length end)}' "$json"
+    recurring: (if .verify == null then null else [.types[] | select(.recurring)] | length end)}' "$json"
 }
 
 cmd_config() {

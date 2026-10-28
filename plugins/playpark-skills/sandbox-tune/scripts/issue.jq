@@ -38,6 +38,15 @@ def candidates_errors:
       end
   end;
 
+# 日次の判断（daily.sh）の skipped の不正を 1 行 1 件で出す。issue にしなかった型も判断済みとして記録するので、id と分類が要る
+def skipped_errors:
+  if (.skipped | type) != "array" then "skipped は [{id,class,reason}] の配列にしてください"
+  else
+    .skipped | to_entries[]
+    | if (.value | type) != "object" or (.value.id | type) != "string" or (.value | has("class") | not)
+      then "skipped[\(.key)] は id（文字列）と class を持つオブジェクトにしてください: \(.value | tojson)" else empty end
+  end;
+
 def ac_md: map("- [ ] " + .) | join("\n");
 
 def paths_md: map("- " + .) | join("\n");
