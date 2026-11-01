@@ -30,7 +30,8 @@ const runPrIterate = (ctx) => runWorkflowCapture(src, ctx, '.claude/workflows/pr
 // commit-ensure の回収の add: 基準線に無い porcelain 行（新規行）のパスだけを stage する（worktree 全体の `.` は stage しない）。
 // パスは commit-ensure-status#i（既定は ` M a.ts`）から workflow が単一引用符の引数に組み立て、pathspec magic を無効にする
 const DEFAULT_LEFTOVER = { exit_code: 0, porcelain: [' M a.ts'] };
-const ADD_NEW_PATHS = "`git --literal-pathspecs add --ignore-removal -- 'a.ts'`";
+const CLEAN_BASELINE = { exit_code: 0, porcelain: [] };
+const ADD_NEW_PATHS ="`git --literal-pathspecs add --ignore-removal -- 'a.ts'`";
 
 function assertNoSandboxCrash(error) {
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -45,13 +46,13 @@ function assertNoSandboxCrash(error) {
  * fixStub(label) -> fix result（省略時は常に applied:true）
  * commitEnsureStub(label) -> commit-ensure（--pr --iteration）result（省略時は { dirty: false, committed: false, pushed: false }）
  * dirtyCheckStub(label) -> worktree-dirty-check（--check-only）result（省略時は未 stub 扱い＝null、fail-open）
- * baselineStub(label) -> fix-baseline#i（fix 前の porcelain 行）result（省略時は既定 responder の null ＝基準線なし）
+ * baselineStub(label) -> fix-baseline#i（fix 前の porcelain 行）result（省略時は CLEAN_BASELINE ＝ fix 前は clean）
  * statusStub(label) -> commit-ensure-status#i（fix 後の porcelain 行）result（省略時は DEFAULT_LEFTOVER）
  */
 function buildAgentStub({ reviewerStub, ciStub, fixStub, commitEnsureStub, dirtyCheckStub, baselineStub, statusStub, agentCalls }) {
   const rounds = ({ label, agentType, prompt }) => {
     if (label.startsWith('fix-baseline#')) {
-      return baselineStub ? baselineStub(label) : undefined;
+      return baselineStub ? baselineStub(label) : CLEAN_BASELINE;
     }
     if (label.startsWith('commit-ensure-status#')) {
       return statusStub ? statusStub(label) : DEFAULT_LEFTOVER;
@@ -573,6 +574,32 @@ for (const [name, baselineStub] of [
 
     const ensurePrompt = agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '';
     assert.ok(ensurePrompt.includes('porcelain 行はすべて新規行'), `基準線なしの commit-ensure は全 porcelain 行を新規行にする: ${ensurePrompt.slice(0, 900)}`);
+    assert.deepEqual(reviewers(agentCalls), ['review#1']);
+    assert.equal(result?.status, 'fix_failed');
+    assert.equal(result?.fix_terminal_reason, 'commit_unensured');
+  });
+}
+
+// 基準線が null なら add が fix の前からある未追跡ファイルも stage し、基準線に stage 済みの行があれば commit が index ごと
+// fix の前の変更を PR に入れる。どちらの round も add・commit・push を指示せず、agent が回収済みと申告しても止める
+for (const [name, baselineStub] of [
+  ['基準線なし', () => null],
+  ['基準線に stage 済みの行', () => ({ exit_code: 0, porcelain: ['A  secret.env', ENV_FILE] })],
+]) {
+  test(`[D18][#1201 AC-4] ${name} -> 回収の add・commit・push を指示せず、新規行があれば commit_unensured で止める`, async () => {
+    const agentCalls = [];
+    const agentStub = buildAgentStub({
+      reviewerStub: reviewOnceThenApprove,
+      baselineStub,
+      commitEnsureStub: () => ({ dirty: true, committed: true, pushed: true, porcelain: [' M a.ts'], porcelain_after: [] }),
+      agentCalls,
+    });
+    const { result, error } = await runPrIterate(makeSandbox(agentStub));
+    assertNoSandboxCrash(error);
+    if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
+
+    const s2 = stepLine(agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '', 2);
+    assert.ok(!/`git (?:[^`]* )?(?:add|commit|push)[ `]/.test(s2), `手順 2 に回収の git コマンドがある: ${s2}`);
     assert.deepEqual(reviewers(agentCalls), ['review#1']);
     assert.equal(result?.status, 'fix_failed');
     assert.equal(result?.fix_terminal_reason, 'commit_unensured');

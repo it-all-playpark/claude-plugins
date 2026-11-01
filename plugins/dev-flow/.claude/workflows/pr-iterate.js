@@ -2522,6 +2522,12 @@ function porcelainBaselineRule(baseline, when) {
   if (baseline == null || baseline.size === 0) return `${head}基準線: []（${when}の porcelain 行は無い。porcelain 行はすべて新規行）。dirty / clean は新規行で判定する。`
   return `${head}基準線（${when}からあった行。dirty に数えず stage もしない）: ${JSON.stringify([...baseline])}。dirty / clean は新規行で判定する（新規行が 0 行なら clean。exit 非0 は dirty）。`
 }
+// 回収（add・commit・push）をしてよい基準線か。基準線が null（fix の前に何があったか分からない）なら add は fix 前からある
+// 未追跡ファイルも新規行として stage し、基準線に stage 済みの行（1 文字目が空白・`?`・`!` でない）があれば commit が
+// index ごと fix の前からある変更を PR に入れる。どちらも回収せず、新規行があれば commit_unensured で止める（fail-safe）。
+function recoveryAllowed(baseline) {
+  return baseline != null && [...baseline].every((l) => l[0] === ' ' || l[0] === '?' || l[0] === '!')
+}
 // agent の返した porcelain 行が「基準線にある行だけ」であることを示すか。1 行以上あり全行が基準線にあるときだけ true
 // （空配列は exit 非0 と区別できないので clean の証拠にしない）。agent が基準線を無視して dirty と答えても、
 // 返した行から workflow が決定論に dirty を外すための判定で、dirty へ倒す向きには使わない。
@@ -2549,19 +2555,25 @@ function onlyBaselineLines(lines, baseline) {
 // 新規行の削除は手順 3 の status に残り committed:false → fix_failed で決定論に止まる（agent の判断に頼らない）。
 // stage するパスは fix の後の porcelain 行を読み取り専用 probe（commit-ensure-status#i）で取り、workflow が
 // leftoverAddCommand で add コマンドに組み立てる（agent にパスを転記させない）。probe が取れなければ add を実行させず、
-// 新規行が残れば committed:false → fix_failed（fail-safe）。
+// 新規行が残れば committed:false → fix_failed（fail-safe）。基準線が null か stage 済みの行を含む round は回収せず
+// （recoveryAllowed）、新規行があれば fix_failed で止める（fix の前からある変更を PR に commit しない）。
 async function ensureFixCommitted(i, shaPrev) {
   const withDelta = isDeltaSha(shaPrev)
   const baseline = fixBaseline
-  const addCmd = leftoverAddCommand(
-    await readPorcelainLines(`commit-ensure-status#${i}`, `fix#${i} 適用後の作業ツリーの porcelain 行を読み取る。`), baseline)
+  const recover = recoveryAllowed(baseline)
+  const addCmd = recover
+    ? leftoverAddCommand(await readPorcelainLines(`commit-ensure-status#${i}`, `fix#${i} 適用後の作業ツリーの porcelain 行を読み取る。`), baseline)
+    : null
   const addStep = addCmd
     ? `\`${addCmd}\`（workflow が組み立てた add。一字一句そのまま 1 回実行し、パスを書き換え・追加・削除しない。ほかの add は実行しない）`
     : '（stage するパスは無い。add は実行しない）'
+  const step2 = recover
+    ? `順に実行: ${addStep} →\`git commit -m "fix(pr-${PR}): commit leftover review fixes (iteration ${i})"\` → \`git push origin HEAD\`（失敗・timeout でも再発行せず手順 3 へ進む）。${PUSH_RULE}`
+    : 'add・commit・push は実行せず（この round は回収しない）手順 3 へ進む。'
   let ensured = null
   try {
     ensured = await trackedAgent(
-      `## Objective\nfix#${i} 適用後の作業ツリーに fix の未コミット変更が残っていないことを保証し（残っていれば commit + push で回収する）、commit 後の head sha${withDelta ? ' と fix delta の行数' : ''}を返す。\n\n## Steps\n以下を順に bare 単文（先頭トークンが git。cd 前置・bash 前置・env 代入前置・&& 連結禁止）で実行せよ:\n${PORCELAIN_DIRTY_RULE}\n${porcelainBaselineRule(baseline, `fix#${i} の前`)}\n1. \`git -C ${isoWt} status --porcelain\` を実行し、判定基準で数える porcelain 行を先頭の空白を含めて一字一句そのまま porcelain とする。新規行が 0 行なら dirty:false, committed:false, pushed:false, porcelain_after: [] として手順 5 へ進む。\n2. 新規行が 1 行以上、または exit 非0 なら dirty:true とし、順に実行: ${addStep} →\`git commit -m "fix(pr-${PR}): commit leftover review fixes (iteration ${i})"\` → \`git push origin HEAD\`（失敗・timeout でも再発行せず手順 3 へ進む）。${PUSH_RULE}\n3. \`git -C ${isoWt} status --porcelain\` を再実行し、判定基準で数える porcelain 行を一字一句そのまま porcelain_after とする。手順 1 と同じ判定基準で、新規行が 0 行なら committed:true、新規行が残る（または exit 非0）なら dirty なので committed:false。\n4. \`git -C ${isoWt} rev-list "origin/${prMeta?.head_ref || ''}"..HEAD --count\` を実行する。警告行を除いた出力が 0 なら pushed:true。コマンド失敗または非数値出力なら pushed:false。dirty:true とする。\n5. \`git -C ${isoWt} rev-parse HEAD\` を実行し、stdout の 40 桁 hex をそのまま head_sha とする（失敗時は空文字）。\n${withDelta ? `6. \`git -C ${isoWt} diff --shortstat ${shaPrev.trim()}..HEAD\` を実行し、stdout の 1 行を一字一句そのまま delta_shortstat とする（stdout が空なら空文字。失敗時はキーを省略）。\n7. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果>, "delta_shortstat": <6の結果>, "porcelain": <1の porcelain>, "porcelain_after": <3の porcelain_after> } を返す。` : `6. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果>, "porcelain": <1の porcelain>, "porcelain_after": <3の porcelain_after> } を返す。`}\n\n## Output format\n{ "dirty": boolean, "committed": boolean, "pushed": boolean, "head_sha": string${withDelta ? ', "delta_shortstat": string' : ''}, "porcelain": string[], "porcelain_after": string[] }\nprose 禁止。JSON のみ返せ。\n\n## Tools\n使用可: Bash, Read\n\n## Boundary\n上記 git コマンド以外のファイル変更・git 操作禁止。\n\n## Token cap\nJSON のみ。1 行以内。`,
+      `## Objective\nfix#${i} 適用後の作業ツリーに fix の未コミット変更が残っていないことを保証し（残っていれば commit + push で回収する）、commit 後の head sha${withDelta ? ' と fix delta の行数' : ''}を返す。\n\n## Steps\n以下を順に bare 単文（先頭トークンが git。cd 前置・bash 前置・env 代入前置・&& 連結禁止）で実行せよ:\n${PORCELAIN_DIRTY_RULE}\n${porcelainBaselineRule(baseline, `fix#${i} の前`)}\n1. \`git -C ${isoWt} status --porcelain\` を実行し、判定基準で数える porcelain 行を先頭の空白を含めて一字一句そのまま porcelain とする。新規行が 0 行なら dirty:false, committed:false, pushed:false, porcelain_after: [] として手順 5 へ進む。\n2. 新規行が 1 行以上、または exit 非0 なら dirty:true とし、${step2}\n3. \`git -C ${isoWt} status --porcelain\` を再実行し、判定基準で数える porcelain 行を一字一句そのまま porcelain_after とする。手順 1 と同じ判定基準で、新規行が 0 行なら committed:true、新規行が残る（または exit 非0）なら dirty なので committed:false。\n4. \`git -C ${isoWt} rev-list "origin/${prMeta?.head_ref || ''}"..HEAD --count\` を実行する。警告行を除いた出力が 0 なら pushed:true。コマンド失敗または非数値出力なら pushed:false。dirty:true とする。\n5. \`git -C ${isoWt} rev-parse HEAD\` を実行し、stdout の 40 桁 hex をそのまま head_sha とする（失敗時は空文字）。\n${withDelta ? `6. \`git -C ${isoWt} diff --shortstat ${shaPrev.trim()}..HEAD\` を実行し、stdout の 1 行を一字一句そのまま delta_shortstat とする（stdout が空なら空文字。失敗時はキーを省略）。\n7. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果>, "delta_shortstat": <6の結果>, "porcelain": <1の porcelain>, "porcelain_after": <3の porcelain_after> } を返す。` : `6. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果>, "porcelain": <1の porcelain>, "porcelain_after": <3の porcelain_after> } を返す。`}\n\n## Output format\n{ "dirty": boolean, "committed": boolean, "pushed": boolean, "head_sha": string${withDelta ? ', "delta_shortstat": string' : ''}, "porcelain": string[], "porcelain_after": string[] }\nprose 禁止。JSON のみ返せ。\n\n## Tools\n使用可: Bash, Read\n\n## Boundary\n上記 git コマンド以外のファイル変更・git 操作禁止。\n\n## Token cap\nJSON のみ。1 行以内。`,
       { agentType: 'dev-runner-haiku', schema: COMMIT_ENSURE, label: `commit-ensure#${i}`, phase: 'Iterate' },
     )
   } catch (e) {
@@ -2571,6 +2583,8 @@ async function ensureFixCommitted(i, shaPrev) {
   const deltaLines = withDelta ? parseShortstatLines(ensured?.delta_shortstat) : null
   if (ensured == null) return { ensured: false, headSha, deltaLines }
   if (ensured.dirty === false || onlyBaselineLines(ensured.porcelain, baseline)) return { ensured: true, headSha, deltaLines }
+  // 回収しない基準線の round で新規行があれば、agent の committed / pushed の申告によらず止める
+  if (!recover) return { ensured: false, headSha, deltaLines }
   const committed = ensured.committed === true || onlyBaselineLines(ensured.porcelain_after, baseline)
   if (committed && ensured.pushed === true) {
     fixUncommittedRecovered++

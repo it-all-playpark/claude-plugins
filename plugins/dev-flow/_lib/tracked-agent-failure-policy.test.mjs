@@ -392,6 +392,8 @@ const PR_B2 = {
   overrides: {
     'review#1': () => ({ decision: 'request-changes', issues: [{ severity: 'critical', description: 'x', suggestion: 'y' }], summary: 'nope' }),
     'review#2': { decision: 'approve', issues: [], summary: 'ok now' },
+    // 基準線を取れた round だけが commit-ensure-status（回収の add の材料）を読む
+    'fix-baseline#1': { exit_code: 0, porcelain: [] },
   },
 };
 // B3: fix#1 が null → fix-null-retry（fix#1-retry）が applied を返して commit-ensure#1 → review#2 approve。
