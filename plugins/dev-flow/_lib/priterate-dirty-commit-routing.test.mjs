@@ -11,7 +11,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -27,8 +27,10 @@ function makeSandbox({ rounds, agentCalls }) {
 
 const runPrIterate = (ctx) => runWorkflowCapture(src, ctx, '.claude/workflows/pr-iterate.js');
 
-// commit-ensure の回収の add: 基準線に無い porcelain 行（新規行）のパスだけを stage する（worktree 全体の `.` は stage しない）
-const ADD_NEW_PATHS = '`git add --ignore-removal -- <新規行のパス>`';
+// commit-ensure の回収の add: 基準線に無い porcelain 行（新規行）のパスだけを stage する（worktree 全体の `.` は stage しない）。
+// パスは commit-ensure-status#i（既定は ` M a.ts`）から workflow が単一引用符の引数に組み立て、pathspec magic を無効にする
+const DEFAULT_LEFTOVER = { exit_code: 0, porcelain: [' M a.ts'] };
+const ADD_NEW_PATHS = "`git --literal-pathspecs add --ignore-removal -- 'a.ts'`";
 
 function assertNoSandboxCrash(error) {
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -44,11 +46,15 @@ function assertNoSandboxCrash(error) {
  * commitEnsureStub(label) -> commit-ensure（--pr --iteration）result（省略時は { dirty: false, committed: false, pushed: false }）
  * dirtyCheckStub(label) -> worktree-dirty-check（--check-only）result（省略時は未 stub 扱い＝null、fail-open）
  * baselineStub(label) -> fix-baseline#i（fix 前の porcelain 行）result（省略時は既定 responder の null ＝基準線なし）
+ * statusStub(label) -> commit-ensure-status#i（fix 後の porcelain 行）result（省略時は DEFAULT_LEFTOVER）
  */
-function buildAgentStub({ reviewerStub, ciStub, fixStub, commitEnsureStub, dirtyCheckStub, baselineStub, agentCalls }) {
+function buildAgentStub({ reviewerStub, ciStub, fixStub, commitEnsureStub, dirtyCheckStub, baselineStub, statusStub, agentCalls }) {
   const rounds = ({ label, agentType, prompt }) => {
     if (label.startsWith('fix-baseline#')) {
       return baselineStub ? baselineStub(label) : undefined;
+    }
+    if (label.startsWith('commit-ensure-status#')) {
+      return statusStub ? statusStub(label) : DEFAULT_LEFTOVER;
     }
     if (agentType === 'dev-flow:pr-reviewer') {
       return reviewerStub(label);
@@ -113,7 +119,7 @@ test('[D1][AC-3] fix applied:true + commit-ensure dirty:false -> commit-ensure#1
     `commit-ensure#1 の prompt は bare ${ADD_NEW_PATHS} / \`git commit\` / \`git push origin HEAD\` を含むべき: ${gitCmds.join(' | ')}`,
   );
   // 未ステージの削除を stage する add（-A / --all / -u 等）も worktree 全体（.）の add も使わない（issue #875 / #1201）
-  assert.deepEqual(gitCmds.filter((c) => c.startsWith('`git add')), [ADD_NEW_PATHS],
+  assert.deepEqual(gitCmds.filter((c) => / add /.test(c)), [ADD_NEW_PATHS],
     `commit-ensure#1 の add は新規行のパスだけを stage する ${ADD_NEW_PATHS} だけ: ${gitCmds.join(' | ')}`);
   assert.deepEqual([...new Set(gitCmds.filter((c) => c.includes(' push')))], ['`git push origin HEAD`'],
     `commit-ensure#1 の push は \`git push origin HEAD\` だけ（-u を付けない）: ${gitCmds.join(' | ')}`);
@@ -369,29 +375,35 @@ test('[D11][#742 AC-3] 終端の worktree-dirty-check prompt も porcelain 行�
 // ---- D12 (issue #875 / #1201): 手順 2 の add / commit を実 git で走らせる ----
 // 部分 checkout の worktree（取り出していないパスが ` D` で残る）で `git add -A` を走らせると、PR branch に
 // 全削除の commit が push される。worktree 全体（.）を stage すると、環境が置いた未追跡ファイルも PR に入る。
-// prompt の手順 2 の add / commit を、新規行（基準線に無い porcelain 行）のパスで実 git に流して確かめる。
+// 一時 repo の基準線と fix 後の status を fix-baseline#1 / commit-ensure-status#1 の応答にして workflow を回し、
+// commit-ensure#1 の手順 2 の add / commit をそのままシェルで実行して確かめる。
 
-/** commit-ensure#1 の prompt の手順 2 から add / commit の雛形を取り出す。 */
-async function commitEnsureStep2Cmds() {
+/** commit-ensure#1 の prompt の手順 2 から add / commit を取り出す（基準線と fix 後の porcelain 行を応答に使う）。 */
+async function commitEnsureStep2Cmds(baselineLines, afterLines) {
   const agentCalls = [];
   const majorIssue = { severity: 'major', topic: 't1', file: 'a.ts', description: 'd1', suggestion: 's1' };
   const reviewerStub = (label) => (label === 'review#1'
     ? { decision: 'request-changes', issues: [majorIssue], summary: 'ng' }
     : { decision: 'approve', issues: [], summary: 'ok' });
-  const { error } = await runPrIterate(makeSandbox(buildAgentStub({ reviewerStub, agentCalls })));
+  const { error } = await runPrIterate(makeSandbox(buildAgentStub({
+    reviewerStub,
+    baselineStub: () => ({ exit_code: 0, porcelain: baselineLines }),
+    statusStub: () => ({ exit_code: 0, porcelain: afterLines }),
+    agentCalls,
+  })));
   assertNoSandboxCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
   const s2 = stepLine(agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '', 2);
-  const cmds = [...s2.matchAll(/`(git (?:add|commit)[^`]*)`/g)].map((m) => m[1]);
+  const cmds = [...s2.matchAll(/`(git (?:--literal-pathspecs add|commit)[^`]*)`/g)].map((m) => m[1]);
   assert.equal(cmds.length, 2, `手順 2 は add と commit を 1 つずつ持つべき: ${s2}`);
   return cmds;
 }
 
 /**
- * 一時 repo を作り、setup（fix の前の状態）→ 基準線の status → fix（fix の変更）→ 手順 2 を新規行のパスで実行し、
- * 実行後の HEAD と status を返す。新規行のパスは手順 2 の指示どおり、2 文字目が空白でない新規行の 4 文字目以降。
+ * 一時 repo を作り、setup（fix の前の状態）→ 基準線の status → fix（fix の変更）→ fix 後の status から組み立てた
+ * 手順 2 をシェルで実行し、実行後の HEAD と status（probe に挙げた名前のファイルの有無）を返す。
  */
-function runStep2InRepo(cmds, { setup, fix }) {
+async function step2Result({ setup, fix }, probe = []) {
   const dir = mkdtempSync(join(tmpdir(), 'commit-ensure-'));
   const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
   const sh = (cmd) => execFileSync('sh', ['-c', cmd], { cwd: dir, env, encoding: 'utf8' });
@@ -404,13 +416,14 @@ function runStep2InRepo(cmds, { setup, fix }) {
     setup(dir);
     const baseline = new Set(statusLines());
     fix(dir);
-    const paths = statusLines().filter((l) => !baseline.has(l) && l[1] !== ' ').map((l) => l.slice(3).split(' -> ').pop());
-    for (const cmd of cmds) sh(cmd.replace('<新規行のパス>', paths.join(' ')));
+    const cmds = await commitEnsureStep2Cmds([...baseline], statusLines());
+    for (const cmd of cmds) sh(cmd);
     return {
-      tree: sh('git ls-tree -r --name-only HEAD').split('\n').filter(Boolean),
+      tree: sh('git ls-tree -r -z --name-only HEAD').split('\0').filter(Boolean),
       fixed: sh('git show HEAD:fixed.txt'),
       status: statusLines(),
       baseline,
+      present: Object.fromEntries(probe.map((n) => [n, existsSync(join(dir, n))])),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -418,8 +431,7 @@ function runStep2InRepo(cmds, { setup, fix }) {
 }
 
 test('[D12][#875 AC-3] 基準線に無い未ステージの削除: 手順 2 の add / commit は削除を commit せず、status に新規行が残る', async () => {
-  const cmds = await commitEnsureStep2Cmds();
-  const r = runStep2InRepo(cmds, {
+  const r = await step2Result({
     setup: () => {},
     fix: (dir) => {
       unlinkSync(join(dir, 'kept.txt'));               // 取り出していないパス（未ステージの削除）
@@ -432,8 +444,7 @@ test('[D12][#875 AC-3] 基準線に無い未ステージの削除: 手順 2 の 
 });
 
 test('[D12b][#1201 AC-3] 基準線にある未追跡ファイル・未ステージの削除: 手順 2 は新規行のパスだけを commit し、基準線の行は status に残る', async () => {
-  const cmds = await commitEnsureStep2Cmds();
-  const r = runStep2InRepo(cmds, {
+  const r = await step2Result({
     setup: (dir) => {
       writeFileSync(join(dir, '.worktreeinclude'), 'env\n'); // 環境が worktree に置く未追跡ファイル
       unlinkSync(join(dir, 'kept.txt'));                     // 部分 checkout の未ステージの削除
@@ -449,6 +460,25 @@ test('[D12b][#1201 AC-3] 基準線にある未追跡ファイル・未ステー�
   assert.equal(r.fixed, 'after\n', 'fix の変更は commit で回収されるべき');
   assert.ok(r.status.length > 0 && r.status.every((l) => r.baseline.has(l)),
     `回収後の status は基準線の行だけになるべき（手順 3 で committed:true）: ${JSON.stringify(r.status)}`);
+});
+
+test('[D12c][#1201 AC-3] PR が名付けたファイル名はシェルでも pathspec でも解釈されず、リテラルなパスとして stage される', async () => {
+  const injected = '$(touch pwned).md';
+  const r = await step2Result({
+    setup: (dir) => writeFileSync(join(dir, 'secret.env'), 'TOKEN=x\n'), // 基準線にある未追跡ファイル
+    fix: (dir) => {
+      writeFileSync(join(dir, 'fixed.txt'), 'after\n');
+      writeFileSync(join(dir, injected), 'x\n');   // コマンド置換を含む名前
+      writeFileSync(join(dir, ':!x.md'), 'x\n');   // 除外 pathspec の形の名前
+      writeFileSync(join(dir, "it's.md"), 'x\n');  // 単一引用符を含む名前
+      writeFileSync(join(dir, '日本 語.md'), 'x\n');  // status が C 形式（8 進）で引用する名前
+    },
+  }, ['pwned']);
+  assert.equal(r.present.pwned, false, 'ファイル名のコマンド置換が実行された');
+  assert.ok(!r.tree.includes('secret.env'), '基準線にある未追跡ファイルが pathspec magic で stage された');
+  for (const name of [injected, ':!x.md', "it's.md", '日本 語.md']) assert.ok(r.tree.includes(name), `${name} が commit で回収されていない: ${r.tree.join(', ')}`);
+  assert.equal(r.fixed, 'after\n', 'fix の変更は commit で回収されるべき');
+  assert.deepEqual(r.status, ['?? secret.env'], `回収後の status は基準線の行だけになるべき: ${JSON.stringify(r.status)}`);
 });
 
 // ---- D13〜D17 (issue #1201): fix#i の前の porcelain 行を基準線にし、基準線に無い行だけを fix の残りと数える ----
