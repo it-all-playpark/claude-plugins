@@ -523,6 +523,24 @@ test('[D12e][#1201 AC-3] status の probe は未追跡ファイルを個別に�
   assert.ok(add.includes("'fixed.txt'") && !add.includes("'d/'"), `ディレクトリの行を add に並べてはならない: ${add}`);
 });
 
+test('[D12f][#1201 AC-3] rename の宛先が引用内に ` -> ` を含んでも、基準線の未追跡ファイルを add に並べない（rename / copy 行は並べない）', async () => {
+  const agentCalls = [];
+  const { error } = await runPrIterate(makeSandbox(buildAgentStub({
+    reviewerStub: (label) => (label === 'review#1'
+      ? { decision: 'request-changes', issues: [{ severity: 'major', topic: 't1', file: 'a.ts', description: 'd1', suggestion: 's1' }], summary: 'ng' }
+      : { decision: 'approve', issues: [], summary: 'ok' }),
+    baselineStub: () => ({ exit_code: 0, porcelain: ['?? secret.env"'] }),
+    statusStub: () => ({ exit_code: 0, porcelain: ['?? secret.env"', 'RM old -> "x -> secret.env"', ' M fixed.txt'] }),
+    agentCalls,
+  })));
+  assertNoSandboxCrash(error);
+  if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
+  const s2 = stepLine(agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '', 2);
+  const add = s2.match(/`(git --literal-pathspecs add[^`]*)`/)?.[1] ?? '';
+  assert.ok(add.includes("'fixed.txt'"), `新規行の通常のパスは add に並べるべき: ${add}`);
+  assert.ok(!add.includes('secret.env') && !add.includes("'old'"), `rename / copy 行のパスを add に並べてはならない: ${add}`);
+});
+
 // ---- D13〜D17 (issue #1201): fix#i の前の porcelain 行を基準線にし、基準線に無い行だけを fix の残りと数える ----
 const ENV_FILE = '?? .worktreeinclude';
 const majorIssue1201 = { severity: 'major', topic: 't1', file: 'a.ts', description: 'd1', suggestion: 's1' };

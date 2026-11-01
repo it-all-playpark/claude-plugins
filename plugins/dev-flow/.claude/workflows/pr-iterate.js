@@ -2485,8 +2485,9 @@ async function readPorcelainLines(label, objective) {
 // 回収の stage コマンドを workflow が組み立てる。パスは PR が名付けたファイル名（外部入力）なので、agent に
 // シェルコマンドへ転記させない（`$(...)` 等のコマンド置換が走る）。各パスは単一引用符で囲んだリテラルな引数にし、
 // `--literal-pathspecs` で `:!x` 等の pathspec magic を無効にする（除外 pathspec だけだと基準線の未追跡ファイルまで stage する）。
-// 対象は新規行のうち 2 文字目が空白でない行（2 文字目が空白の行は stage 済み）。rename / copy は `->` の右側。
-// C 形式で引用されたパス（空白・非 ASCII 等を含む名前。`"` で囲まれる）は戻してから引用する。戻せないパスと、
+// 対象は新規行のうち 2 文字目が空白でない行（2 文字目が空白の行は stage 済み）。rename / copy の行（1・2 文字目に R / C）は
+// 並べない: `old -> new` の区切りは引用されたパスの中にも現れ、分割すると宛先を別のパス（基準線の未追跡ファイル等）に
+// 取り違える。並べなかった rename / copy は手順 3 の status に残り committed:false → fix_failed で止まる。C 形式で引用されたパス（空白・非 ASCII 等を含む名前。`"` で囲まれる）は戻してから引用する。戻せないパスと、
 // 制御文字・backtick を含むパスと、`/` で終わるパス（ディレクトリ。add すると中の基準線の未追跡ファイルまで
 // stage する。probe が `--untracked-files=all` を付けずに返した行もここで落ちる）は並べない（stage されずに手順 3 の status に残り committed:false → fix_failed で
 // 止まる。fail-safe）。並べるパスが無ければ null（add は実行しない）。
@@ -2514,8 +2515,8 @@ function unquotePorcelainPath(p) {
 function leftoverAddCommand(lines, baseline) {
   if (lines == null) return null
   const paths = lines
-    .filter((l) => !(baseline != null && baseline.has(l)) && l[1] !== ' ')
-    .map((l) => { try { return unquotePorcelainPath(/[RC]/.test(l.slice(0, 2)) ? l.slice(3).split(' -> ').pop() : l.slice(3)) } catch { return null } })
+    .filter((l) => !(baseline != null && baseline.has(l)) && l[1] !== ' ' && !/[RC]/.test(l.slice(0, 2)))
+    .map((l) => { try { return unquotePorcelainPath(l.slice(3)) } catch { return null } })
     .filter((p) => p != null && p !== '' && !p.endsWith('/') && !/[\x00-\x1f\x7f\x60]/.test(p))
   if (paths.length === 0) return null
   return `git --literal-pathspecs add --ignore-removal -- ${paths.map(shellQuote).join(' ')}`
