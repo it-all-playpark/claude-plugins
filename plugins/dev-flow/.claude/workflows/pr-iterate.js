@@ -1377,8 +1377,17 @@ const FIX = {
 }
 
 
-// 終端 dirty 検出と fix 適用後 commit 保証の exec-proxy スキーマ。
-const DIRTY_STATUS = { type: 'object', required: ['dirty'], properties: { dirty: { type: 'boolean' }, files: { type: 'number' } } }
+// 終端 dirty 検出と fix 適用後 commit 保証の exec-proxy スキーマ。porcelain / porcelain_after は status の porcelain 行の
+// verbatim で、workflow が基準線（FIX_BASELINE）と突き合わせる。
+const DIRTY_STATUS = {
+  type: 'object', required: ['dirty'],
+  properties: { dirty: { type: 'boolean' }, files: { type: 'number' }, porcelain: { type: 'array', items: { type: 'string' } } },
+}
+// fix#i の前の worktree の porcelain 行（読み取り専用 probe）。exit_code が 0 でなければ基準線は取れなかった扱い。
+const FIX_BASELINE = {
+  type: 'object', required: ['exit_code', 'porcelain'],
+  properties: { exit_code: { type: 'number' }, porcelain: { type: 'array', items: { type: 'string' } } },
+}
 // final_test_red の確認範囲の exec-proxy スキーマ。HOLD_TEST_DIFF は HOLD 時の head → 終端 head の変更ファイル一覧
 // （outside は HOLD 時の head にあって終端 head に無い commit 数。testRelatedChanges が読む）、HOLD_TEST_RUN は run-tests の stdout。
 const HOLD_TEST_DIFF = {
@@ -1401,6 +1410,7 @@ const COMMIT_ENSURE = {
   properties: {
     dirty: { type: 'boolean' }, committed: { type: 'boolean' }, pushed: { type: 'boolean' },
     head_sha: { type: 'string' }, delta_shortstat: { type: 'string' },
+    porcelain: { type: 'array', items: { type: 'string' } }, porcelain_after: { type: 'array', items: { type: 'string' } },
   },
 }
 
@@ -2387,6 +2397,11 @@ if (shaNow == null) log('⚠️ review#1 時点の head sha を取得できず �
 // turn の上限は agent() の opts では変えられないため、opts で model / effort を渡さない。
 async function callFixAgent(prompt, i) {
   securityHeadMayChange()
+  fixBaseline = await takeFixBaseline(i)
+  if (!runBaselineTaken) {
+    runBaseline = fixBaseline
+    runBaselineTaken = true
+  }
   let fix = null
   try {
     fix = await trackedAgent(prompt, { agentType: 'pr-fixer', schema: FIX, label: `fix#${i}`, phase: 'Iterate' })
@@ -2437,6 +2452,42 @@ async function callReviewAgent(prompt, label) {
 const PORCELAIN_DIRTY_RULE = '【dirty 判定基準】出力のうち porcelain 行（先頭 2 文字が状態コード（空白・M・T・A・D・R・C・U・?・! のいずれか）で、3 文字目が空白の行。例: ` M a.ts` / `?? b.ts`）だけを数える。'
   + '`<path>: Operation not permitted` のような警告行や `warning:` で始まる行など、porcelain 形式でない行は数えない（警告行だけが出ていて porcelain 行が 0 行なら変更なし＝clean）。'
   + 'porcelain 行が 1 行以上あれば変更あり＝dirty。コマンドが exit 非0 で失敗した場合は判定不能として変更あり＝dirty とみなす。'
+// PORCELAIN_DIRTY_RULE の porcelain 行の形。agent が返した行を workflow 側で同じ基準で数え直すのに使う。
+const PORCELAIN_LINE_RE = /^[ MTADRCU?!]{2} ./
+const porcelainLinesOf = (v) => (Array.isArray(v) && v.every((l) => typeof l === 'string') ? v.filter((l) => PORCELAIN_LINE_RE.test(l)) : null)
+
+// 基準線: fix#i の spawn 前に取った worktree の porcelain 行の集合（Set。取れなかったときは null）。
+// worktree には fix の前から変更が残りうる（利用者の環境が置く未追跡ファイル・部分 checkout の未 stage の削除）。
+// それを fix の残りと数えると、commit・push 済みの fix を commit_unensured で止めるか、回収で無関係なファイルを PR に
+// commit する。commit-ensure#i は基準線に無い行（新規行）だけで dirty を判定し、新規行のパスだけを stage する。
+// 基準線が null のときは全 porcelain 行を新規行として扱う（fail-safe。状態不明を clean と同一視しない）。
+// runBaseline は run の最初の fix の前の基準線で、終端の worktree-dirty-check が使う（後の round の基準線は前の fix の
+// 残りを含みうるので使わない）。
+let fixBaseline = null
+let runBaseline = null
+let runBaselineTaken = false
+async function takeFixBaseline(i) {
+  const r = await failOpenAgent(
+    `## Objective\nfix#${i} を起動する前の作業ツリーの porcelain 行を基準線として読み取る。\n\n## Steps\n\`git -C ${isoWt} status --porcelain\` を bare 単文（先頭トークンが git。cd 前置・bash 前置・env 代入前置・&& 連結禁止）で 1 回実行せよ。${PORCELAIN_DIRTY_RULE}\n判定基準で数える porcelain 行だけを、先頭の空白を含めて一字一句そのまま出力順に porcelain に入れ、exit_code にコマンドの exit code を入れて返す。\n\n## Output format\n{ "exit_code": number, "porcelain": string[] }\nprose 禁止。JSON のみ返せ。\n\n## Tools\n使用可: Bash, Read\n\n## Boundary\n読み取り専用。ファイル変更・git mutation 禁止。\n\n## Token cap\nJSON のみ。`,
+    { agentType: 'dev-runner-haiku-ro', schema: FIX_BASELINE, label: `fix-baseline#${i}`, phase: 'Iterate' },
+  )
+  const lines = r?.exit_code === 0 ? porcelainLinesOf(r.porcelain) : null
+  if (lines == null) log(`⚠️ fix-baseline#${i} で fix 前の porcelain 行を取れず — commit-ensure#${i} は fix 後の全 porcelain 行で dirty を判定する（fail-safe）`)
+  return lines == null ? null : new Set(lines)
+}
+// 基準線を prompt に渡す段落（commit-ensure と worktree-dirty-check で共有）。行は JSON 文字列で渡し、先頭の空白を保つ。
+function porcelainBaselineRule(baseline, when) {
+  const head = '【基準線】判定基準で数える porcelain 行のうち、次の基準線の行と一字一句一致する行を除いた行を「新規行」と呼ぶ。'
+  if (baseline == null || baseline.size === 0) return `${head}基準線: []（${when}の porcelain 行は無い。porcelain 行はすべて新規行）。dirty / clean は新規行で判定する。`
+  return `${head}基準線（${when}からあった行。dirty に数えず stage もしない）: ${JSON.stringify([...baseline])}。dirty / clean は新規行で判定する（新規行が 0 行なら clean。exit 非0 は dirty）。`
+}
+// agent の返した porcelain 行が「基準線にある行だけ」であることを示すか。1 行以上あり全行が基準線にあるときだけ true
+// （空配列は exit 非0 と区別できないので clean の証拠にしない）。agent が基準線を無視して dirty と答えても、
+// 返した行から workflow が決定論に dirty を外すための判定で、dirty へ倒す向きには使わない。
+function onlyBaselineLines(lines, baseline) {
+  const ls = porcelainLinesOf(lines)
+  return baseline != null && ls != null && ls.length > 0 && ls.every((l) => baseline.has(l))
+}
 
 // fix 適用直後の commit 保証。fix agent の self-report（applied:true）を信用せず
 // 決定論スクリプトで worktree の未コミット変更を検証し、dirty なら commit+push で回収する。
@@ -2450,16 +2501,18 @@ const PORCELAIN_DIRTY_RULE = '【dirty 判定基準】出力のうち porcelain 
 // add / commit / push は cwd（isoWt。agent 自身の pwd / nested は NESTED.cwd）で実行し、読み取りのみの
 // status / rev-list / rev-parse / diff は -C ${isoWt} を付ける。worktree は upstream を持たない（起動元 repo の
 // .git/config は sandbox 内から書けない）ので、push 済みの判定は `@{u}` ではなく origin/<head_ref> と比べる。
-// status の dirty 判定は PORCELAIN_DIRTY_RULE に従う。
-// 回収の stage は `git add -A` ではなく `git add --ignore-removal .`: 未ステージの削除（` D`）は部分 checkout
-// （取り出せなかったパス）と区別できず、`-A` は PR branch に全削除の commit を作る。削除は stage しないので
-// 手順 3 の status に残り committed:false → fix_failed で決定論に止まる（agent の判断に頼らない）。
+// status の dirty 判定は PORCELAIN_DIRTY_RULE の porcelain 行のうち基準線（fixBaseline）に無い新規行で行う。
+// agent が基準線を無視して dirty と答えても、返した porcelain 行が基準線の行だけなら workflow が dirty を外す（onlyBaselineLines）。
+// 回収の stage は新規行のパスだけ（`.` や `-A` で worktree 全体を stage しない）: 基準線の未追跡ファイルを PR に commit せず、
+// 未ステージの削除（` D`）は部分 checkout（取り出せなかったパス）と区別できないので `--ignore-removal` で stage しない。
+// 新規行の削除は手順 3 の status に残り committed:false → fix_failed で決定論に止まる（agent の判断に頼らない）。
 async function ensureFixCommitted(i, shaPrev) {
   const withDelta = isDeltaSha(shaPrev)
+  const baseline = fixBaseline
   let ensured = null
   try {
     ensured = await trackedAgent(
-      `## Objective\nfix#${i} 適用後の作業ツリーに未コミット変更が残っていないことを保証し（残っていれば commit + push で回収する）、commit 後の head sha${withDelta ? ' と fix delta の行数' : ''}を返す。\n\n## Steps\n以下を順に bare 単文（先頭トークンが git。cd 前置・bash 前置・env 代入前置・&& 連結禁止）で実行せよ:\n${PORCELAIN_DIRTY_RULE}\n1. \`git -C ${isoWt} status --porcelain\` を実行する。判定基準で clean（porcelain 行が 0 行）なら dirty:false, committed:false, pushed:false として手順 5 へ進む。\n2. 判定基準で dirty（porcelain 行が 1 行以上、または exit 非0）なら dirty:true とし、順に実行: \`git add --ignore-removal .\` → \`git commit -m "fix(pr-${PR}): commit leftover review fixes (iteration ${i})"\` → \`git push origin HEAD\`（失敗・timeout でも再発行せず手順 3 へ進む）。${PUSH_RULE}\n3. \`git -C ${isoWt} status --porcelain\` を再実行し、手順 1 と同じ判定基準で判定する。clean（porcelain 行が 0 行）なら committed:true、dirty なら committed:false。\n4. \`git -C ${isoWt} rev-list "origin/${prMeta?.head_ref || ''}"..HEAD --count\` を実行する。警告行を除いた出力が 0 なら pushed:true。コマンド失敗または非数値出力なら pushed:false。dirty:true とする。\n5. \`git -C ${isoWt} rev-parse HEAD\` を実行し、stdout の 40 桁 hex をそのまま head_sha とする（失敗時は空文字）。\n${withDelta ? `6. \`git -C ${isoWt} diff --shortstat ${shaPrev.trim()}..HEAD\` を実行し、stdout の 1 行を一字一句そのまま delta_shortstat とする（stdout が空なら空文字。失敗時はキーを省略）。\n7. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果>, "delta_shortstat": <6の結果> } を返す。` : `6. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果> } を返す。`}\n\n## Output format\n{ "dirty": boolean, "committed": boolean, "pushed": boolean, "head_sha": string${withDelta ? ', "delta_shortstat": string' : ''} }\nprose 禁止。JSON のみ返せ。\n\n## Tools\n使用可: Bash, Read\n\n## Boundary\n上記 git コマンド以外のファイル変更・git 操作禁止。\n\n## Token cap\nJSON のみ。1 行以内。`,
+      `## Objective\nfix#${i} 適用後の作業ツリーに fix の未コミット変更が残っていないことを保証し（残っていれば commit + push で回収する）、commit 後の head sha${withDelta ? ' と fix delta の行数' : ''}を返す。\n\n## Steps\n以下を順に bare 単文（先頭トークンが git。cd 前置・bash 前置・env 代入前置・&& 連結禁止）で実行せよ:\n${PORCELAIN_DIRTY_RULE}\n${porcelainBaselineRule(baseline, `fix#${i} の前`)}\n1. \`git -C ${isoWt} status --porcelain\` を実行し、判定基準で数える porcelain 行を先頭の空白を含めて一字一句そのまま porcelain とする。新規行が 0 行なら dirty:false, committed:false, pushed:false, porcelain_after: [] として手順 5 へ進む。\n2. 新規行が 1 行以上、または exit 非0 なら dirty:true とし、順に実行: \`git add --ignore-removal -- <新規行のパス>\`（新規行のうち 2 文字目が空白でない行について、4 文字目以降のパスを空白区切りで並べる。\`<旧> -> <新>\` の形は \`->\` の右側だけ。2 文字目が空白の行は stage 済みなので並べない。\`.\` や基準線の行のパスは並べない。並べるパスが無ければ add は実行しない）→ \`git commit -m "fix(pr-${PR}): commit leftover review fixes (iteration ${i})"\` → \`git push origin HEAD\`（失敗・timeout でも再発行せず手順 3 へ進む）。${PUSH_RULE}\n3. \`git -C ${isoWt} status --porcelain\` を再実行し、判定基準で数える porcelain 行を一字一句そのまま porcelain_after とする。手順 1 と同じ判定基準で、新規行が 0 行なら committed:true、新規行が残る（または exit 非0）なら dirty なので committed:false。\n4. \`git -C ${isoWt} rev-list "origin/${prMeta?.head_ref || ''}"..HEAD --count\` を実行する。警告行を除いた出力が 0 なら pushed:true。コマンド失敗または非数値出力なら pushed:false。dirty:true とする。\n5. \`git -C ${isoWt} rev-parse HEAD\` を実行し、stdout の 40 桁 hex をそのまま head_sha とする（失敗時は空文字）。\n${withDelta ? `6. \`git -C ${isoWt} diff --shortstat ${shaPrev.trim()}..HEAD\` を実行し、stdout の 1 行を一字一句そのまま delta_shortstat とする（stdout が空なら空文字。失敗時はキーを省略）。\n7. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果>, "delta_shortstat": <6の結果>, "porcelain": <1の porcelain>, "porcelain_after": <3の porcelain_after> } を返す。` : `6. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果>, "porcelain": <1の porcelain>, "porcelain_after": <3の porcelain_after> } を返す。`}\n\n## Output format\n{ "dirty": boolean, "committed": boolean, "pushed": boolean, "head_sha": string${withDelta ? ', "delta_shortstat": string' : ''}, "porcelain": string[], "porcelain_after": string[] }\nprose 禁止。JSON のみ返せ。\n\n## Tools\n使用可: Bash, Read\n\n## Boundary\n上記 git コマンド以外のファイル変更・git 操作禁止。\n\n## Token cap\nJSON のみ。1 行以内。`,
       { agentType: 'dev-runner-haiku', schema: COMMIT_ENSURE, label: `commit-ensure#${i}`, phase: 'Iterate' },
     )
   } catch (e) {
@@ -2468,8 +2521,9 @@ async function ensureFixCommitted(i, shaPrev) {
   const headSha = isDeltaSha(ensured?.head_sha) ? ensured.head_sha.trim() : null
   const deltaLines = withDelta ? parseShortstatLines(ensured?.delta_shortstat) : null
   if (ensured == null) return { ensured: false, headSha, deltaLines }
-  if (ensured.dirty === false) return { ensured: true, headSha, deltaLines }
-  if (ensured.committed === true && ensured.pushed === true) {
+  if (ensured.dirty === false || onlyBaselineLines(ensured.porcelain, baseline)) return { ensured: true, headSha, deltaLines }
+  const committed = ensured.committed === true || onlyBaselineLines(ensured.porcelain_after, baseline)
+  if (committed && ensured.pushed === true) {
     fixUncommittedRecovered++
     log(`⚠️ fix#${i} は applied:true だが未コミット変更が残っていた — ensure-committed が commit+push で回収した`)
     return { ensured: true, headSha, deltaLines }
@@ -3178,13 +3232,14 @@ if (securityTarget && securityReview.status !== 'cleared') log(`⚠️ security 
 
 // 異常終端時の worktree dirty 検出（返り値 worktree_dirty）。advisory — 失敗は fail-open
 // （'unknown' + 警告のみ。gate・status には影響しない）。lgtm 終端では probe しない（agent 呼び出し追加ゼロ）。
+// run の最初の fix の前に取った基準線（runBaseline）にある行は dirty に数えない（fix の前からあった変更で、fix 適用分ではない）。
 let worktreeDirty = null  // 'dirty' | 'clean' | 'unknown' | null(=lgtm で未実施)
 if (status !== 'lgtm') {
   const probe = await failOpenAgent(
-    `## Objective\npr-iterate 異常終端（status=${status}）時点の作業ツリーが dirty（未コミット変更あり）かを検出する。\n\n## Steps\n\`git -C ${isoWt} status --porcelain\` を bare 単文（先頭トークンが git。cd 前置・bash 前置・env 代入前置・&& 連結禁止）で実行せよ。${PORCELAIN_DIRTY_RULE}clean（porcelain 行が 0 行）なら { "dirty": false, "files": 0 }。dirty なら { "dirty": true, "files": <porcelain 行の行数> }。\n\n## Output format\n{ "dirty": boolean, "files": number }\nprose 禁止。JSON のみ返せ。\n\n## Tools\n使用可: Bash, Read\n\n## Boundary\n読み取り専用。ファイル変更・git mutation 禁止。\n\n## Token cap\nJSON のみ。1 行以内。`,
+    `## Objective\npr-iterate 異常終端（status=${status}）時点の作業ツリーが dirty（未コミット変更あり）かを検出する。\n\n## Steps\n\`git -C ${isoWt} status --porcelain\` を bare 単文（先頭トークンが git。cd 前置・bash 前置・env 代入前置・&& 連結禁止）で実行せよ。${PORCELAIN_DIRTY_RULE}${porcelainBaselineRule(runBaseline, '最初の fix の前')}判定基準で数える porcelain 行を先頭の空白を含めて一字一句そのまま porcelain とする。clean（新規行が 0 行）なら { "dirty": false, "files": 0, "porcelain": <porcelain> }。dirty なら { "dirty": true, "files": <新規行の行数>, "porcelain": <porcelain> }。\n\n## Output format\n{ "dirty": boolean, "files": number, "porcelain": string[] }\nprose 禁止。JSON のみ返せ。\n\n## Tools\n使用可: Bash, Read\n\n## Boundary\n読み取り専用。ファイル変更・git mutation 禁止。\n\n## Token cap\nJSON のみ。1 行以内。`,
     { agentType: 'dev-runner-haiku-ro', schema: DIRTY_STATUS, label: 'worktree-dirty-check', phase: 'Iterate' },
   )
-  worktreeDirty = probe == null ? 'unknown' : (probe.dirty === true ? 'dirty' : 'clean')
+  worktreeDirty = probe == null ? 'unknown' : (probe.dirty === true && !onlyBaselineLines(probe.porcelain, runBaseline) ? 'dirty' : 'clean')
   if (worktreeDirty === 'dirty') log(`⚠️ 終端 status=${status} で作業ツリーが dirty（未コミット変更 ${probe?.files ?? '?'} 件）— fix 適用分が失われる可能性。人間が確認すること`)
   if (worktreeDirty === 'unknown') log('⚠️ worktree-dirty-check probe に失敗 — dirty 状態は不明（fail-open で続行）')
 }

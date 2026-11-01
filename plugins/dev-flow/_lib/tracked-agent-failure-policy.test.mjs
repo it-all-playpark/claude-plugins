@@ -469,6 +469,7 @@ const EXPECTED_PR_ITERATE = {
   'ci-check#1': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはstatus:errorに合成しci_errorへ流す' },
   'post-summary': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。投稿失敗はfail-openでgate判定に影響しない' },
   'journal-log': { config: PR_B1, policy: 'continue', reason: 'runJournalHandoff内try/catchで吸収するfail-open経路' },
+  'fix-baseline#1': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは基準線なしとしてfix後の全porcelain行で判定するfail-safe' },
   'fix#1': { config: PR_B2, policy: 'continue', reason: 'callFixAgent内try/catchで吸収しnull-retryへ倒すfail-safe経路' },
   'commit-ensure#1': { config: PR_B2, policy: 'continue', reason: 'try/catchで吸収しfix_failedエスカレーションへ倒すfail-safe経路' },
   'review#2': { config: PR_B2, policy: 'continue', reason: 'callReviewAgent内try/catchで吸収しschema-retryへ倒すfail-safe経路' },
