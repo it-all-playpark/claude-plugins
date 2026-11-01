@@ -112,6 +112,8 @@ test('[fix-prompt-contract] (e) commit-ensure#1 prompt の push も timeout: 600
   const { ctx, calls } = makePrIterateSandbox({
     overrides: {
       'review#1': { decision: 'request-changes', issues: [{ severity: 'major', topic: 't', file: 'src/a.js', line: 1, description: 'd', suggestion: '' }], summary: 'ng' },
+      // 回収の commit・push は基準線を取れた round にだけ指示する
+      'fix-baseline#1': { exit_code: 0, porcelain: [] },
     },
   });
   const { error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');

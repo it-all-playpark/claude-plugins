@@ -392,6 +392,8 @@ const PR_B2 = {
   overrides: {
     'review#1': () => ({ decision: 'request-changes', issues: [{ severity: 'critical', description: 'x', suggestion: 'y' }], summary: 'nope' }),
     'review#2': { decision: 'approve', issues: [], summary: 'ok now' },
+    // 基準線を取れた round だけが commit-ensure-status（回収の add の材料）を読む
+    'fix-baseline#1': { exit_code: 0, porcelain: [] },
   },
 };
 // B3: fix#1 が null → fix-null-retry（fix#1-retry）が applied を返して commit-ensure#1 → review#2 approve。
@@ -469,6 +471,8 @@ const EXPECTED_PR_ITERATE = {
   'ci-check#1': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはstatus:errorに合成しci_errorへ流す' },
   'post-summary': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。投稿失敗はfail-openでgate判定に影響しない' },
   'journal-log': { config: PR_B1, policy: 'continue', reason: 'runJournalHandoff内try/catchで吸収するfail-open経路' },
+  'fix-baseline#1': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは基準線なしとしてfix後の全porcelain行で判定するfail-safe' },
+  'commit-ensure-status#1': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは回収のaddを組み立てず、新規行が残ればcommit_unensuredで止めるfail-safe' },
   'fix#1': { config: PR_B2, policy: 'continue', reason: 'callFixAgent内try/catchで吸収しnull-retryへ倒すfail-safe経路' },
   'commit-ensure#1': { config: PR_B2, policy: 'continue', reason: 'try/catchで吸収しfix_failedエスカレーションへ倒すfail-safe経路' },
   'review#2': { config: PR_B2, policy: 'continue', reason: 'callReviewAgent内try/catchで吸収しschema-retryへ倒すfail-safe経路' },

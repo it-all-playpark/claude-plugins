@@ -11,7 +11,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -27,6 +27,12 @@ function makeSandbox({ rounds, agentCalls }) {
 
 const runPrIterate = (ctx) => runWorkflowCapture(src, ctx, '.claude/workflows/pr-iterate.js');
 
+// commit-ensure の回収の add: 基準線に無い porcelain 行（新規行）のパスだけを stage する（worktree 全体の `.` は stage しない）。
+// パスは commit-ensure-status#i（既定は ` M a.ts`）から workflow が単一引用符の引数に組み立て、pathspec magic を無効にする
+const DEFAULT_LEFTOVER = { exit_code: 0, porcelain: [' M a.ts'] };
+const CLEAN_BASELINE = { exit_code: 0, porcelain: [] };
+const ADD_NEW_PATHS ="`git --literal-pathspecs add --ignore-removal -- 'a.ts'`";
+
 function assertNoSandboxCrash(error) {
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`pr-iterate.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -40,9 +46,17 @@ function assertNoSandboxCrash(error) {
  * fixStub(label) -> fix result（省略時は常に applied:true）
  * commitEnsureStub(label) -> commit-ensure（--pr --iteration）result（省略時は { dirty: false, committed: false, pushed: false }）
  * dirtyCheckStub(label) -> worktree-dirty-check（--check-only）result（省略時は未 stub 扱い＝null、fail-open）
+ * baselineStub(label) -> fix-baseline#i（fix 前の porcelain 行）result（省略時は CLEAN_BASELINE ＝ fix 前は clean）
+ * statusStub(label) -> commit-ensure-status#i（fix 後の porcelain 行）result（省略時は DEFAULT_LEFTOVER）
  */
-function buildAgentStub({ reviewerStub, ciStub, fixStub, commitEnsureStub, dirtyCheckStub, agentCalls }) {
+function buildAgentStub({ reviewerStub, ciStub, fixStub, commitEnsureStub, dirtyCheckStub, baselineStub, statusStub, agentCalls }) {
   const rounds = ({ label, agentType, prompt }) => {
+    if (label.startsWith('fix-baseline#')) {
+      return baselineStub ? baselineStub(label) : CLEAN_BASELINE;
+    }
+    if (label.startsWith('commit-ensure-status#')) {
+      return statusStub ? statusStub(label) : DEFAULT_LEFTOVER;
+    }
     if (agentType === 'dev-flow:pr-reviewer') {
       return reviewerStub(label);
     }
@@ -101,13 +115,13 @@ test('[D1][AC-3] fix applied:true + commit-ensure dirty:false -> commit-ensure#1
   // sandbox 内から書けない）ので、push は remote と HEAD を明示し、push 済みの判定は origin/<head_ref> と比べる
   const gitCmds = commitEnsurePrompt.match(/`git [^`]*`/g) ?? [];
   assert.ok(
-    gitCmds.includes('`git add --ignore-removal .`') && commitEnsurePrompt.includes('`git commit -m "fix(pr-5)')
+    gitCmds.includes(ADD_NEW_PATHS) && commitEnsurePrompt.includes('`git commit -m "fix(pr-5)')
       && gitCmds.includes('`git push origin HEAD`'),
-    `commit-ensure#1 の prompt は bare \`git add --ignore-removal .\` / \`git commit\` / \`git push origin HEAD\` を含むべき: ${gitCmds.join(' | ')}`,
+    `commit-ensure#1 の prompt は bare ${ADD_NEW_PATHS} / \`git commit\` / \`git push origin HEAD\` を含むべき: ${gitCmds.join(' | ')}`,
   );
-  // 未ステージの削除を stage する add（-A / --all / -u 等）を使わない（issue #875）
-  assert.deepEqual(gitCmds.filter((c) => c.startsWith('`git add')), ['`git add --ignore-removal .`'],
-    `commit-ensure#1 の add は \`git add --ignore-removal .\` だけ: ${gitCmds.join(' | ')}`);
+  // 未ステージの削除を stage する add（-A / --all / -u 等）も worktree 全体（.）の add も使わない（issue #875 / #1201）
+  assert.deepEqual(gitCmds.filter((c) => / add /.test(c)), [ADD_NEW_PATHS],
+    `commit-ensure#1 の add は新規行のパスだけを stage する ${ADD_NEW_PATHS} だけ: ${gitCmds.join(' | ')}`);
   assert.deepEqual([...new Set(gitCmds.filter((c) => c.includes(' push')))], ['`git push origin HEAD`'],
     `commit-ensure#1 の push は \`git push origin HEAD\` だけ（-u を付けない）: ${gitCmds.join(' | ')}`);
   assert.ok(
@@ -287,16 +301,16 @@ test('[D8][#742 AC-3] commit-ensure prompt: 手順 1 / 3 の dirty 判定が por
   const s2 = stepLine(prompt, 2);
   const s3 = stepLine(prompt, 3);
   assert.ok(
-    s1.includes('status --porcelain') && /porcelain 行が 0 行[^。]*dirty:false/.test(s1),
-    `手順 1 は porcelain 行 0 行で dirty:false とすべき: ${s1}`,
+    s1.includes('status --porcelain') && /新規行が 0 行[^。]*dirty:false/.test(s1),
+    `手順 1 は新規行（基準線に無い porcelain 行）0 行で dirty:false とすべき: ${s1}`,
   );
   assert.ok(
-    /porcelain 行が 1 行以上/.test(s2) && s2.includes('dirty:true') && s2.includes('`git add --ignore-removal .`'),
-    `手順 2 は porcelain 行 1 行以上で dirty:true とし commit/push で回収すべき: ${s2}`,
+    /新規行が 1 行以上/.test(s2) && s2.includes('dirty:true') && s2.includes(ADD_NEW_PATHS),
+    `手順 2 は新規行 1 行以上で dirty:true とし、新規行のパスの commit/push で回収すべき: ${s2}`,
   );
   assert.ok(
     s3.includes('status --porcelain') && s3.includes('手順 1 と同じ判定基準')
-      && /porcelain 行が 0 行[^。]*committed:true/.test(s3) && /dirty なら committed:false/.test(s3),
+      && /新規行が 0 行[^。]*committed:true/.test(s3) && /dirty なので committed:false/.test(s3),
     `手順 3 は手順 1 と同じ基準で committed を判定すべき: ${s3}`,
   );
   // commit-ensure の prompt は sandbox 回避の指示と読まれないよう 'sandbox' を含めない（D1 と同じ制約）
@@ -356,42 +370,323 @@ test('[D11][#742 AC-3] 終端の worktree-dirty-check prompt も porcelain 行�
   assert.equal(result?.worktree_dirty, 'clean');
   const prompt = agentCalls.find((c) => c.label === 'worktree-dirty-check')?.prompt ?? '';
   assertPorcelainRule(prompt, 'worktree-dirty-check');
-  assert.ok(prompt.includes('<porcelain 行の行数>'), `files は porcelain 行の行数を返すべき: ${prompt.slice(0, 600)}`);
+  assert.ok(prompt.includes('<新規行の行数>'), `files は新規行（基準線に無い porcelain 行）の行数を返すべき: ${prompt.slice(0, 600)}`);
 });
 
-// ---- D12 (issue #875): 未ステージの削除がある worktree で commit-ensure が全削除を commit しない ----
+// ---- D12 (issue #875 / #1201): 手順 2 の add / commit を実 git で走らせる ----
 // 部分 checkout の worktree（取り出していないパスが ` D` で残る）で `git add -A` を走らせると、PR branch に
-// 全削除の commit が push される。手順 2 の add / commit を実 git で走らせ、削除が stage されず手順 3 の status に
-// porcelain 行が残る（committed:false → D10 の fix_failed）ことを確かめる。
-test('[D12][#875 AC-3] 未ステージの削除がある worktree: 手順 2 の add / commit は削除を commit せず、status に porcelain 行が残る', async () => {
+// 全削除の commit が push される。worktree 全体（.）を stage すると、環境が置いた未追跡ファイルも PR に入る。
+// 一時 repo の基準線と fix 後の status を fix-baseline#1 / commit-ensure-status#1 の応答にして workflow を回し、
+// commit-ensure#1 の手順 2 の add / commit をそのままシェルで実行して確かめる。
+
+/** commit-ensure#1 の prompt の手順 2 から add / commit を取り出す（基準線と fix 後の porcelain 行を応答に使う）。 */
+async function commitEnsureStep2Cmds(baselineLines, afterLines) {
   const agentCalls = [];
   const majorIssue = { severity: 'major', topic: 't1', file: 'a.ts', description: 'd1', suggestion: 's1' };
   const reviewerStub = (label) => (label === 'review#1'
     ? { decision: 'request-changes', issues: [majorIssue], summary: 'ng' }
     : { decision: 'approve', issues: [], summary: 'ok' });
-  const { error } = await runPrIterate(makeSandbox(buildAgentStub({ reviewerStub, agentCalls })));
+  const { error } = await runPrIterate(makeSandbox(buildAgentStub({
+    reviewerStub,
+    baselineStub: () => ({ exit_code: 0, porcelain: baselineLines }),
+    statusStub: () => ({ exit_code: 0, porcelain: afterLines }),
+    agentCalls,
+  })));
   assertNoSandboxCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
   const s2 = stepLine(agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '', 2);
-  const cmds = [...s2.matchAll(/`(git (?:add|commit)[^`]*)`/g)].map((m) => m[1]);
+  const cmds = [...s2.matchAll(/`(git (?:--literal-pathspecs add|commit)[^`]*)`/g)].map((m) => m[1]);
   assert.equal(cmds.length, 2, `手順 2 は add と commit を 1 つずつ持つべき: ${s2}`);
+  return cmds;
+}
 
+/**
+ * 一時 repo を作り、setup（fix の前の状態）→ 基準線の status → fix（fix の変更）→ fix 後の status から組み立てた
+ * 手順 2 をシェルで実行し、実行後の HEAD と status（probe に挙げた名前のファイルの有無）を返す。
+ */
+async function step2Result({ setup, fix }, probe = []) {
   const dir = mkdtempSync(join(tmpdir(), 'commit-ensure-'));
   const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
   const sh = (cmd) => execFileSync('sh', ['-c', cmd], { cwd: dir, env, encoding: 'utf8' });
+  const statusLines = () => sh('git status --porcelain --untracked-files=all').split('\n').filter(Boolean);
   try {
     sh('git init -q && git config user.name t && git config user.email t@example.com');
     writeFileSync(join(dir, 'kept.txt'), 'kept\n');
     writeFileSync(join(dir, 'fixed.txt'), 'before\n');
     sh('git add -A && git commit -q -m init');
-    unlinkSync(join(dir, 'kept.txt'));               // 取り出していないパス（未ステージの削除）
-    writeFileSync(join(dir, 'fixed.txt'), 'after\n'); // fix の未コミット変更
+    setup(dir, sh);
+    const baseline = new Set(statusLines());
+    fix(dir, sh);
+    const cmds = await commitEnsureStep2Cmds([...baseline], statusLines());
     for (const cmd of cmds) sh(cmd);
-
-    assert.ok(sh('git ls-tree -r --name-only HEAD').split('\n').includes('kept.txt'), '未ステージの削除が commit された');
-    assert.equal(sh('git show HEAD:fixed.txt'), 'after\n', 'fix の変更は commit で回収されるべき');
-    assert.equal(sh('git status --porcelain'), ' D kept.txt\n', '削除は未ステージのまま status に残るべき（手順 3 で dirty → committed:false）');
+    return {
+      tree: sh('git ls-tree -r -z --name-only HEAD').split('\0').filter(Boolean),
+      fixed: sh('git show HEAD:fixed.txt'),
+      status: statusLines(),
+      baseline,
+      present: Object.fromEntries(probe.map((n) => [n, existsSync(join(dir, n))])),
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+test('[D12][#875 AC-3] 基準線に無い未ステージの削除: 手順 2 の add / commit は削除を commit せず、status に新規行が残る', async () => {
+  const r = await step2Result({
+    setup: () => {},
+    fix: (dir) => {
+      unlinkSync(join(dir, 'kept.txt'));               // 取り出していないパス（未ステージの削除）
+      writeFileSync(join(dir, 'fixed.txt'), 'after\n'); // fix の未コミット変更
+    },
+  });
+  assert.ok(r.tree.includes('kept.txt'), '未ステージの削除が commit された');
+  assert.equal(r.fixed, 'after\n', 'fix の変更は commit で回収されるべき');
+  assert.deepEqual(r.status, [' D kept.txt'], '削除は未ステージのまま status に残るべき（手順 3 で dirty → committed:false）');
+});
+
+test('[D12b][#1201 AC-3] 基準線にある未追跡ファイル・未ステージの削除: 手順 2 は新規行のパスだけを commit し、基準線の行は status に残る', async () => {
+  const r = await step2Result({
+    setup: (dir) => {
+      writeFileSync(join(dir, '.worktreeinclude'), 'env\n'); // 環境が worktree に置く未追跡ファイル
+      unlinkSync(join(dir, 'kept.txt'));                     // 部分 checkout の未ステージの削除
+    },
+    fix: (dir) => {
+      writeFileSync(join(dir, 'fixed.txt'), 'after\n');
+      writeFileSync(join(dir, 'added.txt'), 'new\n');
+    },
+  });
+  assert.ok(!r.tree.includes('.worktreeinclude'), '基準線にある未追跡ファイルが PR ブランチに commit された');
+  assert.ok(r.tree.includes('kept.txt'), '基準線にある未ステージの削除が commit された');
+  assert.ok(r.tree.includes('added.txt'), 'fix が足した未追跡ファイルは commit で回収されるべき');
+  assert.equal(r.fixed, 'after\n', 'fix の変更は commit で回収されるべき');
+  assert.ok(r.status.length > 0 && r.status.every((l) => r.baseline.has(l)),
+    `回収後の status は基準線の行だけになるべき（手順 3 で committed:true）: ${JSON.stringify(r.status)}`);
+});
+
+test('[D12c][#1201 AC-3] PR が名付けたファイル名はシェルでも pathspec でも解釈されず、リテラルなパスとして stage される', async () => {
+  const injected = '$(touch pwned).md';
+  const r = await step2Result({
+    setup: (dir) => writeFileSync(join(dir, 'secret.env'), 'TOKEN=x\n'), // 基準線にある未追跡ファイル
+    fix: (dir) => {
+      writeFileSync(join(dir, 'fixed.txt'), 'after\n');
+      writeFileSync(join(dir, injected), 'x\n');   // コマンド置換を含む名前
+      writeFileSync(join(dir, ':!x.md'), 'x\n');   // 除外 pathspec の形の名前
+      writeFileSync(join(dir, "it's.md"), 'x\n');  // 単一引用符を含む名前
+      writeFileSync(join(dir, '日本 語.md'), 'x\n');  // status が C 形式（8 進）で引用する名前
+    },
+  }, ['pwned']);
+  assert.equal(r.present.pwned, false, 'ファイル名のコマンド置換が実行された');
+  assert.ok(!r.tree.includes('secret.env'), '基準線にある未追跡ファイルが pathspec magic で stage された');
+  for (const name of [injected, ':!x.md', "it's.md", '日本 語.md']) assert.ok(r.tree.includes(name), `${name} が commit で回収されていない: ${r.tree.join(', ')}`);
+  assert.equal(r.fixed, 'after\n', 'fix の変更は commit で回収されるべき');
+  assert.deepEqual(r.status, ['?? secret.env'], `回収後の status は基準線の行だけになるべき: ${JSON.stringify(r.status)}`);
+});
+
+test('[D12d][#1201 AC-3] 基準線の未追跡ファイルと同じディレクトリで fix が追跡ファイルを消して未追跡ファイルを足しても、基準線のファイルは stage されない', async () => {
+  const r = await step2Result({
+    setup: (dir, sh) => {
+      mkdirSync(join(dir, 'd'));
+      writeFileSync(join(dir, 'd', 'tracked.txt'), 't\n');
+      sh('git add d/tracked.txt && git commit -q -m d');
+      writeFileSync(join(dir, 'd', 'secret.env'), 'TOKEN=x\n'); // 基準線にある未追跡ファイル
+    },
+    fix: (dir, sh) => {
+      sh('git rm -q d/tracked.txt');                       // 追跡ファイルの削除を stage
+      writeFileSync(join(dir, 'd', 'new.txt'), 'n\n');      // 同じディレクトリに未追跡の置換ファイル
+      writeFileSync(join(dir, 'fixed.txt'), 'after\n');
+    },
+  });
+  assert.ok(!r.tree.includes('d/secret.env'), `基準線にある未追跡ファイルがディレクトリごと stage された: ${r.tree.join(', ')}`);
+  assert.ok(r.tree.includes('d/new.txt') && !r.tree.includes('d/tracked.txt'), `fix の変更が回収されていない: ${r.tree.join(', ')}`);
+  assert.deepEqual(r.status, ['?? d/secret.env'], `回収後の status は基準線の行だけになるべき: ${JSON.stringify(r.status)}`);
+});
+
+test('[D12e][#1201 AC-3] status の probe は未追跡ファイルを個別に列挙させ、ディレクトリの行（?? d/）は回収の add に並べない', async () => {
+  const agentCalls = [];
+  const { error } = await runPrIterate(makeSandbox(buildAgentStub({
+    reviewerStub: (label) => (label === 'review#1'
+      ? { decision: 'request-changes', issues: [{ severity: 'major', topic: 't1', file: 'a.ts', description: 'd1', suggestion: 's1' }], summary: 'ng' }
+      : { decision: 'approve', issues: [], summary: 'ok' }),
+    baselineStub: () => ({ exit_code: 0, porcelain: ['?? d/secret.env'] }),
+    statusStub: () => ({ exit_code: 0, porcelain: ['?? d/', ' M fixed.txt'] }),
+    agentCalls,
+  })));
+  assertNoSandboxCrash(error);
+  if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
+  for (const label of ['fix-baseline#1', 'commit-ensure-status#1', 'commit-ensure#1']) {
+    const p = agentCalls.find((c) => c.label === label)?.prompt ?? '';
+    assert.ok(p.includes('status --porcelain --untracked-files=all'), `${label} は --untracked-files=all で status を取るべき`);
+    assert.ok(!/status --porcelain(?! --untracked-files=all)/.test(p), `${label} に --untracked-files=all の無い status がある`);
+  }
+  const s2 = stepLine(agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '', 2);
+  const add = s2.match(/`(git --literal-pathspecs add[^`]*)`/)?.[1] ?? '';
+  assert.ok(add.includes("'fixed.txt'") && !add.includes("'d/'"), `ディレクトリの行を add に並べてはならない: ${add}`);
+});
+
+test('[D12f][#1201 AC-3] rename の宛先が引用内に ` -> ` を含んでも、基準線の未追跡ファイルを add に並べない（rename / copy 行は並べない）', async () => {
+  const agentCalls = [];
+  const { error } = await runPrIterate(makeSandbox(buildAgentStub({
+    reviewerStub: (label) => (label === 'review#1'
+      ? { decision: 'request-changes', issues: [{ severity: 'major', topic: 't1', file: 'a.ts', description: 'd1', suggestion: 's1' }], summary: 'ng' }
+      : { decision: 'approve', issues: [], summary: 'ok' }),
+    baselineStub: () => ({ exit_code: 0, porcelain: ['?? secret.env"'] }),
+    statusStub: () => ({ exit_code: 0, porcelain: ['?? secret.env"', 'RM old -> "x -> secret.env"', ' M fixed.txt'] }),
+    agentCalls,
+  })));
+  assertNoSandboxCrash(error);
+  if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
+  const s2 = stepLine(agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '', 2);
+  const add = s2.match(/`(git --literal-pathspecs add[^`]*)`/)?.[1] ?? '';
+  assert.ok(add.includes("'fixed.txt'"), `新規行の通常のパスは add に並べるべき: ${add}`);
+  assert.ok(!add.includes('secret.env') && !add.includes("'old'"), `rename / copy 行のパスを add に並べてはならない: ${add}`);
+});
+
+// ---- D13〜D17 (issue #1201): fix#i の前の porcelain 行を基準線にし、基準線に無い行だけを fix の残りと数える ----
+const ENV_FILE = '?? .worktreeinclude';
+const majorIssue1201 = { severity: 'major', topic: 't1', file: 'a.ts', description: 'd1', suggestion: 's1' };
+const reviewOnceThenApprove = (label) => (label === 'review#1'
+  ? { decision: 'request-changes', issues: [majorIssue1201], summary: 'ng' }
+  : { decision: 'approve', issues: [], summary: 'ok' });
+const reviewers = (calls) => calls.filter((c) => c.agentType === 'dev-flow:pr-reviewer').map((c) => c.label);
+
+test('[D13][#1201 AC-1/AC-6] 基準線と fix 後の porcelain がどちらも ?? .worktreeinclude で fix が commit・push 済み -> commit_unensured で止めず review#2 へ', async () => {
+  const agentCalls = [];
+  const agentStub = buildAgentStub({
+    reviewerStub: reviewOnceThenApprove,
+    baselineStub: () => ({ exit_code: 0, porcelain: [ENV_FILE] }),
+    // 基準線を使わない判定の返り値（fix の後の porcelain 行 1 行で dirty、回収の add 後も同じ行が残る）
+    commitEnsureStub: () => ({ dirty: true, committed: false, pushed: true, porcelain: [ENV_FILE], porcelain_after: [ENV_FILE] }),
+    agentCalls,
+  });
+  const { result, error } = await runPrIterate(makeSandbox(agentStub));
+  assertNoSandboxCrash(error);
+  if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
+
+  // AC-1: fix#1 の spawn 前に読み取り専用 proxy で基準線を取り、commit-ensure#1 に渡す
+  const labels = agentCalls.map((c) => c.label);
+  const baselineCall = agentCalls.find((c) => c.label === 'fix-baseline#1');
+  assert.ok(baselineCall, `fix-baseline#1 が dispatch されていない: ${labels.join(', ')}`);
+  assert.equal(baselineCall.agentType, 'dev-flow:dev-runner-haiku-ro', 'fix-baseline は読み取り専用 proxy で取る');
+  assert.ok(labels.indexOf('fix-baseline#1') < labels.indexOf('fix#1'), `fix-baseline#1 は fix#1 の前: ${labels.join(', ')}`);
+  assert.ok(baselineCall.prompt.includes('status --porcelain'), 'fix-baseline は git status --porcelain を読む');
+  assertPorcelainRule(baselineCall.prompt, 'fix-baseline#1');
+  const ensurePrompt = agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '';
+  assert.ok(ensurePrompt.includes(JSON.stringify([ENV_FILE])), `commit-ensure#1 の prompt に基準線の行が無い: ${ensurePrompt.slice(0, 900)}`);
+
+  // AC-2 / AC-6
+  assert.ok(reviewers(agentCalls).includes('review#2'), `review#2 に進むべき: ${JSON.stringify(reviewers(agentCalls))}`);
+  assert.notEqual(result?.fix_terminal_reason, 'commit_unensured', 'commit_unensured で止めてはならない');
+  assert.equal(result?.status, 'lgtm', `result.status は lgtm であるべきだが '${result?.status}' だった`);
+  assert.equal(result?.fix_uncommitted_recovered, 0, '基準線の行しか無い round は回収に数えない');
+});
+
+test('[D14][#1201 AC-7 回収] 基準線に無い行が fix 後に増え、回収後は基準線の行だけが残る -> 回収して review#2 へ', async () => {
+  const agentCalls = [];
+  const agentStub = buildAgentStub({
+    reviewerStub: reviewOnceThenApprove,
+    baselineStub: () => ({ exit_code: 0, porcelain: [ENV_FILE] }),
+    commitEnsureStub: () => ({ dirty: true, committed: false, pushed: true, porcelain: [ENV_FILE, ' M a.ts'], porcelain_after: [ENV_FILE] }),
+    agentCalls,
+  });
+  const { result, error } = await runPrIterate(makeSandbox(agentStub));
+  assertNoSandboxCrash(error);
+  if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
+
+  assert.ok(reviewers(agentCalls).includes('review#2'), `review#2 に進むべき: ${JSON.stringify(reviewers(agentCalls))}`);
+  assert.equal(result?.status, 'lgtm');
+  assert.equal(result?.fix_uncommitted_recovered, 1, '新規行を回収した round は回収に数える');
+});
+
+test('[D15][#1201 AC-7 fail-safe] 基準線に無い行が回収後も残る -> fix_failed（commit_unensured）、review#2 は呼ばれない', async () => {
+  const agentCalls = [];
+  const agentStub = buildAgentStub({
+    reviewerStub: reviewOnceThenApprove,
+    baselineStub: () => ({ exit_code: 0, porcelain: [ENV_FILE] }),
+    commitEnsureStub: () => ({ dirty: true, committed: false, pushed: true, porcelain: [ENV_FILE, ' D kept.txt'], porcelain_after: [ENV_FILE, ' D kept.txt'] }),
+    agentCalls,
+  });
+  const { result, error } = await runPrIterate(makeSandbox(agentStub));
+  assertNoSandboxCrash(error);
+  if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
+
+  assert.deepEqual(reviewers(agentCalls), ['review#1']);
+  assert.equal(result?.status, 'fix_failed');
+  assert.equal(result?.fix_terminal_reason, 'commit_unensured');
+});
+
+for (const [name, baselineStub] of [
+  ['null', () => null],
+  ['exit 非0', () => ({ exit_code: 128, porcelain: [ENV_FILE] })],
+  ['throw', () => { throw new Error('StructuredOutput 未返却'); }],
+]) {
+  test(`[D16][#1201 AC-4 fail-safe] 基準線を取れない（${name}）-> fix 後の全 porcelain 行で判定し commit_unensured で止める`, async () => {
+    const agentCalls = [];
+    const agentStub = buildAgentStub({
+      reviewerStub: reviewOnceThenApprove,
+      baselineStub,
+      commitEnsureStub: () => ({ dirty: true, committed: false, pushed: true, porcelain: [ENV_FILE], porcelain_after: [ENV_FILE] }),
+      agentCalls,
+    });
+    const { result, error } = await runPrIterate(makeSandbox(agentStub));
+    assertNoSandboxCrash(error);
+    if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
+
+    const ensurePrompt = agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '';
+    assert.ok(ensurePrompt.includes('porcelain 行はすべて新規行'), `基準線なしの commit-ensure は全 porcelain 行を新規行にする: ${ensurePrompt.slice(0, 900)}`);
+    assert.deepEqual(reviewers(agentCalls), ['review#1']);
+    assert.equal(result?.status, 'fix_failed');
+    assert.equal(result?.fix_terminal_reason, 'commit_unensured');
+  });
+}
+
+// 基準線が null なら add が fix の前からある未追跡ファイルも stage し、基準線に stage 済みの行があれば commit が index ごと
+// fix の前の変更を PR に入れる。どちらの round も add・commit・push を指示せず、agent が回収済みと申告しても止める
+for (const [name, baselineStub] of [
+  ['基準線なし', () => null],
+  ['基準線に stage 済みの行', () => ({ exit_code: 0, porcelain: ['A  secret.env', ENV_FILE] })],
+]) {
+  test(`[D18][#1201 AC-4] ${name} -> 回収の add・commit・push を指示せず、新規行があれば commit_unensured で止める`, async () => {
+    const agentCalls = [];
+    const agentStub = buildAgentStub({
+      reviewerStub: reviewOnceThenApprove,
+      baselineStub,
+      commitEnsureStub: () => ({ dirty: true, committed: true, pushed: true, porcelain: [' M a.ts'], porcelain_after: [] }),
+      agentCalls,
+    });
+    const { result, error } = await runPrIterate(makeSandbox(agentStub));
+    assertNoSandboxCrash(error);
+    if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
+
+    const s2 = stepLine(agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '', 2);
+    assert.ok(!/`git (?:[^`]* )?(?:add|commit|push)[ `]/.test(s2), `手順 2 に回収の git コマンドがある: ${s2}`);
+    assert.deepEqual(reviewers(agentCalls), ['review#1']);
+    assert.equal(result?.status, 'fix_failed');
+    assert.equal(result?.fix_terminal_reason, 'commit_unensured');
+  });
+}
+
+test('[D17][#1201 AC-5] 終端の worktree-dirty-check は run の最初の fix の前の基準線にある行を dirty に数えない', async () => {
+  // round ごとに別 topic の指摘を返し（stuck にしない）、fix#2 が applied:false で fix_failed 終端にする
+  const runTwoFixes = async (dirtyPorcelain) => {
+    const agentCalls = [];
+    let n = 0;
+    const agentStub = buildAgentStub({
+      reviewerStub: () => ({ decision: 'request-changes', issues: [{ ...majorIssue1201, topic: `t${++n}` }], summary: 'ng' }),
+      fixStub: (label) => (label === 'fix#1' ? { applied: true, summary: 'fixed', files: [] } : { applied: false, summary: 'cannot', files: [] }),
+      // 2 回目の基準線には前の round の残り（' M a.ts'）が入りうる。終端は最初の基準線だけを使う
+      baselineStub: (label) => ({ exit_code: 0, porcelain: label === 'fix-baseline#1' ? [ENV_FILE] : [ENV_FILE, ' M a.ts'] }),
+      dirtyCheckStub: () => ({ dirty: true, files: dirtyPorcelain.length, porcelain: dirtyPorcelain }),
+      agentCalls,
+    });
+    const { result, error } = await runPrIterate(makeSandbox(agentStub));
+    assertNoSandboxCrash(error);
+    if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
+    assert.equal(result?.status, 'fix_failed');
+    assert.deepEqual(agentCalls.filter((c) => c.label.startsWith('fix-baseline#')).map((c) => c.label), ['fix-baseline#1', 'fix-baseline#2'], '基準線は fix ごとに取る');
+    const prompt = agentCalls.find((c) => c.label === 'worktree-dirty-check')?.prompt ?? '';
+    assert.ok(prompt.includes(JSON.stringify([ENV_FILE])), `worktree-dirty-check の prompt に最初の基準線が無い: ${prompt.slice(0, 900)}`);
+    return result;
+  };
+  assert.equal((await runTwoFixes([ENV_FILE])).worktree_dirty, 'clean', '最初の基準線にある行だけなら clean');
+  assert.equal((await runTwoFixes([ENV_FILE, ' M a.ts'])).worktree_dirty, 'dirty', '最初の基準線に無い行が残れば dirty');
 });
