@@ -11,7 +11,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -408,15 +408,15 @@ async function step2Result({ setup, fix }, probe = []) {
   const dir = mkdtempSync(join(tmpdir(), 'commit-ensure-'));
   const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
   const sh = (cmd) => execFileSync('sh', ['-c', cmd], { cwd: dir, env, encoding: 'utf8' });
-  const statusLines = () => sh('git status --porcelain').split('\n').filter(Boolean);
+  const statusLines = () => sh('git status --porcelain --untracked-files=all').split('\n').filter(Boolean);
   try {
     sh('git init -q && git config user.name t && git config user.email t@example.com');
     writeFileSync(join(dir, 'kept.txt'), 'kept\n');
     writeFileSync(join(dir, 'fixed.txt'), 'before\n');
     sh('git add -A && git commit -q -m init');
-    setup(dir);
+    setup(dir, sh);
     const baseline = new Set(statusLines());
-    fix(dir);
+    fix(dir, sh);
     const cmds = await commitEnsureStep2Cmds([...baseline], statusLines());
     for (const cmd of cmds) sh(cmd);
     return {
@@ -480,6 +480,47 @@ test('[D12c][#1201 AC-3] PR が名付けたファイル名はシェルでも pat
   for (const name of [injected, ':!x.md', "it's.md", '日本 語.md']) assert.ok(r.tree.includes(name), `${name} が commit で回収されていない: ${r.tree.join(', ')}`);
   assert.equal(r.fixed, 'after\n', 'fix の変更は commit で回収されるべき');
   assert.deepEqual(r.status, ['?? secret.env'], `回収後の status は基準線の行だけになるべき: ${JSON.stringify(r.status)}`);
+});
+
+test('[D12d][#1201 AC-3] 基準線の未追跡ファイルと同じディレクトリで fix が追跡ファイルを消して未追跡ファイルを足しても、基準線のファイルは stage されない', async () => {
+  const r = await step2Result({
+    setup: (dir, sh) => {
+      mkdirSync(join(dir, 'd'));
+      writeFileSync(join(dir, 'd', 'tracked.txt'), 't\n');
+      sh('git add d/tracked.txt && git commit -q -m d');
+      writeFileSync(join(dir, 'd', 'secret.env'), 'TOKEN=x\n'); // 基準線にある未追跡ファイル
+    },
+    fix: (dir, sh) => {
+      sh('git rm -q d/tracked.txt');                       // 追跡ファイルの削除を stage
+      writeFileSync(join(dir, 'd', 'new.txt'), 'n\n');      // 同じディレクトリに未追跡の置換ファイル
+      writeFileSync(join(dir, 'fixed.txt'), 'after\n');
+    },
+  });
+  assert.ok(!r.tree.includes('d/secret.env'), `基準線にある未追跡ファイルがディレクトリごと stage された: ${r.tree.join(', ')}`);
+  assert.ok(r.tree.includes('d/new.txt') && !r.tree.includes('d/tracked.txt'), `fix の変更が回収されていない: ${r.tree.join(', ')}`);
+  assert.deepEqual(r.status, ['?? d/secret.env'], `回収後の status は基準線の行だけになるべき: ${JSON.stringify(r.status)}`);
+});
+
+test('[D12e][#1201 AC-3] status の probe は未追跡ファイルを個別に列挙させ、ディレクトリの行（?? d/）は回収の add に並べない', async () => {
+  const agentCalls = [];
+  const { error } = await runPrIterate(makeSandbox(buildAgentStub({
+    reviewerStub: (label) => (label === 'review#1'
+      ? { decision: 'request-changes', issues: [{ severity: 'major', topic: 't1', file: 'a.ts', description: 'd1', suggestion: 's1' }], summary: 'ng' }
+      : { decision: 'approve', issues: [], summary: 'ok' }),
+    baselineStub: () => ({ exit_code: 0, porcelain: ['?? d/secret.env'] }),
+    statusStub: () => ({ exit_code: 0, porcelain: ['?? d/', ' M fixed.txt'] }),
+    agentCalls,
+  })));
+  assertNoSandboxCrash(error);
+  if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
+  for (const label of ['fix-baseline#1', 'commit-ensure-status#1', 'commit-ensure#1']) {
+    const p = agentCalls.find((c) => c.label === label)?.prompt ?? '';
+    assert.ok(p.includes('status --porcelain --untracked-files=all'), `${label} は --untracked-files=all で status を取るべき`);
+    assert.ok(!/status --porcelain(?! --untracked-files=all)/.test(p), `${label} に --untracked-files=all の無い status がある`);
+  }
+  const s2 = stepLine(agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '', 2);
+  const add = s2.match(/`(git --literal-pathspecs add[^`]*)`/)?.[1] ?? '';
+  assert.ok(add.includes("'fixed.txt'") && !add.includes("'d/'"), `ディレクトリの行を add に並べてはならない: ${add}`);
 });
 
 // ---- D13〜D17 (issue #1201): fix#i の前の porcelain 行を基準線にし、基準線に無い行だけを fix の残りと数える ----
