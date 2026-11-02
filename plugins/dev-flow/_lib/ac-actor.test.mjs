@@ -2,7 +2,7 @@
 // AC の actor 分類（agent / human / ci）と、ac_results の actor 別集計・差し戻し用 fix_feedback の pin（issue #747 / #861）。
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, isObservationalAc, acObservationalOf, deterministicAcIndexes, demoteUnprovenObservationalAc, pendingAcObservationalIndexes, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap } from './ac-actor.mjs';
+import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, isObservationalAc, acObservationalOf, deterministicAcIndexes, demoteUnprovenObservationalAc, pendingAcObservationalIndexes, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap, freezeAcVerify, acVerifyCandidateIndexes } from './ac-actor.mjs';
 import { KNOWN_OBSERVATIONAL_ACS } from './test-helpers/observational-ac-controls.mjs';
 
 // repo 内外が混ざった AC（テスト・README・rules の削除と dotfiles の excludedCommands の変更を 1 つに書いたもの）
@@ -415,4 +415,89 @@ test('[ac-observational] テストファイルを inline code で名指しして
     assert.deepEqual(observational, [true], ac);
     assert.deepEqual(actors, ['human'], ac);
   }
+});
+
+// ---- issue #1208: AC 自体が inline code で指定した検証コマンド（verify_command / expect_paths） ----
+
+// private repo の PR の AC-2（build の完走と生成物を AC が指定した観測型 AC）。workspace の scope 名だけ placeholder に置き換えた
+const BUILD_CMD = 'timeout 300 pnpm --filter @acme/landing build';
+const BUILD_PATHS = ['packages/landing/out/index.html', 'packages/landing/out/404.html'];
+const BUILD_AC = `sandbox 内で \`${BUILD_CMD}\` が exit 0 で終わり、\`${BUILD_PATHS[0]}\` と \`${BUILD_PATHS[1]}\` が生成される`;
+
+test('[ac-verify] freezeAcVerify: AC の inline code と完全一致する verify_command / expect_paths（build の完走を指定した AC）を凍結する', () => {
+  const frozen = freezeAcVerify(['worker 数の上限を設定で変えられる', BUILD_AC], {
+    results: [{ ac_index: 1, observational: true, verify_command: BUILD_CMD, expect_paths: [...BUILD_PATHS] }],
+  });
+  assert.deepEqual(frozen, [
+    { verify_command: null, expect_paths: [] },
+    { verify_command: BUILD_CMD, expect_paths: BUILD_PATHS },
+  ]);
+});
+
+test('[ac-verify] freezeAcVerify: AC に無い文字列・inline code の一部だけ・.. を含むパス・/ 始まりのパスは採らない', () => {
+  const freeze = (r) => freezeAcVerify([BUILD_AC], { results: [{ ac_index: 0, observational: true, ...r }] })[0];
+  // AC に無いコマンド（LLM が組み立てた・言い換えた）
+  assert.deepEqual(freeze({ verify_command: 'pnpm --filter @acme/landing build && ls out', expect_paths: BUILD_PATHS }), { verify_command: null, expect_paths: [] });
+  assert.equal(freeze({ verify_command: 'pnpm build', expect_paths: [] }).verify_command, null);
+  // inline code の一部だけ（timeout を外した・前後に空白を足した）
+  assert.equal(freeze({ verify_command: 'pnpm --filter @acme/landing build', expect_paths: [] }).verify_command, null);
+  assert.equal(freeze({ verify_command: ` ${BUILD_CMD} `, expect_paths: [] }).verify_command, null);
+  // パス: AC に無い・一部だけ・.. を含む・/ 始まりは除外し、残りは採る
+  const paths = freeze({ verify_command: BUILD_CMD, expect_paths: ['packages/landing/out/other.html', 'out/index.html', ...BUILD_PATHS, 42] }).expect_paths;
+  assert.deepEqual(paths, BUILD_PATHS);
+  const site = (ac, expectPaths) => freezeAcVerify([ac], { results: [{ ac_index: 0, observational: true, verify_command: 'make site', expect_paths: expectPaths }] })[0];
+  assert.deepEqual(site('`make site` が exit 0 で、`site/./index.html` が生成される', ['site/./index.html']), { verify_command: 'make site', expect_paths: ['site/./index.html'] });
+  // .. を含む・/ 始まりのパスは採らない（採らなかった inline code が残るので AC ごと凍結しない）
+  assert.deepEqual(site('`make site` が exit 0 で、`../site/index.html` が生成される', ['../site/index.html']), { verify_command: null, expect_paths: [] });
+  assert.deepEqual(site('`make site` が exit 0 で、`/tmp/site/index.html` が生成される', ['/tmp/site/index.html']), { verify_command: null, expect_paths: [] });
+  // verify_command が採れなければ expect_paths も採らない。応答なし・形が違う・index 違いは null
+  assert.deepEqual(freeze({ verify_command: null, expect_paths: BUILD_PATHS }), { verify_command: null, expect_paths: [] });
+  assert.deepEqual(freezeAcVerify([BUILD_AC], null), [{ verify_command: null, expect_paths: [] }]);
+  assert.deepEqual(freezeAcVerify([BUILD_AC], { results: [{ ac_index: 1, verify_command: BUILD_CMD, expect_paths: [] }] }), [{ verify_command: null, expect_paths: [] }]);
+  assert.deepEqual(freezeAcVerify(undefined, { results: [] }), []);
+});
+
+test('[ac-verify] freezeAcVerify: verify_command と採った expect_paths 以外の inline code が残る AC（複数コマンドの複合 AC 等）は凍結しない', () => {
+  const multi = '`node --test plugins/dev-flow/_lib/` と `bash tests/run-all-bats.sh` が通り、`tools/sync-inlines.mjs --write` を実行した後の inline 区間が一致する';
+  for (const cmd of ['node --test plugins/dev-flow/_lib/', 'bash tests/run-all-bats.sh']) {
+    assert.deepEqual(freezeAcVerify([multi], { results: [{ ac_index: 0, observational: true, verify_command: cmd, expect_paths: [] }] }), [{ verify_command: null, expect_paths: [] }], cmd);
+  }
+  // 生成物のパスを expect_paths に採らなかった AC も、残った inline code を確かめていないので凍結しない
+  assert.deepEqual(freezeAcVerify([BUILD_AC], { results: [{ ac_index: 0, observational: true, verify_command: BUILD_CMD, expect_paths: [BUILD_PATHS[0]] }] }), [{ verify_command: null, expect_paths: [] }]);
+});
+
+test('[ac-verify] classifyAcActor: verify_command が凍結された観測型 AC も、テストファイルの名指しが無ければ human のまま（verify_command の有無で actor を変えない）', () => {
+  const acVerify = freezeAcVerify([BUILD_AC], { results: [{ ac_index: 0, observational: true, verify_command: BUILD_CMD, expect_paths: BUILD_PATHS }] });
+  assert.equal(acVerify[0].verify_command, BUILD_CMD, '前提: verify_command が凍結されている');
+  assert.equal(classifyAcActor(BUILD_AC, { observational: true, verifyCommand: acVerify[0].verify_command }), 'human');
+  assert.equal(classifyAcActor(BUILD_AC, { observational: true }), 'human');
+  assert.deepEqual(acActorsOf([BUILD_AC], { observational: [true], acVerify }), ['human']);
+  // テストファイルを名指しした観測型 AC は従来どおり agent（verify_command で変わるのではない）
+  assert.equal(classifyAcActor('`node --test plugins/dev-flow/_lib/foo.test.mjs` が exit 0 で終わる', { observational: true, verifyCommand: 'node --test plugins/dev-flow/_lib/foo.test.mjs' }), 'agent');
+  // HUMAN_AC_PATTERNS・ci_verify・external の優先順は変えない
+  assert.equal(classifyAcActor('staging で `pnpm build` が exit 0 で終わる', { observational: true, verifyCommand: 'pnpm build' }), 'human');
+  assert.equal(classifyAcActor('`pnpm test:e2e:local` が exit 0 で終わる', { observational: true, verifyCommand: 'pnpm test:e2e:local', ciVerify: { label: 'full-ci', commands: ['pnpm test:e2e:local'] } }), 'ci');
+  assert.equal(classifyAcActor('dotfiles で `make apply` が exit 0 で終わる', { observational: true, verifyCommand: 'make apply' }), 'human');
+});
+
+test('[ac-verify] acVerifyCandidateIndexes: 観測型が true で文面上の actor が human / ci でない AC だけを分類 agent に聞く候補にする', () => {
+  const acs = [BUILD_AC, 'staging で `pnpm build` が exit 0 で終わる', '`pnpm test:e2e:local` が通る', 'worker 数の上限を設定で変えられる', '実行ログに 1 件以上記録される'];
+  const ciVerify = { label: 'full-ci', commands: ['pnpm test:e2e:local'] };
+  assert.deepEqual(acVerifyCandidateIndexes(acs, [true, true, true, false, null], { ciVerify }), [0]);
+  assert.deepEqual(acVerifyCandidateIndexes(acs, [true, true, true, true, true], { ciVerify }), [0, 3, 4]);
+  assert.deepEqual(acVerifyCandidateIndexes(acs, [false, false, false, false, null], { ciVerify }), [], '観測型 true が無ければ候補なし（null は pendingAcObservationalIndexes が拾う）');
+  assert.deepEqual(acVerifyCandidateIndexes(undefined, undefined), []);
+});
+
+test('[ac-verify] acObservationalPrompt: verify_command（exit code だけで結果が決まる inline code。決まらなければ null）と expect_paths を返させ、材料は title と渡す AC の文面だけ', () => {
+  const acs = ['worker 数の上限を設定で変えられる', BUILD_AC];
+  const prompt = acObservationalPrompt('fix(landing): build を直す', acs, [1]);
+  assert.ok(prompt.includes('"fix(landing): build を直す"'), prompt);
+  assert.ok(prompt.includes(JSON.stringify({ ac_index: 1, ac: BUILD_AC })), prompt);
+  assert.ok(!prompt.includes(acs[0]), `渡していない AC を含めている: ${prompt}`);
+  assert.match(prompt, /verify_command: その AC の結果を exit code だけで決められる、worktree を cwd に実行するコマンド/);
+  assert.match(prompt, /inline code の中身を 1 文字も変えずに写せ/);
+  assert.match(prompt, /決まらなければ null/);
+  assert.match(prompt, /expect_paths: /);
+  assert.ok(prompt.includes('"verify_command":"<inline code の中身>"|null,"expect_paths":["<inline code の中身>"]'), prompt);
 });

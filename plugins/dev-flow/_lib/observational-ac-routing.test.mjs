@@ -12,9 +12,9 @@
 //   (J) inspection の観測型 AC / (K) Evaluate で昇格済みの AC → redgreen-final を spawn しない
 // テストファイルを inline code で名指しした観測型 AC（issue #1147。actor agent）:
 //   (L) inspection の satisfied:true → 未達に倒れて dev-implementer へ差し戻し、上限後も未達なら ac_agent_unsatisfied の HOLD
-// 観測型判定の確定（issue #859。prerun の ac_observational が null の AC だけを分類 agent に回す）:
-//   (F) 回帰（acme/webapp）: null の AC だけを title と AC 文面で 1 回渡し、確定値が evaluator と actor に効く
-//       （prerun が全 AC を確定していれば spawn しないことは (A) で見る）
+// 観測型判定の確定（issue #859。prerun の ac_observational が null の AC と、観測型で文面上の actor が agent の AC を分類 agent に回す）:
+//   (F) 回帰（acme/webapp）: null の AC と観測型 AC を title と AC 文面で 1 回渡し、確定値が evaluator と actor に効く
+//       （観測型 AC の検証コマンドが無ければ human のままなことは (A) で見る）
 //   (G) 分類 agent の失敗は未確定の AC を観測型に倒す
 
 import { test } from 'vitest';
@@ -68,7 +68,13 @@ test('[observational-ac] (A) inspection の satisfied:true → checked にせず
   const { result, calls } = await run({ 'eval#1': evalWith([inspection(0), inspection(1)]) });
   assert.equal(reimplCalls(calls).length, 0, `観測型 AC で差し戻した: ${calls.map((c) => c.label).join(', ')}`);
   assert.equal(evalCalls(calls).length, 1);
-  assert.equal(acObsCalls(calls).length, 0, 'prerun が全 AC を確定していれば分類 agent を spawn しない');
+  // 観測型で文面上の actor が agent の AC があるので、AC の検証コマンドを聞く分類 agent を 1 回だけ spawn する（issue #1208）。
+  // 応答が無い（verify_command なし）なら actor は human のまま
+  const obs = acObsCalls(calls);
+  assert.equal(obs.length, 1, `分類 agent は 1 回: ${calls.map((c) => c.label).join(', ')}`);
+  assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: 0, ac: OBS_AC })), obs[0].prompt);
+  assert.ok(!obs[0].prompt.includes(CODE_AC), `観測型でない AC を渡している: ${obs[0].prompt}`);
+  assert.ok(!calls.some((c) => c.label.startsWith('ac-verify-')), 'verify_command が無ければ AC コマンドを実行しない');
   assert.equal(result?.merge_tier, 'HOLD');
   assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
   assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });
@@ -223,7 +229,9 @@ test('[observational-ac] (F) 回帰: null の AC だけを AC 文面 + title で
   assert.equal(obs[0].agentType, 'dev-flow:dev-runner');
   assert.ok(obs[0].prompt.includes(JSON.stringify(REG_TITLE)), `title が渡っていない: ${obs[0].prompt}`);
   assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: 2, ac: REG_ACS[2] })), `null の AC が渡っていない: ${obs[0].prompt}`);
-  for (const i of [0, 1, 3, 4]) assert.ok(!obs[0].prompt.includes(REG_ACS[i]), `prerun で確定した AC-${i + 1} を渡している: ${obs[0].prompt}`);
+  // prerun で観測型 true の AC-4（文面上の actor は agent）は、AC の検証コマンドを聞くために同じ 1 回に含める（issue #1208）
+  assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: 3, ac: REG_ACS[3] })), `観測型で actor agent の AC が渡っていない: ${obs[0].prompt}`);
+  for (const i of [0, 1, 4]) assert.ok(!obs[0].prompt.includes(REG_ACS[i]), `prerun で観測型 false と確定した AC-${i + 1} を渡している: ${obs[0].prompt}`);
   assert.ok(!obs[0].prompt.includes('stub-issue-body'), 'issue 本文を渡している');
   // diff・evaluator の結果が存在する前（isolation-probe・実装・評価より前）に 1 回だけ走る
   const at = (pred) => calls.findIndex(pred);

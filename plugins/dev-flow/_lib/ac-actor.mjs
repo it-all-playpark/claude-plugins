@@ -48,8 +48,9 @@
 // 差し戻さず ac_human_pending へ回す（merge 後の実 run・計測が要る AC は run 内で証跡を作れず、差し戻しても
 // AGENT_AC_REIMPL_MAX を使い切ってから HOLD になるだけのため）。
 // 判定は 2 段構え（issue #859）: prerun-analyze.sh が正規表現（isObservationalAc）で絞り込み、当たった AC だけを
-// Jev に聞いて analyze.ac_observational（true / false / null）を出す。analyze ゲートは null の AC だけを AC の文面と
-// issue のタイトルだけを読む分類 agent に 1 回で渡し、それでも決まらなければ true にする（resolveAcObservational）。
+// Jev に聞いて analyze.ac_observational（true / false / null）を出す。analyze ゲートは null の AC（と、観測型で文面上の
+// actor が human / ci でない AC — acVerifyCandidateIndexes）を AC の文面と issue のタイトルだけを読む分類 agent に 1 回で渡し、
+// null の AC がそれでも決まらなければ true にする（resolveAcObservational）。
 // 正規表現は絞り込み専用で拾いすぎてよい（語の追加で誤判定を直す方式は語彙の違う repo で収束しないため）。
 // 分類 agent に diff・evaluator の結果を渡さないのは、観測型の仕組みが evaluator のコード読みだけで達成扱いになるのを
 // 止めるためのもので、実装や評価を見た判定にすると抜け道になるため（incentive-structural）。
@@ -57,6 +58,14 @@
 // actor 'agent' にする（issue #1147）。テストでの検証を AC 自体が指定しており、red→green の実証は worktree 内で作れる
 // 証跡なので、未達は差し戻せば満たせる。観測型の判定は true のまま変えない — 達成は red→green の deterministic 昇格
 // だけで、文面が増やせるのは差し戻しの回数（AGENT_AC_REIMPL_MAX で止まる）だけにするため。
+// worktree で実行するコマンドを AC 自体が inline code で指定した観測型 AC（issue #1208）は、分類 agent がそのコマンド
+// （verify_command）と生成されるファイル（expect_paths）を返し、freezeAcVerify が AC の inline code と完全一致するものだけを
+// analyze ゲートで凍結する。workflow はそれを local-verify で sandbox 内で実行し、失敗は dev-implementer へ差し戻し、
+// 最終 tree の exit 0 は人手 AC の確認材料として終端サマリーに開示するだけにする（_lib/local-verify.mjs）。
+// verify_command の有無で actor を変えない（'human' のまま）し、exit 0 を観測型 AC の proven にも入れない — 実行される
+// script・build 設定・テストは PR が書き換えられるので、exit 0 で HOLD を外すと PR の内容で gate を誘導できる（incentive-structural）。
+// LLM が組み立てた・言い換えたコマンドは実行しない — 実行するものを AC の文面に縛り、実装後に読み直さない
+// （implementer が差し戻しの判定に使うコマンドを書き換えられないように）。
 //
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
@@ -212,19 +221,69 @@ export function pendingAcObservationalIndexes(acObservational) {
   return out
 }
 
-// 分類 agent の prompt。材料は issue のタイトルと null の AC の文面だけ（diff・evaluator の結果・issue 本文は渡さない）。
-// 判定基準は prerun-analyze.sh の Jev 質問と同じ。
+// 観測型が true で、文面上の actor（HUMAN_AC_PATTERNS・ci_verify・external）が 'human' / 'ci' でない AC の index（0 始まり）。
+// AC が指定したコマンドを run 内で実行できる候補で、分類 agent に verify_command を聞く対象。opts は classifyAcActor と同じ。
+export function acVerifyCandidateIndexes(acceptanceCriteria, acObservational, opts = {}) {
+  const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
+  const obs = Array.isArray(acObservational) ? acObservational : []
+  const out = []
+  for (let i = 0; i < acs.length; i++) {
+    if (obs[i] === true && classifyAcActor(acs[i], { repo: opts?.repo, ciVerify: opts?.ciVerify }) === 'agent') out.push(i)
+  }
+  return out
+}
+
+// 分類 agent の prompt。材料は issue のタイトルと渡す AC の文面だけ（diff・evaluator の結果・implementer の報告・issue 本文は渡さない）。
+// indexes は観測型が null の AC と acVerifyCandidateIndexes の和。観測型の判定基準は prerun-analyze.sh の Jev 質問と同じ。
+// verify_command / expect_paths は AC の inline code をそのまま写させる（写し違い・組み立ては freezeAcVerify が捨てる）。
+// inline code の区切りは文中で「バッククォート」と書く（sync-inlines の stripComments が生のバッククォートを template literal と読むため）。
 export function acObservationalPrompt(issueTitle, acceptanceCriteria, indexes) {
   const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
   const items = (Array.isArray(indexes) ? indexes : []).map((i) => ({ ac_index: i, ac: String(acs[i] ?? '') }))
-  return '次の issue の受け入れ基準（AC）それぞれが観測型かを判定せよ。判定材料は下に示す issue のタイトルと AC の文面だけ。'
+  return '次の issue の受け入れ基準（AC）それぞれについて、観測型かどうかと、AC が指定した検証コマンドを判定せよ。判定材料は下に示す issue のタイトルと AC の文面だけ。'
     + 'ツールは使わず、ファイル・diff・issue 本文・コマンドの出力を読みに行かない。\n'
     + '観測型（observational:true）: コードとテストを読むだけでは確かめられず、実行した結果・ログ・計測を観測しないと確かめられない AC。'
     + 'AC がテストコードやソースコード自体の書き方・構成について述べているなら false。'
     + '文面だけでは決められない AC は observational:null を返せ（観測型として扱われる）。\n'
+    + 'verify_command: その AC の結果を exit code だけで決められる、worktree を cwd に実行するコマンドを AC 自身が inline code（バッククォートで囲んだ部分）で書いているなら、'
+    + 'その inline code の中身を 1 文字も変えずに写せ。コマンドを組み立てる・言い換える・inline code の一部だけを切り出すことはしない。決まらなければ null。\n'
+    + 'expect_paths: verify_command の終了後に worktree に生成されていることを AC が求めるファイルのうち、AC が inline code で書いたパス（中身をそのまま写す。worktree からの相対パスだけ）。'
+    + '無ければ []。verify_command が null なら []。\n'
     + `issue のタイトル: ${JSON.stringify(String(issueTitle ?? ''))}\n`
     + `AC（ac_index は 0 始まり）: ${JSON.stringify(items)}\n`
-    + '上の全 AC について 1 件ずつ {"results":[{"ac_index":<上の ac_index>,"observational":true|false|null}]} の形で返せ。\n'
+    + '上の全 AC について 1 件ずつ {"results":[{"ac_index":<上の ac_index>,"observational":true|false|null,"verify_command":"<inline code の中身>"|null,"expect_paths":["<inline code の中身>"]}]} の形で返せ。\n'
+}
+
+// AC の inline code の中身（区切りのバッククォートを除いたもの。前後の空白も変えない）。
+function inlineCodesOf(ac) {
+  return (String(ac ?? '').match(INLINE_CODE_RE) ?? []).map((m) => m.slice(1, -1))
+}
+
+// worktree からの相対パスか（/ 始まりでなく、.. のセグメントを含まない）。
+function isWorktreeRelativePath(p) {
+  return p.trim() !== '' && !p.startsWith('/') && !p.split('/').includes('..')
+}
+
+// 分類 agent が返した AC ごとの verify_command / expect_paths を検証して凍結する（analyze ゲートで 1 回だけ。実装後に読み直さない）。
+// verify_command はその AC の inline code の 1 つと完全一致するときだけ採り、それ以外（AC に無い文字列・inline code の一部・
+// 非文字列）は null。expect_paths はその AC の inline code と完全一致し、/ 始まりでも .. のセグメントを含むものでもないものだけを残す。
+// verify_command が null の AC は expect_paths も []（実行しないコマンドの生成物は確かめようがない）。
+// inline code に verify_command と採った expect_paths 以外が残る AC も null（複合 AC を 1 本のコマンドで達成扱いにしない）。
+// 返り値は AC ごとの { verify_command: string | null, expect_paths: string[] }（index は acceptanceCriteria と同じ）。
+export function freezeAcVerify(acceptanceCriteria, agentResult) {
+  const results = Array.isArray(agentResult?.results) ? agentResult.results : []
+  return (Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []).map((ac, i) => {
+    const codes = inlineCodesOf(ac)
+    const r = results.find((x) => x && x.ac_index === i)
+    const cmd = r && typeof r.verify_command === 'string' && r.verify_command.trim() !== '' && codes.includes(r.verify_command) ? r.verify_command : null
+    if (cmd === null) return { verify_command: null, expect_paths: [] }
+    const paths = (Array.isArray(r.expect_paths) ? r.expect_paths : [])
+      .filter((p) => typeof p === 'string' && codes.includes(p) && isWorktreeRelativePath(p))
+    // verify_command と採った expect_paths 以外の inline code が残る AC（コマンドを複数書いた複合 AC 等）は凍結しない —
+    // 1 本の exit 0 で AC 全体を確かめたことにならないため。
+    if (codes.some((c) => c !== cmd && !paths.includes(c))) return { verify_command: null, expect_paths: [] }
+    return { verify_command: cmd, expect_paths: [...new Set(paths)] }
+  })
 }
 
 // prerun の ac_observational（true / false / null）に分類 agent の応答を重ねて AC ごとの boolean に確定する。
@@ -276,7 +335,8 @@ function namesTestFile(ac) {
 }
 
 // opts.observational は analyze ゲートで確定した AC の観測型判定（boolean）。true なら human — ただしテストファイルを
-// inline code で名指しした AC は agent（red→green の実証を worktree 内で作れるので差し戻す）。
+// inline code で名指しした AC は agent（red→green の実証を worktree 内で作れるので差し戻す）。AC が指定したコマンド
+// （freezeAcVerify で凍結した verify_command）の有無では変えない（exit 0 は PR が書き換えうる出力のため。issue #1208）。
 // opts.ciVerify は repo の ci_verify 宣言（null / 省略は未設定 — 'ci' を返さない）。
 // （人手）・staging・本番等の明示は ci より優先する（CI の check では満たせない作業を書いた AC のため）。
 // ci は観測型より優先する（実行しないと確かめられない AC を、CI の check が実行して確かめるため）。
