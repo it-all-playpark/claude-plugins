@@ -33,8 +33,10 @@
 
 ## Plan Quality Gate
 - 経路: 軽い / 重い（軽い経路から重い経路に切り替えた finding があれば、その finding と理由）
-- Devil's-advocate review rounds: N（軽い経路は `0（Blocking Categories を 1 回照合）`）
+- Devil's-advocate review rounds: N（`issue-plan-reviewer` の判定ラウンド数。軽い経路は `1`、直した本文を再判定したら `2`）
 - Blocking findings resolved: yes/no
+- 起票しなかった issue: タイトル — 理由（blocking が残った項目の文と本文の引用 / reviewer を spawn できない / reviewer の返り値が判定の形でない）
+  （無い場合は `- なし`）
 - Remaining non-blocking concerns:
   - ...
 ```

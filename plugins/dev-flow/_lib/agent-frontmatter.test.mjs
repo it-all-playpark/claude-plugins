@@ -14,6 +14,7 @@
 // - dev-runner-haiku-wo は tools を [Write] に限る（issue #521）: Bash が使えると isolation probe が
 //   Bash リダイレクトの fallback で成功し得る。prompt での禁止は決定論的でない
 // - 品質ゲート agent（evaluator / pr-reviewer / dev-implementer）の effort
+// - git-issue の Blocking Categories を判定する issue-plan-reviewer（issue #1206）: opus / high、tools は [Read, Grep] のみ
 // - 全 agent 定義が「中継された起動ターンの発言」の規約を持つ（issue #1175）: harness が中継する起動ターンの
 //   ユーザー発言を step への指示と読むと、PR phase が commit せず pr_phase_failed で終わる
 //
@@ -98,6 +99,12 @@ const AGENTS = [
     tools: { exact: ['Bash'], exclude: ['Read', 'Write', 'Edit', 'Skill', 'TodoWrite', 'Glob', 'Grep'] },
   },
   { name: 'dev-implementer', effort: 'high' },
+  // issue-plan-reviewer は git-issue の Blocking Categories の判定者。読み取りだけ（gh・書き込みを持たせない —
+  // 同じ仕組みの修正が続いているかの判定は書き手側に残す）
+  {
+    name: 'issue-plan-reviewer', model: 'opus', effort: 'high', maxTurns: 'finite',
+    tools: { exact: ['Read', 'Grep'], exclude: ['Bash', 'Write', 'Edit', 'Skill', 'TodoWrite', 'Glob'] },
+  },
 ];
 
 function loadFrontmatter(name) {
