@@ -61,7 +61,8 @@
 // 観測型でも、worktree で実行するコマンドを AC 自体が inline code で指定した AC は actor 'agent' にする（issue #1203）。
 // 分類 agent がそのコマンド（verify_command）と生成されるファイル（expect_paths）を返し、freezeAcVerify が AC の inline code と
 // 完全一致するものだけを analyze ゲートで凍結する。workflow はそれを local-verify で sandbox 内で実行し、最終 tree の exit 0 を
-// red→green と並ぶ deterministic な証跡にする（_lib/local-verify.mjs）。LLM が組み立てた・言い換えたコマンドは実行しない
+// 観測型 AC の inspection 達成を倒さない根拠にする（evaluator の未達は覆さず deterministic 昇格にもしない — exit code は PR が
+// 書き換えうるコマンド・テストの出力のため。_lib/local-verify.mjs）。LLM が組み立てた・言い換えたコマンドは実行しない
 // — 実行するものを AC の文面に縛り、実装後に読み直さない（implementer が判定に使うコマンドを書き換えられないように）。
 //
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
@@ -265,6 +266,7 @@ function isWorktreeRelativePath(p) {
 // verify_command はその AC の inline code の 1 つと完全一致するときだけ採り、それ以外（AC に無い文字列・inline code の一部・
 // 非文字列）は null。expect_paths はその AC の inline code と完全一致し、/ 始まりでも .. のセグメントを含むものでもないものだけを残す。
 // verify_command が null の AC は expect_paths も []（実行しないコマンドの生成物は確かめようがない）。
+// inline code に verify_command と採った expect_paths 以外が残る AC も null（複合 AC を 1 本のコマンドで達成扱いにしない）。
 // 返り値は AC ごとの { verify_command: string | null, expect_paths: string[] }（index は acceptanceCriteria と同じ）。
 export function freezeAcVerify(acceptanceCriteria, agentResult) {
   const results = Array.isArray(agentResult?.results) ? agentResult.results : []
@@ -275,6 +277,9 @@ export function freezeAcVerify(acceptanceCriteria, agentResult) {
     if (cmd === null) return { verify_command: null, expect_paths: [] }
     const paths = (Array.isArray(r.expect_paths) ? r.expect_paths : [])
       .filter((p) => typeof p === 'string' && codes.includes(p) && isWorktreeRelativePath(p))
+    // verify_command と採った expect_paths 以外の inline code が残る AC（コマンドを複数書いた複合 AC 等）は凍結しない —
+    // 1 本の exit 0 で AC 全体を確かめたことにならないため。
+    if (codes.some((c) => c !== cmd && !paths.includes(c))) return { verify_command: null, expect_paths: [] }
     return { verify_command: cmd, expect_paths: [...new Set(paths)] }
   })
 }

@@ -13,7 +13,9 @@
 // AC コマンド（issue #1203）: 観測型 AC のうち、AC 自体が inline code で指定したコマンド（_lib/ac-actor.mjs の freezeAcVerify が
 // analyze ゲートで凍結した verify_command / expect_paths）も同じ local-verify で sandbox 内で実行する（db の無い宣言 —
 // pg-broker を呼ばない。宣言は --config-pct で渡し、worktree の宣言とは突き合わせない）。
-//   Validate green 後に 1 本ずつ実行する（acVerifyValidateAction）。passed は demoteUnprovenObservationalAc の proven に入れ、
+//   Validate green 後に 1 本ずつ実行する（acVerifyValidateAction）。passed は demoteUnprovenObservationalAc の proven に入れる
+//     （evaluator の satisfied:true を倒さないだけ。evaluator の未達は覆さず、ledger の deterministic 昇格にもしない — exit code は
+//     PR が書き換えうるコマンド・テストの出力のため）。
 //     failed / timeout は log_tail を付けて dev-implementer へ差し戻す（AGENT_AC_REIMPL_MAX を ci の AC・Evaluate と共有）。
 //     上限後も失敗なら agent の未達（ac_agent_unsatisfied）。unavailable / error は proven にせず人手 AC 待ちのまま
 //   Final reconcile は passed を出した tree と最終 tree が異なるときだけ再実行する（acVerifyFinalAction。ci の AC の
@@ -158,12 +160,17 @@ export function acVerifyFeedback({ result, command, acIndex, acceptanceCriteria 
 }
 
 // AC コマンドの記録 1 件を ac_results の 1 要素にする（r は evaluator / final-ac-reconcile の同じ AC の結果。無ければ null）。
-// passed は satisfied:true（根拠はコマンド・exit code・log_path）、failed は agent の未達、それ以外は実行で確かめられなかった
+// passed は evaluator の判定を保ち、コマンド・exit code・log_path を根拠に添えるだけにする（evaluator が satisfied:true の
+// ときだけ達成。結果が無ければ確かめられなかった扱い）。exit code は PR が書き換えうるコマンド・テストの出力なので、それだけで
+// evaluator の未達を覆さない（incentive-structural）。failed は agent の未達、それ以外は実行で確かめられなかった
 // 観測型 AC として unreachable_env:true の未達（差し戻さず人手 AC 待ち — 差し戻しても AC コマンドは再実行されないため）。
 function acVerifyResult(e, r) {
   const base = { ...(r ?? {}), ac_index: e.ac_index, observational: true }
   if (e.status === 'passed') {
-    return { ...base, satisfied: true, verified_by: 'local', unreachable_env: false, evidence: `AC のコマンド（\`${e.command}\`）が exit ${e.exit_code ?? 0}: ${e.log_path ?? 'log なし'}` }
+    const run = `AC のコマンド（\`${e.command}\`）が exit ${e.exit_code ?? 0}: ${e.log_path ?? 'log なし'}`
+    if (r?.satisfied === true) return { ...base, satisfied: true, unreachable_env: false, evidence: `${run}${typeof r.evidence === 'string' && r.evidence.trim() ? `（evaluator: ${r.evidence.trim()}）` : ''}` }
+    if (r) return { ...base, satisfied: false, evidence: `evaluator が未達と判定（AC のコマンドの exit 0 だけでは達成にしない）: ${typeof r.evidence === 'string' ? r.evidence : ''} / ${run}` }
+    return { ...base, satisfied: false, unreachable_env: true, evidence: `evaluator の判定が無い（AC のコマンドの exit 0 だけでは達成にしない）: ${run}` }
   }
   if (e.status === 'failed') {
     return { ...base, satisfied: false, verified_by: 'local', unreachable_env: false, evidence: `AC のコマンド（\`${e.command}\`）が ${acVerifyHow(e)}${e.reason ? `（${e.reason}）` : ''}（差し戻し上限まで直らなかった）: ${e.log_path ?? 'log なし'}` }
@@ -171,8 +178,8 @@ function acVerifyResult(e, r) {
   return { ...base, satisfied: false, unreachable_env: true, evidence: `AC のコマンド（\`${e.command}\`）で確かめられなかった（${e.status}${e.reason ? `: ${e.reason}` : ''}）` }
 }
 
-// ac_results の AC コマンドの AC を記録の結果で置き換える（無ければ足す）。evaluator の判定は使わない — AC の結果は
-// AC が指定したコマンドの exit code で決まるため。記録が無い・非配列はそのまま返す。
+// ac_results の AC コマンドの AC を記録の結果で置き換える（無ければ足す）。passed は evaluator の判定に根拠を添えるだけ、
+// failed / 確かめられなかった記録は未達にする（acVerifyResult）。記録が無い・非配列はそのまま返す。
 export function applyAcVerifyResults(acResults, entries) {
   if (!Array.isArray(acResults)) return acResults
   const list = (Array.isArray(entries) ? entries : []).filter((e) => e && Number.isInteger(e.ac_index))
@@ -184,20 +191,20 @@ export function applyAcVerifyResults(acResults, entries) {
 }
 
 // AC 未達の actor 別内訳（unsatisfiedAcByActor の形）に AC コマンドの記録を重ねる（Final reconcile の最終判定）。
-// passed は agent / human から外し、failed は agent に入れる（human から外す）。それ以外（unavailable / error / skipped /
-// stale）は human に入れる（applyAcVerifyResults の unreachable_env と同じ扱い — Evaluate では passed だったが最終 tree で
+// passed は内訳を変えない（evaluator の判定のまま — exit 0 だけで未達を外さない）、failed は agent に入れる（human から外す）。
+// それ以外（unavailable / error / skipped / stale）は human に入れる（applyAcVerifyResults の unreachable_env と同じ扱い — Evaluate では passed だったが最終 tree で
 // 確かめられなかった AC も人手 AC 待ちにする）。他のキー（ci 等）は変えない。
 export function mergeAcVerifyGaps(byActor, entries) {
   const src = byActor && typeof byActor === 'object' ? byActor : {}
   let agent = Array.isArray(src.agent) ? [...src.agent] : []
   let human = Array.isArray(src.human) ? [...src.human] : []
   for (const e of (Array.isArray(entries) ? entries : [])) {
-    if (!e || !Number.isInteger(e.ac_index)) continue
+    if (!e || !Number.isInteger(e.ac_index) || e.status === 'passed') continue
     const k = e.ac_index
     agent = agent.filter((x) => x !== k)
     human = human.filter((x) => x !== k)
     if (e.status === 'failed') agent.push(k)
-    else if (e.status !== 'passed') human.push(k)
+    else human.push(k)
   }
   return { ...src, agent: agent.sort((a, b) => a - b), human: human.sort((a, b) => a - b) }
 }

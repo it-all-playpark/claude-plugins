@@ -1157,6 +1157,7 @@ function freezeAcVerify(acceptanceCriteria, agentResult) {
     if (cmd === null) return { verify_command: null, expect_paths: [] }
     const paths = (Array.isArray(r.expect_paths) ? r.expect_paths : [])
       .filter((p) => typeof p === 'string' && codes.includes(p) && isWorktreeRelativePath(p))
+    if (codes.some((c) => c !== cmd && !paths.includes(c))) return { verify_command: null, expect_paths: [] }
     return { verify_command: cmd, expect_paths: [...new Set(paths)] }
   })
 }
@@ -1435,7 +1436,10 @@ function acVerifyFeedback({ result, command, acIndex, acceptanceCriteria }) {
 function acVerifyResult(e, r) {
   const base = { ...(r ?? {}), ac_index: e.ac_index, observational: true }
   if (e.status === 'passed') {
-    return { ...base, satisfied: true, verified_by: 'local', unreachable_env: false, evidence: `AC のコマンド（\`${e.command}\`）が exit ${e.exit_code ?? 0}: ${e.log_path ?? 'log なし'}` }
+    const run = `AC のコマンド（\`${e.command}\`）が exit ${e.exit_code ?? 0}: ${e.log_path ?? 'log なし'}`
+    if (r?.satisfied === true) return { ...base, satisfied: true, unreachable_env: false, evidence: `${run}${typeof r.evidence === 'string' && r.evidence.trim() ? `（evaluator: ${r.evidence.trim()}）` : ''}` }
+    if (r) return { ...base, satisfied: false, evidence: `evaluator が未達と判定（AC のコマンドの exit 0 だけでは達成にしない）: ${typeof r.evidence === 'string' ? r.evidence : ''} / ${run}` }
+    return { ...base, satisfied: false, unreachable_env: true, evidence: `evaluator の判定が無い（AC のコマンドの exit 0 だけでは達成にしない）: ${run}` }
   }
   if (e.status === 'failed') {
     return { ...base, satisfied: false, verified_by: 'local', unreachable_env: false, evidence: `AC のコマンド（\`${e.command}\`）が ${acVerifyHow(e)}${e.reason ? `（${e.reason}）` : ''}（差し戻し上限まで直らなかった）: ${e.log_path ?? 'log なし'}` }
@@ -1458,12 +1462,12 @@ function mergeAcVerifyGaps(byActor, entries) {
   let agent = Array.isArray(src.agent) ? [...src.agent] : []
   let human = Array.isArray(src.human) ? [...src.human] : []
   for (const e of (Array.isArray(entries) ? entries : [])) {
-    if (!e || !Number.isInteger(e.ac_index)) continue
+    if (!e || !Number.isInteger(e.ac_index) || e.status === 'passed') continue
     const k = e.ac_index
     agent = agent.filter((x) => x !== k)
     human = human.filter((x) => x !== k)
     if (e.status === 'failed') agent.push(k)
-    else if (e.status !== 'passed') human.push(k)
+    else human.push(k)
   }
   return { ...src, agent: agent.sort((a, b) => a - b), human: human.sort((a, b) => a - b) }
 }
@@ -6416,7 +6420,7 @@ async function execAcVerify(state) {
 // Final reconcile: AC コマンドの passed は実行した tree（tree_hash）でしか確かめていない。最終 tree の diff hash と突き合わせ、
 // 異なる（hash が取れない場合を含む）AC だけ最終 tree で 1 回再実行して結果を置き換える（差し戻しはしない。acVerifyFinalAction）。
 // worktree が最終 HEAD に無い・再実行の結果が取れないときは passed を捨てて stale（proven にしない）。
-// 最終 tree で passed の AC は ledger の AC item を deterministic で checked にする（red→green の昇格と同じ扱い）。
+// 最終 tree で passed でなくなった AC は ledger の AC item を未解消へ戻す（passed を deterministic 昇格にはしない）。
 async function reconcileAcVerifyTree(state, { worktreeAtFinal }) {
   const passed = state.acVerify.filter((e) => e.status === 'passed')
   if (!passed.length) return state
@@ -6447,17 +6451,15 @@ async function reconcileAcVerifyTree(state, { worktreeAtFinal }) {
   return syncAcVerifyLedger(state)
 }
 
-// 最終 tree の AC コマンドの記録を ledger の AC item に写す: passed は deterministic で checked（red→green の昇格と同じ扱い）、
-// Evaluate で exit 0 を根拠に checked にしたが最終 tree で passed でなくなった AC は未解消へ戻す。
+// 最終 tree の AC コマンドの記録を ledger の AC item に写す: Evaluate で exit 0 を根拠に checked にしたが最終 tree で passed で
+// なくなった AC は未解消へ戻す。passed は deterministic 昇格にしない — exit code は PR が書き換えうるコマンド・テストの出力で、
+// 達成は evaluator の判定と合わせて決める（applyAcVerifyResults）。
 function syncAcVerifyLedger(state) {
   for (const e of state.acVerify) {
     const acId = `AC-${e.ac_index + 1}`
     const item = state.ledger?.items.find((it) => it.id === acId)
     if (!item) continue
-    if (e.status === 'passed') {
-      state.ledger = setCheck(state.ledger, acId, { kind: 'deterministic' })
-      state.ledger = checkItem(state.ledger, acId, `AC コマンド exit 0（最終 tree）: ${e.command}`)
-    } else if (item.checked && item.check?.kind !== 'deterministic') {
+    if (e.status !== 'passed' && item.checked && item.check?.kind !== 'deterministic') {
       state.ledger = reopenItem(state.ledger, acId, `AC コマンドが最終 tree で exit 0 にならない（${e.status}）`)
     }
   }
@@ -6997,15 +6999,17 @@ async function execEvaluatePhase(state) {
     // （テストファイルを名指しした観測型 AC は actor agent なので、未達は差し戻しに入る — classifyAcActor）。
     // ci の AC は evaluator の判定を使わず「CI で未判定」（satisfied:false・actor ci）に置き換える — unsatisfiedByActor.ci に
     // 入り、agent の差し戻し（agentAcFeedback）にも人手 AC 待ちにも数えない。CI の結果は pr-iterate の後で反映する。
-    // AC コマンドの AC は evaluator の判定を使わずコマンドの結果（state.acVerify）で置き換える: exit 0 は proven で達成、
-    // 上限後も失敗は agent の未達、確かめられなかったものは unreachable_env の人手 AC 待ち（applyAcVerifyResults）。
+    // AC コマンドの AC はコマンドの結果（state.acVerify）を重ねる: exit 0 は proven（evaluator の satisfied:true を倒さない
+    // だけで、evaluator の未達は覆さない）、上限後も失敗は agent の未達、確かめられなかったものは unreachable_env の人手 AC 待ち
+    // （applyAcVerifyResults）。
     const provenObs = [...deterministicAcIndexes(ledger.items), ...acVerifyProvenIndexes(state.acVerify)]
     const acResultsEff = applyCiAcResults(applyAcVerifyResults(demoteUnprovenObservationalAc(ev.ac_results, req.ac_observational, provenObs), state.acVerify), req.ac_actors, null)
-    // exit 0 の AC コマンドの AC item は checked にする（最終 tree との突き合わせは Final reconcile の reconcileAcVerifyTree。
-    // 最終 tree で passed でなくなれば未解消へ戻す）
+    // exit 0 で evaluator も達成と判定した AC コマンドの AC item は checked にする（inspection のまま。最終 tree との突き合わせは
+    // Final reconcile の reconcileAcVerifyTree。最終 tree で passed でなくなれば未解消へ戻す）
     for (const k of acVerifyProvenIndexes(state.acVerify)) {
       const acId = `AC-${k + 1}`
-      if (ledger.items.some((it) => it.id === acId && !it.checked)) ledger = checkItem(ledger, acId, `AC コマンド exit 0: ${AC_VERIFY[k].verify_command}`)
+      const satisfied = (acResultsEff ?? []).some((r) => r && r.ac_index === k && r.satisfied === true)
+      if (satisfied && ledger.items.some((it) => it.id === acId && !it.checked)) ledger = checkItem(ledger, acId, `AC コマンド exit 0 + evaluator 達成: ${AC_VERIFY[k].verify_command}`)
     }
     evalResult = Array.isArray(acResultsEff) ? { ...ev, ac_results: acResultsEff } : ev
     unsatisfiedAc = (acResultsEff ?? []).some((r) => r && r.satisfied === false)
@@ -7687,7 +7691,7 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
 }
 
 // AC コマンドの exit 0 を最終 tree と突き合わせる（reconcileAcVerifyTree）。Final AC reconcile より前に置き、最終 tree で
-// proven になった AC を deterministic 昇格として扱わせる（final evaluator に未実証の観測型 AC として渡さない）。
+// proven になった AC を final evaluator に未実証の観測型 AC として渡さない（達成は final evaluator の判定と合わせて決める）。
 // fix が無い run の worktree は PR の tree のまま、fix がある run は reconcile-sync が成功したときだけ最終 HEAD にある。
 if (AC_VERIFY_INDEXES.length) state = await reconcileAcVerifyTree(state, { worktreeAtFinal: (iterate?.fixes_applied ?? 0) === 0 || finalSyncOk })
 
@@ -7710,7 +7714,7 @@ if (_facDecision.run) {
     && (it.escalate === true || (it.checked !== true && !(it.triaged === true && typeof it.triaged_evidence === 'string' && it.triaged_evidence.length > 0))))
   // Evaluate で red→green 実証していない観測型 AC（ci の AC を除く）。final evaluator に test_files / impl_files を返させ、
   // 下の redgreen-final で最終 tree の red→green を実証する機会を与える。
-  const provenAtEval = deterministicAcIndexes(state.ledger.items)
+  const provenAtEval = [...deterministicAcIndexes(state.ledger.items), ...acVerifyProvenIndexes(state.acVerify)]
   const unprovenObsAc = (req.ac_observational ?? []).flatMap((o, i) => (o === true && !provenAtEval.includes(i) && !CI_AC_INDEXES.includes(i) ? [i] : []))
   const fa = await trackedAgent(
     `cd ${WT} で作業。pr-iterate の fix 適用後の最終 PR tree に対し、以下の既存 acceptance_criteria のみを one-shot で再検証せよ（final AC 再検証）。\n`
@@ -7767,20 +7771,20 @@ if (_facDecision.run) {
     }
     // 観測型 AC は red→green 実証（Evaluate か上の redgreen-final で deterministic 昇格）していなければ、final reconcile の
     // inspection で satisfied:true でも達成扱いにしない（未達の人手 AC 待ちに倒す）。
-    const finalResults = demoteUnprovenObservationalAc(v.results, req.ac_observational, deterministicAcIndexes(state.ledger.items))
+    // 最終 tree で AC コマンドが exit 0 の AC も proven に入れる（final evaluator の satisfied:true を倒さないだけ。未達は覆さない）。
+    const acVerifyProvenFinal = acVerifyProvenIndexes(state.acVerify)
+    const finalResults = demoteUnprovenObservationalAc(v.results, req.ac_observational, [...deterministicAcIndexes(state.ledger.items), ...acVerifyProvenFinal])
     state.finalAcResults = finalResults
     state.finalUnsatisfiedAc = finalResults.some((r) => r && r.satisfied === false)
     state.finalUnsatisfiedAcByActor = unsatisfiedAcByActor(finalResults, req.ac_actors)
-    const acVerifyProvenFinal = acVerifyProvenIndexes(state.acVerify)
     for (const r of v.results) {
       if (CI_AC_INDEXES.includes(r.ac_index)) continue   // ci の AC は CI の結果で決める（下の ci-verify 反映）
-      if (acVerifyProvenFinal.includes(r.ac_index)) continue   // 最終 tree で AC コマンドが exit 0 の AC はその結果で決める（下の ac-verify 反映）
       const acId = `AC-${r.ac_index + 1}`
       const acItem = state.ledger.items.find((it) => it.id === acId)
       if (r.satisfied === false) {
         state.ledger = appendItem(state.ledger, { id: `AC-FINAL-${r.ac_index + 1}`, text: `[final-reconcile 不成立] ${String(req.acceptance_criteria[r.ac_index])}`.slice(0, 500), dimension: 'ac', severity: 'critical', source: 'evaluator', check: { kind: 'inspection' } }).ledger
         log(`AC-FINAL-${r.ac_index + 1}: 最終 tree で AC 不成立 → critical append（既存 ${acId} は変更しない）`)
-      } else if (acItem && !acItem.checked && req.ac_observational?.[r.ac_index] === true) {
+      } else if (acItem && !acItem.checked && req.ac_observational?.[r.ac_index] === true && !acVerifyProvenFinal.includes(r.ac_index)) {
         log(`${acId}: 観測型 AC の final reconcile pass（inspection）→ checked にせず人手 AC 待ち（red→green 実証なし）`)
       } else if (acItem && !acItem.checked) {
         state.ledger = checkItem(state.ledger, acId, `final reconcile pass: ${r.evidence}`)
@@ -7800,8 +7804,8 @@ if (_facDecision.run) {
   state.finalUnsatisfiedAcByActor = state.unsatisfiedAcByActor
   log(`Final AC reconcile: skip（reason=${_facDecision.reason}）`)
 }
-// AC コマンドの AC: 最終 tree と突き合わせた記録（reconcileAcVerifyTree の後の state.acVerify）で判定を確定する。evaluator /
-// final-ac-reconcile の判定は使わない。最終 tree で exit 0 → 達成（根拠はコマンド・exit code・log_path）、上限後も失敗 →
+// AC コマンドの AC: 最終 tree と突き合わせた記録（reconcileAcVerifyTree の後の state.acVerify）を evaluator /
+// final-ac-reconcile の判定に重ねる。最終 tree で exit 0 → evaluator の判定のまま（根拠にコマンド・exit code・log_path を添える）、上限後も失敗 →
 // agent の未達（ac_agent_unsatisfied）、確かめられなかった（unavailable / error / stale 等）→ 人手 AC 待ち。
 if (AC_VERIFY_INDEXES.length) {
   if (state.evalResult && Array.isArray(state.evalResult.ac_results)) state.evalResult = { ...state.evalResult, ac_results: applyAcVerifyResults(state.evalResult.ac_results, state.acVerify) }

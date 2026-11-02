@@ -443,17 +443,27 @@ test('[ac-verify] freezeAcVerify: AC に無い文字列・inline code の一部�
   assert.equal(freeze({ verify_command: 'pnpm --filter @acme/landing build', expect_paths: [] }).verify_command, null);
   assert.equal(freeze({ verify_command: ` ${BUILD_CMD} `, expect_paths: [] }).verify_command, null);
   // パス: AC に無い・一部だけ・.. を含む・/ 始まりは除外し、残りは採る
-  const paths = freeze({ verify_command: BUILD_CMD, expect_paths: ['packages/landing/out/other.html', 'out/index.html', BUILD_PATHS[0], 42] }).expect_paths;
-  assert.deepEqual(paths, [BUILD_PATHS[0]]);
-  const traversal = freezeAcVerify(['`make site` が exit 0 で、`../site/index.html` と `/tmp/site/index.html` と `site/./index.html` が生成される'], {
-    results: [{ ac_index: 0, observational: true, verify_command: 'make site', expect_paths: ['../site/index.html', '/tmp/site/index.html', 'site/./index.html'] }],
-  })[0];
-  assert.deepEqual(traversal, { verify_command: 'make site', expect_paths: ['site/./index.html'] });
+  const paths = freeze({ verify_command: BUILD_CMD, expect_paths: ['packages/landing/out/other.html', 'out/index.html', ...BUILD_PATHS, 42] }).expect_paths;
+  assert.deepEqual(paths, BUILD_PATHS);
+  const site = (ac, expectPaths) => freezeAcVerify([ac], { results: [{ ac_index: 0, observational: true, verify_command: 'make site', expect_paths: expectPaths }] })[0];
+  assert.deepEqual(site('`make site` が exit 0 で、`site/./index.html` が生成される', ['site/./index.html']), { verify_command: 'make site', expect_paths: ['site/./index.html'] });
+  // .. を含む・/ 始まりのパスは採らない（採らなかった inline code が残るので AC ごと凍結しない）
+  assert.deepEqual(site('`make site` が exit 0 で、`../site/index.html` が生成される', ['../site/index.html']), { verify_command: null, expect_paths: [] });
+  assert.deepEqual(site('`make site` が exit 0 で、`/tmp/site/index.html` が生成される', ['/tmp/site/index.html']), { verify_command: null, expect_paths: [] });
   // verify_command が採れなければ expect_paths も採らない。応答なし・形が違う・index 違いは null
   assert.deepEqual(freeze({ verify_command: null, expect_paths: BUILD_PATHS }), { verify_command: null, expect_paths: [] });
   assert.deepEqual(freezeAcVerify([BUILD_AC], null), [{ verify_command: null, expect_paths: [] }]);
   assert.deepEqual(freezeAcVerify([BUILD_AC], { results: [{ ac_index: 1, verify_command: BUILD_CMD, expect_paths: [] }] }), [{ verify_command: null, expect_paths: [] }]);
   assert.deepEqual(freezeAcVerify(undefined, { results: [] }), []);
+});
+
+test('[ac-verify] freezeAcVerify: verify_command と採った expect_paths 以外の inline code が残る AC（複数コマンドの複合 AC 等）は凍結しない', () => {
+  const multi = '`node --test plugins/dev-flow/_lib/` と `bash tests/run-all-bats.sh` が通り、`tools/sync-inlines.mjs --write` を実行した後の inline 区間が一致する';
+  for (const cmd of ['node --test plugins/dev-flow/_lib/', 'bash tests/run-all-bats.sh']) {
+    assert.deepEqual(freezeAcVerify([multi], { results: [{ ac_index: 0, observational: true, verify_command: cmd, expect_paths: [] }] }), [{ verify_command: null, expect_paths: [] }], cmd);
+  }
+  // 生成物のパスを expect_paths に採らなかった AC も、残った inline code を確かめていないので凍結しない
+  assert.deepEqual(freezeAcVerify([BUILD_AC], { results: [{ ac_index: 0, observational: true, verify_command: BUILD_CMD, expect_paths: [BUILD_PATHS[0]] }] }), [{ verify_command: null, expect_paths: [] }]);
 });
 
 test('[ac-verify] classifyAcActor: verify_command が凍結された観測型 AC は agent、verify_command もテストファイルの名指しも無い観測型 AC は human のまま', () => {

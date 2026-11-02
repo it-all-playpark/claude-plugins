@@ -224,16 +224,22 @@ test('[local-verify-routing] (AV-1) 判定の純関数: 最終 tree で passed �
   assert.deepEqual(acVerifyProvenIndexes(undefined), []);
 });
 
-test('[local-verify-routing] (AV-2) applyAcVerifyResults / mergeAcVerifyGaps: passed は根拠（コマンド・exit code・log_path）付きで達成、failed は agent の未達、error は人手 AC 待ち', () => {
+test('[local-verify-routing] (AV-2) applyAcVerifyResults / mergeAcVerifyGaps: passed は evaluator の判定に根拠（コマンド・exit code・log_path）を添えるだけ、failed は agent の未達、error は人手 AC 待ち', () => {
   const evalResults = [
-    { ac_index: 0, satisfied: false, verified_by: 'inspection', evidence: 'evaluator の判定は使わない' },
+    { ac_index: 0, satisfied: false, verified_by: 'inspection', evidence: 'expect_paths の中身が空' },
     { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
   ];
-  const passed = applyAcVerifyResults(evalResults, [entry('passed')]);
+  // exit 0 だけで evaluator の未達を覆さない（PR が書き換えうるコマンド・テストの終了コードのため）
+  const overruled = applyAcVerifyResults(evalResults, [entry('passed')]);
+  assert.equal(overruled[0].satisfied, false);
+  assert.ok(overruled[0].evidence.includes('expect_paths の中身が空') && overruled[0].evidence.includes(AC_LOG), overruled[0].evidence);
+  assert.equal(overruled[1], evalResults[1], 'AC コマンドの無い AC は変えない');
+  const passed = applyAcVerifyResults([{ ...evalResults[0], satisfied: true, evidence: 'ok' }], [entry('passed')]);
   assert.equal(passed[0].satisfied, true);
-  assert.equal(passed[0].verified_by, 'local');
-  assert.equal(passed[0].evidence, `AC のコマンド（\`${BUILD_CMD}\`）が exit 0: ${AC_LOG}`);
-  assert.equal(passed[1], evalResults[1], 'AC コマンドの無い AC は変えない');
+  assert.equal(passed[0].evidence, `AC のコマンド（\`${BUILD_CMD}\`）が exit 0: ${AC_LOG}（evaluator: ok）`);
+  // evaluator の結果が無い AC は exit 0 でも達成にしない（確かめられなかった扱い）
+  const missing = applyAcVerifyResults([evalResults[1]], [entry('passed')]);
+  assert.deepEqual({ satisfied: missing[0].satisfied, unreachable_env: missing[0].unreachable_env }, { satisfied: false, unreachable_env: true });
   const failed = applyAcVerifyResults(evalResults, [entry('failed', { reason: acFailed.reason })]);
   assert.equal(failed[0].satisfied, false);
   assert.equal(failed[0].unreachable_env, false);
@@ -245,7 +251,7 @@ test('[local-verify-routing] (AV-2) applyAcVerifyResults / mergeAcVerifyGaps: pa
   assert.equal(applyAcVerifyResults(null, [entry('passed')]), null);
 
   const gaps = { agent: [0, 1], human: [], ci: [3] };
-  assert.deepEqual(mergeAcVerifyGaps(gaps, [entry('passed')]), { agent: [1], human: [], ci: [3] });
+  assert.deepEqual(mergeAcVerifyGaps(gaps, [entry('passed')]), gaps, 'passed は evaluator の内訳を変えない');
   assert.deepEqual(mergeAcVerifyGaps({ agent: [], human: [0], ci: [] }, [entry('failed')]), { agent: [0], human: [], ci: [] });
   assert.deepEqual(mergeAcVerifyGaps({ agent: [0], human: [], ci: [] }, [entry('error')]), { agent: [], human: [0], ci: [] });
   assert.deepEqual(mergeAcVerifyGaps({ agent: [], human: [], ci: [] }, [entry('stale')]), { agent: [], human: [0], ci: [] }, 'Evaluate で passed でも最終 tree で確かめられなければ人手 AC 待ち');
@@ -280,6 +286,22 @@ test('[local-verify-routing] (AP) AC コマンドが exit 0 → 観測型 AC を
   assert.equal(result.merge_tier, 'REVIEW', JSON.stringify(result.merge_tier_hold_reasons));
   assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [], ci: [] });
   assert.ok(calls.find((c) => c.label === 'pr#1').prompt.includes(`- [x] ${BUILD_AC}`), 'PR 本文で AC コマンドの AC が checked');
+});
+
+test('[local-verify-routing] (AO) AC コマンドが exit 0 でも evaluator が未達と判定した AC は達成にしない（REVIEW に進めない）', async () => {
+  const evalUnsatisfied = {
+    verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation',
+    ac_results: [
+      { ac_index: 0, satisfied: false, verified_by: 'inspection', evidence: 'build の検証を外したテストで exit 0 にしている' },
+      { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
+    ],
+    security_clearance: [], concern_resolutions: [],
+  };
+  const overrides = { ...acPassedOnce };
+  for (let k = 1; k <= AGENT_AC_REIMPL_MAX + 1; k++) overrides[`eval#${k}`] = evalUnsatisfied;
+  const { result } = await runAc({ overrides });
+  assert.notEqual(result.merge_tier, 'REVIEW', JSON.stringify(result.merge_tier_hold_reasons));
+  assert.ok(plain(result.final_unsatisfied_ac_by_actor).agent.includes(0), JSON.stringify(result.final_unsatisfied_ac_by_actor));
 });
 
 test('[local-verify-routing] (AT) exit 0 を出した tree と最終 tree が異なる → 最終 tree で再実行し、その結果で判定する', async () => {
