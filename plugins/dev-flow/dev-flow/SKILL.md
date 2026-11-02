@@ -194,7 +194,7 @@ Setup 末尾の analyze ゲート（固有の phase は持たない）は `args.
 whitelist 検証してゲート（AC 空 / comment_conflicts 非空 / uncertain 非空 / repo 内外が混ざった AC）を判定するだけで、
 通常経路では agent を起動しない（ゲートが引いたときだけ sonnet を 1 spawn（`analyze-clarify#N`）し、人間向けの
 missing_context を作って needs_clarification で終端する。ゲートを通過しても、観測型判定が prerun で確定しない
-AC があるときは AC の文面だけを読む分類 agent（`ac-observational#N`）を 1 spawn する）。ゲート直後に issue から単一 task の plan を合成するだけ（Plan phase は
+AC か、AC が指定した検証コマンドを聞く観測型 AC があるときは AC の文面だけを読む分類 agent（`ac-observational#N`）を 1 spawn する）。ゲート直後に issue から単一 task の plan を合成するだけ（Plan phase は
 持たず、planner 系 agent は起動しない）で、Implement で `dev-implementer`（plan+impl 統合、opus / high）を
 1 spawn する。BLOCKED 再実装（`reimpl-blocked#b`）・Validate の green-fix・Evaluate の差し戻し（`reimpl#i`）も
 同じ agent への再 spawn。shape（micro / standard / complex）は analyze ゲートでは決めず、Diff triage で

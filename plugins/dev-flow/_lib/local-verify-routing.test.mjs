@@ -5,6 +5,10 @@
 //   (F) 失敗 → log_tail を付けて dev-implementer に差し戻し（AGENT_AC_REIMPL_MAX を Evaluate と共有）、上限後は ac_agent_unsatisfied
 //   (U) pg-broker に届かない → #861 の CI 待ちの経路（pr-iterate に wait 無しの ci_verify）。理由を終端サマリーに出す
 //   (N) local_verify が無い repo・ci の AC が無い run は local-verify を起動しない
+// AC コマンド（issue #1203。観測型 AC が inline code で指定したコマンドを、analyze ゲートで凍結して local-verify で実行する）:
+//   (AV-*) 判定の純関数（最終 tree で passed → proven・tree が異なる passed → 再実行・failed → 差し戻し・error → 未達）
+//   (AP) exit 0 → 観測型 AC を達成（ac_human_pending の HOLD にしない） (AT) 最終 tree が異なれば再実行
+//   (AF) 失敗 → log_tail 付きで差し戻し、上限後は ac_agent_unsatisfied (AE) error → proven にせず人手 AC 待ち
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -13,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
 import { AGENT_AC_REIMPL_MAX } from './ac-actor.mjs';
-import { localVerifyConfigArg } from './local-verify.mjs';
+import { localVerifyConfigArg, AC_VERIFY_TIMEOUT_SEC, acVerifyValidateAction, acVerifyFinalAction, acVerifyProvenIndexes, applyAcVerifyResults, mergeAcVerifyGaps } from './local-verify.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude/workflows/dev-flow.js'), 'utf8');
@@ -191,4 +195,145 @@ test('[local-verify-routing] (N) local_verify が無い repo・ci の AC が無�
   assert.equal(localVerifyCalls(noCiAc.calls).length, 0);
   assert.equal('ci_verify' in noCiAc.iterateArgs[0], false);
   assert.equal(noCiAc.result.local_verify, null);
+});
+
+// ---- AC コマンド（issue #1203） ----
+
+const BUILD_CMD = 'timeout 300 pnpm --filter @acme/landing build';
+const BUILD_PATHS = ['packages/landing/out/index.html', 'packages/landing/out/404.html'];
+const BUILD_AC = `sandbox 内で \`${BUILD_CMD}\` が exit 0 で終わり、\`${BUILD_PATHS[0]}\` と \`${BUILD_PATHS[1]}\` が生成される`;
+const AC_LOG = '/tmp/wt/.devflow-tmp/ac-verify/ac-1/logs/command.log';
+const acPassed = { ok: true, status: 'passed', exit_code: 0, log_path: AC_LOG, log_tail: 'built', db_deleted: null };
+const acFailed = { ok: false, status: 'failed', exit_code: 0, reason: `command は exit 0 だが expect_paths が worktree に無い: ${BUILD_PATHS[1]}`, log_path: AC_LOG, log_tail: 'Error: page /404 failed to render', db_deleted: null };
+const entry = (status, extra = {}) => ({ ac_index: 0, command: BUILD_CMD, expect_paths: BUILD_PATHS, status, exit_code: 0, log_path: AC_LOG, tree_hash: 'AAA', ...extra });
+
+test('[local-verify-routing] (AV-1) 判定の純関数: 最終 tree で passed → proven、tree が異なる passed → 再実行、failed → 差し戻し（上限後は未達）、error → 未達', () => {
+  // Final reconcile（acVerifyFinalAction）
+  assert.equal(acVerifyFinalAction(entry('passed'), 'AAA'), 'proven');
+  assert.equal(acVerifyFinalAction(entry('passed'), 'BBB'), 'rerun');
+  assert.equal(acVerifyFinalAction(entry('passed'), null), 'rerun', '最終 tree の hash が取れなければ突き合わせられないので再実行');
+  assert.equal(acVerifyFinalAction(entry('failed'), 'AAA'), 'failed');
+  for (const status of ['error', 'unavailable', 'skipped', 'stale']) assert.equal(acVerifyFinalAction(entry(status), 'AAA'), 'unproven', status);
+  // Validate green 後の 1 回（acVerifyValidateAction。差し戻し回数は ci の AC・Evaluate と共有）
+  assert.equal(acVerifyValidateAction('passed', 0, AGENT_AC_REIMPL_MAX), 'passed');
+  assert.equal(acVerifyValidateAction('failed', AGENT_AC_REIMPL_MAX - 1, AGENT_AC_REIMPL_MAX), 'reimpl');
+  assert.equal(acVerifyValidateAction('failed', AGENT_AC_REIMPL_MAX, AGENT_AC_REIMPL_MAX), 'failed');
+  for (const verdict of ['error', 'unavailable', 'running']) assert.equal(acVerifyValidateAction(verdict, 0, AGENT_AC_REIMPL_MAX), 'unproven', verdict);
+  // proven は passed の記録だけ
+  assert.deepEqual(acVerifyProvenIndexes([entry('passed'), { ...entry('error'), ac_index: 1 }, { ...entry('failed'), ac_index: 2 }]), [0]);
+  assert.deepEqual(acVerifyProvenIndexes(undefined), []);
+});
+
+test('[local-verify-routing] (AV-2) applyAcVerifyResults / mergeAcVerifyGaps: passed は根拠（コマンド・exit code・log_path）付きで達成、failed は agent の未達、error は人手 AC 待ち', () => {
+  const evalResults = [
+    { ac_index: 0, satisfied: false, verified_by: 'inspection', evidence: 'evaluator の判定は使わない' },
+    { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
+  ];
+  const passed = applyAcVerifyResults(evalResults, [entry('passed')]);
+  assert.equal(passed[0].satisfied, true);
+  assert.equal(passed[0].verified_by, 'local');
+  assert.equal(passed[0].evidence, `AC のコマンド（\`${BUILD_CMD}\`）が exit 0: ${AC_LOG}`);
+  assert.equal(passed[1], evalResults[1], 'AC コマンドの無い AC は変えない');
+  const failed = applyAcVerifyResults(evalResults, [entry('failed', { reason: acFailed.reason })]);
+  assert.equal(failed[0].satisfied, false);
+  assert.equal(failed[0].unreachable_env, false);
+  assert.ok(failed[0].evidence.includes(BUILD_PATHS[1]) && failed[0].evidence.includes(AC_LOG), failed[0].evidence);
+  const errored = applyAcVerifyResults(evalResults, [entry('error', { reason: 'proxy の応答が無い' })]);
+  assert.deepEqual({ satisfied: errored[0].satisfied, unreachable_env: errored[0].unreachable_env, observational: errored[0].observational }, { satisfied: false, unreachable_env: true, observational: true });
+  // 結果の無い AC は足す・非配列はそのまま
+  assert.deepEqual(applyAcVerifyResults([evalResults[1]], [entry('passed')]).map((r) => r.ac_index), [0, 1]);
+  assert.equal(applyAcVerifyResults(null, [entry('passed')]), null);
+
+  const gaps = { agent: [0, 1], human: [], ci: [3] };
+  assert.deepEqual(mergeAcVerifyGaps(gaps, [entry('passed')]), { agent: [1], human: [], ci: [3] });
+  assert.deepEqual(mergeAcVerifyGaps({ agent: [], human: [0], ci: [] }, [entry('failed')]), { agent: [0], human: [], ci: [] });
+  assert.deepEqual(mergeAcVerifyGaps({ agent: [0], human: [], ci: [] }, [entry('error')]), { agent: [], human: [0], ci: [] });
+  assert.deepEqual(mergeAcVerifyGaps({ agent: [], human: [], ci: [] }, [entry('stale')]), { agent: [], human: [0], ci: [] }, 'Evaluate で passed でも最終 tree で確かめられなければ人手 AC 待ち');
+});
+
+async function runAc({ overrides = {}, iterate = {}, acObs = { results: [{ ac_index: 0, observational: true, verify_command: BUILD_CMD, expect_paths: [...BUILD_PATHS] }] } } = {}) {
+  const { ctx, calls, logs } = makeDevFlowSandbox({
+    overrides: { 'ac-observational#1': acObs, ...overrides },
+    workflow: async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0, ...iterate }),
+    extra: { args: devFlowArgs(1, { analyze: prerunAnalyze({ acceptance_criteria: [BUILD_AC, CODE_AC], ac_observational: [true, false] }) }) },
+  });
+  const { result, error } = await runWorkflowCapture(src, ctx);
+  assertNoCrash(error, 'local-verify-routing(ac-verify)');
+  assert.equal(error, null, `run が throw した: ${error?.message}`);
+  return { result, calls, logs };
+}
+
+const acVerifyCalls = (calls) => calls.filter((c) => c.label.startsWith('ac-verify-'));
+const acReimplCalls = (calls) => calls.filter((c) => /^reimpl-ac-verify#\d+:serial:issue-1$/.test(c.label));
+const acPassedOnce = { 'ac-verify-start#AC-1.1': running, 'ac-verify-wait#AC-1.1.1': acPassed, 'ac-verify-stop#AC-1.1': stopped };
+
+test('[local-verify-routing] (AP) AC コマンドが exit 0 → 観測型 AC を達成にし ac_human_pending の HOLD にしない。宣言は凍結した AC の inline code（db 無し）だけ', async () => {
+  const { result, calls } = await runAc({ overrides: acPassedOnce });
+  assert.deepEqual(acVerifyCalls(calls).map((c) => c.label), ['ac-verify-start#AC-1.1', 'ac-verify-wait#AC-1.1.1', 'ac-verify-stop#AC-1.1']);
+  const at = (label) => calls.findIndex((c) => c.label === label);
+  assert.ok(at('test#1') < at('ac-verify-start#AC-1.1') && at('ac-verify-stop#AC-1.1') < at('eval#1'), calls.map((c) => c.label).join(', '));
+  const start = calls.find((c) => c.label === 'ac-verify-start#AC-1.1').prompt;
+  assert.ok(start.endsWith(` --config-pct ${localVerifyConfigArg({ command: BUILD_CMD, expect_paths: BUILD_PATHS, timeout_seconds: AC_VERIFY_TIMEOUT_SEC })}`), start);
+  assert.ok(start.includes("--state-dir '/tmp/wt/.devflow-tmp/ac-verify/ac-1'"), start);
+  assert.ok(calls.some((c) => c.label === 'diff-hash-ac-verify-final'), '最終 tree の hash を取って突き合わせる');
+  assert.equal(acReimplCalls(calls).length, 0);
+  assert.equal(result.merge_tier, 'REVIEW', JSON.stringify(result.merge_tier_hold_reasons));
+  assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [], ci: [] });
+  assert.ok(calls.find((c) => c.label === 'pr#1').prompt.includes(`- [x] ${BUILD_AC}`), 'PR 本文で AC コマンドの AC が checked');
+});
+
+test('[local-verify-routing] (AT) exit 0 を出した tree と最終 tree が異なる → 最終 tree で再実行し、その結果で判定する', async () => {
+  const rerunPassed = await runAc({ overrides: {
+    ...acPassedOnce,
+    'diff-hash-ac-verify-final': { hash: 'BBB', empty: false },
+    'ac-verify-start#AC-1.final': running, 'ac-verify-wait#AC-1.final.1': acPassed, 'ac-verify-stop#AC-1.final': stopped,
+  } });
+  assert.deepEqual(acVerifyCalls(rerunPassed.calls).map((c) => c.label).slice(3), ['ac-verify-start#AC-1.final', 'ac-verify-wait#AC-1.final.1', 'ac-verify-stop#AC-1.final']);
+  assert.equal(acReimplCalls(rerunPassed.calls).length, 0, '最終 tree の再実行では差し戻さない');
+  assert.equal(rerunPassed.result.merge_tier, 'REVIEW', JSON.stringify(rerunPassed.result.merge_tier_hold_reasons));
+
+  const rerunError = await runAc({ overrides: {
+    ...acPassedOnce,
+    'diff-hash-ac-verify-final': { hash: 'BBB', empty: false },
+    'ac-verify-start#AC-1.final': { ok: false, status: 'error', error: 'local-verify が起動していない' }, 'ac-verify-stop#AC-1.final': stopped,
+  } });
+  assert.equal(rerunError.result.merge_tier, 'HOLD');
+  assert.deepEqual(plain(rerunError.result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
+  assert.deepEqual(plain(rerunError.result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] }, '最終 tree の結果ではない exit 0 を根拠にしない');
+});
+
+test(`[local-verify-routing] (AF) AC コマンドが失敗 → log_tail 付きで差し戻し、${AGENT_AC_REIMPL_MAX} 回後も失敗なら ac_agent_unsatisfied で HOLD（Evaluate と上限を共有）`, async () => {
+  const overrides = {};
+  for (let k = 1; k <= AGENT_AC_REIMPL_MAX + 1; k++) {
+    overrides[`ac-verify-start#AC-1.${k}`] = running;
+    overrides[`ac-verify-wait#AC-1.${k}.1`] = acFailed;
+    overrides[`ac-verify-stop#AC-1.${k}`] = stopped;
+  }
+  const { result, calls } = await runAc({ overrides });
+  const reimpl = acReimplCalls(calls);
+  assert.equal(reimpl.length, AGENT_AC_REIMPL_MAX, calls.map((c) => c.label).join(', '));
+  for (const c of reimpl) {
+    assert.ok(c.prompt.includes('Error: page /404 failed to render'), `差し戻しに log_tail を付ける: ${c.prompt}`);
+    assert.ok(c.prompt.includes(BUILD_PATHS[1]) && c.prompt.includes(AC_LOG), c.prompt);
+  }
+  assert.ok(calls.some((c) => c.label === 'test#ac-verify-1'), '差し戻しの後は unit テストを確かめてから再実行する');
+  assert.equal(calls.filter((c) => c.label.startsWith('ac-verify-start#')).length, AGENT_AC_REIMPL_MAX + 1);
+  assert.equal(calls.filter((c) => /^reimpl#\d+:serial:/.test(c.label)).length, 0, 'Evaluate は上限を使い切っているので差し戻さない');
+  assert.equal(result.merge_tier, 'HOLD');
+  assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_agent_unsatisfied']);
+  assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [0], human: [], ci: [] });
+});
+
+test('[local-verify-routing] (AE) AC コマンドを確かめられない（error）・verify_command が凍結されない → proven にせず人手 AC 待ち（差し戻さない）', async () => {
+  const errored = await runAc({ overrides: { 'ac-verify-start#AC-1.1': { ok: false, status: 'error', error: 'local_verify の宣言が不正' }, 'ac-verify-stop#AC-1.1': stopped } });
+  assert.equal(acReimplCalls(errored.calls).length, 0);
+  assert.equal(errored.calls.filter((c) => /^reimpl#\d+:serial:/.test(c.label)).length, 0);
+  assert.equal(errored.result.merge_tier, 'HOLD');
+  assert.deepEqual(plain(errored.result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
+  assert.deepEqual(plain(errored.result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });
+
+  // 分類 agent が AC に無いコマンドを返した → 凍結されず、AC コマンドを実行しない（従来どおり人手 AC 待ち）
+  const rewritten = await runAc({ acObs: { results: [{ ac_index: 0, observational: true, verify_command: 'pnpm build', expect_paths: [] }] } });
+  assert.equal(acVerifyCalls(rewritten.calls).length, 0);
+  assert.deepEqual(plain(rewritten.result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });
 });

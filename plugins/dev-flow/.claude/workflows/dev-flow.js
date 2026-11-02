@@ -1113,17 +1113,52 @@ function pendingAcObservationalIndexes(acObservational) {
   return out
 }
 
+function acVerifyCandidateIndexes(acceptanceCriteria, acObservational, opts = {}) {
+  const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
+  const obs = Array.isArray(acObservational) ? acObservational : []
+  const out = []
+  for (let i = 0; i < acs.length; i++) {
+    if (obs[i] === true && classifyAcActor(acs[i], { repo: opts?.repo, ciVerify: opts?.ciVerify }) === 'agent') out.push(i)
+  }
+  return out
+}
+
 function acObservationalPrompt(issueTitle, acceptanceCriteria, indexes) {
   const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
   const items = (Array.isArray(indexes) ? indexes : []).map((i) => ({ ac_index: i, ac: String(acs[i] ?? '') }))
-  return '次の issue の受け入れ基準（AC）それぞれが観測型かを判定せよ。判定材料は下に示す issue のタイトルと AC の文面だけ。'
+  return '次の issue の受け入れ基準（AC）それぞれについて、観測型かどうかと、AC が指定した検証コマンドを判定せよ。判定材料は下に示す issue のタイトルと AC の文面だけ。'
     + 'ツールは使わず、ファイル・diff・issue 本文・コマンドの出力を読みに行かない。\n'
     + '観測型（observational:true）: コードとテストを読むだけでは確かめられず、実行した結果・ログ・計測を観測しないと確かめられない AC。'
     + 'AC がテストコードやソースコード自体の書き方・構成について述べているなら false。'
     + '文面だけでは決められない AC は observational:null を返せ（観測型として扱われる）。\n'
+    + 'verify_command: その AC の結果を exit code だけで決められる、worktree を cwd に実行するコマンドを AC 自身が inline code（バッククォートで囲んだ部分）で書いているなら、'
+    + 'その inline code の中身を 1 文字も変えずに写せ。コマンドを組み立てる・言い換える・inline code の一部だけを切り出すことはしない。決まらなければ null。\n'
+    + 'expect_paths: verify_command の終了後に worktree に生成されていることを AC が求めるファイルのうち、AC が inline code で書いたパス（中身をそのまま写す。worktree からの相対パスだけ）。'
+    + '無ければ []。verify_command が null なら []。\n'
     + `issue のタイトル: ${JSON.stringify(String(issueTitle ?? ''))}\n`
     + `AC（ac_index は 0 始まり）: ${JSON.stringify(items)}\n`
-    + '上の全 AC について 1 件ずつ {"results":[{"ac_index":<上の ac_index>,"observational":true|false|null}]} の形で返せ。\n'
+    + '上の全 AC について 1 件ずつ {"results":[{"ac_index":<上の ac_index>,"observational":true|false|null,"verify_command":"<inline code の中身>"|null,"expect_paths":["<inline code の中身>"]}]} の形で返せ。\n'
+}
+
+function inlineCodesOf(ac) {
+  return (String(ac ?? '').match(INLINE_CODE_RE) ?? []).map((m) => m.slice(1, -1))
+}
+
+function isWorktreeRelativePath(p) {
+  return p.trim() !== '' && !p.startsWith('/') && !p.split('/').includes('..')
+}
+
+function freezeAcVerify(acceptanceCriteria, agentResult) {
+  const results = Array.isArray(agentResult?.results) ? agentResult.results : []
+  return (Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []).map((ac, i) => {
+    const codes = inlineCodesOf(ac)
+    const r = results.find((x) => x && x.ac_index === i)
+    const cmd = r && typeof r.verify_command === 'string' && r.verify_command.trim() !== '' && codes.includes(r.verify_command) ? r.verify_command : null
+    if (cmd === null) return { verify_command: null, expect_paths: [] }
+    const paths = (Array.isArray(r.expect_paths) ? r.expect_paths : [])
+      .filter((p) => typeof p === 'string' && codes.includes(p) && isWorktreeRelativePath(p))
+    return { verify_command: cmd, expect_paths: [...new Set(paths)] }
+  })
 }
 
 function resolveAcObservational(acObservational, agentResult) {
@@ -1167,12 +1202,14 @@ function classifyAcActor(ac, opts = {}) {
   if (HUMAN_AC_PATTERNS.some((re) => re.test(text))) return 'human'
   if (matchesCiVerify(ac, opts?.ciVerify)) return 'ci'
   if (classifyAcScope(ac, opts) === 'external') return 'human'
-  return opts?.observational === true && !namesTestFile(ac) ? 'human' : 'agent'
+  const hasVerifyCommand = typeof opts?.verifyCommand === 'string' && opts.verifyCommand !== ''
+  return opts?.observational === true && !namesTestFile(ac) && !hasVerifyCommand ? 'human' : 'agent'
 }
 
 function acActorsOf(acceptanceCriteria, opts = {}) {
   const obs = Array.isArray(opts?.observational) ? opts.observational : []
-  return (Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []).map((ac, i) => classifyAcActor(ac, { repo: opts?.repo, observational: obs[i] === true, ciVerify: opts?.ciVerify }))
+  const verify = Array.isArray(opts?.acVerify) ? opts.acVerify : []
+  return (Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []).map((ac, i) => classifyAcActor(ac, { repo: opts?.repo, observational: obs[i] === true, ciVerify: opts?.ciVerify, verifyCommand: verify[i]?.verify_command ?? null }))
 }
 
 function ciAcIndexes(actors) {
@@ -1346,6 +1383,89 @@ function localVerifyCiOutcome(localVerify) {
     exit_code: localVerify.exit_code ?? null,
     log_path: localVerify.log_path ?? null,
   }
+}
+
+
+const AC_VERIFY_TIMEOUT_SEC = 900
+const AC_VERIFY_STATE_DIR = '.devflow-tmp/ac-verify'
+
+function acVerifyConfig(frozen) {
+  return {
+    command: frozen.verify_command,
+    expect_paths: Array.isArray(frozen.expect_paths) ? frozen.expect_paths : [],
+    timeout_seconds: AC_VERIFY_TIMEOUT_SEC,
+  }
+}
+
+function acVerifyValidateAction(verdict, reimplCount, reimplMax) {
+  if (verdict === 'passed') return 'passed'
+  if (verdict === 'failed') return reimplCount < reimplMax ? 'reimpl' : 'failed'
+  return 'unproven'
+}
+
+function acVerifyFinalAction(entry, finalTreeHash) {
+  if (entry?.status === 'passed') return typeof finalTreeHash === 'string' && entry.tree_hash === finalTreeHash ? 'proven' : 'rerun'
+  if (entry?.status === 'failed') return 'failed'
+  return 'unproven'
+}
+
+function acVerifyProvenIndexes(entries) {
+  return (Array.isArray(entries) ? entries : []).filter((e) => e && e.status === 'passed' && Number.isInteger(e.ac_index)).map((e) => e.ac_index)
+}
+
+function acVerifyHow(e) {
+  return e.timeout === true ? 'timeout_seconds を超えて止められた' : `exit ${e.exit_code ?? '?'}`
+}
+
+function acVerifyFeedback({ result, command, acIndex, acceptanceCriteria }) {
+  const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
+  const how = result?.status === 'timeout' ? 'timeout_seconds を超えて止められた' : `exit ${result?.exit_code ?? '?'} で失敗した`
+  const reason = typeof result?.reason === 'string' && result.reason ? `（${result.reason}）` : ''
+  return {
+    severity: 'major',
+    topic: `AC-${acIndex + 1} 未達`,
+    ac_index: acIndex,
+    description: `AC-${acIndex + 1}「${String(acs[acIndex] ?? '')}」が指定したコマンド（\`${command}\`）を worktree で実行したら ${how}${reason}`,
+    suggestion: 'log_tail（失敗した実行の出力の末尾）から原因を特定して実装を直せ。AC のコマンドや期待するファイルを変えて通さない。全文は log_path にある',
+    log_path: typeof result?.log_path === 'string' ? result.log_path : null,
+    log_tail: String(result?.log_tail ?? '').slice(-LOCAL_VERIFY_TAIL_MAX),
+  }
+}
+
+function acVerifyResult(e, r) {
+  const base = { ...(r ?? {}), ac_index: e.ac_index, observational: true }
+  if (e.status === 'passed') {
+    return { ...base, satisfied: true, verified_by: 'local', unreachable_env: false, evidence: `AC のコマンド（\`${e.command}\`）が exit ${e.exit_code ?? 0}: ${e.log_path ?? 'log なし'}` }
+  }
+  if (e.status === 'failed') {
+    return { ...base, satisfied: false, verified_by: 'local', unreachable_env: false, evidence: `AC のコマンド（\`${e.command}\`）が ${acVerifyHow(e)}${e.reason ? `（${e.reason}）` : ''}（差し戻し上限まで直らなかった）: ${e.log_path ?? 'log なし'}` }
+  }
+  return { ...base, satisfied: false, unreachable_env: true, evidence: `AC のコマンド（\`${e.command}\`）で確かめられなかった（${e.status}${e.reason ? `: ${e.reason}` : ''}）` }
+}
+
+function applyAcVerifyResults(acResults, entries) {
+  if (!Array.isArray(acResults)) return acResults
+  const list = (Array.isArray(entries) ? entries : []).filter((e) => e && Number.isInteger(e.ac_index))
+  if (!list.length) return acResults
+  const decided = new Set(list.map((e) => e.ac_index))
+  const kept = acResults.filter((r) => !(r && decided.has(r.ac_index)))
+  const replaced = list.map((e) => acVerifyResult(e, acResults.find((r) => r && r.ac_index === e.ac_index) ?? null))
+  return [...kept, ...replaced].sort((a, b) => (Number.isInteger(a?.ac_index) ? a.ac_index : Infinity) - (Number.isInteger(b?.ac_index) ? b.ac_index : Infinity))
+}
+
+function mergeAcVerifyGaps(byActor, entries) {
+  const src = byActor && typeof byActor === 'object' ? byActor : {}
+  let agent = Array.isArray(src.agent) ? [...src.agent] : []
+  let human = Array.isArray(src.human) ? [...src.human] : []
+  for (const e of (Array.isArray(entries) ? entries : [])) {
+    if (!e || !Number.isInteger(e.ac_index)) continue
+    const k = e.ac_index
+    agent = agent.filter((x) => x !== k)
+    human = human.filter((x) => x !== k)
+    if (e.status === 'failed') agent.push(k)
+    else if (e.status !== 'passed') human.push(k)
+  }
+  return { ...src, agent: agent.sort((a, b) => a - b), human: human.sort((a, b) => a - b) }
 }
 // ==== END inline: _lib/local-verify.mjs ====
 
@@ -3658,8 +3778,9 @@ const CLARIFY = {
     epoch: { type: 'number' },
   },
 }
-// Setup 末尾の analyze ゲート通過後、prerun で観測型判定が確定しない（null の）AC があるときだけ 1 spawn する
-// 分類 agent のスキーマ（acObservationalPrompt）。observational:null は判定できない AC で、true として扱う。
+// Setup 末尾の analyze ゲート通過後、prerun で観測型判定が確定しない（null の）AC か、観測型で文面上の actor が agent の
+// AC があるときだけ 1 spawn する分類 agent のスキーマ（acObservationalPrompt）。observational:null は判定できない AC で、
+// true として扱う。verify_command / expect_paths は AC の inline code の写しで、freezeAcVerify が完全一致だけを凍結する。
 const AC_OBSERVATIONAL = {
   type: 'object',
   required: ['results'],
@@ -3668,8 +3789,13 @@ const AC_OBSERVATIONAL = {
       type: 'array',
       items: {
         type: 'object',
-        required: ['ac_index', 'observational'],
-        properties: { ac_index: { type: 'integer' }, observational: { type: ['boolean', 'null'] } },
+        required: ['ac_index', 'observational', 'verify_command', 'expect_paths'],
+        properties: {
+          ac_index: { type: 'integer' },
+          observational: { type: ['boolean', 'null'] },
+          verify_command: { type: ['string', 'null'] },
+          expect_paths: { type: 'array', items: { type: 'string' } },
+        },
       },
     },
   },
@@ -5629,18 +5755,25 @@ if (gateReasons.length) {
 // 観測型 AC（実行して出力・記録を観測しないと確かめられない。actor は human）。prerun が正規表現の
 // 絞り込み + Jev で出した analyze.ac_observational を使い、null（Jev 低確信・Jev に届かない）の AC だけを
 // AC の文面と issue のタイトルだけを読む分類 agent に 1 回で渡す。agent が判定できない AC は true（resolveAcObservational）。
-// null が無ければ spawn しない。needs_clarification で終わる run に spawn を使わないようゲート通過後に置く。
-// Evaluate / Final reconcile は red→green 実証で deterministic 昇格したときだけ checked にし、inspection の
-// satisfied:true は人手 AC 待ちに倒す。
+// 同じ agent に、観測型で文面上の actor が agent の AC（acVerifyCandidateIndexes）について、AC 自体が inline code で
+// 指定した検証コマンド（verify_command / expect_paths）も聞く。AC の inline code と完全一致するものだけをここで凍結し
+// （freezeAcVerify → AC_VERIFY）、実装後に読み直さない。
+// null も候補も無ければ spawn しない。needs_clarification で終わる run に spawn を使わないようゲート通過後に置く。
+// Evaluate / Final reconcile は red→green 実証で deterministic 昇格したか、AC コマンドが最終 tree で exit 0 だったときだけ
+// checked にし、inspection の satisfied:true は人手 AC 待ちに倒す。
 if (req.ac_observational.length) log(`analyze: 観測型判定（prerun）: ${req.ac_observational.map((o, i) => `AC-${i + 1}=${JSON.stringify(o)}（${ANALYZE.ac_observational_evidence[i]}）`).join(' / ')}`)
 const acObsPending = pendingAcObservationalIndexes(req.ac_observational)
-if (acObsPending.length) {
-  log(`analyze: 観測型判定が prerun で確定しない AC ${acObsPending.length} 件（AC-${acObsPending.map((i) => i + 1).join(', AC-')}）— AC の文面だけを読む分類 agent に 1 回で渡す`)
-  const acObsAgent = await failOpenAgent(acObservationalPrompt(req.issue_title, req.acceptance_criteria, acObsPending), { agentType: 'dev-runner', schema: AC_OBSERVATIONAL, label: `ac-observational#${ISSUE}`, phase: 'Setup' })
-  if (!acObsAgent) log('⚠️ analyze: 観測型の分類 agent が null — 未確定の AC は観測型として扱う')
-  req.ac_observational = resolveAcObservational(req.ac_observational, acObsAgent)
+const acVerifyCandidates = acVerifyCandidateIndexes(req.acceptance_criteria, req.ac_observational, { repo: REPO, ciVerify: PRERUN.ci_verify })
+const acClassifyIndexes = [...new Set([...acObsPending, ...acVerifyCandidates])].sort((a, b) => a - b)
+let acObsAgent = null
+if (acClassifyIndexes.length) {
+  log(`analyze: 観測型判定が prerun で確定しない AC ${acObsPending.length} 件${acObsPending.length ? `（AC-${acObsPending.map((i) => i + 1).join(', AC-')}）` : ''} / AC の検証コマンドを聞く観測型 AC ${acVerifyCandidates.length} 件${acVerifyCandidates.length ? `（AC-${acVerifyCandidates.map((i) => i + 1).join(', AC-')}）` : ''} — AC の文面だけを読む分類 agent に 1 回で渡す`)
+  acObsAgent = await failOpenAgent(acObservationalPrompt(req.issue_title, req.acceptance_criteria, acClassifyIndexes), { agentType: 'dev-runner', schema: AC_OBSERVATIONAL, label: `ac-observational#${ISSUE}`, phase: 'Setup' })
+  if (!acObsAgent) log('⚠️ analyze: 観測型の分類 agent が null — 未確定の AC は観測型として扱い、AC の検証コマンドは無しとする')
+  if (acObsPending.length) req.ac_observational = resolveAcObservational(req.ac_observational, acObsAgent)
 }
-if (req.ac_observational.includes(true)) log(`analyze: 観測型 AC ${req.ac_observational.filter(Boolean).length} 件（AC-${req.ac_observational.map((o, i) => o ? i + 1 : null).filter((n) => n != null).join(', AC-')}）— red→green 実証が無ければ inspection で達成扱いにせず人手 AC 待ちへ回す`)
+const AC_VERIFY = freezeAcVerify(req.acceptance_criteria, acObsAgent)
+if (req.ac_observational.includes(true)) log(`analyze: 観測型 AC ${req.ac_observational.filter(Boolean).length} 件（AC-${req.ac_observational.map((o, i) => o ? i + 1 : null).filter((n) => n != null).join(', AC-')}）— red→green 実証か AC コマンドの exit 0 が無ければ inspection で達成扱いにせず人手 AC 待ちへ回す`)
 // AC ごとの actor（'agent' | 'human'。_lib/ac-actor.mjs）。analyze ゲートで AC と一緒に freeze し、Evaluate の
 // 差し戻し（agent AC の未達だけ）と Merge tier の HOLD 理由（取りこぼし / 人手待ち）を分ける。
 // repo 外の作業だけを書いた AC と、上で確定した観測型 AC は human（repo 内外が混ざった AC は上の analyze ゲートで止めた）。
@@ -5648,8 +5781,12 @@ if (req.ac_observational.includes(true)) log(`analyze: 観測型 AC ${req.ac_obs
 // 検証を CI の check で判定する。evaluator に判定させず、差し戻しにも回さない。PR に ci_verify.label を付け、pr-iterate が
 // LGTM 後に ci_verify.checks の完了を待った結果で satisfied を決める（未完了は Merge tier の ac_ci_pending）。
 const CI_VERIFY = PRERUN.ci_verify
-req.ac_actors = acActorsOf(req.acceptance_criteria, { repo: REPO, observational: req.ac_observational, ciVerify: CI_VERIFY })
+req.ac_actors = acActorsOf(req.acceptance_criteria, { repo: REPO, observational: req.ac_observational, ciVerify: CI_VERIFY, acVerify: AC_VERIFY })
 const CI_AC_INDEXES = ciAcIndexes(req.ac_actors)
+// AC コマンド: 観測型で actor agent の AC のうち、AC_VERIFY に verify_command が凍結された AC。Validate green 後に
+// local-verify で 1 本ずつ実行し（execAcVerify）、最終 tree の exit 0 を達成の根拠にする（_lib/local-verify.mjs）。
+const AC_VERIFY_INDEXES = req.ac_actors.flatMap((a, i) => (a === 'agent' && req.ac_observational[i] === true && AC_VERIFY[i]?.verify_command ? [i] : []))
+if (AC_VERIFY_INDEXES.length) log(`analyze: AC コマンド ${AC_VERIFY_INDEXES.length} 件（${AC_VERIFY_INDEXES.map((i) => `AC-${i + 1}: ${AC_VERIFY[i].verify_command}${AC_VERIFY[i].expect_paths.length ? ` → ${AC_VERIFY[i].expect_paths.join(', ')}` : ''}`).join(' / ')}）— Validate green 後に sandbox 内で実行し、最終 tree の exit 0 で判定する`)
 if (CI_VERIFY) log(`analyze: ci_verify（label=${CI_VERIFY.label} / checks=${CI_VERIFY.checks.join(', ')} / 上限 ${CI_VERIFY.wait_ceiling_seconds}s）— ci の AC ${CI_AC_INDEXES.length} 件${CI_AC_INDEXES.length ? `（AC-${CI_AC_INDEXES.map((n) => n + 1).join(', AC-')}）— evaluator に判定させず、PR に label を付けて CI の check で判定する` : ''}`)
 // local_verify: repo が "dev-flow".local_verify を宣言していれば、ci の AC を PR の前に pg-broker の DB でローカル実行して
 // 判定する（execLocalVerify。Validate green 後・Evaluate 前）。pg-broker に届かなければ上の CI の check 待ちに戻る。
@@ -5698,6 +5835,9 @@ let state = {
   // local-verify（ci の AC のローカル実行。execLocalVerify）の結果と、その失敗で dev-implementer へ差し戻した回数
   // （AGENT_AC_REIMPL_MAX を Evaluate の agent AC 差し戻しと共有する）
   localVerify: null, localVerifyReimplCount: 0,
+  // AC コマンド（AC_VERIFY_INDEXES。execAcVerify）の AC ごとの記録と、その失敗で dev-implementer へ差し戻した回数
+  // （AGENT_AC_REIMPL_MAX を ci の AC のローカル実行・Evaluate の agent AC 差し戻しと共有する）
+  acVerify: [], acVerifyReimplCount: 0,
   evalDiffHash: null, secDiffHash: null, validateDiffHash: null,
   prDiffHash: null, staleDiffFiles: null, prHeadTreeOid: null,
   testsurfHits: [], testsurfPatterns: [],
@@ -6163,31 +6303,165 @@ async function execValidatePhase(state) {
 // ============================================================
 // start には Setup 時に検証した宣言（LOCAL_VERIFY）を --config-pct で渡す。local-verify は worktree の宣言を読み直さず
 // これを実行し、worktree の宣言が一致しなければ error を返す（実装が command を書き換えて ci の AC を satisfied にできないように）。
-async function runLocalVerifyOnce(attempt, phaseName = 'Validate') {
-  const stateDir = `${WT}/${LOCAL_VERIFY_STATE_DIR}`
+// AC コマンド（runAcVerifyOnce）も同じ経路で、宣言（cfg）・state dir・label（AC_VERIFY_LABELS）だけを替えて呼ぶ。
+const LOCAL_VERIFY_LABELS = { start: (a) => `local-verify-start#${a}`, wait: (a, k) => `local-verify-wait#${a}.${k}`, stop: (a) => `local-verify-stop#${a}` }
+const AC_VERIFY_LABELS = { start: (a) => `ac-verify-start#${a}`, wait: (a, k) => `ac-verify-wait#${a}.${k}`, stop: (a) => `ac-verify-stop#${a}` }
+async function runLocalVerifyOnce(attempt, phaseName = 'Validate', { cfg = LOCAL_VERIFY, stateDir = `${WT}/${LOCAL_VERIFY_STATE_DIR}`, labels = LOCAL_VERIFY_LABELS } = {}) {
   const proxy = (cmd) => `cd ${WT} で作業。次を Bash で **timeout 600000** を指定して 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ`
     + `（判定や脚色をしない。失敗時に ok:true を生成してはならない。& や nohup を足さない — 常駐化はコマンド自身が行う）:\n${cmd}`
   let res = null
   try {
     res = await failOpenAgent(
-      proxy(`local-verify start --worktree '${WT}' --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_START_WAIT_SEC} --config-pct ${localVerifyConfigArg(LOCAL_VERIFY)}`),
-      { agentType: 'dev-runner-haiku', schema: LOCALVERIFY, label: `local-verify-start#${attempt}`, phase: phaseName },
+      proxy(`local-verify start --worktree '${WT}' --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_START_WAIT_SEC} --config-pct ${localVerifyConfigArg(cfg)}`),
+      { agentType: 'dev-runner-haiku', schema: LOCALVERIFY, label: labels.start(attempt), phase: phaseName },
     )
-    const polls = localVerifyWaitPolls(LOCAL_VERIFY.timeout_seconds)
+    const polls = localVerifyWaitPolls(cfg.timeout_seconds)
     for (let k = 1; localVerifyVerdict(res) === 'running' && k <= polls; k++) {
       res = await failOpenAgent(
         proxy(`local-verify wait --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_WAIT_SEC}`),
-        { agentType: 'dev-runner-haiku', schema: LOCALVERIFY, label: `local-verify-wait#${attempt}.${k}`, phase: phaseName },
+        { agentType: 'dev-runner-haiku', schema: LOCALVERIFY, label: labels.wait(attempt, k), phase: phaseName },
       )
     }
   } finally {
     const stop = await failOpenAgent(
       proxy(`local-verify stop --state-dir '${stateDir}'`),
-      { agentType: 'dev-runner-haiku', schema: LOCALVERIFY_STOP, label: `local-verify-stop#${attempt}`, phase: phaseName },
+      { agentType: 'dev-runner-haiku', schema: LOCALVERIFY_STOP, label: labels.stop(attempt), phase: phaseName },
     )
-    if (!stop || stop.ok !== true) log(`⚠️ local-verify-stop#${attempt}: 停止を確認できない（${stop?.error ?? 'proxy の応答が無い'}）— DB の DELETE は local-verify の supervisor の trap に委ねる`)
+    if (!stop || stop.ok !== true) log(`⚠️ ${labels.stop(attempt)}: 停止を確認できない（${stop?.error ?? 'proxy の応答が無い'}）— 後片付けは local-verify の supervisor の trap に委ねる`)
   }
   return res
+}
+
+// AC コマンド 1 本の 1 回の実行（k は AC の index。宣言は analyze ゲートで凍結した AC_VERIFY[k] だけ — worktree から読み直さない）。
+// label は ac-verify-start#AC-<n>.<attempt>（Final reconcile の再実行は attempt='final'）。
+async function runAcVerifyOnce(k, attempt, phaseName) {
+  return runLocalVerifyOnce(`AC-${k + 1}.${attempt}`, phaseName, { cfg: acVerifyConfig(AC_VERIFY[k]), stateDir: `${WT}/${AC_VERIFY_STATE_DIR}/ac-${k + 1}`, labels: AC_VERIFY_LABELS })
+}
+
+// local-verify wait の応答から AC コマンドの記録に残す値（tree_hash は実行した tree の diff hash）。
+function acVerifyOutcome(res, treeHash) {
+  return {
+    exit_code: res?.exit_code ?? null, log_path: res?.log_path ?? null, tree_hash: treeHash,
+    ...(typeof res?.reason === 'string' && res.reason ? { reason: res.reason } : {}),
+    ...(res?.status === 'timeout' ? { timeout: true } : {}),
+  }
+}
+
+// AC コマンドの記録（state.acVerify）を AC ごとに 1 件へ置き換える。
+function recordAcVerify(state, k, fields) {
+  const entry = { ac_index: k, command: AC_VERIFY[k].verify_command, expect_paths: AC_VERIFY[k].expect_paths, ...fields }
+  state.acVerify = [...state.acVerify.filter((e) => e.ac_index !== k), entry].sort((a, b) => a.ac_index - b.ac_index)
+}
+
+// ============================================================
+// AC コマンド: 観測型 AC のうち AC 自体が inline code で指定したコマンドを、Validate が green になった後に
+// local-verify（db の無い宣言 — pg-broker を呼ばない）で 1 本ずつ sandbox 内で実行する。判定は _lib/local-verify.mjs の
+// acVerifyValidateAction:
+//   passed: demoteUnprovenObservationalAc の proven に入れる（Final reconcile で最終 tree と突き合わせる）
+//   failed / timeout: log_tail を付けて dev-implementer に差し戻し（AGENT_AC_REIMPL_MAX を ci の AC のローカル実行・Evaluate と
+//     共有）、unit テストを Validate と同じループで確かめてから失敗した AC コマンドだけ再実行する。上限後は agent の未達
+//   unavailable / error / Validate red: proven にしない（人手 AC 待ちのまま）
+// ============================================================
+async function execAcVerify(state) {
+  if (!AC_VERIFY_INDEXES.length) return state
+  if (!(state.val && state.val.green === true)) {
+    const reason = `Validate が green でないため実行しない（tests=${state.val?.tests ?? 'null'}）`
+    for (const k of AC_VERIFY_INDEXES) recordAcVerify(state, k, { status: 'skipped', reason })
+    log(`⚠️ ac-verify: ${reason} — AC コマンドの AC（AC-${AC_VERIFY_INDEXES.map((n) => n + 1).join(', AC-')}）は人手 AC 待ち`)
+    return state
+  }
+  // 実行する tree の diff hash。初回は Validate の diff-gate の hash（ci の AC の差し戻しで捨てられていれば取り直す）、
+  // 差し戻し後は実行前に取り直す。取れなければ null（Final reconcile で最終 tree での再実行に倒れる）。
+  let treeHash = state.validateDiffHash ?? null
+  let pending = [...AC_VERIFY_INDEXES]
+  for (let attempt = 1; pending.length; attempt++) {
+    if (treeHash == null) treeHash = await localVerifyTreeHash(state.dhPrompt, `diff-hash-ac-verify#${attempt}`, 'Validate')
+    const reimplTargets = []
+    for (const k of pending) {
+      const res = await runAcVerifyOnce(k, attempt, 'Validate')
+      const verdict = localVerifyVerdict(res)
+      const action = acVerifyValidateAction(verdict, state.localVerifyReimplCount + state.acVerifyReimplCount, AGENT_AC_REIMPL_MAX)
+      const cmd = AC_VERIFY[k].verify_command
+      if (action === 'unproven') {
+        const reason = verdict === 'running' ? `${AC_VERIFY_TIMEOUT_SEC}s を過ぎても終わらない` : (res?.reason ?? res?.error ?? 'proxy の応答が無い・形が不正')
+        recordAcVerify(state, k, { status: verdict === 'unavailable' ? 'unavailable' : 'error', reason })
+        log(`⚠️ ac-verify AC-${k + 1}#${attempt}: ${cmd} を確かめられない（${verdict}: ${reason}）— proven にせず人手 AC 待ち`)
+        continue
+      }
+      recordAcVerify(state, k, { status: action === 'passed' ? 'passed' : 'failed', ...acVerifyOutcome(res, treeHash) })
+      const how = res.status === 'timeout' ? 'timeout' : `exit ${res.exit_code}${res.reason ? `（${res.reason}）` : ''}`
+      if (action === 'passed') log(`ac-verify AC-${k + 1}#${attempt}: ${cmd} が exit 0 — 観測型 AC の証跡にする（最終 tree と突き合わせる）`)
+      else if (action === 'failed') log(`⚠️ ac-verify AC-${k + 1}#${attempt}: ${cmd} が ${how} — 差し戻し上限（AGENT_AC_REIMPL_MAX=${AGENT_AC_REIMPL_MAX}）到達。Merge tier の ac_agent_unsatisfied で HOLD`)
+      else reimplTargets.push({ k, res, how })
+    }
+    if (!reimplTargets.length) return state
+    state.acVerifyReimplCount++
+    log(`ac-verify#${attempt}: AC コマンドの失敗 ${reimplTargets.map((t) => `AC-${t.k + 1}（${t.how}）`).join(' / ')} — log_tail を付けて dev-implementer へ差し戻す（${state.localVerifyReimplCount + state.acVerifyReimplCount}/${AGENT_AC_REIMPL_MAX}）`)
+    const feedback = reimplTargets.map((t) => acVerifyFeedback({ result: t.res, command: AC_VERIFY[t.k].verify_command, acIndex: t.k, acceptanceCriteria: state.req.acceptance_criteria }))
+    const reimplResults = await runImplement(state.req, state.plan, feedback, `reimpl-ac-verify#${attempt}`)
+    for (const r of reimplResults) { if (r && Array.isArray(r.concerns)) state.concerns.push(...r.concerns) }
+    state.plan = await trimPrSectionsIfOver(state.req, adoptImplPrNotes(adoptReportedFiles(state.plan, reimplResults), reimplResults), `sections-trim-ac-verify#${attempt}`)
+    state.plan = await rewriteNonJapanesePrBodyItems(state.req, state.plan, `lang-rewrite-ac-verify#${attempt}`)
+    const gfBefore = state.greenFixIterations.length
+    state.val = await runValidateLoop('ac-verify', { concerns: state.concerns, greenFixIterations: state.greenFixIterations, phaseName: 'Validate', baseFailing: state.baseFailing })
+    state.validateDiffHash = null
+    treeHash = null
+    state.greenFixCount = state.greenFixIterations.length
+    if (state.greenFixCount > gfBefore) state.concerns.push(`AC コマンド差し戻し後の green-fix が ${state.greenFixCount - gfBefore} 回発生: テストの期待値・assert の弱体化で green 化していないかテスト diff を重点監査せよ`)
+    pending = reimplTargets.map((t) => t.k)
+  }
+  return state
+}
+
+// Final reconcile: AC コマンドの passed は実行した tree（tree_hash）でしか確かめていない。最終 tree の diff hash と突き合わせ、
+// 異なる（hash が取れない場合を含む）AC だけ最終 tree で 1 回再実行して結果を置き換える（差し戻しはしない。acVerifyFinalAction）。
+// worktree が最終 HEAD に無い・再実行の結果が取れないときは passed を捨てて stale（proven にしない）。
+// 最終 tree で passed の AC は ledger の AC item を deterministic で checked にする（red→green の昇格と同じ扱い）。
+async function reconcileAcVerifyTree(state, { worktreeAtFinal }) {
+  const passed = state.acVerify.filter((e) => e.status === 'passed')
+  if (!passed.length) return state
+  const update = (k, fields) => { state.acVerify = state.acVerify.map((e) => (e.ac_index === k ? { ...e, ...fields } : e)) }
+  if (!worktreeAtFinal) {
+    for (const e of passed) update(e.ac_index, { status: 'stale', reason: 'worktree を PR の最終 HEAD に同期できず、最終 tree で確かめられない' })
+    log(`⚠️ ac-verify: worktree を PR の最終 HEAD に同期できず — AC コマンドの exit 0（AC-${passed.map((e) => e.ac_index + 1).join(', AC-')}）を最終 tree の証跡にしない`)
+    return syncAcVerifyLedger(state)
+  }
+  const finalHash = await localVerifyTreeHash(state.dhPrompt, 'diff-hash-ac-verify-final', 'Final reconcile')
+  for (const e of passed) {
+    const k = e.ac_index
+    if (acVerifyFinalAction(e, finalHash) === 'proven') {
+      log(`ac-verify AC-${k + 1}: 最終 tree（${finalHash.slice(0, 8)}）は exit 0 を出した tree と一致 — その結果で判定する`)
+      continue
+    }
+    log(`ac-verify AC-${k + 1}: exit 0 を出した tree（${typeof e.tree_hash === 'string' ? e.tree_hash.slice(0, 8) : '不明'}）と最終 tree（${finalHash == null ? '不明' : finalHash.slice(0, 8)}）が異なる — 最終 tree で再実行する`)
+    const res = await runAcVerifyOnce(k, 'final', 'Final reconcile')
+    const verdict = localVerifyVerdict(res)
+    if (verdict === 'passed' || verdict === 'failed') {
+      recordAcVerify(state, k, { status: verdict, ...acVerifyOutcome(res, finalHash) })
+      log(`ac-verify AC-${k + 1}#final: ${e.command} が ${verdict === 'passed' ? 'exit 0' : res.status === 'timeout' ? 'timeout' : `exit ${res.exit_code}`} — 最終 tree の結果で判定する`)
+    } else {
+      update(k, { status: 'stale', reason: `最終 tree での再実行の結果が取れない（${verdict}: ${res?.reason ?? res?.error ?? 'proxy の応答が無い・形が不正'}）` })
+      log(`⚠️ ac-verify AC-${k + 1}: 最終 tree での再実行の結果が取れない（${verdict}）— exit 0 を最終 tree の証跡にしない`)
+    }
+  }
+  return syncAcVerifyLedger(state)
+}
+
+// 最終 tree の AC コマンドの記録を ledger の AC item に写す: passed は deterministic で checked（red→green の昇格と同じ扱い）、
+// Evaluate で exit 0 を根拠に checked にしたが最終 tree で passed でなくなった AC は未解消へ戻す。
+function syncAcVerifyLedger(state) {
+  for (const e of state.acVerify) {
+    const acId = `AC-${e.ac_index + 1}`
+    const item = state.ledger?.items.find((it) => it.id === acId)
+    if (!item) continue
+    if (e.status === 'passed') {
+      state.ledger = setCheck(state.ledger, acId, { kind: 'deterministic' })
+      state.ledger = checkItem(state.ledger, acId, `AC コマンド exit 0（最終 tree）: ${e.command}`)
+    } else if (item.checked && item.check?.kind !== 'deterministic') {
+      state.ledger = reopenItem(state.ledger, acId, `AC コマンドが最終 tree で exit 0 にならない（${e.status}）`)
+    }
+  }
+  return state
 }
 
 async function execLocalVerify(state) {
@@ -6490,8 +6764,8 @@ async function execEvaluatePhase(state) {
   let reimplCount = 0          // reimpl#i（fix_feedback 付き差し戻し）の実行回数。>0 なら PR 前にフルテストを再実行する
   let unsatisfiedAc = false
   let unsatisfiedByActor = { agent: [], human: [], ci: [] }
-  // agent AC の未達を理由に含む reimpl#i の回数（AGENT_AC_REIMPL_MAX で cap）。local-verify の失敗で差し戻した回数も含める
-  let agentAcReimplCount = state.localVerifyReimplCount
+  // agent AC の未達を理由に含む reimpl#i の回数（AGENT_AC_REIMPL_MAX で cap）。local-verify・AC コマンドの失敗で差し戻した回数も含める
+  let agentAcReimplCount = state.localVerifyReimplCount + state.acVerifyReimplCount
   // evaluate の上限。agent AC の未達が残る間は AGENT_AC_REIMPL_MAX まで延長する — standard（EVAL_PASSES=1）でも
   // 「worktree 内で満たせる AC が未達のまま PR → lgtm → HOLD」を差し戻しで拾うため。
   let evalLimit = EVAL_PASSES
@@ -6723,7 +6997,16 @@ async function execEvaluatePhase(state) {
     // （テストファイルを名指しした観測型 AC は actor agent なので、未達は差し戻しに入る — classifyAcActor）。
     // ci の AC は evaluator の判定を使わず「CI で未判定」（satisfied:false・actor ci）に置き換える — unsatisfiedByActor.ci に
     // 入り、agent の差し戻し（agentAcFeedback）にも人手 AC 待ちにも数えない。CI の結果は pr-iterate の後で反映する。
-    const acResultsEff = applyCiAcResults(demoteUnprovenObservationalAc(ev.ac_results, req.ac_observational, deterministicAcIndexes(ledger.items)), req.ac_actors, null)
+    // AC コマンドの AC は evaluator の判定を使わずコマンドの結果（state.acVerify）で置き換える: exit 0 は proven で達成、
+    // 上限後も失敗は agent の未達、確かめられなかったものは unreachable_env の人手 AC 待ち（applyAcVerifyResults）。
+    const provenObs = [...deterministicAcIndexes(ledger.items), ...acVerifyProvenIndexes(state.acVerify)]
+    const acResultsEff = applyCiAcResults(applyAcVerifyResults(demoteUnprovenObservationalAc(ev.ac_results, req.ac_observational, provenObs), state.acVerify), req.ac_actors, null)
+    // exit 0 の AC コマンドの AC item は checked にする（最終 tree との突き合わせは Final reconcile の reconcileAcVerifyTree。
+    // 最終 tree で passed でなくなれば未解消へ戻す）
+    for (const k of acVerifyProvenIndexes(state.acVerify)) {
+      const acId = `AC-${k + 1}`
+      if (ledger.items.some((it) => it.id === acId && !it.checked)) ledger = checkItem(ledger, acId, `AC コマンド exit 0: ${AC_VERIFY[k].verify_command}`)
+    }
     evalResult = Array.isArray(acResultsEff) ? { ...ev, ac_results: acResultsEff } : ev
     unsatisfiedAc = (acResultsEff ?? []).some((r) => r && r.satisfied === false)
     unsatisfiedByActor = unsatisfiedAcByActor(acResultsEff, req.ac_actors)
@@ -6967,6 +7250,7 @@ phase('Validate')
 state = await execValidatePhase(state)
 if (state.__earlyReturn) return state.__earlyReturn
 state = await execLocalVerify(state)
+state = await execAcVerify(state)
 feedClockMark('validate_end', epochResOf(state.validateEndEpochRes))
 
 phase('Diff triage')
@@ -7402,6 +7686,11 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
   if (evr.reason === 'not_verified') log(`Final reconcile: 最終 tree の決定論検証が不成立（final_reconcile=${finalReconcile}, final_test_green=${finalTestGreen}）— 未 checked の EVAL-* は据え置き`)
 }
 
+// AC コマンドの exit 0 を最終 tree と突き合わせる（reconcileAcVerifyTree）。Final AC reconcile より前に置き、最終 tree で
+// proven になった AC を deterministic 昇格として扱わせる（final evaluator に未実証の観測型 AC として渡さない）。
+// fix が無い run の worktree は PR の tree のまま、fix がある run は reconcile-sync が成功したときだけ最終 HEAD にある。
+if (AC_VERIFY_INDEXES.length) state = await reconcileAcVerifyTree(state, { worktreeAtFinal: (iterate?.fixes_applied ?? 0) === 0 || finalSyncOk })
+
 // ============================================================
 // Step6: targeted Final AC reconcile。fix 適用 run で final test が green/no_tests の場合のみ、
 // Setup 末尾の analyze ゲートで freeze した既存 AC を最終 PR tree に対し one-shot で再検証する。契約（EVALUATOR_OPERATIONAL_CONTRACT.
@@ -7482,8 +7771,10 @@ if (_facDecision.run) {
     state.finalAcResults = finalResults
     state.finalUnsatisfiedAc = finalResults.some((r) => r && r.satisfied === false)
     state.finalUnsatisfiedAcByActor = unsatisfiedAcByActor(finalResults, req.ac_actors)
+    const acVerifyProvenFinal = acVerifyProvenIndexes(state.acVerify)
     for (const r of v.results) {
       if (CI_AC_INDEXES.includes(r.ac_index)) continue   // ci の AC は CI の結果で決める（下の ci-verify 反映）
+      if (acVerifyProvenFinal.includes(r.ac_index)) continue   // 最終 tree で AC コマンドが exit 0 の AC はその結果で決める（下の ac-verify 反映）
       const acId = `AC-${r.ac_index + 1}`
       const acItem = state.ledger.items.find((it) => it.id === acId)
       if (r.satisfied === false) {
@@ -7508,6 +7799,16 @@ if (_facDecision.run) {
   else { state.finalAcResults = null; state.finalUnsatisfiedAc = state.unsatisfiedAc }
   state.finalUnsatisfiedAcByActor = state.unsatisfiedAcByActor
   log(`Final AC reconcile: skip（reason=${_facDecision.reason}）`)
+}
+// AC コマンドの AC: 最終 tree と突き合わせた記録（reconcileAcVerifyTree の後の state.acVerify）で判定を確定する。evaluator /
+// final-ac-reconcile の判定は使わない。最終 tree で exit 0 → 達成（根拠はコマンド・exit code・log_path）、上限後も失敗 →
+// agent の未達（ac_agent_unsatisfied）、確かめられなかった（unavailable / error / stale 等）→ 人手 AC 待ち。
+if (AC_VERIFY_INDEXES.length) {
+  if (state.evalResult && Array.isArray(state.evalResult.ac_results)) state.evalResult = { ...state.evalResult, ac_results: applyAcVerifyResults(state.evalResult.ac_results, state.acVerify) }
+  state.finalAcResults = applyAcVerifyResults(state.finalAcResults, state.acVerify)
+  state.finalUnsatisfiedAcByActor = mergeAcVerifyGaps(state.finalUnsatisfiedAcByActor ?? state.unsatisfiedAcByActor, state.acVerify)
+  state.finalUnsatisfiedAc = ['agent', 'human', 'ci'].some((k) => (state.finalUnsatisfiedAcByActor[k] ?? []).length > 0)
+  log(`ac-verify: AC コマンドの AC ${AC_VERIFY_INDEXES.length} 件 — ${state.acVerify.map((e) => `AC-${e.ac_index + 1}=${e.status}`).join(' / ')}`)
 }
 // ci の AC: pr-iterate が LGTM 後に ci_verify.checks の完了を待った結果（iterate.ci_verify）で判定を確定する。
 // evaluator / final-ac-reconcile の判定は使わない。success なら ledger の AC item を check run の URL を根拠に checked にし、

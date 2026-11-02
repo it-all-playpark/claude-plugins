@@ -10,6 +10,15 @@
 //   unavailable（pg-broker のソケットに届かない・DB を確保できない）/ error（proxy の応答が無い・宣言不正等）:
 //     fail-open。従来どおり pr-iterate が LGTM 後に CI の check を待って判定する。理由は終端サマリーに 1 行出す
 //
+// AC コマンド（issue #1203）: 観測型 AC のうち、AC 自体が inline code で指定したコマンド（_lib/ac-actor.mjs の freezeAcVerify が
+// analyze ゲートで凍結した verify_command / expect_paths）も同じ local-verify で sandbox 内で実行する（db の無い宣言 —
+// pg-broker を呼ばない。宣言は --config-pct で渡し、worktree の宣言とは突き合わせない）。
+//   Validate green 後に 1 本ずつ実行する（acVerifyValidateAction）。passed は demoteUnprovenObservationalAc の proven に入れ、
+//     failed / timeout は log_tail を付けて dev-implementer へ差し戻す（AGENT_AC_REIMPL_MAX を ci の AC・Evaluate と共有）。
+//     上限後も失敗なら agent の未達（ac_agent_unsatisfied）。unavailable / error は proven にせず人手 AC 待ちのまま
+//   Final reconcile は passed を出した tree と最終 tree が異なるときだけ再実行する（acVerifyFinalAction。ci の AC の
+//     tree_hash の突合と同じ規則）。最終 tree の passed だけが達成の根拠になる
+//
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
 // 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。
@@ -78,4 +87,117 @@ export function localVerifyCiOutcome(localVerify) {
     exit_code: localVerify.exit_code ?? null,
     log_path: localVerify.log_path ?? null,
   }
+}
+
+// ---- AC コマンド（issue #1203） ----
+
+// AC コマンドの上限秒数（local-verify の timeout_seconds）。AC の文面は秒数を持たないので run 側で決める。
+// build の完走を確かめる AC が収まり、wait 3 回（localVerifyWaitPolls）で終わる長さ。
+export const AC_VERIFY_TIMEOUT_SEC = 900
+// AC ごとの local-verify の state dir の親（AC-<n> の下に置く。ci の AC の LOCAL_VERIFY_STATE_DIR と分ける）。
+export const AC_VERIFY_STATE_DIR = '.devflow-tmp/ac-verify'
+
+// local-verify start の --config-pct に渡す宣言（db の無い宣言。pg-broker を呼ばずに command を実行する）。
+// frozen は freezeAcVerify の 1 要素（{ verify_command, expect_paths }）。
+export function acVerifyConfig(frozen) {
+  return {
+    command: frozen.verify_command,
+    expect_paths: Array.isArray(frozen.expect_paths) ? frozen.expect_paths : [],
+    timeout_seconds: AC_VERIFY_TIMEOUT_SEC,
+  }
+}
+
+// Validate green 後の 1 回の実行結果（localVerifyVerdict の値）を経路に畳む。
+//   'passed': proven の候補（Final reconcile で最終 tree と突き合わせる）
+//   'reimpl': failed / timeout で差し戻し回数（reimplCount。ci の AC・Evaluate と共有）が reimplMax 未満 → log_tail を付けて差し戻す
+//   'failed': 差し戻し上限後も失敗 → agent の未達（ac_agent_unsatisfied）
+//   'unproven': unavailable / error / running（終わらない）→ proven にしない
+// reimplMax は呼び出し側が AGENT_AC_REIMPL_MAX を渡す（本ファイルは ac-actor.mjs を import できないため）。
+export function acVerifyValidateAction(verdict, reimplCount, reimplMax) {
+  if (verdict === 'passed') return 'passed'
+  if (verdict === 'failed') return reimplCount < reimplMax ? 'reimpl' : 'failed'
+  return 'unproven'
+}
+
+// Final reconcile: AC コマンドの記録（{ status, tree_hash }）と最終 tree の diff hash から経路を決める。
+//   'proven': passed を出した tree が最終 tree と一致する（hash が取れたときだけ）
+//   'rerun': passed だが tree が異なる・最終 tree の hash が取れない → 最終 tree で 1 回だけ再実行する（差し戻しはしない）
+//   'failed': 差し戻し上限後も失敗した記録 → agent の未達のまま
+//   'unproven': unavailable / error / skipped / stale → 達成の根拠にしない
+export function acVerifyFinalAction(entry, finalTreeHash) {
+  if (entry?.status === 'passed') return typeof finalTreeHash === 'string' && entry.tree_hash === finalTreeHash ? 'proven' : 'rerun'
+  if (entry?.status === 'failed') return 'failed'
+  return 'unproven'
+}
+
+// passed の AC コマンドの記録の ac_index。demoteUnprovenObservationalAc の provenIndexes に足す。
+// Final reconcile の後は最終 tree で passed のものだけが passed のまま残る（突き合わせられなかったものは stale）。
+export function acVerifyProvenIndexes(entries) {
+  return (Array.isArray(entries) ? entries : []).filter((e) => e && e.status === 'passed' && Number.isInteger(e.ac_index)).map((e) => e.ac_index)
+}
+
+function acVerifyHow(e) {
+  return e.timeout === true ? 'timeout_seconds を超えて止められた' : `exit ${e.exit_code ?? '?'}`
+}
+
+// AC コマンドが失敗した AC の差し戻し（fix_feedback）。AC ごとに 1 項目、log の末尾を添える。
+// result は local-verify wait の応答（status / exit_code / log_path / log_tail / reason）。
+export function acVerifyFeedback({ result, command, acIndex, acceptanceCriteria }) {
+  const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
+  const how = result?.status === 'timeout' ? 'timeout_seconds を超えて止められた' : `exit ${result?.exit_code ?? '?'} で失敗した`
+  const reason = typeof result?.reason === 'string' && result.reason ? `（${result.reason}）` : ''
+  return {
+    severity: 'major',
+    topic: `AC-${acIndex + 1} 未達`,
+    ac_index: acIndex,
+    description: `AC-${acIndex + 1}「${String(acs[acIndex] ?? '')}」が指定したコマンド（\`${command}\`）を worktree で実行したら ${how}${reason}`,
+    suggestion: 'log_tail（失敗した実行の出力の末尾）から原因を特定して実装を直せ。AC のコマンドや期待するファイルを変えて通さない。全文は log_path にある',
+    log_path: typeof result?.log_path === 'string' ? result.log_path : null,
+    log_tail: String(result?.log_tail ?? '').slice(-LOCAL_VERIFY_TAIL_MAX),
+  }
+}
+
+// AC コマンドの記録 1 件を ac_results の 1 要素にする（r は evaluator / final-ac-reconcile の同じ AC の結果。無ければ null）。
+// passed は satisfied:true（根拠はコマンド・exit code・log_path）、failed は agent の未達、それ以外は実行で確かめられなかった
+// 観測型 AC として unreachable_env:true の未達（差し戻さず人手 AC 待ち — 差し戻しても AC コマンドは再実行されないため）。
+function acVerifyResult(e, r) {
+  const base = { ...(r ?? {}), ac_index: e.ac_index, observational: true }
+  if (e.status === 'passed') {
+    return { ...base, satisfied: true, verified_by: 'local', unreachable_env: false, evidence: `AC のコマンド（\`${e.command}\`）が exit ${e.exit_code ?? 0}: ${e.log_path ?? 'log なし'}` }
+  }
+  if (e.status === 'failed') {
+    return { ...base, satisfied: false, verified_by: 'local', unreachable_env: false, evidence: `AC のコマンド（\`${e.command}\`）が ${acVerifyHow(e)}${e.reason ? `（${e.reason}）` : ''}（差し戻し上限まで直らなかった）: ${e.log_path ?? 'log なし'}` }
+  }
+  return { ...base, satisfied: false, unreachable_env: true, evidence: `AC のコマンド（\`${e.command}\`）で確かめられなかった（${e.status}${e.reason ? `: ${e.reason}` : ''}）` }
+}
+
+// ac_results の AC コマンドの AC を記録の結果で置き換える（無ければ足す）。evaluator の判定は使わない — AC の結果は
+// AC が指定したコマンドの exit code で決まるため。記録が無い・非配列はそのまま返す。
+export function applyAcVerifyResults(acResults, entries) {
+  if (!Array.isArray(acResults)) return acResults
+  const list = (Array.isArray(entries) ? entries : []).filter((e) => e && Number.isInteger(e.ac_index))
+  if (!list.length) return acResults
+  const decided = new Set(list.map((e) => e.ac_index))
+  const kept = acResults.filter((r) => !(r && decided.has(r.ac_index)))
+  const replaced = list.map((e) => acVerifyResult(e, acResults.find((r) => r && r.ac_index === e.ac_index) ?? null))
+  return [...kept, ...replaced].sort((a, b) => (Number.isInteger(a?.ac_index) ? a.ac_index : Infinity) - (Number.isInteger(b?.ac_index) ? b.ac_index : Infinity))
+}
+
+// AC 未達の actor 別内訳（unsatisfiedAcByActor の形）に AC コマンドの記録を重ねる（Final reconcile の最終判定）。
+// passed は agent / human から外し、failed は agent に入れる（human から外す）。それ以外（unavailable / error / skipped /
+// stale）は human に入れる（applyAcVerifyResults の unreachable_env と同じ扱い — Evaluate では passed だったが最終 tree で
+// 確かめられなかった AC も人手 AC 待ちにする）。他のキー（ci 等）は変えない。
+export function mergeAcVerifyGaps(byActor, entries) {
+  const src = byActor && typeof byActor === 'object' ? byActor : {}
+  let agent = Array.isArray(src.agent) ? [...src.agent] : []
+  let human = Array.isArray(src.human) ? [...src.human] : []
+  for (const e of (Array.isArray(entries) ? entries : [])) {
+    if (!e || !Number.isInteger(e.ac_index)) continue
+    const k = e.ac_index
+    agent = agent.filter((x) => x !== k)
+    human = human.filter((x) => x !== k)
+    if (e.status === 'failed') agent.push(k)
+    else if (e.status !== 'passed') human.push(k)
+  }
+  return { ...src, agent: agent.sort((a, b) => a - b), human: human.sort((a, b) => a - b) }
 }

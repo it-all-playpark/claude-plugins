@@ -14,8 +14,13 @@
 #     "command": "pnpm test:e2e:local",              # worktree を cwd に bash -c で実行する
 #     "db": { "engine": "postgres", "version": "17" }, # pg-broker create --version に渡す
 #     "env": "E2E_EXTERNAL_DATABASE_URL",             # database_url を入れて command に渡す環境変数名
-#     "timeout_seconds": 1500                         # command の上限。超えたら止めて timeout
+#     "timeout_seconds": 1500,                        # command の上限。超えたら止めて timeout
+#     "expect_paths": ["out/index.html"]              # 省略可。command が exit 0 でも、終了後に worktree に無いものがあれば failed
 #   } }
+#
+# db の無い宣言（{command, timeout_seconds, expect_paths?}）は pg-broker を呼ばずに command を実行する（env も渡さない）。
+# dev-flow はこれで AC 自体が inline code で指定したコマンドを実行する（issue #1203。AC の文面から凍結した値を
+# --config-pct で渡す）。AC コマンドは repo の宣言ではないので、db の無い宣言は worktree の宣言と突き合わせない。
 #
 # プロセスモデル:
 #   別の Bash 呼び出しからは kill できない（sandbox が別実体への signal を EPERM にする）ので、start は
@@ -26,7 +31,8 @@
 # 出力契約: start / wait / stop は常に exit 0 + stdout に JSON 1 行。usage error のみ exit 2。
 #   1 回の Bash 呼び出し（上限 600 秒）に収まるよう、start は DB 確保まで最大 --wait-sec（既定 300）、
 #   wait は最大 --wait-sec（既定 480）だけ待ち、終わっていなければ status:"running" を返す。
-#   status: running（まだ実行中）/ passed（exit 0）/ failed（exit 非 0）/ timeout（timeout_seconds 超過で停止）/
+#   status: running（まだ実行中）/ passed（exit 0）/ failed（exit 非 0・exit 0 でも expect_paths が無い — reason 付き）/
+#           timeout（timeout_seconds 超過で停止）/
 #           stopped（stop で停止）/ unavailable（pg-broker に届かない・DB を確保できない）/ error（宣言不正等）
 #
 # Usage:
@@ -132,13 +138,17 @@ load_config() {
     problem="$(jq -r '
         if type != "object" then "local_verify が object でない"
         elif (.command | type) != "string" or (.command | test("^\\s*$")) then "command が空でない string でない"
-        elif (.db | type) != "object" or .db.engine != "postgres" then "db.engine が \"postgres\" でない"
-        elif (.db.version | type) != "string" or (.db.version | test("^\\s*$")) then "db.version が空でない string でない"
-        elif (.env | type) != "string" or (.env | test("^[A-Za-z_][A-Za-z0-9_]*$") | not) then "env が環境変数名でない"
+        elif .expect_paths != null and (.expect_paths | type) != "array" then "expect_paths が配列でない"
+        elif (.expect_paths // []) | any(type != "string" or test("^\\s*$") or startswith("/") or (split("/") | map(select(. == "..")) | length > 0)) then "expect_paths に worktree からの相対パスでないもの（/ 始まり・.. を含む）がある"
+        elif .db != null and ((.db | type) != "object" or .db.engine != "postgres") then "db.engine が \"postgres\" でない"
+        elif .db != null and ((.db.version | type) != "string" or (.db.version | test("^\\s*$"))) then "db.version が空でない string でない"
+        elif .db != null and ((.env | type) != "string" or (.env | test("^[A-Za-z_][A-Za-z0-9_]*$") | not)) then "env が環境変数名でない"
         elif (.timeout_seconds | type) != "number" or .timeout_seconds <= 0 or (.timeout_seconds | floor) != .timeout_seconds then "timeout_seconds が正の整数でない"
         else empty end' <<<"$raw")"
     [[ -z "$problem" ]] || { echo "local_verify の宣言が不正: $problem"; return 1; }
-    if [[ -n "$config_pct" ]]; then
+    # worktree の宣言との突き合わせは db のある宣言（repo の宣言）だけ。db の無い宣言は AC の文面から凍結した値で、
+    # worktree には対応する宣言が無い（読み直すと実装が判定に使うコマンドを書き換えられる）。
+    if [[ -n "$config_pct" && "$(jq -r '.db != null' <<<"$raw")" == true ]]; then
         local current expected actual
         current="$(worktree_declaration "$worktree")"
         [[ -n "$current" ]] || { echo 'worktree の "dev-flow".local_verify が消えている（Setup 時の宣言と異なる）— 実装中に書き換えられた宣言では判定しない'; return 1; }
@@ -147,7 +157,7 @@ load_config() {
         [[ "$expected" == "$actual" ]] || { echo "worktree の \"dev-flow\".local_verify が Setup 時の宣言と異なる（Setup: $expected / worktree: ${current:0:300}）— 実装中に書き換えられた宣言では判定しない"; return 1; }
     fi
     write_json "$SPEC" --arg worktree "$worktree" --argjson cfg "$raw" \
-        '{worktree: $worktree, command: $cfg.command, engine: $cfg.db.engine, version: $cfg.db.version, env: $cfg.env, timeout_seconds: $cfg.timeout_seconds}'
+        '{worktree: $worktree, command: $cfg.command, engine: $cfg.db.engine, version: $cfg.db.version, env: $cfg.env, timeout_seconds: $cfg.timeout_seconds, expect_paths: ($cfg.expect_paths // [])}'
 }
 
 # ---------------------------------------------------------------------------
@@ -206,40 +216,50 @@ supervise() {
     trap 'exit 130' INT
     trap '' HUP  # 起動元の shell が終わっても生き続ける
 
-    local worktree cmd version env_name timeout
+    local worktree cmd engine version env_name timeout
     worktree="$(read_field "$SPEC" .worktree)"
     cmd="$(read_field "$SPEC" .command)"
+    engine="$(read_field "$SPEC" .engine)"
     version="$(read_field "$SPEC" .version)"
     env_name="$(read_field "$SPEC" .env)"
     timeout="$(read_field "$SPEC" .timeout_seconds)"
-    set_phase creating
 
-    # broker に届かない（未インストール・停止中）・DB を確保できないときは unavailable で終える。
-    # 呼び出し側（dev-flow）はこれを fail-open にして CI の check の結果で判定する。
-    local out rc reason
-    "$BROKER" create --version "$version" >"$STATE_DIR/broker-create.out" 2>"$STATE_DIR/broker-create.err"; rc=$?
-    out="$(cat "$STATE_DIR/broker-create.out" 2>/dev/null)"
-    if (( rc != 0 )); then
-        reason="$(tail -n 3 "$STATE_DIR/broker-create.err" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
-        [[ -n "$reason" ]] || reason="pg-broker create が exit $rc"
-        write_json "$RESULT" --arg reason "$reason" '{status: "unavailable", exit_code: null, reason: $reason}'
-        set_phase unavailable --arg reason "$reason"
-        exit 0
-    fi
-    DB_ID="$(jq -r '.id // empty' <<<"$out" 2>/dev/null)"
-    local url
-    url="$(jq -r '.database_url // empty' <<<"$out" 2>/dev/null)"
-    if [[ -z "$DB_ID" || -z "$url" ]]; then
-        reason="pg-broker create の応答に id / database_url が無い: ${out:0:200}"
-        write_json "$RESULT" --arg reason "$reason" '{status: "unavailable", exit_code: null, reason: $reason}'
-        set_phase unavailable --arg reason "$reason"
-        exit 0
+    local out rc reason='' url=''
+    # db の無い宣言は DB を確保せず、env も渡さずに command を実行する
+    if [[ -n "$engine" ]]; then
+        set_phase creating
+
+        # broker に届かない（未インストール・停止中）・DB を確保できないときは unavailable で終える。
+        # 呼び出し側（dev-flow）はこれを fail-open にして CI の check の結果で判定する。
+        "$BROKER" create --version "$version" >"$STATE_DIR/broker-create.out" 2>"$STATE_DIR/broker-create.err"; rc=$?
+        out="$(cat "$STATE_DIR/broker-create.out" 2>/dev/null)"
+        if (( rc != 0 )); then
+            reason="$(tail -n 3 "$STATE_DIR/broker-create.err" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
+            [[ -n "$reason" ]] || reason="pg-broker create が exit $rc"
+            write_json "$RESULT" --arg reason "$reason" '{status: "unavailable", exit_code: null, reason: $reason}'
+            set_phase unavailable --arg reason "$reason"
+            exit 0
+        fi
+        DB_ID="$(jq -r '.id // empty' <<<"$out" 2>/dev/null)"
+        url="$(jq -r '.database_url // empty' <<<"$out" 2>/dev/null)"
+        if [[ -z "$DB_ID" || -z "$url" ]]; then
+            reason="pg-broker create の応答に id / database_url が無い: ${out:0:200}"
+            write_json "$RESULT" --arg reason "$reason" '{status: "unavailable", exit_code: null, reason: $reason}'
+            set_phase unavailable --arg reason "$reason"
+            exit 0
+        fi
+        set_phase running --arg db_id "$DB_ID" --argjson started_at "$(now)"
+    else
+        set_phase running --argjson started_at "$(now)"
     fi
 
-    set_phase running --arg db_id "$DB_ID" --argjson started_at "$(now)"
     # command は自分の process group で起こす（止めるときに孫まで届くように）
     set -m
-    ( cd "$worktree" && export "$env_name=$url" && exec bash -c "$cmd" ) </dev/null >>"$CMD_LOG" 2>&1 &
+    if [[ -n "$engine" ]]; then
+        ( cd "$worktree" && export "$env_name=$url" && exec bash -c "$cmd" ) </dev/null >>"$CMD_LOG" 2>&1 &
+    else
+        ( cd "$worktree" && exec bash -c "$cmd" ) </dev/null >>"$CMD_LOG" 2>&1 &
+    fi
     CMD_PID=$!
     set +m
 
@@ -255,13 +275,27 @@ supervise() {
     fi
     wait "$CMD_PID" 2>/dev/null; rc=$?
     CMD_PID=''
+    # expect_paths: exit 0 でも、宣言したファイルが終了後の worktree に無ければ failed（理由は log にも残し、log_tail で返す）
+    local missing='' p paths_list
+    if [[ -z "$stop_reason" ]] && (( rc == 0 )); then
+        paths_list="$(jq -r '.expect_paths[]?' "$SPEC" 2>/dev/null)"
+        while IFS= read -r p; do
+            [[ -n "$p" ]] || continue
+            [[ -e "$worktree/$p" ]] || missing+="${missing:+, }$p"
+        done <<<"$paths_list"
+    fi
     local status
     if [[ -n "$stop_reason" ]]; then status="$stop_reason"
+    elif [[ -n "$missing" ]]; then
+        status=failed
+        reason="command は exit 0 だが expect_paths が worktree に無い: $missing"
+        echo "[local-verify] $reason" >>"$CMD_LOG"
     elif (( rc == 0 )); then status=passed
     else status=failed
     fi
     delete_db
-    write_json "$RESULT" --arg status "$status" --argjson code "$rc" '{status: $status, exit_code: $code}'
+    write_json "$RESULT" --arg status "$status" --argjson code "$rc" --arg reason "$reason" \
+        '{status: $status, exit_code: $code} + (if $reason != "" then {reason: $reason} else {} end)'
     trap - EXIT
     set_phase done
 }
@@ -348,7 +382,7 @@ cmd_start() {
         emit --arg error "$problem" '{ok: false, status: "error", error: $error}'
         return
     fi
-    if ! command -v "$BROKER" >/dev/null 2>&1; then
+    if [[ -n "$(read_field "$SPEC" .engine)" ]] && ! command -v "$BROKER" >/dev/null 2>&1; then
         emit --arg reason "pg-broker が PATH に無い（${BROKER}）" '{ok: false, status: "unavailable", reason: $reason}'
         return
     fi
