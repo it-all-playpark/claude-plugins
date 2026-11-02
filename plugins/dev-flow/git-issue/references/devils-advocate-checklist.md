@@ -63,12 +63,22 @@ Treat findings as `blocking` if any item below is true:
 
 ## Loop Protocol
 
-1. Produce a list of findings with severity (`blocking` or `non-blocking`).
-2. For each blocking finding, propose a concrete correction.
-3. Revise the plan. 修正は AC と `## 制約・取らないこと` に反映し、指摘と修正の履歴は issue 本文に書き写さない
-   （ラウンド数と残った non-blocking の懸念は SKILL.md Output Contract の `## Plan Quality Gate` で返す）。
-4. Re-run review until blocking findings are zero or max rounds reached.
+Blocking Categories の判定は本文を書いた本人が行わない（書き手は設計の正当化を知ったまま読むので、塞いでいない
+経路を見落とす）。判定する役は `issue-plan-reviewer` agent で、渡すのは本文ファイルとこのチェックリストのパスだけ
+（調査結果・会話・書き手の判断理由・前のラウンドの判定を渡さない）。spawn の形は SKILL.md の
+「Blocking Categories の判定（issue-plan-reviewer）」。
+
+1. Phase 4 の前に、Phase 3 の計画から SKILL.md Phase 5 と同じテンプレートで本文ファイルを書く。
+2. 各ラウンドで、本文ファイルごとに、そのラウンドで新しく spawn した `issue-plan-reviewer` に Blocking Categories の
+   項目ごとの判定（`blocking` / `non-blocking`）をさせる。
+3. 書き手が `blocking` の項目を計画と本文ファイルで直す。修正は AC と `## 制約・取らないこと` に反映し、指摘と修正の履歴は
+   issue 本文に書き写さない（ラウンド数と残った non-blocking の懸念は SKILL.md Output Contract の `## Plan Quality Gate` で返す）。
+4. blocking が 0 になるか max rounds に達するまで 2・3 を繰り返す。
+5. Phase 5 で本文を書き直したら、Phase 6 の前に最終の本文ファイルを新しく spawn した `issue-plan-reviewer` にもう 1 回
+   判定させ、blocking があれば起票しない。
 
 If max rounds reached with blocking findings remaining:
 - Do not create issue.
 - Return unresolved findings and required user decisions.
+
+reviewer を spawn できない、または返り値が項目ごとの判定の形でないときも起票しない（書き手の自己判定で代えない）。

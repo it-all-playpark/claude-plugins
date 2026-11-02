@@ -70,8 +70,8 @@ Phase 5〜7 は同じように通る。
 | 1 | Normalize input context | Problem statement, goals, constraints are explicit |
 | 2 | Specialist investigation | Frontend/backend/infra findings are ready to feed AC and constraints |
 | 3 | Draft implementation plan | Plan includes phases, executors, agent issue split, target paths, dependencies, AC, risks |
-| 4 | Devil's-advocate review loop | No blocking gaps remain |
-| 5 | Compose final issue body | Template is fully filled for every agent issue (human issue bodies too, if any) |
+| 4 | Devil's-advocate review loop | `issue-plan-reviewer` judges no Blocking Categories item as blocking on the body files |
+| 5 | Compose final issue body | Template is fully filled for every agent issue (human issue bodies too, if any); a rewritten body is re-judged |
 | 6 | Create issue | human issues (if any) → agent issues in topological order (`--blocked-by`) return URLs |
 | 7 | Launch order | `dev-flow-ready-set` over the created agent issues fills `## Launch Order` (skipped on `--dry-run`) |
 
@@ -109,7 +109,7 @@ Generate an actionable plan containing:
 - rollout and rollback strategy
 - open questions requiring user decision
 
-この計画は issue の分割・AC・制約を決めるための作業メモ（本文に書くものは Phase 5）。
+この計画は issue の分割・AC・制約を決めるための作業メモ（本文に書くものは Phase 5。本文ファイルは Phase 4 の前に書く）。
 
 #### Executor Classification
 
@@ -161,23 +161,54 @@ agent issue の本文には `## 変更対象パス` が必須。書式は 1 行 
 
 ### Phase 4: Devil's-Advocate Review Loop
 
-Apply the checklist in `references/devils-advocate-checklist.md`.
+ループに入る前（Phase 4 の前）に、Phase 3 の計画から Phase 5 と同じテンプレート（本文に含めるもの・書かないもの・
+4000 字は Phase 5 のとおり）で本文ファイルを書く（例: `/tmp/git-issue-body.md`。agent issue を分けた場合は 1 本ごとに
+`/tmp/git-issue-body-1.md`, `-body-2.md` …）。判定するのは計画ではなくこの本文ファイル。ループの形は
+`references/devils-advocate-checklist.md` の Loop Protocol と同じ。
 
 Loop rules:
-1. Run devil's-advocate review on current plan.
-2. Classify findings as `blocking` or `non-blocking`.
-3. Revise the plan to resolve all blocking findings.
-4. Repeat until no blocking findings or max rounds reached.
+1. 各ラウンドで、本文ファイルごとに、そのラウンドで新しく spawn した `issue-plan-reviewer` に Blocking Categories を
+   判定させる（下の「Blocking Categories の判定（issue-plan-reviewer）」。渡すのは本文ファイルとチェックリストのパスだけ）。
+   書き手は自分で判定しない
+2. `blocking` と判定された項目を、書き手が計画と本文ファイルの両方で直す
+3. blocking が 0 になるか max rounds（`--max-review-rounds`）に達するまで繰り返す
 
-Do not create a GitHub issue while blocking findings remain.
+Do not create a GitHub issue while blocking findings remain. max rounds に達して blocking が残った本文は起票しない。
 
 ラウンド数と残った non-blocking の懸念は Output Contract の `## Plan Quality Gate` でユーザーに返す。
 
+### Blocking Categories の判定（issue-plan-reviewer）
+
+Blocking Categories の判定は、本文を書いた本人（この skill を実行しているセッション）が行わない。書き手は設計の
+正当化を知ったまま読むので、塞いでいない経路を見落とす（分類: incentive-structural。書き手の能力に依らず
+自分の設計を通す方向に偏るので sunset しない）。軽い経路の手順 3、重い経路の Phase 4 の各ラウンド、Phase 5 の後の
+再判定はすべてこの節の形で行う。
+
+- 判定のたびに Agent tool で `issue-plan-reviewer`（`subagent_type: "dev-flow:issue-plan-reviewer"`。`name` は付けない）を
+  新しく spawn する。前の判定をした reviewer を再利用しない
+- prompt に渡すのは本文ファイルのパスとチェックリストのパスだけにする:
+
+  ```
+  body_path: /tmp/git-issue-body-1.md
+  checklist_path: ${CLAUDE_PLUGIN_ROOT}/git-issue/references/devils-advocate-checklist.md
+  ```
+
+  `${CLAUDE_PLUGIN_ROOT}` は展開した絶対パスで渡す。調査結果・会話・書き手の判断理由・前の判定と直した内容は
+  渡さない（判定が書き手の正当化に引きずられる）
+- 返り値は `agents/issue-plan-reviewer.md` の「出力」の JSON。判定の形は、`verdicts` が Blocking Categories の全項目を
+  1 件ずつ持ち、各 `verdict` が `blocking` / `non-blocking` のどちらかで、`blocking` の項目に `item`（項目の文）と
+  `quote`（本文の引用）があること
+- reviewer を spawn できない（Agent tool が使えない・spawn が失敗する）、または返り値が判定の形でないときは、その
+  issue を起票しない。書き手の自己判定で代えず、起票しなかった issue と理由を Output Contract の
+  `## Plan Quality Gate` で返す
+
 ### Phase 5: Compose Final Issue Body
 
-issue 本文を一時ファイルに書く（例: `/tmp/git-issue-body.md`）。agent issue を分けた場合は 1 本ごとに
-本文ファイルを分け（`/tmp/git-issue-body-1.md`, `-body-2.md` …）、以降の AC Lint Self-Check と Phase 6 の
-起票は本文ファイルごとに行う。
+Phase 4 で判定させた本文ファイル（`/tmp/git-issue-body.md`、分けた場合は `/tmp/git-issue-body-1.md`, `-body-2.md` …）を
+最終の本文に仕上げる。以降の AC Lint Self-Check と Phase 6 の起票は本文ファイルごとに行う。Phase 5 で本文を
+書き直したら（AC Lint Self-Check の直しを含む）、Phase 6 の前に最終の本文ファイルを新しく spawn した
+`issue-plan-reviewer` にもう 1 回判定させ（「Blocking Categories の判定（issue-plan-reviewer）」）、blocking があれば
+その issue を起票せず、当たった項目と引用を Output Contract の `## Plan Quality Gate` で返す。
 
 本文に含めるもの（agent issue。構成は `references/issue-template.md`）:
 - `## ゴール` — 何を満たせば完了か
@@ -312,18 +343,22 @@ Phase 4 の devil's-advocate ループを行わない。複数の finding を 1 
    `--search "\"$(cat /tmp/git-issue-path.txt)\" in:body"` の形で 1 つの引数として渡す。置換の結果はシェルに再評価されない）、そのうち finding と同じ仕組み（同じ判定・同じ prompt の組み立て・
    同じガード）を直した issue が直近 30 日に 2 件以上あれば、その finding は重い経路に切り替える。パスが重なるだけでは
    切り替えない（よく触るファイルではほぼ全件の close 済み issue の本文に出るので、パスだけで数えると全 finding が重い経路になる）
-2. 各本文を `references/devils-advocate-checklist.md` の Blocking Categories に 1 回だけ照らし、当たった項目を直す
-   （ループはしない）。ただし「直し方が症状の条件の分岐・ガード・入力の追加だけ」の項目に当たった finding は、その場で
-   直さずに重い経路に切り替える（他の Blocking 項目はこれまでどおりその場で直す）
-3. Phase 5 と同じく finding ごとに本文ファイルを作り（`/tmp/git-issue-body-1.md`, `-body-2.md` …）、
+2. Phase 5 と同じく finding ごとに本文ファイルを作り（`/tmp/git-issue-body-1.md`, `-body-2.md` …）、
    本文ファイルごとに AC Lint Self-Check（`ac-lint`）を通す
+3. 本文ファイルを `references/devils-advocate-checklist.md` の Blocking Categories に照らす判定は書き手が行わず、
+   本文ファイルごとに `issue-plan-reviewer` を spawn して行う（「Blocking Categories の判定（issue-plan-reviewer）」。
+   prompt に渡すのは本文ファイルとチェックリストのパスだけで、調査結果・会話・書き手の判断理由を渡さない）。
+   reviewer が blocking と判定した項目は書き手が直し（直した本文は AC Lint Self-Check も通し直す）、新しく spawn した
+   reviewer に直した本文をもう 1 回判定させ、blocking が残れば重い経路に切り替える（ループはしない）。ただし
+   「直し方が症状の条件の分岐・ガード・入力の追加だけ」の項目に当たった finding は、その場で直さずに重い経路に
+   切り替える（他の Blocking 項目はこれまでどおりその場で直す）
 4. 本文ファイルごとに Phase 6 の `create_issue.py`（`--kind agent`、`--blocked-by` なし）で起票する。
    ゲート（ac-lint・4000 字・変更対象パス・`executor: human` の検出・AC の人手判定（dev-flow と同じ `ac-actor.mjs` の判定））は重い経路と同じ
 5. Phase 7 は起票した全 issue の番号をまとめて `dev-flow-ready-set` に 1 回だけ渡す（finding ごとに実行しない）
 
 途中で分割・issue 間の依存・human タスクが必要と分かったら、手順 1 で同じ仕組みを直した close 済みの issue が
-直近 30 日に 2 件以上見つかったら、または手順 2 で「直し方が症状の条件の分岐・ガード・入力の追加だけ」の項目に
-当たったら、その finding は軽い経路をやめて重い経路（Phase 1 から）に切り替える。切り替えた finding は、入力の
+直近 30 日に 2 件以上見つかったら、手順 3 で reviewer が「直し方が症状の条件の分岐・ガード・入力の追加だけ」の項目に
+当たったと判定したら、または直した本文の再判定で blocking が残ったら、その finding は軽い経路をやめて重い経路（Phase 1 から）に切り替える。切り替えた finding は、入力の
 症状・原因・直し方を Phase 1 の入力にして、人に質問せずに進む（Preconditions の follow-up 質問はせず、足りない制約は
 入力と対象コードから決める。dev-flow-health は無人の `claude -p` から呼ぶので、質問を待つと止まる）。重い経路では、
 同じ型の別の症状まで消える直し方（削除・統合・一般化を含む）を設計してから起票する。切り替えた finding と理由は
