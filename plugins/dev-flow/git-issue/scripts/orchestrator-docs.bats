@@ -46,6 +46,8 @@
 # - 軽い経路は本文ファイルを書いてから reviewer に判定させ、直した本文は新しい reviewer に再判定させる
 # - 重い経路は Phase 4 の前に本文ファイルを書き、ラウンドごとに新しい reviewer に判定させ、Phase 5 で書き直した本文を再判定する
 # - reviewer を spawn できない・判定の形でないときは起票せず、## Plan Quality Gate で返す
+# - issue 間の依存は本文ファイルの Blocked by 行に書いて Phase 6 で --blocked-by に写し、reviewer は issue 間の項目を
+#   兄弟の本文ファイルを読んで判定する
 
 setup() {
     command -v python3 >/dev/null || skip "python3 not available"
@@ -519,4 +521,18 @@ frontmatter_value() {
     [[ "$loop" == *"If max rounds reached with blocking findings remaining:"*"- Do not create issue."* ]]
     [[ "$loop" == *"reviewer を spawn できない、または返り値が項目ごとの判定の形でないときも起票しない"* ]]
     [[ "$loop" != *"For each blocking finding, propose a concrete correction."* ]]
+}
+
+@test "(34) issue 間の依存は本文ファイルの Blocked by 行に書いて Phase 6 で --blocked-by に写し、reviewer は issue 間の項目を兄弟の本文ファイルから判定する" {
+    phase4="$(extract_section "$SKILL_MD" "### Phase 4")"
+    [[ "$phase4" == *"issue 間の依存は本文ファイルに書いておく"*'`Blocked by <本文ファイル名>` の行で書く'* ]]
+    [[ "$phase4" == *'Phase 6 ではこの行を `--blocked-by` に写す'* ]]
+    phase6="$(extract_section "$SKILL_MD" "### Phase 6")"
+    [[ "$phase6" == *'`--blocked-by <番号[,…]>` に渡して（先行 issue は Phase 4 で本文ファイルの `Blocked by <本文ファイル名>` 行に書いたもの）'* ]]
+    input="$(extract_section "$REVIEWER" "## 入力")"
+    [[ "$input" == *"issue 間の項目（依存の循環・Blocked by の欠落・依存順の矛盾）"* ]]
+    [[ "$input" == *"同じ接頭辞の兄弟本文ファイル"*'`/tmp/git-issue-body-*.md`'*"Read し"* ]]
+    # issue 間の項目は checklist の Blocking Categories にあり、reviewer が判定する対象
+    section="$(awk '/^## Blocking Categories/ { f = 1; next } f && /^## / { exit } f { print }' "$CHECKLIST")"
+    [[ "$section" == *"agent issue 間の依存が循環している / 先行 issue の成果物を使うのに Blocked by が無い"* ]]
 }
