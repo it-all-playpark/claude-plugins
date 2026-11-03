@@ -37,6 +37,9 @@ redact_all
 | (.verify != null) as $verified
 | "# sandbox-tune レポート（\(.period.since) 〜 \(.period.until)）\n\n"
   + "- 期間: \(.period.days) 日 / transcript: \(.files_scanned) ファイル（\(.projects_dir)）/ 型: \(.types | length) 件\n"
+  + ((.files_unreadable // []) | if length > 0
+     then "- 読めずに飛ばした transcript: \(length) ファイル（所有者・権限を確かめる）: \(map("`\(.)`") | join(", "))\n"
+     else "" end)
   + (if $verified then "- 設定 repo: \(.verify.repo)（見たパス: \(.verify.paths | join(", "))）。拒否が起きた repo は .claude/settings.json を見た\n"
      else "- 設定 repo: なし（verify は未実施。resolved / remaining の判定なし）\n" end)
   + (if (.criteria_files // []) | length > 0 then "- 追加の判定基準: \(.criteria_files | join(", "))\n" else "" end)
