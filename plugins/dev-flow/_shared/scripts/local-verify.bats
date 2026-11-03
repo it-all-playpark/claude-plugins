@@ -198,6 +198,80 @@ start_verify_pct() {
     [ ! -s "$BROKER_CALLS" ]
 }
 
+# db の無い宣言（dev-flow が AC の inline code から凍結したコマンド。issue #1208）の --config-pct
+# $1 = command, $2 = expect_paths の JSON 配列（既定 []）
+ac_config_pct() {
+    jq -rn --arg cmd "$1" --argjson paths "${2:-[]}" '{command: $cmd, expect_paths: $paths, timeout_seconds: 60} | tojson | @uri'
+}
+
+@test "db の無い宣言: pg-broker を呼ばずに command を実行し、worktree の宣言とは突き合わせない" {
+    # worktree に宣言は無い（AC コマンドは repo の宣言ではない）
+    start_verify_pct "$(ac_config_pct 'echo "db=${E2E_EXTERNAL_DATABASE_URL:-none}"; echo "cwd=$PWD"')"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.status == "running" or .status == "passed"'
+    wait_verify
+    echo "$output" | jq -e '.ok == true and .status == "passed" and .exit_code == 0'
+    echo "$output" | jq -e '.log_tail | contains("db=none")'
+    echo "$output" | jq -e --arg wt "$WT" '.log_tail | contains("cwd=" + $wt)'
+    wait_supervisor_done
+    [ ! -s "$BROKER_CALLS" ]
+
+    # pg-broker が PATH に無くても unavailable にしない
+    export LOCAL_VERIFY_PG_BROKER="$BATS_TEST_TMPDIR/no-such-pg-broker"
+    start_verify_pct "$(ac_config_pct 'true')"
+    wait_verify
+    echo "$output" | jq -e '.status == "passed"'
+}
+
+@test "expect_paths: exit 0 でも終了後の worktree に無いパスがあれば failed（理由付き）、全部あれば passed" {
+    start_verify_pct "$(ac_config_pct 'mkdir -p out && echo ok > out/index.html' '["out/index.html", "out/404.html"]')"
+    wait_verify
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .status == "failed" and .exit_code == 0'
+    echo "$output" | jq -e '(.reason | contains("out/404.html")) and (.reason | contains("out/index.html") | not)'
+    echo "$output" | jq -e '.log_tail | contains("expect_paths が worktree に無い: out/404.html")'
+    wait_supervisor_done
+
+    rm -rf "$WT/out"
+    start_verify_pct "$(ac_config_pct 'mkdir -p out && echo ok > out/index.html && echo nf > out/404.html' '["out/index.html", "out/404.html"]')"
+    wait_verify
+    echo "$output" | jq -e '.ok == true and .status == "passed" and .exit_code == 0 and (has("reason") | not)'
+    wait_supervisor_done
+    [ ! -s "$BROKER_CALLS" ]
+}
+
+@test "expect_paths: command の開始より前から更新されていないパス（前の実行や implementer が残したもの）があれば exit 0 でも failed、その実行で更新されれば passed" {
+    # 前の実行が残した生成物（mtime を過去に置く）。command はそれを作り直さない
+    mkdir -p "$WT/out"
+    echo old > "$WT/out/index.html"
+    echo old > "$WT/out/404.html"
+    touch -t 202001010000 "$WT/out/index.html" "$WT/out/404.html"
+    start_verify_pct "$(ac_config_pct 'echo nf > out/404.html' '["out/index.html", "out/404.html"]')"
+    wait_verify
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .status == "failed" and .exit_code == 0'
+    echo "$output" | jq -e '(.reason | contains("この実行で作られて・更新されていない")) and (.reason | contains("out/index.html")) and (.reason | contains("out/404.html") | not)'
+    echo "$output" | jq -e '.log_tail | contains("expect_paths がこの実行で作られて・更新されていない（command の開始より前のまま）: out/index.html")'
+    wait_supervisor_done
+
+    # 既存のファイルでも、その実行で書き直したものは passed
+    touch -t 202001010000 "$WT/out/index.html" "$WT/out/404.html"
+    start_verify_pct "$(ac_config_pct 'echo new > out/index.html && echo nf > out/404.html' '["out/index.html", "out/404.html"]')"
+    wait_verify
+    echo "$output" | jq -e '.ok == true and .status == "passed" and .exit_code == 0 and (has("reason") | not)'
+    wait_supervisor_done
+    [ ! -s "$BROKER_CALLS" ]
+}
+
+@test "expect_paths: / 始まり・.. を含むパスは宣言不正の error で、command を実行しない" {
+    start_verify_pct "$(ac_config_pct 'echo ran > ran.txt' '["../outside.html"]')"
+    echo "$output" | jq -e '.status == "error" and (.error | contains("expect_paths"))'
+    start_verify_pct "$(ac_config_pct 'echo ran > ran.txt' '["/etc/hosts"]')"
+    echo "$output" | jq -e '.status == "error" and (.error | contains("expect_paths"))'
+    [ ! -e "$WT/ran.txt" ]
+    [ ! -s "$BROKER_CALLS" ]
+}
+
 @test "wait: start 前は error、usage error は exit 2" {
     run bash "$SCRIPT" wait --state-dir "$STATE_DIR" --wait-sec 1
     [ "$status" -eq 0 ]

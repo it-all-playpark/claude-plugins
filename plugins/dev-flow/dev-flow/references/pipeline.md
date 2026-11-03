@@ -116,7 +116,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - 差し戻し後も空 diff なら throw（fail-closed）。例外は人間の cross-repo ラベル opt-in と、worktree 外の dirty な成果物の決定論の証拠が
     揃ったときだけの graceful 終端（`_lib/cross-repo-gate.mjs`）
   - local-verify が pg-broker に届かない・結果を取れない・Validate が red なら、pr-iterate の CI 待ちに戻す（fail-open。理由は終端サマリーの参考に出す）
-- **コード**: `execValidatePhase`・`runValidateLoop`・`triageBaseFailures`・`execLocalVerify`（`.claude/workflows/dev-flow.js`）、
+- **コード**: `execValidatePhase`・`runValidateLoop`・`triageBaseFailures`・`execLocalVerify`・`execAcVerify`（`.claude/workflows/dev-flow.js`）、
   `_lib/run-tests-prompt.mjs`、`_lib/base-failure-triage.mjs`、`_lib/cross-repo-gate.mjs`、`_lib/local-verify.mjs`
 
 ## Diff triage

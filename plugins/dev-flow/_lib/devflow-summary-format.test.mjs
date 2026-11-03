@@ -3024,6 +3024,31 @@ test('issue #844: 同じ AC にまとめた行でも、観測型 AC は対応が
   assert.ok(hold[0].endsWith(`| ${OBS_ACTION_844}・要判断（blast-radius）（下表 AC#4 未達（観測型） 行） |`), hold[0]);
 });
 
+// ─── issue #1208: AC が指定したコマンドが最終 tree で exit 0 だった AC は、人手 AC のまま行にコマンド・exit code・log_path を添える ───
+
+const AC_VERIFY_1208 = { ac_index: 0, command: 'timeout 300 pnpm --filter @acme/landing build', exit_code: 0, log_path: '/tmp/wt/.devflow-tmp/ac-verify/ac-1/logs/command.log' };
+const AC_VERIFY_NOTE_1208 = ' / AC のコマンド `timeout 300 pnpm --filter @acme/landing build` は最終 tree で exit 0（log: /tmp/wt/.devflow-tmp/ac-verify/ac-1/logs/command.log）— 人手確認の材料（AC の達成判定には使っていない）';
+
+test('issue #1208: AC コマンドが exit 0 の観測型 AC は未達行（人手 AC 待ち）のままコマンド・exit code・log_path を添え、HOLD 理由は変えない', () => {
+  const input = input844();
+  const body = buildDevflowSummaryBody({ ...input, acVerify: [AC_VERIFY_1208] });
+  assert.ok(body.includes(`| ❌ 未達 | AC#1（観測型） | inspection | 観測型 AC — test の red→green 実証が無い${AC_VERIFY_NOTE_1208} |`), body);
+  assert.deepEqual(rows794(body, '### HOLD になった理由と現状'), rows794(buildDevflowSummaryBody(input), '### HOLD になった理由と現状'));
+  // 開示が無ければ従来どおり・開示の AC が未達でなければ何も添えない
+  assert.equal(buildDevflowSummaryBody({ ...input, acVerify: [] }), buildDevflowSummaryBody(input));
+  assert.equal(buildDevflowSummaryBody({ ...input, acVerify: [{ ...AC_VERIFY_1208, ac_index: 1 }] }), buildDevflowSummaryBody(input));
+  const noLog = buildDevflowSummaryBody({ ...input, acVerify: [{ ...AC_VERIFY_1208, log_path: null }] });
+  assert.ok(noLog.includes('は最終 tree で exit 0（log なし）— 人手確認の材料'), noLog);
+});
+
+test('issue #1208: 同じ AC にまとめた行でも、AC 判定の現状にコマンド・exit code・log_path を添える', () => {
+  const input = input794({ agent: [], human: [3] });
+  input.acResults = input.acResults.map((a) => (a.ac_index === 3 ? { ...a, observational: true } : a));
+  const body = buildDevflowSummaryBody({ ...input, acVerify: [{ ...AC_VERIFY_1208, ac_index: 3 }] });
+  const row = body.split('\n').find((l) => l.startsWith('| ❌ 未解消 | 必須（AC#4 未達（観測型） に紐づく')) ?? '';
+  assert.ok(row.includes(`AC 判定 satisfied:false（inspection）: dotfiles 側が未変更${AC_VERIFY_NOTE_1208}`), row);
+});
+
 // ─── issue #829: 終端サマリの定型行・二重掲載・矛盾する注記を formatter で消す ───────────
 // 直近の dev-flow 製 PR の終端サマリに出ていた形（REVIEW の fix 適用後 reverified・REVIEW の fix なし・
 // AUTO の micro docs・HOLD の security hit + 未解消混在）を formatter の入力として再構成した fixture。

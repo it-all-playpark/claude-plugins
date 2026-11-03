@@ -180,6 +180,9 @@ function resolvedCell(v) {
  * @param {{status:string, command:string, label?:string, reason?:string, exit_code?:number|null, log_path?:string|null, reimpl_count?:number}|null|undefined} [opts.localVerify] -
  *   local-verify（ci の AC を pg-broker の DB でローカル実行。issue #863）の結果。「参考」に 1 行出す（unavailable / error / skipped は
  *   CI の check 待ちに回した理由）。passed なら「あなたがやること」に merge 前の CI 確認を足す（run は check の結果を待っていない）。表示専用
+ * @param {Array<{ac_index:number, command:string, exit_code?:number|null, log_path?:string|null}>|null|undefined} [opts.acVerify] -
+ *   AC が inline code で指定したコマンドのうち最終 tree で exit 0 だったもの（_lib/local-verify.mjs の acVerifyDisclosures。issue #1208）。
+ *   その AC の未達行（未達 AC 表・同じ AC にまとめた行）にコマンド・exit code・log_path を人手確認の材料として添える（表示専用）
  * @param {Array<{iteration:number, status:string, reason?:string, files?:Array<{path:string,type:string}>, merge_sha?:string|null}>|null|undefined} [opts.conflictAutoresolve] -
  *   pr-iterate の返り値 conflict_autoresolve（base との conflict の自動解消の試行。issue #916）。自動解消した試行は「参考」に型とファイルを、
  *   解消しなかった試行は mergeable_conflicting の HOLD 理由の「現状」に止めたファイルと型を出す（表示専用）
@@ -233,6 +236,7 @@ export function buildDevflowSummaryBody({
   unsatisfiedAcByActor,
   ciVerify,
   localVerify,
+  acVerify,
   conflictAutoresolve,
   securityReview,
   headSha,
@@ -360,6 +364,16 @@ export function buildDevflowSummaryBody({
   const observationalGaps = unsatisfiedAC.filter((a) => a.observational === true).map((a) => a.ac_index);
   // evaluator が実行環境に届かない（unreachable_env:true）と返した AC の未達も人手 AC 待ちのうち「実行して確かめる」もの。
   const unreachableGaps = unsatisfiedAC.filter((a) => a.unreachable_env === true && acHumanGaps.includes(a.ac_index) && a.observational !== true).map((a) => a.ac_index);
+  // AC が指定したコマンド（issue #1208）が最終 tree で exit 0 だった AC は、その AC の行にコマンド・exit code・log_path を
+  // 人手 AC の確認材料として添える。exit code は PR が書き換えうるコマンドの出力なので、AC の達成判定・HOLD には使わない（表示専用）。
+  const acVerifyByIndex = new Map((Array.isArray(acVerify) ? acVerify : [])
+    .filter((d) => d != null && Number.isInteger(d.ac_index) && typeof d.command === 'string')
+    .map((d) => [d.ac_index, d]));
+  const acVerifyNote = (k) => {
+    const d = acVerifyByIndex.get(k);
+    if (!d) return '';
+    return ` / AC のコマンド \`${mdCell(d.command)}\` は最終 tree で exit ${d.exit_code ?? 0}（${d.log_path ? 'log: ' + mdCell(d.log_path) : 'log なし'}）— 人手確認の材料（AC の達成判定には使っていない）`;
+  };
   const acUnsatisfiedCode = (k) => {
     if (acAgentGaps.includes(k)) return 'ac_agent_unsatisfied';
     if (acHumanGaps.includes(k)) return 'ac_human_pending';
@@ -775,7 +789,7 @@ export function buildDevflowSummaryBody({
     ].join(' / ');
     const current = [
       ...g.blocking.map((it) => (it.evidence ? mdCell(it.evidence) : '未解消')),
-      ...(g.ac != null ? [`AC 判定 satisfied:false（${g.ac.verified_by != null ? g.ac.verified_by : 'inspection'}）${g.ac.evidence ? ': ' + mdCell(g.ac.evidence) : ''}`] : []),
+      ...(g.ac != null ? [`AC 判定 satisfied:false（${g.ac.verified_by != null ? g.ac.verified_by : 'inspection'}）${g.ac.evidence ? ': ' + mdCell(g.ac.evidence) : ''}${acVerifyNote(g.acIndex)}`] : []),
       ...g.escalate.map((it) => 'ESCALATE: ' + escalateCurrent(it)),
     ].join(' / ');
     return { _kind: 'ac_group', _line: `| ❌ 未解消 | 必須（${g.label} に紐づく ${count} 件${breakdown}） | ac | ${content} | ${current} | ${g.actions.join('・')} |` };
@@ -852,7 +866,7 @@ export function buildDevflowSummaryBody({
       lines.push('|---|---|---|---|');
       for (const ac of unsatisfiedACRows) {
         const verifiedBy = ac.verified_by != null ? ac.verified_by : 'inspection';
-        const evidenceCell = ac.evidence ? mdCell(ac.evidence) : '—';
+        const evidenceCell = (ac.evidence ? mdCell(ac.evidence) : '—') + acVerifyNote(ac.ac_index);
         lines.push(`| ❌ 未達 | AC#${ac.ac_index + 1}${ac.observational === true ? '（観測型）' : ''}${ac.ci === true ? '（CI）' : ''} | ${verifiedBy} | ${evidenceCell} |`);
       }
     }

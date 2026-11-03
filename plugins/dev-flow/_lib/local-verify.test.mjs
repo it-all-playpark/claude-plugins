@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   LOCAL_VERIFY_WAIT_SEC, LOCAL_VERIFY_TAIL_MAX,
   localVerifyWaitPolls, localVerifyVerdict, localVerifyFeedback, localVerifyCiOutcome, localVerifyConfigArg,
+  AC_VERIFY_TIMEOUT_SEC, acVerifyConfig, acVerifyFeedback,
 } from './local-verify.mjs';
 
 test('[local-verify] localVerifyVerdict: passed は exit_code 0 が揃ったときだけ。timeout は failed、応答なし・未知の status は error', () => {
@@ -52,4 +53,27 @@ test('[local-verify] localVerifyConfigArg: shell のクォートが要らない 
   const arg = localVerifyConfigArg(cfg);
   assert.match(arg, /^[A-Za-z0-9._%-]+$/);
   assert.deepEqual(JSON.parse(decodeURIComponent(arg)), cfg);
+});
+
+test('[local-verify] acVerifyConfig: 凍結した AC コマンドを db の無い宣言（command / expect_paths / timeout_seconds だけ）にする', () => {
+  const cfg = acVerifyConfig({ verify_command: 'timeout 300 pnpm --filter @acme/landing build', expect_paths: ['packages/landing/out/index.html'] });
+  assert.deepEqual(cfg, { command: 'timeout 300 pnpm --filter @acme/landing build', expect_paths: ['packages/landing/out/index.html'], timeout_seconds: AC_VERIFY_TIMEOUT_SEC });
+  assert.equal('db' in cfg || 'env' in cfg, false, 'pg-broker を呼ばない');
+  assert.ok(localVerifyWaitPolls(AC_VERIFY_TIMEOUT_SEC) >= 2);
+  assert.deepEqual(acVerifyConfig({ verify_command: 'make', expect_paths: null }).expect_paths, []);
+});
+
+test('[local-verify] acVerifyFeedback: AC 番号・本文・コマンド・失敗の理由と log の末尾（上限で切る）を添える', () => {
+  const fb = acVerifyFeedback({
+    result: { status: 'failed', exit_code: 0, reason: 'expect_paths が worktree に無い: out/404.html', log_path: '/wt/log', log_tail: 'x'.repeat(LOCAL_VERIFY_TAIL_MAX) + 'END' },
+    command: 'make site', acIndex: 1, acceptanceCriteria: ['a', '`make site` で out/404.html が生成される'],
+  });
+  assert.equal(fb.topic, 'AC-2 未達');
+  assert.equal(fb.ac_index, 1);
+  assert.match(fb.description, /AC-2「`make site` で out\/404\.html が生成される」が指定したコマンド（`make site`）を worktree で実行したら exit 0 で失敗した（expect_paths が worktree に無い: out\/404\.html）/);
+  assert.match(fb.suggestion, /AC のコマンドや期待するファイルを変えて通さない/);
+  assert.equal(fb.log_path, '/wt/log');
+  assert.equal(fb.log_tail.length, LOCAL_VERIFY_TAIL_MAX);
+  assert.ok(fb.log_tail.endsWith('END'));
+  assert.match(acVerifyFeedback({ result: { status: 'timeout' }, command: 'c', acIndex: 0, acceptanceCriteria: ['a'] }).description, /timeout_seconds を超えて止められた/);
 });
