@@ -151,7 +151,8 @@ resolve_config() {
 }
 
 cmd_collect() {
-  local days=30 projects_dir="$HOME/.claude/projects" now="" until since list events n
+  local days=30 projects_dir="$HOME/.claude/projects" now="" until since list readable events n f
+  local unreadable=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --days) days="${2:-}"; shift 2 ;;
@@ -174,6 +175,15 @@ cmd_collect() {
   else
     find "$projects_dir" -mindepth 2 -maxdepth 2 -type f -name '*.jsonl' -mtime "-$((days + 1))" -print0 >"$list"
   fi
+  # 読めない transcript（root で動いたセッションが残した 600 のファイル等）が 1 本でもあると jq ごと落ちて
+  # 全体の集計が止まるので外す。外したものは files_unreadable に残し、レポートと要約で見えるようにする
+  readable="$(mktemp "${TMPDIR:-/tmp}/sandbox-tune-readable.XXXXXX")"
+  while IFS= read -r -d '' f; do
+    if [ -r "$f" ]; then printf '%s\0' "$f"; else unreadable+=("$(home_rel "$f")"); fi
+  done <"$list" >"$readable"
+  mv "$readable" "$list"
+  [ "${#unreadable[@]}" -eq 0 ] || printf 'sandbox-tune: 読めない transcript を %d 件飛ばしました: %s\n' \
+    "${#unreadable[@]}" "${unreadable[*]}" >&2
   n="$(tr -cd '\0' <"$list" | wc -c | tr -d ' ')"
   if [ "$n" -gt 0 ]; then
     xargs -0 jq -R -n -c -L "$SCRIPT_DIR" --arg home "$HOME" --argjson since "$since" --argjson until "$until" \
@@ -184,7 +194,8 @@ cmd_collect() {
     include "aggregate";
     {generated_at: ($until | todate),
      period: {since: ($since | todate), until: ($until | todate), days: $days},
-     projects_dir: $dir, files_scanned: $files, types: aggregate}' "$events"
+     projects_dir: $dir, files_scanned: $files, files_unreadable: $ARGS.positional, types: aggregate}' "$events" \
+    --args ${unreadable[@]+"${unreadable[@]}"}
   rm -f "$list" "$events"
 }
 
@@ -349,7 +360,8 @@ cmd_run() {
     stale_branch: ([.types[] | select(.status == "stale_branch")] | length),
     resolved: ([.types[] | select(.status == "resolved")] | length),
     intended: ([.types[] | select(.status == "intended")] | length),
-    recurring: (if .verify == null then null else [.types[] | select(.recurring)] | length end)}' "$json"
+    recurring: (if .verify == null then null else [.types[] | select(.recurring)] | length end),
+    unreadable: ((.files_unreadable // []) | length)}' "$json"
 }
 
 cmd_config() {

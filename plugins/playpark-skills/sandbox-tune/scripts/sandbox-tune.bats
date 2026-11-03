@@ -131,6 +131,23 @@ sandbox:unix_socket:/run/db/x.sock 1 1" ]
   [ "$(printf '%s' "$output" | jq -c '[.period.since, .period.until, .files_scanned]')" = '["2026-09-01T00:00:00Z","2026-10-01T00:00:00Z",2]' ]
 }
 
+@test "run: 読めない transcript は飛ばして残りを集計し、飛ばしたパスを files_unreadable・レポート・要約の unreadable に出す" {
+  fixture_basic
+  use proj-a/locked.jsonl S9 2026-09-15T00:00:00.000Z t9 'curl -sS https://locked.example.test'
+  result proj-a/locked.jsonl S9 2026-09-15T00:00:01.000Z t9 "$(violation locked.example.test)"
+  chmod 000 "$P/proj-a/locked.jsonl"
+  cd "$WORK"
+  run --separate-stderr bash "$SCRIPT" run --no-verify --projects-dir "$P" --now "$NOW" --out "$WORK/out"
+  chmod 600 "$P/proj-a/locked.jsonl"
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"読めない transcript を 1 件飛ばしました"* ]]
+  [ "$(printf '%s' "$output" | jq -r .unreadable)" = 1 ]
+  json="$WORK/out/sandbox-tune-2026-10-01.json"
+  [ "$(jq -c '[.files_scanned, .files_unreadable, ([.types[].id] | index("sandbox:network:locked.example.test"))]' "$json")" \
+    = "[2,[\"$P/proj-a/locked.jsonl\"],null]" ]
+  grep -q "読めずに飛ばした transcript: 1 ファイル" "$WORK/out/sandbox-tune-2026-10-01.md"
+}
+
 @test "collect: --days で期間を変えると、その前の事象も数える" {
   fixture_basic
   run collect --days 90
