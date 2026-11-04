@@ -452,7 +452,8 @@ fi
 # worktree の skill-config.json / .claude/skill-config.json（前者優先）の "dev-flow".<key> を verbatim で出す。
 #   ci_verify: sandbox 内で実行できない検証を CI のどの check で判定するかの repo 側の宣言（issue #861）
 #   local_verify: その検証を pg-broker の DB でローカル実行するコマンドの宣言（issue #863）
-# 形の検証は workflow 側（_lib/prerun-setup.mjs の normalizeCiVerify / normalizeLocalVerify）が行い、不正なら fail-closed で止める。
+#   pr_title_format: commit subject（= PR タイトル）のテンプレート
+# 形の検証は workflow 側（_lib/prerun-setup.mjs の normalizeCiVerify / normalizeLocalVerify / normalizePrTitleFormat）が行い、不正なら fail-closed で止める。
 # 無い・JSON として読めないファイルは未設定（null）として扱う。
 devflow_config_json() {
     local key="$1" rel v
@@ -468,9 +469,11 @@ devflow_config_json() {
 }
 ci_verify_json='null'
 local_verify_json='null'
+pr_title_format_json='null'
 if [[ "$SEG2_OK" == true ]]; then
     ci_verify_json="$(devflow_config_json ci_verify)"
     local_verify_json="$(devflow_config_json local_verify)"
+    pr_title_format_json="$(devflow_config_json pr_title_format)"
 fi
 
 # ============================================================================
@@ -525,6 +528,7 @@ OUT_JSON="$(jq -n \
     --argjson analyze "$analyze_json" \
     --argjson ci_verify "$ci_verify_json" \
     --argjson local_verify "$local_verify_json" \
+    --argjson pr_title_format "$pr_title_format_json" \
     --argjson skip_worktree "$(skip_worktree_json)" \
     --argjson epoch "$epoch" \
     --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
@@ -538,7 +542,7 @@ OUT_JSON="$(jq -n \
     + (if $have_head then {head: $head} else {} end)
     + (if $have_worktree_error then {worktree_error: $worktree_error} else {} end)
     + {worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree}
-    + {clean: $clean, stack: $stack, analyze: $analyze, ci_verify: $ci_verify, local_verify: $local_verify, epoch: $epoch}
+    + {clean: $clean, stack: $stack, analyze: $analyze, ci_verify: $ci_verify, local_verify: $local_verify, pr_title_format: $pr_title_format, epoch: $epoch}
     + {ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds, security_reviewer: $security_reviewer}
     + {plugin_commit: (if ($plugin_commit | test("^[0-9a-f]{12}$")) then $plugin_commit else null end)}
     ')"

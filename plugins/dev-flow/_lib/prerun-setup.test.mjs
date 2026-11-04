@@ -310,6 +310,27 @@ test('validatePrerunSetup: local_verify の形が不正なら fail-closed で th
   }
 });
 
+// ---- pr_title_format: commit subject（= PR タイトル）のテンプレートを検証する ----
+
+test('validatePrerunSetup: pr_title_format は trim して返し、null / 欠落は未設定（null）', () => {
+  assert.equal(validatePrerunSetup(validRaw({ pr_title_format: ' #{issue} {title} ' }), 641).pr_title_format, '#{issue} {title}');
+  assert.equal(validatePrerunSetup(validRaw({ pr_title_format: '{prefix}: {title} [{type}/{scope}] (#{issue})' }), 641).pr_title_format, '{prefix}: {title} [{type}/{scope}] (#{issue})');
+  assert.equal(validatePrerunSetup(validRaw({ pr_title_format: null }), 641).pr_title_format, null);
+  assert.equal(validatePrerunSetup(validRaw(), 641).pr_title_format, null);
+});
+
+test('validatePrerunSetup: pr_title_format が不正なら fail-closed で throw（黙って既定に倒さない）', () => {
+  for (const [value, re] of [
+    ['', /空でない文字列でない/],
+    [42, /空でない文字列でない/],
+    ['#{issue}', /\{title\} が無い/],
+    ['#{issue} {title}\nbody', /改行を含む/],
+    ['#{number} {title}', /未知の差し込み \{number\}/],
+  ]) {
+    assert.throws(() => validatePrerunSetup(validRaw({ pr_title_format: value }), 641), re, JSON.stringify(value));
+  }
+});
+
 test('summarizePrerunDeps: ok:true note非空は logLine に note を含む', () => {
   const result = summarizePrerunDeps({ ok: true, note: 'npm:installed' });
   assert.match(result.logLine, /npm:installed/);

@@ -69,7 +69,7 @@ test('[implementer-naming] (c) dev-flow.js の実装経路の識別子がモデ�
     'const implFeedback = ',
     'function adoptReportedFiles(plan, results)',
     'function diffDeclaredPaths(planTasks, changedFiles)',
-    'function buildCommitMessage({ issue, req, plan })',
+    'function buildCommitMessage({ issue, req, plan, titleFormat = null })',
     'function buildPrBody({ issue, req, plan,',
   ]) {
     assert.ok(devFlowSrc.includes(decl), `dev-flow.js に ${decl} が無い`);
