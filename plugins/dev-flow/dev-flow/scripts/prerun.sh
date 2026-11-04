@@ -22,7 +22,7 @@
 # branch の reflog の作成記録（`branch: Created from <ref>`）で判定する。
 #
 # GitHub I/O は analyze 段の `analyze-issue`（GitHub CLI の issue 取得を内蔵）と blocker 判定
-# （prerun-analyze.sh の dependencies API / Blocked by 先の issue 状態）、CI 待ちの上限を決める base branch の
+# （prerun-analyze.sh の dependencies API / Blocked by 先の issue 状態）、CI 待ちの上限を決める PR で走った
 # 成功 run の一覧（ci-wait-ceiling.sh が内蔵する run list）の読み取りのみ。
 # リモート更新系の書き込みコマンドは持たない（.claude/rules/dev-flow.md 参照）。
 
@@ -188,11 +188,11 @@ else
     base_error="git fetch origin failed: ${FETCH_OUT}"
 fi
 
-# ci_wait_ceiling_seconds: nested pr-iterate の CI 待ちの上限（秒）。PR の base（= 上で解決した base）の
-# CI 所要時間から決める（pr-iterate-prerun と同じ ci-wait-ceiling.sh）。base 未解決・run 一覧の読み取り失敗は 300
+# ci_wait_ceiling_seconds: nested pr-iterate の CI 待ちの上限（秒）。repo の PR で走った workflow run の
+# workflow ごとの所要時間から決める（pr-iterate-prerun と同じ ci-wait-ceiling.sh）。base 未解決・run 一覧の読み取り失敗は 300
 ci_wait_ceiling_seconds="$CI_WAIT_CEILING_DEFAULT"
 if [[ "$BASE_OK" == true ]]; then
-    ci_wait_ceiling_seconds="$(ci_wait_ceiling "$base" "$repo")"
+    ci_wait_ceiling_seconds="$(ci_wait_ceiling "$repo")"
 fi
 
 # security_reviewer: nested pr-iterate の security review を回す CLI の opt-in（"dev-flow".security_reviewer）。
