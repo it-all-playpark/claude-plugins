@@ -39,6 +39,8 @@ PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$PLUGIN_ROOT/_shared/scripts/worktree-checkout.sh"
 # shellcheck source=../../_shared/scripts/ci-wait-ceiling.sh
 source "$PLUGIN_ROOT/_shared/scripts/ci-wait-ceiling.sh"
+# shellcheck source=../../_shared/scripts/devflow-config.sh
+source "$PLUGIN_ROOT/_shared/scripts/devflow-config.sh"
 # shellcheck source=../../_shared/scripts/security-reviewer-config.sh
 source "$PLUGIN_ROOT/_shared/scripts/security-reviewer-config.sh"
 
@@ -195,10 +197,19 @@ if [[ "$BASE_OK" == true ]]; then
     ci_wait_ceiling_seconds="$(ci_wait_ceiling "$repo")"
 fi
 
-# security_reviewer: nested pr-iterate の security review を回す CLI の opt-in（"dev-flow".security_reviewer）。
-# pr-iterate-prerun と同じ security-reviewer-config.sh で、解決した base の origin/<base> と user 設定から読む。
-# worktree（PR head になる作業ツリー）の設定ファイルは読まない。値の検証は workflow（_lib/prerun-setup.mjs）が行う
+# repo 設定 "dev-flow".<key> は devflow-config.sh（pr-iterate-prerun と共通）で、解決した base の origin/<base> と
+# user 設定から verbatim で読む。worktree（PR head になる作業ツリー）とメイン checkout の作業ツリーの設定ファイルは読まない
+# — 再利用 worktree に前の run の実装が書き換えた設定が残っていても、それを次の run の判定条件にしない。
+#   security_reviewer: nested pr-iterate の security review を回す CLI の opt-in（無ければ "claude"。security-reviewer-config.sh）
+#   ci_verify: sandbox 内で実行できない検証を CI のどの check で判定するかの宣言（issue #861）
+#   local_verify: その検証を pg-broker の DB でローカル実行するコマンドの宣言（issue #863）
+#   pr_title_format: commit subject（= PR タイトル）のテンプレート
+# 値・形の検証は workflow 側（_lib/prerun-setup.mjs の security_reviewer の enum・normalizeCiVerify /
+# normalizeLocalVerify / normalizePrTitleFormat）が行い、不正なら fail-closed で止める。
 security_reviewer="$(security_reviewer_config "$ROOT" "$base")"
+ci_verify_json="$(devflow_config "$ROOT" "$base" ci_verify)"
+local_verify_json="$(devflow_config "$ROOT" "$base" local_verify)"
+pr_title_format_json="$(devflow_config "$ROOT" "$base" pr_title_format)"
 
 # ============================================================================
 # Segment 2: worktree create/reuse + base-origin match verification + write probe
@@ -443,37 +454,6 @@ if [[ "$SEG2_OK" == true ]]; then
     stack_json="$(printf '%s' "$stack_json" | jq -c --argjson t "$TEST_RUNNERS_JSON" '. + {test_runners: $t}')"
 else
     stack_json='{"frameworks":[],"test_runners":[],"error":"skipped: worktree unavailable"}'
-fi
-
-# ============================================================================
-# Segment 5b: ci_verify / local_verify (段2成功時のみ)
-# ============================================================================
-
-# worktree の skill-config.json / .claude/skill-config.json（前者優先）の "dev-flow".<key> を verbatim で出す。
-#   ci_verify: sandbox 内で実行できない検証を CI のどの check で判定するかの repo 側の宣言（issue #861）
-#   local_verify: その検証を pg-broker の DB でローカル実行するコマンドの宣言（issue #863）
-#   pr_title_format: commit subject（= PR タイトル）のテンプレート
-# 形の検証は workflow 側（_lib/prerun-setup.mjs の normalizeCiVerify / normalizeLocalVerify / normalizePrTitleFormat）が行い、不正なら fail-closed で止める。
-# 無い・JSON として読めないファイルは未設定（null）として扱う。
-devflow_config_json() {
-    local key="$1" rel v
-    for rel in skill-config.json .claude/skill-config.json; do
-        [[ -f "$WT/$rel" ]] || continue
-        v="$(jq -c --arg key "$key" 'if type == "object" and (.["dev-flow"] | type) == "object" then .["dev-flow"][$key] else null end' "$WT/$rel" 2>/dev/null)" || v=''
-        if [[ -n "$v" && "$v" != 'null' ]]; then
-            printf '%s' "$v"
-            return
-        fi
-    done
-    printf 'null'
-}
-ci_verify_json='null'
-local_verify_json='null'
-pr_title_format_json='null'
-if [[ "$SEG2_OK" == true ]]; then
-    ci_verify_json="$(devflow_config_json ci_verify)"
-    local_verify_json="$(devflow_config_json local_verify)"
-    pr_title_format_json="$(devflow_config_json pr_title_format)"
 fi
 
 # ============================================================================

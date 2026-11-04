@@ -2,13 +2,14 @@
 # Tests for _shared/scripts/local-verify.sh（issue #863）
 #
 # Strategy: pg-broker は LOCAL_VERIFY_PG_BROKER でスタブに差し替え、呼ばれた argv を $BROKER_CALLS に 1 行ずつ残す。
-# 宣言コマンドは fixture worktree の .claude/skill-config.json に書く（exit 0 / 非 0 / 長い sleep）。
+# 宣言コマンドは --config で渡す JSON ファイルに書く（exit 0 / 非 0 / 長い sleep）。
 # supervisor はバックグラウンドで残るので、start は fd 3 を閉じて呼ぶ（bats が子の終了を待って止まらないように）。
 
 setup() {
     SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/local-verify.sh"
     WT="$BATS_TEST_TMPDIR/wt"
     STATE_DIR="$BATS_TEST_TMPDIR/state"
+    CONFIG="$BATS_TEST_TMPDIR/local-verify.json"
     BROKER_CALLS="$BATS_TEST_TMPDIR/broker-calls"
     mkdir -p "$WT/.claude"
     : > "$BROKER_CALLS"
@@ -39,12 +40,12 @@ teardown() {
 # $1 = command, $2 = timeout_seconds（既定 60）
 declare_local_verify() {
     jq -n --arg cmd "$1" --argjson timeout "${2:-60}" \
-        '{"dev-flow": {local_verify: {command: $cmd, db: {engine: "postgres", version: "17"}, env: "E2E_EXTERNAL_DATABASE_URL", timeout_seconds: $timeout}}}' \
-        > "$WT/.claude/skill-config.json"
+        '{command: $cmd, db: {engine: "postgres", version: "17"}, env: "E2E_EXTERNAL_DATABASE_URL", timeout_seconds: $timeout}' \
+        > "$CONFIG"
 }
 
 start_verify() {
-    run bash "$SCRIPT" start --worktree "$WT" --state-dir "$STATE_DIR" --wait-sec 20 3>&-
+    run bash "$SCRIPT" start --worktree "$WT" --state-dir "$STATE_DIR" --wait-sec 20 --config "$CONFIG" 3>&-
 }
 
 wait_verify() {
@@ -148,11 +149,15 @@ wait_supervisor_done() {
     echo "$output" | jq -e '.status == "unavailable" and (.reason | contains("PATH に無い"))'
 }
 
-@test "宣言が無い・不正: error を返し pg-broker を呼ばない" {
-    start_verify
-    echo "$output" | jq -e '.status == "error" and (.error | contains("local_verify が無い"))'
+@test "宣言が無い・不正: error を返し pg-broker を呼ばない。--config-pct も --config も無ければ worktree の宣言があっても error" {
+    jq -n '{"dev-flow": {local_verify: {command: "echo ran > ran.txt", db: {engine: "postgres", version: "17"}, env: "E2E_EXTERNAL_DATABASE_URL", timeout_seconds: 60}}}' > "$WT/.claude/skill-config.json"
+    cp "$WT/.claude/skill-config.json" "$WT/skill-config.json"
+    run bash "$SCRIPT" start --worktree "$WT" --state-dir "$STATE_DIR" --wait-sec 20 3>&-
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .status == "error" and (.error | contains("宣言が無い"))'
+    [ ! -e "$WT/ran.txt" ]
 
-    jq -n '{"dev-flow": {local_verify: {command: "true", db: {engine: "mysql", version: "8"}, env: "E2E_EXTERNAL_DATABASE_URL", timeout_seconds: 60}}}' > "$WT/.claude/skill-config.json"
+    jq -n '{command: "true", db: {engine: "mysql", version: "8"}, env: "E2E_EXTERNAL_DATABASE_URL", timeout_seconds: 60}' > "$CONFIG"
     start_verify
     echo "$output" | jq -e '.status == "error" and (.error | contains("db.engine"))'
     [ ! -s "$BROKER_CALLS" ]
@@ -168,27 +173,15 @@ start_verify_pct() {
     run bash "$SCRIPT" start --worktree "$WT" --state-dir "$STATE_DIR" --wait-sec 20 --config-pct "$1" 3>&-
 }
 
-@test "--config-pct: worktree の宣言が Setup 時の宣言と一致すれば、Setup 時の宣言の command を実行する" {
-    declare_local_verify "  echo 'setup-command ran'  "
-    start_verify_pct "$(setup_config_pct "echo 'setup-command ran'")"
+@test "--config-pct: 実装が worktree の宣言を書き換えても（command を true に）、--config-pct の宣言の command を実行する" {
+    jq -n '{"dev-flow": {local_verify: {command: "echo worktree-command ran; true", db: {engine: "postgres", version: "16"}, env: "E2E_EXTERNAL_DATABASE_URL", timeout_seconds: 60}}}' > "$WT/.claude/skill-config.json"
+    cp "$WT/.claude/skill-config.json" "$WT/skill-config.json"
+    start_verify_pct "$(setup_config_pct "echo 'setup-command ran'; exit 1")"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.status == "running" or .status == "passed"'
     wait_verify
-    echo "$output" | jq -e '.status == "passed" and (.log_tail | contains("setup-command ran"))'
-}
-
-@test "--config-pct: 実装が worktree の宣言を書き換えた（command を true に）なら error を返し、command も pg-broker も実行しない" {
-    declare_local_verify 'true'
-    start_verify_pct "$(setup_config_pct 'exit 1')"
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == false and .status == "error" and (.error | contains("Setup 時の宣言と異なる"))'
-    [ ! -s "$BROKER_CALLS" ]
-
-    # 宣言を消しても同じ
-    echo '{}' > "$WT/.claude/skill-config.json"
-    start_verify_pct "$(setup_config_pct 'exit 1')"
-    echo "$output" | jq -e '.status == "error" and (.error | contains("消えている"))'
-    [ ! -s "$BROKER_CALLS" ]
+    echo "$output" | jq -e '.ok == false and .status == "failed" and .exit_code == 1'
+    echo "$output" | jq -e '(.log_tail | contains("setup-command ran")) and (.log_tail | contains("worktree-command ran") | not)'
+    grep -qx 'create --version 17' "$BROKER_CALLS"
 }
 
 @test "--config-pct: percent-encoding の形でない値は error" {
@@ -204,8 +197,7 @@ ac_config_pct() {
     jq -rn --arg cmd "$1" --argjson paths "${2:-[]}" '{command: $cmd, expect_paths: $paths, timeout_seconds: 60} | tojson | @uri'
 }
 
-@test "db の無い宣言: pg-broker を呼ばずに command を実行し、worktree の宣言とは突き合わせない" {
-    # worktree に宣言は無い（AC コマンドは repo の宣言ではない）
+@test "db の無い宣言: pg-broker を呼ばずに command を実行する" {
     start_verify_pct "$(ac_config_pct 'echo "db=${E2E_EXTERNAL_DATABASE_URL:-none}"; echo "cwd=$PWD"')"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.status == "running" or .status == "passed"'

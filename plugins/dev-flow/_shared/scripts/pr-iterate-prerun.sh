@@ -51,7 +51,8 @@
 #   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。repo の PR で走った成功 run の workflow ごとの所要時間から
 #     決める（ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
 #   security_review: 敵対的 security review の起動時の判定 {target, reasons, reviewer_context_changed, reviewer}。reviewer は review を回す
-#     CLI の opt-in（"dev-flow".security_reviewer。base branch の skill-config.json か user 設定から読み、PR head の設定は読まない。
+#     CLI の opt-in（"dev-flow".security_reviewer。devflow-config.sh で PR の base の origin/<base> か user 設定から読み、
+#     PR head・メイン checkout の作業ツリーの設定は読まない。
 #     無ければ "claude"。ok:false の早期終端では載せない — workflow は省略を "claude" として扱う）。origin/<base>...<PR head> の diff を
 #     security-review-scope.sh で判定し、全ファイルが許可リストに当たるときだけ target:false。判定できない（ok:false の
 #     早期終端・base 不明・node 不在・取得失敗）ときは target:true。reviewer_context_changed は diff が reviewer の指示ファイル
@@ -499,7 +500,8 @@ if [[ -n "$base_ref" ]]; then
 fi
 
 # security review を回す CLI の opt-in（"dev-flow".security_reviewer。issue #1087）。読む場所と優先順は
-# security-reviewer-config.sh（dev-flow-prerun と共通）。PR head（worktree）の設定ファイルは読まない
+# devflow-config.sh（dev-flow-prerun と共通。security-reviewer-config.sh が既定値 "claude" を足す）で、base ref は PR の base。
+# PR head（worktree）とメイン checkout の作業ツリーの設定ファイルは読まない
 security_reviewer="$(security_reviewer_config "$ROOT" "$base_ref")"
 security_review="$(printf '%s' "$security_review" | jq -c --argjson r "$security_reviewer" '. + {reviewer: $r}')"
 

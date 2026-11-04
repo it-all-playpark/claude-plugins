@@ -7,9 +7,10 @@
 # 宣言コマンドは worktree のコードを実行するので、呼び出し元と同じ sandbox 内で動かす
 # （本スクリプトを sandbox の excludedCommands に入れない — 入れると worktree の任意コードが sandbox 外で動く）。
 #
-# 宣言（skill-config.json / .claude/skill-config.json の順に探す。--config で JSON ファイルを直接渡してもよい）。
-# dev-flow は Setup 時に検証した宣言を --config-pct（JSON を percent-encoding した 1 トークン）で渡す。そのときは
-# それを宣言として使い、worktree の宣言が一致しなければ error を返す（実装による宣言のすり替えを判定に使わない）:
+# 宣言は --config-pct（JSON を percent-encoding した 1 トークン）か --config（JSON ファイル）でだけ受け取り、どちらも
+# 無ければ error。dev-flow は Setup 時に検証した宣言（prerun が origin/<base> と user 設定から読んだ skill-config の
+# "dev-flow".local_verify）を --config-pct で渡す。worktree の設定ファイルは読まない — 実装中に書き換えた宣言を
+# 判定に使わないことは、読み先を PR の外に置くことで保つ:
 #   "dev-flow": { "local_verify": {
 #     "command": "pnpm test:e2e:local",              # worktree を cwd に bash -c で実行する
 #     "db": { "engine": "postgres", "version": "17" }, # pg-broker create --version に渡す
@@ -22,7 +23,7 @@
 # 残したファイルがあるだけで、生成を求めた AC を exit 0 で通さないため。
 # db の無い宣言（{command, timeout_seconds, expect_paths?}）は pg-broker を呼ばずに command を実行する（env も渡さない）。
 # dev-flow はこれで AC 自体が inline code で指定したコマンドを実行する（issue #1208。AC の文面から凍結した値を
-# --config-pct で渡す）。AC コマンドは repo の宣言ではないので、db の無い宣言は worktree の宣言と突き合わせない。
+# --config-pct で渡す）。
 #
 # プロセスモデル:
 #   別の Bash 呼び出しからは kill できない（sandbox が別実体への signal を EPERM にする）ので、start は
@@ -99,22 +100,6 @@ log_tail() {
 # config
 # ---------------------------------------------------------------------------
 
-# worktree の skill-config.json / .claude/skill-config.json から "dev-flow".local_verify を探して stdout に出す。
-# 無ければ何も出さない。
-worktree_declaration() {
-    local worktree="$1" rel raw
-    for rel in skill-config.json .claude/skill-config.json; do
-        [[ -f "$worktree/$rel" ]] || continue
-        raw="$(jq -c 'if type == "object" and (.["dev-flow"] | type) == "object" then .["dev-flow"].local_verify else null end' "$worktree/$rel" 2>/dev/null)" || raw=''
-        [[ -n "$raw" && "$raw" != 'null' ]] && { printf '%s' "$raw"; return; }
-    done
-}
-
-# 宣言を dev-flow の normalizeLocalVerify と同じ形に畳む（前後の空白を落とし、使うキーだけ残す。キーは整列）。
-normalize_declaration() {
-    jq -cS '{command: (.command | gsub("^\\s+|\\s+$"; "")), db: {engine: .db.engine, version: (.db.version | gsub("^\\s+|\\s+$"; ""))}, env: .env, timeout_seconds: .timeout_seconds}'
-}
-
 # --config-pct の値（JSON を percent-encoding した 1 トークン）を戻す。形が違えば 1 を返す。
 decode_pct() {
     local s="$1"
@@ -122,10 +107,7 @@ decode_pct() {
     printf '%b' "${s//%/\\x}"
 }
 
-# 宣言を読み、形を検証して spec に書く。不正なら理由を stdout に 1 行出して 1 を返す。
-# --config-pct（dev-flow が Setup 時に検証した宣言）があればそれを宣言として使い、worktree の宣言が一致することも
-# 確かめる。worktree は実装で書き換えられうるので、Setup 時と異なる宣言（例: command を `true` にする）で
-# ci の AC を satisfied にさせない — 不一致は error（dev-flow は CI の check 待ちに戻し、理由をサマリーに出す）。
+# 宣言（--config-pct か --config）を読み、形を検証して spec に書く。不正・どちらも無ければ理由を stdout に 1 行出して 1 を返す。
 load_config() {
     local worktree="$1" config_path="$2" config_pct="$3" raw=''
     if [[ -n "$config_pct" ]]; then
@@ -135,8 +117,7 @@ load_config() {
     elif [[ -n "$config_path" ]]; then
         raw="$(jq -c '.' "$config_path" 2>/dev/null)" || { echo "--config を JSON として読めない: $config_path"; return 1; }
     else
-        raw="$(worktree_declaration "$worktree")"
-        [[ -n "$raw" ]] || { echo 'skill-config.json / .claude/skill-config.json に "dev-flow".local_verify が無い'; return 1; }
+        echo '宣言が無い（--config-pct か --config で local_verify の宣言を渡す）'; return 1
     fi
     local problem
     problem="$(jq -r '
@@ -150,16 +131,6 @@ load_config() {
         elif (.timeout_seconds | type) != "number" or .timeout_seconds <= 0 or (.timeout_seconds | floor) != .timeout_seconds then "timeout_seconds が正の整数でない"
         else empty end' <<<"$raw")"
     [[ -z "$problem" ]] || { echo "local_verify の宣言が不正: $problem"; return 1; }
-    # worktree の宣言との突き合わせは db のある宣言（repo の宣言）だけ。db の無い宣言は AC の文面から凍結した値で、
-    # worktree には対応する宣言が無い（読み直すと実装が判定に使うコマンドを書き換えられる）。
-    if [[ -n "$config_pct" && "$(jq -r '.db != null' <<<"$raw")" == true ]]; then
-        local current expected actual
-        current="$(worktree_declaration "$worktree")"
-        [[ -n "$current" ]] || { echo 'worktree の "dev-flow".local_verify が消えている（Setup 時の宣言と異なる）— 実装中に書き換えられた宣言では判定しない'; return 1; }
-        expected="$(normalize_declaration <<<"$raw")"
-        actual="$(normalize_declaration <<<"$current" 2>/dev/null)"
-        [[ "$expected" == "$actual" ]] || { echo "worktree の \"dev-flow\".local_verify が Setup 時の宣言と異なる（Setup: $expected / worktree: ${current:0:300}）— 実装中に書き換えられた宣言では判定しない"; return 1; }
-    fi
     write_json "$SPEC" --arg worktree "$worktree" --argjson cfg "$raw" \
         '{worktree: $worktree, command: $cfg.command, engine: $cfg.db.engine, version: $cfg.db.version, env: $cfg.env, timeout_seconds: $cfg.timeout_seconds, expect_paths: ($cfg.expect_paths // [])}'
 }

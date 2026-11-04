@@ -42,12 +42,15 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    書き込み probe・`.devflow-tmp` の clean・issue analyze（`analyze-issue --contract` の
    決定論 parse + Jev 有界判定）・framework 検出を 1 コマンドで行い、`ok:true` なら同じ JSON を
    `<worktree>/.devflow-tmp/prerun-setup.json` にも書く。deps install はしない（手順2b）。
-   `security_reviewer` は nested pr-iterate の security review を回す CLI の opt-in（`"dev-flow".security_reviewer`）で、
-   `pr-iterate-prerun` と同じ規則（base branch の設定 → user 設定、worktree の設定は読まない、無ければ `"claude"`）で読む。
-   `claude` / `codex` 以外は `dev-flow-run` が明示 error で止める。security review の守る要件と境界・経路は
+   repo 設定（`"dev-flow"` の `ci_verify` / `local_verify` / `pr_title_format` / `security_reviewer`）は、すべて
+   `pr-iterate-prerun` と共通の `_shared/scripts/devflow-config.sh` で、解決した base の `origin/<base>` の
+   `skill-config.json` → `.claude/skill-config.json` → user 設定の順に読む。worktree（PR head）とメイン checkout の
+   作業ツリーの設定ファイルは読まない（実装が書き換えた設定を次の run の判定条件にしない。設定を変える issue の
+   新しい宣言は merge 後の run から効く）。
+   `security_reviewer` は nested pr-iterate の security review を回す CLI の opt-in（`"dev-flow".security_reviewer`。
+   無ければ `"claude"`）。`claude` / `codex` 以外は `dev-flow-run` が明示 error で止める。security review の守る要件と境界・経路は
    `references/security-review.md`。
-   `pr_title_format` は PR タイトル（= commit subject）のテンプレート（`"dev-flow".pr_title_format`。worktree の
-   skill-config.json から読む）。既定は `{prefix}: {title} (#{issue})`、例 `"#{issue} {title}"`。差し込みは `{prefix}`
+   `pr_title_format` は PR タイトル（= commit subject）のテンプレート（`"dev-flow".pr_title_format`）。既定は `{prefix}: {title} (#{issue})`、例 `"#{issue} {title}"`。差し込みは `{prefix}`
    （`type(scope)` か `type`）・`{type}`・`{scope}`・`{title}`（必須）・`{issue}` で、不正な値は `dev-flow-run` が明示 error で止める。
    書けないパス（`.githooks` 等）を追跡する repo で full checkout が失敗したら、取り出せるパスだけを取り出して
    取り出せないパスに skip-worktree を付ける（`skip_worktree` に列挙）。再利用する worktree に未ステージの削除
