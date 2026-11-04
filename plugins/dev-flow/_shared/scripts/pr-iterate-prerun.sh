@@ -48,8 +48,8 @@
 #   prior_summary: PR コメントのうち終端サマリーの marker（`<!-- dev-flow:... -->` / `<!-- pr-iterate:<status>:<n>[ head=<sha>] -->`）を
 #     持つ最後のもの {source: "dev-flow"|"pr-iterate", url, head_sha, head_mismatch}。head_sha は marker の head（無ければ null）、
 #     head_mismatch は head_sha が今の PR head（headRefOid）と違うか、head_sha が null のとき true。終端サマリーが無ければ null
-#   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。PR の base branch の CI 所要時間から決める
-#     （ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
+#   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。repo の PR で走った成功 run の workflow ごとの所要時間から
+#     決める（ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
 #   security_review: 敵対的 security review の起動時の判定 {target, reasons, reviewer_context_changed, reviewer}。reviewer は review を回す
 #     CLI の opt-in（"dev-flow".security_reviewer。base branch の skill-config.json か user 設定から読み、PR head の設定は読まない。
 #     無ければ "claude"。ok:false の早期終端では載せない — workflow は省略を "claude" として扱う）。origin/<base>...<PR head> の diff を
@@ -59,7 +59,7 @@
 #     この決定論の値を run の終わりまで固定する。run 中の判定は LLM の中継を通るので PR の指示文で偽れる）
 #   不明な値は null。ok:false でも exit 0（引数不正と --direction の拒否のみ exit 2、stdout 空）。
 #
-# GitHub I/O は `gh pr view` と `gh run list`（base branch の成功 run。いずれも読み取り）のみ。push / comment / worktree の削除（この呼び出しで作った
+# GitHub I/O は `gh pr view` と `gh run list`（PR で走った成功 run。いずれも読み取り）のみ。push / comment / worktree の削除（この呼び出しで作った
 # 書けない worktree の退避を除く）はしない — 単体起動の worktree は回収後も人間が確認できるよう残す。
 #
 # sandbox 内で動く。起動元 repo の .git/config は sandbox 内から書けないので、worktree は --no-track で作る
@@ -276,8 +276,8 @@ fi
 [[ -n "$head_ref" ]] || fail "gh pr view ${PR} did not return headRefName"
 git check-ref-format --branch "$head_ref" >/dev/null 2>&1 || fail "headRefName is not a valid branch name: ${head_ref}"
 [[ "$PR_HEAD_OID" =~ ^[0-9a-f]{40}$ ]] || fail "gh pr view ${PR} did not return a 40-hex headRefOid: ${PR_HEAD_OID}"
-# CI 待ちの上限は PR の base branch の CI 所要時間から決める（dev-flow-prerun と同じ ci-wait-ceiling.sh）
-[[ -n "$base_ref" ]] && ci_wait_ceiling_seconds="$(ci_wait_ceiling "$base_ref" "$repo")"
+# CI 待ちの上限は repo の PR で走った成功 run の workflow ごとの所要時間から決める（dev-flow-prerun と同じ ci-wait-ceiling.sh）
+[[ -n "$base_ref" ]] && ci_wait_ceiling_seconds="$(ci_wait_ceiling "$repo")"
 
 # ============================================================================
 # Segment 2: ROOT resolution + fetch + PR head 一致検証

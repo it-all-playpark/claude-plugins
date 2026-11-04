@@ -127,16 +127,17 @@ make_issue_fixture() {
 }
 
 # ---- (1d) CI 待ちの上限（ci_wait_ceiling_seconds。issue #1046） ----
-# 上限の求め方（p90 + 60 秒・300〜900 秒・5 件未満は 300）は _shared/scripts/ci-wait-ceiling.bats が見る。ここは配線だけ。
+# 上限の求め方（workflow ごとの p90 の最大 + 60 秒・300〜900 秒・5 件以上の workflow が無ければ 300）は
+# _shared/scripts/ci-wait-ceiling.bats が見る。ここは配線だけ。
 
-@test "(1d) 解決した base の成功 run から ci_wait_ceiling_seconds を出し、gh run list が失敗したら 300" {
+@test "(1d) PR で走った成功 run から ci_wait_ceiling_seconds を出し、gh run list が失敗したら 300" {
     export GH_RUN_STUB_FIXTURE="$BATS_TEST_TMPDIR/runs.json"
-    jq -nc '[range(5) | {startedAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:10:00Z"}]' >"$GH_RUN_STUB_FIXTURE"
+    jq -nc '[range(5) | {workflowName: "CI", startedAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:10:00Z"}]' >"$GH_RUN_STUB_FIXTURE"
     cd "$ROOT"
     run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .base == "dev" and .ci_wait_ceiling_seconds == 660'
-    grep -qx "run list --branch dev --status success --limit 20 --json startedAt,updatedAt" "$GH_RUN_STUB_LOG"
+    grep -qx "run list --event pull_request --status success --limit 50 --json workflowName,startedAt,updatedAt" "$GH_RUN_STUB_LOG"
     jq -e '.ci_wait_ceiling_seconds == 660' "$WT/.devflow-tmp/prerun-setup.json"
 
     unset GH_RUN_STUB_FIXTURE

@@ -594,16 +594,17 @@ comment_json() {
 }
 
 # ---- CI 待ちの上限（ci_wait_ceiling_seconds。issue #1046） ----
-# 上限の求め方（p90 + 60 秒・300〜900 秒・5 件未満は 300）は ci-wait-ceiling.bats が見る。ここは配線だけ。
+# 上限の求め方（workflow ごとの p90 の最大 + 60 秒・300〜900 秒・5 件以上の workflow が無ければ 300）は
+# ci-wait-ceiling.bats が見る。ここは配線だけ。
 
-@test "(5i) PR の base branch の成功 run から ci_wait_ceiling_seconds を出す" {
+@test "(5i) repo の PR で走った成功 run から ci_wait_ceiling_seconds を出す" {
     export GH_RUN_STUB_FIXTURE="$BATS_TEST_TMPDIR/runs.json"
-    jq -nc '[range(5) | {startedAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:07:35Z"}]' >"$GH_RUN_STUB_FIXTURE"
+    jq -nc '[range(5) | {workflowName: "CI", startedAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:07:35Z"}]' >"$GH_RUN_STUB_FIXTURE"
     cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .ci_wait_ceiling_seconds == 515'
-    grep -qx "run list --branch main --status success --limit 20 --json startedAt,updatedAt --repo acme/skills" "$GH_STUB_LOG"
+    grep -qx "run list --event pull_request --status success --limit 50 --json workflowName,startedAt,updatedAt --repo acme/skills" "$GH_STUB_LOG"
 }
 
 @test "(5j) gh run list の失敗・PR を読めない ok:false でも ci_wait_ceiling_seconds は 300" {
