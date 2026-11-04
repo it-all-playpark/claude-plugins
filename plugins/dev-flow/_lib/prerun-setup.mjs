@@ -164,8 +164,9 @@ export function normalizePrTitleFormat(raw) {
   return raw.trim();
 }
 
-// ci_verify（issue #861）: prerun が worktree の skill-config.json / .claude/skill-config.json（前者優先）から読んだ
-// "dev-flow".ci_verify。sandbox 内で実行できない検証（E2E 等）を CI のどの check で判定するかを repo が宣言する。
+// ci_verify（issue #861）: prerun が _shared/scripts/devflow-config.sh で、解決した base の origin/<base> の
+// skill-config.json → .claude/skill-config.json → user 設定の順に読んだ "dev-flow".ci_verify（worktree とメイン checkout の
+// 作業ツリーの設定は読まない — 実装が書き換えた宣言を判定に使わない）。sandbox 内で実行できない検証（E2E 等）を CI のどの check で判定するかを repo が宣言する。
 //   label: AC に ci があれば PR に付けるラベル（CI がこのラベルで対象 job を回す）
 //   checks: LGTM 後に完了を待つ check 名（gh pr checks の name）
 //   commands: AC の inline code がこれに当たれば actor を ci にする（_lib/ac-actor.mjs の matchesCiVerify）

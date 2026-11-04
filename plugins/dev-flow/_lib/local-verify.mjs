@@ -12,7 +12,7 @@
 //
 // AC コマンド（issue #1208）: 観測型 AC のうち、AC 自体が inline code で指定したコマンド（_lib/ac-actor.mjs の freezeAcVerify が
 // analyze ゲートで凍結した verify_command / expect_paths）も同じ local-verify で sandbox 内で実行する（db の無い宣言 —
-// pg-broker を呼ばない。宣言は --config-pct で渡し、worktree の宣言とは突き合わせない）。
+// pg-broker を呼ばない。宣言は --config-pct で渡す）。
 // 結果は差し戻し（判定を厳しくする側）と開示だけに使い、AC の達成判定と merge tier は変えない — 実行される script・
 // build 設定・テストは PR が書き換えられるので、exit 0 で ac_human_pending の HOLD を外すと PR の内容で gate を誘導できる
 // （incentive-structural）。
@@ -38,7 +38,7 @@ export const LOCAL_VERIFY_STATE_DIR = '.devflow-tmp/local-verify'
 
 // local-verify start の --config-pct に渡す値。Setup 時に検証した宣言（normalizeLocalVerify の結果）を JSON にして
 // percent-encoding し、shell のクォートが要らない文字（英数字と . _ - %）だけの 1 トークンにする。
-// local-verify はこれを宣言として使い、worktree の宣言（実装で書き換えられうる）が一致しなければ error を返す。
+// local-verify はこれだけを宣言として使い、worktree の設定ファイル（実装で書き換えられうる）は読まない。
 export function localVerifyConfigArg(cfg) {
   return encodeURIComponent(JSON.stringify(cfg)).replace(/[!'()*~]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
 }

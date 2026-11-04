@@ -111,8 +111,9 @@ opt-in（`"dev-flow".security_reviewer = "codex"`）。
 ```
 /pr-iterate     → pr-iterate-prerun が base branch（origin/<base>）の skill-config.json / .claude/skill-config.json、無ければ user 設定
                   （$SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）から読み、
-                  args.security_review.reviewer で渡す（PR head の設定ファイルは読まない。無ければ "claude"）
-/dev-flow       → dev-flow-prerun が同じ規則（_shared/scripts/security-reviewer-config.sh を共有）で解決した base から読み、
+                  args.security_review.reviewer で渡す（PR head（worktree）とメイン checkout の作業ツリーの設定ファイルは
+                  読まない。無ければ "claude"。読み先は dev-flow の他の repo 設定と共通の _shared/scripts/devflow-config.sh）
+/dev-flow       → dev-flow-prerun が同じ規則（devflow-config.sh を共有）で解決した base から読み、
                   setup.security_reviewer に載せる（claude / codex 以外・欠落は prerun-setup.mjs が明示 error）
                   → prIterateArgs() が nested pr-iterate の args.security_review.reviewer で渡す
 pr-iterate      → security-pr-head#i（security-codex-relay）: `gh pr view <PR> --repo <repo> --json baseRefOid,headRefOid`

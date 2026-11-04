@@ -147,7 +147,7 @@ make_issue_fixture() {
 }
 
 # ---- (1e) security review を回す CLI の opt-in（security_reviewer。issue #1125） ----
-# 読む場所と優先順の細部は _shared/scripts/pr-iterate-prerun.bats の (8) が見る（同じ security-reviewer-config.sh）。ここは配線だけ。
+# 読む場所と優先順の細部は _shared/scripts/devflow-config.bats が見る。ここは配線だけ。
 
 @test "(1e) 解決した base にも user 設定にも opt-in が無ければ security_reviewer は claude" {
     cd "$ROOT"
@@ -619,9 +619,10 @@ JSON
     echo "$output" | jq -e '.stack.test_runners[1] == {runner: "pytest", accept: ["test_*.py","*_test.py"], exclude: [], command: "pytest <files>"}'
 }
 
-# ---- (10c) ci_verify / local_verify: worktree の skill-config の "dev-flow".<key> を verbatim で渡す (issue #861 / #863) ----
+# ---- (10c) ci_verify / local_verify / pr_title_format: origin/<base> の skill-config の "dev-flow".<key> を verbatim で渡す (issue #861 / #863 / #1214) ----
+# 読む場所と優先順の細部は _shared/scripts/devflow-config.bats が見る。ここは配線だけ。
 
-@test "(10c) .claude/skill-config.json の \"dev-flow\".ci_verify / local_verify / pr_title_format -> 同名キーに verbatim、無ければ null" {
+@test "(10c) origin/<base> の .claude/skill-config.json の \"dev-flow\".ci_verify / local_verify / pr_title_format -> 同名キーに verbatim、無ければ null" {
     cd "$ROOT"
     run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
@@ -641,6 +642,34 @@ JSON
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ci_verify == {"label":"full-ci","checks":["e2e"],"commands":["pnpm test:e2e:local"],"wait_ceiling_seconds":1500}'
     echo "$output" | jq -e '.local_verify == {"command":"pnpm test:e2e:local","db":{"engine":"postgres","version":"17"},"env":"E2E_EXTERNAL_DATABASE_URL","timeout_seconds":1500}'
+    echo "$output" | jq -e '.pr_title_format == "#{issue} {title}"'
+}
+
+@test "(10d) 独自コミットで ci_verify を書き換えた再利用 worktree から起動しても、ci_verify / local_verify / pr_title_format は origin/<base> の値" {
+    git -C "$SEED" checkout -q dev
+    echo '{"dev-flow":{"pr_title_format":"#{issue} {title}","ci_verify":{"label":"full-ci","checks":["e2e"],"commands":[],"wait_ceiling_seconds":1500},"local_verify":{"command":"pnpm test:e2e:local","db":{"engine":"postgres","version":"17"},"env":"E2E_EXTERNAL_DATABASE_URL","timeout_seconds":1500}}}' > "$SEED/skill-config.json"
+    git -C "$SEED" add skill-config.json
+    git -C "$SEED" commit -q -m "add ci_verify"
+    git -C "$SEED" push -q origin dev
+
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .worktree_status == "created"'
+
+    # 前の run の実装が設定を書き換えて commit した（fast_forward_reused は独自コミットのある worktree を進めない）
+    echo '{"dev-flow":{"pr_title_format":"evil {title}","ci_verify":{"label":"none","checks":["noop"],"commands":[],"wait_ceiling_seconds":1},"local_verify":{"command":"true","db":{"engine":"postgres","version":"17"},"env":"E2E_EXTERNAL_DATABASE_URL","timeout_seconds":1}}}' > "$WT/skill-config.json"
+    git -C "$WT" -c user.name=Test -c user.email=test@example.com commit -q -am "rewrite ci_verify"
+    mkdir -p "$WT/.claude"
+    cp "$WT/skill-config.json" "$WT/.claude/skill-config.json"
+    cp "$WT/skill-config.json" "$ROOT/skill-config.json"
+
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .worktree_status == "reused"'
+    jq -e '."dev-flow".ci_verify.label == "none"' "$WT/skill-config.json"
+    echo "$output" | jq -e '.ci_verify == {"label":"full-ci","checks":["e2e"],"commands":[],"wait_ceiling_seconds":1500}'
+    echo "$output" | jq -e '.local_verify.command == "pnpm test:e2e:local" and .local_verify.timeout_seconds == 1500'
     echo "$output" | jq -e '.pr_title_format == "#{issue} {title}"'
 }
 
