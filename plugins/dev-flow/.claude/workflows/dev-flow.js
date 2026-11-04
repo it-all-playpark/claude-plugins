@@ -266,6 +266,7 @@ function validatePrerunSetup(raw, issue) {
   const testRunners = raw.stack.test_runners.map((r) => ({ runner: r.runner, accept: [...r.accept], exclude: [...r.exclude], command: r.command }));
   const ciVerify = normalizeCiVerify(raw.ci_verify);
   const localVerify = normalizeLocalVerify(raw.local_verify);
+  const prTitleFormat = normalizePrTitleFormat(raw.pr_title_format);
 
   return {
     base: raw.base.trim(),
@@ -283,7 +284,21 @@ function validatePrerunSetup(raw, issue) {
     security_reviewer: raw.security_reviewer,
     ci_verify: ciVerify,
     local_verify: localVerify,
+    pr_title_format: prTitleFormat,
   };
+}
+
+function normalizePrTitleFormat(raw) {
+  if (raw == null) return null;
+  const fail = (why) => {
+    throw new Error(`dev-flow: skill-config の "dev-flow".pr_title_format が不正（${why}。受信: ${stringifyForError(raw)}）— {prefix} / {type} / {scope} / {title} / {issue} を差し込める 1 行の文字列（{title} 必須）に直してから再実行せよ`);
+  };
+  if (!isNonEmptyString(raw)) fail('空でない文字列でない');
+  if (/[\r\n]/.test(raw)) fail('改行を含む');
+  if (!raw.includes('{title}')) fail('{title} が無い');
+  const unknown = (raw.match(/\{[^{}]*\}/g) ?? []).filter((p) => !['{prefix}', '{type}', '{scope}', '{title}', '{issue}'].includes(p));
+  if (unknown.length) fail(`未知の差し込み ${unknown.join(' ')}`);
+  return raw.trim();
 }
 
 function normalizeCiVerify(raw) {
@@ -4545,13 +4560,15 @@ function scopeFromPaths(paths) {
   return common.length ? common[common.length - 1] : null;
 }
 
-function buildCommitMessage({ issue, req, plan }) {
+function buildCommitMessage({ issue, req, plan, titleFormat = null }) {
   const rawTitle = str(req?.issue_title).trim();
   const m = CONVENTIONAL_PREFIX_RE.exec(rawTitle);
   const type = str(req?.issue_type).trim() || (m ? m[1] : '') || 'chore';
   const scope = (m && m[2] ? m[2].trim() : '') || scopeFromPaths(planPaths(plan)) || '';
   const title = m ? m[3].trim() : rawTitle;
-  const subject = `${type}${scope ? `(${scope})` : ''}: ${title} (#${issue})`;
+  const fields = { prefix: `${type}${scope ? `(${scope})` : ''}`, type, scope, title, issue: String(issue) };
+  const subject = collapseWhitespace(str(titleFormat || '{prefix}: {title} (#{issue})')
+    .replace(/\{(prefix|type|scope|title|issue)\}/g, (_, k) => fields[k]));
   const body = str(plan?.summary).trim();
   return body ? `${subject}\n\n${body}\n` : `${subject}\n`;
 }
@@ -7278,7 +7295,7 @@ phase('PR')
 // dev-runner-haiku は本文を `.devflow-tmp/` へ verbatim 保存 → bare 単文 git add / commit -F / push /
 // gh pr create の転写のみを担う。材料は全て state にあり、LLM に diff を読み直させて本文を再生成させる
 // 理由がない（agent 側の要約・判断を挟まない転写契約）。
-const prCommitMessage = buildCommitMessage({ issue: ISSUE, req, plan: state.plan })
+const prCommitMessage = buildCommitMessage({ issue: ISSUE, req, plan: state.plan, titleFormat: PRERUN.pr_title_format })
 // PR body の danger-grep 行は {class, file} の hit 単位で出す。state.dangerHits はクラス名 string[]
 // （security_focus / telemetry 用）なので渡さない。
 const prBody = buildPrBody({

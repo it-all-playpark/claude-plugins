@@ -101,6 +101,23 @@ test('[pr-artifacts] commit message: 共通 dir が無ければ scope 無し、i
   assert.equal(buildCommitMessage({ issue: 3, req: req({ issue_type: undefined, issue_title: 'tidy' }), plan: p }).split('\n')[0], 'chore: tidy (#3)');
 });
 
+test('[pr-artifacts] commit message: titleFormat（repo の pr_title_format）があれば subject をそのテンプレートで組む', () => {
+  assert.equal(
+    buildCommitMessage({ ...INPUT, titleFormat: '#{issue} {title}' }),
+    `#642 PR phase を純関数で生成する\n\n${plan().summary}\n`,
+  );
+  assert.equal(
+    buildCommitMessage({ ...INPUT, titleFormat: '[{type}/{scope}] {title} ({prefix})' }).split('\n')[0],
+    '[refactor/dev-flow] PR phase を純関数で生成する (refactor(dev-flow))',
+  );
+  // scope が空でも空白は詰める
+  const p = plan({ serial: [{ id: 'a', desc: 'd', file_changes: ['src/a.ts'] }, { id: 'b', desc: 'd', file_changes: ['tests/b.ts'] }] });
+  assert.equal(
+    buildCommitMessage({ issue: 5, req: req({ issue_type: 'fix', issue_title: '直す' }), plan: p, titleFormat: '{type} {scope} {title}' }).split('\n')[0],
+    'fix 直す',
+  );
+});
+
 test('[pr-artifacts] commit message: 同一入力 → 同一出力（決定論）', () => {
   assert.equal(buildCommitMessage(INPUT), buildCommitMessage(structuredClone(INPUT)));
 });

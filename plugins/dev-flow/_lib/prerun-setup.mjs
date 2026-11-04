@@ -18,6 +18,7 @@
 //   受理パターン。redgreen-verify と同じ判定元）を evaluator prompt に注入する test_files の受理条件の文に整形する純関数。
 // normalizeCiVerify: prerun の ci_verify（repo の CI 判定の宣言。null は未設定）を検証・正規化する純関数。
 // normalizeLocalVerify: prerun の local_verify（ci の AC をローカル実行で判定する宣言。null は未設定）を検証・正規化する純関数。
+// normalizePrTitleFormat: prerun の pr_title_format（commit subject = PR タイトルのテンプレート。null は未設定）を検証する純関数。
 // analyze: prerun の analyze 段の結果（{ok, ...}）。ok:true の中身の whitelist 検証は
 //   buildReqFromContract（_lib/analyze-contract.mjs）が担い、ここでは object / ok boolean /
 //   ok:false のときの reason string だけを fail-closed に検証して verbatim で返す。
@@ -123,6 +124,7 @@ export function validatePrerunSetup(raw, issue) {
   const testRunners = raw.stack.test_runners.map((r) => ({ runner: r.runner, accept: [...r.accept], exclude: [...r.exclude], command: r.command }));
   const ciVerify = normalizeCiVerify(raw.ci_verify);
   const localVerify = normalizeLocalVerify(raw.local_verify);
+  const prTitleFormat = normalizePrTitleFormat(raw.pr_title_format);
 
   return {
     base: raw.base.trim(),
@@ -140,7 +142,26 @@ export function validatePrerunSetup(raw, issue) {
     security_reviewer: raw.security_reviewer,
     ci_verify: ciVerify,
     local_verify: localVerify,
+    pr_title_format: prTitleFormat,
   };
+}
+
+// pr_title_format: prerun が ci_verify と同じファイルから読んだ "dev-flow".pr_title_format。commit subject（= PR タイトル）
+// の形は参画先の repo の規約で違う（`#<番号> <説明>` 等）ので repo が宣言する。差し込みは
+// `{prefix}`（`type(scope)` か `type`）・`{type}`・`{scope}`・`{title}`・`{issue}`。埋めるのは _lib/pr-artifacts.mjs の buildCommitMessage。
+// null / 欠落は未設定（既定の `{prefix}: {title} (#{issue})`）。`{title}` が無い・未知の `{...}`・改行入りは fail-closed で
+// throw する — 黙って既定に倒すと repo の規約に合わない PR を作り続け、誤記に気付けないため。
+export function normalizePrTitleFormat(raw) {
+  if (raw == null) return null;
+  const fail = (why) => {
+    throw new Error(`dev-flow: skill-config の "dev-flow".pr_title_format が不正（${why}。受信: ${stringifyForError(raw)}）— {prefix} / {type} / {scope} / {title} / {issue} を差し込める 1 行の文字列（{title} 必須）に直してから再実行せよ`);
+  };
+  if (!isNonEmptyString(raw)) fail('空でない文字列でない');
+  if (/[\r\n]/.test(raw)) fail('改行を含む');
+  if (!raw.includes('{title}')) fail('{title} が無い');
+  const unknown = (raw.match(/\{[^{}]*\}/g) ?? []).filter((p) => !['{prefix}', '{type}', '{scope}', '{title}', '{issue}'].includes(p));
+  if (unknown.length) fail(`未知の差し込み ${unknown.join(' ')}`);
+  return raw.trim();
 }
 
 // ci_verify（issue #861）: prerun が worktree の skill-config.json / .claude/skill-config.json（前者優先）から読んだ

@@ -46,6 +46,9 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    `pr-iterate-prerun` と同じ規則（base branch の設定 → user 設定、worktree の設定は読まない、無ければ `"claude"`）で読む。
    `claude` / `codex` 以外は `dev-flow-run` が明示 error で止める。security review の守る要件と境界・経路は
    `references/security-review.md`。
+   `pr_title_format` は PR タイトル（= commit subject）のテンプレート（`"dev-flow".pr_title_format`。worktree の
+   skill-config.json から読む）。既定は `{prefix}: {title} (#{issue})`、例 `"#{issue} {title}"`。差し込みは `{prefix}`
+   （`type(scope)` か `type`）・`{type}`・`{scope}`・`{title}`（必須）・`{issue}` で、不正な値は `dev-flow-run` が明示 error で止める。
    書けないパス（`.githooks` 等）を追跡する repo で full checkout が失敗したら、取り出せるパスだけを取り出して
    取り出せないパスに skip-worktree を付ける（`skip_worktree` に列挙）。再利用する worktree に未ステージの削除
    （部分 checkout）が残っていれば `ok:false`（手順 (c)）。

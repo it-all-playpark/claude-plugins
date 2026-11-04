@@ -64,16 +64,21 @@ function scopeFromPaths(paths) {
   return common.length ? common[common.length - 1] : null;
 }
 
-// commit message: `<type>(<scope>): <title> (#<issue>)` + 空行 + plan.summary。末尾改行付き
-// （`git commit -F` 用）。type は req.issue_type > title の prefix > 'chore'、scope は title の
-// prefix > plan.file_changes の共通 dir > 無し。
-export function buildCommitMessage({ issue, req, plan }) {
+// commit message: subject + 空行 + plan.summary。末尾改行付き（`git commit -F` 用）。subject は PR タイトルにもなる。
+// subject の既定は `<type>(<scope>): <title> (#<issue>)`。repo が skill-config の "dev-flow".pr_title_format
+// （検証済みのテンプレート。_lib/prerun-setup.mjs の normalizePrTitleFormat）を宣言していれば titleFormat で受け、
+// `{prefix}`（`type(scope)` か `type`）・`{type}`・`{scope}`・`{title}`・`{issue}` を埋めて subject にする。
+// type は req.issue_type > title の prefix > 'chore'、scope は title の prefix > plan.file_changes の共通 dir > 無し。
+// title は issue title から Conventional prefix を外したもの。
+export function buildCommitMessage({ issue, req, plan, titleFormat = null }) {
   const rawTitle = str(req?.issue_title).trim();
   const m = CONVENTIONAL_PREFIX_RE.exec(rawTitle);
   const type = str(req?.issue_type).trim() || (m ? m[1] : '') || 'chore';
   const scope = (m && m[2] ? m[2].trim() : '') || scopeFromPaths(planPaths(plan)) || '';
   const title = m ? m[3].trim() : rawTitle;
-  const subject = `${type}${scope ? `(${scope})` : ''}: ${title} (#${issue})`;
+  const fields = { prefix: `${type}${scope ? `(${scope})` : ''}`, type, scope, title, issue: String(issue) };
+  const subject = collapseWhitespace(str(titleFormat || '{prefix}: {title} (#{issue})')
+    .replace(/\{(prefix|type|scope|title|issue)\}/g, (_, k) => fields[k]));
   const body = str(plan?.summary).trim();
   return body ? `${subject}\n\n${body}\n` : `${subject}\n`;
 }
