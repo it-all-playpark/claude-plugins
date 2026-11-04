@@ -129,23 +129,8 @@ RECOVERY_STEPS_FOR() {
 # 数分が duration_seconds から抜け、着手前後の journal 比較が同条件でなくなる
 epoch="$(date +%s)"
 
-repo=""
-ORIGIN_URL="$(git -C "$ROOT" remote get-url origin 2>/dev/null)" || ORIGIN_URL=""
-REPO_BODY=""
-if [[ "$ORIGIN_URL" =~ ^https://github\.com/(.+)$ ]]; then
-    REPO_BODY="${BASH_REMATCH[1]}"
-elif [[ "$ORIGIN_URL" =~ ^git@github\.com:(.+)$ ]]; then
-    REPO_BODY="${BASH_REMATCH[1]}"
-elif [[ "$ORIGIN_URL" =~ ^ssh://git@github\.com/(.+)$ ]]; then
-    REPO_BODY="${BASH_REMATCH[1]}"
-fi
-if [[ -n "$REPO_BODY" ]]; then
-    REPO_BODY="${REPO_BODY%/}"
-    REPO_BODY="${REPO_BODY%.git}"
-    if [[ "$REPO_BODY" =~ ^([^/]+)/([^/]+)$ ]]; then
-        repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-    fi
-fi
+# repo 設定の repo 別の節（devflow-config.sh）を引くのと同じ <owner>/<repo>
+repo="$(devflow_origin_repo "$ROOT")"
 
 # plugin_commit: 実行中の dev-flow plugin の commit（12 桁 hex）。telemetry 記録専用で gate の入力にしない。
 # 決められなければ null（fail-open）
@@ -197,8 +182,8 @@ if [[ "$BASE_OK" == true ]]; then
     ci_wait_ceiling_seconds="$(ci_wait_ceiling "$repo")"
 fi
 
-# repo 設定 "dev-flow".<key> は devflow-config.sh（pr-iterate-prerun と共通）で、解決した base の origin/<base> と
-# user 設定から verbatim で読む。worktree（PR head になる作業ツリー）とメイン checkout の作業ツリーの設定ファイルは読まない
+# repo 設定 "dev-flow".<key> は devflow-config.sh（pr-iterate-prerun と共通）で、user 設定の repo 別の節・解決した base の
+# origin/<base>・user 設定から verbatim で読む。worktree（PR head になる作業ツリー）とメイン checkout の作業ツリーの設定ファイルは読まない
 # — 再利用 worktree に前の run の実装が書き換えた設定が残っていても、それを次の run の判定条件にしない。
 #   security_reviewer: nested pr-iterate の security review を回す CLI の opt-in（無ければ "claude"。security-reviewer-config.sh）
 #   ci_verify: sandbox 内で実行できない検証を CI のどの check で判定するかの宣言（issue #861）

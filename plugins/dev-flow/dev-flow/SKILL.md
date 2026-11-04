@@ -43,10 +43,21 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    決定論 parse + Jev 有界判定）・framework 検出を 1 コマンドで行い、`ok:true` なら同じ JSON を
    `<worktree>/.devflow-tmp/prerun-setup.json` にも書く。deps install はしない（手順2b）。
    repo 設定（`"dev-flow"` の `ci_verify` / `local_verify` / `pr_title_format` / `security_reviewer`）は、すべて
-   `pr-iterate-prerun` と共通の `_shared/scripts/devflow-config.sh` で、解決した base の `origin/<base>` の
-   `skill-config.json` → `.claude/skill-config.json` → user 設定の順に読む。worktree（PR head）とメイン checkout の
-   作業ツリーの設定ファイルは読まない（実装が書き換えた設定を次の run の判定条件にしない。設定を変える issue の
-   新しい宣言は merge 後の run から効く）。
+   `pr-iterate-prerun` と共通の `_shared/scripts/devflow-config.sh` で、キーごとに (1) user 設定の repo 別の節
+   `"dev-flow".repos["<owner>/<repo>"].<key>` → (2) 解決した base の `origin/<base>` の `skill-config.json` →
+   `.claude/skill-config.json` → (3) user 設定の `"dev-flow".<key>` の順に読み、最初に null でない値を使う。user 設定は
+   `$SKILL_CONFIG_PATH` → `~/.config/skills/config.json` → `~/.claude/skill-config.json`（(1) と (3) はそれぞれこのファイルの順）。
+   worktree（PR head）とメイン checkout の作業ツリーの設定ファイルは読まない（実装が書き換えた設定を次の run の
+   判定条件にしない。設定を変える issue の新しい宣言は merge 後の run から効く）。
+   repo に設定をコミットしない repo（顧客の repo 等）は、user 設定の repo 別の節に書く（repo に置く gitignore 済みの
+   ファイルは作業ツリーにあり PR のコードから書けるので使わない）。`<owner>/<repo>` は起動元の
+   メイン checkout の `origin` の URL（`https://github.com/` / `git@github.com:` / `ssh://git@github.com/`）から決め、
+   大文字・小文字を区別せずに照合する（決められなければ (1) は読まない）。`repos` と節が object でなければ未設定、
+   値の検証は repo に書いたときと同じ:
+   ```json
+   {"dev-flow": {"repos": {"acme/app": {"security_reviewer": "codex", "pr_title_format": "#{issue} {title}",
+     "local_verify": {"command": "pnpm test:e2e:local", "db": {"engine": "postgres", "version": "17"}, "env": "E2E_EXTERNAL_DATABASE_URL", "timeout_seconds": 1500}}}}}
+   ```
    `security_reviewer` は nested pr-iterate の security review を回す CLI の opt-in（`"dev-flow".security_reviewer`。
    無ければ `"claude"`）。`claude` / `codex` 以外は `dev-flow-run` が明示 error で止める。security review の守る要件と境界・経路は
    `references/security-review.md`。

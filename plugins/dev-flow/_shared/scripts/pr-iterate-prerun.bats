@@ -742,6 +742,20 @@ comment_json() {
     echo "$output" | jq -e '.ok == true and .security_review.reviewer == "gemini"'
 }
 
+@test "(8f) user 設定の repo 別の節（\"dev-flow\".repos[\"<owner>/<repo>\"]）の opt-in を base branch より優先する" {
+    # 起動元のメイン checkout の origin の URL は GitHub の形にし、fetch は insteadOf で bare origin に向ける
+    git -C "$ROOT" remote set-url origin https://github.com/acme/app.git
+    git -C "$ROOT" config url."$ORIGIN".insteadOf https://github.com/acme/app.git
+    commit_reviewer_config main skill-config.json claude
+    mkdir -p "$HOME/.claude"
+    jq -n '{"dev-flow": {repos: {"acme/other": {security_reviewer: "gemini"}, "acme/app": {security_reviewer: "codex"}}}}' \
+        > "$HOME/.claude/skill-config.json"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "codex"'
+}
+
 # ---- (9) 人が決めた修正方針（--direction。issue #1122）----
 
 @test "(9a) --direction のファイルを launch dir で読み、本文を加工せずに fix_direction に載せる（無ければ・ok:false では載せない）" {

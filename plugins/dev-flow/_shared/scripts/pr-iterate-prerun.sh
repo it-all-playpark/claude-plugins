@@ -51,7 +51,7 @@
 #   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。repo の PR で走った成功 run の workflow ごとの所要時間から
 #     決める（ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
 #   security_review: 敵対的 security review の起動時の判定 {target, reasons, reviewer_context_changed, reviewer}。reviewer は review を回す
-#     CLI の opt-in（"dev-flow".security_reviewer。devflow-config.sh で PR の base の origin/<base> か user 設定から読み、
+#     CLI の opt-in（"dev-flow".security_reviewer。devflow-config.sh で user 設定の repo 別の節・PR の base の origin/<base>・user 設定から読み、
 #     PR head・メイン checkout の作業ツリーの設定は読まない。
 #     無ければ "claude"。ok:false の早期終端では載せない — workflow は省略を "claude" として扱う）。origin/<base>...<PR head> の diff を
 #     security-review-scope.sh で判定し、全ファイルが許可リストに当たるときだけ target:false。判定できない（ok:false の
