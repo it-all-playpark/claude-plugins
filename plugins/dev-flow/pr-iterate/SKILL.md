@@ -65,8 +65,8 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - PR 全体（`origin/<base>...<PR head>`）の diff が敵対的 security review の対象かを決定論の許可リストで判定し、
      `security_review`（`{target, reasons, reviewer_context_changed, reviewer}`）に載せる。判定できないときは `target:true`・
      `reviewer_context_changed:true`。`reviewer` は review を回す CLI の opt-in（`"dev-flow".security_reviewer`。dev-flow と共通の
-     `_shared/scripts/devflow-config.sh` で、PR の base の `origin/<base>` の `skill-config.json` → `.claude/skill-config.json`
-     → user 設定の順に読み、PR head（worktree）とメイン checkout の作業ツリーの設定は読まない。無ければ `"claude"`）
+     `_shared/scripts/devflow-config.sh` で、user 設定の repo 別の節 → PR の base の `origin/<base>` の `skill-config.json` →
+     `.claude/skill-config.json` → user 設定の順に読み（書き方は `dev-flow/SKILL.md`）、PR head（worktree）とメイン checkout の作業ツリーの設定は読まない。無ければ `"claude"`）
    - 実行中の dev-flow plugin の commit（12 桁 hex）を `dev-flow-prerun` と同じ方法で決め、`plugin_commit` に載せる
      （決められなければ null）。journal entry の世代の記録専用
    - 同じ `gh pr view` で PR の title と body を取り、`pr_intent`（`{title, body, body_omitted}`）に載せる（`ok:false` では載せない）。

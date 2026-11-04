@@ -673,6 +673,30 @@ JSON
     echo "$output" | jq -e '.pr_title_format == "#{issue} {title}"'
 }
 
+@test "(10e) user 設定の repo 別の節（\"dev-flow\".repos[\"<owner>/<repo>\"]）の値が ci_verify / local_verify / pr_title_format / security_reviewer に入る" {
+    # origin の URL は GitHub の形にし、fetch は insteadOf で bare origin に向ける
+    git -C "$ROOT" remote set-url origin https://github.com/acme/app.git
+    git -C "$ROOT" config url."$ORIGIN".insteadOf https://github.com/acme/app.git
+    commit_reviewer_config dev claude
+    mkdir -p "$HOME/.claude"
+    jq -n '{"dev-flow": {security_reviewer: "claude", pr_title_format: "{title}", repos: {
+        "acme/other": {security_reviewer: "claude", pr_title_format: "other {title}"},
+        "acme/app": {security_reviewer: "codex", pr_title_format: "#{issue} {title}",
+            ci_verify: {label: "full-ci", checks: ["e2e"], commands: [], wait_ceiling_seconds: 1500},
+            local_verify: {command: "pnpm test:e2e:local", db: {engine: "postgres", version: "17"}, env: "E2E_EXTERNAL_DATABASE_URL", timeout_seconds: 1500}}}}}' \
+        > "$HOME/.claude/skill-config.json"
+
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .repo == "acme/app" and .base == "dev"'
+    echo "$output" | jq -e '.security_reviewer == "codex"'
+    echo "$output" | jq -e '.pr_title_format == "#{issue} {title}"'
+    echo "$output" | jq -e '.ci_verify == {"label":"full-ci","checks":["e2e"],"commands":[],"wait_ceiling_seconds":1500}'
+    echo "$output" | jq -e '.local_verify == {"command":"pnpm test:e2e:local","db":{"engine":"postgres","version":"17"},"env":"E2E_EXTERNAL_DATABASE_URL","timeout_seconds":1500}'
+    jq -e '.security_reviewer == "codex" and .pr_title_format == "#{issue} {title}"' "$WT/.devflow-tmp/prerun-setup.json"
+}
+
 # ---- (11) 引数エラー ----
 
 @test "(11a) --issue 欠落 -> exit 2, stdout空" {

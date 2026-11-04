@@ -109,8 +109,11 @@ Merge tier      → 対象（Diff triage か pr-iterate のどちらか）かつ
 opt-in（`"dev-flow".security_reviewer = "codex"`）。
 
 ```
-/pr-iterate     → pr-iterate-prerun が base branch（origin/<base>）の skill-config.json / .claude/skill-config.json、無ければ user 設定
-                  （$SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）から読み、
+/pr-iterate     → pr-iterate-prerun が (1) user 設定（$SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json の順）の
+                  repo 別の節 "dev-flow".repos["<owner>/<repo>"].security_reviewer（<owner>/<repo> は起動元のメイン checkout の origin の
+                  URL から決め、大文字・小文字を区別せずに照合。例 {"dev-flow": {"repos": {"acme/app": {"security_reviewer": "codex"}}}}）、
+                  (2) base branch（origin/<base>）の skill-config.json / .claude/skill-config.json、(3) user 設定の
+                  "dev-flow".security_reviewer の順に読み、
                   args.security_review.reviewer で渡す（PR head（worktree）とメイン checkout の作業ツリーの設定ファイルは
                   読まない。無ければ "claude"。読み先は dev-flow の他の repo 設定と共通の _shared/scripts/devflow-config.sh）
 /dev-flow       → dev-flow-prerun が同じ規則（devflow-config.sh を共有）で解決した base から読み、
