@@ -5,8 +5,8 @@ bats_require_minimum_version 1.5.0
 # Focus: the pre-flight AC lint gate (lint_ac()) invoked at the top of run(),
 # exercised only through the --dry-run path so `gh` is never required, plus the
 # --kind agent|human gate (incl. the agent `## 変更対象パス` gate, tests 20+, and the
-# 4000-char non-AC body cap pinned to analyze-issue.sh's scope_total_chars, tests 27+, and the
-# AC actor gate delegated to _lib/scripts/ac-actor-classify.mjs, tests 32+) and
+# 4000-char prose cap excluding the AC section and closed code fence contents, tests 27-31 and 42+, and the
+# AC actor gate delegated to _lib/scripts/ac-actor-classify.mjs, tests 32-41) and
 # --blocked-by dependency wiring (tests 5+; the non-dry-run ones put a recording
 # gh stub first on PATH).
 #
@@ -513,7 +513,7 @@ write_paths_body() {
     [[ "$output" == *"Dry run: issue will not be created."* ]]
 }
 
-# ---- --kind agent: AC 節を除いた本文の 4000 字上限（analyze-issue.sh の scope_total_chars と同じ数え方）----
+# ---- --kind agent: AC 節と閉じたコードフェンスの中身を除いた本文の 4000 字上限（AC 節の境界は analyze-issue.sh と同じ）----
 
 # repeat_char <char> <n>: <char> を n 個並べる
 repeat_char() {
@@ -553,7 +553,8 @@ write_scope_body() {
     run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
-    [[ "$stderr" == *"（AC 節を除く）が 4001 字"*"上限 4000 字を 1 字超えている"* ]]
+    [[ "$stderr" == *"（AC 節と閉じたコードフェンスの中身を除く）が 4001 字"*"上限 4000 字を 1 字超えている"* ]]
+    [[ "$stderr" == *"4000 字は本文の文章をゴールと境界条件に絞るための上限"*"閉じていないフェンスの中身は文章として数える"* ]]
     [[ "$stderr" == *"要点を絞って書き直す"* ]]
     [[ "$output" != *"Dry run: issue will not be created."* ]]
 }
@@ -566,7 +567,7 @@ write_scope_body() {
 
     [ "$status" -eq 1 ]
     # "Blocked by #12\n\n" の 16 字が加わる
-    [[ "$stderr" == *"（AC 節を除く）が 4016 字"* ]]
+    [[ "$stderr" == *"を除く）が 4016 字"* ]]
 }
 
 @test "(30) 4000 字超の本文（非 dry-run）-> exit 1、gh issue create を呼ばない" {
@@ -581,16 +582,17 @@ write_scope_body() {
     ! grep -q '^issue create' "$GH_LOG"
 }
 
-@test "(31) 字数は同じ本文で analyze-issue.sh の scope_total_chars と一致する（フェンス・AC 節の境界・マルチバイト）" {
+@test "(31) 字数は同じ本文の analyze-issue.sh の scope_total_chars から閉じたフェンスの中身を引いた値になる（AC 節の境界・マルチバイト）" {
     command -v jq >/dev/null || skip "jq not available"
     use_gh_stub
     ANALYZE="$SKILLS_REPO/dev-flow/scripts/analyze-issue.sh"
     BODY="$BATS_TEST_TMPDIR/body.md"
+    FENCED="# フェンス内のコメントは見出しではない"
     write_body "$BODY" \
         "## ゴール" \
         "  日本語のゴールと末尾の空白  " \
         '```bash' \
-        "# フェンス内のコメントは見出しではない" \
+        "$FENCED" \
         '```' \
         "## 受け入れ基準（Acceptance Criteria）" \
         "- [ ] AC-1 foo" \
@@ -611,13 +613,15 @@ write_scope_body() {
         >"$BATS_TEST_TMPDIR/issue.json"
     export GH_STUB_ISSUE_JSON="$BATS_TEST_TMPDIR/issue.json"
 
-    expected="$("$ANALYZE" 1 --contract | jq -r '.scope_total_chars')"
+    scope_total="$("$ANALYZE" 1 --contract | jq -r '.scope_total_chars')"
+    # フェンスの中身の 1 行とその改行
+    expected="$((scope_total - $(jq -rn --arg s "$FENCED" '$s | length') - 1))"
     [ "$expected" -gt 4000 ]
 
     run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
-    [[ "$stderr" == *"（AC 節を除く）が ${expected} 字"* ]]
+    [[ "$stderr" == *"を除く）が ${expected} 字"* ]]
 }
 
 # ---- --kind agent: dev-flow が人手扱いにする AC（_lib/ac-actor.mjs の classifyAcActor / mixedScopeAcReasons）----
@@ -797,4 +801,155 @@ STUB
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"JSON として読めない"* ]]
     [[ "$output" != *"Dry run: issue will not be created."* ]]
+}
+
+# ---- --kind agent: 字数検査はコードフェンスの外の文章だけを見る ----
+
+# write_fenced_body <file> <pad 字数>: 閉じたフェンスを 3 つの節に持つ agent 本文。フェンスの中身は各 5000 字で、
+#   中身を除いた字数は 95 + <pad 字数>（write_scope_body の 31 字 + 節の見出し・空行・フェンス行の 64 字）
+write_fenced_body() {
+    local content
+    content="$(repeat_char ん 5000)"
+    write_body "$1" \
+        "## 受け入れ基準" \
+        "- [ ] AC-1 foo" \
+        "" \
+        "## 変更対象パス" \
+        "- src/foo.py" \
+        "" \
+        "## ゴール" \
+        "$(repeat_char あ "$2")" \
+        "" \
+        "## 完成イメージ" \
+        '```html' \
+        "$content" \
+        '```' \
+        "" \
+        "## 制約・取らないこと" \
+        '~~~json' \
+        "$content" \
+        '~~~' \
+        "" \
+        "## なぜ" \
+        '```' \
+        "$content" \
+        '```'
+}
+
+@test "(42) 閉じたフェンスの中身はどの節でも言語を問わず数えない。それを除いて 4000 字ちょうど + --dry-run -> exit 0" {
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_fenced_body "$BODY" 3905
+
+    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Dry run: issue will not be created."* ]]
+}
+
+@test "(43) 閉じたフェンスの中身を除いて 4001 字（フェンスの外の文章は数える）+ --dry-run -> exit 1" {
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_fenced_body "$BODY" 3906
+
+    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"を除く）が 4001 字"*"上限 4000 字を 1 字超えている"* ]]
+    [[ "$output" != *"Dry run: issue will not be created."* ]]
+}
+
+# write_trailing_fence_body <file> <fence の後ろの行...>: "## ゴール\n" までの 31 字に続けて行を並べた agent 本文
+write_trailing_fence_body() {
+    local out="$1"
+    shift
+    write_body "$out" \
+        "## 受け入れ基準" \
+        "- [ ] AC-1 foo" \
+        "" \
+        "## 変更対象パス" \
+        "- src/foo.py" \
+        "" \
+        "## ゴール" \
+        "$@"
+}
+
+@test "(44) 閉じていないフェンスの中身は数える（31 + 開始行 8 字 + 中身 3961 字 = 4000 字は exit 0、1 字増やすと exit 1）" {
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_trailing_fence_body "$BODY" '```html' "$(repeat_char ん 3961)"
+
+    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    [ "$status" -eq 0 ]
+
+    write_trailing_fence_body "$BODY" '```html' "$(repeat_char ん 3962)"
+
+    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"を除く）が 4001 字"* ]]
+}
+
+@test "(45) 閉じたフェンスの後ろで閉じ忘れたフェンスは、後ろのフェンスの中身だけを数える" {
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_trailing_fence_body "$BODY" \
+        '```' "$(repeat_char ん 5000)" '```' \
+        '```' "$(repeat_char ん 5000)"
+
+    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+
+    [ "$status" -eq 1 ]
+    # 31 + "```\n" 4 + "```\n" 4 + "```\n" 4 + 5000
+    [[ "$stderr" == *"を除く）が 5043 字"* ]]
+}
+
+@test "(46) 別の文字・短いフェンス・info string 付きの行ではフェンスは閉じず、中身を数える" {
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    # 31 + 開始行 5 + "~~~\n" 4 + "```\n" 4 + "````html\n" 9 + 5000
+    write_trailing_fence_body "$BODY" \
+        '````' \
+        '~~~' \
+        '```' \
+        '````html' \
+        "$(repeat_char ん 5000)"
+
+    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"を除く）が 5053 字"* ]]
+}
+
+@test "(47) フェンスの中の短いフェンス行と別の文字のフェンス行は中身のまま数えない（長い閉じ行で閉じる）" {
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_trailing_fence_body "$BODY" \
+        '````markdown' \
+        '```html' \
+        "$(repeat_char ん 5000)" \
+        '```' \
+        '~~~' \
+        '`````'
+
+    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+
+    [ "$status" -eq 0 ]
+}
+
+@test "(48) 4 字下げの行と行内コードの行はフェンスにならず、続く行を数える" {
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_trailing_fence_body "$BODY" \
+        '    ```' \
+        "$(repeat_char ん 2000)" \
+        '    ```' \
+        '``` code ``` です' \
+        "$(repeat_char ん 2000)" \
+        '``` code ``` です'
+
+    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+
+    [ "$status" -eq 1 ]
+    # 31 + (8 + 2001) + 8 + 16 + 2001 + 15
+    [[ "$stderr" == *"を除く）が 4080 字"* ]]
+}
+
+@test "(49) --help の --kind は字数検査の対象（AC 節と閉じたフェンスの中身を除く、閉じていないフェンスは数える）を説明する" {
+    COLUMNS=400 run python3 "$SCRIPT" --help
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"caps the body prose at 4000 chars, not counting the AC section or the contents of closed code fences; the contents of an unclosed fence count"* ]]
 }
