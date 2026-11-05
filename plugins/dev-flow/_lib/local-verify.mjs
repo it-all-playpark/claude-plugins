@@ -2,7 +2,7 @@
 // pg-broker の使い捨て Postgres に向けたローカル実行（plugin bin/ の local-verify）で判定する経路の純関数（issue #863）。
 //
 // Validate が green になった後・Evaluate の前に、ci の AC があり repo が "dev-flow".local_verify を宣言した run だけ
-// local-verify start → wait（終わるまで繰り返す）→ stop を exec-proxy で呼ぶ。
+// local-verify start → wait（終わるまで繰り返す。_lib/bg-job-wait.mjs の waitBgJob）→ stop を exec-proxy で呼ぶ。
 //   passed（exit 0）: ci の AC を satisfied にする（根拠は log_path と exit code）。PR に ci_verify.label は付けるが
 //     pr-iterate は check の結果を待たない（ci_verify.wait:false）
 //   failed（exit 非 0・timeout）: log_tail を付けて dev-implementer に差し戻す。回数は agent AC の差し戻しと同じ
@@ -43,7 +43,7 @@ export function localVerifyConfigArg(cfg) {
   return encodeURIComponent(JSON.stringify(cfg)).replace(/[!'()*~]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
 }
 
-// wait の最大回数。timeout_seconds を 1 回の待機秒数で割った回数 + 1（local-verify 側も timeout_seconds で
+// wait の最大回数（waitBgJob の maxPolls）。timeout_seconds を 1 回の待機秒数で割った回数 + 1（local-verify 側も timeout_seconds で
 // command を止めて timeout を返すので、これは応答が欠けたときの workflow 側の安全上限）。
 export function localVerifyWaitPolls(timeoutSeconds) {
   const t = Number.isInteger(timeoutSeconds) && timeoutSeconds > 0 ? timeoutSeconds : 0
