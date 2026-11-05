@@ -148,9 +148,6 @@ function extractPhaseDurations(prompt) {
 // テストケース
 // ============================================================
 
-// standard 経路に落ちる req（count=3, ac=4件, type='feat' → floor='standard'）
-// Merge tier phase まで到達させる（Evaluate も実行される）
-
 const src = readFileSync(devFlowPath, 'utf8');
 
 test('[duration-telemetry] epochMode=ok: journal-log prompt に duration_seconds/phase_durations が含まれる（final キーは fixes_applied=0 の Final reconcile skip で欠落する）', async () => {

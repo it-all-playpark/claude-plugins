@@ -37,7 +37,6 @@ const src = readFileSync(devFlowPath, 'utf8');
  */
 function makeSandbox(evaluatorResponses, redgreenResponseFor) {
   const logs = [];
-  const journalPrompts = [];
   const evalCalls = [];
   const redgreenCalls = [];
   const acCallCounts = {};
@@ -93,7 +92,6 @@ function makeSandbox(evaluatorResponses, redgreenResponseFor) {
     counters: {
       evaluatorCalls: () => evalCalls.length,
       logs: () => logs,
-      journalPrompts: () => journalPrompts,
       redgreenCalls: () => redgreenCalls,
     },
   };

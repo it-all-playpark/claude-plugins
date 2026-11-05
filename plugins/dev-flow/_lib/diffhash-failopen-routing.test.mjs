@@ -24,8 +24,6 @@ const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 // StructuredOutput 契約違反メッセージ（trackedAgent の retryOnContractViolation 判定文字列を含む）
 const CV = 'agent({schema}): subagent completed without calling StructuredOutput';
 
-// standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
-
 // ============================================================
 // responder factory: merge-tier-diffhash-reuse-routing.test.mjs の createResponder を複製
 // （danger-grep の diffhash が既定で SAMEHASH を返す — state.secDiffHash が non-null になり

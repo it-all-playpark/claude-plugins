@@ -83,7 +83,6 @@ function makeSandbox(responses) {
 // ============================================================
 
 test('[eval-convergence] AC#1: complex 経路・minor のみ feedback・AC 全 satisfied → evaluator 1 回で収束 + merge_tier !== HOLD', async () => {
-  // complex に落ちる req（count=7 → floor=complex → EVAL_PASSES=EVAL_MAX=10 のループ経路）
 
   // evaluator stub: 全呼び出しで verdict=fail を返すが、minor のみ・critical なし・AC 全 satisfied。
   // ledger は全 blocking checked → isConvergedUnderPolicy = true になるはず。

@@ -34,11 +34,10 @@ const src = readFileSync(devFlowPath, 'utf8');
  *
  * @param {object} dangerGrepResponse - danger-grep / merge-tier-facts(risk) stub が返すレスポンス
  * @param {object} evaluatorResponse - evaluator stub が返すレスポンス（全 iteration で同一を返す）
- * @returns {{ ctx: import('node:vm').Context, counters: { evaluatorCalls: () => number, journalPrompts: () => string[] } }}
+ * @returns {{ ctx: import('node:vm').Context, counters: { evaluatorCalls: () => number } }}
  */
 function makeSandbox(dangerGrepResponse, evaluatorResponse) {
   const evalCalls = [];
-  const journalPrompts = [];
 
   // agent() stub: opts.label / opts.agentType を見て phase 別に最小スキーマを返す
   const agentStub = async (prompt, opts) => {
@@ -95,7 +94,6 @@ function makeSandbox(dangerGrepResponse, evaluatorResponse) {
     ctx,
     counters: {
       evaluatorCalls: () => evalCalls.length,
-      journalPrompts: () => journalPrompts,
     },
   };
 }

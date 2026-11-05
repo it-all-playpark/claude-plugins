@@ -14,8 +14,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts, JS_GLOBALS, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -52,12 +51,10 @@ function makeSandbox(opts) {
     return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'journal-log': null, 'post-summary': null })({ label, agentType, prompt });
   };
 
-  const sandbox = {
-    phase: () => {}, log: () => {}, agent: agentStub,
+  const ctx = makeWorkflowContext({
+    agent: agentStub,
     workflow: async () => iterateResult, args: devFlowArgs('1'),
-    ...JS_GLOBALS,
-  };
-  const ctx = vm.createContext(sandbox);
+  });
   return { ctx, calls };
 }
 

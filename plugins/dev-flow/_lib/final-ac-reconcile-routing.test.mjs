@@ -48,7 +48,6 @@ const STANDARD_REQ = {
 
 // ============================================================
 // responder factory: _lib/final-reconcile-routing.test.mjs の createResponder パターンを踏襲。
-// 'final-ac-reconcile' 専用 default を agentType==='evaluator' fallback より前に置く。
 // ============================================================
 function createResponder(overrides = {}) {
   return function ({ label, agentType, prompt }) {

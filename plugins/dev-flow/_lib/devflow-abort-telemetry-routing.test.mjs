@@ -13,8 +13,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { devFlowArgs, JS_GLOBALS, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -76,13 +75,10 @@ function makeSandbox({
     return { status: 'lgtm', iterations: 1, fixes_applied: 0 };
   };
 
-  const sandbox = {
-    phase: () => {}, log: () => {}, agent: agentStub,
+  const ctx = makeWorkflowContext({
+    agent: agentStub,
     workflow: workflowStub, args: args ?? devFlowArgs('1'),
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return { ctx, calls };
 }
 
