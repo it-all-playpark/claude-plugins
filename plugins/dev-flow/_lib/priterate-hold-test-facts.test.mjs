@@ -44,7 +44,7 @@ test('[hold-test-facts] HOLD + final_test_red + head が違う単体起動は、
 
   const testRun = calls.find((c) => c.label === 'hold-test-run');
   assert.equal(testRun.agentType, 'dev-flow:dev-runner-haiku');
-  assert.ok(testRun.prompt.endsWith(`run-tests ${WT} --base origin/main`), testRun.prompt);
+  assert.ok(testRun.prompt.endsWith(`run-tests start ${WT} --base origin/main`), testRun.prompt);
   // 落ちたファイルだけの単体再実行・2 回目の全件実行はしない
   assert.equal(calls.filter((c) => /run-tests /.test(String(c.prompt)) && c.label !== 'post-summary').length, 1, labels.join(', '));
   assert.ok(!calls.some((c) => String(c.prompt).includes('--files ')), 'run-tests --files の再実行をしない');

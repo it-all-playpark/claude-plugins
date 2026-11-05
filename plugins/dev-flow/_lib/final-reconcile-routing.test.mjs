@@ -472,7 +472,7 @@ test("[final-reconcile] (n) test#final red + failed_files の単体再実行 gre
   const reruns = calls.filter((c) => c.label === 'test#final-rerun');
   assert.equal(reruns.length, 1, `(n) test#final-rerun は 1 回だけ呼ばれるはずだが ${reruns.length} 回`);
   assert.equal(reruns[0].agentType, 'dev-flow:dev-runner-haiku');
-  assert.equal(reruns[0].prompt.split('\n').at(-1), 'run-tests /tmp/wt --files plugins/dev-flow/_shared/scripts/diff-risk-classify.bats');
+  assert.equal(reruns[0].prompt.split('\n').at(-1), 'run-tests start /tmp/wt --files plugins/dev-flow/_shared/scripts/diff-risk-classify.bats');
   assert.equal(calls.filter((c) => c.label === 'test#final').length, 1, '(n) test#final 自体は 1 回のまま');
 
   assert.equal(result?.final_reconcile, 'reverified');

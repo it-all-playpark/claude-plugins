@@ -9,6 +9,8 @@ bats_require_minimum_version 1.5.0
 # untracked の intent-to-add（issue #833）は WT を git init した fixture で、git grep invariant の red と index の状態を見る。
 # 変更ファイルの受け渡し（issue #835）は、受け取った DEVFLOW_CHANGED_FILES / DEVFLOW_BASE を WT 外へ書き出す
 # probe ランナー（make_env_probe）で、値と一覧の中身・未設定の各経路を見る。
+# テストは start → wait の公開の起動形だけで回す（切り離した supervisor が残るので start は fd 3 を閉じて呼ぶ）。
+# 切り離した実行の stderr は state dir の logs/command.log に残るので、run_tests はそれを $stderr に入れる。
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/run-tests.sh"
@@ -17,9 +19,11 @@ setup() {
     mkdir -p "$WT/tests"
     STUB_DIR="$TMP_DIR/.stubbin"
     mkdir -p "$STUB_DIR"
+    export BG_JOB_POLL_SEC=0.1
 }
 
 teardown() {
+    bash "$SCRIPT" stop "$WT" --timeout-sec 15 >/dev/null 2>&1 3>&- || true
     rm -rf "$TMP_DIR"
 }
 
@@ -29,12 +33,18 @@ make_script() {
     chmod +x "$WT/tests/$1"
 }
 
-# stdout（stderr は分ける）が JSON 1 行であることを確かめ、その行を $JSON に入れる。
+# start の引数を受け取り、start → wait で結果まで進める。各 stdout（stderr は分ける）が JSON 1 行であることを確かめ、
+# wait の行を $JSON に、切り離した実行の stderr を $stderr に入れる。start が引数不正で落ちたらその応答を $JSON に入れて返す。
 # 追加の環境変数（PATH の stub 差し替え等）は呼び出し側で export する
 run_tests() {
-    run --separate-stderr bash "$SCRIPT" "$WT"
+    run --separate-stderr bash "$SCRIPT" start "$WT" "$@" 3>&-
     [ "${#lines[@]}" -eq 1 ]
     JSON="$output"
+    [ "$status" -eq 0 ] || return 0
+    run --separate-stderr bash "$SCRIPT" wait "$WT" --wait-sec 120
+    [ "${#lines[@]}" -eq 1 ]
+    JSON="$output"
+    stderr="$(cat "$WT/.devflow-tmp/run-tests/logs/command.log")"
 }
 
 @test "exit 0: 全本 exit 0 なら passed / tests passed / green true、全本を絶対パスで実行する" {
@@ -357,7 +367,8 @@ make_grep_invariant() {
     echo "$JSON" | jq -e '.status == "passed" and .green == true'
     run git -C "$WT" ls-files .devflow-tmp ignored
     [ -z "$output" ]
-    run git -C "$WT" status --porcelain --untracked-files=all
+    # run-tests 自身の state dir を除いて見る
+    run git -C "$WT" status --porcelain --untracked-files=all -- . ':(exclude).devflow-tmp/run-tests'
     [ "$output" = "?? .devflow-tmp/pr-body.md" ]
 }
 
@@ -365,6 +376,8 @@ make_grep_invariant() {
     make_script run-a.sh 'exit 0'
     echo base > "$WT/tracked.txt"
     init_repo
+    # prerun と同じく .devflow-tmp を ignore する（run-tests の state dir が git add -A に載らない）
+    echo '.devflow-tmp/' >> "$WT/.git/info/exclude"
     echo changed > "$WT/tracked.txt"
     mkdir -p "$WT/src"
     echo new > "$WT/src/new.txt"
@@ -390,21 +403,104 @@ make_grep_invariant() {
     [ ! -d "$WT/.git" ]
 }
 
-@test "引数不正は exit 2 で status error の JSON を出す" {
-    run bash "$SCRIPT"
-    [ "$status" -eq 2 ]
-    echo "$output" | jq -e '.status == "error" and .green == false'
-    run bash "$SCRIPT" "$WT" --base
+@test "引数不正は exit 2 で status error の JSON を出す（subcommand の無い起動形も）" {
+    make_script run-a.sh 'echo ran > "$(dirname "$0")/a.marker"'
+    for args in "" "$WT" "$WT --base origin/main" "wait" "stop" "wait $WT --wait-sec x" "stop $WT --wait-sec 1"; do
+        # shellcheck disable=SC2086
+        run bash "$SCRIPT" $args
+        [ "$status" -eq 2 ]
+        echo "$output" | jq -e '.status == "error" and .green == false'
+    done
+    run bash "$SCRIPT" start "$WT" --base
     [ "$status" -eq 2 ]
     echo "$output" | jq -e '.status == "error" and (.summary | contains("--base <ref>"))'
+    [ ! -f "$WT/tests/a.marker" ]
+}
+
+# --- start / wait / stop（issue #1225）---
+
+@test "start はテストを切り離してすぐ返し、wait は --wait-sec より長く sleep する間 running、終われば結果の JSON を返す" {
+    make_script run-a.sh 'sleep 3; echo "ok 1 a"'
+    run --separate-stderr bash "$SCRIPT" start "$WT" 3>&-
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 1 ]
+    echo "$output" | jq -e '.status == "running" and .tests == "running" and .green == false'
+
+    run --separate-stderr bash "$SCRIPT" wait "$WT" --wait-sec 1
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 1 ]
+    echo "$output" | jq -e '.status == "running" and .tests == "running" and .green == false'
+
+    run --separate-stderr bash "$SCRIPT" wait "$WT" --wait-sec 120
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 1 ]
+    echo "$output" | jq -e --arg a "$WT/tests/run-a.sh" \
+        '.status == "passed" and .tests == "passed" and .green == true and ([.scripts[] | del(.log)] == [{path: $a, exit: 0, launch_failed: false}]) and .failed_files == [] and (.epoch | type == "number")'
+}
+
+@test "wait: 終わった後は何度呼んでも同じ結果の JSON を返す（red の failed_files も含む）" {
+    make_script run-a.sh 'echo "not ok 1 x"; echo "# (in test file '"$WT"'/a.bats, line 2)"; exit 1'
+    run_tests
+    first="$JSON"
+    echo "$first" | jq -e '.status == "failed" and .tests == "failed" and .green == false and .failed_files == ["a.bats"]'
+    run bash "$SCRIPT" wait "$WT" --wait-sec 0
+    [ "$output" = "$first" ]
+}
+
+@test "stop: 走っているテストを止め、その後の wait は tests error（テストが通ったとみなさない）" {
+    make_script run-a.sh 'sleep 30; touch "$(dirname "$0")/a.marker"'
+    run bash "$SCRIPT" start "$WT" 3>&-
+    run bash "$SCRIPT" stop "$WT" --timeout-sec 15
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .was_running == true'
+    run bash "$SCRIPT" wait "$WT" --wait-sec 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.status == "error" and .tests == "error" and .green == false'
+    [ ! -f "$WT/tests/a.marker" ]
+}
+
+@test "start 前の wait は tests error、stop は何もしない" {
+    run bash "$SCRIPT" wait "$WT" --wait-sec 0
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.status == "error" and .tests == "error" and .green == false'
+    run bash "$SCRIPT" stop "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .was_running == false'
+}
+
+@test "切り離したテストの上限を超えると止めて tests error" {
+    make_script run-a.sh 'sleep 30'
+    export RUN_TESTS_TIMEOUT_SEC=1
+    run bash "$SCRIPT" start "$WT" 3>&-
+    run bash "$SCRIPT" wait "$WT" --wait-sec 20
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.status == "error" and .tests == "error" and .green == false and (.summary | contains("did not finish"))'
+}
+
+@test "start を繰り返すと前の実行を止めて新しい引数で走らせ直す" {
+    make_script run-a.sh 'sleep 30; touch "$(dirname "$0")/first.marker"'
+    run bash "$SCRIPT" start "$WT" 3>&-
+    make_script run-a.sh 'exit 0'
+    run_tests
+    echo "$JSON" | jq -e '.status == "passed" and .green == true'
+    [ ! -f "$WT/tests/first.marker" ]
+}
+
+@test "--base / --files の引数は切り離した実行まで届く（空白を含むパスも 1 引数のまま）" {
+    make_script run-probe.sh "$(cat <<EOF
+cp "\$DEVFLOW_TEST_FILES" "$TMP_DIR/list.out"
+EOF
+)"
+    : > "$WT/a b.bats"
+    run_tests --files "a b.bats"
+    echo "$JSON" | jq -e '.status == "passed"'
+    [ "$(cat "$TMP_DIR/list.out")" = "a b.bats" ]
 }
 
 # --- 変更ファイルの受け渡し（issue #835）---
 
 run_tests_base() {
-    run --separate-stderr bash "$SCRIPT" "$WT" --base "$1"
-    [ "${#lines[@]}" -eq 1 ]
-    JSON="$output"
+    run_tests --base "$1"
 }
 
 # 受け取った DEVFLOW_CHANGED_FILES / DEVFLOW_BASE を WT 外に書き出すランナー（未設定は "unset"）。
@@ -520,8 +616,7 @@ git_commit() {
 # --- 落ちたファイルだけの再実行（issue #865）---
 
 run_tests_files() {
-    run --separate-stderr bash "$SCRIPT" "$WT" --files "$@"
-    JSON="$output"
+    run_tests --files "$@"
 }
 
 # 受け取った DEVFLOW_TEST_FILES / DEVFLOW_CHANGED_FILES / DEVFLOW_BASE を WT 外に書き出し、一覧の中身も写すランナー。
@@ -567,7 +662,7 @@ EOF
         echo "$JSON" | jq -e '.status == "error" and .green == false and (.summary | contains("--files"))'
     done
     [ ! -f "$TMP_DIR/env.out" ]
-    run --separate-stderr bash "$SCRIPT" "$WT" --files
+    run --separate-stderr bash "$SCRIPT" start "$WT" --files
     [ "$status" -eq 2 ]
 }
 

@@ -389,7 +389,7 @@ test('[validate-unify] (7) test#1 prompt に test スクリプト優先・EPERM 
   // 識別子・トークンのみ pin する（日本語文言は言い回しの変更で落ちるため pin しない。issue #636 AC-1）。
   // スクリプト選択・起動失敗の分類は exec-proxy run-tests が持ち、prompt は bare 単文の転写だけ（issue #821）
   const requiredPhrases = [
-    '\nrun-tests /tmp/wt',
+    '\nrun-tests start /tmp/wt',
     'verbatim',
     'timeout: 600000',
     '"tests":"error"',

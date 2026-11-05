@@ -95,12 +95,12 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 
 ## Validate
 
-- **判定**: test が green か。test の実行は exec-proxy `run-tests <WT> --base origin/<base>` の stdout の転写だけで、`tests/run-*.sh` を
+- **判定**: test が green か。test の実行は exec-proxy `run-tests start <WT> --base origin/<base>` のあと `run-tests wait <WT>` を
+  繰り返す（`runTestsJob`）stdout の転写だけで、`tests/run-*.sh` を
   全本実行し、全本 exit 0 のときだけ green。run-tests は merge-base が解決できたときだけ `tests/run-*.sh` に
   `DEVFLOW_CHANGED_FILES`（merge-base からの差分と untracked の WT 相対パスを 1 行 1 件で書いたファイルの絶対パス）と `DEVFLOW_BASE`
-  （merge-base の sha）を渡す。未設定（`--base` 無し等）は全件実行。テストの選択は repo 側のランナーが行い、
-  dev-flow は repo 固有の知識を持たない。テストの直前に `workspace-prebuild <WT>` が pnpm ワークスペースの成果物を作り直す
-  （依存先の変更で古くなるため）
+  （merge-base の sha）を渡す。未設定（`--base` 無し等）は全件実行。テストの選択は repo 側のランナーが行う。
+  テストの直前に `workspace-prebuild <WT>` が pnpm ワークスペースの成果物を作り直す（依存先の変更で古くなる）
   - 各回の test の前に `pre-commit-hook <WT>` が対象 repo の pre-commit hook を PR phase の commit と同じ stage で回し、exit 非 0 は
     その回を green にせず出力のログのパスだけ green-fix に渡す（hook 無し・結果不明は何も足さない）
   - red なら green-fix（同じ `dev-implementer` を sonnet で）を `GREEN_MAX` まで回す。その前に失敗を分類し、diff と無関係で base でも
@@ -109,8 +109,8 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - repo が `"dev-flow".local_verify` を宣言していれば、ci AC を Validate の green 後・Evaluate の前に pg-broker の使い捨て DB で
     ローカル実行する（`execLocalVerify`）。失敗は dev-implementer に差し戻す（`AGENT_AC_REIMPL_MAX` を Evaluate と共有）
 - **失敗の扱い**:
-  - `tests:'error'`（起動失敗）は green-fix せずに抜け、`GREEN_MAX` 到達の red はそのまま先へ進む（fail-safe。Final reconcile を
-    skip した run は Merge tier の HOLD 理由になる）
+  - `tests:'error'`（起動失敗。待機の上限・start / wait の null・schema 不一致も stop して同じ）は green-fix せずに抜け、
+    `GREEN_MAX` 到達の red はそのまま先へ進む（fail-safe。Final reconcile を skip した run は Merge tier の HOLD 理由になる）
   - base 失敗の分類材料（`failed_files`・diff の一覧・base での再実行）が欠けた失敗はすべて green-fix の対象（fail-safe。green 要件を緩めない）
   - workspace-prebuild の失敗はテストを実行せず red（fail-safe）
   - 差し戻し後も空 diff なら throw（fail-closed）。例外は人間の cross-repo ラベル opt-in と、worktree 外の dirty な成果物の決定論の証拠が
@@ -223,11 +223,11 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 ## Final reconcile
 
 - **判定**: pr-iterate が fix を適用した run（`fixes_applied > 0`）だけ、fix 後の最終 tree で確かめ直す:
-  - worktree を PR の最終 HEAD に同期し、Validate と同じ prompt の `run-tests <WT>` を 1 回だけ実行する（green-fix はしない）。red で
+  - worktree を PR の最終 HEAD に同期し、Validate と同じ start / wait を 1 回だけ実行する（green-fix はしない）。red で
     落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake 候補として開示する（HOLD・`EVAL-*` は外さない。
     PR が書いたテストの出力。`_lib/final-test-rerun.mjs`）
-  - テストを実行できなければ（同期失敗・test の null・`tests:'error'`）`unavailable`。PR の CI の success では代えない
-    （PR が CI の workflow・スクリプトを書き換えうる）
+  - テストを実行できなければ `unavailable`。PR の CI の success では代えない
+    （PR が CI を書き換えうる）
   - 最終の changed-files で宣言外変更を監査し直す
   - final test が green（no_tests を含む）の run（`reverified`）だけ、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
     解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は test#final green を head sha に pin した
@@ -241,7 +241,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 - skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'` は `validate_test_red`（上と同じ再実行で開示）、
   `tests:'error'` は `validate_tests_not_run` で HOLD（PR の CI の success では解除しない）
 - **失敗の扱い**:
-  - 同期失敗・test の null・`tests:'error'` は `unavailable`（fail-safe → HOLD `final_reconcile_unavailable`）。
+  - 同期失敗・throw・`tests:'error'` は `unavailable`（fail-safe → HOLD `final_reconcile_unavailable`）。
     flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）
   - Final AC reconcile の応答が検証に通らなければ `unavailable`（fail-closed → HOLD）
   - `redgreen-final` の spawn 失敗（throw・null）・結果の欠落・red→green 不成立・vdelta の deny は昇格せず、観測型 AC は人手 AC 待ちのまま（fail-safe）
