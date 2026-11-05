@@ -754,14 +754,23 @@ const CI_LAST_STATUS_LABEL = {
   'error': '⚠️ error（ステータス取得失敗 — `gh pr checks <PR>` で実状態を確認すること）',
 };
 
-function formatCiLastStatusLine(ciLastStatus, ciLastFailedChecks, pr) {
+const isFullHead = (s) => typeof s === 'string' && TERMINAL_HEAD_SHA_RE.test(s.trim());
+const isSameHead = (a, b) => isFullHead(a) && isFullHead(b) && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+function formatCiLastStatusLine(ciLastStatus, ciLastFailedChecks, pr, ciLastHead = null, endHead = null) {
   if (ciLastStatus == null) return '**最終 CI 状態**: 未観測（この run では CI を判定していない — `gh pr checks <PR>` で確認すること）'.replace('<PR>', String(pr));
   const label = (CI_LAST_STATUS_LABEL[ciLastStatus] ?? ciLastStatus).replace('<PR>', String(pr));
+  let staleNote = '';
+  if (!isSameHead(ciLastHead, endHead)) {
+    staleNote = isFullHead(ciLastHead) && isFullHead(endHead)
+      ? ` — ⚠️ 古い head ${shortShaCell(ciLastHead)} の観測（終端 head ${shortShaCell(endHead)} の CI は確かめていない — \`gh pr checks ${pr}\` で確認すること）`
+      : ` — ⚠️ 観測した head が終端 head と同じか確かめられない（\`gh pr checks ${pr}\` で確認すること）`;
+  }
   if (ciLastStatus === 'failed') {
     const names = (ciLastFailedChecks || []).map((n) => `\`${mdCell(n)}\``);
-    return `**最終 CI 状態**: ${label} — ${names.length ? names.join(', ') : '（check 名不明）'}`;
+    return `**最終 CI 状態**: ${label} — ${names.length ? names.join(', ') : '（check 名不明）'}${staleNote}`;
   }
-  return `**最終 CI 状態**: ${label}`;
+  return `**最終 CI 状態**: ${label}${staleNote}`;
 }
 
 function formatConflictAutoresolveLines(list) {
@@ -779,7 +788,8 @@ function formatConflictAutoresolveLines(list) {
   });
 }
 
-const PRIOR_HOLD_UNRESOLVED = '未解消（pr-iterate は再判定しない — 人が確認する）';
+const PRIOR_HOLD_STATE_LABEL = { resolved: '✅ 解消', unresolved: '❌ 未解消', unconfirmed: '❔ 未確認' };
+const PRIOR_HOLD_NOT_JUDGED = 'pr-iterate はこの code を判定しない — 人が確認する';
 const PRIOR_HOLD_HUMAN_CODES = ['escalate', 'ac_human_pending'];
 const PRIOR_HOLD_HUMAN = '未解消（人の判断が要る — pr-iterate は判定しない。dev-flow のサマリーの該当項目を確認する）';
 const PRIOR_HOLD_FINAL_TEST = '未解消（HOLD は外さない — 下の事実で確認範囲を絞って人が確認する）';
@@ -822,45 +832,107 @@ function finalTestRedFacts(check) {
   return facts;
 }
 
-function priorHoldRecovery(codes, { status, ciLastStatus, conflictAutoresolve, securityReview, finalTestCheck }) {
+function holdHeadMismatchDetail(what, observedHead, endHead) {
+  return isFullHead(observedHead) && isFullHead(endHead)
+    ? `${what} — head ${shortShaCell(observedHead)} の観測で、終端 head ${shortShaCell(endHead)} では確かめていない`
+    : `${what} — 観測した head が終端 head と同じか確かめられない`;
+}
+
+const CI_UNCONFIRMED_REASON = {
+  pending: 'check が完了していない',
+  error: 'CI の状態を取得できなかった',
+  no_checks: 'check が 1 件も無く、失敗が直ったか確かめられない',
+};
+
+function ciHoldRow(code, ciLastStatus, ciLastHead, endHead) {
+  if (ciLastStatus == null) return { code, state: 'unconfirmed', detail: '最終 CI 状態: 未観測 — この run では CI を判定していない' };
+  const what = `最終 CI 状態: ${ciLastStatus}`;
+  if (!isSameHead(ciLastHead, endHead)) return { code, state: 'unconfirmed', detail: holdHeadMismatchDetail(what, ciLastHead, endHead) };
+  if (ciLastStatus === 'passed') return { code, state: 'resolved', detail: what };
+  if (ciLastStatus === 'failed') return { code, state: 'unresolved', detail: what };
+  return { code, state: 'unconfirmed', detail: `${what} — ${CI_UNCONFIRMED_REASON[ciLastStatus] ?? '結果が確定していない'}` };
+}
+
+function ciVerifyHoldRow(code, ciVerifyStatus, ciVerifyHead, endHead) {
+  if (ciVerifyStatus == null) return { code, state: 'unconfirmed', detail: 'ci_verify: 未実行 — この run は ci_verify の check の完了を確かめていない' };
+  const what = `ci_verify: ${ciVerifyStatus}`;
+  if (!isSameHead(ciVerifyHead, endHead)) return { code, state: 'unconfirmed', detail: holdHeadMismatchDetail(what, ciVerifyHead, endHead) };
+  if (ciVerifyStatus === 'passed') return { code, state: 'resolved', detail: what };
+  if (ciVerifyStatus === 'failed') return { code, state: 'unresolved', detail: what };
+  return { code, state: 'unconfirmed', detail: `${what} — ${CI_UNCONFIRMED_REASON[ciVerifyStatus] ?? '結果が確定していない'}` };
+}
+
+function mergeableHoldRow(code, mergeableLast, lastConflict, endHead) {
+  const attempt = `conflict の自動解消: ${lastConflict ?? '試行なし'}`;
+  if (mergeableLast == null) return { code, state: 'unconfirmed', detail: `conflict の確認に到達していない（${attempt}）` };
+  if (!isSameHead(mergeableLast.head, endHead)) {
+    return { code, state: 'unconfirmed', detail: holdHeadMismatchDetail(`conflict の確認: ${mergeableLast.state}`, mergeableLast.head, endHead) };
+  }
+  if (mergeableLast.state === 'resolved') return { code, state: 'resolved', detail: attempt };
+  if (mergeableLast.state === 'clean') return { code, state: 'resolved', detail: 'conflict なしを観測' };
+  if (mergeableLast.state === 'conflicting') return { code, state: 'unresolved', detail: `conflict が残ると観測（${attempt}）` };
+  return { code, state: 'unconfirmed', detail: 'mergeable が UNKNOWN か取得失敗で、conflict の有無を確かめられない' };
+}
+
+function securityHoldRow(code, sr, securityReviewHead, endHead) {
+  const status = sr?.status ?? null;
+  const what = `この run の security review: ${status ?? '未実施'}`;
+  if (status == null || status === 'not_run') return { code, state: 'unconfirmed', detail: `${what} — 終端 head の review に到達していない` };
+  if (status === 'unresolved' && sr.stop_reason != null) return { code, state: 'unconfirmed', detail: `${what} — review の前に止めた（${sr.stop_reason}）` };
+  if (!isSameHead(securityReviewHead, endHead)) return { code, state: 'unconfirmed', detail: holdHeadMismatchDetail(what, securityReviewHead, endHead) };
+  if (status === 'cleared' || status === 'not_target') return { code, state: 'resolved', detail: what };
+  const critical = sr.critical ?? 0;
+  const major = sr.major ?? 0;
+  if (critical + major > 0) return { code, state: 'unresolved', detail: `${what} — critical ${critical} / major ${major}` };
+  return { code, state: 'unconfirmed', detail: `${what} — review の結果を確かめられなかった` };
+}
+
+function iterateHoldRow(code, status) {
+  const what = `この run の終了状態: ${status}`;
+  if (status === 'lgtm') return { code, state: 'resolved', detail: what };
+  if (status === 'ci_pending' || status === 'ci_error') return { code, state: 'unconfirmed', detail: `${what} — CI の確定前に終わり、LGTM に届くか確かめられなかった` };
+  return { code, state: 'unresolved', detail: what };
+}
+
+function priorHoldRecovery(codes, { status, ciLastStatus, ciLastHead, ciVerifyStatus, ciVerifyHead, mergeableLast, conflictAutoresolve, securityReview, securityReviewHead, finalTestCheck, endHead }) {
   const attempts = (conflictAutoresolve || []).filter((r) => r != null);
   const lastConflict = attempts.length > 0 ? attempts[attempts.length - 1].status : null;
   const rows = (codes || []).map((code) => {
-    if (code === 'iterate_non_lgtm') return { code, resolved: status === 'lgtm', detail: `この run の終了状態: ${status}` };
-    if (code === 'security_review_unresolved') {
-      const sr = securityReview?.status ?? '未実施';
-      return { code, resolved: sr === 'cleared' || sr === 'not_target', detail: `この run の security review: ${sr}` };
-    }
-    if (code === 'ci_checks_failed' || code === 'ac_ci_pending') {
-      return { code, resolved: ciLastStatus === 'passed', detail: `最終 CI 状態: ${ciLastStatus ?? '未観測'}` };
-    }
-    if (code === 'mergeable_conflicting') {
-      return { code, resolved: lastConflict === 'resolved', detail: `conflict の自動解消: ${lastConflict ?? '試行なし'}` };
-    }
-    if (PRIOR_HOLD_HUMAN_CODES.includes(code)) return { code, resolved: false, detail: null, unresolvedLabel: PRIOR_HOLD_HUMAN };
+    if (code === 'iterate_non_lgtm') return iterateHoldRow(code, status);
+    if (code === 'security_review_unresolved') return securityHoldRow(code, securityReview, securityReviewHead, endHead);
+    if (code === 'ci_checks_failed') return ciHoldRow(code, ciLastStatus, ciLastHead, endHead);
+    if (code === 'ac_ci_pending') return ciVerifyHoldRow(code, ciVerifyStatus, ciVerifyHead, endHead);
+    if (code === 'mergeable_conflicting') return mergeableHoldRow(code, mergeableLast, lastConflict, endHead);
+    if (PRIOR_HOLD_HUMAN_CODES.includes(code)) return { code, state: 'unresolved', detail: null, unresolvedLabel: PRIOR_HOLD_HUMAN };
     if (code === 'final_test_red') {
-      return { code, resolved: false, detail: null, unresolvedLabel: PRIOR_HOLD_FINAL_TEST, facts: finalTestRedFacts(finalTestCheck) };
+      return { code, state: 'unresolved', detail: null, unresolvedLabel: PRIOR_HOLD_FINAL_TEST, facts: finalTestRedFacts(finalTestCheck) };
     }
-    return { code, resolved: false, detail: null };
+    return { code, state: 'unconfirmed', detail: PRIOR_HOLD_NOT_JUDGED };
   });
-  if (rows.length === 0) rows.push({ code: null, resolved: false, detail: 'HOLD 理由の code がサマリーに無い — 元のサマリーで理由を確認する' });
-  return { rows, unresolved: rows.filter((r) => !r.resolved).length };
+  if (rows.length === 0) rows.push({ code: null, state: 'unconfirmed', detail: 'HOLD 理由の code がサマリーに無い — 元のサマリーで理由を確認する' });
+  const countOf = (state) => rows.filter((r) => r.state === state).length;
+  return { rows, unresolved: countOf('unresolved'), unconfirmed: countOf('unconfirmed') };
 }
 
-function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, finalTestCheck = null, securityReview = null, headSha = null, fixDirectionUsed = false }) {
+function priorHoldCounts({ unresolved, unconfirmed }) {
+  return [unresolved > 0 ? `${unresolved} 件が未解消` : null, unconfirmed > 0 ? `${unconfirmed} 件が未確認` : null].filter((s) => s != null).join('・');
+}
+
+function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], ciLastHead = null, ciVerifyStatus = null, ciVerifyHead = null, mergeableLast = null, humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, finalTestCheck = null, securityReview = null, securityReviewHead = null, headSha = null, endHead = headSha, fixDirectionUsed = false }) {
   const DECISION_EMOJI = { 'approve': '✅', 'request-changes': '🔴', 'comment': '💬' };
   const lines = [];
   const priorHold = priorDevflow != null && priorDevflow.tier === 'HOLD'
-    ? priorHoldRecovery(priorDevflow.codes, { status, ciLastStatus, conflictAutoresolve, securityReview, finalTestCheck })
+    ? priorHoldRecovery(priorDevflow.codes, { status, ciLastStatus, ciLastHead, ciVerifyStatus, ciVerifyHead, mergeableLast, conflictAutoresolve, securityReview, securityReviewHead, finalTestCheck, endHead })
     : null;
+  const priorHoldOpen = priorHold != null ? priorHoldCounts(priorHold) : '';
 
   let headline = (STATUS_HEADLINE[status] ?? status).replace('<PR>', String(pr));
   if (status === 'security_unresolved' && isSecurityContextChanged(securityReview)) {
     headline = SECURITY_CONTEXT_CHANGED_HEADLINE.replace('<ROUNDS>', String(securityReview.rounds ?? 0));
   }
   if (priorHold && status === 'lgtm') {
-    headline = priorHold.unresolved > 0
-      ? `LGTM（review）— dev-flow の HOLD 理由 ${priorHold.unresolved} 件が未解消。merge 前に確認`
+    headline = priorHoldOpen !== ''
+      ? `LGTM（review）— dev-flow の HOLD 理由 ${priorHoldOpen}。merge 前に確認`
       : `${headline} — dev-flow の HOLD 理由はすべて解消`;
   }
 
@@ -883,7 +955,12 @@ function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSu
   lines.push(`**最終判定理由**: ${lastSummary}`);
 
   lines.push('');
-  lines.push(formatCiLastStatusLine(ciLastStatus, ciLastFailedChecks, pr));
+  lines.push(formatCiLastStatusLine(ciLastStatus, ciLastFailedChecks, pr, ciLastHead, endHead));
+
+  if (status === 'ci_pending' || status === 'ci_error') {
+    lines.push('');
+    lines.push(`**次の手順**: CI の確定後に \`/pr-iterate ${pr}\` を再実行すると判定が確定する`);
+  }
 
   if (securityReview != null) {
     lines.push('');
@@ -904,14 +981,14 @@ function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSu
     lines.push('### dev-flow の HOLD 理由の回収状況');
     lines.push('');
     for (const r of priorHold.rows) {
-      const label = r.resolved ? '✅ 解消' : `❌ ${r.unresolvedLabel ?? PRIOR_HOLD_UNRESOLVED}`;
+      const label = r.unresolvedLabel != null ? `❌ ${r.unresolvedLabel}` : PRIOR_HOLD_STATE_LABEL[r.state];
       const parts = [r.code != null ? `\`${mdCell(r.code)}\`` : null, label, r.detail].filter((p) => p != null);
       lines.push(`- ${parts.join(' — ')}`);
       for (const fact of r.facts ?? []) lines.push(`  - ${fact}`);
     }
     lines.push('');
-    lines.push(priorHold.unresolved > 0
-      ? `**dev-flow の HOLD 理由 ${priorHold.unresolved} 件が未解消** — merge 前に人が確認する`
+    lines.push(priorHoldOpen !== ''
+      ? `**dev-flow の HOLD 理由 ${priorHoldOpen}** — merge 前に人が確認する`
       : '**dev-flow の HOLD 理由はすべて解消**');
   }
 
@@ -1258,7 +1335,7 @@ function ciHeadRejectReason({ ci, expectedSha }) {
 const MERGEABLE_STATE = {
   type: 'object',
   required: ['mergeable', 'mergeStateStatus'],
-  properties: { mergeable: { type: 'string' }, mergeStateStatus: { type: 'string' } },
+  properties: { mergeable: { type: 'string' }, mergeStateStatus: { type: 'string' }, headRefOid: { type: 'string' } },
 };
 
 const CONFLICT_RESOLVE = {
@@ -1291,13 +1368,28 @@ function isConflictingMergeable(meta) {
   return mg === 'CONFLICTING' || ms === 'DIRTY';
 }
 
+function mergeableObservation(meta, prev = null) {
+  const raw = meta != null && typeof meta === 'object' && typeof meta.headRefOid === 'string' ? meta.headRefOid.trim().toLowerCase() : '';
+  const head = /^[0-9a-f]{40}$/.test(raw) ? raw : null;
+  if (isConflictingMergeable(meta)) return { state: 'conflicting', head };
+  if (meta != null && typeof meta === 'object' && String(meta.mergeable ?? '').toUpperCase() === 'MERGEABLE') return { state: 'clean', head };
+  if (prev?.state === 'resolved' && (head == null || head === prev.head)) return prev;
+  return { state: 'unknown', head };
+}
+
+function mergeableAfterAttempt(seen, rec) {
+  if (rec.status === 'resolved') return { state: 'resolved', head: rec.merge_sha };
+  if (rec.status === 'no_conflict') return { state: 'clean', head: seen.head };
+  return seen;
+}
+
 function mergeableCheckPrompt({ pr, repo }) {
   const repoArg = repo ? ` --repo ${repo}` : '';
-  return `## Objective\nPR #${pr} の base branch との conflict 状態（mergeable / mergeStateStatus）を読む。\n\n`
-    + `## Steps\n\`gh pr view ${pr}${repoArg} --json mergeable,mergeStateStatus\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ`
+  return `## Objective\nPR #${pr} の base branch との conflict 状態（mergeable / mergeStateStatus）と、その head（headRefOid）を読む。\n\n`
+    + `## Steps\n\`gh pr view ${pr}${repoArg} --json mergeable,mergeStateStatus,headRefOid\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ`
     + `（cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止）。`
-    + `stdout の mergeable と mergeStateStatus の値を一字一句そのまま返す。コマンドが失敗したら両方を空文字で返す。\n\n`
-    + `## Output format\n{ "mergeable": string, "mergeStateStatus": string }\nprose 禁止。JSON のみ返せ。\n\n`
+    + `stdout の mergeable・mergeStateStatus・headRefOid の値を一字一句そのまま返す。コマンドが失敗したら 3 つとも空文字で返す。\n\n`
+    + `## Output format\n{ "mergeable": string, "mergeStateStatus": string, "headRefOid": string }\nprose 禁止。JSON のみ返せ。\n\n`
     + `## Tools\n使用可: Bash のみ\n\n`
     + `## Boundary\n読み取り専用。ファイル変更・git 操作禁止。\n\n`
     + `## Token cap\nJSON のみ。1 行以内。`;
@@ -2187,11 +2279,14 @@ let lastCiEpoch = null
 // null は「この run で一度も CI を判定していない」（review_contract_error 等の早期終端）。
 let ciLastStatus = null        // 'passed' | 'failed' | 'pending' | 'no_checks' | 'error' | null
 let ciLastFailedChecks = []    // ciLastStatus==='failed' のときの check 名配列
+// ciLastStatus を観測した head。応答に head が無い判定（ci-wait-check は head を読まない）は、この run が知る今の head と組にする
+let ciLastHead = null
 function observeCi(ciEff) {
   ciLastStatus = ciEff.status
   ciLastFailedChecks = ciEff.status === 'failed'
     ? (ciEff.failed_checks ?? []).map((c) => String(c?.name ?? 'unknown'))
     : []
+  ciLastHead = isFullCommitSha(ciEff.head_sha) ? ciEff.head_sha.trim() : shaNow
 }
 // round の 1 回目の CI 判定。review#i と並列に取った ci-check#i を採用できていればそれを使い（spawn 0）、
 // 不採用（head 不一致・null・throw）なら review の後に直列で ci-check を起動する。label は並列分と区別して
@@ -2310,6 +2405,7 @@ function fixPrompt({ objective, issuesHeading, issuesText, guidance = '' }) {
 // ci-verify（CI_VERIFY がある run だけ）: LGTM 後に CI_VERIFY.checks の完了を待つ別ループの状態。返り値 ci_verify に載る。
 // status は最後の待ちの結果（'passed' | 'failed' | 'pending' | 'error'）で、待ちに入らなかった run は null（返り値では 'not_run'）。
 let ciVerifyStatus = null
+let ciVerifyHead = null        // ciVerifyStatus を観測した head（ci-verify は head を読まないので、この run が知る今の head）
 let ciVerifyUrls = []          // success の根拠（check run の URL）
 let ciVerifyWaitSeconds = 0    // 全待ちの nominal 累積待機秒（round の CI 待ち totalCiWaitSeconds とは別に数える）
 let ciVerifyPolls = 0          // 同上の判定 spawn 回数
@@ -2376,12 +2472,15 @@ async function applyCiFix({ round, objective, issuesText, guidance, issuesHeadin
     return false
   }
   shaNow = ciEnsure.headSha
+  endHeadUnsettled = false
   pendingDeltaLines = ciEnsure.deltaLines
   fixesApplied++
   return true
 }
 // base との conflict の自動解消の試行記録（返り値 conflict_autoresolve。要素は conflictAutoresolveRecord の形）。
 const conflictAttempts = []
+// 最後の conflict の観測（mergeableObservation / mergeableAfterAttempt の形。null は確認に到達していない）。終了レポートの回収状況が読む
+let mergeableLast = null
 // 自動解消の merge commit を push した直後だけ値を持つ。次 round の review を `git show --remerge-diff` の範囲に絞る。
 let remergeSha = null
 // LGTM 確定前の base conflict の確認と自動解消（canonical は _lib/conflict-autoresolve.mjs）。mergeable は
@@ -2399,6 +2498,7 @@ async function autoResolveConflict(iteration) {
     mergeableCheckPrompt({ pr: PR, repo: REPO }),
     { agentType: 'dev-runner-haiku-ro', schema: MERGEABLE_STATE, label: `mergeable-check#${iteration}`, phase: 'Iterate' },
   )
+  mergeableLast = mergeableObservation(mergeable, mergeableLast)
   if (!isConflictingMergeable(mergeable)) {
     if (mergeable == null) log(`⚠️ iteration ${iteration}: mergeable-check#${iteration} が結果を返さず — conflict の自動解消は試みない（fail-open）`)
     return null
@@ -2409,11 +2509,13 @@ async function autoResolveConflict(iteration) {
   )
   const rec = conflictAutoresolveRecord(res, iteration)
   conflictAttempts.push(rec)
+  mergeableLast = mergeableAfterAttempt(mergeableLast, rec)
   if (rec.status === 'resolved' || rec.status === 'push_failed') securityHeadMayChange()
   const fileList = rec.files.map((f) => `${f.path}（${f.type}）`).join(' / ') || '—'
   if (rec.status === 'resolved') {
     fixesApplied++
     shaNow = rec.merge_sha
+    endHeadUnsettled = false
     remergeSha = rec.merge_sha
     pendingDeltaLines = null
     log(`iteration ${iteration}: base（${base}）との conflict を自動解消して push した（${fileList}）— 次 iteration で解消行を review し CI gate を通してから LGTM を確定する`)
@@ -2451,6 +2553,9 @@ function routeInsideWorktree(outcome, iteration) {
 // criticalPending: full review が critical を返し、まだ critical の無い full review を経ていない。true の間は
 // 次 round も full review にする（nextCriticalPending / resolveReviewScope）— delta review の approve だけで LGTM にしない。
 let shaNow = isDeltaSha(prMeta?.head_sha) ? prMeta.head_sha.trim() : null
+// head を変えうる操作を始めてから、その後の head を確かめる（shaNow を更新する）までの間 true。true のまま終えた run（fix_failed 等）は
+// shaNow が PR head のままとは言えないので、終了レポートの回収状況で観測を終端 head のものと扱わない
+let endHeadUnsettled = false
 let shaPrev = null
 let pendingDeltaLines = null
 let criticalPending = false
@@ -2682,6 +2787,9 @@ if (SECURITY_REVIEW_ARG == null) log('security review: args.security_review が�
 // true（run 中の判定は PR の worktree を cwd に起動する中継の返り値で、PR が書いた指示文で false に偽れるため、後の判定で戻さない）
 let reviewerContextChanged = SECURITY_REVIEW_ARG?.reviewer_context_changed === true
 let securityStatus = null   // 'cleared' | 'unresolved'（null は今の head の review に到達していない。cleared は fix の前に null に戻す）
+// security review の結果（対象外の判定を含む）を観測した head。起動時の対象外は prerun / dev-flow が今の head で判定した結果。
+// reviewer の結果を読めない・reviewed_sha が今の head と違う round は null（その件数をどの head の結果とも言えない）
+let securityReviewHead = securityTarget ? null : shaNow
 let securityRounds = 0      // review の回数（security-reviewer の spawn と、結果を読めた Codex の review の合計）
 // review の前提チェックで clear にできずに止めた理由（閉じた enum の固定 code。PR 由来の文字列は載せない）:
 // 'diff_unavailable' / 'head_unknown' / 'head_mismatch' / 'review_dir_invalid' / 'reviewer_context_changed' /
@@ -2762,6 +2870,7 @@ async function endWithDeferredSecurity(fix, deferred) {
       return
     }
     shaNow = ensure.headSha
+    endHeadUnsettled = false
     pendingDeltaLines = ensure.deltaLines
     fixesApplied++
   }
@@ -2772,6 +2881,7 @@ async function endWithDeferredSecurity(fix, deferred) {
 // 変わりうる時点で返り値の status を cleared のまま残さない（LGTM はその round の review と同じ head の clear でだけ確定する）
 function securityHeadMayChange() {
   if (securityStatus === 'cleared') securityStatus = null
+  endHeadUnsettled = true
 }
 // security review の 1 回（今の PR head の security-scope#i → 対象なら security-review#i）。
 // 対象の run では review#i と並列に、round の開始時に対象でなかった run では LGTM の候補の round で呼ぶ。fix と terminal は
@@ -2812,6 +2922,7 @@ async function securityRound(iteration) {
   if (!exempt && !securityTarget) log(`iteration ${iteration}: security-scope#${iteration} が対象と判定（${scope == null ? '取得失敗' : (scope.reasons ?? []).slice(0, 3).join(' / ')}）— run の終わりまで対象として扱う`)
   securityTarget = securityTarget || !exempt
   if (!securityTarget) {
+    securityReviewHead = isFullCommitSha(scope?.head_sha) ? scope.head_sha.trim() : shaNow
     log(`iteration ${iteration}: security review 対象外（変更が許可リストだけ）`)
     return { kind: 'not_target' }
   }
@@ -2880,6 +2991,7 @@ async function securityRound(iteration) {
   }
   const verdict = securityReviewVerdict(review, headSha)
   securityCounts = (verdict.cleared && codexCounts) ? { ...verdict.counts, minor: codexCounts.minor } : verdict.counts
+  securityReviewHead = verdict.reason === 'no_result' || verdict.reason === 'sha_mismatch' ? null : headSha
   log(`iteration ${iteration}: security review${codexCleared === null ? '' : '（Codex）'} ${verdict.cleared ? 'clear' : '未 clear'}（critical ${securityCounts.critical} / major ${securityCounts.major} / minor ${securityCounts.minor}）`)
   // Codex の result は script（security-review-codex-result）と workflow の両方が同じ規則で判定し、両方が clear のときだけ clear
   if (verdict.cleared && codexCleared === false) return stop('Codex の結果の判定が script と workflow で一致しない')
@@ -3135,6 +3247,7 @@ for (i = 1; i <= MAX; i++) {
         ciVerifyWaitSeconds += verify.waited
         ciVerifyPolls += verify.polls
         ciVerifyStatus = verify.verdict
+        ciVerifyHead = shaNow
         log(`iteration ${i}: ci-verify（${CI_VERIFY.checks.join(', ')}）= ${verify.verdict}（待機 ${verify.waited}s / poll ${verify.polls} 回）`)
         if (verify.verdict === 'passed') {
           ciVerifyUrls = (verify.eff?.passed_checks ?? []).map((c) => c?.link).filter((u) => typeof u === 'string' && u !== '')
@@ -3345,6 +3458,7 @@ for (i = 1; i <= MAX; i++) {
       break
     }
     shaNow = fixEnsure.headSha
+    endHeadUnsettled = false
     pendingDeltaLines = fixEnsure.deltaLines
     fixesApplied++
   }
@@ -3425,13 +3539,19 @@ const summaryBody = buildTerminalSummaryBody({
   ciPollAttempts: totalCiPollAttempts,
   ciLastStatus,
   ciLastFailedChecks,
+  ciLastHead,
+  ciVerifyStatus,
+  ciVerifyHead,
+  mergeableLast,
   humanFollowups,
   conflictAutoresolve: conflictAttempts,
   priorDevflow: PRIOR_DEVFLOW,
   finalTestCheck,
   securityReview,
+  securityReviewHead,
   // この結論を出した head（最後の fix の push 後の PR head）。marker に載せ、次の単体起動の prerun が今の head と比べる
   headSha: shaNow,
+  endHead: endHeadUnsettled ? null : shaNow,
   // 方針を渡したことだけを載せる（本文は渡さない）
   fixDirectionUsed: FIX_DIRECTION != null,
 })

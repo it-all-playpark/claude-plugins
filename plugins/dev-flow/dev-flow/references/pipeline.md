@@ -204,9 +204,8 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
     push して次 round の review・CI gate を通してから LGTM。それ以外は merge を戻す — base の行を両側が書き換えた hunk は仕様判断なので LLM に解かせない
   - 敵対的 security review — 対象の run は各 round で review と並べて回す（`securityRound` / `securityGate`。`security-review.md`）
   - 単体起動 — wrapper（`pr-iterate/SKILL.md`）の `pr-iterate-prerun` が PR head の worktree を用意し `args.nested`
-    （`caller: 'standalone'`）で渡す。`prior_devflow`（HOLD の dev-flow サマリー）があれば code ごとの回収状況を出し、pr-iterate が
-    確かめられない code は未解消として人に返す（`priorHoldRecovery`）。`prior_summary` の head が今の head と違えば、review の前に
-    「再 review 中」コメントを足す（古い LGTM を今の head の根拠にさせない）。`--direction <file>` の修正方針は prerun が PR の worktree の
+    （`caller: 'standalone'`）で渡す。`prior_devflow`（HOLD の dev-flow サマリー）があれば code ごとの回収状況（解消 / 未解消 / 未確認）を出し、
+    確かめられない code は未確認で人に返す（`priorHoldRecovery`）。`prior_summary` の head が今の head と違えば、review の前に「再 review 中」コメントを足す（古い LGTM を今の head の根拠にさせない）。`--direction <file>` の修正方針は prerun が PR の worktree の
     外で読み、fix の prompt にだけ入れる（判定者には渡さない）
 - **失敗の扱い**:
   - review の null・throw は同じ prompt で 1 回だけ再試行し、だめなら `review_contract_error`、fix の null は 1 回再試行して `fix_failed`、
