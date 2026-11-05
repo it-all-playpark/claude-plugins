@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
 import { EVALUATOR_OPERATIONAL_CONTRACT } from './evaluator-contract.mjs';
-import { devFlowArgs, mergeTierFacts, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -24,11 +24,10 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * eval-convergence 専用の VM sandbox を組む。
  * evaluator stub は呼び出し回数を記録し、responses 配列の index に応じた応答を返す。
  *
- * @param {object} analyzeReq - analyze フェーズの agent が返す req オブジェクト（SHAPE を決定する）
  * @param {object[]} responses - evaluator stub が順に返すレスポンス配列
  * @returns {{ ctx: vm.Context, counters: { evaluatorCalls: () => number } }}
  */
-function makeSandbox(analyzeReq, responses) {
+function makeSandbox(responses) {
   const evalCalls = [];
   const evalPrompts = [];
 
@@ -37,14 +36,6 @@ function makeSandbox(analyzeReq, responses) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    // Setup(worktree)
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
-    }
-    // Analyze: label が 'analyze' で始まる
-    if (label.startsWith('analyze')) {
-      return analyzeReq;
-    }
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // Diff triage / Merge tier: danger-grep 系（label が 'danger-grep' で始まる）
@@ -63,58 +54,22 @@ function makeSandbox(analyzeReq, responses) {
       const idx = Math.min(evalCalls.length - 1, responses.length - 1);
       return responses[idx];
     }
-    // redgreen-verify は呼ばれないはずだが念のため（verified_by:'inspection' で回避）
-    if (agentType === 'dev-flow:dev-runner-haiku' && label.startsWith('redgreen')) {
-      return { red: false, green: false, reason: 'stub' };
-    }
-    // realized-diff（Diff triage）: dev-runner-haiku, label='realized-diff', CHANGED schema
-    if (agentType === 'dev-flow:dev-runner-haiku-ro' && label === 'realized-diff') {
-      return { files: ['src/foo.ts'] };
-    }
-    // declared-path-check（Validate）: dev-runner-haiku, label='declared-path-check', CHANGED schema
-    if (agentType === 'dev-flow:dev-runner-haiku' && label === 'declared-path-check') {
-      return { files: ['src/foo.ts'] };
-    }
-    // PR: label が 'pr' で始まる
-    if (label.startsWith('pr')) {
-      return { pr_url: 'http://x', pr_number: 1, committed: true };
-    }
-    // Merge tier: merge-tier-facts（changed）
-    // → docs/test-only でないファイルを返す（AUTO 除外。HOLD 要因を絞る）
-    if (label === 'merge-tier-facts') {
-      return mergeTierFacts({ files: ['src/foo.ts'] });
-    }
     // implementer その他
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
-    // diff-gate / diff-hash（issue #215）: need() による throw の回避
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false }
     // デフォルト
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'commit-hook#post-eval-1': null, 'isolation-probe': null, 'journal-log': null, 'post-summary': null })({ label, agentType, prompt });
   };
-
-  // parallel() stub: runImplement が parallel(par) を呼ぶため（par が空なら []）
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
 
   // pr-iterate stub: workflow() の呼び出し
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
-  const sandbox = {
-    // workflow 制御関数
-    phase: () => {},
-    log: () => {},
+  const ctx = makeWorkflowContext({
     agent: agentStub,
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
-    // 引数（ISSUE 解決用）
     args: devFlowArgs('1'),
-    // JS 組み込み（shape-loop-routing.test.mjs と同一セット）
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return {
     ctx,
     counters: {
@@ -169,7 +124,7 @@ test('[eval-convergence] AC#1: complex 経路・minor のみ feedback・AC 全 s
   const responses = [evalResponse];
 
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx, counters } = makeSandbox(analyzeReq, responses);
+  const { ctx, counters } = makeSandbox(responses);
   const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる
@@ -234,7 +189,7 @@ test('[eval-convergence] AC#2: 沈黙 critical → EVAL_MAX(10 回)まで差し�
   const responses = [firstResponse, silentResponse];
 
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx, counters } = makeSandbox(analyzeReq, responses);
+  const { ctx, counters } = makeSandbox(responses);
   const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -310,7 +265,7 @@ test('[eval-convergence] AC#3: critical_resolutions {resolved:true, evidence} �
   const responses = [firstResponse, secondResponse];
 
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx, counters } = makeSandbox(analyzeReq, responses);
+  const { ctx, counters } = makeSandbox(responses);
   const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -382,7 +337,7 @@ test('[eval-convergence] contract: eval#2 prompt に EVALUATOR_OPERATIONAL_CONTR
   };
 
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx, counters } = makeSandbox(analyzeReq, [firstResponse, secondResponse]);
+  const { ctx, counters } = makeSandbox([firstResponse, secondResponse]);
   const { error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {

@@ -15,8 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts, runWorkflowCapture, assertNoCrash, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, runWorkflowCapture, assertNoCrash, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -26,13 +25,12 @@ const src = readFileSync(devFlowPath, 'utf8');
 // ---- VM sandbox helpers ----
 
 /**
- * @param {object} analyzeReq - analyze フェーズの agent が返す req オブジェクト（SHAPE を決定する）
  * @param {object} dangerGrepPre - Diff triage（Evaluate 前, label:'danger-grep'）の stub レスポンス
  * @param {object} dangerGrepFinal - Merge tier（label:'merge-tier-facts' の risk サブ結果）の stub レスポンス
  * @param {object} evaluatorResponse - Evaluate 本体（label:'eval#N'）の stub レスポンス（全 iteration 同一）
  * @param {object|null} clearanceResponse - 'security-clearance-final' の stub レスポンス（null 可）
  */
-function makeSandbox(analyzeReq, dangerGrepPre, dangerGrepFinal, evaluatorResponse, clearanceResponse) {
+function makeSandbox(dangerGrepPre, dangerGrepFinal, evaluatorResponse, clearanceResponse) {
   const evalCalls = [];
   const clearanceCalls = [];
   const journalPrompts = [];
@@ -42,12 +40,6 @@ function makeSandbox(analyzeReq, dangerGrepPre, dangerGrepFinal, evaluatorRespon
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
-    }
-    if (label.startsWith('analyze')) {
-      return analyzeReq;
-    }
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // Diff triage（Evaluate 前）の danger-grep（issue #544 統合呼び出し。dangerGrepPre を
@@ -76,9 +68,6 @@ function makeSandbox(analyzeReq, dangerGrepPre, dangerGrepFinal, evaluatorRespon
       evalCalls.push({ label, agentType });
       return evaluatorResponse;
     }
-    if (agentType === 'dev-flow:dev-runner-haiku' && label.startsWith('redgreen')) {
-      return { red: false, green: false, reason: 'stub' };
-    }
     if (label.startsWith('pr')) {
       return { pr_url: 'http://x', pr_number: 16, committed: true };
     }
@@ -91,28 +80,16 @@ function makeSandbox(analyzeReq, dangerGrepPre, dangerGrepFinal, evaluatorRespon
       journalPrompts.push(prompt);
       return { saved: true, logged: true };
     }
-    if (agentType === 'dev-flow:dev-implementer') {
-      return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
-    }
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'security-clearance-final': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
-  const sandbox = {
-    phase: () => {},
-    log: () => {},
+  const ctx = makeWorkflowContext({
     agent: agentStub,
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
     args: devFlowArgs('16'),
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return {
     ctx,
     counters: {
@@ -128,16 +105,6 @@ function makeSandbox(analyzeReq, dangerGrepPre, dangerGrepFinal, evaluatorRespon
 // ============================================================
 // 固定データ
 // ============================================================
-
-// complex に落ちる req（AC 満たし済みで danger 以外の HOLD 要因を混入させない）。
-const ANALYZE_REQ = {
-  summary: 's',
-  acceptance_criteria: ['a'],
-  issue_type: 'feat',
-  scope: 'src',
-  issue_number: 16,
-  issue_title: 'stub-issue-title',
-};
 
 const DANGER_CLEAN = { ok: true, hits: [] };
 const DANGER_HIT_CONFIG = { ok: true, hits: [{ class: 'config', file: 'x', pattern: 'p' }] };
@@ -163,7 +130,7 @@ test('[merge-tier-sec-clearance] シナリオ1: PR#16 再現 — cleared:true+ev
   const clearanceResponse = {
     security_clearance: [{ danger_class: 'config', cleared: true, evidence: 'diff 精査: secret 平文なし' }],
   };
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ, DANGER_CLEAN, DANGER_HIT_CONFIG, EVAL_RESPONSE_CLEAN, clearanceResponse);
+  const { ctx, counters } = makeSandbox(DANGER_CLEAN, DANGER_HIT_CONFIG, EVAL_RESPONSE_CLEAN, clearanceResponse);
   const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
@@ -214,7 +181,7 @@ test('[merge-tier-sec-clearance] シナリオ2: cleared:false — SEC-CONFIG unc
   const clearanceResponse = {
     security_clearance: [{ danger_class: 'config', cleared: false, evidence: '' }],
   };
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ, DANGER_CLEAN, DANGER_HIT_CONFIG, EVAL_RESPONSE_CLEAN, clearanceResponse);
+  const { ctx, counters } = makeSandbox(DANGER_CLEAN, DANGER_HIT_CONFIG, EVAL_RESPONSE_CLEAN, clearanceResponse);
   const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
@@ -231,7 +198,7 @@ test('[merge-tier-sec-clearance] シナリオ2: cleared:false — SEC-CONFIG unc
 // security-clearance-final は model override を渡さない call site なので、null でも再試行しない（計 1 回）。
 // ============================================================
 test('[merge-tier-sec-clearance] シナリオ3: clearance null — HOLD かつ workflow は完走する', async () => {
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ, DANGER_CLEAN, DANGER_HIT_CONFIG, EVAL_RESPONSE_CLEAN, null);
+  const { ctx, counters } = makeSandbox(DANGER_CLEAN, DANGER_HIT_CONFIG, EVAL_RESPONSE_CLEAN, null);
   const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
@@ -252,7 +219,7 @@ test('[merge-tier-sec-clearance] シナリオ4: merge-tier-facts risk fail-close
   const clearanceResponse = {
     security_clearance: [{ danger_class: 'config', cleared: true, evidence: 'should not be called' }],
   };
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ, DANGER_CLEAN, DANGER_FAIL_CLOSED, EVAL_RESPONSE_CLEAN, clearanceResponse);
+  const { ctx, counters } = makeSandbox(DANGER_CLEAN, DANGER_FAIL_CLOSED, EVAL_RESPONSE_CLEAN, clearanceResponse);
   const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
@@ -272,7 +239,7 @@ test('[merge-tier-sec-clearance] シナリオ4: merge-tier-facts risk fail-close
 // シナリオ 5: 両方 clean（回帰） — clearance は呼ばれず、danger 起因の HOLD にならない。
 // ============================================================
 test('[merge-tier-sec-clearance] シナリオ5 regression: Evaluate 前・Merge tier 最終ともに clean — clearance 呼び出しなし、HOLD にならない', async () => {
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ, DANGER_CLEAN, DANGER_CLEAN, EVAL_RESPONSE_CLEAN, null);
+  const { ctx, counters } = makeSandbox(DANGER_CLEAN, DANGER_CLEAN, EVAL_RESPONSE_CLEAN, null);
   const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 

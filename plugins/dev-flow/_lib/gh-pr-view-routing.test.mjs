@@ -23,33 +23,17 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 
-// standard に落ちる req（count=3 ≤ 5, ac.length=1, type=fix → floor='standard'。danger clean +
-// AC satisfied + breaking なしで、gh-pr-view が clean/unknown を返す限り baseline は REVIEW になる）。
-const STANDARD_REQ = {
-  summary: 's',
-  acceptance_criteria: ['a'],
-  issue_type: 'fix',
-  scope: 'src',
-  issue_number: 405,
-  issue_title: 'stub-issue-title',
-};
-
 function createResponder(prMetaResponse) {
   return function (prompt, opts) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-405' };
-    }
-    if (label.startsWith('analyze')) return STANDARD_REQ;
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     if (label === 'danger-grep') return { ok: true, hits: [] };
@@ -61,9 +45,6 @@ function createResponder(prMetaResponse) {
         ac_results: [{ ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: 'ok' }],
         security_clearance: [], concern_resolutions: [],
       };
-    }
-    if (label === 'realized-diff' || label === 'declared-path-check') {
-      return { files: ['src/x.ts'] };
     }
     if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 405, committed: true };
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
@@ -94,17 +75,13 @@ function makeSandbox(prMetaResponse) {
   const pipeline = async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } }));
   const workflow = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
-  const sandbox = {
-    phase: () => {},
-    log: () => {},
+  const ctx = makeWorkflowContext({
     agent,
     parallel,
     pipeline,
     workflow,
     args: devFlowArgs('405'),
-    ...JS_GLOBALS,
-  };
-  const ctx = vm.createContext(sandbox);
+  });
   return { ctx, calls };
 }
 

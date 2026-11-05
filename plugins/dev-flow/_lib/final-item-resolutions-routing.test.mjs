@@ -23,22 +23,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
-
-// standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
-const STANDARD_REQ = {
-  summary: 's',
-  acceptance_criteria: ['a', 'b'],
-  issue_type: 'fix',
-  scope: 'src',
-  issue_number: 658,
-  issue_title: 'stub-issue-title',
-};
 
 const ESCALATE_TOPIC = 'base image floating tag';
 const ESCALATE_FEEDBACK = {
@@ -67,14 +57,9 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-658' };
-    if (label === 'isolation-probe') return { written: true };
-    if (label.startsWith('analyze')) return STANDARD_REQ;
-    if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't1', files: ['src/x.ts'], summary: 's', concerns: [] };
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
-    if (label === 'realized-diff') return { files: ['src/x.ts'] };
     if (agentType === 'dev-flow:evaluator' && label === 'eval#1') {
       return {
         verdict: 'pass', total: 100, threshold: 80,
@@ -97,15 +82,11 @@ function createResponder(overrides = {}) {
         item_resolutions: id ? [{ id, resolution: 'resolved', evidence: 'fix commit で revert 済み' }] : [],
       };
     }
-    if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
-    if (label === 'merge-tier-facts') return mergeTierFacts({ files: ['src/x.ts'] });
     if (label === 'changed-files-final') return { files: [] };
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
     if (label === 'reconcile-sync') return { ok: true, head: 'deadbeef' };
-    if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
-    return null;
+    return devFlowResponder({ 'ac-checkbox-sync': null, 'commit-hook#1': null })({ label, agentType, prompt });
   };
 }
 

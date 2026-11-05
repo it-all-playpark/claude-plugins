@@ -12,13 +12,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, JS_GLOBALS, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, JS_GLOBALS, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 
-function makeCountingSandbox(analyzeReq, config) {
+function makeCountingSandbox(config) {
   const calls = [];
   const {
     gateEmpty = false,
@@ -39,28 +39,19 @@ function makeCountingSandbox(analyzeReq, config) {
     if (label === 'diff-hash-pr') return { hash: 'H', empty: false };
     if (label === 'issue-labels') return issueLabelsRes;
     if (label === 'cross-repo-artifacts') return crossRepoArtifactsRes;
-    if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-1', repo: 'acme/skills' };
-    if (label.startsWith('analyze')) return analyzeReq;
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
-    if (label === 'realized-diff') return { files: ['src/foo.ts'] };
-    if (label === 'declared-path-check') return { files: [] };
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
-    if (label.startsWith('redgreen')) return { red: false, green: false, reason: 'stub' };
     if (agentType === 'dev-flow:evaluator') return { verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation', ac_results: [], security_clearance: [] };
-    if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
-    if (label === 'journal-log-failure') return null;
-    if (label === 'journal-log' && agentType === 'dev-flow:dev-runner-haiku') return { saved: true, logged: true };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 'T1', files: implementerFiles, summary: '', concerns: [], blocking_reason: null, missing_context: null };
     }
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'issue-labels': null, 'journal-log-failure': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
   const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const sandbox = {
     phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 }), args: devFlowArgs('1'),
     ...JS_GLOBALS,
   };
@@ -68,21 +59,12 @@ function makeCountingSandbox(analyzeReq, config) {
   return { ctx, calls };
 }
 
-const STANDARD_REQ = {
-  summary: 's',
-  acceptance_criteria: ['ac1', 'ac2'],
-  issue_type: 'fix',
-  scope: 'src',
-  issue_number: 1,
-  issue_title: 'stub-issue-title',
-};
-
 const src = readFileSync(devFlowPath, 'utf8');
 
 // (1) diff-gate empty=true + cross-repo ラベル + found=1 → throw なし・reimpl-empty-diff 無し・
 //     status==='cross_repo_artifact'・journal-log-failure prompt に 'cross_repo' を含み 'empty_diff' を含まない
 test('[cross-repo-gate] (1) label=cross-repo かつ found>=1 → graceful 終了・status=cross_repo_artifact', async () => {
-  const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, {
+  const { ctx, calls } = makeCountingSandbox({
     gateEmpty: true,
     issueLabelsRes: { ok: true, labels: ['cross-repo'] },
     crossRepoArtifactsRes: { ok: true, found: 1, artifacts: [{ path: '/tmp/other-repo/bar.ts', exists: true, repo_root: '/tmp/other-repo', dirty: true }] },
@@ -108,7 +90,7 @@ test('[cross-repo-gate] (1) label=cross-repo かつ found>=1 → graceful 終了
 
 // (2) empty=true + ラベルあり + found=0 → 既存挙動（reimpl-empty-diff → diff-gate-retry empty=true → throw、error_category empty_diff）
 test('[cross-repo-gate] (2) label=cross-repo だが found=0 → 既存 fail-closed 経路のまま throw', async () => {
-  const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, {
+  const { ctx, calls } = makeCountingSandbox({
     gateEmpty: true,
     retryEmpty: true,
     issueLabelsRes: { ok: true, labels: ['cross-repo'] },
@@ -130,7 +112,7 @@ test('[cross-repo-gate] (2) label=cross-repo だが found=0 → 既存 fail-clos
 
 // (3) empty=true + labels=[] → issue-labels probe 1 回のみで既存挙動維持
 test('[cross-repo-gate] (3) labels=[] → issue-labels probe 1 回のみ・cross-repo-artifacts は呼ばれない・既存 throw 挙動', async () => {
-  const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, {
+  const { ctx, calls } = makeCountingSandbox({
     gateEmpty: true,
     retryEmpty: true,
     issueLabelsRes: { ok: true, labels: [] },
@@ -146,7 +128,7 @@ test('[cross-repo-gate] (3) labels=[] → issue-labels probe 1 回のみ・cross
 
 // (4) empty=true + issue-labels が null/ok:false → fail-safe で既存挙動
 test('[cross-repo-gate] (4) issue-labels が ok:false → fail-safe で既存 throw 挙動・cross-repo-artifacts 0 回', async () => {
-  const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, {
+  const { ctx, calls } = makeCountingSandbox({
     gateEmpty: true,
     retryEmpty: true,
     issueLabelsRes: { ok: false, error: 'gh not found' },
@@ -161,7 +143,7 @@ test('[cross-repo-gate] (4) issue-labels が ok:false → fail-safe で既存 th
 
 // (4b) issue-labels が null を返す場合も fail-safe
 test('[cross-repo-gate] (4b) issue-labels が null → fail-safe で既存 throw 挙動', async () => {
-  const { ctx } = makeCountingSandbox(STANDARD_REQ, {
+  const { ctx } = makeCountingSandbox({
     gateEmpty: true,
     retryEmpty: true,
     issueLabelsRes: null,
@@ -173,7 +155,7 @@ test('[cross-repo-gate] (4b) issue-labels が null → fail-safe で既存 throw
 
 // (5) empty=false → issue-labels / cross-repo-artifacts の呼び出しが 0 回
 test('[cross-repo-gate] (5) diff-gate empty=false → issue-labels / cross-repo-artifacts は呼ばれない', async () => {
-  const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, { gateEmpty: false });
+  const { ctx, calls } = makeCountingSandbox({ gateEmpty: false });
   const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(5) 想定外エラー: ${error.message}`);
@@ -187,7 +169,7 @@ test('[cross-repo-gate] (5) diff-gate empty=false → issue-labels / cross-repo-
 
 // (6) cross-repo ラベルはあるが implementer の申告ファイルが worktree 外に無い（候補 0 件）→ cross-repo-artifacts は呼ばれず既存 fail-closed 経路
 test('[cross-repo-gate] (6) label=cross-repo だが候補パス 0 件 → cross-repo-artifacts は呼ばれず既存 throw 挙動', async () => {
-  const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, {
+  const { ctx, calls } = makeCountingSandbox({
     gateEmpty: true,
     retryEmpty: true,
     issueLabelsRes: { ok: true, labels: ['cross-repo'] },

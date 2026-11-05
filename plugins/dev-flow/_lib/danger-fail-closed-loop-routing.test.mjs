@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -33,12 +33,11 @@ const src = readFileSync(devFlowPath, 'utf8');
  * dangerGrepResponse をそのまま返す。evaluator 呼び出し回数と journal-log に渡された
  * prompt を捕捉する。
  *
- * @param {object} analyzeReq - analyze フェーズの agent が返す req オブジェクト（SHAPE を決定する）
  * @param {object} dangerGrepResponse - danger-grep / merge-tier-facts(risk) stub が返すレスポンス
  * @param {object} evaluatorResponse - evaluator stub が返すレスポンス（全 iteration で同一を返す）
  * @returns {{ ctx: vm.Context, counters: { evaluatorCalls: () => number, journalPrompts: () => string[] } }}
  */
-function makeSandbox(analyzeReq, dangerGrepResponse, evaluatorResponse) {
+function makeSandbox(dangerGrepResponse, evaluatorResponse) {
   const evalCalls = [];
   const journalPrompts = [];
 
@@ -47,14 +46,6 @@ function makeSandbox(analyzeReq, dangerGrepResponse, evaluatorResponse) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    // Setup(worktree)
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
-    }
-    // Analyze: label が 'analyze' で始まる
-    if (label.startsWith('analyze')) {
-      return analyzeReq;
-    }
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // Diff triage: label 'danger-grep' は issue #544 で統合呼び出しへ変わった
@@ -77,24 +68,9 @@ function makeSandbox(analyzeReq, dangerGrepResponse, evaluatorResponse) {
       evalCalls.push({ label, agentType });
       return evaluatorResponse;
     }
-    // redgreen-verify は呼ばれないはずだが念のため（verified_by:'inspection' で回避）
-    if (agentType === 'dev-flow:dev-runner-haiku' && label.startsWith('redgreen')) {
-      return { red: false, green: false, reason: 'stub' };
-    }
-    // PR: label が 'pr' で始まる
-    if (label.startsWith('pr')) {
-      return { pr_url: 'http://x', pr_number: 1, committed: true };
-    }
     // post-summary（dev-runner-haiku）: posted:true 固定
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       return { posted: true, method: 'gh pr comment', url: 'http://x' };
-    }
-    // journal-save (stage1, issue #494): 実際の telemetry payload はここに載る（journal-log は
-    // stage2 でファイルパスのみを扱うため payload literal を含まない）。prompt を捕捉し
-    // saved:true を返して journal-log (stage2) へ進めさせる。
-    if (label === 'journal-save' && agentType === 'dev-flow:dev-runner-haiku') {
-      journalPrompts.push(prompt);
-      return { saved: true, path: '/tmp/wt/.devflow-tmp/payload-test.json' };
     }
     // journal-log (stage2): logged:true を返す
     if (label === 'journal-log' && agentType === 'dev-flow:dev-runner-haiku') {
@@ -104,33 +80,18 @@ function makeSandbox(analyzeReq, dangerGrepResponse, evaluatorResponse) {
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
-    // diff-gate / diff-hash（issue #215）: need() による throw の回避
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false }
     // デフォルト
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null })({ label, agentType, prompt });
   };
-
-  // parallel() stub: runImplement が parallel(par) を呼ぶため（par が空なら []）
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
 
   // pr-iterate stub: workflow() の呼び出し
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
-  const sandbox = {
-    // workflow 制御関数
-    phase: () => {},
-    log: () => {},
+  const ctx = makeWorkflowContext({
     agent: agentStub,
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
-    // 引数（ISSUE 解決用）
     args: devFlowArgs('1'),
-    // JS 組み込み（eval-convergence.test.mjs と同一セット）
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return {
     ctx,
     counters: {
@@ -143,17 +104,6 @@ function makeSandbox(analyzeReq, dangerGrepResponse, evaluatorResponse) {
 // ============================================================
 // テストケース
 // ============================================================
-
-// complex に落ちる req（count=7 → floor=complex → EVAL_PASSES=EVAL_MAX=10 のループ経路）。
-// acceptance_criteria は 1-2 件に絞る（AC 未達要因を混入させないため）。
-const ANALYZE_REQ_COMPLEX = {
-  summary: 's',
-  acceptance_criteria: ['a', 'b'],
-  issue_type: 'feat',
-  scope: 'src',
-  issue_number: 1,
-  issue_title: 'stub-issue-title',
-};
 
 // danger-grep fail-closed stub（risk.ok !== true）。evidence 文字列は evidence 判別用。
 const DANGER_FAIL_CLOSED = { ok: false, hits: [], error: 'stub fail-closed' };
@@ -178,7 +128,7 @@ const EVAL_RESPONSE_CLEAN = {
 };
 
 test('[danger-fail-closed] AC#1: danger-grep fail-closed でも evaluator はちょうど 1 回で収束する（EVAL_MAX=10 まで空回りしない）', async () => {
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ_COMPLEX, DANGER_FAIL_CLOSED, EVAL_RESPONSE_CLEAN);
+  const { ctx, counters } = makeSandbox(DANGER_FAIL_CLOSED, EVAL_RESPONSE_CLEAN);
   const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -193,7 +143,7 @@ test('[danger-fail-closed] AC#1: danger-grep fail-closed でも evaluator はち
 });
 
 test('[danger-fail-closed] AC#2: danger-grep fail-closed 時、merge tier は HOLD になる（軸A invariant: danger-grep の fail-closed は緩めない）', async () => {
-  const { ctx } = makeSandbox(ANALYZE_REQ_COMPLEX, DANGER_FAIL_CLOSED, EVAL_RESPONSE_CLEAN);
+  const { ctx } = makeSandbox(DANGER_FAIL_CLOSED, EVAL_RESPONSE_CLEAN);
   const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -209,7 +159,7 @@ test('[danger-fail-closed] AC#2: danger-grep fail-closed 時、merge tier は HO
 });
 
 test('[danger-fail-closed] AC#4: return object で danger_fail_closed（真偽値）と danger_hits（実 hit クラス）が別軸で判別できる', async () => {
-  const { ctx } = makeSandbox(ANALYZE_REQ_COMPLEX, DANGER_FAIL_CLOSED, EVAL_RESPONSE_CLEAN);
+  const { ctx } = makeSandbox(DANGER_FAIL_CLOSED, EVAL_RESPONSE_CLEAN);
   const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -229,7 +179,7 @@ test('[danger-fail-closed] AC#4: return object で danger_fail_closed（真偽�
 });
 
 test('[danger-fail-closed] AC#5 regression: danger-grep clean 時は evaluator 1 回で収束し、merge tier は danger 起因で HOLD にならず danger_fail_closed:false になる', async () => {
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ_COMPLEX, DANGER_CLEAN, EVAL_RESPONSE_CLEAN);
+  const { ctx, counters } = makeSandbox(DANGER_CLEAN, EVAL_RESPONSE_CLEAN);
   const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {

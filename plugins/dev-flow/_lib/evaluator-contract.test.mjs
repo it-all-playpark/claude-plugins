@@ -43,7 +43,6 @@ function makeSandbox({ overrides = {}, fixesApplied = 0 } = {}) {
   });
 }
 
-
 const evaluatorContractBlock = [
   EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions,
   '',
@@ -262,9 +261,6 @@ test('[evaluator-contract] concern_resolutions contract mentions all 3 resolutio
   assert.ok(!contract.includes('{id, resolved, evidence}'));
 });
 
-// #626 で撤回した旧仕様の文言が契約・evaluator.md に残っていないことだけを pin する（否定側のみ。
-// 新仕様の言い回しは変えられるべきなので肯定側の文言 pin は置かない — issue #636 AC-1。
-// 契約と evaluator.md の同期は上の verbatim mirror テストが担保する）。
 test('[normalizeConcernResolution] normalizes a well-formed triaged item', () => {
   const result = normalizeConcernResolution({ id: 'CONCERN-1', resolution: 'triaged', evidence: 'e' });
   assert.deepEqual(result, { id: 'CONCERN-1', resolution: 'triaged', evidence: 'e' });

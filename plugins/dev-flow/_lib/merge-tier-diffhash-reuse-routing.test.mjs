@@ -33,22 +33,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
-
-// standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
-const STANDARD_REQ = {
-  summary: 's',
-  acceptance_criteria: ['a', 'b'],
-  issue_type: 'fix',
-  scope: 'src',
-  issue_number: 377,
-  issue_title: 'stub-issue-title',
-};
 
 // facts.risk に仕込む hit（再利用が発火しなければ SEC-CONFIG が unchecked に残り HOLD になる）
 const FACTS_RISK_HIT = { ok: true, hits: [{ class: 'config', file: 'src/x.ts', pattern: 'p' }] };
@@ -65,8 +55,6 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-377' };
-    if (label.startsWith('analyze')) return STANDARD_REQ;
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // label 'danger-grep'（Diff triage。issue #544 統合呼び出し）は
@@ -75,28 +63,13 @@ function createResponder(overrides = {}) {
     if (label === 'danger-grep') {
       return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'SAMEHASH', empty: false } };
     }
-    if (agentType === 'dev-flow:evaluator') {
-      return {
-        verdict: 'pass', total: 100, threshold: 80, feedback: [],
-        feedback_level: 'implementation',
-        ac_results: [
-          { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
-          { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
-        ],
-        security_clearance: [], concern_resolutions: [],
-      };
-    }
-    if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
     // merge-tier-facts（Merge tier 統合呼び出し）は既定で diff-triage 側と同一ハッシュ（再利用が発火する）
     // かつ risk に hit を仕込む — 再利用が発火すれば hit は使われず REVIEW、facts の risk が使われれば HOLD
     // になるため、再利用の発火有無を merge_tier で観測できる。不一致にしたいテストは override で上書きする。
     if (label === 'merge-tier-facts') return mergeTierFacts({ hash: 'SAMEHASH', risk: FACTS_RISK_HIT, files: ['src/x.ts'] });
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
-    if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't', files: ['src/x.ts'], summary: 's', concerns: [] };
-    if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'commit-hook#post-eval-1': null, 'isolation-probe': null })({ label, agentType, prompt });
   };
 }
 

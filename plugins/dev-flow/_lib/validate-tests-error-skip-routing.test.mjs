@@ -41,17 +41,6 @@ function createResponder({ mode, gateEmpty }) {
   let mainCount = 0;
   let retryCount = 0;
   return function ({ label, agentType }) {
-    if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-627' };
-    if (label.startsWith('analyze')) {
-      return {
-        summary: 's',
-        acceptance_criteria: ['a', 'b', 'c', 'd'],
-        issue_type: 'fix',
-        scope: 'src',
-        issue_number: 627,
-        issue_title: 'stub-issue-title',
-      };
-    }
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
     if (label === 'diff-gate') return { hash: gateEmpty ? 'EMPTY' : 'H', empty: !!gateEmpty };
     if (label === 'diff-gate-retry') return { hash: 'H', empty: false };
@@ -94,9 +83,6 @@ function createResponder({ mode, gateEmpty }) {
         verdict: 'pass', total: 100, threshold: 80, feedback: [],
         feedback_level: 'implementation', ac_results: [], security_clearance: [],
       };
-    }
-    if (label === 'realized-diff' || label === 'declared-path-check' || label === 'changed-files') {
-      return { files: ['src/foo.ts'] };
     }
     if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
     // それ以外（issue-labels 含む）→ null（非 cross-repo 扱い → 差し戻し1回 → retry 経路へ）

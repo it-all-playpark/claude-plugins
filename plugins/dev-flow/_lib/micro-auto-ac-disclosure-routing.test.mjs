@@ -15,22 +15,12 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts, JS_GLOBALS, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, JS_GLOBALS, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const src = readFileSync(devFlowPath, 'utf8');
-
-// micro shape 用の analyzeReq（acceptance_criteria 2 件。realized 1 件で micro）
-const MICRO_REQ = {
-  summary: 's',
-  acceptance_criteria: ['ac1'],
-  issue_type: 'fix',
-  scope: 'docs',
-  issue_number: 1,
-  issue_title: 'stub-issue-title',
-};
 
 // standard shape 用の analyzeReq（empty-diff-evaluate-routing.test.mjs の STANDARD_REQ 相当）
 const STANDARD_REQ = {
@@ -46,7 +36,7 @@ const STANDARD_REQ = {
  * sandbox を構築する。
  * shape に応じて realized-diff / changed-files の stub を切り替える。
  */
-function makeSandbox(analyzeReq, opts) {
+function makeSandbox(opts) {
   const calls = [];
   const {
     realizedFiles = ['docs/a.md'],
@@ -59,8 +49,6 @@ function makeSandbox(analyzeReq, opts) {
     const agentType = agentOpts && agentOpts.agentType ? agentOpts.agentType : '';
     calls.push({ label, agentType, prompt: String(prompt || '') });
 
-    if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-233' };
-    if (label.startsWith('analyze')) return analyzeReq;
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // file_changes は既定 realizedFiles（docs/a.md）と一致させ、宣言外扱いによる
@@ -70,22 +58,13 @@ function makeSandbox(analyzeReq, opts) {
     if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: realizedFiles, struct: null, diffhash: null };
     if (label === 'merge-tier-facts') return mergeTierFacts({ files: changedFiles });
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
-    if (label.startsWith('redgreen')) return { red: false, green: false, reason: 'stub' };
-    if (label.startsWith('diff-gate')) return { hash: 'H', empty: false };
-    if (label.startsWith('diff-hash')) return { hash: 'H', empty: false };
-    if (agentType === 'dev-flow:evaluator') return {
-      verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation',
-      ac_results: [], security_clearance: [],
-    };
-    if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 'issue-1', files: realizedFiles, summary: '', concerns: [] };
-    return null;
+    return devFlowResponder({ 'ci-check-lite': null, 'commit-hook#1': null, 'isolation-probe': null, 'journal-log': null, 'post-summary': null })({ label, agentType, prompt });
   };
 
   const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const sandbox = {
     phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: async () => iterateResult, args: devFlowArgs('1'),
     ...JS_GLOBALS,
   };
@@ -98,7 +77,7 @@ function makeSandbox(analyzeReq, opts) {
 // ============================================================
 
 test('[micro-auto-ac-disclosure] (A) micro AUTO run → merge_tier===AUTO かつ AC未検証文言を含む', async () => {
-  const { ctx, calls } = makeSandbox(MICRO_REQ, {
+  const { ctx, calls } = makeSandbox({
     realizedFiles: ['docs/a.md'],
     changedFiles: ['docs/a.md'],
   });
@@ -122,7 +101,7 @@ test('[micro-auto-ac-disclosure] (A) micro AUTO run → merge_tier===AUTO かつ
 // ============================================================
 
 test('[micro-auto-ac-disclosure] (B) standard run → merge_tier===REVIEW かつ AC未検証文言なし', async () => {
-  const { ctx, calls } = makeSandbox(STANDARD_REQ, {
+  const { ctx, calls } = makeSandbox({
     realizedFiles: ['src/foo.ts'],
     changedFiles: ['src/foo.ts'],
   });
@@ -144,7 +123,7 @@ test('[micro-auto-ac-disclosure] (B) standard run → merge_tier===REVIEW かつ
 // ============================================================
 
 test('[micro-auto-ac-disclosure] (C) micro AUTO run → evaluator が 0 件（AC未検証開示の前提確認）', async () => {
-  const { ctx, calls } = makeSandbox(MICRO_REQ, {
+  const { ctx, calls } = makeSandbox({
     realizedFiles: ['docs/a.md'],
     changedFiles: ['docs/a.md'],
   });

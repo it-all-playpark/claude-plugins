@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
 import { EVALUATOR_OPERATIONAL_CONTRACT } from './evaluator-contract.mjs';
-import { devFlowArgs, mergeTierFacts, runWorkflowCapture, assertNoCrash, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, runWorkflowCapture, assertNoCrash, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -28,12 +28,11 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * フィールドへ包んで返し、label 'merge-tier-facts'（Merge tier 統合呼び出し）は riskResponse を risk サブ結果に包んで
  * そのまま返す。evaluator 呼び出し回数・evaluator prompt・journal-log prompt を捕捉する。
  *
- * @param {object} analyzeReq - analyze フェーズの agent が返す req オブジェクト（SHAPE を決定する）
  * @param {object} riskResponse - danger-grep / merge-tier-facts(risk) stub が返すレスポンス
  * @param {object} evaluatorResponse - evaluator stub が返すレスポンス（全 iteration で同一を返す）
  * @returns {{ ctx: vm.Context, counters: object }}
  */
-function makeSandbox(analyzeReq, riskResponse, evaluatorResponse) {
+function makeSandbox(riskResponse, evaluatorResponse) {
   const evalCalls = [];
   const evalPrompts = [];
   const journalPrompts = [];
@@ -42,12 +41,6 @@ function makeSandbox(analyzeReq, riskResponse, evaluatorResponse) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
-    }
-    if (label.startsWith('analyze')) {
-      return analyzeReq;
-    }
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // label 'danger-grep'（Diff triage。issue #544 統合呼び出し）は riskResponse を risk
@@ -67,19 +60,8 @@ function makeSandbox(analyzeReq, riskResponse, evaluatorResponse) {
       evalPrompts.push(prompt);
       return evaluatorResponse;
     }
-    if (agentType === 'dev-flow:dev-runner-haiku' && label.startsWith('redgreen')) {
-      return { red: false, green: false, reason: 'stub' };
-    }
-    if (label.startsWith('pr')) {
-      return { pr_url: 'http://x', pr_number: 1, committed: true };
-    }
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       return { posted: true, method: 'gh pr comment', url: 'http://x' };
-    }
-    // journal-save (stage1, issue #494): 実際の telemetry payload はここに載る
-    if (label === 'journal-save' && agentType === 'dev-flow:dev-runner-haiku') {
-      journalPrompts.push(prompt);
-      return { saved: true, path: '/tmp/wt/.devflow-tmp/payload-test.json' };
     }
     if (label === 'journal-log' && agentType === 'dev-flow:dev-runner-haiku') {
       return { logged: true, summary: 'ok' };
@@ -87,25 +69,16 @@ function makeSandbox(analyzeReq, riskResponse, evaluatorResponse) {
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'commit-hook#post-eval-1': null, 'isolation-probe': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
-  const sandbox = {
-    phase: () => {},
-    log: () => {},
+  const ctx = makeWorkflowContext({
     agent: agentStub,
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
     args: devFlowArgs('1'),
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return {
     ctx,
     counters: {
@@ -119,24 +92,6 @@ function makeSandbox(analyzeReq, riskResponse, evaluatorResponse) {
 // ============================================================
 // フィクスチャ
 // ============================================================
-
-const ANALYZE_REQ_STANDARD = {
-  summary: 's',
-  acceptance_criteria: ['a'],
-  issue_type: 'feat',
-  scope: 'src',
-  issue_number: 1,
-  issue_title: 'stub-issue-title',
-};
-
-const ANALYZE_REQ_MICRO = {
-  summary: 's',
-  acceptance_criteria: ['a'],
-  issue_type: 'docs',
-  scope: 'docs',
-  issue_number: 1,
-  issue_title: 'stub-issue-title',
-};
 
 // test-weakening hit（pattern:'skip'）。SEC 7 クラスとは別系統。
 const RISK_TESTSURF_HIT = {
@@ -184,7 +139,7 @@ const EVAL_MICRO_CLEARANCE = {
 
 test('[testsurf] (a) TESTSURF hit + clearance 無し → merge tier HOLD、reasons に test-weakening / TESTSURF-SKIP、返り値 testsurf_hits に skip', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx } = makeSandbox(ANALYZE_REQ_STANDARD, RISK_TESTSURF_HIT, EVAL_NO_CLEARANCE);
+  const { ctx } = makeSandbox(RISK_TESTSURF_HIT, EVAL_NO_CLEARANCE);
   const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
@@ -199,7 +154,7 @@ test('[testsurf] (a) TESTSURF hit + clearance 無し → merge tier HOLD、reaso
 
 test('[testsurf] (b) TESTSURF hit + evaluator clearance あり → item checked で HOLD にならない（他条件 clean 前提）', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx } = makeSandbox(ANALYZE_REQ_STANDARD, RISK_TESTSURF_HIT, EVAL_WITH_CLEARANCE);
+  const { ctx } = makeSandbox(RISK_TESTSURF_HIT, EVAL_WITH_CLEARANCE);
   const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
@@ -210,7 +165,7 @@ test('[testsurf] (b) TESTSURF hit + evaluator clearance あり → item checked 
 
 test('[testsurf] (c) micro shape + testsurf hit → Evaluate が強制実行される（evaluator 呼び出し回数 >= 1）', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ_MICRO, RISK_TESTSURF_HIT, EVAL_MICRO_CLEARANCE);
+  const { ctx, counters } = makeSandbox(RISK_TESTSURF_HIT, EVAL_MICRO_CLEARANCE);
   const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
@@ -219,7 +174,7 @@ test('[testsurf] (c) micro shape + testsurf hit → Evaluate が強制実行さ�
 
 test('[testsurf] (d) TESTSURF hit があっても返り値の danger_hits（SEC 系）には混入しない', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx } = makeSandbox(ANALYZE_REQ_STANDARD, RISK_TESTSURF_HIT, EVAL_NO_CLEARANCE);
+  const { ctx } = makeSandbox(RISK_TESTSURF_HIT, EVAL_NO_CLEARANCE);
   const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
@@ -228,7 +183,7 @@ test('[testsurf] (d) TESTSURF hit があっても返り値の danger_hits（SEC 
 
 test('[testsurf] (e) evaluator prompt に testsurf_focus と testsurf_clearance 契約行が含まれる（AC-3 prompt 注入検証）', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ_STANDARD, RISK_TESTSURF_HIT, EVAL_NO_CLEARANCE);
+  const { ctx, counters } = makeSandbox(RISK_TESTSURF_HIT, EVAL_NO_CLEARANCE);
   const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 

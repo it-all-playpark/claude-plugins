@@ -15,8 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { devFlowArgs, runWorkflowCapture, assertNoCrash, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, assertNoCrash, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 import { isRedgreenCall, redgreenBatchResponse } from './test-helpers/redgreen-batch.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -32,12 +31,11 @@ const src = readFileSync(devFlowPath, 'utf8');
  * 1 spawn に全 AC ペア）の prompt に載った AC ごとに、ac_index・当該 AC の呼び出し回数（1始まり）別に
  * 記録・応答を切り替える。
  *
- * @param {object} analyzeReq
  * @param {object[]} evaluatorResponses - evaluator stub が呼び出し回数 index に応じて順に返す応答配列
  * @param {(acIndex:number, callNumber:number) => object} redgreenResponseFor - ac_index(0始まり)・
  *   当該 AC の呼び出し回数(1始まり) を受け取り redgreen stub の返り値を返す
  */
-function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
+function makeSandbox(evaluatorResponses, redgreenResponseFor) {
   const logs = [];
   const journalPrompts = [];
   const evalCalls = [];
@@ -48,12 +46,6 @@ function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
-    }
-    if (label.startsWith('analyze')) {
-      return analyzeReq;
-    }
     if (label.startsWith('danger-grep')) {
       return { ok: true, hits: [] };
     }
@@ -65,7 +57,6 @@ function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
       const idx = Math.min(evalCalls.length - 1, evaluatorResponses.length - 1);
       return evaluatorResponses[idx];
     }
-    if (label === 'rg-state-dir') return { state_dir: '/tmp/rg-state' };
     if (isRedgreenCall(agentType, label)) {
       // バッチ呼び出しの prompt に載った AC ペアごとに「当該 AC の呼び出し回数」を数える
       // （skip された AC は prompt に載らないので数えない）。
@@ -77,22 +68,8 @@ function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
         return redgreenResponseFor(acIndex, callNumber);
       });
     }
-    if (agentType === 'dev-flow:dev-runner-haiku-ro' && label === 'realized-diff') {
-      return { files: ['_lib/foo.test.mjs'] };
-    }
-    if (agentType === 'dev-flow:dev-runner-haiku' && label === 'declared-path-check') {
-      return { files: ['_lib/foo.test.mjs'] };
-    }
-    if (label.startsWith('pr')) {
-      return { pr_url: 'http://x', pr_number: 1, committed: true };
-    }
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       return { posted: true, method: 'gh pr comment', url: 'http://x' };
-    }
-    // journal-save (stage1, issue #494): 実際の telemetry payload はここに載る
-    if (label === 'journal-save' && agentType === 'dev-flow:dev-runner-haiku') {
-      journalPrompts.push(prompt);
-      return { saved: true, path: '/tmp/wt/.devflow-tmp/payload-test.json' };
     }
     if (label === 'journal-log' && agentType === 'dev-flow:dev-runner-haiku') {
       return { logged: true, summary: 'ok' };
@@ -100,25 +77,17 @@ function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'commit-hook#post-eval-1': null, 'isolation-probe': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
-  const sandbox = {
-    phase: () => {},
+  const ctx = makeWorkflowContext({
     log: (m) => logs.push(String(m)),
     agent: agentStub,
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
     args: devFlowArgs('1'),
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return {
     ctx,
     counters: {
@@ -133,15 +102,6 @@ function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
 // ============================================================
 // フィクスチャ
 // ============================================================
-
-const ANALYZE_REQ_1AC = {
-  summary: 's',
-  acceptance_criteria: ['a'],
-  issue_type: 'feat',
-  scope: 'src',
-  issue_number: 1,
-  issue_title: 'stub-issue-title',
-};
 
 const CLEAN_VERDICT = { comparability: 'exact', transitions: {}, verification_surface: { status: 'intact' } };
 
@@ -180,7 +140,7 @@ test('[redgreen-skip] T1: deterministic 昇格 + checked 済み AC は iteration
   const responses = [criticalFirstIter(), resolvedSecondIter()];
   const redgreenResponseFor = () => ({ red: true, green: true, verdict: CLEAN_VERDICT });
 
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ_1AC, responses, redgreenResponseFor);
+  const { ctx, counters } = makeSandbox(responses, redgreenResponseFor);
   const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
@@ -208,7 +168,7 @@ test('[redgreen-skip] T3: inspection 据え置き AC（checked だが kind!==det
     callNumber === 1 ? { red: false, green: true, reason: 'no red' } : { red: true, green: true }
   );
 
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ_1AC, responses, redgreenResponseFor);
+  const { ctx, counters } = makeSandbox(responses, redgreenResponseFor);
   const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
@@ -238,7 +198,7 @@ test('[redgreen-skip] T4: 未 checked AC は従来どおり起動される', asy
   const responses = [firstIter, resolvedSecondIter()];
   const redgreenResponseFor = () => ({ red: true, green: true, verdict: CLEAN_VERDICT });
 
-  const { ctx, counters } = makeSandbox(ANALYZE_REQ_1AC, responses, redgreenResponseFor);
+  const { ctx, counters } = makeSandbox(responses, redgreenResponseFor);
   const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 

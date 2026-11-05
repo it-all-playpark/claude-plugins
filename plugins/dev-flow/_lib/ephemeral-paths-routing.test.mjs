@@ -33,7 +33,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, prerunAnalyze, JS_GLOBALS, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, prerunAnalyze, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -70,9 +70,6 @@ function makeCountingSandbox(analyzeReq, realizedFiles, declaredFiles = []) {
     const agentType = opts?.agentType ?? '';
     calls.push({ label, agentType, prompt: String(prompt) });
 
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
-    }
     // label 'danger-grep'（issue #544 統合呼び出し）は risk/files を 1 応答で返す
     // （files は旧 realized-diff 相当のスナップショット）。
     if (label === 'danger-grep') {
@@ -92,33 +89,17 @@ function makeCountingSandbox(analyzeReq, realizedFiles, declaredFiles = []) {
         security_clearance: [],
       };
     }
-    if (label.startsWith('pr')) {
-      return { pr_url: 'http://x', pr_number: 1, committed: true };
-    }
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 'issue-1', files: declaredFiles, summary: '', concerns: [] };
     }
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) {
-      return { hash: 'H', empty: false };
-    }
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'journal-log': null, 'merge-tier-facts': null, 'post-summary': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
-
-  const sandbox = {
-    phase: () => {},
-    log: () => {},
+  const ctx = makeWorkflowContext({
     agent: agentStub,
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 }),
-    // REQ は args.setup.analyze から組まれる（Analyze phase は spawn しない）
     args: devFlowArgs('1', { analyze: prerunAnalyze({ acceptance_criteria: analyzeReq.acceptance_criteria, issue_type: analyzeReq.issue_type }) }),
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return { ctx, calls };
 }
 

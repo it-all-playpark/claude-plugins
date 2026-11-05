@@ -25,7 +25,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -38,11 +38,10 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * epochMode='ok' なら clock# probe と給電対象 stub 応答に epoch を単調増加で付与する。
  * epochMode='fail' なら clock# probe は null、他 stub は epoch を省略する（fail-open 経路）。
  *
- * @param {object} analyzeReq - analyze フェーズの agent が返す req オブジェクト（SHAPE を決定する）
  * @param {'ok'|'fail'} epochMode - epoch 給電モード
  * @returns {{ ctx: vm.Context, getJournalPrompts: () => string[], getClockCalls: () => string[] }}
  */
-function makeSandbox(analyzeReq, epochMode) {
+function makeSandbox(epochMode) {
   const journalPrompts = [];
   const clockCalls = []; // clock# probe の起動 label を発火順に記録（AC-1 の決定論検証用）
   const implEpochs = []; // implementer 応答に付与した epoch（implement_end の給電値）
@@ -62,22 +61,6 @@ function makeSandbox(analyzeReq, epochMode) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    // clock#*（issue #443 / #550 F1+F3）: 専用 clock probe は 0 回になった
-    // （clock#start は F1 で、clock#end は F3 で撤去済み — start mark は setup-base probe
-    // （issue #550 案1: resolve-base + worktree-base-check 統合 probe）、end mark は post-summary
-    // 応答の optional epoch からそれぞれ給電される）。この分岐は防御的に残すが到達しないはずで、
-    // AC-1 は getClockCalls() が常に空配列であることを検証する。
-    if (label.startsWith('clock#')) {
-      clockCalls.push(label);
-      if (epochMode === 'fail') return null;
-      epoch += 10;
-      return { ok: true, epoch };
-    }
-    // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #298, #517, #550 案1）。
-    // start mark の給電元（専用 clock#start probe は廃止、epoch は optional）。
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-1', repo: 'acme/skills' };
-    }
     // Setup 末尾の analyze ゲートは args.setup.analyze から REQ を組み spawn しない（issue #690）。
     // setup_end は args.setup.epoch_end から給電され implement 区間の起点になる（issue #695）。
     // implement_end は dev-implementer 呼び出しの epoch から給電される。
@@ -106,10 +89,6 @@ function makeSandbox(analyzeReq, epochMode) {
         ],
         security_clearance: [],
       });
-    }
-    // redgreen-verify は呼ばれないはずだが念のため（verified_by:'inspection' で回避）
-    if (agentType === 'dev-flow:dev-runner-haiku' && label.startsWith('redgreen')) {
-      return { red: false, green: false };
     }
     // PR: label が 'pr' で始まる（pr_end の給電元）
     if (label.startsWith('pr')) {
@@ -140,16 +119,10 @@ function makeSandbox(analyzeReq, epochMode) {
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) {
       return withEpoch({ hash: 'H', empty: false });
     }
-    // reconcile-sync / test#final は fixes_applied=0（本テストの workflowStub）では Final reconcile
-    // 自体が skip されるため呼ばれない想定だが、final_end 給電網羅性のため epoch を用意しておく。
-    if (label === 'reconcile-sync') {
-      return withEpoch({ ok: true, head: 'deadbeef' });
-    }
     // デフォルト: 未知の label は null を返す
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   // workflowStub: dev-flow.js の nested workflow('pr-iterate') 呼び出し（iterate_end の給電元）。
   // fixes_applied:0 で Final reconcile を skip させ（issue #443 の edge case: final キー欠落を検証）、
   // end_epoch から iterate_end を feedClockMark() へ給電する。
@@ -160,18 +133,12 @@ function makeSandbox(analyzeReq, epochMode) {
   };
 
   const logLines = []; // recordClockMark の fail-open 警告（⚠️ clock#<mark>）を検出するため log を捕捉
-  const sandbox = {
-    phase: () => {},
+  const ctx = makeWorkflowContext({
     log: (msg) => { logLines.push(String(msg)); },
     agent: agentStub,
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
     args: devFlowArgs('1'),
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return {
     ctx,
     getJournalPrompts: () => journalPrompts,
@@ -205,7 +172,7 @@ const ANALYZE_REQ = {
 const src = readFileSync(devFlowPath, 'utf8');
 
 test('[duration-telemetry] epochMode=ok: clock# 専用 probe は 0 件起動、journal-log prompt に duration_seconds/phase_durations が含まれる（final キーは fixes_applied=0 の Final reconcile skip で欠落する）', async () => {
-  const { ctx, getJournalPrompts, getClockCalls, getLogLines, getImplEpochs } = makeSandbox(ANALYZE_REQ, 'ok');
+  const { ctx, getJournalPrompts, getClockCalls, getLogLines, getImplEpochs } = makeSandbox('ok');
 
   const { result, error } = await runWorkflowCapture(src, ctx);
 
@@ -271,7 +238,7 @@ test('[duration-telemetry] epochMode=ok: clock# 専用 probe は 0 件起動、j
 });
 
 test('[duration-telemetry] epochMode=fail: clock# 専用 probe は null を返し、他の給電元 stub も epoch を省略する（fail-open）ため journal-log prompt に duration_seconds/phase_durations が現れず、result.merge_tier は正常に返る', async () => {
-  const { ctx, getJournalPrompts, getClockCalls } = makeSandbox(ANALYZE_REQ, 'fail');
+  const { ctx, getJournalPrompts, getClockCalls } = makeSandbox('fail');
 
   const { result, error } = await runWorkflowCapture(src, ctx);
 

@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, JS_GLOBALS, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -66,27 +66,11 @@ function makeCountingSandbox(opts) {
     const agentType = opts?.agentType ?? '';
     calls.push({ label, agentType, prompt: String(prompt ?? '') });
 
-    // Setup
-    if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
-
-    // Analyze（acceptance_criteria 4 件。実効 shape は realized diff から決まる）
-    if (label.startsWith('analyze')) {
-      return {
-        summary: 's',
-        acceptance_criteria: ['ac1', 'ac2', 'ac3', 'ac4'],
-        issue_type: 'fix',
-        scope: 'src',
-        issue_number: 1,
-        issue_title: 'stub-issue-title',
-      };
-    }
-
     // Security / danger-grep
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
 
     // diff-gate / diff-gate-retry
     if (label === 'diff-gate') return { hash: gateEmpty ? 'EMPTY' : 'H', empty: gateEmpty };
-    if (label === 'diff-gate-retry') return { hash: retryEmpty ? 'EMPTY' : 'H', empty: retryEmpty };
 
     // diff-hash 系（eval / pr）
     if (label.startsWith('diff-hash')) return { hash: 'H', empty: false };
@@ -149,30 +133,14 @@ function makeCountingSandbox(opts) {
       };
     }
 
-    // realized-diff / declared-path-check / changed-files
-    if (label === 'realized-diff') return { files: ['src/foo.ts'] };
-    if (label === 'declared-path-check') return { files: [] };
-
-    // PR 系
-    if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
-
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'commit-hook#2': null, 'commit-hook#retry-1': null, 'commit-hook#retry-2': null, 'commit-hook#retry-3': null, 'isolation-probe': null, 'issue-labels': null, 'journal-log': null, 'merge-tier-facts': null, 'post-summary': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
-
-  const sandbox = {
-    phase: () => {},
-    log: () => {},
+  const ctx = makeWorkflowContext({
     agent: agentStub,
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: async () => ({ status: 'LGTM' }),
     args: devFlowArgs('1'),
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return { ctx, calls };
 }
 

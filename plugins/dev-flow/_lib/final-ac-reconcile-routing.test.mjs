@@ -28,7 +28,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, prerunAnalyze, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, prerunAnalyze, assertNoCrash, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
 import { TEST_LOG_REUSE } from './evaluator-contract.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -57,19 +57,9 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-331' };
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
-    if (label === 'realized-diff') return { files: ['src/x.ts'] };
-    if (label === 'final-ac-reconcile') {
-      return {
-        ac_results: [
-          { ac_index: 0, satisfied: true, evidence: 'e0', verified_by: 'inspection' },
-          { ac_index: 1, satisfied: true, evidence: 'e1', verified_by: 'inspection' },
-        ],
-      };
-    }
     if (agentType === 'dev-flow:evaluator') {
       return {
         verdict: 'pass', total: 100, threshold: 80, feedback: [],
@@ -81,16 +71,11 @@ function createResponder(overrides = {}) {
         security_clearance: [], concern_resolutions: [],
       };
     }
-    if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
-    if (label === 'merge-tier-facts') return mergeTierFacts({ files: ['src/x.ts'] });
     if (label === 'changed-files-final') return { files: [] };
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
-    if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't', files: ['src/x.ts'], summary: 's', concerns: [] };
     if (label === 'reconcile-sync') return { ok: true, head: 'deadbeef' };
-    if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
-    return null;
+    return devFlowResponder({ 'ac-checkbox-sync': null, 'commit-hook#1': null, 'final-ac-reconcile': null, 'isolation-probe': null })({ label, agentType, prompt });
   };
 }
 

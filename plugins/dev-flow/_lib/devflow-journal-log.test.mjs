@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -27,11 +27,10 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * journal-log stub の戻り値は引数 journalResult で切り替え可能。
  * resolved 値（return object）を捕捉できるよう runner も同型にしている。
  *
- * @param {object} analyzeReq - analyze フェーズの agent が返す req オブジェクト（SHAPE を決定する）
  * @param {object} journalResult - journal-log stub が返すレスポンス（ログ成功/失敗を切り替え）
  * @returns {{ ctx: vm.Context, getJournalCallCount: () => number, getJournalPrompts: () => string[] }}
  */
-function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
+function makeSandbox(journalResult, evaluatorOverrides) {
   // journal-log 呼び出しカウンタ（issue #807: payload を pending/ へ直接書く 1 spawn）
   let journalCallCount = 0;
   const journalPrompts = [];
@@ -41,14 +40,6 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    // Setup(worktree)
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-1', repo: 'acme/skills' };
-    }
-    // Analyze: label が 'analyze' で始まる
-    if (label.startsWith('analyze')) {
-      return analyzeReq;
-    }
     // Diff triage / Merge tier: danger-grep 系（label が 'danger-grep' で始まる）
     // → danger clean にして HOLD 要因を発生させない
     if (label.startsWith('danger-grep')) {
@@ -76,10 +67,6 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
         ...(evaluatorOverrides ?? {}),
       };
     }
-    // redgreen-verify は呼ばれないはずだが念のため（verified_by:'inspection' で回避）
-    if (agentType === 'dev-flow:dev-runner-haiku' && label.startsWith('redgreen')) {
-      return { red: false, green: false };
-    }
     // PR: label が 'pr' で始まる
     if (label.startsWith('pr')) {
       return { pr_url: 'https://github.com/acme/skills/pull/1', pr_number: 1, committed: true };
@@ -102,34 +89,19 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
-    // diff-gate / diff-hash（issue #215）: need() による throw の回避
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false }
     // デフォルト: 未知の label は null を返す（journal-log が need() で包まれないことを前提）
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
-
-  // parallel() stub: runImplement が parallel(par) を呼ぶため（par が空なら []）
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
 
   // pr-iterate stub: workflow() の呼び出し
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
   // sandbox object（devflow-summary-post.test.mjs と同一セット）
-  const sandbox = {
-    // workflow 制御関数
-    phase: () => {},
-    log: () => {},
+  const ctx = makeWorkflowContext({
     agent: agentStub,
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
-    // 引数（ISSUE 解決用）
     args: devFlowArgs('1', { repo: 'acme/skills' }),
-    // JS 組み込み（devflow-summary-post.test.mjs と同一セット）
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return {
     ctx,
     getJournalCallCount: () => journalCallCount,
@@ -141,21 +113,11 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
 // テストケース
 // ============================================================
 
-// Merge tier phase まで到達させる req（実効 shape は realized diff から決まる。issue #676）
-const ANALYZE_REQ = {
-  summary: 's',
-  acceptance_criteria: ['a', 'b', 'c', 'd'],
-  issue_type: 'feat',
-  scope: 'src',
-  issue_number: 1,
-  issue_title: 'stub-issue-title',
-};
-
 const src = readFileSync(devFlowPath, 'utf8');
 
 test('[journal-log] AC#1 (issue #807): Merge tier phase 後に journal-log が 1 spawn だけ発生し、その prompt に handoff JSON キーと pending パスが含まれること', async () => {
   const journalResult = { saved: true, logged: true };
-  const { ctx, getJournalCallCount, getJournalPrompts } = makeSandbox(ANALYZE_REQ, journalResult);
+  const { ctx, getJournalCallCount, getJournalPrompts } = makeSandbox(journalResult);
 
   const { result, error } = await runWorkflowCapture(src, ctx);
 
@@ -204,7 +166,7 @@ test('[journal-log] AC#1 (issue #807): Merge tier phase 後に journal-log が 1
 test('[journal-log] AC#3: journal-log stub が saved:true / logged:false を返しても result.merge_tier が正常 return され journal_log_status が log_failed になること', async () => {
   // ログ失敗をシミュレート: Write を試みたが失敗（「記録失敗でも workflow return 成功」仕様の回帰検出）
   const journalResult = { saved: true, logged: false };
-  const { ctx } = makeSandbox(ANALYZE_REQ, journalResult);
+  const { ctx } = makeSandbox(journalResult);
 
   const { result, error } = await runWorkflowCapture(src, ctx);
 
@@ -234,7 +196,7 @@ test('[journal-log] AC#3: journal-log stub が saved:true / logged:false を返�
 
 test('[journal-log] AC#4: journal-log が saved:false を返す場合 result.journal_log_status が save_failed になること', async () => {
   const journalResult = { saved: false, logged: false };
-  const { ctx, getJournalCallCount } = makeSandbox(ANALYZE_REQ, journalResult);
+  const { ctx, getJournalCallCount } = makeSandbox(journalResult);
 
   const { result, error } = await runWorkflowCapture(src, ctx);
 
@@ -262,7 +224,7 @@ test('[journal-log] journal-log が throw した場合 run は完走し result.j
   // ため 'without calling StructuredOutput' を含む throw でもリトライされない。ここでは
   // 意図を明確にするため exec-proxy 実行失敗を示す別メッセージ（call count=1 想定に影響しない）を使う。
   const journalResult = new Error('exec-proxy 実行失敗: EPERM');
-  const { ctx, getJournalCallCount } = makeSandbox(ANALYZE_REQ, journalResult);
+  const { ctx, getJournalCallCount } = makeSandbox(journalResult);
 
   const { result, error } = await runWorkflowCapture(src, ctx);
 
@@ -295,7 +257,7 @@ test.each(['dev-flow.js', 'pr-iterate.js'])('[journal-log] inline 整合: %s の
 // confidence は telemetry に書かない（残すキーに含まれない）。
 test('[journal-log] issue #561: evaluator が confidence:0.8 を返す run は abort せず、journal-log prompt に eval_confidence を書かない', async () => {
   const journalResult = { saved: true, logged: true };
-  const { ctx, getJournalPrompts } = makeSandbox(ANALYZE_REQ, journalResult, { confidence: 0.8 });
+  const { ctx, getJournalPrompts } = makeSandbox(journalResult, { confidence: 0.8 });
 
   const { result, error } = await runWorkflowCapture(src, ctx);
 
@@ -314,7 +276,7 @@ test('[journal-log] issue #561: evaluator が confidence:0.8 を返す run は a
 
 test('[journal-log] issue #561: evaluator が confidence を省略する run は abort しない', async () => {
   const journalResult = { saved: true, logged: true };
-  const { ctx, getJournalPrompts } = makeSandbox(ANALYZE_REQ, journalResult);
+  const { ctx, getJournalPrompts } = makeSandbox(journalResult);
 
   const { result, error } = await runWorkflowCapture(src, ctx);
 

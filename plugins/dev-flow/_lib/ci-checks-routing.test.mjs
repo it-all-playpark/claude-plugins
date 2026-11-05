@@ -32,21 +32,6 @@ const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 
 function createResponder({ concerns, ciChecksResponse }) {
   return function ({ label, agentType }) {
-    // Setup(worktree)
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-297' };
-    }
-    // Analyze: 必ず standard（micro だと Evaluate が skip され Merge tier phase の前提が崩れる）
-    if (label.startsWith('analyze')) {
-      return {
-        summary: 's',
-        acceptance_criteria: ['a'],
-        issue_type: 'fix',
-        scope: 'src',
-        issue_number: 1,
-        issue_title: 'stub-issue-title',
-      };
-    }
     // Diff triage / danger-grep 系
     if (label === 'danger-grep') {
       return { ok: true, hits: [] };
@@ -70,10 +55,6 @@ function createResponder({ concerns, ciChecksResponse }) {
         security_clearance: [],
         concern_resolutions: [],
       };
-    }
-    // realized-diff / declared-path-check → files: [] で undeclared を発生させない
-    if (label === 'realized-diff' || label === 'declared-path-check') {
-      return { files: [] };
     }
     // merge-tier-facts（dev-runner-haiku-ro）: checks サブ結果はシナリオ別の応答（{ok,checks} 形 → サブ結果へ写す）
     if (label === 'merge-tier-facts') {

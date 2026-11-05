@@ -39,22 +39,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, assertNoCrash, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
-
-// standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
-const STANDARD_REQ = {
-  summary: 's',
-  acceptance_criteria: ['a', 'b'],
-  issue_type: 'fix',
-  scope: 'src',
-  issue_number: 320,
-  issue_title: 'stub-issue-title',
-};
 
 // ============================================================
 // responder factory: ci-checks-routing.test.mjs の createResponder パターンを踏襲。
@@ -67,37 +57,15 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-320' };
-    if (label.startsWith('analyze')) return STANDARD_REQ;
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
-    if (label === 'realized-diff') return { files: ['src/x.ts'] };
-    if (agentType === 'dev-flow:evaluator') {
-      return {
-        verdict: 'pass', total: 100, threshold: 80, feedback: [],
-        feedback_level: 'implementation',
-        ac_results: [
-          { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
-          { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
-        ],
-        security_clearance: [], concern_resolutions: [],
-      };
-    }
-    if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
     if (label === 'changed-files-final') return { files: [] };
-    // merge-tier-facts の diffhash のみ別ハッシュを返す（issue #377 diff-hash reuse）。この test 群は
-    // fixes_applied>0（Final reconcile で tree が変化）を想定しており、Diff triage 時点
-    // (diff-hash-triage) と Merge tier 時点 (merge-tier-facts.diffhash) のハッシュ不一致が意味的に正しい。
-    // 一致させると reuse が発火し、Merge tier の risk / changed 再判定が facts を使わなくなる（特に case (h)）。
-    if (label === 'merge-tier-facts') return mergeTierFacts({ hash: 'H_MERGE', files: ['src/x.ts'] });
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
-    if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't', files: ['src/x.ts'], summary: 's', concerns: [] };
     if (label === 'reconcile-sync') return { ok: true, head: 'deadbeef' };
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
-    return null;
+    return devFlowResponder({ 'ac-checkbox-sync': null, 'changed-files-final': null, 'commit-hook#1': null, 'commit-hook#post-eval-1': null, 'isolation-probe': null, 'test#final': null, 'test#final-rerun': null })({ label, agentType, prompt });
   };
 }
 

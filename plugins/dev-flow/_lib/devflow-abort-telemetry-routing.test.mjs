@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, JS_GLOBALS, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, JS_GLOBALS, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -39,12 +39,10 @@ function makeSandbox({
 
     if (throwAt && label === throwAt.label) throw throwAt.error;
 
-    if (label.startsWith('analyze')) return analyzeReq;
     // Diff triage 統合 exec-proxy: realized 3 件（dev-implementer の申告と一致 → 宣言外 0 件）。
     // 実効 shape は realized 3 件 + AC 数で決まる（issue #676）: AC 2 → standard、AC 7 → complex。
     if (label.startsWith('danger-grep')) return { risk: { ok: true, hits: [] }, files: [...REALIZED_FILES], struct: null, diffhash: null };
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
-    if (label.startsWith('redgreen')) return { red: false, green: false, reason: 'stub' };
     if (agentType === 'dev-flow:evaluator') {
       return {
         verdict: 'pass', total: 100, threshold: 80,
@@ -52,10 +50,7 @@ function makeSandbox({
       };
     }
     if (label === 'pr#1' && prResponse !== undefined) return prResponse;
-    if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
-    if (label === 'journal-log' && agentType === 'dev-flow:dev-runner-haiku') return { saved: true, logged: true };
-    if (label === 'journal-log-failure') return { saved: true, logged: true };
     if (label === 'journal-log-abort') {
       if (journalLogAbortThrows) throw new Error('journal-log-abort boom');
       return journalLogAbortResult !== undefined ? journalLogAbortResult : { saved: true, logged: true };
@@ -72,7 +67,7 @@ function makeSandbox({
       implementerCallIndex++;
       return result;
     }
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'issue-labels': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
   const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
@@ -84,7 +79,6 @@ function makeSandbox({
 
   const sandbox = {
     phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub, args: args ?? devFlowArgs('1'),
     ...JS_GLOBALS,
   };
