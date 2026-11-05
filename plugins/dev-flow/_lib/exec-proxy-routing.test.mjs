@@ -74,6 +74,7 @@ const EXPECTED_DEV_FLOW = {
   'local-verify-wait#*': RW,
   'local-verify-stop#*': RW,
   // red→green の実証（issue #1226。redgreen は start の spawn）。テストを実行するので sandbox 内で動かす
+  'rg-state-dir': RW,
   'redgreen': RW,
   'redgreen-wait#*': RW,
   'redgreen-stop': RW,
@@ -205,13 +206,14 @@ test('[exec-proxy-routing] dev-flow.js: local-verify は bare 名 `local-verify 
   }
 });
 
-// redgreen-verify の起動形: bin/ の bare 名を先頭トークンにした start / wait / stop の単文（issue #1226）。
-test('[exec-proxy-routing] dev-flow.js: redgreen-verify は bare 名 `redgreen-verify start|wait|stop` で dev-runner-haiku から起動する', async () => {
+// redgreen-verify の起動形: bin/ の bare 名を先頭トークンにした state-dir / start / wait / stop の単文（issue #1226）。
+test('[exec-proxy-routing] dev-flow.js: redgreen-verify は bare 名 `redgreen-verify state-dir|start|wait|stop` で dev-runner-haiku から起動する', async () => {
   const calls = await runDevFlowScenario('redgreen-stop');
-  const rg = calls.filter((c) => c.label.startsWith('redgreen'));
-  assert.deepEqual(rg.map((c) => c.label), ['redgreen', 'redgreen-wait#1', 'redgreen-stop']);
-  const stateDir = '/tmp/wt/.devflow-tmp/redgreen-verify';
+  const rg = calls.filter((c) => c.label === 'rg-state-dir' || c.label.startsWith('redgreen'));
+  assert.deepEqual(rg.map((c) => c.label), ['rg-state-dir', 'redgreen', 'redgreen-wait#1', 'redgreen-stop']);
+  const stateDir = '/tmp/rg-state';
   const forms = [
+    '\nredgreen-verify state-dir',
     `\nredgreen-verify start --state-dir ${stateDir} /tmp/wt 't.test.mjs' 'src/x.ts'`,
     `\nredgreen-verify wait --state-dir ${stateDir} --wait-sec 450`,
     `\nredgreen-verify stop --state-dir ${stateDir}`,

@@ -4125,6 +4125,7 @@ const RG = {
   },
 }
 const RG_STOP = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, stopped: { type: 'boolean' }, was_running: { type: 'boolean' }, error: { type: 'string' } } }
+const RG_STATE_DIR = { type: 'object', required: ['state_dir'], properties: { state_dir: { type: 'string' } } }
 const PRURL = {
   type: 'object', required: ['pr_url', 'pr_number'],
   properties: {
@@ -5301,7 +5302,6 @@ function finalTestRerunVerdict(first, rerun, files) {
 // ==== END inline: _lib/final-test-rerun.mjs ====
 // ==== BEGIN inline: _lib/redgreen-targets.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
-const REDGREEN_STATE_DIR = '.devflow-tmp/redgreen-verify';
 const REDGREEN_WAIT_SEC = 450;
 const REDGREEN_WAIT_CAP_SEC = 3600;
 const REDGREEN_WAIT_POLLS = Math.ceil(REDGREEN_WAIT_CAP_SEC / REDGREEN_WAIT_SEC);
@@ -5348,19 +5348,28 @@ function redgreenProxyPrompt(wt, cmd, fallback) {
     + `timeout に達した・stdout に JSON 1 行が無い場合だけは、${fallback} を一字一句そのまま返せ:\n${cmd}`;
 }
 
-function redgreenStartPrompt(wt, pairs, base = null) {
+function redgreenStateDirPrompt(wt) {
+  return redgreenProxyPrompt(wt, 'redgreen-verify state-dir', '{"state_dir":""}');
+}
+
+function redgreenStateDirFrom(res) {
+  const dir = res?.state_dir;
+  return typeof dir === 'string' && /^\/[\w./-]+$/.test(dir) ? dir : null;
+}
+
+function redgreenStartPrompt(wt, stateDir, pairs, base = null) {
   return redgreenProxyPrompt(wt,
-    `redgreen-verify start --state-dir ${wt}/${REDGREEN_STATE_DIR} ${base ? `--base ${base} ` : ''}${wt} `
+    `redgreen-verify start --state-dir ${stateDir} ${base ? `--base ${base} ` : ''}${wt} `
       + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' '),
     '{"results":[]}');
 }
 
-function redgreenWaitPrompt(wt) {
-  return redgreenProxyPrompt(wt, `redgreen-verify wait --state-dir ${wt}/${REDGREEN_STATE_DIR} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
+function redgreenWaitPrompt(wt, stateDir) {
+  return redgreenProxyPrompt(wt, `redgreen-verify wait --state-dir ${stateDir} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
 }
 
-function redgreenStopPrompt(wt) {
-  return redgreenProxyPrompt(wt, `redgreen-verify stop --state-dir ${wt}/${REDGREEN_STATE_DIR}`, '{"ok":false}');
+function redgreenStopPrompt(wt, stateDir) {
+  return redgreenProxyPrompt(wt, `redgreen-verify stop --state-dir ${stateDir}`, '{"ok":false}');
 }
 // ==== END inline: _lib/redgreen-targets.mjs ====
 // ==== BEGIN inline: _lib/security-scope.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
@@ -6349,19 +6358,27 @@ async function execValidatePhase(state) {
 // Final reconcile の redgreen-final で共通で、spawn（throw を run の中断にするか null に倒すか）・base・label だけが違う）。
 // 待機の累計が上限に達した・応答が読めない・results が欠けたら stop する（実行が impl を退避したまま残っていると、以降の
 // phase がその tree を読む）。返すのは読めた results だけで、呼び出し側は無いペアを欠落として昇格させない。
+// state dir は run で 1 つ（worktree の外。作れなければ起動しない）。同じ dir の start が前の実行の残りを止める。
+let redgreenStateDir = null
 async function runRedgreenVerify(pairs, { spawn, label, phase, base = null }) {
+  redgreenStateDir ??= redgreenStateDirFrom(await spawn(redgreenStateDirPrompt(WT), { agentType: 'dev-runner-haiku', schema: RG_STATE_DIR, label: 'rg-state-dir', phase }))
+  const stateDir = redgreenStateDir
+  if (!stateDir) {
+    log(`⚠️ ${label}: state dir を作れない — redgreen-verify を起動しない`)
+    return []
+  }
   let res = null
   try {
-    const start = await spawn(redgreenStartPrompt(WT, pairs, base), { agentType: 'dev-runner-haiku', schema: RG, label, phase })
+    const start = await spawn(redgreenStartPrompt(WT, stateDir, pairs, base), { agentType: 'dev-runner-haiku', schema: RG, label, phase })
     res = await waitBgJob({
       start,
-      wait: (k) => spawn(redgreenWaitPrompt(WT), { agentType: 'dev-runner-haiku', schema: RG, label: `${label}-wait#${k}`, phase }),
+      wait: (k) => spawn(redgreenWaitPrompt(WT, stateDir), { agentType: 'dev-runner-haiku', schema: RG, label: `${label}-wait#${k}`, phase }),
       maxPolls: REDGREEN_WAIT_POLLS,
       schema: RG,
     })
   } finally {
     if (!redgreenJobSettled(res, pairs.length)) {
-      const stop = await failOpenAgent(redgreenStopPrompt(WT), { agentType: 'dev-runner-haiku', schema: RG_STOP, label: `${label}-stop`, phase })
+      const stop = await failOpenAgent(redgreenStopPrompt(WT, stateDir), { agentType: 'dev-runner-haiku', schema: RG_STOP, label: `${label}-stop`, phase })
       if (!stop || stop.ok !== true) log(`⚠️ ${label}-stop: 停止を確認できない（${stop?.error ?? 'proxy の応答が無い'}）— 実行は redgreen-verify の supervisor の上限時間で止まる`)
     }
   }

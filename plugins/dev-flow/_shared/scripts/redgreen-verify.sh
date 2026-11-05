@@ -2,6 +2,7 @@
 # red→green 実証: 実装だけ退避して base に戻し、test が red→green に転じるか決定論判定する。
 # untracked(新規)・tracked-modified いずれの impl ファイルにも対応する。
 # 使い方:
+#   redgreen-verify state-dir → {"state_dir":"<abs>"}(worktree の外に mktemp -d で作る。失敗は {"state_dir":""} で exit 2)
 #   redgreen-verify start --state-dir <abs> [--wait-sec <n=300>] [--base <ref>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]
 #   redgreen-verify wait  --state-dir <abs> [--wait-sec <n=480>]
 #   redgreen-verify stop  --state-dir <abs> [--timeout-sec <n=60>]
@@ -9,6 +10,8 @@
 #   red→green は 1 回の Bash の上限（600 秒）を超えうるので、切り離して実行する（_lib/scripts/bg-job.sh）。
 #   start は起動してすぐ返り、wait は最大 --wait-sec 待って、終わっていれば下の出力を、まだなら {"status":"running","results":[]} を返す。
 #   results を空で持たせるのは、終わった応答と同じ schema（results 必須）に収めるため。
+#   state dir の results.json が判定の入力になり、テストは同じ uid で worktree を cwd に走る。テストが既知のパスで結果を書けないよう、
+#   state dir は worktree の外の推測できない場所に置き(start は worktree の中を拒否する)、読むのは run が完走して書いた結果だけにする(emit_outcome)。
 #   stop は実行を止める。退避した impl は実行の止まり方によらず supervisor が戻す（bg_job_hook_cleanup）—
 #   止めた後の worktree を以降の phase がそのまま使うので、テストを KILL しても impl を欠いたままにしない。
 #   (test_files, impl_files) ペアを複数受け、引数順に 1 ペアずつ退避→red→復元→green を実行する。
@@ -352,7 +355,8 @@ cmd_run() {
     [ "$k" -gt 0 ] && out="$out,"
     out="$out${results[$k]}"
   done
-  write_results "$out]}"
+  # 書けなければ exit 0 / 2 で終わらない(残っている results.json を run の結果として読ませない)
+  write_results "$out]}" || exit 3
   [ "$completed" -gt 0 ] && exit 0
   exit 2
 }
@@ -390,9 +394,13 @@ emit_outcome() {
   fi
   # 終わった応答はどれも supervisor がもう居ない。後片付けをせずに消えた場合はここで書き戻す
   bg_job_hook_orphan_cleanup
-  if [ -f "$RG_RESULTS" ]; then
+  # results.json を書いて exit 0 / 2 で終わるのは完走した run だけ。テストが run ごと落とした(kill -9 0 等)ときに
+  # 上書きされずに残ったファイルを結果として読まない
+  local code
+  code="$(jq -r '.exit_code' <<< "$job")"
+  if [ -f "$RG_RESULTS" ] && { [ "$code" = 0 ] || [ "$code" = 2 ]; }; then
     cat "$RG_RESULTS"
-    [ "$(jq -r '.exit_code' <<< "$job")" = 0 ] && return 0
+    [ "$code" = 0 ] && return 0
     return 2
   fi
   echo "redgreen-verify: 結果が無い: $job" >&2
@@ -400,9 +408,25 @@ emit_outcome() {
   return 2
 }
 
+cmd_state_dir() {
+  local dir
+  if dir="$(mktemp -d "${TMPDIR:-/tmp}/redgreen-verify.XXXXXXXX")"; then
+    jq -nc --arg d "${dir//\/\//\/}" '{state_dir: $d}'
+    return 0
+  fi
+  echo '{"state_dir":""}'
+  return 2
+}
+
 cmd_start() {
   local wait_sec="$1" base="$2" worktree="$3" problem
   shift 3
+  case "$BG_JOB_STATE_DIR/" in
+    "$worktree"/*)
+      echo "redgreen-verify: --state-dir ($BG_JOB_STATE_DIR) が worktree の中にある(テストが結果を書ける)" >&2
+      echo '{"results":[]}'
+      return 2 ;;
+  esac
   # 前回 run の残り(同じ state dir)を先に止める
   if ! problem="$(bg_job_reset "$worktree")"; then
     echo "redgreen-verify: $problem" >&2
@@ -423,7 +447,8 @@ cmd_start() {
 
 usage() {
   [ -z "${1:-}" ] || echo "redgreen-verify: $1" >&2
-  echo "usage: redgreen-verify.sh start --state-dir <abs> [--wait-sec <n>] [--base <ref>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]" >&2
+  echo "usage: redgreen-verify.sh state-dir" >&2
+  echo "       redgreen-verify.sh start --state-dir <abs> [--wait-sec <n>] [--base <ref>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]" >&2
   echo "       redgreen-verify.sh wait --state-dir <abs> [--wait-sec <n>]" >&2
   echo "       redgreen-verify.sh stop --state-dir <abs> [--timeout-sec <n>]" >&2
   echo '{"results":[]}'
@@ -433,8 +458,9 @@ usage() {
 main() {
   local sub="${1:-}" state_dir='' wait_sec='' timeout_sec='' base=''
   case "$sub" in
+    state-dir) cmd_state_dir; return ;;
     start|wait|stop|supervise|run) shift ;;
-    *) usage 'subcommand (start|wait|stop) required' ;;
+    *) usage 'subcommand (state-dir|start|wait|stop) required' ;;
   esac
   while [ "$#" -gt 0 ]; do
     case "$1" in

@@ -924,6 +924,56 @@ assert_impl_restored() {
   [ "${lines[${#lines[@]}-1]}" = '{"results":[]}' ]
 }
 
+@test "N6: テストが results.json を書いて run ごと落としても結果として読まず、空の results で exit 2 を返して impl を戻す" {
+  make_slow_runner "printf '%s\n' '{\"results\":[{\"index\":0,\"red\":true,\"green\":true,\"reason\":\"ok\"}]}' > '$STATE_DIR/results.json'; kill -9 0"
+  start_slow
+
+  run bash "$SCRIPT" wait --state-dir "$STATE_DIR" --wait-sec 30
+  [ "$status" -eq 2 ]
+  [ "${lines[${#lines[@]}-1]}" = '{"results":[]}' ]
+  [ -f "$STATE_DIR/results.json" ]
+  assert_impl_restored
+}
+
+@test "N7: テストが results.json を書いても、完走した run の結果が上書きする" {
+  make_slow_runner "printf '%s\n' '{\"results\":[{\"index\":0,\"red\":true,\"green\":true,\"forged\":true}]}' > '$STATE_DIR/results.json'"
+  start_slow
+
+  run bash "$SCRIPT" wait --state-dir "$STATE_DIR" --wait-sec 30
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].forged // "none"')" = none ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = ok ]
+}
+
+@test "N8: state-dir は TMPDIR の下に呼び出しごとに別のディレクトリを作って JSON で返す" {
+  TMPDIR="$BATS_TEST_TMPDIR" run bash "$SCRIPT" state-dir
+  [ "$status" -eq 0 ]
+  local first second
+  first="$(printf '%s' "$output" | jq -r '.state_dir')"
+  [ -d "$first" ]
+  [ "$(dirname "$first")" = "$BATS_TEST_TMPDIR" ]
+
+  TMPDIR="$BATS_TEST_TMPDIR/" run bash "$SCRIPT" state-dir
+  second="$(printf '%s' "$output" | jq -r '.state_dir')"
+  [ -d "$second" ]
+  [ "$(dirname "$second")" = "$BATS_TEST_TMPDIR" ]
+  [ "$first" != "$second" ]
+}
+
+@test "N9: state-dir はディレクトリを作れないと空のパスで exit 2" {
+  TMPDIR="$BATS_TEST_TMPDIR/missing" run bash "$SCRIPT" state-dir
+  [ "$status" -eq 2 ]
+  [ "${lines[${#lines[@]}-1]}" = '{"state_dir":""}' ]
+}
+
+@test "N10: start は worktree の中の state dir を拒否し、テストを実行しない" {
+  make_slow_runner ':'
+  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" start --state-dir "$REPO/.devflow-tmp/redgreen-verify" "$REPO" "feature.test.ts" "impl.ts,new.ts" 3>&-
+  [ "$status" -eq 2 ]
+  [ "${lines[${#lines[@]}-1]}" = '{"results":[]}' ]
+  [ ! -e "$REPO/started" ]
+}
+
 # -----------------------------------------------------------------------
 # K: pnpm ワークスペースのビルド成果物(issue #754)
 # packages/shared の exports は git 管理外の ./dist を指し、packages/backend が workspace:* で依存する。

@@ -15,6 +15,10 @@
 // wait の spawn を繰り返して待つ（_lib/bg-job-wait.mjs の waitBgJob。dev-flow.js の runRedgreenVerify）。
 // 待機の累計が REDGREEN_WAIT_CAP_SEC に達したら stop で止め、results 空（JSON が返らなかったときと同じ結果）で終わる。
 //
+// state dir: results.json が判定の入力になるので、テストが既知のパスで書ける worktree の中に置かない。mktemp を workflow では
+// 呼べないので redgreen-verify state-dir の spawn で作り、そのパスを start / wait / stop に渡す。start の前に作るのは、
+// start の応答が読めなくても stop できるようにするため（応答でパスを受け取ると、起動済みの実行を止める手段が無くなる）。
+//
 // timeout / background: start / wait の 1 回は 600 秒に収まるが、Bash tool の既定 timeout（120 秒）は超える。
 // timeout 未指定だと background に回され、agent が待った後に同じコマンドを再発行する（start の再発行は実行をやり直す）ので、
 // timeout: 600000 を明示し background 化・再発行を禁じる。JSON が返らなかった場合の応答は固定文字列にして
@@ -22,8 +26,6 @@
 //
 // INLINE 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。
 
-// redgreen-verify の state dir（worktree 内の .devflow-tmp は realized diff から除外される）。
-export const REDGREEN_STATE_DIR = '.devflow-tmp/redgreen-verify';
 // wait 1 回あたりの待機秒数（1 回の Bash 呼び出し＝600 秒に収まり、上限を割り切れる値）と、待機の累計の上限。
 export const REDGREEN_WAIT_SEC = 450;
 export const REDGREEN_WAIT_CAP_SEC = 3600;
@@ -108,26 +110,42 @@ function redgreenProxyPrompt(wt, cmd, fallback) {
     + `timeout に達した・stdout に JSON 1 行が無い場合だけは、${fallback} を一字一句そのまま返せ:\n${cmd}`;
 }
 
+export function redgreenStateDirPrompt(wt) {
+  return redgreenProxyPrompt(wt, 'redgreen-verify state-dir', '{"state_dir":""}');
+}
+
+/**
+ * state-dir の応答からパスを取り出す。後続のコマンド行に載せるので、絶対パスで空白・メタ文字の無い値だけを受け取る。
+ *
+ * @param {unknown} res
+ * @returns {string|null} 受け取れなければ null（呼び出し側は起動せず全ペア欠落にする）
+ */
+export function redgreenStateDirFrom(res) {
+  const dir = res?.state_dir;
+  return typeof dir === 'string' && /^\/[\w./-]+$/.test(dir) ? dir : null;
+}
+
 /**
  * base を渡すと `--base <base>` を付け、HEAD と base の merge-base まで impl を戻して red を測らせる
  * （Final reconcile の commit 済み tree 用。Evaluate は未 commit の変更なので省略 = HEAD 基準）。
  *
  * @param {string} wt worktree の絶対パス
+ * @param {string} stateDir redgreen-verify state-dir が作ったパス
  * @param {Array<{test_files: string[], impl_files: string[]}>} pairs buildRedgreenPairs の pairs
  * @param {string|null} [base] 比較先の ref（例 `origin/main`）
  * @returns {string}
  */
-export function redgreenStartPrompt(wt, pairs, base = null) {
+export function redgreenStartPrompt(wt, stateDir, pairs, base = null) {
   return redgreenProxyPrompt(wt,
-    `redgreen-verify start --state-dir ${wt}/${REDGREEN_STATE_DIR} ${base ? `--base ${base} ` : ''}${wt} `
+    `redgreen-verify start --state-dir ${stateDir} ${base ? `--base ${base} ` : ''}${wt} `
       + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' '),
     '{"results":[]}');
 }
 
-export function redgreenWaitPrompt(wt) {
-  return redgreenProxyPrompt(wt, `redgreen-verify wait --state-dir ${wt}/${REDGREEN_STATE_DIR} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
+export function redgreenWaitPrompt(wt, stateDir) {
+  return redgreenProxyPrompt(wt, `redgreen-verify wait --state-dir ${stateDir} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
 }
 
-export function redgreenStopPrompt(wt) {
-  return redgreenProxyPrompt(wt, `redgreen-verify stop --state-dir ${wt}/${REDGREEN_STATE_DIR}`, '{"ok":false}');
+export function redgreenStopPrompt(wt, stateDir) {
+  return redgreenProxyPrompt(wt, `redgreen-verify stop --state-dir ${stateDir}`, '{"ok":false}');
 }

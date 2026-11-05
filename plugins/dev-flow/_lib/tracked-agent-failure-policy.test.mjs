@@ -266,6 +266,7 @@ const EXPECTED_DEV_FLOW = {
   'local-verify-start#2': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。差し戻し後のローカル実行の起動結果が無ければfail-openでCIのcheck待ちに回す' },
   'local-verify-wait#2.1': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。差し戻し後のローカル実行の結果が無ければfail-openでCIのcheck待ちに回す' },
   'local-verify-stop#2': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。停止確認の失敗はlogのみでDBの削除はlocal-verifyのtrapに委ねる（差し戻し後）' },
+  'rg-state-dir': { config: DF_REDGREEN, policy: 'abort', reason: 'bare据え置き。startと同じspawnで呼び、例外は吸収されずrunを中断させる（何も起動していない）' },
   'redgreen': { config: DF_REDGREEN, policy: 'abort', reason: 'bare据え置き。red→green実証呼び出し自体の例外は吸収されずrunを中断させる' },
   'redgreen-wait#1': {
     config: DEV_FLOW_SCENARIOS['redgreen-wait'],
