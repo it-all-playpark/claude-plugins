@@ -132,10 +132,16 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      - 入出力（prompt.md・schema.json・cwd/・result.json）はすべて保存先（`$TMPDIR` 配下の `dev-flow-security-review-XXXXXX`）に置くので、
        ほかの設定は要らない。codex を起動できない（未設定・通信の拒否）round は security-reviewer の判定に戻る
 
-   - `prior_devflow` が HOLD の dev-flow サマリーなら、終端サマリーは HOLD 理由の code ごとの回収状況を出し、
-     未解消が残れば見出しを「🎉 LGTM」にしない（このレポートが PR の最後のコメント＝最新の結論になるため）。
+   - `prior_devflow` が HOLD の dev-flow サマリーなら、終端サマリーは HOLD 理由の code ごとの回収状況を 解消 / 未解消 / 未確認 の
+     3 状態で出す。解消・未解消はこの run が終端 head で観測した結果で、確かめられなかった code は未確認（❌ を付けず、何を確かめられなかったかを
+     載せる）。CI・`ci_verify`・mergeable・security review の観測は head と組で扱い、終端 head と違う（確かめられない）観測は値に関わらず未確認にする。
+     判定表に無い code と code の無い HOLD も未確認。未解消か未確認が 1 件でもあれば見出しを「🎉 LGTM」にせず「すべて解消」とも書かない
+     （このレポートが PR の最後のコメント＝最新の結論になるため）。`escalate` / `ac_human_pending` / `final_test_red` は判定せず未解消に数える。
      `final_test_red` は解消にしない。HOLD 時の head と終端 head が違えば、その間のテスト関連の変更（ファイルと `git diff` コマンド）と
      最終 tree の全件テストの結果を 1 回だけ取って行の下に出し、人の確認範囲を絞る。null でもそのまま渡す
+
+   - `status` が `ci_pending` / `ci_error` の終端サマリーには、前回の HOLD の有無に関わらず、CI の確定後に `/pr-iterate <PR>` を再実行すれば
+     判定が確定することが PR 番号入りで載る。終端サマリーを後から書き換える仕組みは持たず、最新の結論は再実行のレポートが担う
 
    - `prior_summary.head_mismatch` が true なら、workflow は review を始める前に「head `<sha>` で再 review 中。
      <古いサマリーの URL> の結論はこの head に当てはまらない」コメントを PR に足す。意味: その URL の LGTM / tier は今の

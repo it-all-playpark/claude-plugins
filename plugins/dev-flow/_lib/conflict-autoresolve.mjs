@@ -10,11 +10,12 @@
 // LLM に解かせると PR 側を黙って捨てる解消が起き得る（incentive-structural）。解けない conflict は従来どおり
 // dev-flow の Merge tier が `mergeable_conflicting` で HOLD にする（判定は変えない）。
 
-// mergeable-check#i（dev-runner-haiku-ro）の応答。gh pr view の値をそのまま写す。
+// mergeable-check#i（dev-runner-haiku-ro）の応答。gh pr view の値をそのまま写す。headRefOid は終了レポートの回収状況が
+// 「どの head の観測か」を確かめる材料で、欠けても conflict の判定と自動解消は変わらない（回収状況が未確認になるだけ）。
 export const MERGEABLE_STATE = {
   type: 'object',
   required: ['mergeable', 'mergeStateStatus'],
-  properties: { mergeable: { type: 'string' }, mergeStateStatus: { type: 'string' } },
+  properties: { mergeable: { type: 'string' }, mergeStateStatus: { type: 'string' }, headRefOid: { type: 'string' } },
 };
 
 // conflict-resolve#i（dev-runner-haiku）の応答。result は conflict-autoresolve の stdout JSON。
@@ -56,17 +57,46 @@ export function isConflictingMergeable(meta) {
 }
 
 /**
+ * mergeable-check#i の応答を、終了レポートの回収状況が使う conflict の観測にする。head は同じ gh pr view で読んだ値（無ければ null）。
+ * 同じ head で自動解消を push した直後は GitHub が UNKNOWN を返しうるので、UNKNOWN・取得失敗では自動解消の観測を消さない。
+ * @param {unknown} meta - MERGEABLE_STATE の応答
+ * @param {{state: string, head: string|null}|null} [prev] - 直前の観測
+ * @returns {{state: 'clean'|'conflicting'|'unknown'|'resolved', head: string|null}}
+ */
+export function mergeableObservation(meta, prev = null) {
+  const raw = meta != null && typeof meta === 'object' && typeof meta.headRefOid === 'string' ? meta.headRefOid.trim().toLowerCase() : '';
+  const head = /^[0-9a-f]{40}$/.test(raw) ? raw : null;
+  if (isConflictingMergeable(meta)) return { state: 'conflicting', head };
+  if (meta != null && typeof meta === 'object' && String(meta.mergeable ?? '').toUpperCase() === 'MERGEABLE') return { state: 'clean', head };
+  if (prev?.state === 'resolved' && (head == null || head === prev.head)) return prev;
+  return { state: 'unknown', head };
+}
+
+/**
+ * conflict-resolve#i の結果（conflictAutoresolveRecord）を conflict の観測に反映する。push まで済んだ自動解消はその merge commit の
+ * head で解消、衝突なしで merge できた（no_conflict）なら conflict なし。それ以外は mergeable-check の観測（conflict あり）のまま。
+ * @param {{state: string, head: string|null}} seen - mergeableObservation の値
+ * @param {{status: string, merge_sha: string|null}} rec
+ * @returns {{state: string, head: string|null}}
+ */
+export function mergeableAfterAttempt(seen, rec) {
+  if (rec.status === 'resolved') return { state: 'resolved', head: rec.merge_sha };
+  if (rec.status === 'no_conflict') return { state: 'clean', head: seen.head };
+  return seen;
+}
+
+/**
  * mergeable-check#i の prompt。
  * @param {{pr: number|string, repo?: string|null}} p
  * @returns {string}
  */
 export function mergeableCheckPrompt({ pr, repo }) {
   const repoArg = repo ? ` --repo ${repo}` : '';
-  return `## Objective\nPR #${pr} の base branch との conflict 状態（mergeable / mergeStateStatus）を読む。\n\n`
-    + `## Steps\n\`gh pr view ${pr}${repoArg} --json mergeable,mergeStateStatus\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ`
+  return `## Objective\nPR #${pr} の base branch との conflict 状態（mergeable / mergeStateStatus）と、その head（headRefOid）を読む。\n\n`
+    + `## Steps\n\`gh pr view ${pr}${repoArg} --json mergeable,mergeStateStatus,headRefOid\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ`
     + `（cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止）。`
-    + `stdout の mergeable と mergeStateStatus の値を一字一句そのまま返す。コマンドが失敗したら両方を空文字で返す。\n\n`
-    + `## Output format\n{ "mergeable": string, "mergeStateStatus": string }\nprose 禁止。JSON のみ返せ。\n\n`
+    + `stdout の mergeable・mergeStateStatus・headRefOid の値を一字一句そのまま返す。コマンドが失敗したら 3 つとも空文字で返す。\n\n`
+    + `## Output format\n{ "mergeable": string, "mergeStateStatus": string, "headRefOid": string }\nprose 禁止。JSON のみ返せ。\n\n`
     + `## Tools\n使用可: Bash のみ\n\n`
     + `## Boundary\n読み取り専用。ファイル変更・git 操作禁止。\n\n`
     + `## Token cap\nJSON のみ。1 行以内。`;

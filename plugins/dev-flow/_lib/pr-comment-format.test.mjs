@@ -606,7 +606,11 @@ test('buildTerminalSummaryBody: humanFollowups 非空なら人間側 follow-up �
 // --- dev-flow の HOLD 理由の回収状況（issue #930） -------------------------------
 
 const PRIOR_URL = 'https://github.com/acme/skills/pull/5#issuecomment-1';
-const UNRESOLVED = '❌ 未解消（pr-iterate は再判定しない — 人が確認する）';
+// 観測した head と終端 head（同じ head の観測を渡す既定の組）
+const OBS_HEAD = 'a'.repeat(40);
+const OTHER_HEAD = 'b'.repeat(40);
+const ON_HEAD = { headSha: OBS_HEAD, ciLastHead: OBS_HEAD, ciVerifyHead: OBS_HEAD, securityReviewHead: OBS_HEAD };
+const NOT_JUDGED = '❔ 未確認 — pr-iterate はこの code を判定しない — 人が確認する';
 const UNRESOLVED_HUMAN = '❌ 未解消（人の判断が要る — pr-iterate は判定しない。dev-flow のサマリーの該当項目を確認する）';
 const UNRESOLVED_FINAL_TEST = '❌ 未解消（HOLD は外さない — 下の事実で確認範囲を絞って人が確認する）';
 const recoveryLines = (body) => {
@@ -637,7 +641,7 @@ test('buildTerminalSummaryBody: #870 相当（HOLD codes=ac_human_pending + lgtm
 
 test('buildTerminalSummaryBody: #918 相当（HOLD codes=iterate_non_lgtm,ci_checks_failed + lgtm + CI passed）はすべて解消と明記する', () => {
   const body = buildTerminalSummaryBody({
-    pr: 918, status: 'lgtm', iterations: 2, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed',
+    pr: 918, status: 'lgtm', iterations: 2, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed', ...ON_HEAD,
     priorDevflow: { tier: 'HOLD', codes: ['iterate_non_lgtm', 'ci_checks_failed'], url: PRIOR_URL },
   });
   assert.equal(headlineOf(body), '### 🎉 LGTM — dev-flow の HOLD 理由はすべて解消');
@@ -648,49 +652,182 @@ test('buildTerminalSummaryBody: #918 相当（HOLD codes=iterate_non_lgtm,ci_che
   assert.ok(body.includes('**dev-flow の HOLD 理由はすべて解消**'), body);
 });
 
-test('buildTerminalSummaryBody: 回収状況の写像 — 条件を満たさない確認可能な code と、pr-iterate が再判定しない code は未解消', () => {
-  const opts = { pr: 5, iterations: 3, lastDecision: 'request-changes', lastSummary: 'ng', history: [] };
-  const prior = { tier: 'HOLD', codes: ['iterate_non_lgtm', 'ci_checks_failed', 'ac_ci_pending', 'mergeable_conflicting', 'escalate'], url: PRIOR_URL };
-  const unresolved = buildTerminalSummaryBody({
-    ...opts, status: 'stuck', ciLastStatus: 'failed', ciLastFailedChecks: ['Bats Tests'], priorDevflow: prior,
-    conflictAutoresolve: [{ iteration: 1, status: 'aborted', reason: 'type C', files: [] }],
-  });
-  assert.deepEqual(recoveryLines(unresolved), [
-    `- \`iterate_non_lgtm\` — ${UNRESOLVED} — この run の終了状態: stuck`,
-    `- \`ci_checks_failed\` — ${UNRESOLVED} — 最終 CI 状態: failed`,
-    `- \`ac_ci_pending\` — ${UNRESOLVED} — 最終 CI 状態: failed`,
-    `- \`mergeable_conflicting\` — ${UNRESOLVED} — conflict の自動解消: aborted`,
-    `- \`escalate\` — ${UNRESOLVED_HUMAN}`,
-  ]);
-  // 非 lgtm 終端の見出しは従来どおり
-  assert.equal(headlineOf(unresolved), '### ⚠️ STUCK — 人間レビューへエスカレーション');
+// 判定表の 1 code を 1 行だけ出した本文の行
+const recoveryRow = (code, extra) => recoveryLines(buildTerminalSummaryBody({
+  pr: 5, status: 'lgtm', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [],
+  ...ON_HEAD, priorDevflow: { tier: 'HOLD', codes: [code], url: PRIOR_URL }, ...extra,
+}))[0];
+const sr = (status, extra = {}) => ({ target: status !== 'not_target', status, rounds: 1, critical: 0, major: 0, minor: 0, ...extra });
+const mergeableAt = (state, head = OBS_HEAD) => ({ mergeableLast: { state, head } });
 
-  const resolved = buildTerminalSummaryBody({
-    ...opts, status: 'lgtm', ciLastStatus: 'passed', priorDevflow: { ...prior, codes: ['ac_ci_pending', 'mergeable_conflicting'] },
-    conflictAutoresolve: [{ iteration: 1, status: 'resolved', files: [], merge_sha: 'a'.repeat(40) }],
-  });
-  assert.deepEqual(recoveryLines(resolved), [
-    '- `ac_ci_pending` — ✅ 解消 — 最終 CI 状態: passed',
-    '- `mergeable_conflicting` — ✅ 解消 — conflict の自動解消: resolved',
-  ]);
+test('buildTerminalSummaryBody: 回収状況の判定表 — iterate_non_lgtm は lgtm で解消、ci_pending / ci_error で未確認、他の非 lgtm で未解消', () => {
+  assert.equal(recoveryRow('iterate_non_lgtm', { status: 'lgtm' }), '- `iterate_non_lgtm` — ✅ 解消 — この run の終了状態: lgtm');
+  for (const status of ['stuck', 'fix_failed', 'max_reached', 'review_contract_error', 'security_unresolved']) {
+    assert.equal(recoveryRow('iterate_non_lgtm', { status }), `- \`iterate_non_lgtm\` — ❌ 未解消 — この run の終了状態: ${status}`);
+  }
+  for (const status of ['ci_pending', 'ci_error']) {
+    assert.equal(recoveryRow('iterate_non_lgtm', { status }), `- \`iterate_non_lgtm\` — ❔ 未確認 — この run の終了状態: ${status} — CI の確定前に終わり、LGTM に届くか確かめられなかった`);
+  }
 });
 
-test('buildTerminalSummaryBody: security_review_unresolved はこの run の security review が clear / 対象外なら終端 status に依らず解消、それ以外は未解消', () => {
-  const opts = { pr: 5, iterations: 2, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed' };
-  const prior = { tier: 'HOLD', codes: ['security_review_unresolved'], url: PRIOR_URL };
-  const sr = (status) => ({ target: status !== 'not_target', status, rounds: 1, critical: 0, major: 0, minor: 0 });
-  for (const [status, review, want] of [
-    ['lgtm', sr('cleared'), '- `security_review_unresolved` — ✅ 解消 — この run の security review: cleared'],
-    ['lgtm', sr('not_target'), '- `security_review_unresolved` — ✅ 解消 — この run の security review: not_target'],
-    // cleared は今の head の結果（head を変えうる操作の前に pr-iterate が null に戻す）。LGTM に届かないことは iterate_non_lgtm が扱う
-    ['stuck', sr('cleared'), '- `security_review_unresolved` — ✅ 解消 — この run の security review: cleared'],
-    ['max_reached', sr('not_target'), '- `security_review_unresolved` — ✅ 解消 — この run の security review: not_target'],
-    ['security_unresolved', sr('unresolved'), `- \`security_review_unresolved\` — ${UNRESOLVED} — この run の security review: unresolved`],
-    ['max_reached', sr('not_run'), `- \`security_review_unresolved\` — ${UNRESOLVED} — この run の security review: not_run`],
+test('buildTerminalSummaryBody: 回収状況の判定表 — ci_checks_failed は passed で解消、failed で未解消、pending / error / no_checks / null で未確認', () => {
+  assert.equal(recoveryRow('ci_checks_failed', { ciLastStatus: 'passed' }), '- `ci_checks_failed` — ✅ 解消 — 最終 CI 状態: passed');
+  assert.equal(recoveryRow('ci_checks_failed', { ciLastStatus: 'failed' }), '- `ci_checks_failed` — ❌ 未解消 — 最終 CI 状態: failed');
+  assert.equal(recoveryRow('ci_checks_failed', { ciLastStatus: 'pending' }), '- `ci_checks_failed` — ❔ 未確認 — 最終 CI 状態: pending — check が完了していない');
+  assert.equal(recoveryRow('ci_checks_failed', { ciLastStatus: 'error' }), '- `ci_checks_failed` — ❔ 未確認 — 最終 CI 状態: error — CI の状態を取得できなかった');
+  assert.equal(recoveryRow('ci_checks_failed', { ciLastStatus: 'no_checks' }), '- `ci_checks_failed` — ❔ 未確認 — 最終 CI 状態: no_checks — check が 1 件も無く、失敗が直ったか確かめられない');
+  assert.equal(recoveryRow('ci_checks_failed', { ciLastStatus: null }), '- `ci_checks_failed` — ❔ 未確認 — 最終 CI 状態: 未観測 — この run では CI を判定していない');
+});
+
+test('buildTerminalSummaryBody: 回収状況の判定表 — ac_ci_pending は ciLastStatus でなく ci_verify で決まる（passed で解消、failed で未解消、pending / error / 未実行で未確認）', () => {
+  assert.equal(recoveryRow('ac_ci_pending', { ciVerifyStatus: 'passed', ciLastStatus: 'failed' }), '- `ac_ci_pending` — ✅ 解消 — ci_verify: passed');
+  assert.equal(recoveryRow('ac_ci_pending', { ciVerifyStatus: 'failed', ciLastStatus: 'passed' }), '- `ac_ci_pending` — ❌ 未解消 — ci_verify: failed');
+  assert.equal(recoveryRow('ac_ci_pending', { ciVerifyStatus: 'pending', ciLastStatus: 'passed' }), '- `ac_ci_pending` — ❔ 未確認 — ci_verify: pending — check が完了していない');
+  assert.equal(recoveryRow('ac_ci_pending', { ciVerifyStatus: 'error', ciLastStatus: 'passed' }), '- `ac_ci_pending` — ❔ 未確認 — ci_verify: error — CI の状態を取得できなかった');
+  assert.equal(recoveryRow('ac_ci_pending', { ciLastStatus: 'passed' }), '- `ac_ci_pending` — ❔ 未確認 — ci_verify: 未実行 — この run は ci_verify の check の完了を確かめていない');
+});
+
+test('buildTerminalSummaryBody: 回収状況の判定表 — mergeable_conflicting は conflict なしの観測か自動解消で解消、残る観測で未解消、未到達 / UNKNOWN / 取得失敗で未確認', () => {
+  assert.equal(recoveryRow('mergeable_conflicting', mergeableAt('clean')), '- `mergeable_conflicting` — ✅ 解消 — conflict なしを観測');
+  assert.equal(recoveryRow('mergeable_conflicting', {
+    ...mergeableAt('resolved'), conflictAutoresolve: [{ iteration: 1, status: 'resolved', files: [], merge_sha: OBS_HEAD }],
+  }), '- `mergeable_conflicting` — ✅ 解消 — conflict の自動解消: resolved');
+  assert.equal(recoveryRow('mergeable_conflicting', {
+    ...mergeableAt('conflicting'), conflictAutoresolve: [{ iteration: 1, status: 'aborted', reason: 'type C', files: [] }],
+  }), '- `mergeable_conflicting` — ❌ 未解消 — conflict が残ると観測（conflict の自動解消: aborted）');
+  assert.equal(recoveryRow('mergeable_conflicting', {}), '- `mergeable_conflicting` — ❔ 未確認 — conflict の確認に到達していない（conflict の自動解消: 試行なし）');
+  assert.equal(recoveryRow('mergeable_conflicting', mergeableAt('unknown')), '- `mergeable_conflicting` — ❔ 未確認 — mergeable が UNKNOWN か取得失敗で、conflict の有無を確かめられない');
+});
+
+test('buildTerminalSummaryBody: 回収状況の判定表 — security_review_unresolved は cleared / not_target で解消、critical+major>0 で未解消、それ以外（review 前に止めた run を含む）で未確認', () => {
+  const row = (securityReview, status = 'lgtm') => recoveryRow('security_review_unresolved', { status, securityReview });
+  assert.equal(row(sr('cleared')), '- `security_review_unresolved` — ✅ 解消 — この run の security review: cleared');
+  assert.equal(row(sr('not_target')), '- `security_review_unresolved` — ✅ 解消 — この run の security review: not_target');
+  // 終端 status に依らない（LGTM に届かないことは iterate_non_lgtm が扱う）
+  assert.equal(row(sr('cleared'), 'stuck'), '- `security_review_unresolved` — ✅ 解消 — この run の security review: cleared');
+  assert.equal(row(sr('unresolved', { critical: 1, major: 2 }), 'security_unresolved'), '- `security_review_unresolved` — ❌ 未解消 — この run の security review: unresolved — critical 1 / major 2');
+  assert.equal(row(sr('unresolved', { major: 1 }), 'security_unresolved'), '- `security_review_unresolved` — ❌ 未解消 — この run の security review: unresolved — critical 0 / major 1');
+  assert.equal(row(sr('not_run'), 'max_reached'), '- `security_review_unresolved` — ❔ 未確認 — この run の security review: not_run — 終端 head の review に到達していない');
+  assert.equal(row(null), '- `security_review_unresolved` — ❔ 未確認 — この run の security review: 未実施 — 終端 head の review に到達していない');
+  // review 前に止めた run は前の round の件数が残っていても未解消にしない
+  assert.equal(row(sr('unresolved', { stop_reason: 'reviewer_context_changed', critical: 1 }), 'security_unresolved'), '- `security_review_unresolved` — ❔ 未確認 — この run の security review: unresolved — review の前に止めた（reviewer_context_changed）');
+  assert.equal(row(sr('unresolved'), 'security_unresolved'), '- `security_review_unresolved` — ❔ 未確認 — この run の security review: unresolved — review の結果を確かめられなかった');
+});
+
+test('buildTerminalSummaryBody: 判定表の観測は head と組で扱い、終端 head と違う・head が不明な観測は値に関わらず未確認', () => {
+  const stale = (what) => `${what} — head \`aaaaaaa\` の観測で、終端 head \`bbbbbbb\` では確かめていない`;
+  const unknown = (what) => `${what} — 観測した head が終端 head と同じか確かめられない`;
+  for (const [code, value, what] of [
+    ['ci_checks_failed', { ciLastStatus: 'passed' }, '最終 CI 状態: passed'],
+    ['ci_checks_failed', { ciLastStatus: 'failed' }, '最終 CI 状態: failed'],
+    ['ac_ci_pending', { ciVerifyStatus: 'passed' }, 'ci_verify: passed'],
+    ['ac_ci_pending', { ciVerifyStatus: 'failed' }, 'ci_verify: failed'],
+    ['mergeable_conflicting', mergeableAt('clean'), 'conflict の確認: clean'],
+    ['mergeable_conflicting', mergeableAt('conflicting'), 'conflict の確認: conflicting'],
+    ['mergeable_conflicting', mergeableAt('resolved'), 'conflict の確認: resolved'],
+    ['security_review_unresolved', { securityReview: sr('cleared') }, 'この run の security review: cleared'],
+    ['security_review_unresolved', { securityReview: sr('not_target') }, 'この run の security review: not_target'],
+    ['security_review_unresolved', { securityReview: sr('unresolved', { critical: 1 }) }, 'この run の security review: unresolved'],
   ]) {
-    const body = buildTerminalSummaryBody({ ...opts, status, priorDevflow: prior, securityReview: review });
-    assert.deepEqual(recoveryLines(body), [want], status);
+    assert.ok(!recoveryRow(code, value).includes('未確認'), `${what}: 同じ head の観測は解消か未解消`);
+    assert.equal(recoveryRow(code, { ...value, headSha: OTHER_HEAD }), `- \`${code}\` — ❔ 未確認 — ${stale(what)}`, `${what}: 古い head の観測`);
+    // 大文字小文字の違いは同じ head
+    assert.ok(!recoveryRow(code, { ...value, headSha: OBS_HEAD.toUpperCase() }).includes('未確認'), `${what}: 大文字の head`);
+    // fix が head を動かしたか確かめられなかった run（endHead: null）。marker の head は残る
+    const unsettled = buildTerminalSummaryBody({
+      pr: 5, status: 'fix_failed', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [],
+      ...ON_HEAD, endHead: null, priorDevflow: { tier: 'HOLD', codes: [code], url: PRIOR_URL }, ...value,
+    });
+    assert.deepEqual(recoveryLines(unsettled), [`- \`${code}\` — ❔ 未確認 — ${unknown(what)}`], `${what}: 終端 head 不明`);
+    assert.ok(unsettled.endsWith(`<!-- pr-iterate:fix_failed:1 head=${OBS_HEAD} -->`), 'marker の形式と head は変わらない');
   }
+  assert.equal(recoveryRow('ci_checks_failed', { ciLastStatus: 'passed', ciLastHead: null }), `- \`ci_checks_failed\` — ❔ 未確認 — ${unknown('最終 CI 状態: passed')}`);
+  assert.equal(recoveryRow('mergeable_conflicting', mergeableAt('clean', null)), `- \`mergeable_conflicting\` — ❔ 未確認 — ${unknown('conflict の確認: clean')}`);
+});
+
+test('buildTerminalSummaryBody: 古い head の観測なら **最終 CI 状態** の行にそう出す（終端 head と同じ観測・未観測の行は変えない）', () => {
+  const ciLine = (extra) => buildTerminalSummaryBody({
+    pr: 5, status: 'max_reached', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ...ON_HEAD, ...extra,
+  }).split('\n').find((l) => l.startsWith('**最終 CI 状態**'));
+  assert.equal(ciLine({ ciLastStatus: 'passed' }), '**最終 CI 状態**: ✅ passed');
+  assert.equal(ciLine({ ciLastStatus: 'passed', headSha: OTHER_HEAD }), '**最終 CI 状態**: ✅ passed — ⚠️ 古い head `aaaaaaa` の観測（終端 head `bbbbbbb` の CI は確かめていない — `gh pr checks 5` で確認すること）');
+  assert.equal(ciLine({ ciLastStatus: 'failed', ciLastFailedChecks: ['bats'], headSha: OTHER_HEAD }), '**最終 CI 状態**: 🔴 failed — `bats` — ⚠️ 古い head `aaaaaaa` の観測（終端 head `bbbbbbb` の CI は確かめていない — `gh pr checks 5` で確認すること）');
+  assert.equal(ciLine({ ciLastStatus: 'passed', endHead: null }), '**最終 CI 状態**: ✅ passed — ⚠️ 観測した head が終端 head と同じか確かめられない（`gh pr checks 5` で確認すること）');
+  assert.ok(ciLine({ ciLastStatus: null, headSha: OTHER_HEAD }).startsWith('**最終 CI 状態**: 未観測'));
+});
+
+test('buildTerminalSummaryBody: 未確認の行は ❌ を付けず、集計は未解消と未確認の件数を分け、未確認だけなら「未解消」の語を出さない', () => {
+  const opts = { pr: 5, iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ...ON_HEAD };
+  const onlyUnconfirmed = buildTerminalSummaryBody({
+    ...opts, status: 'ci_pending', ciLastStatus: 'pending',
+    priorDevflow: { tier: 'HOLD', codes: ['iterate_non_lgtm', 'ci_checks_failed', 'mergeable_conflicting', 'ac_ci_pending', 'security_review_unresolved', 'danger_unresolved'], url: PRIOR_URL },
+  });
+  for (const row of recoveryLines(onlyUnconfirmed)) {
+    assert.ok(row.includes('未確認') && !row.includes('❌'), row);
+    assert.ok(row.split(' — ').length >= 3, `何を確かめられなかったかを載せる: ${row}`);
+  }
+  assert.ok(onlyUnconfirmed.includes('**dev-flow の HOLD 理由 6 件が未確認** — merge 前に人が確認する'), onlyUnconfirmed);
+  assert.ok(!onlyUnconfirmed.includes('未解消'), onlyUnconfirmed);
+  assert.ok(!onlyUnconfirmed.includes('すべて解消'), onlyUnconfirmed);
+
+  const mixed = buildTerminalSummaryBody({
+    ...opts, status: 'stuck', ciLastStatus: 'failed',
+    priorDevflow: { tier: 'HOLD', codes: ['ci_checks_failed', 'iterate_non_lgtm', 'danger_unresolved'], url: PRIOR_URL },
+  });
+  assert.ok(mixed.includes('**dev-flow の HOLD 理由 2 件が未解消・1 件が未確認** — merge 前に人が確認する'), mixed);
+
+  const onlyUnresolved = buildTerminalSummaryBody({
+    ...opts, status: 'stuck', ciLastStatus: 'failed', priorDevflow: { tier: 'HOLD', codes: ['ci_checks_failed'], url: PRIOR_URL },
+  });
+  assert.ok(onlyUnresolved.includes('**dev-flow の HOLD 理由 1 件が未解消** — merge 前に人が確認する'), onlyUnresolved);
+  assert.ok(!onlyUnresolved.includes('未確認'), onlyUnresolved);
+  // 非 lgtm 終端の見出しは回収状況で変えない
+  assert.equal(headlineOf(onlyUnresolved), '### ⚠️ STUCK — 人間レビューへエスカレーション');
+});
+
+test('buildTerminalSummaryBody: 未確認が 1 件でもある lgtm は「すべて解消」とも「🎉 LGTM」とも出さず、見出しに件数を分けて出す', () => {
+  const opts = { pr: 5, status: 'lgtm', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed', ...ON_HEAD };
+  const unconfirmed = buildTerminalSummaryBody({ ...opts, priorDevflow: { tier: 'HOLD', codes: ['iterate_non_lgtm', 'ac_ci_pending'], url: PRIOR_URL } });
+  assert.equal(headlineOf(unconfirmed), '### LGTM（review）— dev-flow の HOLD 理由 1 件が未確認。merge 前に確認');
+  assert.ok(!unconfirmed.includes('🎉 LGTM'), unconfirmed);
+  assert.ok(!unconfirmed.includes('すべて解消'), unconfirmed);
+  assert.ok(!unconfirmed.includes('未解消'), unconfirmed);
+
+  const both = buildTerminalSummaryBody({ ...opts, priorDevflow: { tier: 'HOLD', codes: ['escalate', 'ac_ci_pending'], url: PRIOR_URL } });
+  assert.equal(headlineOf(both), '### LGTM（review）— dev-flow の HOLD 理由 1 件が未解消・1 件が未確認。merge 前に確認');
+  assert.ok(!both.includes('🎉 LGTM'), both);
+});
+
+test('buildTerminalSummaryBody: ci_pending / ci_error の終了レポートは HOLD の有無に関わらず再実行の案内を PR 番号入りで載せ、他の status では載せない', () => {
+  const opts = { pr: 77, iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [] };
+  const guide = '**次の手順**: CI の確定後に `/pr-iterate 77` を再実行すると判定が確定する';
+  for (const status of ['ci_pending', 'ci_error']) {
+    for (const priorDevflow of [null, { tier: 'REVIEW', codes: [], url: PRIOR_URL }, { tier: 'HOLD', codes: ['ci_checks_failed'], url: PRIOR_URL }]) {
+      assert.ok(buildTerminalSummaryBody({ ...opts, status, priorDevflow }).split('\n').includes(guide), `${status} / ${JSON.stringify(priorDevflow)}`);
+    }
+  }
+  for (const status of ['lgtm', 'stuck', 'fix_failed', 'max_reached', 'review_contract_error', 'security_unresolved']) {
+    assert.ok(!buildTerminalSummaryBody({ ...opts, status }).includes('/pr-iterate 77'), status);
+  }
+});
+
+test('buildTerminalSummaryBody: 「pr-iterate は判定しない」の文言はこの run が判定しない code の行にだけ出る', () => {
+  const body = buildTerminalSummaryBody({
+    pr: 5, status: 'stuck', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'failed', ...ON_HEAD, ...mergeableAt('conflicting'),
+    securityReview: sr('unresolved', { critical: 1 }), ciVerifyStatus: 'failed',
+    priorDevflow: { tier: 'HOLD', codes: ['iterate_non_lgtm', 'ci_checks_failed', 'ac_ci_pending', 'mergeable_conflicting', 'security_review_unresolved', 'danger_unresolved', 'escalate', 'ac_human_pending'], url: PRIOR_URL },
+  });
+  const rows = recoveryLines(body);
+  const judged = rows.filter((l) => l.includes('判定しない')).map((l) => l.split(' — ')[0]);
+  assert.deepEqual(judged, ['- `danger_unresolved`', '- `escalate`', '- `ac_human_pending`']);
+  assert.ok(!body.includes('再判定しない'), body);
+  // 判定した code の未解消・未確認の行にも、判定表の未確認の行にも出ない
+  for (const extra of [{ ciLastStatus: 'pending' }, { ciLastStatus: 'passed', headSha: OTHER_HEAD }]) {
+    assert.ok(!recoveryRow('ci_checks_failed', extra).includes('判定しない'), JSON.stringify(extra));
+  }
+  assert.ok(!recoveryRow('mergeable_conflicting', {}).includes('判定しない'));
+  assert.ok(!recoveryRow('security_review_unresolved', { securityReview: sr('not_run') }).includes('判定しない'));
+  assert.ok(!recoveryRow('ac_ci_pending', {}).includes('判定しない'));
 });
 
 test('buildTerminalSummaryBody: security review の行は件数だけを出す（対象外 / clear / 未完了）', () => {
@@ -753,13 +890,13 @@ test('buildTerminalSummaryBody: stop_reason=reviewer_context_changed のとき�
   }
 });
 
-test('buildTerminalSummaryBody: code の無い HOLD marker（codes 空）は理由を確かめられないので未解消 1 件', () => {
+test('buildTerminalSummaryBody: code の無い HOLD marker（codes 空）は理由を確かめられないので未確認 1 件', () => {
   const body = buildTerminalSummaryBody({
     pr: 5, status: 'lgtm', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed',
     priorDevflow: { tier: 'HOLD', codes: [], url: PRIOR_URL },
   });
-  assert.equal(headlineOf(body), '### LGTM（review）— dev-flow の HOLD 理由 1 件が未解消。merge 前に確認');
-  assert.equal(recoveryLines(body).length, 1);
+  assert.equal(headlineOf(body), '### LGTM（review）— dev-flow の HOLD 理由 1 件が未確認。merge 前に確認');
+  assert.deepEqual(recoveryLines(body), ['- ❔ 未確認 — HOLD 理由の code がサマリーに無い — 元のサマリーで理由を確認する']);
 });
 
 test('buildTerminalSummaryBody: priorDevflow が null・HOLD 以外なら終了レポートは priorDevflow 省略時と byte 一致', () => {
@@ -787,7 +924,7 @@ const recoverySection = (body) => {
   return out;
 };
 const finalTestBody = (finalTestCheck, extra = {}) => buildTerminalSummaryBody({
-  pr: 5, status: 'lgtm', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed',
+  pr: 5, status: 'lgtm', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed', ciLastHead: END_HEAD, headSha: END_HEAD,
   priorDevflow: { tier: 'HOLD', codes: ['final_test_red'], url: PRIOR_URL, head_sha: HOLD_HEAD }, finalTestCheck, ...extra,
 });
 const ranCheck = (changes, tests) => ({ ran: true, holdHead: HOLD_HEAD, endHead: END_HEAD, changes, tests });
@@ -859,7 +996,7 @@ test('buildTerminalSummaryBody: テスト関連の変更なし・全件 green・
   assert.equal(headlineOf(mixed), '### LGTM（review）— dev-flow の HOLD 理由 1 件が未解消。merge 前に確認');
 });
 
-test('buildTerminalSummaryBody: 未解消の文言は人の判断待ち（escalate / ac_human_pending）・final_test_red・それ以外で互いに異なる', () => {
+test('buildTerminalSummaryBody: 判定表の外の code — 人の判断待ち（escalate / ac_human_pending）と final_test_red は未解消、それ以外は未確認で、文言は互いに異なる', () => {
   const body = finalTestBody(ranCheck({ status: 'none', files: [] }, PASSED), {
     priorDevflow: { tier: 'HOLD', codes: ['escalate', 'ac_human_pending', 'final_test_red', 'danger_unresolved'], url: PRIOR_URL, head_sha: HOLD_HEAD },
   });
@@ -868,8 +1005,8 @@ test('buildTerminalSummaryBody: 未解消の文言は人の判断待ち（escala
     `- \`escalate\` — ${UNRESOLVED_HUMAN}`,
     `- \`ac_human_pending\` — ${UNRESOLVED_HUMAN}`,
     FINAL_TEST_ROW,
-    `- \`danger_unresolved\` — ${UNRESOLVED}`,
+    `- \`danger_unresolved\` — ${NOT_JUDGED}`,
   ]);
-  assert.equal(new Set([UNRESOLVED, UNRESOLVED_HUMAN, UNRESOLVED_FINAL_TEST]).size, 3);
-  assert.equal(headlineOf(body), '### LGTM（review）— dev-flow の HOLD 理由 4 件が未解消。merge 前に確認');
+  assert.equal(new Set([NOT_JUDGED, UNRESOLVED_HUMAN, UNRESOLVED_FINAL_TEST]).size, 3);
+  assert.equal(headlineOf(body), '### LGTM（review）— dev-flow の HOLD 理由 3 件が未解消・1 件が未確認。merge 前に確認');
 });
