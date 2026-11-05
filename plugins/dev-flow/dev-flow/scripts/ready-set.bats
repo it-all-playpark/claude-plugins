@@ -473,6 +473,55 @@ pr_heads() {
     [ -z "$(grep -E '(^| )(-X|--method|-f|--field|-F|--raw-field|--input)( |$)' "$GH_LOG")" ]
 }
 
+# ---- 作業ブランチ名の書式 "dev-flow".branch_format（issue #1220）----
+# prerun と同じ devflow-config.sh で読む。cwd の repo の origin を acme/skills の GitHub の URL にし、user 設定の
+# repo 別の節に書式を置く（HOME も実行者の環境から切り離す）
+
+set_branch_format() {
+    git remote add origin https://github.com/acme/skills.git
+    export HOME="$WORK/home"
+    mkdir -p "$HOME"
+    export SKILL_CONFIG_PATH="$WORK/skill-config.json"
+    jq -n --arg f "$1" '{"dev-flow": {repos: {"acme/skills": {branch_format: $f}}}}' >"$SKILL_CONFIG_PATH"
+}
+
+@test "ready-set: branch_format \"issue-{issue}-{slug}\" -> 書式に合う local branch・worktree の branch・open PR の head を in_flight にし、合わない branch は拾わない" {
+    set_branch_format 'issue-{issue}-{slug}'
+    git branch issue-200-fix-login
+    git worktree add -q -b issue-201-add-cache "$WORK/wt-201"
+    pr_heads issue-202-Rename_API feature/issue-204 renovate/foo
+    git branch issue-203
+    git branch feature/issue-205
+    for n in 200 201 202 203 204 205; do issue "$n" "pkg/$n"; done
+    issue 206 "pkg/206"
+    ready_set --with-in-flight 206
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.in_flight == [{number: 200, reason: "local_branch"}, {number: 201, reason: "local_branch"}, {number: 202, reason: "open_pr"}]
+        and [.launch[].number] == [206] and .waiting == []'
+    # 書式に合わない branch の issue は取得もしない
+    run grep -qE '^issue view (203|204|205) ' "$GH_LOG"
+    [ "$status" -eq 1 ]
+}
+
+@test "ready-set: branch_format を設定した repo では候補の issue も書式の branch で in_flight にし、feature/issue-<N> では in_flight にしない" {
+    set_branch_format 'issue-{issue}-{slug}'
+    git branch issue-210-some-work
+    git branch feature/issue-211
+    issue 210 "a"
+    issue 211 "b"
+    ready_set 210 211
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.in_flight == [{number: 210, reason: "local_branch"}] and [.launch[].number] == [211]'
+}
+
+@test "ready-set: 不正な branch_format -> \"dev-flow\".branch_format を名指しした ok:false と非 0 終了" {
+    set_branch_format 'issue-{slug}'
+    issue 220 "a"
+    ready_set 220
+    [ "$status" -ne 0 ]
+    echo "$output" | jq -e '.ok == false and (.error | contains("\"dev-flow\".branch_format が不正")) and has("launch") == false'
+}
+
 # ---- 出力仕様と dev-flow SKILL.md「並列実行」節（issue #1000） ----
 
 # dev-flow SKILL.md の「## 並列実行」節を次の `## ` 見出しまで抜き出す

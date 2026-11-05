@@ -5,9 +5,13 @@
 #   <issue>...        候補の issue 番号
 #   --label <label>   そのラベルの open issue を候補に加える
 #   --with-in-flight  実行中の issue を自動で加え、その変更対象パスを占有に入れる。実行中 = head が
-#                     `feature/issue-<N>` の open PR、`feature/issue-<N>` の local branch、その branch か
+#                     作業ブランチの書式（下記）に合う open PR、書式に合う local branch、その branch か
 #                     df-<N> の worktree。自動で加えた issue は human-task / blocker を見ずに in_flight にする
 #                     （実際に走っているので占有から漏らさない）。closed の issue は残骸として出力しない
+#
+# 作業ブランチの書式は dev-flow-prerun と同じ "dev-flow".branch_format（未設定は feature/issue-{issue}）を同じ順で読み、
+# {slug} は任意の文字列とみなして照合する（_shared/scripts/devflow-config.sh）。origin/<base> は prerun と同じく
+# origin/dev → origin/HEAD の順に、fetch せず手元の追跡 ref で決める。書式が不正なら ok:false で終える
 #
 # 出力（stdout に 1 行 JSON）:
 #   { ok: true, launch: [{number, title, paths, command: "/dev-flow <N>", bg_command: "claude --bg \"/dev-flow <N>\""}],
@@ -18,7 +22,7 @@
 # 分類（上から順に最初に当たったもの）:
 #   closed → 出力しない / `human-task` ラベル → waiting human_task / open な blocker → waiting blocked_by
 #   （detail に blocker 番号。判定は prerun と共有の _lib/scripts/issue-blockers.sh）/ open な linked PR、
-#   `feature/issue-<N>` の local branch、その branch か df-<N> の worktree → in_flight / それ以外 → ready
+#   書式に合う `<N>` の local branch、その branch か df-<N> の worktree → in_flight / それ以外 → ready
 #
 # 選択: ready を issue 番号の昇順に貪欲に launch へ入れる。in_flight の変更対象パスは最初から占有扱い。
 # 占有とパスが重なる issue は waiting path_conflict（detail に相手の番号）。`## 変更対象パス` が無い・空の
@@ -34,7 +38,10 @@
 
 set -euo pipefail
 
-ISSUE_BLOCKERS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/_lib/scripts/issue-blockers.sh"
+PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ISSUE_BLOCKERS="$PLUGIN_ROOT/_lib/scripts/issue-blockers.sh"
+# shellcheck source=../../_shared/scripts/devflow-config.sh
+source "$PLUGIN_ROOT/_shared/scripts/devflow-config.sh"
 
 die() {
     local code="$1" msg="$2"
@@ -80,9 +87,18 @@ if [[ -n "$LABEL" ]]; then
 fi
 
 # 在庫中の作業（local branch / worktree）はカレントの git repo から 1 回だけ読む
-if ! BRANCHES="$(git for-each-ref --format='%(refname:short)' refs/heads/feature/ 2>&1)"; then
+if ! BRANCHES="$(git for-each-ref --format='%(refname:lstrip=2)' refs/heads/ 2>&1)"; then
     die 1 "local branch を読めない（git repo の中で実行する）: $(oneline "$BRANCHES")"
 fi
+if git show-ref --verify --quiet refs/remotes/origin/dev; then
+    BASE="dev"
+else
+    BASE="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || BASE=""
+    BASE="${BASE#origin/}"
+fi
+BRANCH_FORMAT="$(devflow_branch_format_of "$(devflow_config . "$BASE" branch_format)")" || die 1 "$BRANCH_FORMAT"
+# 書式に合う branch 名から issue 番号を取り出す正規表現（{issue} が BASH_REMATCH[1]）
+BRANCH_RE_ANY="$(devflow_branch_regex "$BRANCH_FORMAT")"
 if ! WORKTREES="$(git worktree list --porcelain 2>&1)"; then
     die 1 "worktree 一覧を読めない（git repo の中で実行する）: $(oneline "$WORKTREES")"
 fi
@@ -91,6 +107,8 @@ WT_DIRS="$(printf '%s\n' "$WORKTREES" | awk '/^worktree /{ n = split(substr($0, 
 
 # here-string で渡す: 早く終わる grep -q へ pipe すると、一致の後ろの write が SIGPIPE になり pipefail で偽になる
 has_line() { grep -qxF -- "$1" <<<"$2"; }
+# 第 2 引数の行のどれかが issue 第 1 引数の書式（{slug} は任意）に合うか
+has_branch_of() { grep -qE -- "$(devflow_branch_regex "$BRANCH_FORMAT" "$1")" <<<"$2"; }
 
 # --with-in-flight: 実行中の issue を open PR の head / local branch / worktree から拾い、候補に足す。
 # 利用者が渡した候補（USER_CANDIDATES）とは分けて持ち、拾っただけの issue は in_flight 判定だけ行う
@@ -104,7 +122,9 @@ if [[ "$WITH_IN_FLIGHT" == 1 ]]; then
         if type == "array" and all(.[]; (.headRefName | type) == "string") then .[].headRefName else error("malformed") end' 2>/dev/null)" \
         || die 1 "open PR 一覧の応答が不正"
     DISCOVERED="$(
-        printf '%s\n' "$PR_HEADS" "$BRANCHES" "$WT_BRANCHES" | sed -nE 's#^feature/issue-([1-9][0-9]*)$#\1#p'
+        while IFS= read -r B; do
+            if [[ "$B" =~ $BRANCH_RE_ANY ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; fi
+        done <<<"$(printf '%s\n' "$PR_HEADS" "$BRANCHES" "$WT_BRANCHES")"
         printf '%s\n' "$WT_DIRS" | sed -nE 's#^df-([1-9][0-9]*)$#\1#p'
     )"
     while IFS= read -r N; do
@@ -128,11 +148,11 @@ JQ_DECLARED_PATHS='def declared_paths: [ (gsub("\r"; "") | split("\n")) as $l
 # 実行中の理由（open_pr / local_branch / worktree）。走っていなければ空。PR_HEADS は --with-in-flight の時だけ埋まる
 flight_of() {
     local n="$1" issue_json="$2"
-    if [[ "$(jq -r '.open_pr' <<<"$issue_json")" == "true" ]] || has_line "feature/issue-${n}" "$PR_HEADS"; then
+    if [[ "$(jq -r '.open_pr' <<<"$issue_json")" == "true" ]] || has_branch_of "$n" "$PR_HEADS"; then
         echo "open_pr"
-    elif has_line "feature/issue-${n}" "$BRANCHES"; then
+    elif has_branch_of "$n" "$BRANCHES"; then
         echo "local_branch"
-    elif has_line "feature/issue-${n}" "$WT_BRANCHES" || has_line "df-${n}" "$WT_DIRS"; then
+    elif has_branch_of "$n" "$WT_BRANCHES" || has_line "df-${n}" "$WT_DIRS"; then
         echo "worktree"
     fi
 }

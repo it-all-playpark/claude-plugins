@@ -261,6 +261,7 @@ function validatePrerunSetup(raw, issue) {
   }
 
   const repo = isNonEmptyString(raw.repo) ? raw.repo : null;
+  if (!isNonEmptyString(raw.branch) && raw.branch_format != null) fail('branch', raw.branch);
   const branch = isNonEmptyString(raw.branch) ? raw.branch : `feature/issue-${issue}`;
   const frameworks = raw.stack.frameworks.filter((f) => typeof f === 'string');
   const testRunners = raw.stack.test_runners.map((r) => ({ runner: r.runner, accept: [...r.accept], exclude: [...r.exclude], command: r.command }));

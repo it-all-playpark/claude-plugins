@@ -253,3 +253,64 @@ set_origin_url() {
     run devflow_config "$ROOT" main ci_verify
     [ "$output" = '42' ]
 }
+
+# ---- 作業ブランチ名の書式 "dev-flow".branch_format（issue #1220）----
+
+@test "devflow_branch_format_of: 未設定（null）は既定の feature/issue-{issue}、正しい書式はそのまま返す" {
+    run devflow_branch_format_of null
+    [ "$status" -eq 0 ]
+    [ "$output" = 'feature/issue-{issue}' ]
+    run devflow_branch_format_of '"issue-{issue}-{slug}"'
+    [ "$status" -eq 0 ]
+    [ "$output" = 'issue-{issue}-{slug}' ]
+    run devflow_branch_format_of '"dev/{issue}.x"'
+    [ "$status" -eq 0 ]
+    [ "$output" = 'dev/{issue}.x' ]
+}
+
+@test "devflow_branch_format_of: 不正な書式は \"dev-flow\".branch_format と理由を書いたエラー文で 1 を返す" {
+    local raw why
+    while IFS='|' read -r raw why; do
+        run devflow_branch_format_of "$raw"
+        [ "$status" -eq 1 ] || { echo "accepted: $raw"; false; }
+        [[ "$output" == *'"dev-flow".branch_format が不正'* ]] || { echo "no key: $output"; false; }
+        [[ "$output" == *"$why"* ]] || { echo "no reason '$why': $output"; false; }
+    done <<'CASES'
+"issue-{slug}"|{issue} が無い
+"{issue}-{issue}-{slug}"|{issue} が 2 回以上ある
+"issue-{issue}-{slug}-{slug}"|{slug} が 2 回以上ある
+"issue-{issue}-{title}"|未知の差し込み {title}
+"issue-{issue}\n-{slug}"|改行を含む
+"issue-{issue}-{slug}\n"|改行を含む
+"issue {issue}"|A-Za-z0-9._/- 以外の文字がある
+"issue-{issue}-ログイン"|A-Za-z0-9._/- 以外の文字がある
+"issue..{issue}"|git check-ref-format --branch を通らない
+"{issue}-{slug}.lock"|git check-ref-format --branch を通らない
+"issue-{issue}/"|git check-ref-format --branch を通らない
+""|空でない文字列でない
+42|空でない文字列でない
+CASES
+}
+
+@test "devflow_branch_regex: {issue} は番号、{slug} は [A-Za-z0-9._-]+ として行全体に一致させ、番号を省くと 1 番目の group に取り出す" {
+    re="$(devflow_branch_regex 'issue-{issue}-{slug}' 12)"
+    [[ "issue-12-fix-login" =~ $re ]]
+    [[ "issue-12-Fix_Login.v2" =~ $re ]]
+    [[ ! "issue-12" =~ $re ]]
+    [[ ! "issue-120-fix" =~ $re ]]
+    [[ ! "feature/issue-12" =~ $re ]]
+    [[ ! "issue-12-a/b" =~ $re ]]
+    [[ ! "x/issue-12-fix" =~ $re ]]
+
+    re="$(devflow_branch_regex 'feature/issue-{issue}')"
+    [[ "feature/issue-34" =~ $re ]]
+    [ "${BASH_REMATCH[1]}" = 34 ]
+    [[ ! "feature/issue-34-x" =~ $re ]]
+
+    # . は任意の 1 文字でなく . にだけ一致する
+    re="$(devflow_branch_regex 'v.{issue}' 5)"
+    [[ "v.5" =~ $re ]]
+    [[ ! "vx5" =~ $re ]]
+
+    [ "$(devflow_branch_name 'issue-{issue}-{slug}' 12 fix-login)" = 'issue-12-fix-login' ]
+}

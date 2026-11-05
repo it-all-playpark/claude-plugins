@@ -227,6 +227,15 @@ test('validatePrerunSetup: branch 欠落は feature/issue-<issue> を返す', ()
   assert.equal(result.branch, 'feature/issue-641');
 });
 
+test('validatePrerunSetup: branch_format を設定した setup は prerun の branch をそのまま使い、branch 欠落は feature/issue-<issue> に倒さず throw する', () => {
+  const result = validatePrerunSetup(validRaw({ branch: 'issue-641-fix-login-timeout', branch_format: 'issue-{issue}-{slug}' }), 641);
+  assert.equal(result.branch, 'issue-641-fix-login-timeout');
+  const raw = validRaw({ branch_format: 'issue-{issue}-{slug}' });
+  delete raw.branch;
+  assert.throws(() => validatePrerunSetup(raw, 641), /必須キーが欠落\/型不正: branch/);
+  assert.throws(() => validatePrerunSetup(validRaw({ branch: '', branch_format: 'issue-{issue}-{slug}' }), 641), /branch/);
+});
+
 // ── validatePrerunSetup: 未知キー ───────────────────────────────────────────
 
 test('validatePrerunSetup: 未知キーがあっても throw しない', () => {
