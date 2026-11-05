@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path';
 import { makeRecordingSandbox, runDevFlowInSandbox, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
 import { gateLane, isConvergedUnderPolicy, DEFAULT_GATE_POLICY } from './gate-policy.mjs';
 import { makeLedger, appendItem, checkItem } from './goal-ledger.mjs';
+import { ciRollupCommand } from './ci-check.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -170,7 +171,7 @@ test('[ci-checks][a] crash guard: green auto-close シナリオが sandbox で�
   assertNoCrash(sharedGreen.err, 'a-green');
 });
 
-test('[ci-checks][AC-1][a] merge-tier-facts 呼び出しが 1 回発生し gh pr checks コマンドを prompt に含む（checks 専用 spawn は発行しない）', async () => {
+test('[ci-checks][AC-1][a] merge-tier-facts 呼び出しが 1 回発生し ci-check と同じ rollup コマンドを prompt に含む（checks 専用 spawn は発行しない）', async () => {
   await ensureGreenRun();
   const { calls } = sharedGreen;
   const factCalls = calls.filter((c) => c.label === 'merge-tier-facts');
@@ -179,8 +180,8 @@ test('[ci-checks][AC-1][a] merge-tier-facts 呼び出しが 1 回発生し gh pr
     `label === 'merge-tier-facts' の call は 1 件のはず (全 labels: ${calls.map((c) => c.label).join(', ')})`,
   );
   assert.ok(
-    factCalls[0].prompt.includes('gh pr checks 1 --json name,bucket'),
-    `merge-tier-facts の prompt に gh pr checks コマンドが含まれていない:\n${factCalls[0].prompt}`,
+    factCalls[0].prompt.includes(ciRollupCommand({ pr: 1, repo: null })),
+    `merge-tier-facts の prompt に rollup コマンドが含まれていない:\n${factCalls[0].prompt}`,
   );
   assert.equal(calls.filter((c) => c.label === 'ci-checks').length, 0, 'checks 専用の exec-proxy spawn は発行しない');
 });

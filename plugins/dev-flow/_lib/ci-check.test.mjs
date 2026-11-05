@@ -20,9 +20,10 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { CI_POLL_SECONDS, CI_WAIT_CEILING_SECONDS, ciWaitCeiling, ciMaxPolls, CI_TURN_MARGIN, CI_STATUS, CI_WAIT_CHECK, ciCheckPrompt, ciWaitCheckPrompt, ciFetchSteps, ciHeadRejectReason, isFullCommitSha, ciStatusFromCounts, ciEffectiveStatus, CI_VERIFY_POLL_SECONDS, CI_VERIFY_CHECK, ciVerifyPrompt, ciVerifyVerdict } from './ci-check.mjs';
+import { CI_POLL_SECONDS, CI_WAIT_CEILING_SECONDS, ciWaitCeiling, ciMaxPolls, CI_TURN_MARGIN, CI_STATUS, CI_WAIT_CHECK, ciCheckPrompt, ciWaitCheckPrompt, ciFetchSteps, ciRollupCommand, ciHeadRejectReason, isFullCommitSha, ciStatusFromCounts, ciEffectiveStatus, CI_VERIFY_POLL_SECONDS, CI_VERIFY_CHECK, ciVerifyPrompt, ciVerifyVerdict } from './ci-check.mjs';
 
 // ============================================================
 // 定数
@@ -68,13 +69,13 @@ test('[ci-check] ci-wait-check prompt の Bash 手順は ci-wait / gh / check-ci
   );
 });
 
-test('[ci-check] ci-check prompt の Bash 手順は gh（head sha）/ gh（checks）/ check-ci の 3 単文だけ（turn 会計の前提）', () => {
+test('[ci-check] ci-check prompt の Bash 手順は gh（head sha）/ gh（rollup）/ check-ci の 3 単文だけ（turn 会計の前提）', () => {
   const p = ciCheckPrompt({ pr: 123, repo: 'owner/name' });
   const steps = p.slice(p.indexOf('## Steps'), p.indexOf('## Output format'));
   const bashSteps = steps.match(/^\d+\. `[^`]+`/gm) ?? [];
   assert.deepEqual(
     bashSteps.map((s) => s.replace(/^\d+\. `/, '').match(/^(gh pr \w+|\S+)/)[1]),
-    ['gh pr view', 'gh pr checks', 'check-ci'],
+    ['gh pr view', 'gh pr view', 'check-ci'],
     `Bash 単文の手順が想定と異なる: ${JSON.stringify(bashSteps)}`,
   );
 });
@@ -217,13 +218,44 @@ test('[ci-check] ciCheckPrompt は決定論的（同入力 -> 同出力）', () 
 
 test('[ci-check] repo 指定ありなら --repo フラグを含む', () => {
   const p = ciCheckPrompt({ pr: 123, repo: 'owner/name' });
-  assert.ok(p.includes('gh pr checks 123 --repo owner/name --json name,state,bucket'), p.slice(0, 400));
+  assert.ok(p.includes('gh pr view 123 --repo owner/name --json statusCheckRollup --jq '), p.slice(0, 400));
 });
 
 test('[ci-check] repo が null なら --repo フラグを含まない', () => {
   const p = ciCheckPrompt({ pr: 123, repo: null });
-  assert.ok(p.includes('gh pr checks 123 --json name,state,bucket'), p.slice(0, 400));
+  assert.ok(p.includes('gh pr view 123 --json statusCheckRollup --jq '), p.slice(0, 400));
   assert.ok(!p.includes('--repo'), '--repo は出力されてはならない');
+});
+
+// gh のエクスポート形（cli/cli api/export_pr.go の statusCheckRollup）。jq は gh の --jq と同じ構文で畳む。
+const RAW_ROLLUP = {
+  statusCheckRollup: [
+    { __typename: 'CheckRun', name: 'lint', workflowName: 'CI', status: 'IN_PROGRESS', conclusion: 'SUCCESS', startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:01:00Z', detailsUrl: 'https://x/1' },
+    { __typename: 'StatusContext', context: 'vercel', state: 'SUCCESS', startedAt: '2026-01-01T00:00:00Z', targetUrl: 'https://x/2' },
+  ],
+};
+const foldWith = (command, input) => {
+  const filter = command.match(/--jq '(.+)'$/)[1];
+  return JSON.parse(execFileSync('jq', ['-c', filter], { input: JSON.stringify(input), encoding: 'utf8' }));
+};
+
+test('[ci-check] ciRollupCommand: --jq は判定に要るキーだけを残し、URL は withLink のときだけ残す', () => {
+  const folded = foldWith(ciRollupCommand({ pr: 1, repo: null }), RAW_ROLLUP);
+  assert.deepEqual(Object.keys(folded[0]).sort(), ['conclusion', 'name', 'startedAt', 'status', 'workflowName']);
+  assert.deepEqual(Object.keys(folded[1]).sort(), ['context', 'startedAt', 'state']);
+  const linked = foldWith(ciRollupCommand({ pr: 1, repo: null, withLink: true }), RAW_ROLLUP);
+  assert.equal(linked[0].detailsUrl, 'https://x/1');
+  assert.equal(linked[1].targetUrl, 'https://x/2');
+});
+
+test('[ci-check] ciRollupCommand: rollup が null の PR でも --jq は失敗せず空配列を返す', () => {
+  assert.deepEqual(foldWith(ciRollupCommand({ pr: 1, repo: null }), { statusCheckRollup: null }), []);
+});
+
+test('[ci-check] ciFetchSteps: URL が要る ci-verify（only）だけ withLink の rollup を取る', () => {
+  assert.ok(ciFetchSteps({ pr: 7, repo: 'o/n', n: 2 }).includes(`\`${ciRollupCommand({ pr: 7, repo: 'o/n' })}\``));
+  assert.ok(ciFetchSteps({ pr: 7, repo: 'o/n', n: 2, exclude: ['e2e'] }).includes(`\`${ciRollupCommand({ pr: 7, repo: 'o/n' })}\``));
+  assert.ok(ciFetchSteps({ pr: 7, repo: 'o/n', n: 2, only: ['e2e'] }).includes(`\`${ciRollupCommand({ pr: 7, repo: 'o/n', withLink: true })}\``));
 });
 
 test('[ci-check] pr が文字列でも同じ prompt になる（dev-flow は number, pr-iterate は string 由来）', () => {
@@ -252,14 +284,14 @@ test('ciCheckPrompt: check-ci を plugin bin/ の bare 名（先頭トークン�
   assert.ok(!p.includes('bash check-ci'), 'bash 前置を付けない');
 });
 
-test('[ci-check] ciWaitCheckPrompt は ci-wait → gh pr checks → check-ci の順に 1 spawn で実行させ、bare sleep を含まない', () => {
+test('[ci-check] ciWaitCheckPrompt は ci-wait → gh pr view（rollup）→ check-ci の順に 1 spawn で実行させ、bare sleep を含まない', () => {
   const w = ciWaitCheckPrompt({ pr: 123, repo: 'owner/name', seconds: 45 });
   const iWait = w.indexOf('`ci-wait 45`');
-  const iGh = w.indexOf('`gh pr checks 123 --repo owner/name --json name,state,bucket`');
+  const iGh = w.indexOf(`\`${ciRollupCommand({ pr: 123, repo: 'owner/name' })}\``);
   const iCheck = w.indexOf('`check-ci --checks-data');
   assert.ok(iWait >= 0, 'ci-wait 45 を bare 単文として含む');
-  assert.ok(iGh > iWait, 'gh pr checks は ci-wait の後');
-  assert.ok(iCheck > iGh, 'check-ci は gh pr checks の後');
+  assert.ok(iGh > iWait, 'rollup の取得は ci-wait の後');
+  assert.ok(iCheck > iGh, 'check-ci は rollup の取得の後');
   assert.ok(!/`sleep \d+`/.test(w), 'bare sleep 単文を含まない');
   assert.ok(!w.includes('check-ci.sh'), '拡張子付き名を含まない');
   assert.ok(w.includes('"slept": boolean'), 'Output format に slept を含む');
@@ -301,6 +333,23 @@ test('[ci-check] exec-proxy.md の ci-wait-check 行は slept が true でない
   assert.ok(policy.startsWith('fail-closed') && policy.includes('`ci_pending`'), `ci-wait-check 行のポリシーが fail-closed の ci_pending 終端でない: ${policy}`);
 });
 
+test('[ci-check] CI 取得を書く docs とスクリプトの先頭コメントは statusCheckRollup を入力に挙げる', () => {
+  const plugin = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const read = (rel) => readFileSync(join(plugin, rel), 'utf8');
+  const headComment = (rel) => read(rel).split(/^set -euo pipefail$/m)[0];
+  const rowOf = (rel, prefix) => read(rel).split('\n').find((l) => l.startsWith(prefix)) ?? '';
+  const targets = {
+    'exec-proxy.md の ci-checks 行': rowOf('dev-flow/references/exec-proxy.md', '| ci-checks（ENV'),
+    'dev-runner-haiku-ro.md の ci-checks 行': rowOf('agents/dev-runner-haiku-ro.md', '| `ci-checks`'),
+    'dev-runner-haiku-ro.md の ci-wait-check 行': rowOf('agents/dev-runner-haiku-ro.md', '| `ci-wait-check#'),
+    'check-ci.sh の先頭コメント': headComment('pr-iterate/scripts/check-ci.sh'),
+    'merge-tier-facts.sh の先頭コメント': headComment('_shared/scripts/merge-tier-facts.sh'),
+  };
+  for (const [name, text] of Object.entries(targets)) {
+    assert.ok(text.includes('--json statusCheckRollup'), `${name} が CI の入力に statusCheckRollup を挙げていない: ${text.slice(0, 300)}`);
+  }
+});
+
 test('[ci-check] ci-check と ci-wait-check は gh fetch → check-ci の手順本文を ciFetchSteps で共有する', () => {
   const c = ciCheckPrompt({ pr: 7, repo: 'o/n' });
   const w = ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: 45 });
@@ -318,7 +367,7 @@ const SHA_B = 'b'.repeat(40);
 test('[ci-check] ciCheckPrompt は head sha（gh pr view --json headRefOid）を checks より先に取り、応答に head_sha を加えさせる', () => {
   const p = ciCheckPrompt({ pr: 123, repo: 'owner/name' });
   const iSha = p.indexOf('`gh pr view 123 --repo owner/name --json headRefOid -q .headRefOid`');
-  const iChecks = p.indexOf('`gh pr checks 123 --repo owner/name --json name,state,bucket`');
+  const iChecks = p.indexOf(`\`${ciRollupCommand({ pr: 123, repo: 'owner/name' })}\``);
   assert.ok(iSha >= 0, `head sha 取得の bare 単文が無い: ${p.slice(0, 600)}`);
   assert.ok(iChecks > iSha, 'head sha は checks より先に取る（sha が一致すれば checks も同じ head のもの）');
   assert.ok(p.includes('"head_sha": string'), 'Output format に head_sha を含む');
@@ -366,7 +415,7 @@ test('[ci-check] ci-verify prompt の Bash 手順は（待つときだけ ci-wai
   const waited = ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: CI_VERIFY_POLL_SECONDS });
   assert.deepEqual(bashOf(waited), ['ci-wait', 'gh', 'check-ci']);
   assert.deepEqual(bashOf(ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: 0 })), ['gh', 'check-ci']);
-  assert.ok(waited.includes('`gh pr checks 7 --repo o/n --json name,state,bucket,link`') && waited.includes(`--only 'e2e'`), waited);
+  assert.ok(waited.includes(`\`${ciRollupCommand({ pr: 7, repo: 'o/n', withLink: true })}\``) && waited.includes(`--only 'e2e'`), waited);
   assert.ok(ciWaitCheckTurns(CI_TURN_MARGIN) <= readMaxTurns());
   // ci-wait は Bash tool の既定 timeout（120 秒）に収まる長さ
   assert.ok(CI_VERIFY_POLL_SECONDS < 120);

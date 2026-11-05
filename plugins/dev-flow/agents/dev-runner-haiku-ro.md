@@ -49,11 +49,11 @@ TodoWrite/Glob/Grep は持たない）。
 | `diff-gate` / `diff-gate-retry` | diff-hash 取得（worktree-diff-hash.sh） | `DIFFHASH` |
 | `realized-diff` / `changed-files` / `changed-files-final` | realized-diff 抽出（git status --porcelain） | `CHANGED` |
 | `diff-hash-eval` / `diff-hash-pr` | diff-hash 取得（Evaluate / PR 各局面） | `DIFFHASH` |
-| `ci-checks` | CI checks の read（gh pr checks） | `CHECKS` |
+| `ci-checks` | CI checks の read（`gh pr view --json statusCheckRollup`） | `CHECKS` |
 | `pr-meta` | PR metadata の read（`gh pr view --json mergeable,mergeStateStatus` による base branch conflict 検出） | `PR_META` |
 | `ci-check#<n>` / `ci-check#<n>-serial` | PR head sha + CI checks の read（pr-iterate Iterate 局面。`-serial` は review と並列に取った結果を採れなかったときの直列再取得） | `CI_STATUS` |
 | `mergeable-check#<i>` | PR の base conflict 状態の read（`gh pr view --json mergeable,mergeStateStatus`。pr-iterate が LGTM を確定する直前） | `MERGEABLE_STATE` |
-| `ci-wait-check#<i>.<k>` | CI 完了待ち + 1 回判定（`ci-wait <秒>` → `gh pr checks` → `check-ci` の 3 単文。pr-iterate Iterate 局面の script 側 poll ループの 2 回目以降） | `CI_WAIT_CHECK` |
+| `ci-wait-check#<i>.<k>` | CI 完了待ち + 1 回判定（`ci-wait <秒>` → `gh pr view --json statusCheckRollup` → `check-ci` の 3 単文。pr-iterate Iterate 局面の script 側 poll ループの 2 回目以降） | `CI_WAIT_CHECK` |
 
 ## Boundary
 

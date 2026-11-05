@@ -9,7 +9,7 @@
 # 呼び出して集約するのみで、各スクリプトの判定ロジックは複製しない。
 #
 # 認証付き network I/O (gh) は本スクリプト内に持たない (.claude/rules/dev-flow.md の exec-proxy 制約。
-# check-ci と同じ precedent): `gh pr view` / `gh pr checks` は呼び出し側 subagent が gh を先頭
+# check-ci と同じ precedent): `gh pr view` は呼び出し側 subagent が gh を先頭
 # トークンとする bare 単文で実行し、その stdout を --pr-view-data / --checks-data / --closes-data の
 # argv で verbatim 転写する。本スクリプトはその argv 入力とローカル git の純変換に留まる。
 # PR body は subagent 側が `gh pr view --json body --jq` で true / false に畳んでから渡す — 本文そのものを
@@ -18,7 +18,7 @@
 #
 # Usage: merge-tier-facts.sh --worktree <abs-path> --base <ref> \
 #          [--pr-view-data '<gh pr view --json mergeable,mergeStateStatus,headRefOid の stdout>'] \
-#          [--checks-data '<gh pr checks --json name,bucket の stdout>'] \
+#          [--checks-data '<gh pr view --json statusCheckRollup --jq (判定に要るキーへの畳み込み) の stdout>'] \
 #          [--closes-data '<gh pr view --json body --jq '.body | test("Closes #<issue>(\\D|$)")' の stdout>']
 #   --base は完全修飾 ref (例: origin/main)。呼び出し側 (dev-flow.js) が origin/ を付けて渡す。
 #   --pr-view-data / --checks-data / --closes-data は gh の stdout が空だった場合に省略してよい (省略は ok:false)。
@@ -34,8 +34,8 @@
 #               省略 / JSON object でないときは ok:false
 #   head_tree - `git rev-parse <pr.headRefOid>^{tree}` ({tree})。pr が取得できないか headRefOid が
 #               40hex でないときは ok:false (skipped)
-#   checks    - --checks-data の JSON array ({checks: [...]})。省略 / JSON array でないときは ok:false
-#               (gh pr checks の exit code は判定に使わない — 呼び出し側は stdout をそのまま渡す)
+#   checks    - --checks-data の rollup を ci-rollup.jq (check-ci.sh と同じ分類の定義) で写した
+#               ({checks: [{name, bucket}, ...]})。null は空配列と同じ。省略 / ci-rollup.jq が受理しないときは ok:false
 #   closes    - --closes-data が `true` / `false` (前後の空白は除く) のとき ({present: <bool>})。
 #               省略 / それ以外の値は ok:false (取得失敗。Closes 欠落 = present:false とは区別する)
 #   epoch     - `date +%s` (clock mark 給電用。取得失敗は null)
@@ -118,7 +118,6 @@ ok_result()  { jq -nc --argjson v "$1" '{ok: true, value: $v}'; }
 err_result() { jq -nc --arg e "$1" '{ok: false, value: null, error: $e}'; }
 
 is_json_object() { printf '%s' "$1" | jq -e 'type == "object"' >/dev/null 2>&1; }
-is_json_array()  { printf '%s' "$1" | jq -e 'type == "array"'  >/dev/null 2>&1; }
 
 # 子スクリプトの stderr は捨てずに一時ファイルへ受け、失敗時だけ先頭 300 byte を error に添える
 # (exit code だけでは git の fatal 文など原因を回収できない)。
@@ -215,13 +214,13 @@ else
 fi
 
 # ============================================================================
-# 6. checks = --checks-data (gh pr checks --json name,bucket の stdout 転写) の純変換
+# 6. checks = --checks-data (gh pr view --json statusCheckRollup の stdout 転写) の純変換
 # ============================================================================
 
 if [[ "$HAVE_CHECKS_DATA" != true ]]; then
-    checks_json="$(err_result "checks data not provided (--checks-data omitted: gh pr checks stdout was empty or the command failed)")"
-elif is_json_array "$CHECKS_DATA"; then
-    checks_json="$(ok_result "$(jq -nc --argjson c "$CHECKS_DATA" '{checks: $c}')")"
+    checks_json="$(err_result "checks data not provided (--checks-data omitted: gh pr view --json statusCheckRollup stdout was empty or the command failed)")"
+elif checks_rollup="$(printf '%s' "$CHECKS_DATA" | jq -ce -f "$SCRIPT_DIR/ci-rollup.jq" 2>/dev/null)"; then
+    checks_json="$(ok_result "$(jq -nc --argjson c "$checks_rollup" '{checks: ($c | map({name, bucket}))}')")"
 else
     checks_json="$(err_result "checks data is not a JSON array: $(printf '%s' "$CHECKS_DATA" | head -c 300)")"
 fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-ci.sh - Classify PR CI status from a `gh pr checks` snapshot.
+# check-ci.sh - Classify PR CI status from a `gh pr view --json statusCheckRollup` snapshot.
 # Usage: check-ci.sh --checks-data <string> [--fetch-error-data <string>]
 #                    [--attempt N] [--max-attempts K] [--poll-seconds M]
 #                    [--only <check name>]... [--exclude <check name>]...
@@ -10,8 +10,8 @@
 # declared in "dev-flow".ci_verify (sandbox-unreachable verification such as
 # E2E, which runs far longer than the round gate's wait ceiling). When --only
 # is given the output also carries passed_checks, and every reported check
-# keeps its `link` when the snapshot has one (fetch with --json ...,link) so
-# the caller can record the check run URL as AC evidence.
+# keeps its `link` when the snapshot has one (fetch keeping detailsUrl / targetUrl)
+# so the caller can record the check run URL as AC evidence.
 #
 # Exits 0 when CI status is determined (passed/failed/pending/no_checks).
 # Exits 1 when the snapshot is unusable (the caller's fetch failed) or when
@@ -24,16 +24,17 @@
 # snapshot as argv data (two bare, single-statement commands — no file relay,
 # no redirection, no pipes):
 #
-#   gh pr checks <pr> --repo <owner/repo> --json name,state,bucket
+#   gh pr view <pr> --repo <owner/repo> --json statusCheckRollup \
+#     --jq '.statusCheckRollup // [] | map(del(.__typename,.completedAt,.detailsUrl,.targetUrl))'
 #   check-ci.sh --checks-data '<that stdout, verbatim>' \
 #     --fetch-error-data '<that stderr, verbatim, if the gh call failed>' \
 #     --attempt <n> --max-attempts <k> --poll-seconds <m>
 #
 # This script trusts that the caller transcribes `gh`'s stdout/stderr
 # verbatim into --checks-data/--fetch-error-data — it has no way to verify
-# the transcription against the original `gh` output. --json is kept to the
-# minimal fields (name,state,bucket) specifically to keep the transcribed
-# payload small, which keeps the transcription-corruption surface small.
+# the transcription against the original `gh` output. --jq folds the rollup to
+# the keys the verdict reads specifically to keep the transcribed payload
+# small, which keeps the transcription-corruption surface small.
 # Quote breakage or partial transcription during the caller's argv relay is
 # not silently swallowed: a corrupted --checks-data value fails to parse as a
 # JSON array and falls into the same "error" path as a genuine fetch failure
@@ -56,23 +57,19 @@
 # then this script) with no redirection, pipe, or compound command in
 # between.
 #
-# Verdict derivation is a pure function of the `bucket` field in
-# `gh pr checks --json ...`'s output (pass/fail/pending/skipping/cancel);
-# `cancel` is folded into "failed" (fail-closed) and `skipping` is folded
-# into "passed" (+ a separate skipped count; with --only it is folded into
-# "pending" instead — see compute_verdict). Any bucket value outside this
-# known 5-value vocabulary is also folded into "failed" (fail-closed): if
-# `gh` ever emits a new bucket, an unrecognized value must never fall
-# through the passed/failed/pending partition uncounted and let the
-# `else -> "passed"` default paper over it (that would be wrong-green).
+# _shared/scripts/ci-rollup.jq reduces the rollup to one {name, state, bucket}
+# per check (merge-tier-facts.sh uses the same file, so the CI gate and the
+# Merge tier cannot classify differently; the classification table and the
+# duplicate rule live there). Verdict derivation is then a pure function of
+# `bucket` (pass/fail/pending/skipping/cancel): `cancel` is folded into
+# "failed" (fail-closed) and `skipping` is folded into "passed" (+ a separate
+# skipped count; with --only it is folded into "pending" instead — see
+# compute_verdict). A conclusion / state the table does not know is bucket
+# "fail", so an unrecognized value can never read as green.
 #
-# The verdict is never derived from gh's exit code, and the caller must not
-# gate on it either: `gh pr checks` exits 8 while checks are pending and exits
-# 1 when any check has failed, so treating a non-zero exit as a fetch failure
-# would misclassify pending/failed runs as "error" (the bug class fixed by
-# c7ada02). A snapshot is only treated as failed when --checks-data does not
-# parse as a JSON array and --fetch-error-data does not indicate there were
-# no checks to report.
+# The verdict is never derived from gh's exit code. A rollup of null or [] reads
+# as no_checks. A snapshot is only treated as failed when --checks-data is
+# neither of those nor a JSON array of objects.
 #
 # Bounded-wait accounting (the caller polls; this script only reports it):
 # --attempt N (default 1): 1-based index of the caller's current poll attempt.
@@ -165,25 +162,19 @@ epoch_field() {
     fi
 }
 
-# read_snapshot - validates $CHECKS_DATA into CHECKS_JSON. A value that does
-# not parse as a JSON array is a failed fetch, except when --fetch-error-data
-# indicates gh had no checks to report (which is a legitimate empty result).
+# read_snapshot - reduces the rollup in $CHECKS_DATA to CHECKS_JSON through
+# ci-rollup.jq. A value it does not accept is a failed fetch.
 read_snapshot() {
     CHECKS_JSON="[]"
     FETCH_ERR=""
-    if printf '%s' "$CHECKS_DATA" | jq -e 'type == "array"' >/dev/null 2>&1; then
-        CHECKS_JSON="$CHECKS_DATA"
+    if CHECKS_JSON="$(printf '%s' "$CHECKS_DATA" | jq -ce -f "$SCRIPT_DIR/../../_shared/scripts/ci-rollup.jq" 2>/dev/null)"; then
         return 0
     fi
-    # 早く終わる reader（grep -q / head）へ pipe しない: 残りの write が SIGPIPE になり pipefail で偽・非 0 になる
-    if grep -qi 'no checks reported' <<<"$FETCH_ERR_DATA"; then
-        CHECKS_JSON="[]"
-        return 0
-    fi
+    # 早く終わる reader（head）へ pipe しない: 残りの write が SIGPIPE になり pipefail で偽・非 0 になる
     if [[ -n "$FETCH_ERR_DATA" ]]; then
-        FETCH_ERR="gh pr checks: $(printf '%s' "$FETCH_ERR_DATA" | { head -3; cat >/dev/null; } | tr '\n' ' ')"
+        FETCH_ERR="gh pr view: $(printf '%s' "$FETCH_ERR_DATA" | { head -3; cat >/dev/null; } | tr '\n' ' ')"
     else
-        FETCH_ERR="gh pr checks: snapshot data is not a JSON array"
+        FETCH_ERR="gh pr view: snapshot data is not a JSON array"
     fi
     return 1
 }
@@ -194,11 +185,7 @@ read_snapshot() {
 #             (with --only: bucket == "pass" only)
 # is_pending: bucket == "pending"             — still running
 #             (with --only: bucket IN("pending", "skipping"))
-# is_failed:  bucket IN("fail", "cancel") OR bucket outside the known
-#             5-value vocabulary — failed, cancelled, or unrecognized
-#             (fail-closed: an unknown bucket must count as failed, not
-#             silently drop out of every count and let the "no failed, no
-#             pending -> passed" default misreport it as green).
+# is_failed:  bucket IN("fail", "cancel")     — failed, cancelled, or unrecognized by ci-rollup.jq
 #
 # --only / --exclude filter the snapshot by exact name first (--only keeps the
 # named checks, --exclude drops them); the verdict is then derived from what
@@ -213,8 +200,7 @@ compute_verdict() {
       def only_mode:  ($only | length) > 0;
       def is_passed:  if only_mode then .bucket == "pass" else .bucket | IN("pass", "skipping") end;
       def is_pending: if only_mode then .bucket | IN("pending", "skipping") else .bucket == "pending" end;
-      def is_known:   .bucket | IN("pass", "fail", "pending", "skipping", "cancel");
-      def is_failed:  (.bucket | IN("fail", "cancel")) or (is_known | not);
+      def is_failed:  .bucket | IN("fail", "cancel");
       def with_link:  if (.link | type) == "string" and .link != "" then {link} else {} end;
       def passed_checks_field:
         if only_mode then {passed_checks: [.[] | select(is_passed) | {name, bucket, state} + with_link]} else {} end;

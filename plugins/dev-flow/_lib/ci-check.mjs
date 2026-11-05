@@ -56,7 +56,7 @@ export function ciMaxPolls(ceilingSeconds) {
 export const CI_TURN_MARGIN = 3;
 
 // CI gate schema — the gate lost in eb8aa7e (issue #133) を復元したもの。
-// dev-runner-haiku-ro が bare `gh pr checks` で CI snapshot を取得し、
+// dev-runner-haiku-ro が bare `gh pr view --json statusCheckRollup`（ciRollupCommand）で CI snapshot を取得し、
 // pr-iterate/scripts/check-ci.sh（snapshot に対する純変換）で分類して stdout JSON を verbatim で返す。
 // fetch を script でなく agent 側に置くのは、exec-proxy script が認証付き network I/O を
 // 持ってはならないため（issue #488）。
@@ -112,14 +112,22 @@ function checkNameArgs(flag, names) {
   return (Array.isArray(names) ? names : []).map((name) => ` ${flag} '${String(name).split("'").join("'\\''")}'`).join('');
 }
 
+// CI 判定の入力を取るコマンド（ciFetchSteps / Merge tier の mergeTierFactsPrompt が共有する）。gh pr checks --json は
+// conclusion を返さず、status が COMPLETED でない check の結果を bucket に落とすので使わない。rollup は null になりうるので
+// [] に直す。--jq で判定に要らないキーを落とし、haiku が argv に転写する量を抑える。URL が要るのは ci-verify だけ（withLink）。
+export function ciRollupCommand({ pr, repo, withLink = false }) {
+  const drop = withLink ? '.__typename,.completedAt' : '.__typename,.completedAt,.detailsUrl,.targetUrl';
+  return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop}))'`;
+}
+
 // exclude: check-ci に --exclude で渡す check 名（ci_verify.checks。review ⇄ fix の round の CI 判定から外す）。
-// only: check-ci に --only で渡す check 名（LGTM 後の ci-verify 待ち）。only を渡すときは gh の --json に link を足し、
+// only: check-ci に --only で渡す check 名（LGTM 後の ci-verify 待ち）。only を渡すときは rollup の URL を残し、
 // check run の URL を AC の根拠に残す。
 export function ciFetchSteps({ pr, repo, n, exclude = [], only = [] }) {
   const withLink = Array.isArray(only) && only.length > 0;
-  return `${n}. \`gh pr checks ${pr}${repo ? ' --repo ' + repo : ''} --json name,state,bucket${withLink ? ',link' : ''}\` を gh を先頭トークンとする bare 単文で実行せよ`
+  return `${n}. \`${ciRollupCommand({ pr, repo, withLink })}\` を gh を先頭トークンとする bare 単文で実行せよ`
     + `（リダイレクト・パイプ・複合コマンドは使わない）。`
-    + `このコマンドの exit code を判定に使ってはならない（pending で 8、失敗ありで 1 を返す仕様であり、fetch 自体の成否とは無関係）。\n`
+    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。\n`
     + `${n + 1}. \`check-ci --checks-data '<手順${n}の stdout を一字一句そのまま。要約・整形・省略禁止>' `
     + `--fetch-error-data '<手順${n}の stderr を一字一句そのまま。stderr が空なら本オプション自体を省略>'`
     + `${checkNameArgs('--only', only)}${checkNameArgs('--exclude', exclude)}\` `

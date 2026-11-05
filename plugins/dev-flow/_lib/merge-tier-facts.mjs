@@ -46,12 +46,14 @@ export function closesCheckCommand({ pr, repo, issue }) {
   return `gh pr view ${pr}${repoArg} --json body --jq '.body | test("Closes #${Number(issue)}(\\\\D|$)")'`;
 }
 
-// mergeTierFactsPrompt({ wt, base, pr, repo, issue }): 統合 exec-proxy の prompt。
+// mergeTierFactsPrompt({ wt, base, pr, repo, issue, rollupCommand }): 統合 exec-proxy の prompt。
 // gh の 3 コマンドは subagent が bare 単文で実行し、stdout を argv で merge-tier-facts へ verbatim 転写する
 // （exec-proxy スクリプトは認証付き network I/O を内部に持たない契約。check-ci と同型）。
 // PR body は closesCheckCommand で true / false に畳んだ結果だけを渡し、本文を argv にも prompt にも載せない。
 // base は origin/ 無しの branch 名を受け、prompt 側で origin/ を付ける（既存 call site と同じ）。
-export function mergeTierFactsPrompt({ wt, base, pr, repo, issue }) {
+// rollupCommand は ci-check.mjs の ciRollupCommand の戻り値（CI gate と同じ入力を取る。canonical は import を持てないので
+// 呼び出し側が渡す）。
+export function mergeTierFactsPrompt({ wt, base, pr, repo, issue, rollupCommand }) {
   const repoArg = repo ? ' --repo ' + repo : '';
   const bare = '（cd 前置・`bash` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止）';
   return `## Objective\nPR #${pr} の Merge tier 判定に使う事実を取得し、merge-tier-facts の stdout JSON をそのまま返せ。\n\n`
@@ -62,8 +64,9 @@ export function mergeTierFactsPrompt({ wt, base, pr, repo, issue }) {
     + `- 読み取り専用。git mutation（commit/push/reset/fetch/pull 等）禁止。ファイルを変更しない\n\n`
     + `## Steps\n`
     + `1. \`gh pr view ${pr}${repoArg} --json mergeable,mergeStateStatus,headRefOid\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。stdout を <PR_VIEW> とする。\n`
-    + `2. \`gh pr checks ${pr}${repoArg} --json name,bucket\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
-    + `このコマンドの exit code を判定に使ってはならない（pending で 8、失敗ありで 1 を返す仕様であり、fetch 自体の成否とは無関係）。stdout を <CHECKS> とする。\n`
+    + `2. \`${rollupCommand}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
+    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。`
+    + `stdout を <CHECKS> とする。\n`
     + `3. \`${closesCheckCommand({ pr, repo, issue })}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
     + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。`
     + `stdout（\`true\` または \`false\`）を <CLOSES> とする。\n`

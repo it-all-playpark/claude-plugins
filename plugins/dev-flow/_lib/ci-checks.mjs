@@ -1,4 +1,4 @@
-// dev-flow Merge tier phase: gh pr checks の結果から env_key ごとの CI check が全 green かを
+// dev-flow Merge tier phase: merge-tier-facts の checks サブ結果から env_key ごとの CI check が全 green かを
 // 判定する純関数群。CI green を根拠に auto-close してよい ENV item を allowlist で限定する
 // （AC-3。npm-cache-eperm 等 CI で検証できない ENV key は含めない）。
 //
@@ -15,7 +15,7 @@ export const ENV_CHECK_RES = {
 // CI green で auto-close してよい ENV key の allowlist（ENV_CHECK_RES の key 集合）。
 export const CI_VERIFIABLE_ENV_KEYS = Object.keys(ENV_CHECK_RES);
 
-// gh pr checks exec-proxy の agent() schema。
+// checks サブ結果の schema。
 export const CHECKS = {
   type: 'object',
   required: ['ok'],
@@ -36,7 +36,7 @@ export const CHECKS = {
   },
 };
 
-// gh pr checks --json name,bucket の出力から、指定 env_key に対応する CI check が全 pass かを判定する純関数。
+// checks サブ結果（{name, bucket} の配列）から、指定 env_key に対応する CI check が全 pass かを判定する純関数。
 export function envChecksGreen(checks, envKey) {
   const re = ENV_CHECK_RES[envKey];
   if (!re) {

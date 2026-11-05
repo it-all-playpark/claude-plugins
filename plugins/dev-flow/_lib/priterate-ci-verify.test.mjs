@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
-import { CI_VERIFY_CHECK, ciVerifyPrompt, CI_VERIFY_POLL_SECONDS } from './ci-check.mjs';
+import { CI_VERIFY_CHECK, ciVerifyPrompt, ciRollupCommand, CI_VERIFY_POLL_SECONDS } from './ci-check.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude', 'workflows', 'pr-iterate.js'), 'utf8');
@@ -52,7 +52,7 @@ test('[ci-verify] success: round の CI 判定から e2e を外し、LGTM 後の
   assert.deepEqual(v.map((c) => c.label), ['ci-verify#1.1', 'ci-verify#1.2']);
   assert.equal(v[0].prompt, ciVerifyPrompt({ pr: 5, repo: 'acme/skills', checks: ['e2e'], seconds: 0 }));
   assert.equal(v[1].prompt, ciVerifyPrompt({ pr: 5, repo: 'acme/skills', checks: ['e2e'], seconds: CI_VERIFY_POLL_SECONDS }));
-  assert.ok(v[1].prompt.includes(`\`ci-wait ${CI_VERIFY_POLL_SECONDS}\``) && v[1].prompt.includes(`--only 'e2e'`) && v[1].prompt.includes('--json name,state,bucket,link'), v[1].prompt);
+  assert.ok(v[1].prompt.includes(`\`ci-wait ${CI_VERIFY_POLL_SECONDS}\``) && v[1].prompt.includes(`--only 'e2e'`) && v[1].prompt.includes(ciRollupCommand({ pr: 5, repo: 'acme/skills', withLink: true })), v[1].prompt);
   assert.ok(!v[0].prompt.includes('`ci-wait '), '1 回目の poll は待たない');
   assert.equal(JSON.stringify(v[0].schema), JSON.stringify(CI_VERIFY_CHECK));
   assert.equal(calls.filter((c) => c.label.startsWith('fix#')).length, 0);
@@ -107,8 +107,8 @@ function checkCiOnly(snapshot, name) {
 
 test('[ci-verify] skipped の e2e は passed にならない: check-ci --only の実出力で pending のまま上限 → ci_verify.status=pending・URL なし', async () => {
   const skipped = checkCiOnly([
-    { name: 'lint', state: 'SUCCESS', bucket: 'pass' },
-    { name: 'e2e', state: 'SKIPPED', bucket: 'skipping', link: E2E_LINK },
+    { name: 'lint', workflowName: 'CI', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: '2026-01-01T00:00:00Z' },
+    { name: 'e2e', workflowName: 'CI', status: 'COMPLETED', conclusion: 'SKIPPED', startedAt: '2026-01-01T00:00:00Z', detailsUrl: E2E_LINK },
   ], 'e2e');
   assert.equal(skipped.status, 'pending');
   assert.deepEqual(skipped.passed_checks, []);

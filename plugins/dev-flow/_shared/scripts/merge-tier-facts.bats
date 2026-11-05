@@ -29,7 +29,7 @@ setup() {
     HEAD_TREE="$(git -C "$REPO" rev-parse 'HEAD^{tree}')"
 
     PR_VIEW_JSON="$(printf '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"%s"}' "$HEAD_SHA")"
-    CHECKS_JSON='[{"name":"build","bucket":"pass"},{"name":"bats","bucket":"pass"}]'
+    CHECKS_JSON='[{"name":"build","workflowName":"CI","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T00:00:00Z"},{"name":"bats","workflowName":"CI","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T00:00:00Z"}]'
 
     # gh が呼ばれないことを PATH 先頭の失敗 stub で pin する (script が gh を内部で呼んだら exit 99)
     STUB_BIN="$(mktemp -d)"
@@ -60,7 +60,7 @@ run_facts() {
         .changed.ok == true and .changed.value.files == ["src.txt"] and
         .pr.ok == true and .pr.value.mergeable == "MERGEABLE" and .pr.value.mergeStateStatus == "CLEAN" and .pr.value.headRefOid == $sha and
         .head_tree.ok == true and .head_tree.value.tree == $tree and
-        .checks.ok == true and (.checks.value.checks | length) == 2 and .checks.value.checks[0].name == "build" and
+        .checks.ok == true and .checks.value.checks == [{name: "bats", bucket: "pass"}, {name: "build", bucket: "pass"}] and
         .closes.ok == true and .closes.value.present == true and
         (.epoch | type) == "number"
     '
@@ -89,9 +89,9 @@ run_facts() {
 }
 
 # ---------------------------------------------------------------------------
-# (d) gh pr checks 失敗 -> checks のみ ok:false
+# (d) rollup の取得失敗 -> checks のみ ok:false
 # ---------------------------------------------------------------------------
-@test "--checks-data 省略 (gh pr checks 失敗) -> checks だけ ok:false、他 5 つは ok:true" {
+@test "--checks-data 省略 (gh pr view --json statusCheckRollup 失敗) -> checks だけ ok:false、他 5 つは ok:true" {
     run bash "$SCRIPT" --worktree "$REPO" --base origin/main --pr-view-data "$PR_VIEW_JSON"
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" | jq -e '
@@ -101,12 +101,18 @@ run_facts() {
 }
 
 # ---------------------------------------------------------------------------
-# (e) gh pr checks が pending (exit 8) でも stdout に JSON array があれば ok:true
+# (e) rollup を check-ci と同じ定義 (ci-rollup.jq) で {name, bucket} に写す。null は空配列
 # ---------------------------------------------------------------------------
-@test "pending の checks-data (gh exit 8 相当) でも JSON array なら checks.ok:true" {
-    run bash "$SCRIPT" --worktree "$REPO" --base origin/main --pr-view-data "$PR_VIEW_JSON" --checks-data '[{"name":"build","bucket":"pending"}]'
+@test "conclusion が空の CheckRun は bucket pending、status が IN_PROGRESS でも conclusion があれば pass" {
+    run bash "$SCRIPT" --worktree "$REPO" --base origin/main --pr-view-data "$PR_VIEW_JSON" --checks-data '[{"name":"a","status":"IN_PROGRESS","conclusion":""},{"name":"b","status":"IN_PROGRESS","conclusion":"SUCCESS"}]'
     [ "$status" -eq 0 ]
-    printf '%s\n' "$output" | jq -e '.checks.ok == true and .checks.value.checks[0].bucket == "pending"'
+    printf '%s\n' "$output" | jq -e '.checks == {ok: true, value: {checks: [{name: "a", bucket: "pending"}, {name: "b", bucket: "pass"}]}}'
+}
+
+@test "rollup が null -> checks.ok:true で空配列" {
+    run bash "$SCRIPT" --worktree "$REPO" --base origin/main --pr-view-data "$PR_VIEW_JSON" --checks-data 'null'
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | jq -e '.checks == {ok: true, value: {checks: []}}'
 }
 
 @test "不正 JSON の pr-view-data / checks-data -> 当該サブ結果だけ ok:false" {
@@ -222,6 +228,7 @@ make_stub_scripts_dir() {
     cp "$SCRIPT" "$STUB_SCRIPTS/merge-tier-facts.sh"
     cp "$(dirname "$SCRIPT")/worktree-diff-hash.sh" "$STUB_SCRIPTS/worktree-diff-hash.sh"
     cp "$(dirname "$SCRIPT")/diff-risk-classify.sh" "$STUB_SCRIPTS/diff-risk-classify.sh"
+    cp "$(dirname "$SCRIPT")/ci-rollup.jq" "$STUB_SCRIPTS/ci-rollup.jq"
 }
 
 @test "worktree-diff-hash.sh 失敗 -> diffhash.error に stderr の先頭が入り、他サブ結果は ok:true" {

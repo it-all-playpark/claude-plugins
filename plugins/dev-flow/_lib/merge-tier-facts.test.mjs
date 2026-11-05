@@ -1,5 +1,12 @@
-import { test } from 'vitest';
+import { test, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { ciRollupCommand } from './ci-check.mjs';
+import { classifyCiChecks } from './merge-tier.mjs';
 import {
   parseMergeTierFacts, isWellFormedRiskFact, isRiskValueDropped, MERGE_FACTS_RISK_DROPPED_ERROR, mergeTierFactsTopLevelKeys,
   mergeTierFactsPrompt, mergeDiffHashError, closesCheckCommand, parseClosesFact, prClosesStatusOf,
@@ -183,10 +190,12 @@ test('mergeTierFactsTopLevelKeys は診断用にキー一覧 / 型名を返す',
 
 // (12) prompt: gh 2 コマンドは bare 単文、script は bare 名先頭トークン、stdout は argv 転写。
 // prompt に sandbox / excludedCommands / 特定パス起動の理由を書かない（.claude/rules/dev-flow.md）。
+const promptOf = (o) => mergeTierFactsPrompt({ ...o, rollupCommand: ciRollupCommand({ pr: o.pr, repo: o.repo }) });
+
 test('mergeTierFactsPrompt: gh 3 コマンド + merge-tier-facts bare 名の手順で、gh 出力は argv 転写', () => {
-  const p = mergeTierFactsPrompt({ wt: '/tmp/wt', base: 'main', pr: 42, repo: 'acme/skills', issue: 824 });
+  const p = promptOf({ wt: '/tmp/wt', base: 'main', pr: 42, repo: 'acme/skills', issue: 824 });
   assert.ok(p.includes('`gh pr view 42 --repo acme/skills --json mergeable,mergeStateStatus,headRefOid`'));
-  assert.ok(p.includes('`gh pr checks 42 --repo acme/skills --json name,bucket`'));
+  assert.ok(p.includes(`2. \`${ciRollupCommand({ pr: 42, repo: 'acme/skills' })}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ`), p);
   assert.ok(p.includes('`merge-tier-facts --worktree /tmp/wt --base origin/main --pr-view-data \''));
   assert.ok(p.includes('--checks-data \''));
   assert.ok(p.includes('当該オプション自体を省略せよ'));
@@ -197,12 +206,76 @@ test('mergeTierFactsPrompt: gh 3 コマンド + merge-tier-facts bare 名の手�
 });
 
 test('mergeTierFactsPrompt: repo 省略時は --repo を付けない', () => {
-  const p = mergeTierFactsPrompt({ wt: '/tmp/wt', base: 'dev', pr: 7, issue: 3 });
+  const p = promptOf({ wt: '/tmp/wt', base: 'dev', pr: 7, issue: 3 });
   assert.ok(p.includes('`gh pr view 7 --json mergeable,mergeStateStatus,headRefOid`'));
-  assert.ok(p.includes('`gh pr checks 7 --json name,bucket`'));
+  assert.ok(p.includes(`\`${ciRollupCommand({ pr: 7 })}\``));
   assert.ok(p.includes(`\`gh pr view 7 --json body --jq '.body | test("Closes #3(\\\\D|$)")'\``));
   assert.ok(p.includes('--base origin/dev '));
   assert.ok(!p.includes('--repo'));
+});
+
+// (12') 同じ rollup で check-ci の判定と merge-tier-facts → classifyCiChecks の判定が一致する（issue #1232）。
+// 片方だけ分類を変えると CI gate と Merge tier の判定が食い違う。
+const here = dirname(fileURLToPath(import.meta.url));
+const scriptEnv = { ...process.env, PATH: `${join(here, '..', '..', 'playpark-core', 'bin')}:${process.env.PATH}` };
+const factsWorktree = mkdtempSync(join(tmpdir(), 'merge-tier-facts-test-'));
+afterAll(() => rmSync(factsWorktree, { recursive: true, force: true }));
+
+function viaCheckCi(data) {
+  const r = spawnSync('bash', [join(here, '..', 'pr-iterate', 'scripts', 'check-ci.sh'), '--checks-data', data], { encoding: 'utf8', env: scriptEnv });
+  return JSON.parse(r.stdout);
+}
+
+function viaMergeTierFacts(data) {
+  const r = spawnSync('bash', [join(here, '..', '_shared', 'scripts', 'merge-tier-facts.sh'), '--worktree', factsWorktree, '--base', 'origin/main', '--checks-data', data], { encoding: 'utf8', env: scriptEnv });
+  return classifyCiChecks(parseMergeTierFacts(JSON.parse(r.stdout)).checks);
+}
+
+const EARLY = '2026-01-01T00:00:00Z';
+const LATE = '2026-01-01T00:05:00Z';
+const run = (name, conclusion, status = 'COMPLETED', startedAt = EARLY, workflowName = 'CI') => ({ name, workflowName, status, conclusion, startedAt });
+const ctx = (context, state, startedAt = EARLY) => ({ context, state, startedAt });
+
+const ROLLUP_FIXTURES = [
+  ['status が IN_PROGRESS のままの SUCCESS', [run('a', 'SUCCESS', 'IN_PROGRESS')], 'passed'],
+  ['status が IN_PROGRESS のままの FAILURE', [run('a', 'FAILURE', 'IN_PROGRESS')], 'failed'],
+  ['conclusion が空', [run('a', '', 'IN_PROGRESS')], 'pending'],
+  ...['SUCCESS', 'SKIPPED', 'NEUTRAL'].map((v) => [`CheckRun ${v}`, [run('a', v)], 'passed']),
+  ...['FAILURE', 'ERROR', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'CANCELLED', 'WHATEVER'].map((v) => [`CheckRun ${v}`, [run('a', v)], 'failed']),
+  ...['PENDING', 'EXPECTED', 'STALE'].map((v) => [`CheckRun ${v}`, [run('a', v)], 'pending']),
+  ['StatusContext SUCCESS', [ctx('v', 'SUCCESS')], 'passed'],
+  ['StatusContext ERROR', [ctx('v', 'ERROR')], 'failed'],
+  ['StatusContext PENDING', [ctx('v', 'PENDING')], 'pending'],
+  ['StatusContext の未知の state', [ctx('v', 'WHATEVER')], 'failed'],
+  ['同名 CheckRun: 先の failure を後の success で消さない', [run('a', 'FAILURE', 'COMPLETED', EARLY), run('a', 'SUCCESS', 'COMPLETED', LATE)], 'failed'],
+  ['同名 CheckRun: failure なしは最新で判定', [run('a', 'SUCCESS', 'COMPLETED', EARLY), run('a', '', 'IN_PROGRESS', LATE)], 'pending'],
+  ['同名 StatusContext: 最新で判定', [ctx('v', 'FAILURE', EARLY), ctx('v', 'SUCCESS', LATE)], 'passed'],
+  ['failed と pending の混在', [run('a', 'FAILURE'), run('b', '', 'IN_PROGRESS'), run('c', 'SUCCESS')], 'failed'],
+  ['空配列', [], 'no_checks'],
+];
+
+for (const [title, rollup, state] of ROLLUP_FIXTURES) {
+  test(`rollup の判定が check-ci と Merge tier で一致する: ${title} → ${state}`, () => {
+    const data = JSON.stringify(rollup);
+    const gate = viaCheckCi(data);
+    const tier = viaMergeTierFacts(data);
+    assert.equal(gate.status, state);
+    assert.equal(tier.state, state);
+    assert.deepEqual(tier.failedNames, gate.failed_checks.map((c) => c.name));
+    assert.deepEqual(tier.pendingNames, gate.pending_checks.map((c) => c.name));
+  });
+}
+
+test('rollup が null: check-ci も Merge tier も no_checks', () => {
+  assert.equal(viaCheckCi('null').status, 'no_checks');
+  assert.equal(viaMergeTierFacts('null').state, 'no_checks');
+});
+
+test('rollup として読めない入力: check-ci は error、Merge tier は unavailable（どちらも green にしない）', () => {
+  for (const data of ['not json', '{}', '[1]']) {
+    assert.equal(viaCheckCi(data).status, 'error', data);
+    assert.equal(viaMergeTierFacts(data).state, 'unavailable', data);
+  }
 });
 
 // (13) closes: PR body は gh の --jq で true / false に畳み、その結果だけを merge-tier-facts へ渡す（issue #824）。
@@ -216,7 +289,7 @@ test('closesCheckCommand: repo 指定つき bare 単文の gh pr view --json bod
 });
 
 test('mergeTierFactsPrompt: closes の gh コマンドを 1 本足し、stdout の true / false だけを --closes-data で渡す', () => {
-  const p = mergeTierFactsPrompt({ wt: '/tmp/wt', base: 'main', pr: 42, repo: 'acme/skills', issue: 824 });
+  const p = promptOf({ wt: '/tmp/wt', base: 'main', pr: 42, repo: 'acme/skills', issue: 824 });
   const cmd = closesCheckCommand({ pr: 42, repo: 'acme/skills', issue: 824 });
   assert.ok(p.includes(`3. \`${cmd}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ`), p);
   assert.ok(p.includes("--closes-data '<手順3の stdout（true または false）をそのまま>'"), p);
