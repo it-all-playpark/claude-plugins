@@ -205,7 +205,7 @@ bg_job_hook_extra_fields() {
 cmd_start() {
     local worktree="$1" config_path="$2" wait_sec="$3" config_pct="$4"
     # 前回 run の残り（同じ state dir）を先に止める
-    bg_job_reset "$worktree" || return
+    bg_job_reset "$worktree" || return 0
     local problem
     if ! problem="$(load_config "$worktree" "$config_path" "$config_pct")"; then
         bg_job_emit --arg error "$problem" '{ok: false, status: "error", error: $error}'

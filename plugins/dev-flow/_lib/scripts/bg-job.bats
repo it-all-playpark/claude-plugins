@@ -228,6 +228,39 @@ EOF
     [ -e "$CWD/keep.txt" ]
 }
 
+@test "local-verify の start: state dir が worktree の親なら exit 0 + status:error を返す" {
+    local verify config
+    verify="$(dirname "$LIB")/../../_shared/scripts/local-verify.sh"
+    config="$(jq -rn '{command: "true", timeout_seconds: 60} | tojson | @uri')"
+    echo keep > "$CWD/keep.txt"
+    run bash "$verify" start --worktree "$CWD" --state-dir "$BATS_TEST_TMPDIR" --config-pct "$config" 3>&-
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 1 ]
+    echo "$output" | jq -e '.ok == false and .status == "error" and (.error | contains("同じかその親"))'
+    [ -e "$CWD/keep.txt" ]
+}
+
+@test "local-verify の start: 前の実行を止められないなら exit 0 + status:error を返す" {
+    # 実物の local-verify.sh と bg_job_reset のまま、stop の結果だけを「止まらなかった」にする（実際に止まらない
+    # supervisor を作ると reset の上限 30 秒を待つことになる）
+    local tree="$BATS_TEST_TMPDIR/tree" state="$BATS_TEST_TMPDIR/stuck-state"
+    mkdir -p "$tree/_shared/scripts" "$tree/_lib/scripts" "$state"
+    cp "$(dirname "$LIB")/../../_shared/scripts/local-verify.sh" "$tree/_shared/scripts/"
+    cat > "$tree/_lib/scripts/bg-job.sh" <<EOF
+source "$LIB"
+bg_job_stop() { jq -nc '{ok: false, stopped: false, error: "stuck"}'; }
+EOF
+    echo '{"phase":"running","supervisor_pid":1}' > "$state/state.json"
+    local config
+    config="$(jq -rn '{command: "true", timeout_seconds: 60} | tojson | @uri')"
+    run bash "$tree/_shared/scripts/local-verify.sh" start --worktree "$CWD" --state-dir "$state" --config-pct "$config" 3>&-
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 1 ]
+    echo "$output" | jq -e '.ok == false and .status == "error" and (.error | contains("止められない"))'
+    [ -e "$state/state.json" ]
+    [ ! -e "$state/spec.json" ]
+}
+
 @test "local-verify の start / wait / stop / supervise は bg-job.sh の関数を通る" {
     # 同じ相対位置に local-verify.sh を置き、bg-job.sh の入口を印付きに差し替える
     local tree="$BATS_TEST_TMPDIR/tree"
