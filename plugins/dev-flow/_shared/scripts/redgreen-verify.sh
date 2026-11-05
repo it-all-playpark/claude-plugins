@@ -409,9 +409,10 @@ emit_outcome() {
 }
 
 cmd_state_dir() {
-  local dir
-  if dir="$(mktemp -d "${TMPDIR:-/tmp}/redgreen-verify.XXXXXXXX")"; then
-    jq -nc --arg d "${dir//\/\//\/}" '{state_dir: $d}'
+  local dir tmp="${TMPDIR:-/tmp}"
+  # macOS の TMPDIR は末尾が / で、そのままだと // を含むパスになり redgreenStateDirFrom が拒否する
+  if dir="$(mktemp -d "${tmp%/}/redgreen-verify.XXXXXXXX")"; then
+    jq -nc --arg d "$dir" '{state_dir: $d}'
     return 0
   fi
   echo '{"state_dir":""}'

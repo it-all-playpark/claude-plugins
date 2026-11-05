@@ -956,7 +956,8 @@ assert_impl_restored() {
   TMPDIR="$BATS_TEST_TMPDIR/" run bash "$SCRIPT" state-dir
   second="$(printf '%s' "$output" | jq -r '.state_dir')"
   [ -d "$second" ]
-  [ "$(dirname "$second")" = "$BATS_TEST_TMPDIR" ]
+  # dirname は // を畳むので、末尾 / の TMPDIR で返るパスは文字列のまま比べる
+  [ "$second" = "$BATS_TEST_TMPDIR/$(basename "$second")" ]
   [ "$first" != "$second" ]
 }
 
