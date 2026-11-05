@@ -9,7 +9,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
 import { devFlowArgs, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -20,7 +19,6 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * validate loop unification 専用の VM sandbox を組む。
  *
  * opts.gateEmpty: true → diff-gate が empty:true を返し retry 経路を発火させる
- * opts.retryEmpty: boolean → diff-gate-retry が empty:{retryEmpty} を返す（default false）
  *
  * test stub の挙動:
  *   opts.retryAlwaysFailed: false（default）
@@ -35,22 +33,19 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  *   - 常に { status:'DONE', task_id:'t', files:['src/foo.test.ts'], summary:'typo修正', concerns:['GF_CONCERN_MARKER'] }
  *   - 本経路・retry 経路とも同一（テスト 4・5 の GF_CONCERN_MARKER 到達 pin 用）
  *
- * diff-gate は opts.gateEmpty:true / diff-gate-retry は opts.retryEmpty:false（default）で
- * retry 経路を発火させる。
+ * diff-gate は opts.gateEmpty:true で retry 経路を発火させる。
  *
  * @param {object} [opts]
  * @param {boolean} [opts.gateEmpty=false]
- * @param {boolean} [opts.retryEmpty=false]
  * @param {boolean} [opts.retryAlwaysFailed=false]
  * @param {boolean} [opts.mainTestThrowFirst=false] - true の場合、本経路 test（'test#N'）の
  *   1 回目呼び出しで EPERM 相当の Error を throw する（sandbox EPERM 起動失敗の再現）。
  *   2 回目以降は従来どおり passed を返す（1 回目 failed 分岐は throw が先行するため到達しない）。
- * @returns {{ ctx: vm.Context, calls: Array<{label: string, agentType: string, prompt: string}> }}
+ * @returns {{ ctx: import('node:vm').Context, calls: Array<{label: string, agentType: string, prompt: string}> }}
  */
 function makeCountingSandbox(opts) {
   const {
     gateEmpty = false,
-    retryEmpty = false,
     retryAlwaysFailed = false,
     mainTestThrowFirst = false,
   } = opts || {};
@@ -133,7 +128,7 @@ function makeCountingSandbox(opts) {
       };
     }
 
-    return devFlowResponder({ 'commit-hook#1': null, 'commit-hook#2': null, 'commit-hook#retry-1': null, 'commit-hook#retry-2': null, 'commit-hook#retry-3': null, 'isolation-probe': null, 'issue-labels': null, 'journal-log': null, 'merge-tier-facts': null, 'post-summary': null, 'security-scope': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'commit-hook#1': null, 'commit-hook#2': null, 'commit-hook#retry-1': null, 'commit-hook#retry-2': null, 'commit-hook#retry-3': null, 'isolation-probe': null, 'journal-log': null, 'merge-tier-facts': null, 'post-summary': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
   const ctx = makeWorkflowContext({
@@ -170,7 +165,7 @@ test('[validate-unify] (1) crash guard: dev-flow.js が sandbox で ReferenceErr
 
 test('[validate-unify] (3) プロンプト同一 pin: test#1 と test#retry-1 のプロンプト byte 一致・green-fix#1 と green-fix#retry-1 のプロンプト byte 一致', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx, calls } = makeCountingSandbox({ gateEmpty: true, retryEmpty: false });
+  const { ctx, calls } = makeCountingSandbox({ gateEmpty: true });
   const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -215,7 +210,7 @@ test('[validate-unify] (3) プロンプト同一 pin: test#1 と test#retry-1 �
 
 test('[validate-unify] (4) concerns 伝搬同一 pin: eval#1 の prompt に GF_CONCERN_MARKER が含まれること（本経路+retry 経路 green-fix concerns → evaluator）', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx, calls } = makeCountingSandbox({ gateEmpty: true, retryEmpty: false });
+  const { ctx, calls } = makeCountingSandbox({ gateEmpty: true });
   const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -242,7 +237,7 @@ test('[validate-unify] (4) concerns 伝搬同一 pin: eval#1 の prompt に GF_C
 
 test('[validate-unify] (5) green-fix データ echo 注入 pin: eval#1 の prompt に src/foo.test.ts が含まれること', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx, calls } = makeCountingSandbox({ gateEmpty: true, retryEmpty: false });
+  const { ctx, calls } = makeCountingSandbox({ gateEmpty: true });
   const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -267,7 +262,7 @@ test('[validate-unify] (5) green-fix データ echo 注入 pin: eval#1 の promp
 
 test('[validate-unify] (6) GREEN_MAX ループ pin: test#retry ちょうど 3 件・green-fix#retry ちょうど 2 件（retry 常時 failed モード）', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx, calls } = makeCountingSandbox({ gateEmpty: true, retryEmpty: false, retryAlwaysFailed: true });
+  const { ctx, calls } = makeCountingSandbox({ gateEmpty: true, retryAlwaysFailed: true });
   const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);

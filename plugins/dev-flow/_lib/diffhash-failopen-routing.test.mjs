@@ -6,7 +6,7 @@
 // せず、既存の null 経路（stale-eval 検出 skip / Merge tier の risk・changed を facts で再判定）へ
 // 合流して journal handoff まで完走することを実証する。
 //
-// ハーネスは _lib/merge-tier-diffhash-reuse-routing.test.mjs の createResponder / STANDARD_REQ を
+// ハーネスは _lib/merge-tier-diffhash-reuse-routing.test.mjs の createResponder を
 // 踏襲し、_lib/test-helpers/vm-sandbox.mjs の makeRecordingSandbox / runDevFlowInSandbox を使う。
 
 import { test } from 'vitest';
@@ -25,14 +25,6 @@ const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 const CV = 'agent({schema}): subagent completed without calling StructuredOutput';
 
 // standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
-const STANDARD_REQ = {
-  summary: 's',
-  acceptance_criteria: ['a', 'b'],
-  issue_type: 'fix',
-  scope: 'src',
-  issue_number: 605,
-  issue_title: 'stub-issue-title',
-};
 
 // ============================================================
 // responder factory: merge-tier-diffhash-reuse-routing.test.mjs の createResponder を複製

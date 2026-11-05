@@ -80,7 +80,7 @@ function makeSandbox(dangerGrepPre, dangerGrepFinal, evaluatorResponse, clearanc
       journalPrompts.push(prompt);
       return { saved: true, logged: true };
     }
-    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'security-clearance-final': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null })({ label, agentType, prompt });
   };
 
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });

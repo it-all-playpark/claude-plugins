@@ -71,14 +71,10 @@ function makeSandbox(prMetaResponse) {
     const result = createResponder(prMetaResponse)(prompt, opts);
     return result === undefined ? null : result;
   };
-  const parallel = async (fns) => Promise.all((fns || []).map((f) => f()));
-  const pipeline = async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } }));
   const workflow = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
   const ctx = makeWorkflowContext({
     agent,
-    parallel,
-    pipeline,
     workflow,
     args: devFlowArgs('405'),
   });

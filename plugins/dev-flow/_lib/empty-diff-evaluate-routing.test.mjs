@@ -49,12 +49,11 @@ function makeCountingSandbox(diffHashConfig) {
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
     if (agentType === 'dev-flow:evaluator') return { verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation', ac_results: [], security_clearance: [] };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 'issue-1', files: [...realizedFiles], summary: '', concerns: [] };
-    return devFlowResponder({ 'ci-check-lite': null, 'commit-hook#1': null, 'commit-hook#retry-1': null, 'isolation-probe': null, 'issue-labels': null, 'journal-log-failure': null, 'post-summary': null, 'reconcile-sync': null, 'tree-diff-numstat': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'commit-hook#1': null, 'commit-hook#retry-1': null, 'isolation-probe': null, 'journal-log-failure': null, 'post-summary': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const sandbox = {
-    phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
+    phase: () => {}, log: () => {}, agent: agentStub,
     workflow: async () => iterateResult, args: devFlowArgs('1'),
     ...JS_GLOBALS,
   };
@@ -249,14 +248,6 @@ test('[empty-diff] (L) hash 不一致 + iterate fix 同時発生 → eval_stalen
 
 // (M) micro path（runEval=false）で iterate fix があっても stale 関連の行が一切出ない（AC-4）
 test('[empty-diff] (M) micro path（runEval=false）+ iterate fix あり → eval_staleness===none・stale 行なし', async () => {
-  const MICRO_REQ = {
-    summary: 's',
-    acceptance_criteria: ['ac1'],
-    issue_type: 'docs',
-    scope: 'docs',
-    issue_number: 1,
-    issue_title: 'stub-issue-title',
-  };
   // realized 1 件 + AC 1 → micro（runEval=false）
   const { ctx } = makeCountingSandbox({
     gateEmpty: false,

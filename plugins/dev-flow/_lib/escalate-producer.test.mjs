@@ -64,7 +64,7 @@ function makeSandbox(evaluatorResponse) {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
     // デフォルト
-    return devFlowResponder({ 'commit-hook#1': null, 'commit-hook#post-eval-1': null, 'isolation-probe': null, 'journal-log': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'journal-log': null })({ label, agentType, prompt });
   };
 
   // pr-iterate stub: workflow() の呼び出し

@@ -10,7 +10,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
 import { devFlowArgs, makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -26,7 +25,7 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * resolved 値（return object）を捕捉できるよう runner も同型にしている。
  *
  * @param {object} postResult - post-summary stub が返すレスポンス（投稿成功/失敗を切り替え）
- * @returns {{ ctx: vm.Context, getPostSummaryCallCount: () => number }}
+ * @returns {{ ctx: import('node:vm').Context, getPostSummaryCallCount: () => number }}
  */
 function makeSandbox(postResult) {
   // post-summary 呼び出しカウンタ
@@ -75,7 +74,7 @@ function makeSandbox(postResult) {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
     // デフォルト
-    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'journal-log': null, 'merge-tier-facts': null, 'post-summary': null, 'security-scope': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'journal-log': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
   // pr-iterate stub: workflow() の呼び出し

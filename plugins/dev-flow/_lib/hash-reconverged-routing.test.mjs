@@ -63,7 +63,7 @@ function createResponder(overrides = {}) {
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
-    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'reconcile-sync': null, 'tree-diff-numstat': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null })({ label, agentType, prompt });
   };
 }
 

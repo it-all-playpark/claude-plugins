@@ -10,7 +10,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
 import { EVALUATOR_OPERATIONAL_CONTRACT } from './evaluator-contract.mjs';
 import { devFlowArgs, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
@@ -25,7 +24,7 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * evaluator stub は呼び出し回数を記録し、responses 配列の index に応じた応答を返す。
  *
  * @param {object[]} responses - evaluator stub が順に返すレスポンス配列
- * @returns {{ ctx: vm.Context, counters: { evaluatorCalls: () => number } }}
+ * @returns {{ ctx: import('node:vm').Context, counters: { evaluatorCalls: () => number } }}
  */
 function makeSandbox(responses) {
   const evalCalls = [];
@@ -85,14 +84,6 @@ function makeSandbox(responses) {
 
 test('[eval-convergence] AC#1: complex 経路・minor のみ feedback・AC 全 satisfied → evaluator 1 回で収束 + merge_tier !== HOLD', async () => {
   // complex に落ちる req（count=7 → floor=complex → EVAL_PASSES=EVAL_MAX=10 のループ経路）
-  const analyzeReq = {
-    summary: 's',
-    acceptance_criteria: ['a', 'b', 'c', 'd'],
-    issue_type: 'feat',
-    scope: 'src',
-    issue_number: 1,
-    issue_title: 'stub-issue-title',
-  };
 
   // evaluator stub: 全呼び出しで verdict=fail を返すが、minor のみ・critical なし・AC 全 satisfied。
   // ledger は全 blocking checked → isConvergedUnderPolicy = true になるはず。
@@ -148,14 +139,6 @@ test('[eval-convergence] AC#1: complex 経路・minor のみ feedback・AC 全 s
 });
 
 test('[eval-convergence] AC#2: 沈黙 critical → EVAL_MAX(10 回)まで差し戻し → HOLD + ledger 未収束', async () => {
-  const analyzeReq = {
-    summary: 's',
-    acceptance_criteria: ['a', 'b', 'c', 'd'],
-    issue_type: 'feat',
-    scope: 'src',
-    issue_number: 1,
-    issue_title: 'stub-issue-title',
-  };
 
   const ac4 = [
     { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
@@ -217,14 +200,6 @@ test('[eval-convergence] AC#2: 沈黙 critical → EVAL_MAX(10 回)まで差し�
 });
 
 test('[eval-convergence] AC#3: critical_resolutions {resolved:true, evidence} → 2 回で収束・非 HOLD', async () => {
-  const analyzeReq = {
-    summary: 's',
-    acceptance_criteria: ['a', 'b', 'c', 'd'],
-    issue_type: 'feat',
-    scope: 'src',
-    issue_number: 1,
-    issue_title: 'stub-issue-title',
-  };
 
   const ac4 = [
     { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
@@ -295,14 +270,6 @@ test('[eval-convergence] AC#3: critical_resolutions {resolved:true, evidence} �
 // AC#3 と同じ 2 iteration フィクスチャ（1 回目 critical → 2 回目解消）を使い、注入が実際に
 // 起きる eval#2 の prompt で検証する。
 test('[eval-convergence] contract: eval#2 prompt に EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions が verbatim 含まれる（issue #174。収束契約は dev-flow.js prompt が唯一の operative contract。evaluator.md は sandbox 保護で workflow から編集不可）', async () => {
-  const analyzeReq = {
-    summary: 's',
-    acceptance_criteria: ['a', 'b', 'c', 'd'],
-    issue_type: 'feat',
-    scope: 'src',
-    issue_number: 1,
-    issue_title: 'stub-issue-title',
-  };
 
   const ac4 = [
     { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: 'ok' },

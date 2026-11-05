@@ -75,7 +75,7 @@ function createResponder(overrides = {}) {
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
     if (label === 'reconcile-sync') return { ok: true, head: 'deadbeef' };
-    return devFlowResponder({ 'ac-checkbox-sync': null, 'commit-hook#1': null, 'final-ac-reconcile': null, 'isolation-probe': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'ac-checkbox-sync': null, 'commit-hook#1': null, 'isolation-probe': null })({ label, agentType, prompt });
   };
 }
 

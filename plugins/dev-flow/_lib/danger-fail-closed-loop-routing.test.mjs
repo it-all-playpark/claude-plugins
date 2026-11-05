@@ -16,7 +16,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
 import { devFlowArgs, mergeTierFacts, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -35,7 +34,7 @@ const src = readFileSync(devFlowPath, 'utf8');
  *
  * @param {object} dangerGrepResponse - danger-grep / merge-tier-facts(risk) stub が返すレスポンス
  * @param {object} evaluatorResponse - evaluator stub が返すレスポンス（全 iteration で同一を返す）
- * @returns {{ ctx: vm.Context, counters: { evaluatorCalls: () => number, journalPrompts: () => string[] } }}
+ * @returns {{ ctx: import('node:vm').Context, counters: { evaluatorCalls: () => number, journalPrompts: () => string[] } }}
  */
 function makeSandbox(dangerGrepResponse, evaluatorResponse) {
   const evalCalls = [];

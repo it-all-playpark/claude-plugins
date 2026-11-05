@@ -67,10 +67,9 @@ function makeSandbox({
       implementerCallIndex++;
       return result;
     }
-    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'issue-labels': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const workflowStub = async (name) => {
     calls.push({ label: `workflow:${name}`, agentType: '', prompt: '' });
     if (workflowThrows) throw workflowThrows;
@@ -78,7 +77,7 @@ function makeSandbox({
   };
 
   const sandbox = {
-    phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
+    phase: () => {}, log: () => {}, agent: agentStub,
     workflow: workflowStub, args: args ?? devFlowArgs('1'),
     ...JS_GLOBALS,
   };

@@ -65,7 +65,7 @@ function createResponder(overrides = {}) {
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
     if (label === 'reconcile-sync') return { ok: true, head: 'deadbeef' };
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
-    return devFlowResponder({ 'ac-checkbox-sync': null, 'changed-files-final': null, 'commit-hook#1': null, 'commit-hook#post-eval-1': null, 'isolation-probe': null, 'test#final': null, 'test#final-rerun': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'ac-checkbox-sync': null, 'commit-hook#1': null, 'commit-hook#post-eval-1': null, 'isolation-probe': null })({ label, agentType, prompt });
   };
 }
 

@@ -26,7 +26,7 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 function makeSandbox({ analyzeReq, implementerFn, diffGateConfig, journalLogFailureResult } = {}) {
   const calls = [];
   let implementerCallIndex = 0;
-  const { gateEmpty = false, retryEmpty = false } = diffGateConfig || {};
+  const { gateEmpty = false } = diffGateConfig || {};
 
   const agentStub = async (prompt, opts) => {
     const label = opts?.label ?? '';
@@ -56,14 +56,13 @@ function makeSandbox({ analyzeReq, implementerFn, diffGateConfig, journalLogFail
       implementerCallIndex++;
       return result;
     }
-    return devFlowResponder({ 'analyze-clarify#1': null, 'commit-hook#1': null, 'isolation-probe': null, 'issue-labels': null, 'journal-log-failure': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'analyze-clarify#1': null, 'commit-hook#1': null, 'isolation-probe': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
   const sandbox = {
-    phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
+    phase: () => {}, log: () => {}, agent: agentStub,
     // REQ は args.setup.analyze から組まれる（Analyze phase は spawn しない）
     workflow: workflowStub, args: devFlowArgs('1', { repo: 'acme/skills', analyze: prerunAnalyze({ acceptance_criteria: analyzeReq.acceptance_criteria, issue_type: analyzeReq.issue_type }) }),
     ...JS_GLOBALS,

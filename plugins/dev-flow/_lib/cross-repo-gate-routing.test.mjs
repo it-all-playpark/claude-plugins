@@ -3,7 +3,7 @@
 // パターンを踏襲し、dhGate.empty===true 時の lazy issue-labels probe / cross-repo-artifacts
 // 検証 / __earlyReturn 配線を VM sandbox で検証する。
 //
-// analyzeReq は acceptance_criteria あり・issue_type:'fix'（実効 shape は realized diff から決まる、
+// analyze は acceptance_criteria あり・issue_type:'fix'（実効 shape は realized diff から決まる、
 // issue_type:'fix'）で runEval を成立させる。
 
 import { test } from 'vitest';
@@ -46,12 +46,11 @@ function makeCountingSandbox(config) {
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 'T1', files: implementerFiles, summary: '', concerns: [], blocking_reason: null, missing_context: null };
     }
-    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'issue-labels': null, 'journal-log-failure': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'journal-log-failure': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const sandbox = {
-    phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
+    phase: () => {}, log: () => {}, agent: agentStub,
     workflow: async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 }), args: devFlowArgs('1'),
     ...JS_GLOBALS,
   };

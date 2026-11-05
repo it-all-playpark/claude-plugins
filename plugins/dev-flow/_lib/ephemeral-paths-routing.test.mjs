@@ -32,7 +32,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
 import { devFlowArgs, prerunAnalyze, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -60,7 +59,7 @@ const src = readFileSync(devFlowPath, 'utf8');
  * @param {object} analyzeReq - analyze フェーズの agent が返す req オブジェクト（SHAPE を決定する）
  * @param {string[]} realizedFiles - label 'danger-grep' stub が files フィールドとして返すファイル一覧
  * @param {string[]} [declaredFiles] - dev-implementer stub が files として申告するファイル一覧
- * @returns {{ ctx: vm.Context, calls: Array<{label: string, agentType: string, prompt: string}> }}
+ * @returns {{ ctx: import('node:vm').Context, calls: Array<{label: string, agentType: string, prompt: string}> }}
  */
 function makeCountingSandbox(analyzeReq, realizedFiles, declaredFiles = []) {
   const calls = [];

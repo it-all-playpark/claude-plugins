@@ -12,7 +12,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
 import { EVALUATOR_OPERATIONAL_CONTRACT } from './evaluator-contract.mjs';
 import { devFlowArgs, mergeTierFacts, runWorkflowCapture, assertNoCrash, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
@@ -30,7 +29,7 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  *
  * @param {object} riskResponse - danger-grep / merge-tier-facts(risk) stub が返すレスポンス
  * @param {object} evaluatorResponse - evaluator stub が返すレスポンス（全 iteration で同一を返す）
- * @returns {{ ctx: vm.Context, counters: object }}
+ * @returns {{ ctx: import('node:vm').Context, counters: object }}
  */
 function makeSandbox(riskResponse, evaluatorResponse) {
   const evalCalls = [];

@@ -22,16 +22,6 @@ const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const src = readFileSync(devFlowPath, 'utf8');
 
-// standard shape 用の analyzeReq（empty-diff-evaluate-routing.test.mjs の STANDARD_REQ 相当）
-const STANDARD_REQ = {
-  summary: 's',
-  acceptance_criteria: ['ac1', 'ac2'],
-  issue_type: 'fix',
-  scope: 'src',
-  issue_number: 1,
-  issue_title: 'stub-issue-title',
-};
-
 /**
  * sandbox を構築する。
  * shape に応じて realized-diff / changed-files の stub を切り替える。
@@ -59,12 +49,11 @@ function makeSandbox(opts) {
     if (label === 'merge-tier-facts') return mergeTierFacts({ files: changedFiles });
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 'issue-1', files: realizedFiles, summary: '', concerns: [] };
-    return devFlowResponder({ 'ci-check-lite': null, 'commit-hook#1': null, 'isolation-probe': null, 'journal-log': null, 'post-summary': null })({ label, agentType, prompt });
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'journal-log': null, 'post-summary': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const sandbox = {
-    phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
+    phase: () => {}, log: () => {}, agent: agentStub,
     workflow: async () => iterateResult, args: devFlowArgs('1'),
     ...JS_GLOBALS,
   };

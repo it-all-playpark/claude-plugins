@@ -1,5 +1,5 @@
 // issue #371 F2 / issue #443 F7: dev-flow.js の duration telemetry 配線を検証する実行ベース統合テスト。
-// devflow-journal-log.test.mjs の makeSandbox / runWorkflowCapture / ANALYZE_REQ を同型コピーし
+// devflow-journal-log.test.mjs の makeSandbox / runWorkflowCapture を同型コピーし
 // (repo precedent はテストごとの helper 複製)、agentStub に
 // 給電（feedClockMark）対象 label への optional epoch 付与を追加する。
 //
@@ -18,7 +18,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
 import { devFlowArgs, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -33,7 +32,7 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * epochMode='fail' なら給電対象 stub 応答の epoch を省略する（fail-open 経路）。
  *
  * @param {'ok'|'fail'} epochMode - epoch 給電モード
- * @returns {{ ctx: vm.Context, getJournalPrompts: () => string[] }}
+ * @returns {{ ctx: import('node:vm').Context, getJournalPrompts: () => string[] }}
  */
 function makeSandbox(epochMode) {
   const journalPrompts = [];
@@ -111,7 +110,7 @@ function makeSandbox(epochMode) {
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) {
       return withEpoch({ hash: 'H', empty: false });
     }
-    // デフォルト: 未知の label は null を返す
+    // 未知の label は devFlowResponder の既定に委譲する
     return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
@@ -151,14 +150,6 @@ function extractPhaseDurations(prompt) {
 
 // standard 経路に落ちる req（count=3, ac=4件, type='feat' → floor='standard'）
 // Merge tier phase まで到達させる（Evaluate も実行される）
-const ANALYZE_REQ = {
-  summary: 's',
-  acceptance_criteria: ['a', 'b', 'c', 'd'],
-  issue_type: 'feat',
-  scope: 'src',
-  issue_number: 1,
-  issue_title: 'stub-issue-title',
-};
 
 const src = readFileSync(devFlowPath, 'utf8');
 

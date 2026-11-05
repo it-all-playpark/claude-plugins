@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, assertNoCrash, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');

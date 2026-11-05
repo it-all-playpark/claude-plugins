@@ -12,7 +12,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
 import { devFlowArgs, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -28,7 +27,7 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * resolved 値（return object）を捕捉できるよう runner も同型にしている。
  *
  * @param {object} journalResult - journal-log stub が返すレスポンス（ログ成功/失敗を切り替え）
- * @returns {{ ctx: vm.Context, getJournalCallCount: () => number, getJournalPrompts: () => string[] }}
+ * @returns {{ ctx: import('node:vm').Context, getJournalCallCount: () => number, getJournalPrompts: () => string[] }}
  */
 function makeSandbox(journalResult, evaluatorOverrides) {
   // journal-log 呼び出しカウンタ（issue #807: payload を pending/ へ直接書く 1 spawn）
@@ -89,7 +88,7 @@ function makeSandbox(journalResult, evaluatorOverrides) {
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
-    // デフォルト: 未知の label は null を返す（journal-log が need() で包まれないことを前提）
+    // 未知の label は devFlowResponder の既定に委譲する
     return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
