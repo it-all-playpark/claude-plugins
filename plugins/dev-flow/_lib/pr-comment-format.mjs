@@ -214,22 +214,13 @@ const CI_UNCONFIRMED_REASON = {
   no_checks: 'check が 1 件も無く、失敗が直ったか確かめられない',
 };
 
-function ciHoldRow(code, ciLastStatus, ciLastHead, endHead) {
-  if (ciLastStatus == null) return { code, state: 'unconfirmed', detail: '最終 CI 状態: 未観測 — この run では CI を判定していない' };
-  const what = `最終 CI 状態: ${ciLastStatus}`;
-  if (!isSameHead(ciLastHead, endHead)) return { code, state: 'unconfirmed', detail: holdHeadMismatchDetail(what, ciLastHead, endHead) };
-  if (ciLastStatus === 'passed') return { code, state: 'resolved', detail: what };
-  if (ciLastStatus === 'failed') return { code, state: 'unresolved', detail: what };
-  return { code, state: 'unconfirmed', detail: `${what} — ${CI_UNCONFIRMED_REASON[ciLastStatus] ?? '結果が確定していない'}` };
-}
-
-function ciVerifyHoldRow(code, ciVerifyStatus, ciVerifyHead, endHead) {
-  if (ciVerifyStatus == null) return { code, state: 'unconfirmed', detail: 'ci_verify: 未実行 — この run は ci_verify の check の完了を確かめていない' };
-  const what = `ci_verify: ${ciVerifyStatus}`;
-  if (!isSameHead(ciVerifyHead, endHead)) return { code, state: 'unconfirmed', detail: holdHeadMismatchDetail(what, ciVerifyHead, endHead) };
-  if (ciVerifyStatus === 'passed') return { code, state: 'resolved', detail: what };
-  if (ciVerifyStatus === 'failed') return { code, state: 'unresolved', detail: what };
-  return { code, state: 'unconfirmed', detail: `${what} — ${CI_UNCONFIRMED_REASON[ciVerifyStatus] ?? '結果が確定していない'}` };
+function ciStatusHoldRow({ code, status, head, endHead, label, unobservedDetail }) {
+  if (status == null) return { code, state: 'unconfirmed', detail: unobservedDetail };
+  const what = `${label}: ${status}`;
+  if (!isSameHead(head, endHead)) return { code, state: 'unconfirmed', detail: holdHeadMismatchDetail(what, head, endHead) };
+  if (status === 'passed') return { code, state: 'resolved', detail: what };
+  if (status === 'failed') return { code, state: 'unresolved', detail: what };
+  return { code, state: 'unconfirmed', detail: `${what} — ${CI_UNCONFIRMED_REASON[status] ?? '結果が確定していない'}` };
 }
 
 function mergeableHoldRow(code, mergeableLast, lastConflict, endHead) {
@@ -280,9 +271,9 @@ function priorHoldRecovery(codes, { status, ciLastStatus, ciLastHead, ciVerifySt
   const rows = (codes || []).map((code) => {
     if (code === 'iterate_non_lgtm') return iterateHoldRow(code, status);
     if (code === 'security_review_unresolved') return securityHoldRow(code, securityReview, securityReviewHead, endHead);
-    if (code === 'ci_checks_failed') return ciHoldRow(code, ciLastStatus, ciLastHead, endHead);
+    if (code === 'ci_checks_failed') return ciStatusHoldRow({ code, status: ciLastStatus, head: ciLastHead, endHead, label: '最終 CI 状態', unobservedDetail: '最終 CI 状態: 未観測 — この run では CI を判定していない' });
     // ciLastStatus は ci_verify の check を除いた値なので ac_ci_pending の根拠にしない
-    if (code === 'ac_ci_pending') return ciVerifyHoldRow(code, ciVerifyStatus, ciVerifyHead, endHead);
+    if (code === 'ac_ci_pending') return ciStatusHoldRow({ code, status: ciVerifyStatus, head: ciVerifyHead, endHead, label: 'ci_verify', unobservedDetail: 'ci_verify: 未実行 — この run は ci_verify の check の完了を確かめていない' });
     if (code === 'mergeable_conflicting') return mergeableHoldRow(code, mergeableLast, lastConflict, endHead);
     if (PRIOR_HOLD_HUMAN_CODES.includes(code)) return { code, state: 'unresolved', detail: null, unresolvedLabel: PRIOR_HOLD_HUMAN };
     if (code === 'final_test_red') {

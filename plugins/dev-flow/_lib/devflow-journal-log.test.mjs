@@ -13,13 +13,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 
-// ---- VM sandbox helpers（devflow-summary-post.test.mjs の makeSandbox / runDevFlowCapture と同型）----
+// ---- VM sandbox helpers（devflow-summary-post.test.mjs の makeSandbox / runWorkflowCapture と同型）----
 
 /**
  * journal-log 呼び出し検証専用の VM sandbox を組む。
@@ -42,10 +42,6 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     const agentType = opts?.agentType ?? '';
 
     // Setup(worktree)
-    // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #550 案1）
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-1', repo: 'acme/skills' };
     }
@@ -90,9 +86,6 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     }
     // Merge tier: changed-files
     // → docs/test-only でないファイルを返す（AUTO 除外）
-    if (label === 'changed-files') {
-      return { files: ['src/foo.ts'] };
-    }
     // post-summary（dev-runner-haiku）: posted:true 固定
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       return { posted: true, method: 'gh pr comment', url: 'http://x' };
@@ -111,8 +104,6 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     }
     // diff-gate / diff-hash（issue #215）: need() による throw の回避
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false }
-    // issue-meta（issue #451）: analyze provenance 突合 probe
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     // デフォルト: 未知の label は null を返す（journal-log が need() で包まれないことを前提）
     return null;
   };
@@ -135,21 +126,7 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     // 引数（ISSUE 解決用）
     args: devFlowArgs('1', { repo: 'acme/skills' }),
     // JS 組み込み（devflow-summary-post.test.mjs と同一セット）
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);
@@ -158,37 +135,6 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     getJournalCallCount: () => journalCallCount,
     getJournalPrompts: () => journalPrompts,
   };
-}
-
-/**
- * dev-flow.js ソースを strip して async IIFE でラップし vm sandbox で実行する。
- * devflow-summary-post.test.mjs の runDevFlowCapture と同型：
- * IIFE の **resolved 値（return object）を捕捉して返す**。
- *
- * @param {string} src - dev-flow.js の raw ソース
- * @param {vm.Context} ctx - vm コンテキスト
- * @returns {Promise<{ result: object|null, error: Error|null }>}
- */
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
 }
 
 // ============================================================
@@ -211,7 +157,7 @@ test('[journal-log] AC#1 (issue #807): Merge tier phase 後に journal-log が 1
   const journalResult = { saved: true, logged: true };
   const { ctx, getJournalCallCount, getJournalPrompts } = makeSandbox(ANALYZE_REQ, journalResult);
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる（sandbox クラッシュ検出）
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -260,7 +206,7 @@ test('[journal-log] AC#3: journal-log stub が saved:true / logged:false を返�
   const journalResult = { saved: true, logged: false };
   const { ctx } = makeSandbox(ANALYZE_REQ, journalResult);
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる（sandbox クラッシュ検出）
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -290,7 +236,7 @@ test('[journal-log] AC#4: journal-log が saved:false を返す場合 result.jou
   const journalResult = { saved: false, logged: false };
   const { ctx, getJournalCallCount } = makeSandbox(ANALYZE_REQ, journalResult);
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -318,7 +264,7 @@ test('[journal-log] journal-log が throw した場合 run は完走し result.j
   const journalResult = new Error('exec-proxy 実行失敗: EPERM');
   const { ctx, getJournalCallCount } = makeSandbox(ANALYZE_REQ, journalResult);
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -351,7 +297,7 @@ test('[journal-log] issue #561: evaluator が confidence:0.8 を返す run は a
   const journalResult = { saved: true, logged: true };
   const { ctx, getJournalPrompts } = makeSandbox(ANALYZE_REQ, journalResult, { confidence: 0.8 });
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -370,7 +316,7 @@ test('[journal-log] issue #561: evaluator が confidence を省略する run は
   const journalResult = { saved: true, logged: true };
   const { ctx, getJournalPrompts } = makeSandbox(ANALYZE_REQ, journalResult);
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);

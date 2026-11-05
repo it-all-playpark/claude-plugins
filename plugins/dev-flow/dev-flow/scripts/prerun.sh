@@ -103,24 +103,6 @@ WTLIST_RAW="$(git worktree list --porcelain 2>&1)" || {
 ROOT="$(awk '/^worktree /{print substr($0,10); exit}' <<<"$WTLIST_RAW")"
 [[ -n "$ROOT" ]] || { echo "failed to resolve git root from worktree list" >&2; exit 2; }
 
-# git worktree list --porcelain はディレクトリの物理パス (シンボリックリンク解決済み) を報告する
-# (macOS の /var -> /private/var 等)。引数 --worktree は raw のまま JSON へ出力する契約
-# (常に引数値) だが、既存 worktree ブロックとの突合せだけはこの物理パスで行う。
-canon_path() {
-    local p="$1" dir base
-    if [[ -e "$p" ]]; then
-        (cd "$p" 2>/dev/null && pwd -P) || printf '%s' "$p"
-    else
-        dir="$(dirname "$p")"
-        base="$(basename "$p")"
-        if [[ -d "$dir" ]]; then
-            printf '%s/%s' "$(cd "$dir" && pwd -P)" "$base"
-        else
-            printf '%s' "$p"
-        fi
-    fi
-}
-
 RECOVERY_STEPS_FOR() {
     local wt="$1" base_name="$2"
     printf 'このいずれかで復旧して再実行せよ: (1) git worktree remove %s（失敗時は --force）で当該 worktree を削除して dev-flow を再実行する（origin/%s 起点で作り直される）、(2) 既存 worktree の起点を意図しているなら --base を明示して一致させて再実行する。' "$wt" "$base_name"
@@ -290,6 +272,7 @@ if [[ "$BASE_OK" == true && -n "$branch_format_error" ]]; then
     worktree_error="$branch_format_error"
 elif [[ "$BASE_OK" == true ]]; then
     WTLIST2="$(git -C "$ROOT" worktree list --porcelain 2>&1)" || WTLIST2=""
+    # --worktree は raw のまま JSON へ出力する契約なので、物理パスは既存 worktree ブロックとの突合せにだけ使う
     CANON_WT="$(canon_path "$WT")"
     BLOCK_INFO="$(printf '%s\n' "$WTLIST2" | awk -v target="worktree ${CANON_WT}" '
         BEGIN { RS=""; FS="\n"; found=0; prunable=0; branch=""; detached=0 }

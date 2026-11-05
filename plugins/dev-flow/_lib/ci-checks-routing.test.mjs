@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, runDevFlowInSandbox, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, runDevFlowInSandbox, mergeTierFacts, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 import { gateLane, isConvergedUnderPolicy, DEFAULT_GATE_POLICY } from './gate-policy.mjs';
 import { makeLedger, appendItem, checkItem } from './goal-ledger.mjs';
 import { ciRollupCommand } from './ci-check.mjs';
@@ -33,10 +33,6 @@ const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 function createResponder({ concerns, ciChecksResponse }) {
   return function ({ label, agentType }) {
     // Setup(worktree)
-    // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #550 案1）
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-297' };
     }
@@ -105,8 +101,6 @@ function createResponder({ concerns, ciChecksResponse }) {
         concerns,
       };
     }
-    // issue-meta（issue #451）: analyze provenance 突合 probe
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     // デフォルト（worktree-deps 等）
     return null;
   };
@@ -116,12 +110,6 @@ async function runScenario({ concerns, ciChecksResponse }) {
   const { ctx, calls, logs } = makeRecordingSandbox(createResponder({ concerns, ciChecksResponse }));
   const err = await runDevFlowInSandbox(devFlowSrc, ctx);
   return { calls, logs, err };
-}
-
-function assertNoCrash(err, scenarioName) {
-  if (err && (err.name === 'ReferenceError' || err.name === 'SyntaxError')) {
-    assert.fail(`[${scenarioName}] dev-flow.js が sandbox でクラッシュ: ${err.name}: ${err.message}`);
-  }
 }
 
 // post-summary の環境ノートはグループ件数のみを表示する。env_key ごとの auto-close / 据え置きは

@@ -20,12 +20,6 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 
 function responder({ label, agentType }) {
-  if (label === 'setup-base') {
-    return {
-      ok: true, default_branch: 'main', dev_exists: false, requested_exists: false,
-      worktree_exists: false, upstream_remote: '', upstream_merge: '',
-    };
-  }
   if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-553' };
   if (label.startsWith('analyze')) {
     return {
@@ -49,7 +43,6 @@ function responder({ label, agentType }) {
   }
   if (label === 'realized-diff' || label === 'declared-path-check' || label === 'changed-files') return { files: [] };
   if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
-  if (label === 'issue-meta') return { ok: true, number: 553, title: 'stub-issue-title' };
   return null;
 }
 

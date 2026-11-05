@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, prerunAnalyze, makeDevFlowSandbox, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, prerunAnalyze, makeDevFlowSandbox, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 import { PLUGIN_VERSION } from './plugin-version.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -33,12 +33,10 @@ function makeSandbox({ analyzeReq, implementerFn, diffGateConfig, journalLogFail
     const agentType = opts?.agentType ?? '';
     calls.push({ label, agentType, prompt: String(prompt ?? '') });
 
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-1', repo: 'acme/skills' };
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
     if (label === 'realized-diff') return { files: ['src/foo.ts'] };
     if (label === 'declared-path-check') return { files: [] };
-    if (label === 'changed-files') return { files: ['src/foo.ts'] };
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
     if (label.startsWith('redgreen')) return { red: false, green: false, reason: 'stub' };
     if (agentType === 'dev-flow:evaluator') {
@@ -76,31 +74,11 @@ function makeSandbox({ analyzeReq, implementerFn, diffGateConfig, journalLogFail
     pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     // REQ は args.setup.analyze から組まれる（Analyze phase は spawn しない）
     workflow: workflowStub, args: devFlowArgs('1', { repo: 'acme/skills', analyze: prerunAnalyze({ acceptance_criteria: analyzeReq.acceptance_criteria, issue_type: analyzeReq.issue_type }) }),
-    console, JSON, Math, String, Number, Boolean, Array, Object, Error,
-    RegExp, Promise, Symbol, Map, Set, Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);
   return { ctx, calls };
-}
-
-async function runDevFlowInSandbox(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let result = null;
-  try {
-    const promise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (promise && typeof promise.then === 'function') {
-      result = await promise.catch((e) => { caughtError = e; return null; });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { error: caughtError, result };
 }
 
 const src = readFileSync(devFlowPath, 'utf8');
@@ -122,7 +100,7 @@ test('[failure-telemetry] (1) analyze 経路: AC 空 → journal-log-failure の
   };
 
   const { ctx, calls } = makeSandbox({ analyzeReq });
-  const { error, result } = await runDevFlowInSandbox(src, ctx);
+  const { error, result } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -174,7 +152,7 @@ test('[failure-telemetry] (2) implement 経路: NEEDS_CONTEXT 解消不能 → j
   });
 
   const { ctx, calls } = makeSandbox({ analyzeReq, implementerFn, journalLogFailureResult: { saved: true, logged: true } });
-  const { error, result } = await runDevFlowInSandbox(src, ctx);
+  const { error, result } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -286,7 +264,7 @@ test('[failure-telemetry] (4) 完走経路: journal-log-failure が 0 回・jour
   };
 
   const { ctx, calls } = makeSandbox({ analyzeReq });
-  const { error, result } = await runDevFlowInSandbox(src, ctx);
+  const { error, result } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);

@@ -10,6 +10,23 @@
 WT_SKIP_WORKTREE=()
 WT_ADD_ERR=""
 
+# git worktree list --porcelain はシンボリックリンク解決済みの物理パスを報告する（macOS の /var -> /private/var 等）。
+# 登録済み worktree との突合せはこの物理パスで行う。
+canon_path() {
+    local p="$1" dir base
+    if [[ -e "$p" ]]; then
+        (cd "$p" 2>/dev/null && pwd -P) || printf '%s' "$p"
+    else
+        dir="$(dirname "$p")"
+        base="$(basename "$p")"
+        if [[ -d "$dir" ]]; then
+            printf '%s/%s' "$(cd "$dir" && pwd -P)" "$base"
+        else
+            printf '%s' "$p"
+        fi
+    fi
+}
+
 # worktree_add <root> <wt> <branch> <start>
 #   branch が無ければ <start> から --no-track で作り（起動元 repo の .git/config に upstream を書かない）、
 #   あれば checkout する。成功で 0。WT_SKIP_WORKTREE に skip-worktree を付けたパス（full checkout できた

@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, w
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makePrIterateSandbox, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude/workflows/pr-iterate.js'), 'utf8');
@@ -32,12 +32,6 @@ const runPrIterate = (ctx) => runWorkflowCapture(src, ctx, '.claude/workflows/pr
 const DEFAULT_LEFTOVER = { exit_code: 0, porcelain: [' M a.ts'] };
 const CLEAN_BASELINE = { exit_code: 0, porcelain: [] };
 const ADD_NEW_PATHS ="`git --literal-pathspecs add --ignore-removal -- 'a.ts'`";
-
-function assertNoSandboxCrash(error) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`pr-iterate.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
 
 /**
  * round 系 call の応答を label で分岐する rounds と、呼び出しの記録先 agentCalls を返す。
@@ -91,7 +85,7 @@ test('[D1][AC-3] fix applied:true + commit-ensure dirty:false -> commit-ensure#1
   const agentStub = buildAgentStub({ reviewerStub, commitEnsureStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const commitEnsureCalls = agentCalls.filter((c) => c.label.startsWith('commit-ensure#'));
@@ -147,7 +141,7 @@ test('[D2][AC-3 回収] commit-ensure dirty:true+committed:true+pushed:true -> �
   const agentStub = buildAgentStub({ reviewerStub, commitEnsureStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   assert.equal(result?.status, 'lgtm', `result.status は lgtm であるべきだが '${result?.status}' だった`);
@@ -166,7 +160,7 @@ test('[D3][AC-3 fail-safe] commit-ensure が null -> status:fix_failed、review#
   const agentStub = buildAgentStub({ reviewerStub, commitEnsureStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const reviewerCalls = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
@@ -186,7 +180,7 @@ test('[D4][AC-3 fail-safe] commit-ensure dirty:true+committed:true+pushed:false 
   const agentStub = buildAgentStub({ reviewerStub, commitEnsureStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   assert.equal(result?.status, 'fix_failed', `result.status は fix_failed であるべきだが '${result?.status}' だった`);
@@ -202,7 +196,7 @@ test('[D5][AC-2] stuck 終端 + worktree-dirty-check dirty:true -> result.worktr
   const agentStub = buildAgentStub({ reviewerStub, commitEnsureStub, dirtyCheckStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   assert.equal(result?.status, 'stuck', `result.status は stuck であるべきだが '${result?.status}' だった`);
@@ -220,7 +214,7 @@ test('[D6][AC-2 fail-open] stuck 終端 + worktree-dirty-check probe が null ->
   const agentStub = buildAgentStub({ reviewerStub, commitEnsureStub, dirtyCheckStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   assert.equal(result?.status, 'stuck', `result.status は stuck であるべきだが '${result?.status}' だった`);
@@ -234,7 +228,7 @@ test('[D7][AC-2 lgtm 非実施] 正常 lgtm 経路 -> worktree-dirty-check 呼�
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   assert.equal(result?.status, 'lgtm', `result.status は lgtm であるべきだが '${result?.status}' だった`);
@@ -292,7 +286,7 @@ test('[D8][#742 AC-3] commit-ensure prompt: 手順 1 / 3 の dirty 判定が por
   };
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const { error } = await runPrIterate(makeSandbox(agentStub));
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const prompt = agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '';
@@ -328,7 +322,7 @@ test('[D9][#742 AC-1] 警告行だけの clean worktree（commit-ensure dirty:fa
   const fixStub = () => ({ applied: true, summary: 'PR 本文を追記', files: [] });
   const agentStub = buildAgentStub({ reviewerStub, fixStub, commitEnsureStub, agentCalls });
   const { result, error } = await runPrIterate(makeSandbox(agentStub));
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const reviewLabels = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer').map((c) => c.label);
@@ -347,7 +341,7 @@ test('[D10][#742 AC-2 fail-safe] porcelain 行が残り回収できない（dirt
   const commitEnsureStub = () => ({ dirty: true, committed: false, pushed: true });
   const agentStub = buildAgentStub({ reviewerStub, commitEnsureStub, agentCalls });
   const { result, error } = await runPrIterate(makeSandbox(agentStub));
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const reviewerCalls = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
@@ -363,7 +357,7 @@ test('[D11][#742 AC-3] 終端の worktree-dirty-check prompt も porcelain 行�
   const dirtyCheckStub = () => ({ dirty: false, files: 0 });
   const agentStub = buildAgentStub({ reviewerStub, dirtyCheckStub, agentCalls });
   const { result, error } = await runPrIterate(makeSandbox(agentStub));
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   assert.equal(result?.status, 'stuck', `result.status は stuck であるべきだが '${result?.status}' だった`);
@@ -392,7 +386,7 @@ async function commitEnsureStep2Cmds(baselineLines, afterLines) {
     statusStub: () => ({ exit_code: 0, porcelain: afterLines }),
     agentCalls,
   })));
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
   const s2 = stepLine(agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '', 2);
   const cmds = [...s2.matchAll(/`(git (?:--literal-pathspecs add|commit)[^`]*)`/g)].map((m) => m[1]);
@@ -511,7 +505,7 @@ test('[D12e][#1201 AC-3] status の probe は未追跡ファイルを個別に�
     statusStub: () => ({ exit_code: 0, porcelain: ['?? d/', ' M fixed.txt'] }),
     agentCalls,
   })));
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
   for (const label of ['fix-baseline#1', 'commit-ensure-status#1', 'commit-ensure#1']) {
     const p = agentCalls.find((c) => c.label === label)?.prompt ?? '';
@@ -533,7 +527,7 @@ test('[D12f][#1201 AC-3] rename の宛先が引用内に ` -> ` を含んでも�
     statusStub: () => ({ exit_code: 0, porcelain: ['?? secret.env"', 'RM old -> "x -> secret.env"', ' M fixed.txt'] }),
     agentCalls,
   })));
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
   const s2 = stepLine(agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '', 2);
   const add = s2.match(/`(git --literal-pathspecs add[^`]*)`/)?.[1] ?? '';
@@ -559,7 +553,7 @@ test('[D13][#1201 AC-1/AC-6] 基準線と fix 後の porcelain がどちらも ?
     agentCalls,
   });
   const { result, error } = await runPrIterate(makeSandbox(agentStub));
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   // AC-1: fix#1 の spawn 前に読み取り専用 proxy で基準線を取り、commit-ensure#1 に渡す
@@ -589,7 +583,7 @@ test('[D14][#1201 AC-7 回収] 基準線に無い行が fix 後に増え、回�
     agentCalls,
   });
   const { result, error } = await runPrIterate(makeSandbox(agentStub));
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   assert.ok(reviewers(agentCalls).includes('review#2'), `review#2 に進むべき: ${JSON.stringify(reviewers(agentCalls))}`);
@@ -606,7 +600,7 @@ test('[D15][#1201 AC-7 fail-safe] 基準線に無い行が回収後も残る -> 
     agentCalls,
   });
   const { result, error } = await runPrIterate(makeSandbox(agentStub));
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   assert.deepEqual(reviewers(agentCalls), ['review#1']);
@@ -628,7 +622,7 @@ for (const [name, baselineStub] of [
       agentCalls,
     });
     const { result, error } = await runPrIterate(makeSandbox(agentStub));
-    assertNoSandboxCrash(error);
+    assertNoCrash(error);
     if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
     const ensurePrompt = agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '';
@@ -654,7 +648,7 @@ for (const [name, baselineStub] of [
       agentCalls,
     });
     const { result, error } = await runPrIterate(makeSandbox(agentStub));
-    assertNoSandboxCrash(error);
+    assertNoCrash(error);
     if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
     const s2 = stepLine(agentCalls.find((c) => c.label === 'commit-ensure#1')?.prompt ?? '', 2);
@@ -679,7 +673,7 @@ test('[D17][#1201 AC-5] 終端の worktree-dirty-check は run の最初の fix 
       agentCalls,
     });
     const { result, error } = await runPrIterate(makeSandbox(agentStub));
-    assertNoSandboxCrash(error);
+    assertNoCrash(error);
     if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
     assert.equal(result?.status, 'fix_failed');
     assert.deepEqual(agentCalls.filter((c) => c.label.startsWith('fix-baseline#')).map((c) => c.label), ['fix-baseline#1', 'fix-baseline#2'], '基準線は fix ごとに取る');

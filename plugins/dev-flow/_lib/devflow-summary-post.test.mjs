@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, makeDevFlowSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -39,10 +39,6 @@ function makeSandbox(analyzeReq, postResult) {
     const agentType = opts?.agentType ?? '';
 
     // Setup(worktree)
-    // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #550 案1）
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
     }
@@ -86,9 +82,6 @@ function makeSandbox(analyzeReq, postResult) {
     }
     // Merge tier: changed-files
     // → docs/test-only でないファイルを返す（AUTO 除外）
-    if (label === 'changed-files') {
-      return { files: ['src/foo.ts'] };
-    }
     // post-summary（dev-runner-haiku）: 呼び出しカウンタをインクリメントし postResult を返す
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       postSummaryCallCount += 1;
@@ -100,8 +93,6 @@ function makeSandbox(analyzeReq, postResult) {
     }
     // diff-gate / diff-hash（issue #215）: need() による throw の回避
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false }
-    // issue-meta（issue #451）: analyze provenance 突合 probe
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     // デフォルト
     return null;
   };
@@ -124,21 +115,7 @@ function makeSandbox(analyzeReq, postResult) {
     // 引数（ISSUE 解決用）
     args: devFlowArgs('1'),
     // JS 組み込み
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);
@@ -146,36 +123,6 @@ function makeSandbox(analyzeReq, postResult) {
     ctx,
     getPostSummaryCallCount: () => postSummaryCallCount,
   };
-}
-
-/**
- * dev-flow.js ソースを strip して async IIFE でラップし vm sandbox で実行する。
- * IIFE の **resolved 値（return object）を捕捉して返す**。
- *
- * @param {string} src - dev-flow.js の raw ソース
- * @param {vm.Context} ctx - vm コンテキスト
- * @returns {Promise<{ result: object|null, error: Error|null }>}
- */
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
 }
 
 // ============================================================
@@ -199,7 +146,7 @@ test('[summary-post] Merge tier phase 後に post-summary dev-runner-haiku 呼�
   const postResult = { posted: true, method: 'gh pr comment', url: 'http://x' };
   const { ctx, getPostSummaryCallCount } = makeSandbox(ANALYZE_REQ, postResult);
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる（sandbox クラッシュ検出）
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -219,7 +166,7 @@ test('[summary-post] post-summary stub が posted:false を返しても result.m
   const postResult = { posted: false };
   const { ctx } = makeSandbox(ANALYZE_REQ, postResult);
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる（sandbox クラッシュ検出）
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {

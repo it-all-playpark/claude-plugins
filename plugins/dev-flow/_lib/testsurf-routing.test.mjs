@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
 import { EVALUATOR_OPERATIONAL_CONTRACT } from './evaluator-contract.mjs';
-import { devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, runWorkflowCapture, assertNoCrash, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -42,9 +42,6 @@ function makeSandbox(analyzeReq, riskResponse, evaluatorResponse) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
     }
@@ -91,7 +88,6 @@ function makeSandbox(analyzeReq, riskResponse, evaluatorResponse) {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     return null;
   };
 
@@ -106,21 +102,7 @@ function makeSandbox(analyzeReq, riskResponse, evaluatorResponse) {
     pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
     args: devFlowArgs('1'),
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);
@@ -132,34 +114,6 @@ function makeSandbox(analyzeReq, riskResponse, evaluatorResponse) {
       journalPrompts: () => journalPrompts,
     },
   };
-}
-
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
-function assertNoCrash(error) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
 }
 
 // ============================================================
@@ -231,7 +185,7 @@ const EVAL_MICRO_CLEARANCE = {
 test('[testsurf] (a) TESTSURF hit + clearance 無し → merge tier HOLD、reasons に test-weakening / TESTSURF-SKIP、返り値 testsurf_hits に skip', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx } = makeSandbox(ANALYZE_REQ_STANDARD, RISK_TESTSURF_HIT, EVAL_NO_CLEARANCE);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.equal(result?.merge_tier, 'HOLD', `TESTSURF hit が未クリアなら merge tier は HOLD になるべきだが '${result?.merge_tier}' だった（reasons: ${JSON.stringify(result?.merge_tier_reasons)}）`);
@@ -246,7 +200,7 @@ test('[testsurf] (a) TESTSURF hit + clearance 無し → merge tier HOLD、reaso
 test('[testsurf] (b) TESTSURF hit + evaluator clearance あり → item checked で HOLD にならない（他条件 clean 前提）', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx } = makeSandbox(ANALYZE_REQ_STANDARD, RISK_TESTSURF_HIT, EVAL_WITH_CLEARANCE);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.notEqual(result?.merge_tier, 'HOLD', `evaluator が evidence 付きで clearance すれば HOLD にならないべきだが '${result?.merge_tier}'（reasons: ${JSON.stringify(result?.merge_tier_reasons)}）`);
@@ -257,7 +211,7 @@ test('[testsurf] (b) TESTSURF hit + evaluator clearance あり → item checked 
 test('[testsurf] (c) micro shape + testsurf hit → Evaluate が強制実行される（evaluator 呼び出し回数 >= 1）', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, counters } = makeSandbox(ANALYZE_REQ_MICRO, RISK_TESTSURF_HIT, EVAL_MICRO_CLEARANCE);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.ok(counters.evaluatorCalls() >= 1, `micro shape でも testsurf hit があれば Evaluate が強制実行されるべきだが evaluator は ${counters.evaluatorCalls()} 回しか呼ばれなかった`);
@@ -266,7 +220,7 @@ test('[testsurf] (c) micro shape + testsurf hit → Evaluate が強制実行さ�
 test('[testsurf] (d) TESTSURF hit があっても返り値の danger_hits（SEC 系）には混入しない', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx } = makeSandbox(ANALYZE_REQ_STANDARD, RISK_TESTSURF_HIT, EVAL_NO_CLEARANCE);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.ok(Array.isArray(result?.danger_hits) && result.danger_hits.length === 0, `danger_hits は空であるべきだが: ${JSON.stringify(result?.danger_hits)}`);
@@ -275,7 +229,7 @@ test('[testsurf] (d) TESTSURF hit があっても返り値の danger_hits（SEC 
 test('[testsurf] (e) evaluator prompt に testsurf_focus と testsurf_clearance 契約行が含まれる（AC-3 prompt 注入検証）', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, counters } = makeSandbox(ANALYZE_REQ_STANDARD, RISK_TESTSURF_HIT, EVAL_NO_CLEARANCE);
-  const { error } = await runDevFlowCapture(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   const prompts = counters.evaluatorPrompts();

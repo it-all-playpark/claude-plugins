@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, runDevFlowInSandbox, devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, runDevFlowInSandbox, devFlowArgs, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -67,12 +67,6 @@ async function run(frameworks) {
   const { ctx, calls } = makeRecordingSandbox(createResponder(), { args: devFlowArgs(1, { stack: { frameworks, test_runners: [] } }) });
   const error = await runDevFlowInSandbox(src, ctx);
   return { error, calls };
-}
-
-function assertNoCrash(error) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail('dev-flow.js が sandbox でクラッシュ: ' + error.name + ': ' + error.message);
-  }
 }
 
 function groupPrompts(calls) {
@@ -142,4 +136,3 @@ test('[turbopack-stack-gate] (c) frameworks:[] → 注入されない', async ()
     assert.ok(!/context7/i.test(c.prompt), `prompt (label=${c.label}) に 'context7' が含まれてはいけない`);
   }
 });
-

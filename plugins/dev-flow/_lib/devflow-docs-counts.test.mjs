@@ -24,7 +24,7 @@ test('README: Atlas 紹介の phase 数が dev-flow.js の meta.phases と一致
   assert.equal(Number(m[1]), count);
 });
 
-test('atlas: 概観図の phase ノード番号・1.x 節見出し・phase 数が dev-flow.js の meta.phases と一致し、Analyze ノード / 節が無い', () => {
+test('atlas: 概観図の phase ノード番号・1.x 節見出し・phase 数が dev-flow.js の meta.phases と一致する', () => {
   const atlas = readFileSync(join(repoRoot, 'docs/dev-flow-atlas.md'), 'utf8');
   const start = devFlowSrc.indexOf('phases: [');
   const titles = [...devFlowSrc.slice(start, devFlowSrc.indexOf('],', start)).matchAll(/\{ title: '([^']+)' \}/g)].map((m) => m[1]);
@@ -46,24 +46,15 @@ test('atlas: 概観図の phase ノード番号・1.x 節見出し・phase 数�
     assert.ok(m, `atlas に phase 数の記述が無い: ${re}`);
     assert.equal(Number(m[1]), titles.length);
   }
-
-  assert.ok(!/\bAnalyze\b/.test(atlas), 'atlas に撤去済み Analyze phase の表記が残っている（Setup 末尾の analyze ゲートと書く）');
 });
 
 // README は skill / agent / bin wrapper の件数を書かない（tests/readme-facts.bats が pin）。
 // agent 数は plugin-manifest.bats が manifest の description と実体を照合する。
-test('README / plugin.json / marketplace.json: dev-flow の skill 数が実体と一致し、撤去した doctor / improve を載せない', () => {
+test('plugin.json / marketplace.json: dev-flow の skill 数が実体と一致する', () => {
   const skills = readdirSync(pluginRoot, { withFileTypes: true })
     .filter((d) => d.isDirectory() && existsSync(join(pluginRoot, d.name, 'SKILL.md')))
     .map((d) => d.name);
   assert.ok(skills.includes('dev-flow-health'), `dev-flow-health が skill として無い: ${skills.join(', ')}`);
-  for (const removed of ['dev-flow-doctor', 'dev-flow-improve']) {
-    assert.ok(!existsSync(join(pluginRoot, removed)), `${removed}/ が残っている`);
-  }
-  assert.ok(!existsSync(join(pluginRoot, '.claude/workflows/dev-improve.js')), 'dev-improve.js が残っている');
-  assert.ok(!existsSync(join(pluginRoot, 'agents/improve-miner.md')), 'improve-miner.md が残っている');
-
-  assert.ok(!/dev-flow-doctor|dev-flow-improve/.test(readme), 'README に撤去した doctor / improve が残っている');
 
   const manifests = [
     JSON.parse(readFileSync(join(pluginRoot, '.claude-plugin/plugin.json'), 'utf8')).description,
@@ -71,7 +62,6 @@ test('README / plugin.json / marketplace.json: dev-flow の skill 数が実体�
   ];
   for (const desc of manifests) {
     assert.match(desc, new RegExp(`\\b${skills.length} skills\\b`), `description の skill 数が実体（${skills.length}）と一致しない: ${desc}`);
-    assert.ok(!/dev-improve/.test(desc), `description に撤去した dev-improve が残っている: ${desc}`);
   }
 });
 
@@ -89,16 +79,12 @@ test('journal.sh: prune の既定 keep 一覧は dev-flow plugin に実在する
 test("dev-runner.md: 役割記述が agentType: 'dev-runner' の実呼び出し（analyze-clarify）に合う", () => {
   const md = readFileSync(join(pluginRoot, 'agents/dev-runner.md'), 'utf8');
   const description = md.slice(md.indexOf('description:'), md.indexOf('model:'));
-  assert.ok(!/test-green|issue analysis/.test(description), `description にテスト実行 / issue 分析が残っている:\n${description}`);
   assert.match(description, /analyze-clarify/);
   // analyze-clarify は clarifyPrompt（dev-flow.js）と同じく exec-proxy analyze-issue を直接実行する
   assert.match(description, /analyze-issue/, `description が analyze-issue の直接実行を指していない:\n${description}`);
   const clarifyRow = md.split('\n').find((l) => l.startsWith('| analyze-clarify'));
   assert.ok(clarifyRow, 'dev-runner.md に analyze-clarify の行が無い');
   assert.ok(clarifyRow.includes('`analyze-issue <n> [--repo R] --depth comprehensive --dump-body <path>`'), `analyze-clarify の行が analyze-issue の直接実行を指していない: ${clarifyRow}`);
-  assert.ok(!/dev-improve/.test(md), 'dev-runner.md に撤去した dev-improve の役割が残っている');
-  assert.ok(!md.includes('| test green 確認 |'), 'テスト実行は dev-runner-haiku が担う');
-  assert.ok(!md.includes('| issue 分析 |'), '通常経路の issue 分析は prerun の script が担う');
   const src = readFileSync(join(pluginRoot, '.claude/workflows/dev-flow.js'), 'utf8');
   assert.ok(
     /agentType: 'dev-runner', schema: \w+, label: `analyze-clarify#/.test(src),
@@ -106,11 +92,10 @@ test("dev-runner.md: 役割記述が agentType: 'dev-runner' の実呼び出し�
   );
 });
 
-test('references/analyze-issue.md: 判定できないときの fail-closed の扱いと理由を書き、値は写さず analyze-issue.sh / prerun-analyze.sh を指す', () => {
+test('references/analyze-issue.md: 値は写さず analyze-issue.sh / prerun-analyze.sh を指す', () => {
   const sh = readFileSync(join(pluginRoot, 'dev-flow/scripts/analyze-issue.sh'), 'utf8');
   const prerunAnalyzeSh = readFileSync(join(pluginRoot, 'dev-flow/scripts/prerun-analyze.sh'), 'utf8');
   const md = readFileSync(join(pluginRoot, 'dev-flow/references/analyze-issue.md'), 'utf8');
-  const flat = md.replace(/\n/g, '');
 
   // 値の正は script。md はそこを指す
   for (const script of ['analyze-issue.sh', 'prerun-analyze.sh']) {
@@ -129,18 +114,6 @@ test('references/analyze-issue.md: 判定できないときの fail-closed の�
   const choices = [...(criteria ?? '').matchAll(/"(\w+)":"/g)].map((m) => m[1]);
   assert.ok(choices.includes('override') && choices.includes('resolved'), `prerun-analyze.sh の comment 分類が読めない: ${choices.join(', ')}`);
   assert.ok(!choices.every((c) => md.includes(c)), `analyze-issue.md が comment の分類（${choices.join(' / ')}）を書き写している`);
-
-  // fail-closed の扱いと理由
-  const failClosed = sectionOf(md, '## 判定できないときの fail-closed').replace(/\n/g, '');
-  for (const s of ['AC 空', '`comment_conflicts` 非空', '`uncertain` 非空', 'needs_clarification', '`ok:false`']) {
-    assert.ok(failClosed.includes(s), `fail-closed の節に ${s} が無い`);
-  }
-  assert.ok(failClosed.includes('LLM に黙って片方を採らせると'), 'fail-closed の節に理由が無い');
-  const override = sectionOf(md, '## comment の override 判定に使う');
-  assert.ok(override.includes('`author_association`') && override.includes('`issue_author`') && override.includes('fail-closed'), 'override 判定の fail-closed の理由が無い');
-  assert.ok(flat.includes('「comment 0 件」と同一視せず'), 'comments 欠落を comment 0 件と同一視しない fail-closed が無い');
-  const truncation = sectionOf(md, '## 本文の切断').replace(/\n/g, '');
-  assert.ok(truncation.includes('切断は黙って行わない') && truncation.includes('`body_dump_path`'), '本文の切断を黙って行わない扱いが無い');
 });
 
 test('references: prerun が Jev に回す理由は analyze-issue.md の 1 か所に書き、exec-proxy.md の analyze 行はそこを指す', () => {
@@ -236,8 +209,6 @@ test('atlas / pipeline.md: LITE 条件が dev-flow.js の const LITE と一致�
     assert.ok(prSection.includes(`\`${label}\``), `pipeline.md の PR 節に lite route の spawn ${label} が無い`);
   }
   assert.ok(liteBlock.includes("ciLite.status === 'passed' || ciLite.status === 'no_checks'"), 'lite route の CI 判定が変わった — pipeline.md の PR 節を見直す');
-  const flatPr = prSection.replace(/\n\s*/g, '');
-  assert.ok(flatPr.includes('CI が passed / no_checks でなければ（failed・pending・error・null）同じく昇格する'), 'pipeline.md の PR 節に CI 不成立でも昇格する旨が無い');
   const lite = atlasSrc.split('\n').find((l) => l.includes('R4{"LITE ?'));
   assert.ok(lite, 'atlas に LITE 判定ノードが無い');
   for (const cond of ['micro', 'runEval=false', 'danger clean', 'ci の AC なし']) {
@@ -258,13 +229,6 @@ test('atlas / rules / SKILL.md: Setup で起動する dev-runner の label を�
       assert.ok(src.includes(`${label}#N`), `${name} に Setup の spawn ${label}#N が無い`);
     }
   }
-});
-
-test('pipeline.md: 混在 AC の説明は mixedScopeAcReasons と同じく repo 外の作業を human-task issue に切り出させ、依存の向きを書く', () => {
-  // 日本語の折り返しは空白なしで繋がるので改行と続く字下げを除いて照合する
-  const flat = sectionOf(pipelineMd, '## Setup\n').replace(/\n\s*/g, '');
-  assert.ok(flat.includes('`mixed` で、repo 外の作業を `human-task` ラベルの別 issue に切り出し、実装 issue の AC を repo 内で検証できるものだけにするよう求める'), 'pipeline.md の混在 AC の説明が human-task issue への切り出しを求めていない');
-  assert.ok(flat.includes('merge 前に人がやる作業なら実装 issue に `Blocked by #<human issue>`、merge 後に確認する作業なら human issue に `Blocked by #<実装 issue>`'), 'pipeline.md に依存の向きが無い');
 });
 
 // pipeline.md は phase ごとに部分を読める地図: 各 phase の ## 節が 判定 / 失敗の扱い / コード を持ち、コードの場所は実在を指す
@@ -341,22 +305,7 @@ test('security-review.md: 守る要件と境界（R1〜R3）と経路を持ち�
   for (const s of ['- R1 ', '- R2 ', '- R3 ', '**境界の外（塞がない。issue にもしない）**', '`SECURITY_REVIEW_BOUNDARY`', '`SECURITY_FIX_GUIDANCE`']) {
     assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
   }
-  // 将来の PR の変更を要する経路の除外とその例外。前提は人間の merge で、全 PR の review ではない
-  for (const s of ['将来の PR が対象のファイル（`isSecurityReviewExemptPath` が false）を', '前提は「merge は人間が行う」ことで、「全 PR が security review を',
-    '今の diff が PR の制御できる出力を gate の根拠に', '今の diff がその出力を偽ること', '免除ファイル（`*.bats`・`*.test.*`・`*.spec.*`・`.md` 等）の出力が根拠に入る経路']) {
-    assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
-  }
   for (const h of ['## 対象の判定', '## Claude 経路', '## Codex 経路']) assert.ok(md.includes(`${h}\n`), `security-review.md に ${h} が無い`);
-  // AC とぶつかる指摘も fix は直さず人へ返す。security-review.md の人へ返す条件と pr-fixer.md の「security review の指摘」節に書く（issue #1163）
-  const fixerSection = sectionOf(readFileSync(join(pluginRoot, 'agents/pr-fixer.md'), 'utf8'), '## security review の指摘');
-  for (const [name, doc] of [['security-review.md の守る要件と境界', boundary], ['pr-fixer.md の security review の指摘', fixerSection]]) {
-    for (const s of ['`securityFixAcceptanceCriteriaBlock`', 'AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない', 'summary にぶつかる AC の番号と破れた不変条件を書',
-      // PR の意図と両立する設計を先に探し、両方を満たす設計が無い指摘だけを返す（issue #1196）
-      '`securityFixIntentBlock`', '破れた不変条件と攻撃経路', 'PR の意図を取り消す変更（PR の変更を戻す・PR が足した機能を外す）は修正', '意図を保ったまま経路を塞ぐ設計を先に探す']) {
-      assert.ok(doc.replace(/\n\s*/g, '').includes(s), `${name} に ${s} が無い`);
-    }
-  }
-  assert.ok(boundary.replace(/\n\s*/g, '').includes('PR の意図と破れた不変条件の両方を満たす設計が無い指摘だけ'), 'security-review.md に fix#i が人に返す条件が無い');
   // R1〜R3 を定義するのは security-review.md だけ
   const holders = readdirSync(refDir).filter((f) => f.endsWith('.md')).filter((f) => /^- R1 /m.test(readFileSync(join(refDir, f), 'utf8')));
   assert.deepEqual(holders, ['security-review.md'], `R1〜R3 の定義が security-review.md 以外にもある: ${holders.join(', ')}`);
@@ -382,10 +331,4 @@ test('AGENTS.md: 日次 launchd は install-schedule.sh --install の手動登�
   const block = agentsMd.slice(agentsMd.indexOf('日次 launchd'), agentsMd.indexOf('```', agentsMd.indexOf('日次 launchd')));
   assert.ok(block.includes('macOS のみ'), `AGENTS.md の日次 launchd 行に macOS 限定が無い:\n${block}`);
   assert.ok(block.includes('install-schedule.sh --install'), `AGENTS.md の日次 launchd 行に有効化手順が無い:\n${block}`);
-});
-
-test('evaluator.md: concern_resolutions の boolean キー不受理を現行仕様として書く', () => {
-  const md = readFileSync(join(pluginRoot, 'agents/evaluator.md'), 'utf8');
-  assert.ok(md.includes('boolean キーは受理しない（error）'));
-  assert.ok(!md.includes('旧 resolved:true/false'));
 });

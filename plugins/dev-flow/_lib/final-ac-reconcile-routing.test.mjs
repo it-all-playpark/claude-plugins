@@ -6,7 +6,7 @@
 // state.finalUnsatisfiedAc）を参照することを pin する。
 //
 // ハーネスは _lib/final-reconcile-routing.test.mjs の構造（makeRecordingSandbox +
-// createResponder + ローカル runDevFlowCapture + assertNoCrash + STANDARD_REQ + makeSandbox）
+// createResponder + 共有の runWorkflowCapture + assertNoCrash + STANDARD_REQ + makeSandbox）
 // を丸ごと踏襲する。
 //
 // テストケース:
@@ -28,46 +28,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, prerunAnalyze, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 import { TEST_LOG_REUSE } from './evaluator-contract.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
-
-// ============================================================
-// runDevFlowCapture: strip + wrap + vm 実行し {result, error} を返す
-// （_lib/final-reconcile-routing.test.mjs と同型のローカル copy）
-// ============================================================
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
-function assertNoCrash(error, name) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`[${name}] dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
 
 // standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
 const STANDARD_REQ = {
@@ -90,7 +57,6 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-331' };
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
@@ -120,8 +86,6 @@ function createResponder(overrides = {}) {
     if (label === 'changed-files-final') return { files: [] };
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
-    // journal-save (stage1, issue #494): 実際の telemetry payload はここに載る
-    if (label === 'journal-save') return { saved: true, path: '/tmp/wt/.devflow-tmp/payload-test.json' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't', files: ['src/x.ts'], summary: 's', concerns: [] };
     if (label === 'reconcile-sync') return { ok: true, head: 'deadbeef' };
@@ -144,7 +108,7 @@ function makeSandbox({ overrides = {}, fixesApplied = 0, analyze = {} } = {}) {
 
 test('[final-ac-reconcile] (r1) fixes_applied=0 → final-ac-reconcile 不発 + final_ac_reconcile===skipped + merge_tier REVIEW', async () => {
   const { ctx, calls } = makeSandbox({ fixesApplied: 0 });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'r1');
   assert.ok(result !== null, '(r1) workflow は return object を返すべきだが null だった');
 
@@ -162,7 +126,7 @@ test('[final-ac-reconcile] (r2) fixes=1 + test#final green → final-ac-reconcil
     fixesApplied: 1,
     overrides: { 'test#final': { tests: 'passed', green: true, summary: '' } },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'r2');
   assert.ok(result !== null, '(r2) workflow は return object を返すべきだが null だった');
 
@@ -181,7 +145,7 @@ test("[final-ac-reconcile] (r3) fixes=1 + final-ac-reconcile null → unavailabl
     fixesApplied: 1,
     overrides: { 'final-ac-reconcile': null },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'r3');
   assert.ok(result !== null, '(r3) workflow は return object を返すべきだが null だった');
 
@@ -209,7 +173,7 @@ test('[final-ac-reconcile] (r4) fixes=1 + ac_index 重複 → unavailable + HOLD
       },
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'r4');
   assert.ok(result !== null, '(r4) workflow は return object を返すべきだが null だった');
 
@@ -234,7 +198,7 @@ test("[final-ac-reconcile] (r5) fixes=1 + AC-2 不成立 → reverified + HOLD +
       },
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'r5');
   assert.ok(result !== null, '(r5) workflow は return object を返すべきだが null だった');
 
@@ -264,7 +228,7 @@ test("[final-ac-reconcile] (r6) fixes=1 + test#final red → final-ac-reconcile 
     fixesApplied: 1,
     overrides: { 'test#final': { tests: 'failed', green: false, summary: 'boom' } },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'r6');
   assert.ok(result !== null, '(r6) workflow は return object を返すべきだが null だった');
 
@@ -293,7 +257,7 @@ const FINAL_GREEN_LOGS = {
 test('[final-ac-reconcile] (r7) test#final green → prompt に test#final の tests / green・ログパス・再実行しない指示が入る', async () => {
   const changed = ['plugins/a.bats', 'plugins/a.sh'];
   const { ctx, calls } = makeSandbox({ fixesApplied: 1, overrides: { 'test#final': FINAL_GREEN_LOGS, 'changed-files-final': { files: changed } } });
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'r7');
   const p = calls.find((c) => c.label === 'final-ac-reconcile')?.prompt ?? '';
   // ログを根拠にできるのは最終 diff が変更したファイルだけ（changed-files-final の一覧をそのまま渡す）
@@ -311,7 +275,7 @@ test('[final-ac-reconcile] (r8) test#final が red で単体再実行が green�
       'test#final-rerun': { tests: 'passed', green: true, summary: 'passed', scripts: [{ path: '/tmp/wt/tests/run-all-bats.sh', exit: 0, launch_failed: false, log: '/tmp/run-tests-Zz99/rerun.log' }] },
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'r8');
   assert.ok(calls.some((c) => c.label === 'test#final-rerun'), '(r8) 前提: 単体再実行が走る');
   assert.ok(!calls.some((c) => c.label === 'final-ac-reconcile'), `(r8) 単体再実行の green で final-ac-reconcile を起動してはならない (labels: ${calls.map((c) => c.label).join(', ')})`);
@@ -331,7 +295,7 @@ test('[final-ac-reconcile] (r9) test#final が error（unavailable）→ PR head
       'ci-final': { ok: true, headRefOid: sha, statusCheckRollup: rollup },
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'r9');
   assert.equal(result?.final_reconcile, 'unavailable');
   assert.ok(!calls.some((c) => c.label === 'final-ac-reconcile'), `(r9) final-ac-reconcile は起動しない (labels: ${calls.map((c) => c.label).join(', ')})`);

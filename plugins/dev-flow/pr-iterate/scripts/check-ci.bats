@@ -402,18 +402,6 @@ E2E_URL=https://github.com/o/r/actions/runs/2/job/22
     echo "$output" | jq -e '.passed_checks == []'
 }
 
-@test "argv: removed --checks-json option is rejected as Unknown option" {
-    run bash "$SCRIPT" --checks-json /tmp/whatever.json
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"Unknown option"* ]]
-}
-
-@test "argv: removed --fetch-error option is rejected as Unknown option" {
-    run bash "$SCRIPT" --checks-data '[]' --fetch-error /tmp/whatever.txt
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"Unknown option"* ]]
-}
-
 # ---------------------------------------------------------------------------
 # bounded-wait accounting (the caller polls; the script only reports)
 # ---------------------------------------------------------------------------

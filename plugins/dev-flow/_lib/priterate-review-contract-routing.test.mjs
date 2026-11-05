@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makePrIterateSandbox, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude/workflows/pr-iterate.js'), 'utf8');
@@ -26,12 +26,6 @@ function makeSandbox({ rounds, agentCalls }) {
 }
 
 const runPrIterate = (ctx) => runWorkflowCapture(src, ctx, '.claude/workflows/pr-iterate.js');
-
-function assertNoSandboxCrash(error) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`pr-iterate.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
 
 /**
  * round 系 call の応答を label で分岐する rounds と、呼び出しの記録先 agentCalls を返す。
@@ -70,7 +64,7 @@ test('[AC-1] comment decision + minor 1 件のみ(blocking 0件) -> fix# 起動�
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const ciCalls = agentCalls.filter((c) => c.prompt.includes('check-ci --checks-data'));
@@ -89,7 +83,7 @@ test('[AC-2] request-changes decision + issues:[](blocking 0件) -> fix# 起動�
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const ciCalls = agentCalls.filter((c) => c.prompt.includes('check-ci --checks-data'));
@@ -114,7 +108,7 @@ test('[AC-3] approve+major の1回だけ再reviewで矛盾解消(request-changes
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const reviewerCalls = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
@@ -142,7 +136,7 @@ test('[AC-4] approve+major が retry 後も再発 -> review_contract_error で�
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const reviewerCalls = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
@@ -168,7 +162,7 @@ test('[AC-5] minor findings が終端 post-summary の本文に保持される�
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
   assert.equal(result?.status, 'lgtm', `前提: lgtm であるべきだが '${result?.status}' だった`);
 
@@ -188,7 +182,7 @@ test('[AC-6 回帰] approve + issues:[] + CI passed -> lgtm（retry label 呼び
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const retryCalls = agentCalls.filter((c) => c.label.includes('contract-retry'));
@@ -214,7 +208,7 @@ test('[AC-6 回帰] request-changes + [major](topic毎回ユニーク) -> fix# �
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const fixCalls = agentCalls.filter((c) => c.label.startsWith('fix#'));
@@ -238,7 +232,7 @@ test('[AC-6 回帰] approve + issues:[] だが CI failed -> CI gate 内の fix a
   const agentStub = buildAgentStub({ reviewerStub, ciStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const fixCalls = agentCalls.filter((c) => c.label.startsWith('fix#'));
@@ -253,7 +247,7 @@ test('[ci_gate 投稿] request-changes decision + blocking 0 + CI passed の pos
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
   assert.equal(result?.status, 'lgtm', `前提: lgtm であるべきだが '${result?.status}' だった`);
 

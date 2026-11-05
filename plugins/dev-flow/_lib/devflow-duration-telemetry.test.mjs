@@ -1,5 +1,5 @@
 // issue #371 F2 / issue #443 F7: dev-flow.js の duration telemetry 配線を検証する実行ベース統合テスト。
-// devflow-journal-log.test.mjs の makeSandbox / runDevFlowCapture / ANALYZE_REQ を同型コピーし
+// devflow-journal-log.test.mjs の makeSandbox / runWorkflowCapture / ANALYZE_REQ を同型コピーし
 // (repo precedent はテストごとの helper 複製)、agentStub に専用 clock# probe 分岐と
 // 給電（feedClockMark）対象 label への optional epoch 付与を追加する。
 //
@@ -25,13 +25,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 
-// ---- VM sandbox helpers（devflow-journal-log.test.mjs の makeSandbox / runDevFlowCapture と同型）----
+// ---- VM sandbox helpers（devflow-journal-log.test.mjs の makeSandbox / runWorkflowCapture と同型）----
 
 /**
  * duration telemetry 検証専用の VM sandbox を組む。
@@ -75,18 +75,8 @@ function makeSandbox(analyzeReq, epochMode) {
     }
     // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #298, #517, #550 案1）。
     // start mark の給電元（専用 clock#start probe は廃止、epoch は optional）。
-    if (label === 'setup-base') {
-      return withEpoch({
-        ok: true, default_branch: 'main', dev_exists: true, requested_exists: false,
-        worktree_exists: false, upstream_remote: '', upstream_merge: '',
-      });
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-1', repo: 'acme/skills' };
-    }
-    // worktree-deps: 旧 analyze 開始 mark の給電元（issue #443。issue #641 で撤去済み、防御的に残す）
-    if (label === 'worktree-deps') {
-      return withEpoch({ status: 'no_dependencies' });
     }
     // Setup 末尾の analyze ゲートは args.setup.analyze から REQ を組み spawn しない（issue #690）。
     // setup_end は args.setup.epoch_end から給電され implement 区間の起点になる（issue #695）。
@@ -127,9 +117,6 @@ function makeSandbox(analyzeReq, epochMode) {
     }
     // Merge tier: changed-files
     // → docs/test-only でないファイルを返す（AUTO 除外。給電対象ではない）
-    if (label === 'changed-files') {
-      return { files: ['src/foo.ts'] };
-    }
     // post-summary（issue #550 F3）: posted:true 固定 + end mark の給電元
     // （専用 clock#end probe 撤去に伴い、post-summary 応答の optional epoch から
     // feedClockMark('end', ...) へ給電される）。
@@ -181,21 +168,7 @@ function makeSandbox(analyzeReq, epochMode) {
     pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
     args: devFlowArgs('1'),
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);
@@ -212,36 +185,6 @@ function makeSandbox(analyzeReq, epochMode) {
 function extractPhaseDurations(prompt) {
   const m = /"phase_durations":(\{[^}]*\})/.exec(prompt);
   return m ? JSON.parse(m[1]) : null;
-}
-
-/**
- * dev-flow.js ソースを strip して async IIFE でラップし vm sandbox で実行する。
- * devflow-journal-log.test.mjs の runDevFlowCapture と同型。
- *
- * @param {string} src - dev-flow.js の raw ソース
- * @param {vm.Context} ctx - vm コンテキスト
- * @returns {Promise<{ result: object|null, error: Error|null }>}
- */
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
 }
 
 // ============================================================
@@ -264,7 +207,7 @@ const src = readFileSync(devFlowPath, 'utf8');
 test('[duration-telemetry] epochMode=ok: clock# 専用 probe は 0 件起動、journal-log prompt に duration_seconds/phase_durations が含まれる（final キーは fixes_applied=0 の Final reconcile skip で欠落する）', async () => {
   const { ctx, getJournalPrompts, getClockCalls, getLogLines, getImplEpochs } = makeSandbox(ANALYZE_REQ, 'ok');
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -330,7 +273,7 @@ test('[duration-telemetry] epochMode=ok: clock# 専用 probe は 0 件起動、j
 test('[duration-telemetry] epochMode=fail: clock# 専用 probe は null を返し、他の給電元 stub も epoch を省略する（fail-open）ため journal-log prompt に duration_seconds/phase_durations が現れず、result.merge_tier は正常に返る', async () => {
   const { ctx, getJournalPrompts, getClockCalls } = makeSandbox(ANALYZE_REQ, 'fail');
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);

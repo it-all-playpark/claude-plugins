@@ -3,7 +3,7 @@
 // evaluate / Setup 段の agent throw、および empty-diff throw との二重記録回避）で
 // buildAbortHandoffPayload の単一形（outcome:'failure' + error_category:'abort'）の journal entry
 // を 1 件残し、fail-open（handoff 自体の失敗が元の例外の rethrow を妨げない）であることを
-// VM sandbox で検証する。makeSandbox / runDevFlowInSandbox は devflow-failure-telemetry-routing
+// VM sandbox で検証する。makeSandbox / runWorkflowCapture は devflow-failure-telemetry-routing
 // test.mjs の パターンを踏襲し、throwAt / journalLogAbortThrows / journal-log-abort stub を追加する。
 // PR phase の失敗（pr#<issue> の中断応答）は abort にせず、throw しない failure 終端
 // （error_category: pr_phase_failed）で返り値と journal に成果物・所要時間・回収手順を残す（(8)、issue #823）。
@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, JS_GLOBALS, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -39,12 +39,10 @@ function makeSandbox({
 
     if (throwAt && label === throwAt.label) throw throwAt.error;
 
-    if (label === 'issue-meta') return { ok: true, number: 1, title: analyzeReq?.issue_title ?? 'stub-issue-title' };
     if (label.startsWith('analyze')) return analyzeReq;
     // Diff triage 統合 exec-proxy: realized 3 件（dev-implementer の申告と一致 → 宣言外 0 件）。
     // 実効 shape は realized 3 件 + AC 数で決まる（issue #676）: AC 2 → standard、AC 7 → complex。
     if (label.startsWith('danger-grep')) return { risk: { ok: true, hits: [] }, files: [...REALIZED_FILES], struct: null, diffhash: null };
-    if (label === 'changed-files') return { files: ['src/foo.ts'] };
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
     if (label.startsWith('redgreen')) return { red: false, green: false, reason: 'stub' };
     if (agentType === 'dev-flow:evaluator') {
@@ -88,31 +86,11 @@ function makeSandbox({
     phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
     pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub, args: args ?? devFlowArgs('1'),
-    console, JSON, Math, String, Number, Boolean, Array, Object, Error,
-    RegExp, Promise, Symbol, Map, Set, Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);
   return { ctx, calls };
-}
-
-async function runDevFlowInSandbox(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let result = null;
-  try {
-    const promise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (promise && typeof promise.then === 'function') {
-      result = await promise.catch((e) => { caughtError = e; return null; });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { error: caughtError, result };
 }
 
 const src = readFileSync(devFlowPath, 'utf8');
@@ -145,7 +123,7 @@ test('[abort-telemetry] (1) Validate で diff-gate proxy が throw → abort ent
     analyzeReq: COMPLEX_ANALYZE_REQ,
     throwAt: { label: 'diff-gate', error: new Error('proxy boom') },
   });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
 
   assert.ok(error !== null, '(1) diff-gate throw で workflow が abort すべきだが error が null だった');
   assert.ok(String(error?.message ?? '').includes('proxy boom'),
@@ -191,7 +169,7 @@ test('[abort-telemetry] (2) Evaluate で evaluator が throw → abort entry 1 �
     analyzeReq: STANDARD_ANALYZE_REQ,
     throwAt: { label: 'eval#1', error: new Error('evaluator boom') },
   });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
 
   assert.ok(error !== null, '(2) evaluator throw で workflow が abort すべきだが error が null だった');
   assert.ok(String(error?.message ?? '').includes('evaluator boom'),
@@ -218,7 +196,7 @@ test('[abort-telemetry] (3) Setup で args.setup.ok が false → WT 未確定�
     analyzeReq: STANDARD_ANALYZE_REQ,
     args: devFlowArgs(1, { ok: false, base_error: 'prerun boom' }),
   });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
 
   assert.ok(error !== null, '(3) args.setup.ok:false で workflow が abort すべきだが error が null だった');
 
@@ -248,7 +226,7 @@ test('[abort-telemetry] (4) fail-open: journal-log-abort stub が throw して�
     throwAt: { label: 'diff-gate', error: new Error('proxy boom') },
     journalLogAbortThrows: true,
   });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
 
   assert.ok(error !== null, '(4) error が null だった');
   assert.ok(String(error?.message ?? '').includes('proxy boom'),
@@ -266,7 +244,7 @@ test('[abort-telemetry] (5) empty_diff throw は writeFailureTelemetry が記録
     analyzeReq: { ...STANDARD_ANALYZE_REQ, issue_type: 'fix' },
     diffGateConfig: { gateEmpty: true, retryEmpty: true },
   });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
 
   assert.ok(error !== null, '(5) empty-diff gate で throw すべきだが error が null だった');
   assert.ok(String(error?.message ?? '').includes('empty-diff gate'),
@@ -284,7 +262,7 @@ test('[abort-telemetry] (5) empty_diff throw は writeFailureTelemetry が記録
 // ============================================================
 test('[abort-telemetry] (6) 完走経路: journal-log-abort が 0 回・journal-log が 1 回・journal_log_status===logged', async () => {
   const { ctx, calls } = makeSandbox({ analyzeReq: { ...STANDARD_ANALYZE_REQ, acceptance_criteria: ['ac1', 'ac2', 'ac3'] } });
-  const { error, result } = await runDevFlowInSandbox(src, ctx);
+  const { error, result } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -308,7 +286,7 @@ test('[abort-telemetry] (7) nested workflow(pr-iterate) が throw → abort entr
     analyzeReq: { ...STANDARD_ANALYZE_REQ, acceptance_criteria: ['ac1', 'ac2', 'ac3'] },
     workflowThrows: new Error('pr-iterate boom'),
   });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
 
   assert.ok(error !== null, '(7) nested workflow throw で dev-flow run が abort すべきだが error が null だった');
   assert.ok(String(error?.message ?? '').includes('pr-iterate boom'),
@@ -343,7 +321,7 @@ const PR_PUSH_FAILED = {
 
 test('[abort-telemetry] (8) PR phase 失敗: throw せず、返り値に error_category / failed_step / failure_reason / committed / head_sha / branch / phase_durations / shape / eval_verdict が載る', async () => {
   const { ctx } = makeSandbox({ analyzeReq: STANDARD_ANALYZE_REQ, prResponse: PR_PUSH_FAILED });
-  const { error, result } = await runDevFlowInSandbox(src, ctx);
+  const { error, result } = await runWorkflowCapture(src, ctx);
 
   assert.equal(error, null, `(8) PR phase 失敗で run が throw した: ${error?.message}`);
   assert.equal(result?.status, 'pr_phase_failed');
@@ -365,7 +343,7 @@ test('[abort-telemetry] (8) PR phase 失敗: throw せず、返り値に error_c
 
 test('[abort-telemetry] (8) PR phase 失敗: 回収コマンドは committed に応じて決まり、issue コメント本文に失敗段・理由・回収コマンドが載る', async () => {
   const { ctx } = makeSandbox({ analyzeReq: STANDARD_ANALYZE_REQ, prResponse: PR_PUSH_FAILED });
-  const { result } = await runDevFlowInSandbox(src, ctx);
+  const { result } = await runWorkflowCapture(src, ctx);
   const cmds = result.recovery_commands;
   assert.equal(cmds[0], 'git push origin HEAD', `push 失敗（commit 済み）は push から: ${JSON.stringify(cmds)}`);
   assert.ok(cmds[1].startsWith('gh pr create --draft --body-file .devflow-tmp/pr-body.md --base main --head feature/issue-1 --title "'), cmds[1]);
@@ -379,7 +357,7 @@ test('[abort-telemetry] (8) PR phase 失敗: 回収コマンドは committed に
     analyzeReq: STANDARD_ANALYZE_REQ,
     prResponse: { pr_url: '', pr_number: 0, committed: false, head_sha: '', failed_step: 'commit', failure_reason: 'fatal: index.lock' },
   });
-  const { error: error2, result: result2 } = await runDevFlowInSandbox(src, ctx2);
+  const { error: error2, result: result2 } = await runWorkflowCapture(src, ctx2);
   assert.equal(error2, null, `(8) commit 失敗で run が throw した: ${error2?.message}`);
   assert.equal(result2.failed_step, 'commit');
   assert.equal(result2.committed, false);
@@ -390,7 +368,7 @@ test('[abort-telemetry] (8) PR phase 失敗: 回収コマンドは committed に
 
 test('[abort-telemetry] (8) PR phase 失敗: abort entry ではなく outcome=failure / error_category=pr_phase_failed の handoff を 1 件書き、nested pr-iterate・Merge tier・終端サマリは実行しない', async () => {
   const { ctx, calls } = makeSandbox({ analyzeReq: STANDARD_ANALYZE_REQ, prResponse: PR_PUSH_FAILED });
-  await runDevFlowInSandbox(src, ctx);
+  await runWorkflowCapture(src, ctx);
 
   assert.equal(calls.filter((c) => c.label === 'journal-log-abort').length, 0, '(8) abort entry が書かれた');
   const failureCalls = calls.filter((c) => c.label === 'journal-log-failure');

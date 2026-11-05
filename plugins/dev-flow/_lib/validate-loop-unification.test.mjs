@@ -2,7 +2,7 @@
 //
 // このファイルは Validate ループ統合（構造重複排除・プロンプト byte 一致・concerns 伝搬・
 // テスト弱体化監査注入・GREEN_MAX ループ）を VM sandbox で pin するテストである。
-// empty-diff-evaluate-routing.test.mjs の makeCountingSandbox / runDevFlowInSandbox と同型で実装する。
+// empty-diff-evaluate-routing.test.mjs の makeCountingSandbox / runWorkflowCapture と同型で実装する。
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, JS_GLOBALS, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -67,7 +67,6 @@ function makeCountingSandbox(opts) {
     calls.push({ label, agentType, prompt: String(prompt ?? '') });
 
     // Setup
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
 
     // Analyze（acceptance_criteria 4 件。実効 shape は realized diff から決まる）
@@ -81,7 +80,6 @@ function makeCountingSandbox(opts) {
         issue_title: 'stub-issue-title',
       };
     }
-
 
     // Security / danger-grep
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
@@ -154,12 +152,10 @@ function makeCountingSandbox(opts) {
     // realized-diff / declared-path-check / changed-files
     if (label === 'realized-diff') return { files: ['src/foo.ts'] };
     if (label === 'declared-path-check') return { files: [] };
-    if (label === 'changed-files') return { files: ['src/foo.ts'] };
 
     // PR 系
     if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
 
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     return null;
   };
 
@@ -173,51 +169,11 @@ function makeCountingSandbox(opts) {
     pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: async () => ({ status: 'LGTM' }),
     args: devFlowArgs('1'),
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);
   return { ctx, calls };
-}
-
-/**
- * dev-flow.js ソースを strip して async IIFE でラップし vm sandbox で実行する。
- * empty-diff-evaluate-routing.test.mjs の runDevFlowInSandbox と同型。
- *
- * @param {string} src - dev-flow.js の raw ソース
- * @param {vm.Context} ctx - vm コンテキスト
- * @returns {Promise<{ error: Error|null, returned: object|null }>}
- */
-async function runDevFlowInSandbox(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-  let caughtError = null;
-  let returned = null;
-  try {
-    const result = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (result && typeof result.then === 'function') {
-      returned = await result.catch((e) => { caughtError = e; return null; });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { error: caughtError, returned };
 }
 
 // ============================================================
@@ -227,7 +183,7 @@ async function runDevFlowInSandbox(src, ctx) {
 test('[validate-unify] (1) crash guard: dev-flow.js が sandbox で ReferenceError / SyntaxError を throw しない', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx } = makeCountingSandbox({ gateEmpty: false });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
   }
@@ -247,7 +203,7 @@ test('[validate-unify] (1) crash guard: dev-flow.js が sandbox で ReferenceErr
 test('[validate-unify] (3) プロンプト同一 pin: test#1 と test#retry-1 のプロンプト byte 一致・green-fix#1 と green-fix#retry-1 のプロンプト byte 一致', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, calls } = makeCountingSandbox({ gateEmpty: true, retryEmpty: false });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
   }
@@ -292,7 +248,7 @@ test('[validate-unify] (3) プロンプト同一 pin: test#1 と test#retry-1 �
 test('[validate-unify] (4) concerns 伝搬同一 pin: eval#1 の prompt に GF_CONCERN_MARKER が含まれること（本経路+retry 経路 green-fix concerns → evaluator）', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, calls } = makeCountingSandbox({ gateEmpty: true, retryEmpty: false });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
   }
@@ -319,7 +275,7 @@ test('[validate-unify] (4) concerns 伝搬同一 pin: eval#1 の prompt に GF_C
 test('[validate-unify] (5) green-fix データ echo 注入 pin: eval#1 の prompt に src/foo.test.ts が含まれること', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, calls } = makeCountingSandbox({ gateEmpty: true, retryEmpty: false });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
   }
@@ -344,7 +300,7 @@ test('[validate-unify] (5) green-fix データ echo 注入 pin: eval#1 の promp
 test('[validate-unify] (6) GREEN_MAX ループ pin: test#retry ちょうど 3 件・green-fix#retry ちょうど 2 件（retry 常時 failed モード）', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, calls } = makeCountingSandbox({ gateEmpty: true, retryEmpty: false, retryAlwaysFailed: true });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
   }
@@ -375,7 +331,7 @@ test('[validate-unify] (6) GREEN_MAX ループ pin: test#retry ちょうど 3 �
 test('[validate-unify] (7) test#1 prompt に test スクリプト優先・EPERM fail-safe の識別トークンが含まれること', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, calls } = makeCountingSandbox({ gateEmpty: false });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
   }
@@ -412,7 +368,7 @@ test('[validate-unify] (7) test#1 prompt に test スクリプト優先・EPERM 
 test('[validate-unify] (8) throw→red 継続 pin: 本経路 test の throw で run が死なず green-fix ループへ継続すること', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, calls } = makeCountingSandbox({ gateEmpty: false, mainTestThrowFirst: true });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
 
   assert.equal(
     error,

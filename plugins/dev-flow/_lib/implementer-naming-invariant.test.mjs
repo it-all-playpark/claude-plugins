@@ -56,8 +56,7 @@ test('[implementer-naming] (b) repo の tracked file に旧 agent 名の参照�
 });
 
 // ---- (c) dev-flow.js の実装経路の識別子・コメントがモデル非依存 ----
-// 合成 plan オブジェクトの consumer（adoptReportedFiles 以下）のシグネチャもここ 1 か所で pin する
-// （撤去済み phase の invariant は removed-phase-invariant.test.mjs）。
+// 合成 plan オブジェクトの consumer（adoptReportedFiles 以下）のシグネチャもここ 1 か所で pin する。
 
 test('[implementer-naming] (c) dev-flow.js の実装経路の識別子がモデル非依存の名前で、Fable 前提の語が無い', () => {
   for (const decl of [

@@ -34,24 +34,3 @@ export function buildSubagentInvocations(counts) {
   }
   return { total, by_type };
 }
-
-/**
- * byType（{agentType: number} 形式）を counts へ加算 merge する。
- * byType が null/undefined/非 object なら no-op。数値でない値は skip する。
- * @param {object} counts - mutate 対象のカウント集計 object
- * @param {object|null|undefined} byType - merge 元
- * @returns {object} counts（同一 object）
- */
-export function mergeSubagentCounts(counts, byType) {
-  if (byType == null || typeof byType !== 'object') {
-    return counts;
-  }
-  for (const key of Object.keys(byType)) {
-    const value = byType[key];
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
-      continue;
-    }
-    counts[key] = (counts[key] || 0) + value;
-  }
-  return counts;
-}

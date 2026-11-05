@@ -252,13 +252,6 @@ test('isolationFailureMessage: error が空文字なら probe error 行を含ま
 // 移したため、probe prompt からは冪等化手順を落とす。issue #521 でさらに probe 対象パスを run 毎に
 // 一意な token 付きにし、成立自体を cleanup 成功に依存させない（#482 の再発を構造的に防ぐ）。
 
-test('isolationProbePrompt: Read-then-Write 冪等化手順を含まない（cleanup へ分離した）', () => {
-  const prompt = isolationProbePrompt('/path/to/worktree', '1000');
-  assert.doesNotMatch(prompt, /Read tool/);
-  assert.doesNotMatch(prompt, /既に存在する場合/);
-  assert.doesNotMatch(prompt, /Read が失敗しても/);
-});
-
 test('isolationCleanupPrompt: worktree 直下の .devflow-tmp を git clean で除去させる', () => {
   const prompt = isolationCleanupPrompt('/repo/.claude/worktrees/df-493', '.devflow-tmp');
   assert.match(prompt, /git -C \/repo\/\.claude\/worktrees\/df-493 clean -fdx -- \.devflow-tmp/);

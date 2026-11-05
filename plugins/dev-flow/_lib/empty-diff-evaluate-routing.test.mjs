@@ -1,5 +1,5 @@
 // empty-diff gate と diff-hash 乖離検出の VM sandbox routing テスト（issue #215）。
-// _lib/realized-shape-routing.test.mjs と同型の makeCountingSandbox / runDevFlowInSandbox パターン。
+// _lib/realized-shape-routing.test.mjs と同型の makeCountingSandbox / runWorkflowCapture パターン。
 //
 // stub に label==='diff-gate' / 'diff-gate-retry' / 'diff-hash-eval' / 'diff-hash-pr' の分岐を追加し
 // テストごとに可変の {hash, empty} を返す。
@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, JS_GLOBALS, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -42,7 +42,6 @@ function makeCountingSandbox(analyzeReq, diffHashConfig) {
     if (label === 'diff-gate-retry') return { hash: retryEmpty ? 'EMPTY' : 'H', empty: retryEmpty };
     if (label === 'diff-hash-eval') return { hash: evalHash, empty: false };
     if (label === 'diff-hash-pr') return { hash: prHash, empty: false };
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
     if (label.startsWith('analyze')) return analyzeReq;
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
@@ -55,7 +54,6 @@ function makeCountingSandbox(analyzeReq, diffHashConfig) {
     if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
     if (label === 'merge-tier-facts') return mergeTierFacts({ files: ['src/foo.ts'] });
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 'issue-1', files: [...realizedFiles], summary: '', concerns: [] };
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     // journal-log: 実際の telemetry payload はここに載る（issue #807: pending/ へ直接書く 1 spawn）。
     if (label === 'journal-log') return { saved: true, logged: true };
     return null;
@@ -66,28 +64,10 @@ function makeCountingSandbox(analyzeReq, diffHashConfig) {
     phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
     pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: async () => iterateResult, args: devFlowArgs('1'),
-    console, JSON, Math, String, Number, Boolean, Array, Object, Error, RegExp, Promise, Symbol, Map, Set, Date,
+    ...JS_GLOBALS,
   };
   const ctx = vm.createContext(sandbox);
   return { ctx, calls };
-}
-
-async function runDevFlowInSandbox(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-  let caughtError = null;
-  let returned = null;
-  try {
-    const result = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (result && typeof result.then === 'function') {
-      returned = await result.catch((e) => { caughtError = e; return null; });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { error: caughtError, returned };
 }
 
 const STANDARD_REQ = {
@@ -102,7 +82,7 @@ const STANDARD_REQ = {
 // (A) diff-gate empty:false → reimpl-empty-diff 0 件・diff-gate-retry 0 件・正常完了
 test('[empty-diff] (A) diff-gate empty:false → reimpl-empty-diff 0 件・diff-gate-retry 0 件・正常完了', async () => {
   const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, { gateEmpty: false });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   const reimplCalls = calls.filter((c) => c.label.startsWith('reimpl-empty-diff'));
   assert.strictEqual(reimplCalls.length, 0, `(A) empty:false なら reimpl-empty-diff 0 件のはずだが ${reimplCalls.length} 件`);
@@ -115,7 +95,7 @@ test('[empty-diff] (A) diff-gate empty:false → reimpl-empty-diff 0 件・diff-
 // (B) diff-gate empty:true / diff-gate-retry empty:false → reimpl-empty-diff >= 1・diff-gate-retry 1 件・正常完了
 test('[empty-diff] (B) diff-gate empty:true / diff-gate-retry empty:false → reimpl-empty-diff >= 1・diff-gate-retry 1 件・正常完了', async () => {
   const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, { gateEmpty: true, retryEmpty: false });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   const reimplCalls = calls.filter((c) => c.label.startsWith('reimpl-empty-diff'));
   assert.ok(reimplCalls.length >= 1, `(B) reimpl-empty-diff >= 1 件のはずだが ${reimplCalls.length} 件`);
@@ -131,7 +111,7 @@ test('[empty-diff] (B) diff-gate empty:true / diff-gate-retry empty:false → re
 // (C) diff-gate empty:true / diff-gate-retry empty:true → throw・evaluator 0 件（fail-fast）
 test('[empty-diff] (C) diff-gate empty:true / diff-gate-retry empty:true → throw し evaluator 0 件（fail-fast）', async () => {
   const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, { gateEmpty: true, retryEmpty: true });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   assert.ok(error !== null, '(C) 両方 empty:true なら workflow が throw すべきだが error が null だった');
   assert.ok(typeof error?.message === 'string' && error.message.includes('empty-diff gate'), `(C) error.message に 'empty-diff gate' を含むべきだが: ${error?.message}`);
   const evaluatorCalls = calls.filter((c) => c.agentType === 'dev-flow:evaluator');
@@ -141,7 +121,7 @@ test('[empty-diff] (C) diff-gate empty:true / diff-gate-retry empty:true → thr
 // (D) eval hash AAA != PR hash BBB → eval_staleness==='hash_mismatch' かつ post-summary に stale 警告
 test('[empty-diff] (D) eval hash AAA != PR hash BBB → eval_staleness===hash_mismatch かつ post-summary に stale 警告', async () => {
   const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, { gateEmpty: false, evalHash: 'AAA', prHash: 'BBB' });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(D) 想定外エラー: ${error.message}`);
   assert.ok(returned !== null, '(D) return object を返すべき');
@@ -154,7 +134,7 @@ test('[empty-diff] (D) eval hash AAA != PR hash BBB → eval_staleness===hash_mi
 // (E) 両 hash 'AAA' 一致 → eval_staleness==='none'・post-summary に stale 警告なし（誤検知なし）
 test('[empty-diff] (E) eval hash AAA == PR hash AAA → eval_staleness===none・post-summary に stale 警告なし', async () => {
   const { ctx } = makeCountingSandbox(STANDARD_REQ, { gateEmpty: false, evalHash: 'AAA', prHash: 'AAA' });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(E) 想定外エラー: ${error.message}`);
   assert.ok(returned !== null, '(E) return object を返すべき');
@@ -164,7 +144,7 @@ test('[empty-diff] (E) eval hash AAA == PR hash AAA → eval_staleness===none・
 // (F) diff-gate empty:true / diff-gate-retry empty:false → test#retry >= 1・evaluator が呼ばれること（issue #219）
 test('[empty-diff] (F) empty-diff gate retry 後に validate 再実行 → test#retry >= 1 かつ evaluator が呼ばれること', async () => {
   const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, { gateEmpty: true, retryEmpty: false });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   // test#retry-N が呼ばれて validate が再実行されること（issue #219 fix 3）
   const retryTestCalls = calls.filter((c) => c.label.startsWith('test#retry'));
@@ -181,7 +161,7 @@ test('[empty-diff] (F) empty-diff gate retry 後に validate 再実行 → test#
 // もし gate が Diff triage の後にあれば danger-grep は reimpl-empty-diff より前に来る（旧バグ）。
 test('[empty-diff] (G) retry 後に danger-grep が reimpl-empty-diff より後に呼ばれること（Diff triage が retry 後 tree を見る）', async () => {
   const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, { gateEmpty: true, retryEmpty: false });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(G) 想定外エラー: ${error.message}`);
   const reimplIdx = calls.findIndex((c) => c.label.startsWith('reimpl-empty-diff'));
@@ -205,7 +185,7 @@ test('[empty-diff] (H) 両 hash 一致 + fixes_applied=2 → eval_staleness===it
     prHash: 'AAA',
     iterateResult: { status: 'lgtm', iterations: 3, fixes_applied: 2 },
   });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(H) 想定外エラー: ${error.message}`);
   assert.ok(returned !== null, '(H) return object を返すべき');
@@ -221,7 +201,7 @@ test('[empty-diff] (I) 両 hash 一致 + status=stuck → eval_staleness===itera
     prHash: 'AAA',
     iterateResult: { status: 'stuck', iterations: 5, fixes_applied: 3 },
   });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(I) 想定外エラー: ${error.message}`);
   assert.ok(returned !== null, '(I) return object を返すべき');
@@ -236,7 +216,7 @@ test('[empty-diff] (I) 両 hash 一致 + status=stuck → eval_staleness===itera
 // test#retry-N / green-fix#retry-N の agent 呼び出しに付く phase タグは 'Validate' が正しい。
 test('[empty-diff] (K) retry 経路の test#retry / green-fix#retry call の phase タグが Validate であること（issue #253）', async () => {
   const { ctx, calls } = makeCountingSandbox(STANDARD_REQ, { gateEmpty: true, retryEmpty: false });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(K) 想定外エラー: ${error.message}`);
   // test#retry-N calls の phase が全て 'Validate' であること
@@ -260,7 +240,7 @@ test('[empty-diff] (J) 両 hash 一致 + status=lgtm + fixes_applied=0 → eval_
     prHash: 'AAA',
     iterateResult: { status: 'lgtm', iterations: 1, fixes_applied: 0 },
   });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(J) 想定外エラー: ${error.message}`);
   assert.ok(returned !== null, '(J) return object を返すべき');
@@ -275,7 +255,7 @@ test('[empty-diff] (L) hash 不一致 + iterate fix 同時発生 → eval_stalen
     prHash: 'BBB',
     iterateResult: { status: 'lgtm', iterations: 3, fixes_applied: 2 },
   });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(L) 想定外エラー: ${error.message}`);
   assert.ok(returned !== null, '(L) return object を返すべき');
@@ -302,7 +282,7 @@ test('[empty-diff] (M) micro path（runEval=false）+ iterate fix あり → eva
     iterateResult: { status: 'lgtm', iterations: 2, fixes_applied: 2 },
     realizedFiles: ['docs/a.md'],
   });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(M) 想定外エラー: ${error.message}`);
   assert.ok(returned !== null, '(M) return object を返すべき');
@@ -317,7 +297,7 @@ test('[empty-diff] (P-1) iterate status=max_reached → merge_tier===HOLD かつ
     prHash: 'AAA',
     iterateResult: { status: 'max_reached', iterations: 10, fixes_applied: 2 },
   });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(P-1) 想定外エラー: ${error.message}`);
   assert.ok(returned !== null, '(P-1) return object を返すべき');
@@ -334,7 +314,7 @@ test('[empty-diff] (P-2) status=lgtm + fixes_applied=0 + hash 一致 → merge_t
     prHash: 'AAA',
     iterateResult: { status: 'lgtm', iterations: 1, fixes_applied: 0 },
   });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(P-2) 想定外エラー: ${error.message}`);
   assert.ok(returned !== null, '(P-2) return object を返すべき');
@@ -356,7 +336,7 @@ test('[empty-diff] (P-3) iterate status=fix_failed + history → HOLD / iterate_
     prHash: 'AAA',
     iterateResult: { status: 'fix_failed', iterations: 3, fixes_applied: 1, history },
   });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(P-3) 想定外エラー: ${error.message}`);
   assert.ok(returned !== null, '(P-3) return object を返すべき');

@@ -17,9 +17,6 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 
 function baseResponder(concernResolutions) {
   return function({ label, agentType }) {
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-614' };
     }
@@ -75,7 +72,6 @@ function baseResponder(concernResolutions) {
         concerns: ['CONCERN マーカー: ORDER BY 検証が未実装'],
       };
     }
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     return null;
   };
 }

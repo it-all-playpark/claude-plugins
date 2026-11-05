@@ -7,7 +7,7 @@
 // ハーネスは makeRecordingSandbox（_lib/test-helpers/vm-sandbox.mjs）を使い、
 // ci-checks-routing.test.mjs の createResponder パターンを踏襲する。ただし return object
 // を検証する必要があるため、実行部分は merge-tier-security-clearance-routing.test.mjs
-// と同型のローカル runDevFlowCapture（{result, error} を返す）を使う
+// と同型の共有の runWorkflowCapture（{result, error} を返す）を使う
 // （vm-sandbox.mjs の共有 runDevFlowInSandbox は error のみを返すため）。
 //
 // テストケース:
@@ -39,45 +39,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { makeRecordingSandbox, devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
-
-// ============================================================
-// runDevFlowCapture: strip + wrap + vm 実行し {result, error} を返す（merge-tier-security-
-// clearance-routing.test.mjs と同型のローカル copy）
-// ============================================================
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
-function assertNoCrash(error, name) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`[${name}] dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
 
 // standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
 const STANDARD_REQ = {
@@ -100,7 +67,6 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-320' };
     if (label.startsWith('analyze')) return STANDARD_REQ;
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
@@ -127,13 +93,10 @@ function createResponder(overrides = {}) {
     if (label === 'merge-tier-facts') return mergeTierFacts({ hash: 'H_MERGE', files: ['src/x.ts'] });
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
-    // journal-save (stage1, issue #494): 実際の telemetry payload はここに載る
-    if (label === 'journal-save') return { saved: true, path: '/tmp/wt/.devflow-tmp/payload-test.json' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't', files: ['src/x.ts'], summary: 's', concerns: [] };
     if (label === 'reconcile-sync') return { ok: true, head: 'deadbeef' };
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
-    if (label === 'issue-meta') return { ok: true, number: 320, title: 'stub-issue-title' };
     return null;
   };
 }
@@ -151,7 +114,7 @@ function makeSandbox({ overrides = {}, fixesApplied = 0 } = {}) {
 
 test('[final-reconcile] (a) fixes_applied=0 → 新規 agent 呼び出しゼロ + final_reconcile===skipped + merge tier 不変', async () => {
   const { ctx, calls } = makeSandbox({ fixesApplied: 0 });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'a');
   assert.ok(result !== null, '(a) workflow は return object を返すべきだが null だった');
 
@@ -176,7 +139,7 @@ test('[final-reconcile] (b) fixes=1 + test green → reverified + final_test_gre
       'reconcile-sync': ({ prompt }) => { syncPrompt = prompt; return { ok: true, head: 'deadbeef' }; },
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'b');
   assert.ok(result !== null, '(b) workflow は return object を返すべきだが null だった');
 
@@ -208,7 +171,7 @@ test("[final-reconcile] (c) fixes=1 + test#final red → merge_tier HOLD + reaso
     fixesApplied: 1,
     overrides: { 'test#final': { tests: 'failed', green: false, summary: 'boom' } },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'c');
   assert.ok(result !== null, '(c) workflow は return object を返すべきだが null だった');
 
@@ -229,7 +192,7 @@ test("[final-reconcile] (d) fixes=1 + test#final null → final_reconcile unavai
     fixesApplied: 1,
     overrides: { 'test#final': null },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'd');
   assert.ok(result !== null, '(d) workflow は return object を返すべきだが null だった');
 
@@ -253,7 +216,7 @@ test("[final-reconcile] (e) fixes=1 + reconcile-sync 失敗(non-ff) → unavaila
     fixesApplied: 1,
     overrides: { 'reconcile-sync': { ok: false, error: 'non-ff' } },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'e');
   assert.ok(result !== null, '(e) workflow は return object を返すべきだが null だった');
 
@@ -271,7 +234,7 @@ test("[final-reconcile] (e2) fixes=1 + reconcile-sync が cwd branch mismatch �
     fixesApplied: 1,
     overrides: { 'reconcile-sync': { ok: false, error: 'cwd branch mismatch: expected feature/issue-700, got main' } },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'e2');
   assert.ok(result !== null, '(e2) workflow は return object を返すべきだが null だった');
 
@@ -286,7 +249,7 @@ test("[final-reconcile] (e2) fixes=1 + reconcile-sync が cwd branch mismatch �
 
 test("[final-reconcile] (h) calls 順序: Merge tier の 'merge-tier-facts' は 'reconcile-sync' より後", async () => {
   const { ctx, calls } = makeSandbox({ fixesApplied: 1 });
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'h');
 
   const idxSync = calls.findIndex((c) => c.label === 'reconcile-sync');
@@ -313,7 +276,7 @@ test("[final-reconcile] (h) calls 順序: Merge tier の 'merge-tier-facts' は 
 
 test("[final-reconcile] (h2) Merge tier の read-only 事実取得は 'merge-tier-facts' 1 回のみで個別 spawn を発行しない", async () => {
   const { ctx, calls } = makeSandbox({ fixesApplied: 1 });
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'h2');
 
   const changedFinalCalls = calls.filter((c) => c.label === 'changed-files-final');
@@ -340,7 +303,7 @@ test('[final-reconcile] (i) fixes=1 + changed-files-final null → reverified �
     fixesApplied: 1,
     overrides: { 'changed-files-final': null },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'i');
   assert.ok(result !== null, '(i) workflow は return object を返すべきだが null だった');
 
@@ -358,7 +321,7 @@ test("[final-reconcile] (j) fixes=1 + test#final throw(EPERM) → run 完走 + f
       'test#final': () => { throw new Error('EPERM: operation not permitted (vitest node_modules/.vite-temp)'); },
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
 
   assert.equal(error, null, `(j) test#final の throw で run 全体が abort してはならないが error が発生: ${error?.message}`);
   assert.ok(result !== null, '(j) workflow は return object を返すべきだが null だった（run 全体が死んだことを示す）');
@@ -382,7 +345,7 @@ test("[final-reconcile] (l) fixes=1 + test#final tests:'error'（起動失敗）
     fixesApplied: 1,
     overrides: { 'test#final': { tests: 'error', green: false, summary: 'pnpm: command not found — テストは 1 件も実行されていない' } },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'l');
   assert.equal(error, null, `(l) run 全体が abort してはならないが error が発生: ${error?.message}`);
   assert.ok(result !== null, '(l) workflow は return object を返すべきだが null だった');
@@ -413,7 +376,7 @@ test("[final-reconcile] (m) fixes=1 + test#final tests:'failed'（本物の red�
     fixesApplied: 1,
     overrides: { 'test#final': { tests: 'failed', green: false, summary: '3 tests failed' } },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'm');
   assert.ok(result !== null, '(m) workflow は return object を返すべきだが null だった');
 
@@ -464,7 +427,7 @@ test("[final-reconcile] (n) test#final red + failed_files の単体再実行 gre
       'test#final-rerun': { tests: 'passed', green: true, summary: 'passed' },
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'n');
   assert.equal(error, null, `(n) run は完走するはずだが ${error?.message}`);
 
@@ -522,7 +485,7 @@ test("[final-reconcile] (o) 単体再実行でも red / 応答なし / throw →
       fixesApplied: 1,
       overrides: { 'test#final': FLAKY_FIRST, 'test#final-rerun': rerun },
     });
-    const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+    const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
     assertNoCrash(error, `o-${name}`);
     assert.equal(error, null, `(o-${name}) run は完走するはずだが ${error?.message}`);
     assert.equal(calls.filter((c) => c.label === 'test#final-rerun').length, 1, `(o-${name}) 再実行は 1 回だけ`);
@@ -544,7 +507,7 @@ test("[final-reconcile] (p) failed_files が空（ビルド失敗・結び付か
   for (const [name, failed_files] of Object.entries({ empty: [], missing: undefined, unsafe: ['./a.bats', 'b c.bats', 'a.bats'] })) {
     const first = { tests: 'failed', green: false, summary: 'workspace build failed', ...(failed_files ? { failed_files } : {}) };
     const { ctx, calls } = makeSandbox({ fixesApplied: 1, overrides: { 'test#final': first } });
-    const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+    const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
     assertNoCrash(error, `p-${name}`);
     assert.ok(!calls.some((c) => c.label === 'test#final-rerun'), `(p-${name}) test#final-rerun を呼んではならない`);
     assert.equal(result?.final_test_green, false);

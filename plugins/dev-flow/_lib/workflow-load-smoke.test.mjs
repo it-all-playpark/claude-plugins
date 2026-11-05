@@ -17,7 +17,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { makeDevFlowSandbox, runDevFlowInSandbox, devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, runDevFlowInSandbox, devFlowArgs, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -111,21 +111,7 @@ function makeWorkflowSandbox(extraGlobals = {}) {
     // 引数（実 loader は args を注入する）
     args: devFlowArgs('1'),
     // JS 組み込み（vm.createContext はデフォルトで提供しないため明示注入）
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
     // require / process / Buffer は意図的に注入しない（禁止グローバル）
     ...extraGlobals,
   };

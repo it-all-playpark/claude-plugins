@@ -33,7 +33,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, prerunAnalyze, JS_GLOBALS, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -70,10 +70,6 @@ function makeCountingSandbox(analyzeReq, realizedFiles, declaredFiles = []) {
     const agentType = opts?.agentType ?? '';
     calls.push({ label, agentType, prompt: String(prompt) });
 
-    // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #550 案1）
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
     }
@@ -81,9 +77,6 @@ function makeCountingSandbox(analyzeReq, realizedFiles, declaredFiles = []) {
     // （files は旧 realized-diff 相当のスナップショット）。
     if (label === 'danger-grep') {
       return { risk: { ok: true, hits: [] }, files: realizedFiles, struct: null, diffhash: null };
-    }
-    if (label === 'danger-grep-final') {
-      return { ok: true, hits: [] };
     }
     if (label.startsWith('test')) {
       return { tests: 'no_tests', green: true, summary: '' };
@@ -101,9 +94,6 @@ function makeCountingSandbox(analyzeReq, realizedFiles, declaredFiles = []) {
     }
     if (label.startsWith('pr')) {
       return { pr_url: 'http://x', pr_number: 1, committed: true };
-    }
-    if (label === 'changed-files') {
-      return { files: ['src/foo.ts'] };
     }
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 'issue-1', files: declaredFiles, summary: '', concerns: [] };
@@ -125,51 +115,11 @@ function makeCountingSandbox(analyzeReq, realizedFiles, declaredFiles = []) {
     workflow: async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 }),
     // REQ は args.setup.analyze から組まれる（Analyze phase は spawn しない）
     args: devFlowArgs('1', { analyze: prerunAnalyze({ acceptance_criteria: analyzeReq.acceptance_criteria, issue_type: analyzeReq.issue_type }) }),
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);
   return { ctx, calls };
-}
-
-/**
- * dev-flow.js ソースを strip して async IIFE でラップし vm sandbox で実行する。
- * return object を解決して返す。
- */
-async function runDevFlowInSandbox(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = '(async () => {\n' + stripped + '\n})();';
-
-  let caughtError = null;
-  let returned = null;
-  try {
-    const result = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (result && typeof result.then === 'function') {
-      returned = await result.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { error: caughtError, returned };
 }
 
 // ============================================================
@@ -201,7 +151,7 @@ test('[ephemeral-paths-routing] (A) realized ephemeral 3 件 non-ephemeral 2 件
   const declaredFiles = ['a.md', 'b.md'];
 
   const { ctx, calls } = makeCountingSandbox(microReq, realizedFiles, declaredFiles);
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail('dev-flow.js が sandbox でクラッシュ: ' + error.name + ': ' + error.message);
@@ -255,7 +205,7 @@ test('[ephemeral-paths-routing] (B) realized ephemeral 2 件 non-ephemeral 6 件
   const declaredFiles = ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts'];
 
   const { ctx, calls } = makeCountingSandbox(microReq, realizedFiles, declaredFiles);
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail('dev-flow.js が sandbox でクラッシュ: ' + error.name + ': ' + error.message);
@@ -299,7 +249,7 @@ test('[ephemeral-paths-routing] (C) standard + realized-diff 宣言外 3 件 →
   const realizedFiles = ['u1.ts', 'u2.ts', 'u3.ts'];
 
   const { ctx, calls } = makeCountingSandbox(standardReq, realizedFiles);
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail('dev-flow.js が sandbox でクラッシュ: ' + error.name + ': ' + error.message);
@@ -351,7 +301,7 @@ test('[ephemeral-paths-routing] (D) realized-diff が ephemeral のみ → "宣�
   const realizedFiles = ['evaluator.staged.md'];
 
   const { ctx, calls } = makeCountingSandbox(standardReq, realizedFiles);
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail('dev-flow.js が sandbox でクラッシュ: ' + error.name + ': ' + error.message);
@@ -391,7 +341,7 @@ test('[ephemeral-paths-routing] (E) porcelain 取得 1 回ピン: danger-grep=1 
   const realizedFiles = ['undeclared-file.ts'];
 
   const { ctx, calls } = makeCountingSandbox(standardReq, realizedFiles);
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail('dev-flow.js が sandbox でクラッシュ: ' + error.name + ': ' + error.message);
@@ -439,7 +389,7 @@ test('[ephemeral-paths-routing] (F) non-ephemeral 宣言外 1 件 → shape===mi
   const realizedFiles = ['leftover-handoff.md'];
 
   const { ctx, calls } = makeCountingSandbox(microReq, realizedFiles);
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail('dev-flow.js が sandbox でクラッシュ: ' + error.name + ': ' + error.message);

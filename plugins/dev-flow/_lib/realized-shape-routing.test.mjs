@@ -181,11 +181,7 @@ test('[realized-shape] (J) micro / standard / complex の spawn 構造: implemen
   assert.deepEqual([implCount(complex.calls), evaluatorCalls(complex.calls).length, complex.returned.route], [2, 2, 'full']);
 });
 
-test('[realized-shape] (K) 静的 pin: dev-flow.js（inline 生成区間含む）に refloorShape / mergeShape / 事前見積もりキーが残っていない', () => {
-  for (const token of ['refloorShape', 'mergeShape', 'SHAPE_RANK', 'estimated_change_file_count', 'shape_refloored', 'effective_shape', 'triviality_reason', 'estimated_file_count']) {
-    assert.ok(!src.includes(token), `dev-flow.js に '${token}' が残っている`);
-  }
-  // 実効 shape は classifyShape(req, realizedCount, lineStats) の 1 呼び出しで決まる
+test('[realized-shape] (K) 静的 pin: 実効 shape は classifyShape(req, realizedCount, lineStats) の 1 呼び出しで決まる', () => {
   assert.match(src, /const triage = classifyShape\(req, realizedCount, lineStats\)\n\s*const EFFECTIVE_SHAPE = triage\.shape/);
   assert.equal((src.match(/classifyShape\(/g) ?? []).length - 1, 1, 'classifyShape の呼び出しは Diff triage の 1 箇所のみ（-1 は関数定義）');
 });

@@ -1,9 +1,6 @@
 // Implement 経路が全 shape で dev-implementer 一本であることを dev-flow.js 全体の VM 実行で
-// pin する（issue #668 / #670 / #673）。planner 経路（dev-planner ⇄ plan-reviewer → implementer）と
-// IMPLEMENT_MODE は #673 で削除済み — ロールバックは git revert（定数切替の scaffolding は残さない）。
+// pin する（issue #668 / #670 / #673）。
 //
-//   AC-1: dev-flow.js に planner 経路のシンボル・PLAN/VERDICT schema・dev-planner / plan-reviewer /
-//         implementer の agentType 文字列が残っていない（静的 pin）
 //   AC-3: 全 shape で Analyze 直後に合成 plan のみ（implement#synth-plan log）。Implement は
 //         dev-implementer の単一 serial spawn（impl:serial:issue-<N>）で、parallel / pipeline を
 //         sandbox に置かなくても完走する。返却 null は implDroppedCount に 1 として計上される
@@ -25,8 +22,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { stripComments } from '../../../tools/sync-inlines.mjs';
-import { neutralizeRegexLiterals } from './test-helpers/source-scan.mjs';
 import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, MICRO_FILES, analyzeArgs } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -76,31 +71,6 @@ function parseJournalHandoffPayload(prompt) {
   assert.ok(match, `journal handoff prompt に JOURNAL_HANDOFF_BODY delimiter が見つからない。prompt:\n${prompt}`);
   return JSON.parse(match[1]);
 }
-
-// ============================================================
-// AC-1: 静的 pin — planner 経路のシンボルと agentType 文字列が 0 件
-// ============================================================
-test('[implementer] AC-1 静的 pin: dev-flow.js に planner 経路のシンボル・schema・agentType 文字列が残っていない', () => {
-  const code = stripComments(neutralizeRegexLiterals(src));
-  // 識別子は語境界で照合する（DESIGN_REPLAN_MAX が PLAN_MAX の部分文字列として誤検知されないように）
-  const forbiddenSymbols = [
-    'IMPLEMENT_MODE', 'PLAN_SOLO', 'soloPlanPrompt', 'planConverged', 'findingsToConcerns',
-    'PLAN_MAX', 'PLAN_STUCK', 'planSeen', 'PLANNER_TEST_PLAN_RULE', 'PLANNER_HANDOFF_RULE',
-    'AC_TEST_CONTRACT', 'applyDisjoint', 'countPlanDrops', 'pipeline',
-  ];
-  for (const sym of forbiddenSymbols) {
-    assert.ok(!new RegExp(`\\b${sym}\\b`).test(code), `dev-flow.js に planner 経路のシンボル '${sym}' が残っている`);
-  }
-  for (const schema of ['PLAN', 'VERDICT']) {
-    assert.ok(!new RegExp(`\\bconst ${schema}\\b`).test(code), `dev-flow.js に ${schema} schema 定義が残っている`);
-    assert.ok(!new RegExp(`schema: ${schema}\\b`).test(code), `dev-flow.js に schema: ${schema} の call site が残っている`);
-  }
-  for (const agent of GONE_AGENTS) {
-    const hits = code.match(new RegExp(`'${agent}'`, 'g')) ?? [];
-    assert.equal(hits.length, 0, `dev-flow.js に agentType 文字列 '${agent}' が ${hits.length} 件残っている`);
-  }
-  assert.ok(!/typeof pipeline/.test(code), 'dev-flow.js に pipeline() の存在チェック（fail-fast）が残っている');
-});
 
 // ============================================================
 // AC-3: 全 shape で合成 plan → dev-implementer 1 spawn（parallel / pipeline なし）

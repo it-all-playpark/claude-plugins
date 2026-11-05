@@ -7,9 +7,7 @@
 // `tests:'error'` でも green-fix（implementer）が GREEN_MAX=3 回まで回ってしまう欠陥がある。
 // 本ファイルはこの欠陥を pin し、F2 実装後に green へ転じることを確認するためのハーネス。
 //
-// ハーネス: makeRecordingSandbox（_lib/test-helpers/vm-sandbox.mjs）。run 返り値
-// （test_green 等）も見るため final-reconcile-routing.test.mjs と同型のローカル
-// runDevFlowCapture（{result, error} を返す）を持つ。
+// ハーネス: makeRecordingSandbox / runWorkflowCapture（_lib/test-helpers/vm-sandbox.mjs）。
 //
 // テストケース:
 //   (0) crash guard: 3 シナリオとも error が ReferenceError / SyntaxError でないこと
@@ -28,39 +26,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { makeRecordingSandbox, devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
-
-// ============================================================
-// runDevFlowCapture: strip + wrap + vm 実行し {result, error} を返す
-// （final-reconcile-routing.test.mjs と同型のローカル copy）
-// ============================================================
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const p = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (p && typeof p.then === 'function') {
-      resolvedResult = await p.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
 
 // ============================================================
 // responder factory
@@ -70,12 +41,6 @@ function createResponder({ mode, gateEmpty }) {
   let mainCount = 0;
   let retryCount = 0;
   return function ({ label, agentType }) {
-    if (label === 'setup-base') {
-      return {
-        ok: true, default_branch: 'main', dev_exists: true, requested_exists: false,
-        worktree_exists: false, upstream_remote: '', upstream_merge: '',
-      };
-    }
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-627' };
     if (label.startsWith('analyze')) {
       return {
@@ -134,7 +99,6 @@ function createResponder({ mode, gateEmpty }) {
       return { files: ['src/foo.ts'] };
     }
     if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
-    if (label === 'issue-meta') return { ok: true, number: 627, title: 'stub-issue-title' };
     // それ以外（issue-labels 含む）→ null（非 cross-repo 扱い → 差し戻し1回 → retry 経路へ）
     return null;
   };
@@ -154,7 +118,7 @@ async function runScenario({ mode, gateEmpty }) {
     log: (m) => logs.push(String(m)),
     args: devFlowArgs('627'),
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   const out = { calls, logs, result, error };
   scenarioCache.set(key, out);
   return out;

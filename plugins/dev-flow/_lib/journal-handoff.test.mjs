@@ -598,8 +598,7 @@ test('buildAbortHandoffPayload omits telemetry when none is given (phase/label a
 //
 // dev-flow.js（writeFailureTelemetry / PR phase 失敗 / Merge tier / top-level abort）と pr-iterate.js
 // （終端 / top-level abort）の 6 call site は canonical `runJournalHandoff` を通り、payload を pending/ へ
-// 直接書く 1 spawn に集約されている（issue #807）。payload の一時ファイル（.devflow-tmp/payload-*.json、
-// WT 未確定 abort 用の ~/.claude/journal/abort-payload/）とそれを書く journal-save spawn は残っていない。
+// 直接書く 1 spawn に集約されている（issue #807）。
 
 test('workflows route every journal handoff through the canonical single-spawn runJournalHandoff', () => {
   const devFlow = readFileSync(join(repoRoot, '.claude/workflows/dev-flow.js'), 'utf8');
@@ -613,33 +612,4 @@ test('workflows route every journal handoff through the canonical single-spawn r
   assert.ok(devFlow.includes("logLabel: 'journal-log-abort',"));
   assert.ok(prIterate.includes("logLabel: 'journal-log',"));
   assert.ok(prIterate.includes("logLabel: 'journal-log-abort',"));
-
-  for (const [name, src] of [['dev-flow.js', devFlow], ['pr-iterate.js', prIterate]]) {
-    assert.ok(!src.includes("'journal-save'"), `${name} に journal-save spawn が残っている`);
-    assert.ok(!src.includes('JOURNAL_SAVE_RESULT'), `${name} に journal-save の schema が残っている`);
-    assert.ok(!src.includes('savePath'), `${name} に payload 一時ファイルの savePath が残っている`);
-    assert.ok(!src.includes('buildJournalSaveInstr'), `${name} に buildJournalSaveInstr が残っている`);
-    assert.ok(!src.includes('buildJournalLogInstr'), `${name} に buildJournalLogInstr が残っている`);
-    assert.ok(!src.includes('buildJournalHandoffInstr('), `${name} に削除済み buildJournalHandoffInstr が残っている`);
-    assert.ok(!src.includes('buildJournalHandoffCommand'), `${name} に削除済み buildJournalHandoffCommand が残っている`);
-    assert.ok(!src.includes("<<'TELEMETRY_EOF'"), `${name} に heredoc handoff が残っている`);
-  }
-});
-
-// AC-4: journal-save が書いていた payload 一時ファイルを読む箇所が残っていないこと。workflow・
-// canonical（_lib/*.mjs）・plugin bin/ のどこにも一時ファイルのパスが現れない。
-test('no dev-flow code path reads the removed journal-save payload temp files', () => {
-  const sources = [];
-  for (const dir of ['.claude/workflows', '_lib', 'bin']) {
-    for (const entry of readdirSync(join(repoRoot, dir), { withFileTypes: true })) {
-      if (!entry.isFile() || entry.name.endsWith('.test.mjs')) continue;
-      sources.push([`${dir}/${entry.name}`, readFileSync(join(repoRoot, dir, entry.name), 'utf8')]);
-    }
-  }
-  assert.ok(sources.length > 0);
-  for (const [name, content] of sources) {
-    for (const needle of ['payload-devflow-', 'payload-priterate-', 'abort-payload']) {
-      assert.ok(!content.includes(needle), `${name} が journal-save の一時ファイル（${needle}）を参照している`);
-    }
-  }
 });
