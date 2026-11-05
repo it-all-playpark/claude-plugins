@@ -305,7 +305,7 @@ function handoffPayload(prompt) {
 const PUSH_REASON = "error: failed to push some refs to 'github.com:o/r.git'";
 const PR_PUSH_FAILED = {
   pr_url: '', pr_number: 0, committed: true, head_sha: 'b'.repeat(40),
-  failed_step: 'push', failure_reason: PUSH_REASON, push_header: 'pr-push: exit=1 log=/tmp/wt/.devflow-tmp/push-output.log', epoch: 1300,
+  failed_step: 'push', failure_reason: '', push_result: { status: 'failed', exit_code: 1, log: '/tmp/wt/.devflow-tmp/push-output.log', tail: PUSH_REASON }, epoch: 1300,
 };
 
 test('[abort-telemetry] (8) PR phase 失敗: throw せず、返り値に error_category / failed_step / failure_reason / committed / head_sha / branch / phase_durations / shape / eval_verdict が載る', async () => {

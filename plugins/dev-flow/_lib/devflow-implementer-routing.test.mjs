@@ -370,7 +370,7 @@ test('[implementer] PR phase 失敗 (#682/#823): failure handoff の error_categ
 test('[implementer] PR push 失敗 (#819/#823): pr#1 が failed_step:push を返すと、返り値の push_log と failure handoff の error_msg に push log のパスが載り、pr#1 の prompt は同じパスを pr-push に渡す', async () => {
   const reason = '❌ Pre-push checks failed\nerror: failed to push some refs to \'github.com:o/r.git\'';
   const { calls, workflowCalls, error, result } = await runStandardWithWorkflowCapture({
-    'pr#1': { pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: reason, push_header: 'pr-push: exit=1 log=/tmp/wt/.devflow-tmp/push-output.log' },
+    'pr#1': { pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: '', push_result: { status: 'failed', exit_code: 1, log: '/tmp/wt/.devflow-tmp/push-output.log', tail: reason } },
   });
   assert.equal(error, null, `push 失敗応答で run が throw した: ${error?.message}`);
   const pushLog = '/tmp/wt/.devflow-tmp/push-output.log';
@@ -379,7 +379,7 @@ test('[implementer] PR push 失敗 (#819/#823): pr#1 が failed_step:push を返
   assert.ok(result.issue_comment.includes(pushLog), `issue_comment に push log のパスが無い:\n${result.issue_comment}`);
   assert.equal(workflowCalls.length, 0, 'push 失敗後に nested pr-iterate が呼ばれた');
   const pr = calls.find((c) => c.label === 'pr#1');
-  assert.ok(pr.prompt.includes(`3. \`pr-push ${pushLog}\``), `pr#1 の prompt が同じ push log を pr-push に渡していない:\n${pr.prompt.slice(0, 400)}`);
+  assert.ok(pr.prompt.includes(`3. \`pr-push start ${pushLog}\``), `pr#1 の prompt が同じ push log を pr-push に渡していない:\n${pr.prompt.slice(0, 400)}`);
   const save = calls.find((c) => c.label === 'journal-log-failure');
   const payload = parseJournalHandoffPayload(save.prompt);
   assert.ok(payload.error_msg.includes(`step: push、reason: ${reason}、push 出力全文: ${pushLog}）`), `failure handoff の error_msg に push log のパスが無い: ${payload.error_msg}`);
