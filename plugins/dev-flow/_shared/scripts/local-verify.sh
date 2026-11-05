@@ -26,9 +26,9 @@
 # --config-pct で渡す）。
 #
 # プロセスモデル:
-#   別の Bash 呼び出しからは kill できない（sandbox が別実体への signal を EPERM にする）ので、start は
-#   detached な supervisor を 1 本起こし、DB の確保・command の起動・停止・DB の削除はすべて supervisor が行う。
-#   止めるときは state dir に stop file を置く。DB の DELETE は supervisor の EXIT trap で必ず呼ぶ
+#   切り離し実行（detached supervisor・状態ファイル・上限時間・stop・wait）は _lib/scripts/bg-job.sh が持ち、ここは
+#   宣言の読み込み・DB の確保と削除・環境変数・expect_paths を hook で載せる。DB の確保と削除も supervisor が行う。
+#   DB の DELETE は supervisor の EXIT trap で必ず呼ぶ
 #   — stop が呼ばれずに command が終わっても、timeout でも、supervisor が TERM / INT で止められても消す。
 #
 # 出力契約: start / wait / stop は常に exit 0 + stdout に JSON 1 行。usage error のみ exit 2。
@@ -49,51 +49,22 @@
 set -uo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+# shellcheck source=../../_lib/scripts/bg-job.sh
+source "$(dirname "$SELF")/../../_lib/scripts/bg-job.sh"
+BG_JOB_NAME=local-verify
+BG_JOB_SELF="$SELF"
+BG_JOB_POLL_SEC="${LOCAL_VERIFY_POLL_SEC:-1}"
 BROKER="${LOCAL_VERIFY_PG_BROKER:-pg-broker}"
-POLL="${LOCAL_VERIFY_POLL_SEC:-1}"
-STOP_GRACE_SEC=10
-# wait が返す log の末尾（dev-implementer への差し戻しに添える）。行数と文字数の両方で切る。
-TAIL_LINES=60
-TAIL_BYTES=4000
 
 usage() { echo "local-verify: $1" >&2; exit 2; }
 
-now() { date +%s; }
-
-# jq で組んだ JSON を atomic に書く（読み手が書きかけを読まないように）
-write_json() {
-    local path="$1"; shift
-    local tmp="$path.$$.tmp"
-    jq -n "$@" > "$tmp" && mv "$tmp" "$path"
-}
-
-read_field() { jq -r "$2 // empty" "$1" 2>/dev/null; }
-
-# 別 sandbox 実体のプロセスへの kill -0 は EPERM になる。EPERM は「存在する」と読む。
-is_alive() {
-    local pid="$1" err
-    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-    err="$(kill -0 "$pid" 2>&1)" && return 0
-    [[ "$err" == *"not permitted"* ]]
-}
-
 paths() {
-    STATE_DIR="$1"
-    SPEC="$STATE_DIR/spec.json"
-    STATE="$STATE_DIR/state.json"
-    RESULT="$STATE_DIR/result.json"
-    DB_DELETED="$STATE_DIR/db-deleted.json"
-    STOP_FILE="$STATE_DIR/stop"
+    bg_job_paths "$1"
+    DB_DELETED="$BG_JOB_STATE_DIR/db-deleted.json"
+    BROKER_CREATE_OUT="$BG_JOB_STATE_DIR/broker-create.out"
+    BROKER_CREATE_ERR="$BG_JOB_STATE_DIR/broker-create.err"
     # command を起こす直前に作る印。expect_paths がこれより古ければ、その実行で作られた・更新されたものではない
-    CMD_STARTED="$STATE_DIR/command-started"
-    LOG_DIR="$STATE_DIR/logs"
-    CMD_LOG="$LOG_DIR/command.log"
-    SUP_LOG="$LOG_DIR/supervisor.log"
-}
-
-log_tail() {
-    [[ -f "$CMD_LOG" ]] || { printf ''; return; }
-    tail -n "$TAIL_LINES" "$CMD_LOG" | tail -c "$TAIL_BYTES"
+    CMD_STARTED="$BG_JOB_STATE_DIR/command-started"
 }
 
 # ---------------------------------------------------------------------------
@@ -131,24 +102,16 @@ load_config() {
         elif (.timeout_seconds | type) != "number" or .timeout_seconds <= 0 or (.timeout_seconds | floor) != .timeout_seconds then "timeout_seconds が正の整数でない"
         else empty end' <<<"$raw")"
     [[ -z "$problem" ]] || { echo "local_verify の宣言が不正: $problem"; return 1; }
-    write_json "$SPEC" --arg worktree "$worktree" --argjson cfg "$raw" \
-        '{worktree: $worktree, command: $cfg.command, engine: $cfg.db.engine, version: $cfg.db.version, env: $cfg.env, timeout_seconds: $cfg.timeout_seconds, expect_paths: ($cfg.expect_paths // [])}'
+    bg_job_write_json "$BG_JOB_SPEC" --arg cwd "$worktree" --argjson cfg "$raw" \
+        '{cwd: $cwd, command: $cfg.command, engine: $cfg.db.engine, version: $cfg.db.version, env: $cfg.env, timeout_seconds: $cfg.timeout_seconds, expect_paths: ($cfg.expect_paths // [])}'
 }
 
 # ---------------------------------------------------------------------------
-# supervise（detached。DB の確保 → command の実行 → 停止 → DB の削除）
+# bg-job の hook（DB の確保 → command の環境変数 → expect_paths → DB の削除）
 # ---------------------------------------------------------------------------
 
 DB_ID=''
-CMD_PID=''
-
-set_phase() {
-    local phase="$1"; shift
-    local prev='{}'
-    [[ -f "$STATE" ]] && prev="$(cat "$STATE")"
-    write_json "$STATE" --argjson prev "$prev" --arg phase "$phase" --argjson pid "$$" "$@" \
-        '$prev + {phase: $phase, supervisor_pid: $pid} + ($ARGS.named | del(.prev, .phase, .pid))'
-}
+DB_URL=''
 
 # DB を消す。EXIT trap と正常経路の両方から呼ばれるので 1 回だけ実行する。
 delete_db() {
@@ -157,241 +120,102 @@ delete_db() {
     DB_ID=''
     out="$("$BROKER" delete "$id" 2>&1)"; rc=$?
     if (( rc == 0 )); then
-        write_json "$DB_DELETED" --arg id "$id" '{id: $id, ok: true}'
+        bg_job_write_json "$DB_DELETED" --arg id "$id" '{id: $id, ok: true}'
     else
-        write_json "$DB_DELETED" --arg id "$id" --arg error "$out" '{id: $id, ok: false, error: $error}'
+        bg_job_write_json "$DB_DELETED" --arg id "$id" --arg error "$out" '{id: $id, ok: false, error: $error}'
     fi
 }
 
-kill_command() {
-    [[ -n "$CMD_PID" ]] || return 0
-    kill -TERM -- "-$CMD_PID" 2>/dev/null || kill -TERM "$CMD_PID" 2>/dev/null
-    local until=$(( $(now) + STOP_GRACE_SEC ))
-    while kill -0 "$CMD_PID" 2>/dev/null && (( $(now) < until )); do sleep "$POLL"; done
-    kill -KILL -- "-$CMD_PID" 2>/dev/null
-    kill -KILL "$CMD_PID" 2>/dev/null
-    return 0
-}
-
-on_exit() {
-    kill_command
-    # pg-broker create の途中で TERM を受けると、create が返った後・DB_ID を代入する前に trap が走る。
-    # create の応答は file に残しているので、そこから id を拾って消す。
-    if [[ -z "$DB_ID" && ! -f "$DB_DELETED" ]]; then
-        DB_ID="$(jq -r '.id // empty' "$STATE_DIR/broker-create.out" 2>/dev/null)"
-    fi
-    delete_db
-    [[ -f "$RESULT" ]] || write_json "$RESULT" '{status: "stopped", exit_code: null}'
-    set_phase done
-}
-
-supervise() {
-    trap on_exit EXIT
-    trap 'exit 143' TERM
-    trap 'exit 130' INT
-    trap '' HUP  # 起動元の shell が終わっても生き続ける
-
-    local worktree cmd engine version env_name timeout
-    worktree="$(read_field "$SPEC" .worktree)"
-    cmd="$(read_field "$SPEC" .command)"
-    engine="$(read_field "$SPEC" .engine)"
-    version="$(read_field "$SPEC" .version)"
-    env_name="$(read_field "$SPEC" .env)"
-    timeout="$(read_field "$SPEC" .timeout_seconds)"
-
-    local out rc reason='' url=''
+bg_job_hook_prepare() {
+    local version out rc reason
     # db の無い宣言は DB を確保せず、env も渡さずに command を実行する
-    if [[ -n "$engine" ]]; then
-        set_phase creating
+    if [[ -n "$(bg_job_read_field "$BG_JOB_SPEC" .engine)" ]]; then
+        version="$(bg_job_read_field "$BG_JOB_SPEC" .version)"
 
         # broker に届かない（未インストール・停止中）・DB を確保できないときは unavailable で終える。
         # 呼び出し側（dev-flow）はこれを fail-open にして CI の check の結果で判定する。
-        "$BROKER" create --version "$version" >"$STATE_DIR/broker-create.out" 2>"$STATE_DIR/broker-create.err"; rc=$?
-        out="$(cat "$STATE_DIR/broker-create.out" 2>/dev/null)"
+        "$BROKER" create --version "$version" >"$BROKER_CREATE_OUT" 2>"$BROKER_CREATE_ERR"; rc=$?
+        out="$(cat "$BROKER_CREATE_OUT" 2>/dev/null)"
         if (( rc != 0 )); then
-            reason="$(tail -n 3 "$STATE_DIR/broker-create.err" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
+            reason="$(tail -n 3 "$BROKER_CREATE_ERR" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
             [[ -n "$reason" ]] || reason="pg-broker create が exit $rc"
-            write_json "$RESULT" --arg reason "$reason" '{status: "unavailable", exit_code: null, reason: $reason}'
-            set_phase unavailable --arg reason "$reason"
-            exit 0
+            bg_job_abort unavailable "$reason"
         fi
         DB_ID="$(jq -r '.id // empty' <<<"$out" 2>/dev/null)"
-        url="$(jq -r '.database_url // empty' <<<"$out" 2>/dev/null)"
-        if [[ -z "$DB_ID" || -z "$url" ]]; then
-            reason="pg-broker create の応答に id / database_url が無い: ${out:0:200}"
-            write_json "$RESULT" --arg reason "$reason" '{status: "unavailable", exit_code: null, reason: $reason}'
-            set_phase unavailable --arg reason "$reason"
-            exit 0
+        DB_URL="$(jq -r '.database_url // empty' <<<"$out" 2>/dev/null)"
+        if [[ -z "$DB_ID" || -z "$DB_URL" ]]; then
+            bg_job_abort unavailable "pg-broker create の応答に id / database_url が無い: ${out:0:200}"
         fi
-        set_phase running --arg db_id "$DB_ID" --argjson started_at "$(now)"
-    else
-        set_phase running --argjson started_at "$(now)"
+        bg_job_set_phase preparing --arg db_id "$DB_ID"
     fi
-
     : >"$CMD_STARTED"
-    # command は自分の process group で起こす（止めるときに孫まで届くように）
-    set -m
-    if [[ -n "$engine" ]]; then
-        ( cd "$worktree" && export "$env_name=$url" && exec bash -c "$cmd" ) </dev/null >>"$CMD_LOG" 2>&1 &
-    else
-        ( cd "$worktree" && exec bash -c "$cmd" ) </dev/null >>"$CMD_LOG" 2>&1 &
-    fi
-    CMD_PID=$!
-    set +m
+}
 
-    local deadline=$(( $(now) + timeout )) stop_reason=''
-    while kill -0 "$CMD_PID" 2>/dev/null; do
-        if [[ -e "$STOP_FILE" ]]; then stop_reason=stopped; break; fi
-        if (( $(now) >= deadline )); then stop_reason=timeout; break; fi
-        sleep "$POLL"
-    done
-    if [[ -n "$stop_reason" ]]; then
-        kill_command
-        echo "[local-verify] command を止めた（${stop_reason}）" >>"$CMD_LOG"
-    fi
-    wait "$CMD_PID" 2>/dev/null; rc=$?
-    CMD_PID=''
-    # expect_paths: exit 0 でも、宣言したファイルが終了後の worktree に無い・command の開始より前から更新されていなければ
-    # failed（理由は log にも残し、log_tail で返す）。mtime が開始の印と同じものはその実行の更新と読む（秒精度の fs で
-    # 開始と同じ秒に書かれた生成物を古いと誤判定しないため）
-    local missing='' stale='' p paths_list
-    if [[ -z "$stop_reason" ]] && (( rc == 0 )); then
-        paths_list="$(jq -r '.expect_paths[]?' "$SPEC" 2>/dev/null)"
-        while IFS= read -r p; do
-            [[ -n "$p" ]] || continue
-            if [[ ! -e "$worktree/$p" ]]; then missing+="${missing:+, }$p"
-            elif [[ "$CMD_STARTED" -nt "$worktree/$p" ]]; then stale+="${stale:+, }$p"
-            fi
-        done <<<"$paths_list"
-    fi
-    local status
-    if [[ -n "$stop_reason" ]]; then status="$stop_reason"
-    elif [[ -n "$missing" || -n "$stale" ]]; then
-        status=failed
-        reason="command は exit 0 だが"
-        [[ -z "$missing" ]] || reason+=" expect_paths が worktree に無い: $missing"
-        [[ -z "$missing" || -z "$stale" ]] || reason+=" /"
-        [[ -z "$stale" ]] || reason+=" expect_paths がこの実行で作られて・更新されていない（command の開始より前のまま）: $stale"
-        echo "[local-verify] $reason" >>"$CMD_LOG"
-    elif (( rc == 0 )); then status=passed
-    else status=failed
+bg_job_hook_command_env() {
+    [[ -z "$DB_URL" ]] || export "$(bg_job_read_field "$BG_JOB_SPEC" .env)=$DB_URL"
+}
+
+# expect_paths: exit 0 でも、宣言したファイルが終了後の worktree に無い・command の開始より前から更新されていなければ
+# failed（理由は log にも残し、log_tail で返す）。mtime が開始の印と同じものはその実行の更新と読む（秒精度の fs で
+# 開始と同じ秒に書かれた生成物を古いと誤判定しないため）
+bg_job_hook_check_success() {
+    local worktree missing='' stale='' p paths_list
+    worktree="$(bg_job_read_field "$BG_JOB_SPEC" .cwd)"
+    paths_list="$(jq -r '.expect_paths[]?' "$BG_JOB_SPEC" 2>/dev/null)"
+    while IFS= read -r p; do
+        [[ -n "$p" ]] || continue
+        if [[ ! -e "$worktree/$p" ]]; then missing+="${missing:+, }$p"
+        elif [[ "$CMD_STARTED" -nt "$worktree/$p" ]]; then stale+="${stale:+, }$p"
+        fi
+    done <<<"$paths_list"
+    [[ -n "$missing" || -n "$stale" ]] || return 0
+    local reason="command は exit 0 だが"
+    [[ -z "$missing" ]] || reason+=" expect_paths が worktree に無い: $missing"
+    [[ -z "$missing" || -z "$stale" ]] || reason+=" /"
+    [[ -z "$stale" ]] || reason+=" expect_paths がこの実行で作られて・更新されていない（command の開始より前のまま）: $stale"
+    echo "$reason"
+}
+
+bg_job_hook_cleanup() {
+    # pg-broker create の途中で TERM を受けると、create が返った後・DB_ID を代入する前に trap が走る。
+    # create の応答は file に残しているので、そこから id を拾って消す。
+    if [[ -z "$DB_ID" && ! -f "$DB_DELETED" ]]; then
+        DB_ID="$(jq -r '.id // empty' "$BROKER_CREATE_OUT" 2>/dev/null)"
     fi
     delete_db
-    write_json "$RESULT" --arg status "$status" --argjson code "$rc" --arg reason "$reason" \
-        '{status: $status, exit_code: $code} + (if $reason != "" then {reason: $reason} else {} end)'
-    trap - EXIT
-    set_phase done
 }
 
-# ---------------------------------------------------------------------------
-# start / wait / stop
-# ---------------------------------------------------------------------------
-
-emit() { jq -nc "$@"; }
-
-# result.json があれば wait の最終形を出して 0、無ければ 1。
-emit_result() {
-    [[ -f "$RESULT" ]] || return 1
-    local tail_text deleted='null'
-    tail_text="$(log_tail)"
-    [[ -f "$DB_DELETED" ]] && deleted="$(jq -c '.ok' "$DB_DELETED" 2>/dev/null || echo null)"
-    emit --argjson r "$(cat "$RESULT")" --arg log_path "$CMD_LOG" --arg log_tail "$tail_text" --argjson db_deleted "$deleted" \
-        '{ok: ($r.status == "passed"), status: $r.status, exit_code: $r.exit_code, log_path: $log_path, log_tail: $log_tail, db_deleted: $db_deleted}
-         + (if $r.reason then {reason: $r.reason} else {} end)'
-    return 0
+# supervisor が KILL 等で trap を走らせずに居なくなったときは、stop がここで DB を消す
+bg_job_hook_orphan_cleanup() {
+    [[ ! -f "$DB_DELETED" ]] || return 0
+    DB_ID="$(bg_job_read_field "$BG_JOB_STATE" .db_id)"
+    delete_db
 }
 
-cmd_stop() {
-    local timeout_sec="$1"
-    [[ -f "$STATE" ]] || { emit '{ok: true, stopped: false, was_running: false}'; return; }
-    local pid phase was_running=false
-    pid="$(read_field "$STATE" .supervisor_pid)"
-    phase="$(read_field "$STATE" .phase)"
-    if is_alive "$pid" && [[ "$phase" != done ]]; then
-        was_running=true
-        date +%s > "$STOP_FILE"
-        local until=$(( $(now) + timeout_sec ))
-        while is_alive "$pid" && [[ "$(read_field "$STATE" .phase)" != done ]] && (( $(now) < until )); do sleep "$POLL"; done
-    fi
-    local alive=false
-    is_alive "$pid" && [[ "$(read_field "$STATE" .phase)" != done ]] && alive=true
-    # supervisor が KILL 等で trap を走らせずに居なくなったときは、ここで DB を消す
-    if [[ "$alive" == false && ! -f "$DB_DELETED" ]]; then
-        DB_ID="$(read_field "$STATE" .db_id)"
-        delete_db
-    fi
+bg_job_hook_extra_fields() {
     local deleted='null'
     [[ -f "$DB_DELETED" ]] && deleted="$(jq -c '.ok' "$DB_DELETED" 2>/dev/null || echo null)"
-    if [[ "$alive" == true ]]; then
-        emit --argjson was "$was_running" --arg error "supervisor (pid $pid) が ${timeout_sec}s 以内に止まらなかった。stop file は残すので timeout_seconds で止まる" \
-            '{ok: false, stopped: false, was_running: $was, db_deleted: null, error: $error}'
-    else
-        emit --argjson was "$was_running" --argjson db_deleted "$deleted" \
-            '{ok: true, stopped: $was, was_running: $was, db_deleted: $db_deleted}'
-    fi
+    bg_job_emit --argjson db_deleted "$deleted" '{db_deleted: $db_deleted}'
 }
 
-cmd_wait() {
-    local wait_sec="$1"
-    [[ -f "$SPEC" ]] || { emit --arg error 'local-verify が起動していない（先に start する）' '{ok: false, status: "error", error: $error}'; return; }
-    local until=$(( $(now) + wait_sec )) pid
-    while :; do
-        emit_result && return
-        pid="$(read_field "$STATE" .supervisor_pid)"
-        if [[ -n "$pid" ]] && ! is_alive "$pid"; then
-            emit_result && return
-            emit --arg error 'supervisor が結果を残さず終了した' --arg log_path "$SUP_LOG" '{ok: false, status: "error", error: $error, log_path: $log_path}'
-            return
-        fi
-        if (( $(now) >= until )); then
-            emit --arg log_path "$CMD_LOG" --arg log_tail "$(log_tail)" '{ok: false, status: "running", log_path: $log_path, log_tail: $log_tail}'
-            return
-        fi
-        sleep "$POLL"
-    done
-}
+# ---------------------------------------------------------------------------
+# start
+# ---------------------------------------------------------------------------
 
 cmd_start() {
     local worktree="$1" config_path="$2" wait_sec="$3" config_pct="$4"
-    case "$worktree/" in
-        "${STATE_DIR%/}/"*) emit --arg error "--state-dir ($STATE_DIR) が worktree と同じかその親になっている" '{ok: false, status: "error", error: $error}'; return ;;
-    esac
     # 前回 run の残り（同じ state dir）を先に止める
-    [[ -f "$STATE" ]] && cmd_stop 30 >/dev/null
-    rm -rf "$STATE_DIR"
-    mkdir -p "$LOG_DIR"
+    bg_job_reset "$worktree" || return 0
     local problem
     if ! problem="$(load_config "$worktree" "$config_path" "$config_pct")"; then
-        emit --arg error "$problem" '{ok: false, status: "error", error: $error}'
+        bg_job_emit --arg error "$problem" '{ok: false, status: "error", error: $error}'
         return
     fi
-    if [[ -n "$(read_field "$SPEC" .engine)" ]] && ! command -v "$BROKER" >/dev/null 2>&1; then
-        emit --arg reason "pg-broker が PATH に無い（${BROKER}）" '{ok: false, status: "unavailable", reason: $reason}'
+    if [[ -n "$(bg_job_read_field "$BG_JOB_SPEC" .engine)" ]] && ! command -v "$BROKER" >/dev/null 2>&1; then
+        bg_job_emit --arg reason "pg-broker が PATH に無い（${BROKER}）" '{ok: false, status: "unavailable", reason: $reason}'
         return
     fi
-    set -m
-    nohup bash "$SELF" supervise --state-dir "$STATE_DIR" </dev/null >>"$SUP_LOG" 2>&1 &
-    local sup=$!
-    set +m
-    disown "$sup" 2>/dev/null
-
-    # DB の確保（pg-broker create）が終わるまで待つ。終わらなければ running を返し、残りは wait が待つ。
-    local until=$(( $(now) + wait_sec )) phase
-    while :; do
-        phase="$(read_field "$STATE" .phase)"
-        case "$phase" in
-            running) emit --arg log_path "$CMD_LOG" '{ok: true, status: "running", log_path: $log_path}'; return ;;
-            unavailable) emit --arg reason "$(read_field "$STATE" .reason)" '{ok: false, status: "unavailable", reason: $reason}'; return ;;
-            done) emit_result || emit --arg error 'supervisor が結果を残さず終了した' '{ok: false, status: "error", error: $error}'; return ;;
-        esac
-        if ! is_alive "$sup" && [[ "$(read_field "$STATE" .phase)" != done ]]; then
-            emit_result && return
-            emit --arg error 'supervisor が起動直後に終了した' --arg log_path "$SUP_LOG" '{ok: false, status: "error", error: $error, log_path: $log_path}'
-            return
-        fi
-        if (( $(now) >= until )); then emit --arg log_path "$CMD_LOG" '{ok: true, status: "running", log_path: $log_path}'; return; fi
-        sleep "$POLL"
-    done
+    bg_job_start "$wait_sec"
 }
 
 # ---------------------------------------------------------------------------
@@ -402,7 +226,7 @@ main() {
     local sub="${1:-}"
     [[ -n "$sub" ]] || usage 'subcommand (start|wait|stop) required'
     shift
-    local state_dir='' worktree='' config_path='' config_pct='' wait_sec='' timeout_sec=60
+    local state_dir='' worktree='' config_path='' config_pct='' wait_sec='' timeout_sec=''
     while (( $# > 0 )); do
         (( $# >= 2 )) || usage "Unknown or incomplete option: $1"
         case "$1" in
@@ -418,17 +242,17 @@ main() {
     done
     [[ -n "$state_dir" ]] || usage '--state-dir is required'
     [[ -z "$wait_sec" || "$wait_sec" =~ ^[0-9]+$ ]] || usage "--wait-sec must be a non-negative integer, got '$wait_sec'"
-    [[ "$timeout_sec" =~ ^[0-9]+$ ]] || usage "--timeout-sec must be a non-negative integer, got '$timeout_sec'"
+    [[ -z "$timeout_sec" || "$timeout_sec" =~ ^[0-9]+$ ]] || usage "--timeout-sec must be a non-negative integer, got '$timeout_sec'"
     mkdir -p "$state_dir" 2>/dev/null
     paths "$(cd "$state_dir" 2>/dev/null && pwd || echo "$state_dir")"
 
     case "$sub" in
-        supervise) supervise ;;
+        supervise) bg_job_supervise ;;
         start)
             [[ -n "$worktree" ]] || usage '--worktree is required'
-            cmd_start "$(cd "$worktree" 2>/dev/null && pwd || echo "$worktree")" "$config_path" "${wait_sec:-300}" "$config_pct" ;;
-        wait) cmd_wait "${wait_sec:-480}" ;;
-        stop) cmd_stop "$timeout_sec" ;;
+            cmd_start "$(cd "$worktree" 2>/dev/null && pwd || echo "$worktree")" "$config_path" "$wait_sec" "$config_pct" ;;
+        wait) bg_job_wait "$wait_sec" ;;
+        stop) bg_job_stop "$timeout_sec" ;;
         *) usage "unknown subcommand: $sub" ;;
     esac
 }
