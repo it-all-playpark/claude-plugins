@@ -73,7 +73,10 @@ const EXPECTED_DEV_FLOW = {
   'local-verify-start#*': RW,
   'local-verify-wait#*': RW,
   'local-verify-stop#*': RW,
+  // red→green の実証（issue #1226。redgreen は start の spawn）。テストを実行するので sandbox 内で動かす
   'redgreen': RW,
+  'redgreen-wait#*': RW,
+  'redgreen-stop': RW,
   'reconcile-sync': RW,
   'journal-log': RW,
   'journal-log-failure': RW,
@@ -198,6 +201,23 @@ test('[exec-proxy-routing] dev-flow.js: local-verify は bare 名 `local-verify 
   for (const [i, c] of lv.entries()) {
     assert.equal(c.agentType, RW, c.label);
     // 最終行がコマンドそのもの（先頭トークンが bare 名。bash / cd / 環境変数代入の前置や絶対パスを含まない）
+    assert.ok(c.prompt.endsWith(forms[i]), `${c.label} の起動形が bare 名の単文でない:\n${c.prompt}`);
+  }
+});
+
+// redgreen-verify の起動形: bin/ の bare 名を先頭トークンにした start / wait / stop の単文（issue #1226）。
+test('[exec-proxy-routing] dev-flow.js: redgreen-verify は bare 名 `redgreen-verify start|wait|stop` で dev-runner-haiku から起動する', async () => {
+  const calls = await runDevFlowScenario('redgreen-stop');
+  const rg = calls.filter((c) => c.label.startsWith('redgreen'));
+  assert.deepEqual(rg.map((c) => c.label), ['redgreen', 'redgreen-wait#1', 'redgreen-stop']);
+  const stateDir = '/tmp/wt/.devflow-tmp/redgreen-verify';
+  const forms = [
+    `\nredgreen-verify start --state-dir ${stateDir} /tmp/wt 't.test.mjs' 'src/x.ts'`,
+    `\nredgreen-verify wait --state-dir ${stateDir} --wait-sec 450`,
+    `\nredgreen-verify stop --state-dir ${stateDir}`,
+  ];
+  for (const [i, c] of rg.entries()) {
+    assert.equal(c.agentType, RW, c.label);
     assert.ok(c.prompt.endsWith(forms[i]), `${c.label} の起動形が bare 名の単文でない:\n${c.prompt}`);
   }
 });

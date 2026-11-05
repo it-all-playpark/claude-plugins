@@ -148,20 +148,21 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - 差し戻しの上限は `EVAL_PASSES`（shape から決まる。上限 `EVAL_MAX`）、design 差し戻しは `DESIGN_REPLAN_MAX`、同じ topic の反復は
     `EVAL_STUCK` で stuck。既出の指摘を渡して蒸し返しを抑える
   - Validate と同じ tree の eval#N には Validate の結果と `run-tests` の各 script のログパス（`scripts[].log`。worktree の外）を渡す。
-    evaluator はログに載っている AC 関連テストファイルを再実行せずログの行を根拠にし、載っていないものだけを実行する
+    evaluator はログに載った AC 関連テストを再実行せずログの行を根拠にする
     （`validateResultPromptBlock`）。ログを根拠にできるのは realized diff が変更したファイルだけ（ログの中身はテストが
     自由に書けるので、変更していないファイルの結果は偽の行と区別できない）。tree が違う・ログか変更ファイルが無いときは
     AC 関連テストファイルを実行させる
   - agent AC の `satisfied:false` は gate_policy に依らず差し戻す（`AGENT_AC_REIMPL_MAX` まで延長）。human AC は差し戻さない。
     観測型 AC は redgreen-verify で red→green を実証して deterministic 昇格したときだけ checked（`demoteUnprovenObservationalAc`）。
     ci AC は evaluator に判定させない。実行環境に届かない理由の未達（`unreachable_env`）は人手 AC 待ちに数える
-  - redgreen-verify — AC のテストを実装を外した tree と戻した tree で走らせ、red→green なら AC を deterministic に昇格する
+  - redgreen-verify — AC のテストを実装を外した tree と戻した tree で走らせ、red→green なら AC を deterministic に昇格する。
+    `start` で切り離して `wait` を繰り返す（`_lib/bg-job-wait.mjs`）
   - 差し戻し後の PR 前再テストで green-fix が入った run は、その差分を evaluator に評価させ直す（`_lib/post-eval-recheck.mjs`）。
     テストを弱めた critical は `GF-RECHECK-*`（全 gate_policy で blocking。test green では解消しない）
 - **失敗の扱い**:
   - evaluator の null は throw（fail-closed。評価していない diff で PR に進まない）
   - stuck・上限到達は throw せず現状で PR へ進む（未解消の critical は Merge tier の HOLD と人のレビューが持つ）
-  - redgreen-verify の spawn 失敗・結果の欠落は inspection 据え置き（fail-safe。deterministic 昇格しない）
+  - redgreen-verify の `start` / `wait` の失敗・待機上限（`REDGREEN_WAIT_CAP_SEC`）・結果の欠落は `stop` して inspection 据え置き（fail-safe。deterministic 昇格しない）
   - post-eval の再評価で hash・evaluator の応答が取れなければ評価済み tree を進めず、PR 直前の `hash_mismatch`（HOLD）で人に返す（fail-safe）
 - **コード**: `execEvaluatePhase`・`execPostEvalValidate`・`recheckPostEvalGreenFix`（`.claude/workflows/dev-flow.js`）、`_lib/gate-policy.mjs`、
   `_lib/goal-ledger.mjs`、`_lib/evaluator-contract.mjs`、`_lib/redgreen-targets.mjs`、`_lib/stuck-detector.mjs`、`_lib/vdelta-transitions.mjs`
@@ -233,9 +234,8 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
     解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は test#final green を head sha に pin した
     evidence で checked にする（evaluator は fix 後に再実行されないため。`finalEvalBlockingResolutions`）。SEC seed・TESTSURF・AC-FINAL は LLM の判断で解消しない
   - Evaluate で red→green を実証していない観測型 AC に Final AC reconcile が `verified_by:'test'` と `test_files` / `impl_files` を返したら、
-    最終 tree で redgreen-verify（`redgreen-final`。impl は `origin/<base>` との merge-base まで戻す）を 1 spawn で実行し、red→green が成立して
-    vdelta が deny しなければ deterministic に昇格する（`finalRedgreenTargets`）。fix がテストを直した run を人手 AC 待ちにしないため。
-    inspection の観測型 AC と Evaluate で昇格済みの AC には spawn しない
+    最終 tree で redgreen-verify（`redgreen-final`。impl は `origin/<base>` との merge-base まで戻す）を `start` / `wait` で実行し、red→green が成立して
+    vdelta が deny しなければ deterministic に昇格する（`finalRedgreenTargets`）。fix がテストを直した run を人手 AC 待ちにしないため
   - test#final が green か no_tests なら、Final AC reconcile に test#final の `tests` / `green` と各 script のログパスを渡し、
     実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）
 - skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'` は `validate_test_red`（上と同じ再実行で開示）、
@@ -244,7 +244,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - 同期失敗・test の null・`tests:'error'` は `unavailable`（fail-safe → HOLD `final_reconcile_unavailable`）。
     flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）
   - Final AC reconcile の応答が検証に通らなければ `unavailable`（fail-closed → HOLD）
-  - `redgreen-final` の spawn 失敗（throw・null）・結果の欠落・red→green 不成立・vdelta の deny は昇格せず、観測型 AC は人手 AC 待ちのまま（fail-safe）
+  - `redgreen-final` の失敗（Evaluate と同じ + throw）・red→green 不成立・vdelta の deny は昇格せず、観測型 AC は人手 AC 待ちのまま（fail-safe）
   - changed-files の取得失敗は宣言外の再監査を skip（fail-open。test gate は維持）。PR 本文の AC checkbox の更新失敗も fail-open
 - **コード**: `phase('Final reconcile')`（`.claude/workflows/dev-flow.js`）、`_lib/final-test-rerun.mjs`、
   `_lib/final-ac-reconcile.mjs`（`finalEvalBlockingResolutions`・`finalRedgreenTargets`）、`_lib/redgreen-targets.mjs`、`_lib/post-eval-recheck.mjs`

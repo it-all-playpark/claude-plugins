@@ -2,9 +2,24 @@
 # redgreen-verify.sh: impl を退避して test が red→green に転じるか判定する。
 # untracked 新規ファイル・tracked-modified ファイルの両シナリオをカバーする。
 # 共有 stash スタックに触れない不変条件(G1/G2/G6)も pin する。
+# 判定のテストは $RGV(start → 終わるまで wait。stdout と exit は結果を返した呼び出しのもの)で 1 ショットに回し、
+# start / wait / stop そのものは N が見る。supervisor はバックグラウンドで残るので、start は fd 3 を閉じて呼ぶ
+# (bats が子の終了を待って止まらないように)。
 
 setup() {
   SCRIPT="$BATS_TEST_DIRNAME/redgreen-verify.sh"
+  STATE_DIR="$BATS_TEST_TMPDIR/state"
+  export REDGREEN_VERIFY_POLL_SEC=0.1
+  RGV="$BATS_TEST_TMPDIR/rgv.sh"
+  cat > "$RGV" <<EOF
+#!/usr/bin/env bash
+out="\$(bash '$SCRIPT' start --state-dir '$STATE_DIR' "\$@" 3>&-)"; rc=\$?
+while [ "\$(jq -r '.status // empty' <<< "\$out" 2>/dev/null)" = running ]; do
+  out="\$(bash '$SCRIPT' wait --state-dir '$STATE_DIR' --wait-sec 60)"; rc=\$?
+done
+printf '%s\n' "\$out"
+exit "\$rc"
+EOF
   REPO="$(mktemp -d)"
   cd "$REPO"
   git init -q && git config user.email t@t && git config user.name t
@@ -20,7 +35,10 @@ use_package_json() {
   echo "$1" > "$REPO/package.json"
   git -C "$REPO" add package.json && git -C "$REPO" commit -q -m "package.json"
 }
-teardown() { rm -rf "$REPO"; }
+teardown() {
+  bash "$SCRIPT" stop --state-dir "$STATE_DIR" --timeout-sec 15 >/dev/null 2>&1 3>&- || true
+  rm -rf "$REPO"
+}
 
 # --- helper: feature.test.mjs を生成 ---
 make_test() {
@@ -44,7 +62,7 @@ EOF
   echo "export const ok = true;" > "$REPO/impl.mjs"
   make_test
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"red":true'* ]]
   [[ "$output" == *'"green":true'* ]]
@@ -61,7 +79,7 @@ EOF
   echo "export const ok = true;" > "$REPO/impl.mjs"
   make_test
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"red":true'* ]]
   [[ "$output" == *'"green":true'* ]]
@@ -79,7 +97,7 @@ EOF
 @test "C: 存在しない untracked impl は exit 2" {
   make_test
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "nonexistent.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "nonexistent.mjs"
   [ "$status" -eq 2 ]
   [[ "$output" == *'impl file not found'* ]]
 }
@@ -89,14 +107,14 @@ EOF
 # -----------------------------------------------------------------------
 @test "非 test ファイル申告は exit 2(昇格拒否)" {
   echo "export const ok = true;" > "$REPO/impl.mjs"
-  run bash "$SCRIPT" "$REPO" "impl.mjs" "impl.mjs"
+  run bash "$RGV" "$REPO" "impl.mjs" "impl.mjs"
   [ "$status" -eq 2 ]
   [[ "$output" == *'non-test file'* ]]
 }
 
 @test "test と impl が同一ファイル(混在)は exit 2" {
   make_test
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "feature.test.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "feature.test.mjs"
   [ "$status" -eq 2 ]
 }
 
@@ -116,7 +134,7 @@ import assert from 'node:assert/strict';
 test('dummy', () => { assert.ok(true); });
 EOF
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "a/mod.mjs,b/mod.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "a/mod.mjs,b/mod.mjs"
   [ "$status" -eq 0 ]
 
   # 両ファイルが正しい内容で復元されていること
@@ -140,7 +158,7 @@ import assert from 'node:assert/strict';
 test('dummy', () => { assert.ok(true); });
 EOF
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "first.mjs,second.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "first.mjs,second.mjs"
   [ "$status" -eq 2 ]
   [[ "$output" == *'impl file not found'* ]]
 
@@ -182,7 +200,7 @@ use_vdelta_vitest() {
   use_vdelta_vitest
   make_mock_pm npx '{"comparability":"exact","verdict":"improved"}'
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.ts" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(printf '%s' "$output" | jq -c '.results[0].verdict')" = '{"comparability":"exact","verdict":"improved"}' ]
@@ -199,7 +217,7 @@ use_vdelta_vitest() {
   use_package_json '{"dependencies":{"vdelta":"^0.10.0"},"devDependencies":{"vitest":"^3.0.0"}}'
   : > "$REPO/pnpm-lock.yaml"
   make_mock_pm pnpm '{"comparability":"exact"}'
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.ts" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -c '.results[0].verdict')" = '{"comparability":"exact"}' ]
   [ "$(cat "$REPO/calls.log")" = "$(printf '%s\n' \
@@ -211,13 +229,13 @@ use_vdelta_vitest() {
 @test "F2: vdelta compare の非ゼロ exit / 不正 JSON は fail-open で verdict を載せず red→green は変わらない" {
   use_vdelta_vitest
   make_mock_pm npx ''
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.ts" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0] | has("verdict")')" = "false" ]
 
   make_mock_pm npx 'not-json'
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.ts" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0] | has("verdict")')" = "false" ]
@@ -230,7 +248,7 @@ use_vdelta_vitest() {
   echo "// feature test" > "$REPO/feature.test.ts"
   make_mock_pm npx '{"comparability":"exact"}'
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.ts" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0] | has("verdict")')" = "false" ]
@@ -244,7 +262,7 @@ use_vdelta_vitest() {
   echo "// feature test" > "$REPO/feature.test.ts"
   make_mock_pm npx '{"comparability":"exact"}'
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.ts" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0] | has("verdict")')" = "false" ]
@@ -268,7 +286,7 @@ use_vdelta_vitest() {
   } > "$REPO/feature.bats"
   make_mock_pm npx '{"comparability":"exact"}'
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.bats" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.bats" "impl.ts"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0] | has("verdict")')" = "false" ]
@@ -278,7 +296,7 @@ use_vdelta_vitest() {
 @test "F6: .claude/redgreen.conf を置いても読まれず結果も起動コマンドも変わらない" {
   use_vdelta_vitest
   make_mock_pm npx '{"comparability":"exact"}'
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.ts" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
   without_conf="$output"
   calls_without_conf="$(cat "$REPO/calls.log")"
@@ -290,7 +308,7 @@ use_vdelta_vitest() {
     echo "test_cmd=bash ./conf-cmd.sh"
     echo "verdict_cmd=bash ./conf-cmd.sh"
   } > "$REPO/.claude/redgreen.conf"
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.ts" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
   [ "$output" = "$without_conf" ]
   [ "$(cat "$REPO/calls.log")" = "$calls_without_conf" ]
@@ -314,7 +332,7 @@ use_vdelta_vitest() {
   before_n="$(git -C "$REPO" stash list | wc -l | tr -d ' ')"
   before_sha="$(git -C "$REPO" rev-parse 'stash@{0}')"
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"red":true'* ]]
   [[ "$output" == *'"green":true'* ]]
@@ -336,7 +354,7 @@ use_vdelta_vitest() {
   before_n="$(git -C "$REPO" stash list | wc -l | tr -d ' ')"
   before_sha="$(git -C "$REPO" rev-parse 'stash@{0}')"
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 2 ]
   [[ "$output" == *'"reason":"no impl changed vs HEAD'* ]]
   [ ! -f "$REPO/calls.log" ]
@@ -357,7 +375,7 @@ use_vdelta_vitest() {
   before_summary="$(git -C "$REPO" diff HEAD --summary)"
   [[ "$before_summary" == *"mode change"* ]]
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs,other.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs,other.mjs"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"red":true'* ]]
   [[ "$output" == *'"green":true'* ]]
@@ -372,7 +390,7 @@ use_vdelta_vitest() {
   git -C "$REPO" add impl.mjs
   make_test
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"red":true'* ]]
   [[ "$output" == *'"green":true'* ]]
@@ -390,7 +408,7 @@ use_vdelta_vitest() {
   make_test
   make_mock_pm npx '' impl.mjs
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 2 ]
   [[ "$output" == *'impl file not found: impl.mjs'* ]]
   [ ! -f "$REPO/calls.log" ]
@@ -404,7 +422,7 @@ use_vdelta_vitest() {
   echo "export const ok = true;" > "$REPO/impl.mjs"
   make_test
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs,gone.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs,gone.mjs"
   [ "$status" -eq 2 ]
   [[ "$output" == *'impl file not found: gone.mjs'* ]]
   [ -f "$REPO/impl.mjs" ]
@@ -435,7 +453,7 @@ EOF
   before_index="$(shasum "$REPO/.git/index")"
   : > "$REPO/.git/index.lock"
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   rm -f "$REPO/.git/index.lock"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"red":true'* ]]
@@ -470,7 +488,7 @@ EOF
   echo "// component test" > "$REPO/Component.test.tsx"
   make_mock_npx
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.ts,Component.test.tsx" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts,Component.test.tsx" "impl.ts"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"red":true'* ]]
   [[ "$output" == *'"green":true'* ]]
@@ -494,7 +512,7 @@ EOF
   echo "// feature test" > "$REPO/feature.test.ts"
   make_mock_npx impl.mjs
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.mjs,feature.bats,feature.test.ts" "impl.mjs"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs,feature.bats,feature.test.ts" "impl.mjs"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"red":true'* ]]
   [[ "$output" == *'"green":true'* ]]
@@ -511,7 +529,7 @@ EOF
   echo "// spec test" > "$REPO/feature.spec.ts"
   make_mock_npx
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.spec.ts" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.spec.ts" "impl.ts"
   [ "$status" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "non-test file declared (ランナー未検出): feature.spec.ts" ]
   [ ! -f "$REPO/npx-calls.log" ]
@@ -523,7 +541,7 @@ EOF
   echo "// feature test" > "$REPO/feature.test.ts"
   make_mock_npx
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.ts" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(cat "$REPO/npx-calls.log")" = "$(printf 'jest feature.test.ts\njest feature.test.ts')" ]
@@ -533,7 +551,7 @@ EOF
   : > "$REPO/pnpm-lock.yaml"
   printf '#!/usr/bin/env bash\necho "pnpm $*" >> "%s/pnpm-calls.log"\n[ -f "%s/impl.ts" ]\n' "$REPO" "$REPO" > "$REPO/mockbin/pnpm"
   chmod +x "$REPO/mockbin/pnpm"
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.ts" "impl.ts"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(grep -c '^pnpm exec jest feature.test.ts$' "$REPO/pnpm-calls.log")" -eq 2 ]
@@ -560,7 +578,7 @@ make_feature_bats() {
   echo "export const ok = true;" > "$REPO/impl.mjs"
   make_feature_bats
 
-  run bash "$SCRIPT" "$REPO" "feature.bats" "impl.mjs"
+  run bash "$RGV" "$REPO" "feature.bats" "impl.mjs"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"red":true'* ]]
   [[ "$output" == *'"green":true'* ]]
@@ -574,7 +592,7 @@ make_feature_bats() {
   git -C "$REPO" add feature.bats && git -C "$REPO" commit -q -m "add feature.bats"
   printf '%s\n' '# modified in worktree' >> "$REPO/feature.bats"
 
-  run bash "$SCRIPT" "$REPO" "feature.bats" "impl.mjs"
+  run bash "$RGV" "$REPO" "feature.bats" "impl.mjs"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"headdiff":{"new":0,"modified":1,"unchanged":0,"total":1}'* ]]
 }
@@ -584,7 +602,7 @@ make_feature_bats() {
   make_feature_bats
   git -C "$REPO" add feature.bats && git -C "$REPO" commit -q -m "add feature.bats"
 
-  run bash "$SCRIPT" "$REPO" "feature.bats" "impl.mjs"
+  run bash "$RGV" "$REPO" "feature.bats" "impl.mjs"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"headdiff":{"new":0,"modified":0,"unchanged":1,"total":1}'* ]]
 }
@@ -597,7 +615,7 @@ make_feature_bats() {
   make_feature_bats
   make_mock_pm npx '' impl.mjs
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "feature.test.mjs,feature.bats" "impl.mjs"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs,feature.bats" "impl.mjs"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"testcmd_ran":true'* ]]
   [[ "$output" != *'"headdiff"'* ]]
@@ -607,7 +625,7 @@ make_feature_bats() {
   echo "export const ok = true;" > "$REPO/impl.mjs"
   make_test
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
   [[ "$output" == *'"testcmd_ran":false'* ]]
   [[ "$output" == *'"headdiff":{"new":1,"modified":0,"unchanged":0,"total":1}'* ]]
@@ -618,7 +636,7 @@ make_feature_bats() {
   git -C "$REPO" add impl.mjs && git -C "$REPO" commit -q -m "add impl"
   make_test
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 2 ]
   [[ "$output" == *'"reason":"no impl changed vs HEAD'* ]]
   [[ "$output" != *'"testcmd_ran"'* ]]
@@ -660,7 +678,7 @@ EOF
   echo "// t2" > "$REPO/t2.test.mjs"
   make_mock_runner_pairs
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results | length')" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].index')" -eq 0 ]
@@ -677,7 +695,7 @@ EOF
   echo "// t2" > "$REPO/t2.test.mjs"
   make_mock_runner_pairs
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
   [ "$status" -eq 0 ]
   # 呼び出し順: pair0 red / pair0 green / pair1 red / pair1 green
   [ "$(sed -n 1p "$REPO/calls.log")" = "t1.test.mjs impl1=absent impl2=present" ]
@@ -694,7 +712,7 @@ EOF
   make_mock_runner_pairs
 
   # pair0 は non-test glob(impl1.mjs を test として申告)、pair1 は正常
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "impl1.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "impl1.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results | length')" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red or .results[0].green')" = "false" ]
@@ -710,7 +728,7 @@ EOF
   echo "export const a = 1;" > "$REPO/impl1.mjs"
   echo "// t2" > "$REPO/t2.test.mjs"
 
-  run bash "$SCRIPT" "$REPO" "impl1.mjs" "impl1.mjs" "t2.test.mjs" "nonexistent.mjs"
+  run bash "$RGV" "$REPO" "impl1.mjs" "impl1.mjs" "t2.test.mjs" "nonexistent.mjs"
   [ "$status" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -r '.results | length')" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "non-test file declared (ランナー未検出): impl1.mjs" ]
@@ -721,7 +739,7 @@ EOF
   echo "export const a = 1;" > "$REPO/impl1.mjs"
   echo "// t1" > "$REPO/t1.test.mjs"
 
-  run bash "$SCRIPT" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs"
+  run bash "$RGV" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs"
   [ "$status" -eq 2 ]
   # usage は stderr(run は stdout/stderr を混ぜる)。stdout 側の最終行が空配列であること
   [ "${lines[${#lines[@]}-1]}" = '{"results":[]}' ]
@@ -733,7 +751,7 @@ EOF
   echo "export const ok = true;" > "$REPO/impl.mjs"
   make_test
 
-  run bash "$SCRIPT" "$REPO" "feature.test.mjs" "feature.test.mjs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "feature.test.mjs"
   [ "$status" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -r '.results | type')" = "array" ]
 }
@@ -749,7 +767,7 @@ EOF
   # mock runner が calls.log を作るので比較は calls.log を除いた status で行う
   before_status="$(git -C "$REPO" status --porcelain | grep -v calls.log)"
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(printf '%s' "$output" | jq -r '.results[1].red and .results[1].green')" = "true" ]
@@ -779,7 +797,7 @@ EOF
   git -C "$REPO" add -A && git -C "$REPO" commit -q -m "pr commit"
   [ -z "$(git -C "$REPO" status --porcelain)" ]
 
-  run bash "$SCRIPT" --base base-ref "$REPO" "feature.test.mjs" "impl.mjs,extra.mjs"
+  run bash "$RGV" --base base-ref "$REPO" "feature.test.mjs" "impl.mjs,extra.mjs"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].headdiff.new')" -eq 1 ]
@@ -794,11 +812,116 @@ EOF
   make_test
   make_mock_pm npx '' impl.mjs
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" --base no-such-ref "$REPO" "feature.test.mjs" "impl.mjs"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" --base no-such-ref "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 2 ]
   [ "${lines[${#lines[@]}-1]}" = '{"results":[]}' ]
   [ ! -f "$REPO/calls.log" ]
   [ -f "$REPO/impl.mjs" ]
+}
+
+# -----------------------------------------------------------------------
+# N: start / wait / stop(issue #1226)。red→green が Bash 1 回の上限を超えても結果を返せるように切り離して実行する。
+# 止めたときは impl が worktree に戻っていることを、止まり方(TERM・KILL・supervisor の消失)ごとに見る。
+# -----------------------------------------------------------------------
+
+# vitest の repo にし、tracked-modified の impl.ts + untracked の new.ts を置く。npx stub は started に印を残してから
+# <本文> を実行し、new.ts があるときだけ pass する
+make_slow_runner() {
+  use_package_json '{"devDependencies":{"vitest":"^3.0.0"}}'
+  echo "export const ok = false;" > "$REPO/impl.ts"
+  git -C "$REPO" add impl.ts && git -C "$REPO" commit -q -m "add impl"
+  echo "export const ok = true;" > "$REPO/impl.ts"
+  chmod +x "$REPO/impl.ts"
+  echo "export const added = 1;" > "$REPO/new.ts"
+  echo "// feature test" > "$REPO/feature.test.ts"
+  mkdir -p "$REPO/mockbin"
+  printf '#!/usr/bin/env bash\n: > "%s/started"\n%s\n[ -f "%s/new.ts" ]\n' "$REPO" "$1" "$REPO" > "$REPO/mockbin/npx"
+  chmod +x "$REPO/mockbin/npx"
+}
+
+start_slow() {
+  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" start --state-dir "$STATE_DIR" "$REPO" "feature.test.ts" "impl.ts,new.ts" 3>&-
+}
+
+# stub が red の実行に入るまで待つ(この時点で impl は退避済み)
+wait_red_phase() {
+  local i
+  for i in $(seq 1 100); do
+    [ -f "$REPO/started" ] && break
+    sleep 0.1
+  done
+  [ -f "$REPO/started" ]
+  [ ! -f "$REPO/new.ts" ]
+  grep -q "ok = false" "$REPO/impl.ts"
+}
+
+assert_impl_restored() {
+  grep -q "ok = true" "$REPO/impl.ts"
+  [ -x "$REPO/impl.ts" ]
+  grep -q "added = 1" "$REPO/new.ts"
+  [ ! -e "$STATE_DIR/impl-backup" ]
+}
+
+@test "N1: テストが --wait-sec より長く sleep するとき start はすぐ running を返し、1 回目の wait は running、2 回目に結果の JSON を返す" {
+  make_slow_runner 'sleep 4'
+
+  start_slow
+  [ "$status" -eq 0 ]
+  [ "$output" = '{"status":"running","results":[]}' ]
+
+  run bash "$SCRIPT" wait --state-dir "$STATE_DIR" --wait-sec 1
+  [ "$status" -eq 0 ]
+  [ "$output" = '{"status":"running","results":[]}' ]
+
+  run bash "$SCRIPT" wait --state-dir "$STATE_DIR" --wait-sec 60
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c 'keys')" = '["results"]' ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0] | {index, red, green, reason}')" = '{"index":0,"red":true,"green":true,"reason":"ok"}' ]
+  assert_impl_restored
+}
+
+@test "N2: stop は red の途中のテストを止めて impl(内容・実行ビット・untracked)を戻し、wait は空の results で exit 2 を返す" {
+  make_slow_runner 'sleep 300'
+  start_slow
+  wait_red_phase
+
+  run bash "$SCRIPT" stop --state-dir "$STATE_DIR" --timeout-sec 30
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c '{ok, stopped}')" = '{"ok":true,"stopped":true}' ]
+  assert_impl_restored
+
+  run bash "$SCRIPT" wait --state-dir "$STATE_DIR" --wait-sec 1
+  [ "$status" -eq 2 ]
+  [ "${lines[${#lines[@]}-1]}" = '{"results":[]}' ]
+}
+
+@test "N3: TERM を無視するテストは KILL で止まり、KILL でも supervisor が impl を戻す" {
+  make_slow_runner $'trap \'\' TERM\nsleep 300'
+  start_slow
+  wait_red_phase
+
+  run bash "$SCRIPT" stop --state-dir "$STATE_DIR" --timeout-sec 30
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.ok')" = "true" ]
+  assert_impl_restored
+}
+
+@test "N4: supervisor が KILL で消えても、wait が結果の無いことを返すときに impl を戻す" {
+  make_slow_runner 'sleep 5'
+  start_slow
+  wait_red_phase
+
+  kill -9 "$(jq -r '.supervisor_pid' "$STATE_DIR/state.json")"
+  run bash "$SCRIPT" wait --state-dir "$STATE_DIR" --wait-sec 5
+  [ "$status" -eq 2 ]
+  [ "${lines[${#lines[@]}-1]}" = '{"results":[]}' ]
+  assert_impl_restored
+}
+
+@test "N5: start の前の wait は空の results で exit 2" {
+  run bash "$SCRIPT" wait --state-dir "$STATE_DIR" --wait-sec 1
+  [ "$status" -eq 2 ]
+  [ "${lines[${#lines[@]}-1]}" = '{"results":[]}' ]
 }
 
 # -----------------------------------------------------------------------
@@ -842,7 +965,7 @@ EOF
   make_pnpm_workspace_pair
   [ ! -e "$REPO/packages/shared/dist" ]
 
-  PATH="$STUB_DIR:$PATH" run bash "$SCRIPT" "$REPO" "packages/backend/greet.test.mjs" "packages/shared/src/greet.js"
+  PATH="$STUB_DIR:$PATH" run bash "$RGV" "$REPO" "packages/backend/greet.test.mjs" "packages/shared/src/greet.js"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red')" = "true" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].green')" = "true" ]
@@ -858,7 +981,7 @@ EOF
   make_pnpm_workspace_pair
   printf '#!/usr/bin/env bash\nexit 1\n' > "$STUB_DIR/pnpm"
 
-  PATH="$STUB_DIR:$PATH" run bash "$SCRIPT" "$REPO" "packages/backend/greet.test.mjs" "packages/shared/src/greet.js"
+  PATH="$STUB_DIR:$PATH" run bash "$RGV" "$REPO" "packages/backend/greet.test.mjs" "packages/shared/src/greet.js"
   [ "$status" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red')" = "false" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].green')" = "false" ]
@@ -876,7 +999,7 @@ EOF
   printf '#!/usr/bin/env bash\necho called >> "%s/pnpm.log"\n' "$REPO" > "$STUB_DIR/pnpm"
   chmod +x "$STUB_DIR/pnpm"
 
-  PATH="$STUB_DIR:$PATH" run bash "$SCRIPT" "$REPO" "feature.test.mjs" "impl.mjs"
+  PATH="$STUB_DIR:$PATH" run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "ok" ]
@@ -907,7 +1030,7 @@ make_stub_runner() { make_stub_at "mockbin/$1" "$1" "$2"; }
   echo "from foo import OK" > "$REPO/test_foo.py"
   make_stub_runner pytest foo.py
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "test_foo.py" "foo.py"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "test_foo.py" "foo.py"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(cat "$REPO/calls.log")" = "$(printf 'pytest test_foo.py\npytest test_foo.py')" ]
@@ -922,7 +1045,7 @@ make_stub_runner() { make_stub_at "mockbin/$1" "$1" "$2"; }
   echo "package pkg" > "$REPO/pkg/foo_test.go"
   make_stub_runner go pkg/foo.go
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "pkg/foo_test.go" "pkg/foo.go"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "pkg/foo_test.go" "pkg/foo.go"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(cat "$REPO/calls.log")" = "$(printf 'go test ./pkg\ngo test ./pkg')" ]
@@ -936,7 +1059,7 @@ make_stub_runner() { make_stub_at "mockbin/$1" "$1" "$2"; }
   echo "#[test] fn t() { assert!(fx::ok()); }" > "$REPO/tests/foo.rs"
   make_stub_runner cargo src/lib.rs
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "tests/foo.rs" "src/lib.rs"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "tests/foo.rs" "src/lib.rs"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(cat "$REPO/calls.log")" = "$(printf 'cargo test --test foo\ncargo test --test foo')" ]
@@ -952,7 +1075,7 @@ make_stub_runner() { make_stub_at "mockbin/$1" "$1" "$2"; }
   make_stub_runner pytest foo.py
   make_stub_runner cargo src/lib.rs
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "test_foo.py" "foo.py" "src/lib.rs" "src/lib.rs"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "test_foo.py" "foo.py" "src/lib.rs" "src/lib.rs"
   [ "$status" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -r '[.results[] | .red or .green] | any')" = "false" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "non-test file declared (ランナー未検出): test_foo.py" ]
@@ -969,7 +1092,7 @@ make_stub_runner() { make_stub_at "mockbin/$1" "$1" "$2"; }
   echo "require 'foo'" > "$REPO/spec/foo_spec.rb"
   make_stub_runner bundle lib/foo.rb
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" "$REPO" "spec/foo_spec.rb" "lib/foo.rb"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "spec/foo_spec.rb" "lib/foo.rb"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(cat "$REPO/calls.log")" = "$(printf 'bundle exec rspec spec/foo_spec.rb\nbundle exec rspec spec/foo_spec.rb')" ]
@@ -983,7 +1106,7 @@ make_stub_runner() { make_stub_at "mockbin/$1" "$1" "$2"; }
   echo "class Foo; end" > "$REPO/app/models/foo.rb"
   echo "require 'test_helper'" > "$REPO/test/foo_test.rb"
 
-  run bash "$SCRIPT" "$REPO" "test/foo_test.rb" "app/models/foo.rb"
+  run bash "$RGV" "$REPO" "test/foo_test.rb" "app/models/foo.rb"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(cat "$REPO/calls.log")" = "$(printf 'bin/rails test test/foo_test.rb\nbin/rails test test/foo_test.rb')" ]
@@ -997,7 +1120,7 @@ make_stub_runner() { make_stub_at "mockbin/$1" "$1" "$2"; }
   echo "<?php test('foo', fn () => expect(new Foo)->toBeObject());" > "$REPO/tests/Unit/FooTest.php"
   make_stub_at vendor/bin/pest vendor/bin/pest src/Foo.php
 
-  run bash "$SCRIPT" "$REPO" "tests/Unit/FooTest.php" "src/Foo.php"
+  run bash "$RGV" "$REPO" "tests/Unit/FooTest.php" "src/Foo.php"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(cat "$REPO/calls.log")" = "$(printf 'vendor/bin/pest tests/Unit/FooTest.php\nvendor/bin/pest tests/Unit/FooTest.php')" ]
@@ -1011,7 +1134,7 @@ make_stub_runner() { make_stub_at "mockbin/$1" "$1" "$2"; }
   echo "<?php class FooTest extends PHPUnit\\Framework\\TestCase {}" > "$REPO/tests/Unit/FooTest.php"
   make_stub_at vendor/bin/phpunit vendor/bin/phpunit src/Foo.php
 
-  run bash "$SCRIPT" "$REPO" "tests/Unit/FooTest.php" "src/Foo.php"
+  run bash "$RGV" "$REPO" "tests/Unit/FooTest.php" "src/Foo.php"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
   [ "$(cat "$REPO/calls.log")" = "$(printf 'vendor/bin/phpunit tests/Unit/FooTest.php\nvendor/bin/phpunit tests/Unit/FooTest.php')" ]

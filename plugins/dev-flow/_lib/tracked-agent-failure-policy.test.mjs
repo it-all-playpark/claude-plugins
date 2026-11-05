@@ -267,6 +267,15 @@ const EXPECTED_DEV_FLOW = {
   'local-verify-wait#2.1': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。差し戻し後のローカル実行の結果が無ければfail-openでCIのcheck待ちに回す' },
   'local-verify-stop#2': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。停止確認の失敗はlogのみでDBの削除はlocal-verifyのtrapに委ねる（差し戻し後）' },
   'redgreen': { config: DF_REDGREEN, policy: 'abort', reason: 'bare据え置き。red→green実証呼び出し自体の例外は吸収されずrunを中断させる' },
+  'redgreen-wait#1': {
+    config: DEV_FLOW_SCENARIOS['redgreen-wait'],
+    policy: 'abort',
+    reason: 'bare据え置き。start と同じくwaitの例外も吸収せず、finallyでstopしてからrunを中断させる',
+    extra: async ({ calls }) => {
+      assert.ok(calls.some((c) => c.label === 'redgreen-stop'), 'wait の throw では実行が残りうるので stop してから中断する');
+    },
+  },
+  'redgreen-stop': { config: DEV_FLOW_SCENARIOS['redgreen-stop'], policy: 'continue', reason: 'failOpenAgent経由。停止確認の失敗はlogのみで実行はsupervisorの上限時間で止まる' },
   'reimpl#1:serial:issue-1': { config: DF_COMPLEX_FIX, policy: 'continue', reason: 'failOpenAgent経由。evaluator差し戻しのdev-implementer失敗はnullとしてdropし継続する' },
   'eval#2': { config: DF_COMPLEX_FIX, policy: 'abort', reason: 'need()包み。2周目の評価取得不能のままPRへ進めない致命契約' },
   'green-fix#1': { config: DF_GREEN_FIX, policy: 'abort', reason: 'bare据え置き。green-fix実装呼び出しはtry/catchで吸収されずrunを中断させる' },

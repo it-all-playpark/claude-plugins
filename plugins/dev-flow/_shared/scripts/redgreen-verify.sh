@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 # red→green 実証: 実装だけ退避して base に戻し、test が red→green に転じるか決定論判定する。
 # untracked(新規)・tracked-modified いずれの impl ファイルにも対応する。
-# 使い方: redgreen-verify.sh [--base <ref>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]
+# 使い方:
+#   redgreen-verify start --state-dir <abs> [--wait-sec <n=300>] [--base <ref>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]
+#   redgreen-verify wait  --state-dir <abs> [--wait-sec <n=480>]
+#   redgreen-verify stop  --state-dir <abs> [--timeout-sec <n=60>]
+#   （内部）redgreen-verify supervise --state-dir <abs> / redgreen-verify run --state-dir <abs>
+#   red→green は 1 回の Bash の上限（600 秒）を超えうるので、切り離して実行する（_lib/scripts/bg-job.sh）。
+#   start は起動してすぐ返り、wait は最大 --wait-sec 待って、終わっていれば下の出力を、まだなら {"status":"running","results":[]} を返す。
+#   results を空で持たせるのは、終わった応答と同じ schema（results 必須）に収めるため。
+#   stop は実行を止める。退避した impl は実行の止まり方によらず supervisor が戻す（bg_job_hook_cleanup）—
+#   止めた後の worktree を以降の phase がそのまま使うので、テストを KILL しても impl を欠いたままにしない。
 #   (test_files, impl_files) ペアを複数受け、引数順に 1 ペアずつ退避→red→復元→green を実行する。
 #   退避先の base は既定で HEAD(implementer は commit しないので、Evaluate の変更は HEAD との差分にある)。
 #   --base <ref> を渡すと HEAD と <ref> の merge-base を base にする。Final reconcile は PR の commit 済み tree を
@@ -30,40 +39,36 @@
 # test_files を base(既定 HEAD)基準で new(base に無い)/modified(base にあり差分あり)/unchanged(base と同一)
 # に三分類した件数で、runner の種類・拡張子に依存しない fallback 信号。red/green の判定には影響しない。
 # exit 0 = 1 ペア以上が判定完了(red/green は JSON 参照) / exit 2 = 全ペアが入力・分離エラー、
-# または引数不正(stdout は {"results":[]})(= deterministic 昇格しないこと)
+# 実行が結果を残さず終わった(stop・上限時間・supervisor の消失)、または引数不正(stdout は {"results":[]})
+# (= deterministic 昇格しないこと)。running の応答は exit 0
+# REDGREEN_VERIFY_POLL_SEC(状態確認の間隔)は bats が短い間隔で回すための上書き口(workflow は渡さない)。
 set -uo pipefail
-
-BASE_REF=""
-if [ "${1:-}" = "--base" ]; then
-  [ -n "${2:-}" ] || { echo "--base requires a ref" >&2; echo '{"results":[]}'; exit 2; }
-  BASE_REF="$2"
-  shift 2
-fi
-WT="${1:?worktree required}"
-shift
-if [ "$#" -lt 2 ] || [ $(( $# % 2 )) -ne 0 ]; then
-  echo "usage: redgreen-verify.sh [--base <ref>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]" >&2
-  echo '{"results":[]}'; exit 2
-fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREBUILD="$SCRIPT_DIR/workspace-prebuild.sh"
 DETECT="$SCRIPT_DIR/detect-test-runner.sh"
 
-cd "$WT" 2>/dev/null || { echo "cd failed: $WT" >&2; echo '{"results":[]}'; exit 2; }
+# shellcheck source=../../_lib/scripts/bg-job.sh
+source "$SCRIPT_DIR/../../_lib/scripts/bg-job.sh"
+BG_JOB_NAME=redgreen-verify
+BG_JOB_SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
+BG_JOB_POLL_SEC="${REDGREEN_VERIFY_POLL_SEC:-1}"
+# supervisor が実行を止める上限。workflow の待機上限（_lib/redgreen-targets.mjs の REDGREEN_WAIT_CAP_SEC）より長くして
+# 通常は workflow の stop で止め、workflow が stop を呼ばずに終わったときだけこれで止める
+RG_TIMEOUT_SEC=3900
 
-# impl の退避・headdiff の比較先(commit)。--base 無しは HEAD
+paths() {
+  bg_job_paths "$1"
+  RG_RESULTS="$BG_JOB_STATE_DIR/results.json"
+  # 退避した impl の置き場(相対パス保持)。run が消えても supervisor が戻せるよう state dir に置く
+  IMPL_BACKUP="$BG_JOB_STATE_DIR/impl-backup"
+}
+
+# impl の退避・headdiff の比較先(commit)。--base 無しは HEAD(run が決める)
+BASE_REF=""
 BASE="HEAD"
-if [ -n "$BASE_REF" ]; then
-  BASE="$(git merge-base HEAD "$BASE_REF" 2>/dev/null)" || BASE=""
-  [ -n "$BASE" ] || { echo "merge-base failed: HEAD $BASE_REF" >&2; echo '{"results":[]}'; exit 2; }
-fi
-
-# vdelta 経路の有効化は repo の package.json の依存だけで決める(dev-flow 専用の設定ファイルは読まない)
+# vdelta 経路の有効化は repo の package.json の依存だけで決める(dev-flow 専用の設定ファイルは読まない。run が決める)
 VDELTA=false
-if [ -f package.json ] && jq -e '((.dependencies // {}) + (.devDependencies // {})) | has("vdelta")' package.json >/dev/null 2>&1; then
-  VDELTA=true
-fi
 
 # --- ペア単位の状態(verify_pair の冒頭で毎回リセットする) ---
 TESTS=()
@@ -84,7 +89,6 @@ VDELTA_PREFIX=()
 #   UNTRACKED_IMPLS: $BASE に無い(未追跡 / git add のみの新規 / --base 以降に commit された新規) → cp -p 退避 + rm
 #   TRACKED_IMPLS  : $BASE にあり worktree と差分あり → cp -p 退避 + write_head_blob で base 化(index は書かない)
 #   UNCHANGED_IMPLS: $BASE と同一 → 退避対象外(base 化しても red 判定に寄与しない)
-TMPDIR_IMPL=""
 UNTRACKED_IMPLS=()
 TRACKED_IMPLS=()
 UNCHANGED_IMPLS=()
@@ -122,18 +126,18 @@ run_tests() {
   return $rc
 }
 
-# 退避済み impl を $TMPDIR_IMPL から相対パス保持で書き戻す(cp -p で mode も戻す)。
-# 本文と EXIT trap の両方から呼ぶ。配列展開は set -u のため必ず件数 guard 下で行う。
+# 退避済み impl を $IMPL_BACKUP から相対パス保持で書き戻す(cp -p で mode も戻す)。
+# 配列展開は set -u のため必ず件数 guard 下で行う。
 restore_saved() {
   local f
   if [ "$UNTRACKED_SAVED" = true ] && [ "${#UNTRACKED_IMPLS[@]}" -gt 0 ]; then
     for f in "${UNTRACKED_IMPLS[@]}"; do
-      if [ -f "$TMPDIR_IMPL/$f" ]; then mkdir -p "$(dirname "$f")"; cp -p "$TMPDIR_IMPL/$f" "$f"; fi
+      if [ -f "$IMPL_BACKUP/$f" ]; then mkdir -p "$(dirname "$f")"; cp -p "$IMPL_BACKUP/$f" "$f"; fi
     done
   fi
   if [ "$TRACKED_SAVED" = true ] && [ "${#TRACKED_IMPLS[@]}" -gt 0 ]; then
     for f in "${TRACKED_IMPLS[@]}"; do
-      if [ -f "$TMPDIR_IMPL/$f" ]; then mkdir -p "$(dirname "$f")"; cp -p "$TMPDIR_IMPL/$f" "$f"; fi
+      if [ -f "$IMPL_BACKUP/$f" ]; then mkdir -p "$(dirname "$f")"; cp -p "$IMPL_BACKUP/$f" "$f"; fi
     done
   fi
 }
@@ -152,14 +156,13 @@ write_head_blob() {
   if [ "$mode" = 100755 ]; then chmod +x "$f"; else chmod -x "$f"; fi
 }
 
-# --- cleanup / restore(二段構え: 各ペアの終端で本文から呼び、途中終了時は EXIT trap が現ペア分を戻す) ---
+# --- cleanup / restore(二段構え: 各ペアの終端で本文から呼び、途中終了時は supervisor の bg_job_hook_cleanup が現ペア分を戻す) ---
 restore_impl() {
   restore_saved
   UNTRACKED_SAVED=false
   TRACKED_SAVED=false
-  if [ -n "$TMPDIR_IMPL" ]; then rm -rf "$TMPDIR_IMPL"; TMPDIR_IMPL=""; fi
+  rm -rf "$IMPL_BACKUP"
 }
-trap restore_impl EXIT
 
 # 1 ペアを判定する。PAIR_JSON に index 抜きの JSON 本体を残し、判定完了なら 0・入力/分離エラーなら 2 を返す。
 # 退避した impl の復元は呼び出し側の restore_impl が担う(return 経路を問わず必ず呼ぶ)。
@@ -195,7 +198,6 @@ verify_pair() {
     done
   done
 
-  TMPDIR_IMPL="$(mktemp -d)"
   for f in "${IMPLS[@]}"; do
     # cat-file -e は $BASE に無いと rc 128 + stderr メッセージ → 抑止して成否だけ使う
     if git cat-file -e "$BASE:$f" >/dev/null 2>&1; then
@@ -227,22 +229,27 @@ verify_pair() {
     PAIR_JSON="\"red\":false,\"green\":false,\"reason\":\"no impl changed vs ${BASE_REF:-HEAD}: $impl_csv\""; return 2
   fi
 
-  # 1. untracked impl: cp -p 退避 → rm
+  # 1. 全件を cp -p で退避してから rename で $IMPL_BACKUP に見せる(supervisor は $IMPL_BACKUP の中身を無条件に書き戻すので、
+  #    コピーの途中で止められたときに書きかけのファイルで impl を上書きしないため)
+  local partial="$IMPL_BACKUP.partial"
+  rm -rf "$partial"
+  mkdir -p "$partial"
+  for f in ${UNTRACKED_IMPLS[@]+"${UNTRACKED_IMPLS[@]}"} ${TRACKED_IMPLS[@]+"${TRACKED_IMPLS[@]}"}; do
+    mkdir -p "$partial/$(dirname "$f")"
+    cp -p "$f" "$partial/$f"
+  done
+  mv "$partial" "$IMPL_BACKUP"
+
+  # 2. untracked impl: rm
   if [ "${#UNTRACKED_IMPLS[@]}" -gt 0 ]; then
+    UNTRACKED_SAVED=true
     for f in "${UNTRACKED_IMPLS[@]}"; do
-      mkdir -p "$TMPDIR_IMPL/$(dirname "$f")"
-      cp -p "$f" "$TMPDIR_IMPL/$f"
       rm -f "$f"
     done
-    UNTRACKED_SAVED=true
   fi
 
-  # 2. 変更あり tracked impl: 全件 cp -p 退避 → TRACKED_SAVED=true(以降の失敗は restore_impl が戻す) → $BASE の内容で base 化
+  # 3. 変更あり tracked impl: TRACKED_SAVED=true(以降の失敗は restore_impl が戻す) → $BASE の内容で base 化
   if [ "${#TRACKED_IMPLS[@]}" -gt 0 ]; then
-    for f in "${TRACKED_IMPLS[@]}"; do
-      mkdir -p "$TMPDIR_IMPL/$(dirname "$f")"
-      cp -p "$f" "$TMPDIR_IMPL/$f"
-    done
     TRACKED_SAVED=true
     for f in "${TRACKED_IMPLS[@]}"; do
       if ! write_head_blob "$f"; then
@@ -256,7 +263,7 @@ verify_pair() {
   if run_tests; then red=false; else red=true; fi
   [ -n "$BUILD_FAILURE" ] && build_failure="$BUILD_FAILURE (red)"
 
-  # 復元(本文側。EXIT trap / restore_impl も呼ばれるがフラグを落として二重復元を防ぐ)
+  # 復元(本文側。restore_impl も呼ばれるがフラグを落として二重復元を防ぐ)
   restore_saved
   UNTRACKED_SAVED=false
   TRACKED_SAVED=false
@@ -303,22 +310,169 @@ verify_pair() {
   return 0
 }
 
-RESULTS=()
-COMPLETED=0
-INDEX=0
-while [ "$#" -ge 2 ]; do
-  if verify_pair "$1" "$2"; then COMPLETED=$((COMPLETED+1)); fi
-  restore_impl
-  RESULTS+=("{\"index\":$INDEX,$PAIR_JSON}")
-  INDEX=$((INDEX+1))
-  shift 2
-done
+# 結果を atomic に書く(wait が書きかけを読まないように)
+write_results() {
+  local tmp="$RG_RESULTS.$$.tmp"
+  printf '%s\n' "$1" > "$tmp" && mv "$tmp" "$RG_RESULTS"
+}
 
-OUT='{"results":['
-for ((k = 0; k < ${#RESULTS[@]}; k++)); do
-  [ "$k" -gt 0 ] && OUT="$OUT,"
-  OUT="$OUT${RESULTS[$k]}"
-done
-echo "$OUT]}"
-[ "$COMPLETED" -gt 0 ] && exit 0
-exit 2
+# ---------------------------------------------------------------------------
+# run(supervisor が worktree を cwd に起こす command。引数は start が spec に書く)
+# ---------------------------------------------------------------------------
+
+cmd_run() {
+  BASE_REF="$(bg_job_read_field "$BG_JOB_SPEC" .base)"
+  if [ -n "$BASE_REF" ]; then
+    BASE="$(git merge-base HEAD "$BASE_REF" 2>/dev/null)" || BASE=""
+    if [ -z "$BASE" ]; then
+      echo "merge-base failed: HEAD $BASE_REF" >&2
+      write_results '{"results":[]}'
+      exit 2
+    fi
+  fi
+  if [ -f package.json ] && jq -e '((.dependencies // {}) + (.devDependencies // {})) | has("vdelta")' package.json >/dev/null 2>&1; then
+    VDELTA=true
+  fi
+
+  local args=() a
+  while IFS= read -r a; do args+=("$a"); done <<< "$(jq -r '.pairs[]' "$BG_JOB_SPEC")"
+  set -- "${args[@]}"
+
+  local results=() completed=0 index=0 k out
+  while [ "$#" -ge 2 ]; do
+    if verify_pair "$1" "$2"; then completed=$((completed+1)); fi
+    restore_impl
+    results+=("{\"index\":$index,$PAIR_JSON}")
+    index=$((index+1))
+    shift 2
+  done
+
+  out='{"results":['
+  for ((k = 0; k < ${#results[@]}; k++)); do
+    [ "$k" -gt 0 ] && out="$out,"
+    out="$out${results[$k]}"
+  done
+  write_results "$out]}"
+  [ "$completed" -gt 0 ] && exit 0
+  exit 2
+}
+
+# ---------------------------------------------------------------------------
+# bg-job の hook(退避した impl の書き戻し)
+# ---------------------------------------------------------------------------
+
+# $IMPL_BACKUP があれば run が復元を終える前に止まっている。中身を worktree へ書き戻す
+restore_backup() {
+  [ -d "$IMPL_BACKUP" ] || return 0
+  local cwd f
+  cwd="$(bg_job_read_field "$BG_JOB_SPEC" .cwd)"
+  ( cd "$IMPL_BACKUP" && find . -type f -print0 ) | while IFS= read -r -d '' f; do
+    mkdir -p "$(dirname "$cwd/$f")"
+    cp -p "$IMPL_BACKUP/$f" "$cwd/$f"
+  done
+  rm -rf "$IMPL_BACKUP"
+}
+
+bg_job_hook_cleanup() { restore_backup; }
+# supervisor が KILL 等で trap を走らせずに居なくなったときは、stop がここで書き戻す
+bg_job_hook_orphan_cleanup() { restore_backup; }
+
+# ---------------------------------------------------------------------------
+# start / wait / stop
+# ---------------------------------------------------------------------------
+
+# bg-job の応答を redgreen-verify の出力に畳む
+emit_outcome() {
+  local job="$1"
+  if [ "$(jq -r '.status // empty' <<< "$job")" = running ]; then
+    echo '{"status":"running","results":[]}'
+    return 0
+  fi
+  # 終わった応答はどれも supervisor がもう居ない。後片付けをせずに消えた場合はここで書き戻す
+  bg_job_hook_orphan_cleanup
+  if [ -f "$RG_RESULTS" ]; then
+    cat "$RG_RESULTS"
+    [ "$(jq -r '.exit_code' <<< "$job")" = 0 ] && return 0
+    return 2
+  fi
+  echo "redgreen-verify: 結果が無い: $job" >&2
+  echo '{"results":[]}'
+  return 2
+}
+
+cmd_start() {
+  local wait_sec="$1" base="$2" worktree="$3" problem
+  shift 3
+  # 前回 run の残り(同じ state dir)を先に止める
+  if ! problem="$(bg_job_reset "$worktree")"; then
+    echo "redgreen-verify: $problem" >&2
+    echo '{"results":[]}'
+    return 2
+  fi
+  bg_job_write_json "$BG_JOB_SPEC" --arg cwd "$worktree" \
+    --arg command "bash $(printf '%q' "$BG_JOB_SELF") run --state-dir $(printf '%q' "$BG_JOB_STATE_DIR")" \
+    --argjson timeout_seconds "$RG_TIMEOUT_SEC" --arg base "$base" \
+    --argjson pairs "$(printf '%s\n' "$@" | jq -R . | jq -sc .)" \
+    '{cwd: $cwd, command: $command, timeout_seconds: $timeout_seconds, base: $base, pairs: $pairs}'
+  emit_outcome "$(bg_job_start "$wait_sec")"
+}
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+usage() {
+  [ -z "${1:-}" ] || echo "redgreen-verify: $1" >&2
+  echo "usage: redgreen-verify.sh start --state-dir <abs> [--wait-sec <n>] [--base <ref>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]" >&2
+  echo "       redgreen-verify.sh wait --state-dir <abs> [--wait-sec <n>]" >&2
+  echo "       redgreen-verify.sh stop --state-dir <abs> [--timeout-sec <n>]" >&2
+  echo '{"results":[]}'
+  exit 2
+}
+
+main() {
+  local sub="${1:-}" state_dir='' wait_sec='' timeout_sec='' base=''
+  case "$sub" in
+    start|wait|stop|supervise|run) shift ;;
+    *) usage 'subcommand (start|wait|stop) required' ;;
+  esac
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --state-dir|--wait-sec|--timeout-sec|--base)
+        [ -n "${2:-}" ] || usage "$1 requires a value"
+        case "$1" in
+          --state-dir) state_dir="$2" ;;
+          --wait-sec) wait_sec="$2" ;;
+          --timeout-sec) timeout_sec="$2" ;;
+          --base) base="$2" ;;
+        esac
+        shift 2 ;;
+      --*) usage "Unknown option: $1" ;;
+      *) break ;;
+    esac
+  done
+  [ -n "$state_dir" ] || usage '--state-dir is required'
+  [[ -z "$wait_sec" || "$wait_sec" =~ ^[0-9]+$ ]] || usage "--wait-sec must be a non-negative integer, got '$wait_sec'"
+  [[ -z "$timeout_sec" || "$timeout_sec" =~ ^[0-9]+$ ]] || usage "--timeout-sec must be a non-negative integer, got '$timeout_sec'"
+  if [ "$sub" = start ]; then
+    [ "$#" -ge 3 ] && [ $(( $# % 2 )) -eq 1 ] || usage
+  else
+    [ "$#" -eq 0 ] || usage "Unexpected argument: $1"
+  fi
+  mkdir -p "$state_dir" 2>/dev/null
+  paths "$(cd "$state_dir" 2>/dev/null && pwd || echo "$state_dir")"
+
+  case "$sub" in
+    supervise) bg_job_supervise ;;
+    run) cmd_run ;;
+    start)
+      local worktree
+      worktree="$(cd "$1" 2>/dev/null && pwd)" || { echo "cd failed: $1" >&2; echo '{"results":[]}'; exit 2; }
+      shift
+      cmd_start "$wait_sec" "$base" "$worktree" "$@" ;;
+    wait) emit_outcome "$(bg_job_wait "$wait_sec")" ;;
+    stop) bg_job_stop "$timeout_sec" ;;
+  esac
+}
+
+main "$@"

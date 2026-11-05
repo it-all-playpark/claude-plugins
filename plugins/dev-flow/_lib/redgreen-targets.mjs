@@ -11,10 +11,23 @@
 // deterministic 昇格・checked・vdelta deny の判定は呼び出し側が AC ごとに行う（ここは配布まで）。
 // argv に載せるファイル列は最初に現れた AC の申告順のまま — 組が全部異なる run の prompt は dedupe 前と同じ byte 列。
 //
-// timeout / background: 全ペアの red/green を 1 回の Bash で走らせるため Bash tool の既定 timeout（120 秒）を超える。
-// timeout 未指定だと background に回され、agent が待った後に同じコマンドを再発行して impl の退避・復元が二重に走るので、
+// start / wait / stop: 全ペアの red/green は 1 回の Bash の上限（600 秒）を超えうるので、start で切り離して起動し、
+// wait の spawn を繰り返して待つ（_lib/bg-job-wait.mjs の waitBgJob。dev-flow.js の runRedgreenVerify）。
+// 待機の累計が REDGREEN_WAIT_CAP_SEC に達したら stop で止め、results 空（JSON が返らなかったときと同じ結果）で終わる。
+//
+// timeout / background: start / wait の 1 回は 600 秒に収まるが、Bash tool の既定 timeout（120 秒）は超える。
+// timeout 未指定だと background に回され、agent が待った後に同じコマンドを再発行する（start の再発行は実行をやり直す）ので、
 // timeout: 600000 を明示し background 化・再発行を禁じる。JSON が返らなかった場合の応答は固定文字列にして
 // agent に結果を組み立てさせない（results 空は全ペア欠落 = inspection 据え置きの fail-safe 経路）。
+//
+// INLINE 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。
+
+// redgreen-verify の state dir（worktree 内の .devflow-tmp は realized diff から除外される）。
+export const REDGREEN_STATE_DIR = '.devflow-tmp/redgreen-verify';
+// wait 1 回あたりの待機秒数（1 回の Bash 呼び出し＝600 秒に収まり、上限を割り切れる値）と、待機の累計の上限。
+export const REDGREEN_WAIT_SEC = 450;
+export const REDGREEN_WAIT_CAP_SEC = 3600;
+export const REDGREEN_WAIT_POLLS = Math.ceil(REDGREEN_WAIT_CAP_SEC / REDGREEN_WAIT_SEC);
 
 /**
  * (test_files, impl_files) の組を順序正規化したキー。
@@ -66,6 +79,36 @@ export function distributeRedgreenResults(pairIndex, results) {
 }
 
 /**
+ * start / wait の最後の応答（waitBgJob の戻り値）から結果を取り出す。結果と読めるのは status の無い応答の results だけ —
+ * 上限まで running（wait_capped）・読めない応答（status:'error'）・null は全ペア欠落の [] にする。
+ *
+ * @param {unknown} res
+ * @returns {object[]}
+ */
+export function redgreenResults(res) {
+  return res && res.status == null && Array.isArray(res.results) ? res.results : [];
+}
+
+/**
+ * 実行が全ペアの結果を残して終わったと言えるか。言えなければ（上限・読めない応答・results の欠落。proxy が {"results":[]} を
+ * 返した場合を含む）実行が残っているかもしれず、impl を退避したまま以降の phase に進まないよう呼び出し側が stop する。
+ *
+ * @param {unknown} res
+ * @param {number} pairCount
+ * @returns {boolean}
+ */
+export function redgreenJobSettled(res, pairCount) {
+  return redgreenResults(res).length === pairCount;
+}
+
+function redgreenProxyPrompt(wt, cmd, fallback) {
+  return `cd ${wt} で作業。次のコマンドを 1 回だけ実行して **stdout の JSON 1 行だけ** を verbatim で返せ(判定や脚色をしない)。`
+    + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない（常駐化はコマンド自身が行う）。`
+    + `コマンドを再発行しない（timeout・background 化した場合も含む）。`
+    + `timeout に達した・stdout に JSON 1 行が無い場合だけは、${fallback} を一字一句そのまま返せ:\n${cmd}`;
+}
+
+/**
  * base を渡すと `--base <base>` を付け、HEAD と base の merge-base まで impl を戻して red を測らせる
  * （Final reconcile の commit 済み tree 用。Evaluate は未 commit の変更なので省略 = HEAD 基準）。
  *
@@ -74,11 +117,17 @@ export function distributeRedgreenResults(pairIndex, results) {
  * @param {string|null} [base] 比較先の ref（例 `origin/main`）
  * @returns {string}
  */
-export function redgreenVerifyPrompt(wt, pairs, base = null) {
-  return `cd ${wt} で作業。次のコマンドを 1 回だけ実行して **stdout の JSON 1 行だけ** を verbatim で返せ(判定や脚色をしない)。`
-    + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。`
-    + `コマンドを再発行しない（timeout・background 化した場合も含む）。`
-    + `timeout に達した・stdout に JSON 1 行が無い場合だけは、{"results":[]} を一字一句そのまま返せ:\n`
-    + `redgreen-verify ${base ? `--base ${base} ` : ''}${wt} `
-    + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' ');
+export function redgreenStartPrompt(wt, pairs, base = null) {
+  return redgreenProxyPrompt(wt,
+    `redgreen-verify start --state-dir ${wt}/${REDGREEN_STATE_DIR} ${base ? `--base ${base} ` : ''}${wt} `
+      + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' '),
+    '{"results":[]}');
+}
+
+export function redgreenWaitPrompt(wt) {
+  return redgreenProxyPrompt(wt, `redgreen-verify wait --state-dir ${wt}/${REDGREEN_STATE_DIR} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
+}
+
+export function redgreenStopPrompt(wt) {
+  return redgreenProxyPrompt(wt, `redgreen-verify stop --state-dir ${wt}/${REDGREEN_STATE_DIR}`, '{"ok":false}');
 }
