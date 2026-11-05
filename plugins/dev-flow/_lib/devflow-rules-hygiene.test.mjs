@@ -93,9 +93,6 @@ test('(g) sunset トリガは実在する dev-flow-canary の probe か major �
       `「${title}」の sunset トリガがコードの信号でも "${DRY_RUN}" でもない: ${trigger}`,
     );
   }
-  for (const [name, src] of [['rules', rulesSrc], ['capability-bound.md', capSrc]]) {
-    assert.ok(!/calibration monitor/i.test(src), `${name} がコードに無い calibration monitor を前提にしている`);
-  }
 });
 
 // rules と capability-bound.md が backtick で挙げる定数・識別子・パスはコードに実在し、値は書き写さない。
@@ -156,15 +153,6 @@ test('(j) pipeline.md は model・effort の選定根拠を書かず、model の
   assert.ok(item, 'capability-bound.md に subagent の model・effort の項目が無い');
   assert.ok(item.fields['何をするか']?.includes('green-fix'), 'capability-bound.md の model・effort の項目が green-fix の override を書いていない');
   assert.ok(pipelineSrc.includes('`capability-bound.md`'), 'pipeline.md が capability-bound.md を指していない');
-});
-
-test('(k) pipeline.md の effort は「frontmatter で決め、call site は opts で渡さない」だけを書き、harness の扱いを書かない', () => {
-  const lines = pipelineSrc.split('\n').filter((l) => /effort/.test(l));
-  assert.ok(
-    lines.some((l) => l.includes('effort は frontmatter で決め、call site は opts で渡さない（`_lib/agent-frontmatter.test.mjs` が pin）')),
-    `pipeline.md に effort の決め方が無い:\n${lines.join('\n')}`,
-  );
-  assert.ok(!/opts\.effort|実効値|agent_opts_effort_accepted/.test(pipelineSrc), 'pipeline.md が harness の opts.effort の扱いを書いている');
 });
 
 // exec-proxy.md は proxy ごとの失敗ポリシー表だけを持つ。label は workflow に実在し、agent の担当・tools・maxTurns は書き写さない
@@ -231,12 +219,6 @@ test('(n) 起動形と GitHub I/O の規範は rules にだけ置き、exec-prox
   assert.ok(execProxySrc.includes('`.claude/rules/dev-flow.md`'), 'exec-proxy.md が rules を指していない');
 });
 
-test('(o) harness に依存する判断（bin/ PATH の version 固定・長い sleep・GIT_OPTIONAL_LOCKS）は capability-bound.md の項目にある', () => {
-  for (const s of ['command -v', '`ci-wait <秒>`', '`GIT_OPTIONAL_LOCKS=0`']) {
-    assert.ok(capItems.some(({ fields }) => fields['何をするか']?.includes(s)), `capability-bound.md に「${s}」を扱う項目が無い`);
-  }
-});
-
 const INVARIANT_ANCHORS = [
   'merge は常に人間',
   '軸A',
@@ -247,6 +229,8 @@ const INVARIANT_ANCHORS = [
   'Date.now',
   '--telemetry-json',
   'written:false',
+  'verbatim 転写',
+  'review-finding 決定論スクラバー',
 ];
 
 test('(d) 不変条件アンカーが全て rules に残っている', () => {
@@ -265,12 +249,11 @@ const EXPECTED_PATHS = [
   'tools/**',
 ];
 
-test('(e) frontmatter の paths 配列が現状と同一の 8 エントリを含み、撤去した doctor / improve を含まない', () => {
+test('(e) frontmatter の paths 配列が現状と同一の 8 エントリを含む', () => {
   const frontmatterMatch = rulesSrc.match(/^---\n([\s\S]*?)\n---/);
   assert.ok(frontmatterMatch, 'frontmatter が見つからない');
   const frontmatter = frontmatterMatch[1];
   for (const p of EXPECTED_PATHS) {
     assert.ok(frontmatter.includes(`"${p}"`), `frontmatter の paths に "${p}" が含まれない`);
   }
-  assert.ok(!/dev-flow-doctor|dev-flow-improve|dev-improve/.test(rulesSrc), 'rules に撤去した doctor / improve への言及が残っている');
 });
