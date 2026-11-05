@@ -810,7 +810,7 @@ JSON
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e '.analyze.ok == true and .analyze.analyze_path == "contract"'
     echo "$output" | jq -e '.analyze.acceptance_criteria == ["AC one", "AC two"] and .analyze.issue_type == "feat" and .analyze.issue_title == "feat: add thing"'
-    echo "$output" | jq -e '(.analyze.issue_body | type) == "string" and .analyze.breaking_change == false and .analyze.comment_overrides == [] and .analyze.comment_conflicts == [] and .analyze.uncertain == []'
+    echo "$output" | jq -e '.analyze.breaking_change == false and .analyze.comment_overrides == [] and .analyze.comment_conflicts == [] and .analyze.uncertain == []'
     echo "$output" | jq -e '.analyze.blockers == []'
     echo "$output" | jq -e '(.analyze.duration_seconds | type) == "number" and .analyze.duration_seconds >= 0'
 }
@@ -843,6 +843,65 @@ JSON
     [ "$analyze_bg_line" -lt "$stack_line" ]
     [ "$stack_line" -lt "$analyze_wait_line" ]
     [ "$analyze_wait_line" -lt "$output_line" ]
+}
+
+# ---- (16e〜g) issue 本文の全文を worktree のファイルで渡す ----
+
+# body_fixture <本文のファイル>: 本文ファイルの中身を argv に載せず（Linux の 1 引数 128KiB 上限）issue fixture にする
+body_fixture() {
+    jq -n --rawfile body "$1" '{title: "feat: add thing", state: "open", body: $body, labels: [], assignees: [], milestone: null, comments: [], author: {login: "reporter"}}' \
+        >"$BATS_TEST_TMPDIR/issue.json"
+    export GH_STUB_FIXTURE="$BATS_TEST_TMPDIR/issue.json"
+}
+
+@test "(16e) 本文全文（CRLF・末尾改行込み）が byte 一致で issue-body.md に載り、再利用 worktree の再実行では最新の本文になる" {
+    local body="$BATS_TEST_TMPDIR/body.md"
+    printf '## 受け入れ基準\r\n\r\n- [ ] AC one\r\n\r\n初回の本文\n\n' >"$body"
+    body_fixture "$body"
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .analyze.ok == true and .worktree_status == "created"'
+    cmp "$body" "$WT/.devflow-tmp/issue-body.md"
+    [ -z "$(git -C "$WT" status --porcelain --untracked-files=all)" ]
+
+    printf '## 受け入れ基準\n\n- [ ] AC one\n\n編集後の本文\n' >"$body"
+    body_fixture "$body"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .analyze.ok == true and .worktree_status == "reused"'
+    cmp "$body" "$WT/.devflow-tmp/issue-body.md"
+}
+
+@test "(16f) 65536 字のマルチバイト本文 -> issue-body.md が byte 一致し analyze.ok:true" {
+    local body="$BATS_TEST_TMPDIR/body.md" head filler_chars
+    head=$'## 受け入れ基準\n\n- [ ] AC one\n\n'
+    # bash の ${#head} は locale でバイト数になるので jq で字数を数える
+    filler_chars=$((65536 - $(printf '%s' "$head" | jq -Rs 'length')))
+    { printf '%s' "$head"; printf 'あ%.0s' $(seq 1 "$filler_chars"); } >"$body"
+    body_fixture "$body"
+    jq -e '.body | length == 65536' "$GH_STUB_FIXTURE"
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .analyze.ok == true and .analyze.acceptance_criteria == ["AC one"]'
+    cmp "$body" "$WT/.devflow-tmp/issue-body.md"
+}
+
+@test "(16g) 本文ファイルを書けない -> analyze.ok:false + reason、他段は影響を受けない" {
+    # clean は追跡ファイルを消さないので、issue-body.md の場所にディレクトリが残って clean の後も書けない
+    git -C "$SEED" checkout -q dev
+    mkdir -p "$SEED/.devflow-tmp/issue-body.md"
+    : >"$SEED/.devflow-tmp/issue-body.md/keep"
+    git -C "$SEED" add .devflow-tmp
+    git -C "$SEED" commit -q -m "block the body file"
+    git -C "$SEED" push -q origin dev
+    make_issue_fixture
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .clean.ok == true'
+    echo "$output" | jq -e '.analyze.ok == false and (.analyze.reason | test("issue 本文を .*issue-body.md に書けない")) and .analyze.analyze_path == "contract"'
 }
 
 # ---- (17) plugin_commit（issue #785）----

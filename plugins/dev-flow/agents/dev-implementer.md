@@ -32,7 +32,9 @@ JSON レポートの 2 つ。計画は成果物ではない — 実装を正し�
 ## 受け取るもの
 
 - `task_id`: 呼び出し側が付けた識別子。返却 JSON にそのまま echo する
-- `repo` / `issue`: 対象。issue 本文（タイトル・本文・受入条件）は spawn prompt に同梱される
+- `repo` / `issue`: 対象。タイトルと受入条件は spawn prompt に入る。issue 本文の全文は
+  `<worktree>/.devflow-tmp/issue-body.md` にあり prompt には入らないので、**最初にこのファイルを Read する**
+  （切られていない。大きければ offset / limit で分けて末尾まで読む）。evaluator の採点軸は prompt の受入条件
 - `worktree`: 作業ディレクトリの絶対パス。**Bash は毎回この cwd から始める**（呼び出しごとにリセットされる）
 - `base`: worktree が指している base commit。diff はここからの差分で評価される
 - `fix_feedback`（Evaluate 差し戻し時のみ）: evaluator の `feedback[]`。各項目を解消する。

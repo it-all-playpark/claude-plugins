@@ -9,7 +9,7 @@
 # 行う処理: base 解決 (origin/dev → origin/HEAD フォールバック) → worktree 作成/再利用 +
 # 起点(base)一致検証 + 独自コミット無しの再利用 worktree を base へ fast-forward + 書き込み probe →.devflow-tmp を info/exclude に足す
 # （対象 repo が ignore していなければ）→ .devflow-tmp の git clean -fdx → analyze
-# （issue 取得 + contract parse + Jev 有界判定。prerun-analyze.sh。detect-stack と並列）‖
+# （issue 取得 + 本文全文を .devflow-tmp/issue-body.md へ書く + contract parse + Jev 有界判定。prerun-analyze.sh。detect-stack と並列）‖
 # detect-stack（+ detect-test-runner の受理パターンを stack.test_runners に載せる）。各段は独立に ok/error を報告し、後続段を巻き込まない。
 # worktree 作成で取り出せないパスには skip-worktree を付け（出力の skip_worktree）、未ステージの削除が残る再利用 worktree は
 # ok:false で止める（_shared/scripts/worktree-checkout.sh）。
@@ -464,6 +464,8 @@ fi
 ANALYZE_OUT="$(mktemp "${TMPDIR:-/tmp}/dev-flow-prerun-analyze-out.XXXXXX")"
 ANALYZE_ARGS=(--issue "$ISSUE")
 [[ -n "$repo" ]] && ANALYZE_ARGS+=(--repo "$repo")
+# Segment 3 の clean の後に書くので、再利用 worktree の再実行でも最新の本文になる。worktree が無ければ書き先も無い（ok:false）
+[[ "$SEG2_OK" == true ]] && ANALYZE_ARGS+=(--body-file "$WT/.devflow-tmp/issue-body.md")
 (
     a_start="$(date +%s)"
     if ANALYZE_RAW="$("$PLUGIN_ROOT/dev-flow/scripts/prerun-analyze.sh" "${ANALYZE_ARGS[@]}" 2>/dev/null)" \

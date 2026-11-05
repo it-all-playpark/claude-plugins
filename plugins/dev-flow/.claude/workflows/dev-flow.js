@@ -2027,8 +2027,6 @@ function buildReqFromContract(analyze, issueNumber) {
   if (!isStringArray(analyze.comment_conflicts)) return null
   if (!isStringArray(analyze.uncertain)) return null
   if (!isStringArray(analyze.jev_reasons)) return null
-  if (typeof analyze.scope !== 'string') return null
-  if (typeof analyze.scope_truncated !== 'boolean') return null
   if (!Array.isArray(analyze.blockers) || !analyze.blockers.every(isBlocker)) return null
   const acCount = analyze.acceptance_criteria.length
   if (!Array.isArray(analyze.ac_observational) || analyze.ac_observational.length !== acCount) return null
@@ -2042,8 +2040,6 @@ function buildReqFromContract(analyze, issueNumber) {
     issue_type: analyze.issue_type,
     acceptance_criteria: analyze.acceptance_criteria.slice(0, 20),
     ac_observational: analyze.ac_observational.slice(0, 20),
-    scope: analyze.scope,
-    scope_truncated: analyze.scope_truncated,
     breaking_change: analyze.breaking_change,
     breaking_keyword_scan: analyze.breaking_keyword_scan,
     breaking_evidence: typeof analyze.breaking_evidence === 'string' ? analyze.breaking_evidence : '',
@@ -2054,17 +2050,8 @@ function buildReqFromContract(analyze, issueNumber) {
     jev_reasons: analyze.jev_reasons.slice(),
     blockers: analyze.blockers.map((b) => ({ repo: b.repo, number: b.number, state: b.state, source: b.source, url: b.url })),
   }
-  if (Number.isInteger(analyze.scope_total_chars) && analyze.scope_total_chars >= 0) {
-    req.scope_total_chars = analyze.scope_total_chars
-  }
   if (Number.isInteger(analyze.comment_count) && analyze.comment_count >= 0) {
     req.comment_count = analyze.comment_count
-  }
-  if (typeof analyze.issue_body === 'string') {
-    req.issue_body = analyze.issue_body
-  }
-  if (typeof analyze.issue_body_truncated === 'boolean') {
-    req.issue_body_truncated = analyze.issue_body_truncated
   }
   return req
 }
@@ -5478,6 +5465,10 @@ const STAGING_CONVENTION = `一時/handoff ファイルの配置規約: `
   + `（git status に混入し realized-diff の実効 shape 誤判定・宣言外変更 concern の原因になる）。\n`
   + EPOCH_INSTRUCTION
 
+// dev-flow-prerun が issue 本文の全文を書くファイル（worktree 相対）。setup は wrapper の LLM が Workflow の args へ
+// 書き写すので本文を載せない。実装中に書き換えられるので判定系の prompt には渡さない（採点軸は acceptance_criteria）。
+const ISSUE_BODY_FILE = '.devflow-tmp/issue-body.md'
+
 // Next.js/Turbopack 固有の build 検証規約。sandbox 内では `next build`（Turbopack）が process 生成・
 // ポートバインド制限により TurbopackInternalError (os error 1) で決定的に失敗する。実装 agent が対照実験を
 // 毎回再発明しないよう、非 Turbopack fallback（`next build --webpack`）で build 検証してよい旨を規約化する。
@@ -5533,20 +5524,17 @@ function adoptReportedFiles(plan, results) {
   const adopt = (t) => isImplTask(t) ? { ...t, file_changes: [...new Set([...(t.file_changes ?? []), ...filesOf(t.id)])] } : t
   return { ...plan, serial: (plan.serial ?? []).map(adopt) }
 }
-// dev-implementer への spawn prompt。issue 本文と AC を直接渡し、手順書型 task・plan contract・
+// dev-implementer への spawn prompt。issue 本文は ISSUE_BODY_FILE を最初に Read させ、AC を直接渡す。手順書型 task・plan contract・
 // AC テスト契約（red→green 自己実証）は渡さない — 全件テスト・red 証明・AC 判定は Validate /
 // redgreen-verify / evaluator が行う（agent 定義 agents/dev-implementer.md）。
 // blocked（BLOCKED 再計画時のみ）: blockSeen 累積の approach_mismatch findings（過去に BLOCKED になった
 // 全アプローチへの回帰禁止）と DONE 成果（再実装させない）を同じ prompt に付けて再 spawn する。
 function implPrompt(t, { req, fixFeedback, blocked }) {
-  const body = typeof req?.issue_body === 'string' && req.issue_body.length > 0 ? req.issue_body : null
   return `cd ${WT} で作業（Bash 呼び出しごとに必ず先頭で cd ${WT} すること。agent の cwd は毎回リセットされる）。`
     + `issue #${ISSUE} を計画から実装まで仕上げよ。git add / commit はするな。\n`
     + `task_id: ${t.id}（返却 JSON の task_id にそのまま echo せよ）\n`
     + `repo: ${REPO ?? '(unknown)'} / issue: #${ISSUE} ${String(req?.issue_title ?? '')} / worktree: ${WT} / base: ${BASE}\n`
-    + (body
-        ? `issue 本文${req.issue_body_truncated === true ? '（切詰め済み — 末尾の [TRUNCATED] マーカー以降は届いていない。切詰め域の記述は acceptance_criteria を正とせよ）' : ''}:\n${body}\n`
-        : 'issue 本文: analyze 出力に含まれていない — acceptance_criteria を正として実装せよ\n')
+    + `最初に ${WT}/${ISSUE_BODY_FILE} を Read せよ。issue 本文の全文で、この prompt には載せていない（大きければ offset / limit で分けて末尾まで読め）。\n`
     + `acceptance_criteria（evaluator はこの AC を採点軸にする。全 AC を満たし、各 AC を守るテストを残せ）:\n${JSON.stringify(req?.acceptance_criteria ?? [])}\n`
     + (fixFeedback ? `fix_feedback（Evaluate 差し戻し。各項目を解消）:\n${JSON.stringify(fixFeedback)}\n` : '')
     + (blocked
@@ -5689,8 +5677,8 @@ const clarifyPrompt = (gateReasons) => `cd ${WT} で作業。issue #${ISSUE} は
 // ------------------------------------------------------------
 // Setup 末尾: analyze ゲート。args.setup.analyze（dev-flow-prerun の analyze 段 = analyze-issue --contract +
 // Jev 有界判定、deps install と並列）を whitelist 検証して REQ を組み、4 条件ゲートだけを判定する。
-// 通常経路の agent spawn は 0。LLM が issue を転写する工程が無いので provenance 突合 / comment_count 突合 /
-// scope 切断時の再実行は置かない。固有の phase は持たない（純関数の検証とゲート判定だけで agent 応答（epoch）が
+// 通常経路の agent spawn は 0。LLM が issue を転写する工程が無いので provenance 突合 / comment_count 突合は
+// 置かない。固有の phase は持たない（純関数の検証とゲート判定だけで agent 応答（epoch）が
 // 無く、所要は常に ≒0）。prerun の analyze 段の所要は prerun_durations.analyze に載せる。
 // ------------------------------------------------------------
 // setup_end は prerun の epoch_end（deps install / detect-stack / analyze 段完了後）から給電する。
@@ -5715,7 +5703,7 @@ const ANALYZE_PATH = req.analyze_path
 const ANALYZE_INELIGIBLE_REASON = req.jev_reasons.length ? req.jev_reasons.join('; ') : null
 log(`analyze: prerun 決定論 parse を採用（path=${ANALYZE_PATH}${ANALYZE_INELIGIBLE_REASON ? ' / jev: ' + ANALYZE_INELIGIBLE_REASON : ''} / AC ${req.acceptance_criteria.length} 件 / prerun analyze ${Number.isFinite(ANALYZE.duration_seconds) ? ANALYZE.duration_seconds : '?'}s）— analyze ゲートの spawn 0`)
 if (req.breaking_change === true) log(`analyze: breaking_change=true（${req.breaking_evidence || '根拠なし'}）`)
-if (req.scope_truncated === true) log(`⚠️ analyze: scope が 4000 字で切断（AC 節除く全 ${Number.isInteger(req.scope_total_chars) ? req.scope_total_chars : '?'} 字）— 切断域の記述は implementer に届かない（acceptance_criteria は全件届く。issue #596）`)
+log(`analyze: issue 本文は切らずに全文を ${WT}/${ISSUE_BODY_FILE} で implementer へ渡す（採点軸は acceptance_criteria）`)
 if (Array.isArray(ANALYZE.ac_heading_near_miss) && ANALYZE.ac_heading_near_miss.length) log(`⚠️ analyze: AC 見出しの表記ゆれ候補が許容表記に一致しない（${ANALYZE.ac_heading_near_miss.join(' / ')}）— AC 空なら needs_clarification になる（issue #573）`)
 // comment が body を明示訂正した override は採用済みとして log で可視化のみ（REQ にも残る）。
 if (req.comment_overrides.length) log(`analyze: comment による body 訂正を採用（${req.comment_overrides.length} 件）: ${req.comment_overrides.join(' | ')}`)

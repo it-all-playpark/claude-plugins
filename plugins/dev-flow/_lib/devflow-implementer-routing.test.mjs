@@ -16,9 +16,9 @@
 //   PR 失敗 (#682/#823): pr#<issue> の中断応答（committed:false / pr_url 空 / pr_number 非正）は
 //         nested pr-iterate・Merge tier へ流さず、throw せず failed_step / failure_reason を返り値に載せて
 //         終端し、failure handoff（error_category: pr_phase_failed）を書く。正常系は従来どおり nested pr-iterate まで進む
-//   prompt: issue_body + acceptance_criteria + task_id + 配置規約を含み、AC テスト契約は含まない
+//   prompt: issue 本文ファイルの Read 指示 + acceptance_criteria + task_id + 配置規約を含み、本文と AC テスト契約は含まない
 //
-// BLOCKED 再実装（reimpl-blocked#b）は blocked-replan-history.test.mjs / guard-blocked-routing.test.mjs。
+// BLOCKED 再実装（reimpl-blocked#b）の findings 累積は blocked-replan-history.test.mjs / guard-blocked-routing.test.mjs。
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -35,22 +35,19 @@ const src = readFileSync(join(here, '..', '.claude', 'workflows', 'dev-flow.js')
 const IMPLEMENTER = 'dev-flow:dev-implementer';
 const GONE_AGENTS = ['dev-planner', 'plan-reviewer', 'implementer'];
 
-const ISSUE_BODY = '## 背景\n本文の一段落。\n\n## 受け入れ基準\n- [ ] a\n- [ ] b';
 const AC = ['ac-one', 'ac-two', 'ac-three', 'ac-four'];
+const ISSUE_BODY_READ = '最初に /tmp/wt/.devflow-tmp/issue-body.md を Read せよ';
 
 // REQ は args.setup.analyze（prerun の analyze 段）から組まれるため、shape 別の analyze を setup に注入する。
 // 実効 shape は realized diff の file 数 + AC 数で決まる（issue #676）: micro は realized 1 件 / AC 2、
 // standard は既定の 3 件 / AC 4、complex は AC 7 件（realized 数に関わらず complex）。
 function analyzeOf(shape, overrides = {}) {
-  const base = { issue_body: ISSUE_BODY, issue_body_truncated: false };
-  if (shape === 'micro') return { ...base, acceptance_criteria: ['a', 'b'], issue_type: 'fix', ...overrides };
-  if (shape === 'complex') return { ...base, acceptance_criteria: ['a', 'b', 'c', 'd', 'e', 'f', 'g'], issue_type: 'feat', ...overrides };
-  return { ...base, acceptance_criteria: AC, issue_type: 'feat', ...overrides };
+  if (shape === 'micro') return { acceptance_criteria: ['a', 'b'], issue_type: 'fix', ...overrides };
+  if (shape === 'complex') return { acceptance_criteria: ['a', 'b', 'c', 'd', 'e', 'f', 'g'], issue_type: 'feat', ...overrides };
+  return { acceptance_criteria: AC, issue_type: 'feat', ...overrides };
 }
 function argsOf(shape, overrides = {}) {
-  const args = analyzeArgs(1, analyzeOf(shape, overrides));
-  for (const k of Object.keys(overrides)) if (overrides[k] === undefined) delete args.setup.analyze[k];
-  return args;
+  return analyzeArgs(1, analyzeOf(shape, overrides));
 }
 function filesOf(shape) {
   if (shape === 'micro') {
@@ -131,13 +128,14 @@ test('[implementer] AC-3: dev-implementer が null を返すと drop 1 として
 });
 
 // ============================================================
-// prompt: issue_body / acceptance_criteria / task_id / 配置規約を含み、AC テスト契約は含まない
+// prompt: 本文ファイルの Read 指示 / acceptance_criteria / task_id / 配置規約を含み、本文・AC テスト契約は含まない
 // ============================================================
-test('[implementer] dev-implementer の prompt に issue_body・acceptance_criteria・task_id・配置規約が含まれ、AC テスト契約は含まれない', async () => {
-  const { calls } = await runFlow('standard');
+test('[implementer] dev-implementer の prompt に本文ファイルの Read 指示・acceptance_criteria・task_id・配置規約が含まれ、AC テスト契約は含まれない', async () => {
+  const { calls, logs } = await runFlow('standard');
   const [call] = byType(calls, IMPLEMENTER);
   assert.ok(call, 'dev-implementer の call が無い');
-  assert.ok(call.prompt.includes(ISSUE_BODY), 'prompt に issue_body（req.issue_body）が含まれない');
+  assert.ok(call.prompt.includes(ISSUE_BODY_READ), 'prompt に本文ファイルを最初に Read する指示が無い');
+  assert.ok(logs.some((l) => l.includes('全文を /tmp/wt/.devflow-tmp/issue-body.md で implementer へ渡す')), '本文の渡し方の log が無い');
   assert.ok(call.prompt.includes(JSON.stringify(AC)), 'prompt に acceptance_criteria が含まれない');
   assert.ok(call.prompt.includes('task_id: issue-1'), 'prompt に合成 task の task_id が含まれない');
   assert.ok(call.prompt.includes('一時/handoff ファイルの配置規約'), 'prompt に STAGING_CONVENTION が含まれない');
@@ -146,13 +144,25 @@ test('[implementer] dev-implementer の prompt に issue_body・acceptance_crite
   assert.ok(!call.prompt.includes('前回実装が BLOCKED になった'), '初回 Implement の prompt に BLOCKED 再実装の文言が含まれている');
 });
 
-test('[implementer] issue_body_truncated:true → prompt に切詰め注記が付く / issue_body 欠落 → 本文なし注記', async () => {
-  const truncated = await runFlow('standard', {}, {}, { issue_body_truncated: true });
-  const [t] = byType(truncated.calls, IMPLEMENTER);
-  assert.ok(t.prompt.includes('切詰め済み'), 'issue_body_truncated:true の注記が無い');
-  const missing = await runFlow('standard', {}, {}, { issue_body: undefined, issue_body_truncated: undefined });
-  const [m] = byType(missing.calls, IMPLEMENTER);
-  assert.ok(m.prompt.includes('issue 本文: analyze 出力に含まれていない'), 'issue_body 欠落時の注記が無い');
+test('[implementer] setup に本文が混ざっても prompt に埋め込まず、Implement・BLOCKED 再実装・Evaluate 差し戻しの全 prompt が本文ファイルの Read 指示と AC を持つ', async () => {
+  const STRAY_BODY = 'STRAY-BODY-MUST-NOT-BE-EMBEDDED';
+  const { calls, error } = await runFlow('standard', {
+    'impl:serial:issue-1': { status: 'BLOCKED', task_id: 'issue-1', files: [], summary: '', concerns: [], blocking_reason: { block_class: 'approach_mismatch', detail: 'R1' } },
+    'reimpl-blocked#1:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: ['src/x.ts'], summary: 's', concerns: [] },
+    'reimpl#1:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: ['src/x.ts'], summary: 's', concerns: [] },
+    'eval#1': EVAL_FAIL('implementation'),
+    'eval#2': EVAL_PASS,
+  }, {}, { issue_body: STRAY_BODY, scope: STRAY_BODY });
+  assert.equal(error, null, `run が throw した: ${error?.message}`);
+  const prompts = byType(calls, IMPLEMENTER);
+  for (const label of ['impl:serial:issue-1', 'reimpl-blocked#1:serial:issue-1', 'reimpl#1:serial:issue-1']) {
+    assert.ok(prompts.some((c) => c.label === label), `${label} が spawn されていない: ${prompts.map((c) => c.label).join(', ')}`);
+  }
+  for (const c of prompts) {
+    assert.ok(c.prompt.includes(ISSUE_BODY_READ), `${c.label} prompt に本文ファイルの Read 指示が無い`);
+    assert.ok(c.prompt.includes(JSON.stringify(AC)), `${c.label} prompt に acceptance_criteria が無い`);
+    assert.ok(!c.prompt.includes(STRAY_BODY), `${c.label} prompt に本文が埋め込まれている`);
+  }
 });
 
 test('[implementer] 返却 files（src/x.ts）が宣言として取り込まれ、宣言外変更 concern が出ない', async () => {

@@ -232,7 +232,7 @@ test('[observational-ac] (F) 回帰: null の AC だけを AC 文面 + title で
   // prerun で観測型 true の AC-4（文面上の actor は agent）は、AC の検証コマンドを聞くために同じ 1 回に含める（issue #1208）
   assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: 3, ac: REG_ACS[3] })), `観測型で actor agent の AC が渡っていない: ${obs[0].prompt}`);
   for (const i of [0, 1, 4]) assert.ok(!obs[0].prompt.includes(REG_ACS[i]), `prerun で観測型 false と確定した AC-${i + 1} を渡している: ${obs[0].prompt}`);
-  assert.ok(!obs[0].prompt.includes('stub-issue-body'), 'issue 本文を渡している');
+  assert.ok(!obs[0].prompt.includes('issue-body.md'), 'issue 本文のファイルを読ませている');
   // diff・evaluator の結果が存在する前（isolation-probe・実装・評価より前）に 1 回だけ走る
   const at = (pred) => calls.findIndex(pred);
   assert.ok(at((c) => c.label.startsWith('ac-observational#')) < at((c) => c.label === 'isolation-probe'), 'isolation-probe より後に走った');

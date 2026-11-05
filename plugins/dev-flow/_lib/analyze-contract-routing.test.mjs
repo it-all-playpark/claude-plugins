@@ -15,7 +15,7 @@
 //   (f) args.setup.analyze が ok:true だが whitelist 不合格 → fail-closed throw（推測で REQ を組まない）
 //   (g) clarify prompt はゲート理由を verbatim で含み、issue は analyze-issue の直接実行（切断時は dump を Read）で読ませ、
 //       issue 転写（gh の直接実行 / sandbox 語）を指示しない
-//   (h) REQ が prerun の analyze から組まれる: breaking_change / issue_body / AC が dev-implementer prompt と shape に届く
+//   (h) REQ が prerun の analyze から組まれる: breaking_change / AC が dev-implementer prompt と shape に届く
 //   (i) open な blocker（issue #744）: needs_clarification（source=blocked_by）で journal handoff 以外の spawn 0、
 //       missing_context に未完了 issue を列挙。analyze ゲートより先に判定する。closed のみなら通常経路
 //   (j) repo 内外が混ざった AC（issue #793）: needs_clarification（source=analyze）で Implement に進まず、
@@ -200,13 +200,12 @@ test('[analyze-routing] (g2) analyze-clarify#1 prompt は互換性の明記を b
 });
 
 // ---- (h) REQ は prerun の analyze から組まれる ----
-test('[analyze-routing] (h) prerun の analyze の issue_body / AC / issue_title が dev-implementer prompt に届き、breaking_change=true は shape=complex に倒す', async () => {
-  const analyze = prerunAnalyze({ issue_title: 'feat: prerun analyze', issue_body: 'PRERUN-BODY-MARKER', acceptance_criteria: ['AC-ONE', 'AC-TWO'], breaking_change: true, breaking_evidence: 'title の breaking marker (!)' });
+test('[analyze-routing] (h) prerun の analyze の AC / issue_title が dev-implementer prompt に届き、breaking_change=true は shape=complex に倒す', async () => {
+  const analyze = prerunAnalyze({ issue_title: 'feat: prerun analyze', acceptance_criteria: ['AC-ONE', 'AC-TWO'], breaking_change: true, breaking_evidence: 'title の breaking marker (!)' });
   const { calls, logs, error } = await run({ args: devFlowArgs(1, { analyze }) });
   assert.equal(error, null);
   const impl = calls.find((c) => c.agentType === 'dev-flow:dev-implementer');
   assert.ok(impl);
-  assert.ok(impl.prompt.includes('PRERUN-BODY-MARKER'), 'issue_body が dev-implementer prompt に無い');
   assert.ok(impl.prompt.includes('AC-ONE') && impl.prompt.includes('AC-TWO'), 'AC が dev-implementer prompt に無い');
   assert.ok(impl.prompt.includes('feat: prerun analyze'), 'issue_title が dev-implementer prompt に無い');
   assert.ok(logs.some((l) => /shape=complex|floor=complex|breaking change detected/.test(l)), `breaking_change=true が shape に反映されていない: ${logs.filter((l) => l.includes('shape')).join(' | ')}`);

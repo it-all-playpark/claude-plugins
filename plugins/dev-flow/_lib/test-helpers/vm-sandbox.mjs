@@ -77,8 +77,6 @@ export function prerunAnalyze(overrides = {}) {
   return {
     ok: true, analyze_path: 'contract', jev_reasons: [],
     issue_title: 'stub-issue-title', issue_type: 'fix', acceptance_criteria: ['a', 'b'],
-    scope: 'src', scope_truncated: false, scope_total_chars: 3,
-    issue_body: 'stub-issue-body', issue_body_truncated: false,
     breaking_keyword_scan: false, breaking_change: false, breaking_evidence: '',
     comment_count: 0, comment_overrides: [], comment_conflicts: [], uncertain: [], blockers: [],
     ac_observational: acs.map(() => false), ac_observational_evidence: acs.map(() => 'stub: 正規表現の絞り込みに当たらない'),

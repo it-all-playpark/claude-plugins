@@ -16,7 +16,6 @@
 //   - analyze.acceptance_criteria が配列で全要素が非空 string（空配列は許容 — AC 空ゲートは Workflow 側）
 //   - analyze.breaking_change / breaking_keyword_scan が boolean
 //   - analyze.comment_overrides / comment_conflicts / uncertain / jev_reasons が string 配列
-//   - analyze.scope が string、analyze.scope_truncated が boolean
 //   - analyze.blockers が配列で、全要素が {repo: string, number: 正整数, state: 非空 string,
 //     source: 'api'|'body', url: string}（issue #744。依存なしは空配列）
 //   - analyze.ac_observational が acceptance_criteria と同じ長さの配列で、全要素が true / false / null
@@ -24,6 +23,8 @@
 //   - analyze.ac_observational_evidence が acceptance_criteria と同じ長さの string 配列（AC ごとの判定根拠）
 //
 // 合格時、REQ をキー個別 copy で構成する（spread しない — 未知キーの混入防止）。
+// issue 本文は REQ に載せない — dev-implementer は worktree の .devflow-tmp/issue-body.md で全文を読み、
+// 実装中に書き換えられるそのファイルを判定の根拠にしない（採点軸は acceptance_criteria）。
 // 事前 shape 見積もりは REQ に載せない — 実効 shape は realized diff の file 数から classifyShape が決める（issue #676）。
 export const ANALYZE_PATH_INPUT = ['contract', 'jev']
 export const BLOCKER_SOURCES = ['api', 'body']
@@ -57,8 +58,6 @@ export function buildReqFromContract(analyze, issueNumber) {
   if (!isStringArray(analyze.comment_conflicts)) return null
   if (!isStringArray(analyze.uncertain)) return null
   if (!isStringArray(analyze.jev_reasons)) return null
-  if (typeof analyze.scope !== 'string') return null
-  if (typeof analyze.scope_truncated !== 'boolean') return null
   if (!Array.isArray(analyze.blockers) || !analyze.blockers.every(isBlocker)) return null
   const acCount = analyze.acceptance_criteria.length
   if (!Array.isArray(analyze.ac_observational) || analyze.ac_observational.length !== acCount) return null
@@ -72,8 +71,6 @@ export function buildReqFromContract(analyze, issueNumber) {
     issue_type: analyze.issue_type,
     acceptance_criteria: analyze.acceptance_criteria.slice(0, 20),
     ac_observational: analyze.ac_observational.slice(0, 20),
-    scope: analyze.scope,
-    scope_truncated: analyze.scope_truncated,
     breaking_change: analyze.breaking_change,
     breaking_keyword_scan: analyze.breaking_keyword_scan,
     breaking_evidence: typeof analyze.breaking_evidence === 'string' ? analyze.breaking_evidence : '',
@@ -84,19 +81,8 @@ export function buildReqFromContract(analyze, issueNumber) {
     jev_reasons: analyze.jev_reasons.slice(),
     blockers: analyze.blockers.map((b) => ({ repo: b.repo, number: b.number, state: b.state, source: b.source, url: b.url })),
   }
-  if (Number.isInteger(analyze.scope_total_chars) && analyze.scope_total_chars >= 0) {
-    req.scope_total_chars = analyze.scope_total_chars
-  }
   if (Number.isInteger(analyze.comment_count) && analyze.comment_count >= 0) {
     req.comment_count = analyze.comment_count
-  }
-  // issue_body / issue_body_truncated（issue #668）: Implement phase が dev-implementer へ issue 本文として
-  // 渡す。型が合うときだけキーを立てる（欠落は実装 agent の prompt 側で「本文なし・AC を正とする」に倒れる）。
-  if (typeof analyze.issue_body === 'string') {
-    req.issue_body = analyze.issue_body
-  }
-  if (typeof analyze.issue_body_truncated === 'boolean') {
-    req.issue_body_truncated = analyze.issue_body_truncated
   }
   return req
 }
