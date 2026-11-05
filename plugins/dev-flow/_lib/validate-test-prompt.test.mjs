@@ -1,5 +1,5 @@
 // Validate / post-eval / test#final の test 実行 prompt を VM run で実際に各 spawn へ渡る prompt として捕捉し、
-// exec-proxy `run-tests <WT>` の stdout 転写契約になっていることを pin する（issue #821）。
+// exec-proxy `run-tests start <WT>` の stdout 転写契約になっていることを pin する（issue #821）。
 //
 // テストスクリプトの選択・起動失敗の分類・failed_files の抽出・green 判定は run-tests（_shared/scripts/run-tests.sh、
 // run-tests.bats が exit 0 / 1 / 126 / run-*.sh 無しの fixture で pin）が exit code から決める。prompt 側に残るのは
@@ -102,14 +102,14 @@ test('[validate-test-prompt] --base は PRERUN.base（origin/<base>）に追従�
   for (const label of ['test#1', 'test#final']) {
     const c = calls.find((x) => x.label === label);
     assert.ok(c != null, `${label} の call が見つからない (labels: ${calls.map((x) => x.label).join(', ')})`);
-    assert.equal(c.prompt.split('\n').at(-1), 'run-tests /tmp/wt --base origin/dev', `${label} の実行コマンド行: ${c.prompt.split('\n').at(-1)}`);
+    assert.equal(c.prompt.split('\n').at(-1), 'run-tests start /tmp/wt --base origin/dev', `${label} の実行コマンド行: ${c.prompt.split('\n').at(-1)}`);
   }
 });
 
-test('[validate-test-prompt] 転写契約: 最終行が bare 単文 `run-tests <WT> --base <ref>` で、stdout の JSON 1 行を verbatim で返させる', () => {
+test('[validate-test-prompt] 転写契約: 最終行が bare 単文 `run-tests start <WT> --base <ref>` で、stdout の JSON 1 行を verbatim で返させる', () => {
   const prompt = runTestsPrompt('/tmp/wt', 'origin/main');
   const lines = prompt.split('\n');
-  assert.equal(lines.at(-1), 'run-tests /tmp/wt --base origin/main', `実行コマンド行が bare 単文の run-tests ではない: ${lines.at(-1)}`);
+  assert.equal(lines.at(-1), 'run-tests start /tmp/wt --base origin/main', `実行コマンド行が bare 単文の run-tests ではない: ${lines.at(-1)}`);
   assert.ok(prompt.includes('1 回だけ実行') && prompt.includes('再実行しない'), '1 回だけ実行の指示が無い');
   assert.ok(prompt.includes('stdout の JSON 1 行だけ'), 'stdout の JSON 1 行だけを返させる指示が無い');
   assert.ok(prompt.includes('verbatim'), 'verbatim 転写の指示が無い');
@@ -158,7 +158,7 @@ test('[validate-test-prompt] Final reconcile の test#final は Validate の tes
 // 変数の契約（名前・形式・未設定 = 全件）は repo 側のランナーが読む唯一の仕様なので、reference の記述を pin する
 test('[validate-test-prompt] pipeline.md の run-tests 説明に DEVFLOW_CHANGED_FILES / DEVFLOW_BASE の契約がある', () => {
   const pipelineMd = readFileSync(join(repoRoot, 'dev-flow/references/pipeline.md'), 'utf8');
-  const pipelinePara = pipelineMd.split('\n\n').find((p) => p.includes('run-tests <WT>'));
+  const pipelinePara = pipelineMd.split('\n\n').find((p) => p.includes('run-tests start <WT>'));
   assert.ok(pipelinePara, 'pipeline.md に run-tests の段落が無い');
   for (const token of ['--base', 'DEVFLOW_CHANGED_FILES', 'DEVFLOW_BASE', '絶対パス', '1 行 1 件', '全件', 'untracked']) {
     assert.ok(pipelinePara.includes(token), `pipeline.md の run-tests 説明に '${token}' が無い`);

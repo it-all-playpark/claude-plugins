@@ -128,6 +128,11 @@ const EXPECTED_DEV_FLOW = {
       assert.ok(calls.some((c) => c.label === 'green-fix#1'), "test#1 throw 後に label 'green-fix#1' の call が見つからない");
     },
   },
+  'test#1.stop': {
+    config: { overrides: { 'test#1': { tests: 'error', green: false, summary: 'run-tests did not return JSON' } } },
+    policy: 'continue',
+    reason: 'failOpenAgent経由。止まらなくてもrun-tests側の上限で止まるのでtests:errorのまま継続する',
+  },
   'diff-gate': { config: DF_B1, policy: 'abort', reason: 'need()包み。empty-diff gate判定不能のまま先へ進めない致命契約' },
   'danger-grep': {
     config: DF_DANGER,

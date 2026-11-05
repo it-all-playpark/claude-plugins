@@ -3885,10 +3885,12 @@ const IMPL = {
 // 省略時はすべての失敗を green-fix の対象にする。
 // scripts[].log: 各 script の出力ログの絶対パス（worktree 外）。同じ tree を判定する eval#N / final-ac-reconcile に
 // testLogsPromptBlock で渡し、実行済みのテストファイルを evaluator に再実行させない。
+// run-tests start / wait の stdout（status・tests が running の応答は runTestsJob の中で待ち切り、呼び出し側には渡らない）。
 const GREEN = {
   type: 'object', required: ['tests', 'green'],
   properties: {
-    tests: { type: 'string', enum: ['passed', 'failed', 'no_tests', 'error'] },
+    status: { type: 'string', enum: ['running', 'passed', 'failed', 'error'] },
+    tests: { type: 'string', enum: ['running', 'passed', 'failed', 'no_tests', 'error'] },
     green: { type: 'boolean' },
     summary: { type: 'string' },
     scripts: {
@@ -5212,22 +5214,62 @@ function crossRepoReturnNote(artifacts) {
 // ==== END inline: _lib/cross-repo-gate.mjs ====
 // ==== BEGIN inline: _lib/run-tests-prompt.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
+const RUN_TESTS_WAIT_SEC = 450
+const RUN_TESTS_MAX_WAIT_SEC = 3600
+
 function runTestsPrompt(wt, base) {
-  return runTestsCommandPrompt(wt, `run-tests ${wt} --base ${base}`);
+  return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base}`);
 }
 
 function runTestFilesPrompt(wt, files) {
-  return runTestsCommandPrompt(wt, `run-tests ${wt} --files ${files.join(' ')}`);
+  return runTestsCommandPrompt(wt, `run-tests start ${wt} --files ${files.join(' ')}`);
 }
 
-function runTestsCommandPrompt(wt, command) {
+function runTestsWaitPrompt(wt) {
+  return runTestsCommandPrompt(wt, `run-tests wait ${wt} --wait-sec ${RUN_TESTS_WAIT_SEC}`);
+}
+
+function runTestsStopPrompt(wt) {
+  return runTestsCommandPrompt(wt, `run-tests stop ${wt}`, '{"ok":false,"error":"run-tests did not return JSON"}');
+}
+
+function runTestsCommandPrompt(wt, command, noJson = '{"tests":"error","green":false,"summary":"run-tests did not return JSON"}') {
   return `cd ${wt} で作業。次のコマンドを **先頭トークンが run-tests の bare 単文** で 1 回だけ実行し、`
     + `**stdout の JSON 1 行だけ** を verbatim で返せ（判定や脚色をしない。キーの追加・削除・値の書き換えをしない）。`
     + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止。`
-    + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。再実行しない（timeout に達した場合も含む）。`
+    + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない（常駐化はコマンド自身が行う）。再実行しない（timeout に達した場合も含む）。`
     + `timeout に達した・stdout に JSON 1 行が無い場合だけは、`
-    + `{"tests":"error","green":false,"summary":"run-tests did not return JSON"} を一字一句そのまま返せ:\n`
+    + `${noJson} を一字一句そのまま返せ:\n`
     + command;
+}
+
+const RUN_TESTS_STOP_SCHEMA = {
+  type: 'object', required: ['ok'],
+  properties: { ok: { type: 'boolean' }, stopped: { type: 'boolean' }, was_running: { type: 'boolean' }, error: { type: 'string' } },
+}
+
+async function runTestsJob({ wt, startPrompt, label, schema, waitJob, spawn, spawnStop }) {
+  const stop = () => spawnStop(runTestsStopPrompt(wt), { schema: RUN_TESTS_STOP_SCHEMA, label: `${label}.stop` });
+  const stoppedError = async (why) => {
+    const stopped = await stop();
+    return { tests: 'error', green: false, summary: `${why}${stopped?.ok === true ? '' : '（テストの停止を確認できない）'}` };
+  };
+  let res;
+  try {
+    res = await waitJob({
+      start: await spawn(startPrompt, { schema, label }),
+      wait: (k) => spawn(runTestsWaitPrompt(wt), { schema, label: `${label}.wait-${k}` }),
+      maxPolls: Math.ceil(RUN_TESTS_MAX_WAIT_SEC / RUN_TESTS_WAIT_SEC),
+      schema,
+    });
+  } catch (e) {
+    await stop();
+    throw e;
+  }
+  if (res.wait_capped === true) return stoppedError(`テストが待機の上限（${RUN_TESTS_MAX_WAIT_SEC} 秒）までに終わらなかった`);
+  if (!['passed', 'failed', 'no_tests', 'error'].includes(res.tests)) return stoppedError('run-tests の応答が無い・形が不正');
+  if (res.tests === 'error' && res.status == null) await stop();
+  return res;
 }
 // ==== END inline: _lib/run-tests-prompt.mjs ====
 // ==== BEGIN inline: _lib/pre-commit-hook.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
@@ -5707,13 +5749,23 @@ const setup = PRERUN
 
 // Validate（test#i / test#retry-i）・post-eval（test#post-eval-i）・Final reconcile（test#final）共有の test 実行 prompt。
 // WT 確定後（Setup 完了後）に 1 回だけ組み、全 test spawn が同一 byte 列を共有する（drift 防止）。
-// 中身は exec-proxy `run-tests <WT> --base <ref>` の stdout 転写だけ（_lib/run-tests-prompt.mjs）。workspace-prebuild・
+// 中身は exec-proxy `run-tests start <WT> --base <ref>` の stdout 転写だけ（_lib/run-tests-prompt.mjs）。workspace-prebuild・
 // tests/run-*.sh 全本の実行・起動失敗（exit 126 / 127）の error 分類・failed_files の抽出・epoch は run-tests が行い、
 // 出力は GREEN schema の必須キー（tests / green）を含む。Turbopack fallback 規約は渡さない — 転写 agent は
 // テストを実行し直さないので、渡しても判断の余地を持ち込むだけになる。
 // --base origin/<PRERUN.base> で変更ファイル一覧（DEVFLOW_CHANGED_FILES / DEVFLOW_BASE）を repo のランナーへ渡す
 // （起点は worktree の作成元 origin/<base>。他の diff 系 proxy と同じ ref）。何を回すかは repo 側が決める。
 const TEST_RUN_PROMPT = runTestsPrompt(WT, `origin/${BASE}`)
+// 全 test spawn の入口: start 1 回のあと wait を繰り返して結果の JSON を返す（null・schema 不一致・待機の上限は tests:'error'）。
+// start / wait の throw は呼び出し側へ投げ直す（throw の扱いは経路ごとに持つ）。
+function runTestsAgent(startPrompt, label, phase) {
+  const opts = { agentType: 'dev-runner-haiku', phase }
+  return runTestsJob({
+    wt: WT, startPrompt, label, schema: GREEN, waitJob: waitBgJob,
+    spawn: (prompt, o) => trackedAgent(prompt, { ...opts, ...o }),
+    spawnStop: (prompt, o) => failOpenAgent(prompt, { ...opts, ...o }),
+  })
+}
 // Validate の各回（commit-hook#<iter>）で PR phase の commit と同じ stage 内容に対して対象 repo の pre-commit hook を
 // 回す exec-proxy の prompt（_lib/pre-commit-hook.mjs）。test spawn と同じく WT 確定後に 1 回だけ組む。
 const PRE_COMMIT_HOOK_PROMPT = preCommitHookPrompt(WT)
@@ -6126,15 +6178,12 @@ async function runValidateLoop(kind, { concerns, greenFixIterations, phaseName, 
     }
     let raw
     try {
-      raw = await trackedAgent(
-        TEST_RUN_PROMPT,
-        { agentType: 'dev-runner-haiku', schema: GREEN, label: testLabel, phase: phaseName },
-      )
+      raw = await runTestsAgent(TEST_RUN_PROMPT, testLabel, phaseName)
     } catch (e) {
       log(`⚠️ ${phaseName}(${testLabel}): test proxy が throw（${e && e.message ? e.message : e}）— red 扱いで継続（fail-safe。issue #359）`)
       raw = { tests: 'failed', green: false, summary: `test proxy 実行失敗（throw）: ${String(e && e.message ? e.message : e)}` }
     }
-    v = need(raw, `${phaseName}(${testLabel})`)
+    v = raw
     if (kind === 'retry') {
       log(`validate(after empty-diff retry) iteration ${i}: tests=${v.tests} green=${v.green}`)
     } else if (kind === 'post-eval') {
@@ -7602,7 +7651,7 @@ async function rerunFailedTestFiles(first, label, holdCode) {
   }
   let result = null
   try {
-    result = await trackedAgent(runTestFilesPrompt(WT, files), { agentType: 'dev-runner-haiku', schema: GREEN, label, phase: 'Final reconcile' })
+    result = await runTestsAgent(runTestFilesPrompt(WT, files), label, 'Final reconcile')
   } catch (e) {
     log(`⚠️ Final reconcile: ${label} が throw（${e && e.message ? e.message : e}）— flake 候補にしない（${holdCode}）`)
   }
@@ -7660,13 +7709,14 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
     let ft = null
     let ftRerun = null
     try {
-      ft = await trackedAgent(TEST_RUN_PROMPT, { agentType: 'dev-runner-haiku', schema: GREEN, label: 'test#final', phase: 'Final reconcile' })
+      ft = await runTestsAgent(TEST_RUN_PROMPT, 'test#final', 'Final reconcile')
     } catch (e) {
       log(`⚠️ Final reconcile: test#final が throw（${e && e.message ? e.message : e}）— null 扱い（fail-safe → unavailable。issue #359）`)
     }
+    // ft が null なのは throw のときだけ（応答の null・schema 不一致・待機の上限は runTestsJob が tests:'error' にする）
     if (!ft) { finalReconcile = 'unavailable'; log('⚠️ Final reconcile: test#final が null — unavailable（fail-safe → merge tier HOLD）') }
     else if (ft.tests === 'error') {
-      // テストが 1 件も実行されなかった起動失敗。本物の red（tests:'failed'）ではないので
+      // テストが 1 件も実行されなかった起動失敗か、結果を取れなかった。本物の red（tests:'failed'）ではないので
       // reverified + finalTestGreen=false に潰さず unavailable に載せる。finalTestGreen は null 据え置き。
       // unavailable は merge tier で final_reconcile_unavailable（human_judgment）の HOLD。PR の CI の success では
       // 代替しない（pull_request の CI は PR head の workflow・スクリプトで動き、PR 自身が書き換えられる）。

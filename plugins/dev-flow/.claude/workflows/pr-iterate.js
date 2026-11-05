@@ -1389,7 +1389,8 @@ const FIX_BASELINE = {
   properties: { exit_code: { type: 'number' }, porcelain: { type: 'array', items: { type: 'string' } } },
 }
 // final_test_red の確認範囲の exec-proxy スキーマ。HOLD_TEST_DIFF は HOLD 時の head → 終端 head の変更ファイル一覧
-// （outside は HOLD 時の head にあって終端 head に無い commit 数。testRelatedChanges が読む）、HOLD_TEST_RUN は run-tests の stdout。
+// （outside は HOLD 時の head にあって終端 head に無い commit 数。testRelatedChanges が読む）、HOLD_TEST_RUN は run-tests start / wait の stdout
+// （status・tests が running の応答は runTestsJob の中で待ち切る）。
 const HOLD_TEST_DIFF = {
   type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, outside: { type: 'number' }, files: { type: 'array', items: { type: 'string' } } },
@@ -1397,7 +1398,8 @@ const HOLD_TEST_DIFF = {
 const HOLD_TEST_RUN = {
   type: 'object', required: ['tests', 'green'],
   properties: {
-    tests: { type: 'string', enum: ['passed', 'failed', 'no_tests', 'error'] },
+    status: { type: 'string', enum: ['running', 'passed', 'failed', 'error'] },
+    tests: { type: 'string', enum: ['running', 'passed', 'failed', 'no_tests', 'error'] },
     green: { type: 'boolean' },
     summary: { type: 'string' },
     failed_files: { type: 'array', items: { type: 'string' } },
@@ -1933,24 +1935,85 @@ function testRelatedChanges(res) {
   return { status: files.length > 0 ? 'changed' : 'none', files };
 }
 // ==== END inline: _lib/test-related-paths.mjs ====
+// ==== BEGIN inline: _lib/bg-job-wait.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+
+function bgJobJsonType(value) {
+  return value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
+}
+
+function bgJobResponseFits(res, schema) {
+  if (bgJobJsonType(res) !== 'object') return false
+  if (!(schema.required ?? []).every((key) => key in res)) return false
+  return Object.entries(schema.properties ?? {}).every(([key, prop]) => !(key in res)
+    || ((prop.type == null || [prop.type].flat().includes(bgJobJsonType(res[key])))
+      && (prop.enum == null || prop.enum.includes(res[key]))))
+}
+
+async function waitBgJob({ start, wait, maxPolls, schema }) {
+  let res = start
+  for (let k = 1; bgJobResponseFits(res, schema) && res.status === 'running' && k <= maxPolls; k++) res = await wait(k)
+  if (!bgJobResponseFits(res, schema)) return { ok: false, status: 'error', error: 'proxy の応答が無い・形が不正' }
+  return res.status === 'running' ? { ...res, wait_capped: true } : res
+}
+// ==== END inline: _lib/bg-job-wait.mjs ====
 // ==== BEGIN inline: _lib/run-tests-prompt.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
+const RUN_TESTS_WAIT_SEC = 450
+const RUN_TESTS_MAX_WAIT_SEC = 3600
+
 function runTestsPrompt(wt, base) {
-  return runTestsCommandPrompt(wt, `run-tests ${wt} --base ${base}`);
+  return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base}`);
 }
 
 function runTestFilesPrompt(wt, files) {
-  return runTestsCommandPrompt(wt, `run-tests ${wt} --files ${files.join(' ')}`);
+  return runTestsCommandPrompt(wt, `run-tests start ${wt} --files ${files.join(' ')}`);
 }
 
-function runTestsCommandPrompt(wt, command) {
+function runTestsWaitPrompt(wt) {
+  return runTestsCommandPrompt(wt, `run-tests wait ${wt} --wait-sec ${RUN_TESTS_WAIT_SEC}`);
+}
+
+function runTestsStopPrompt(wt) {
+  return runTestsCommandPrompt(wt, `run-tests stop ${wt}`, '{"ok":false,"error":"run-tests did not return JSON"}');
+}
+
+function runTestsCommandPrompt(wt, command, noJson = '{"tests":"error","green":false,"summary":"run-tests did not return JSON"}') {
   return `cd ${wt} で作業。次のコマンドを **先頭トークンが run-tests の bare 単文** で 1 回だけ実行し、`
     + `**stdout の JSON 1 行だけ** を verbatim で返せ（判定や脚色をしない。キーの追加・削除・値の書き換えをしない）。`
     + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止。`
-    + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。再実行しない（timeout に達した場合も含む）。`
+    + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない（常駐化はコマンド自身が行う）。再実行しない（timeout に達した場合も含む）。`
     + `timeout に達した・stdout に JSON 1 行が無い場合だけは、`
-    + `{"tests":"error","green":false,"summary":"run-tests did not return JSON"} を一字一句そのまま返せ:\n`
+    + `${noJson} を一字一句そのまま返せ:\n`
     + command;
+}
+
+const RUN_TESTS_STOP_SCHEMA = {
+  type: 'object', required: ['ok'],
+  properties: { ok: { type: 'boolean' }, stopped: { type: 'boolean' }, was_running: { type: 'boolean' }, error: { type: 'string' } },
+}
+
+async function runTestsJob({ wt, startPrompt, label, schema, waitJob, spawn, spawnStop }) {
+  const stop = () => spawnStop(runTestsStopPrompt(wt), { schema: RUN_TESTS_STOP_SCHEMA, label: `${label}.stop` });
+  const stoppedError = async (why) => {
+    const stopped = await stop();
+    return { tests: 'error', green: false, summary: `${why}${stopped?.ok === true ? '' : '（テストの停止を確認できない）'}` };
+  };
+  let res;
+  try {
+    res = await waitJob({
+      start: await spawn(startPrompt, { schema, label }),
+      wait: (k) => spawn(runTestsWaitPrompt(wt), { schema, label: `${label}.wait-${k}` }),
+      maxPolls: Math.ceil(RUN_TESTS_MAX_WAIT_SEC / RUN_TESTS_WAIT_SEC),
+      schema,
+    });
+  } catch (e) {
+    await stop();
+    throw e;
+  }
+  if (res.wait_capped === true) return stoppedError(`テストが待機の上限（${RUN_TESTS_MAX_WAIT_SEC} 秒）までに終わらなかった`);
+  if (!['passed', 'failed', 'no_tests', 'error'].includes(res.tests)) return stoppedError('run-tests の応答が無い・形が不正');
+  if (res.tests === 'error' && res.status == null) await stop();
+  return res;
 }
 // ==== END inline: _lib/run-tests-prompt.mjs ====
 
@@ -3335,8 +3398,9 @@ if (NESTED?.caller !== 'dev-flow' && PRIOR_DEVFLOW?.tier === 'HOLD' && PRIOR_DEV
       { agentType: 'dev-runner-haiku-ro', schema: HOLD_TEST_DIFF, label: 'hold-test-diff', phase: 'Iterate' },
     )
     const base = prMeta?.base_ref || ''
+    const holdTestSpawn = (prompt, o) => failOpenAgent(prompt, { agentType: 'dev-runner-haiku', phase: 'Iterate', ...o })
     const tests = base
-      ? await failOpenAgent(runTestsPrompt(isoWt, `origin/${base}`), { agentType: 'dev-runner-haiku', schema: HOLD_TEST_RUN, label: 'hold-test-run', phase: 'Iterate' })
+      ? await runTestsJob({ wt: isoWt, startPrompt: runTestsPrompt(isoWt, `origin/${base}`), label: 'hold-test-run', schema: HOLD_TEST_RUN, waitJob: waitBgJob, spawn: holdTestSpawn, spawnStop: holdTestSpawn })
       : null
     finalTestCheck = { ran: true, holdHead, endHead, changes: testRelatedChanges(diff), tests }
     log(`final_test_red の確認範囲: テスト関連の変更 ${finalTestCheck.changes.status}（${finalTestCheck.changes.files.length} 件）・最終 tree の全件テスト ${tests?.tests ?? '実行できず'} — HOLD は外さない`)
