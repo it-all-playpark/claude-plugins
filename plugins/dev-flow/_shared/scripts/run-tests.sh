@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
 # run-tests.sh - Validate（test#i）・post-eval・test#final のテスト実行 exec-proxy（issue #821）。
-# Usage: run-tests.sh <worktree> [--base <ref> | --files <test file>...]
+# Usage:
+#   run-tests start <worktree> [--base <ref> | --files <test file>...]
+#   run-tests wait  <worktree> [--wait-sec <n=480>]
+#   run-tests stop  <worktree> [--timeout-sec <n=60>]
+#   （内部）run-tests supervise --state-dir <dir> / run-tests run <worktree> [...]
 #
 # green 判定を LLM の解釈ではなく exit code から決める。呼び出し側 agent は stdout の JSON 1 行を
 # verbatim で転写するだけで、スクリプトの選択・起動失敗の分類・failed_files の抽出はここで行う。
+#
+# 切り離し実行: テストの所要時間は Bash 1 回の上限（600 秒）を超えうるので、start は引数を検証してテストを切り離して起動し
+# すぐ返る。wait は最大 --wait-sec 待ち、終わっていれば下の「出力」の JSON を、終わっていなければ running の JSON
+# （{"status":"running","tests":"running","green":false,...}）を返す。running も GREEN schema の必須キーを持ち、green は常に false。
+# stop はテストを止める（その後の wait は tests "error"）。supervisor・状態ファイルは _lib/scripts/bg-job.sh が持ち、
+# state dir は <WT>/.devflow-tmp/run-tests（前回の残りは start が止めて作り直す）。下の手順と判定は supervisor が
+# 起動する内部の `run` の中身で、結果の JSON は state dir の tests-result.json に書く（stderr は logs/command.log）。
+# 止まらないまま残らないよう、切り離したテストは RUN_TESTS_TIMEOUT_SEC で打ち切る（tests "error"）。
 #
 # 変更ファイルの受け渡し（issue #835）: --base があり `git merge-base <ref> HEAD` が解決できたときだけ、
 # merge-base から working tree への差分（commit 済み・staged・未 stage）と untracked（--exclude-standard、
@@ -68,6 +80,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREBUILD="$SCRIPT_DIR/workspace-prebuild.sh"
 SUMMARY_MAX=4000
 LINES_MAX=30
+USAGE="usage: run-tests start <worktree> [--base <ref> | --files <test file>...] | wait <worktree> [--wait-sec <n>] | stop <worktree> [--timeout-sec <n>]"
+# 切り離したテストの上限（秒）。workflow の待機上限（RUN_TESTS_MAX_WAIT_SEC）より長くして、普段は workflow の stop で止まる。
+# これは run が落ちて stop が呼ばれないときにテストを残さないための上限（bats が短くするための上書き口）
+RUN_TIMEOUT_SEC="${RUN_TESTS_TIMEOUT_SEC:-4200}"
+
+# shellcheck source=../../_lib/scripts/bg-job.sh
+source "$SCRIPT_DIR/../../_lib/scripts/bg-job.sh"
+BG_JOB_NAME=run-tests
+BG_JOB_SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 
 emit() {
     # $1 status / $2 tests / $3 green / $4 summary / $5 scripts JSON / $6 failed_files JSON
@@ -76,29 +97,119 @@ emit() {
         '{status: $s, tests: $t, green: $g, summary: $m, scripts: $sc, failed_files: $ff, epoch: $e}'
 }
 
-unset DEVFLOW_CHANGED_FILES DEVFLOW_BASE DEVFLOW_TEST_FILES
-
-BASE_REF=""
-TEST_FILES=()
-if [[ $# -eq 3 && "$2" == "--base" && -n "$3" ]]; then
-    BASE_REF="$3"
-elif [[ $# -ge 3 && "$2" == "--files" ]]; then
-    TEST_FILES=("${@:3}")
-elif [[ $# -ne 1 ]]; then
-    emit error error false "usage: run-tests <worktree> [--base <ref> | --files <test file>...]" '[]' '[]'
+usage_error() {
+    emit error error false "$USAGE" '[]' '[]'
     exit 2
-fi
-WT=$(cd "$1" 2>/dev/null && pwd) || { emit error error false "cd failed: $1" '[]' '[]'; exit 2; }
-WT_PHYS=$(cd "$WT" && pwd -P)
-# テスト script・フォールバックとも <WT> を cwd にして実行する
-cd "$WT" || { emit error error false "cd failed: $WT" '[]' '[]'; exit 2; }
+}
 
-for p in "${TEST_FILES[@]+"${TEST_FILES[@]}"}"; do
-    if [[ -z "$p" || "$p" == /* || "/$p/" == */../* || ! -f "$WT/$p" ]]; then
-        emit error error false "--files: not a test file under the worktree: $p" '[]' '[]'
-        exit 2
+resolve_worktree() {
+    WT=$(cd "$1" 2>/dev/null && pwd) || { emit error error false "cd failed: $1" '[]' '[]'; exit 2; }
+}
+
+# start / run の引数を検証する。start で弾くので、切り離した後に引数不正で落ちない
+parse_run_args() {
+    BASE_REF=""
+    TEST_FILES=()
+    if [[ $# -eq 3 && "$2" == "--base" && -n "$3" ]]; then
+        BASE_REF="$3"
+    elif [[ $# -ge 3 && "$2" == "--files" ]]; then
+        TEST_FILES=("${@:3}")
+    elif [[ $# -ne 1 ]]; then
+        usage_error
     fi
-done
+    resolve_worktree "$1"
+    WT_PHYS=$(cd "$WT" && pwd -P)
+    # テスト script・フォールバックとも <WT> を cwd にして実行する
+    cd "$WT" || { emit error error false "cd failed: $WT" '[]' '[]'; exit 2; }
+
+    local p
+    for p in "${TEST_FILES[@]+"${TEST_FILES[@]}"}"; do
+        if [[ -z "$p" || "$p" == /* || "/$p/" == */../* || ! -f "$WT/$p" ]]; then
+            emit error error false "--files: not a test file under the worktree: $p" '[]' '[]'
+            exit 2
+        fi
+    done
+}
+
+job_paths() {
+    bg_job_paths "$WT/.devflow-tmp/run-tests"
+    TESTS_RESULT="$BG_JOB_STATE_DIR/tests-result.json"
+}
+
+# bg-job の応答を run-tests の JSON に写す。終わっていれば `run` が残した結果をそのまま返し、結果が無ければ tests "error"
+# （テストが通ったかを確かめられていない）。読み手が見るのはこの形だけ
+emit_job_response() {
+    local res="$1" status
+    status=$(jq -r '.status // empty' <<<"$res" 2>/dev/null)
+    case "$status" in
+        running)
+            jq -nc --arg l "$(jq -r '.log_path // ""' <<<"$res")" --argjson e "$(date +%s)" \
+                '{status: "running", tests: "running", green: false, summary: "", log_path: $l, epoch: $e}'
+            ;;
+        passed|failed)
+            jq -ce 'select(type == "object" and has("tests") and has("green"))' "$TESTS_RESULT" 2>/dev/null \
+                || emit error error false "run-tests ended without a result (exit $(jq -r '.exit_code // "?"' <<<"$res"), log: $BG_JOB_CMD_LOG)" '[]' '[]'
+            ;;
+        timeout)
+            emit error error false "tests did not finish within ${RUN_TIMEOUT_SEC}s and were stopped (log: $BG_JOB_CMD_LOG)" '[]' '[]'
+            ;;
+        stopped)
+            emit error error false "tests were stopped before they finished (log: $BG_JOB_CMD_LOG)" '[]' '[]'
+            ;;
+        *)
+            emit error error false "$(jq -r '.error // .reason // "run-tests job failed"' <<<"$res" 2>/dev/null)" '[]' '[]'
+            ;;
+    esac
+}
+
+cmd_start() {
+    job_paths
+    local reset cmd
+    reset=$(bg_job_reset "$WT") || { emit_job_response "$reset"; return; }
+    printf -v cmd '%q ' bash "$BG_JOB_SELF" run "$WT" "${@:2}"
+    printf -v cmd '%s> %q' "$cmd" "$TESTS_RESULT"
+    bg_job_write_json "$BG_JOB_SPEC" --arg cwd "$WT" --arg cmd "$cmd" --argjson timeout "$RUN_TIMEOUT_SEC" \
+        '{cwd: $cwd, command: $cmd, timeout_seconds: $timeout}'
+    emit_job_response "$(bg_job_start)"
+}
+
+SUBCOMMAND="${1:-}"
+[[ $# -eq 0 ]] || shift
+case "$SUBCOMMAND" in
+    start)
+        parse_run_args "$@"
+        cmd_start "$@"
+        exit 0
+        ;;
+    wait|stop)
+        [[ $# -ge 1 ]] || usage_error
+        flag=--wait-sec
+        [[ "$SUBCOMMAND" == wait ]] || flag=--timeout-sec
+        [[ $# -eq 1 || ( $# -eq 3 && "$2" == "$flag" && "$3" =~ ^[0-9]+$ ) ]] || usage_error
+        resolve_worktree "$1"
+        job_paths
+        if [[ "$SUBCOMMAND" == wait ]]; then
+            emit_job_response "$(bg_job_wait "${3:-}")"
+        else
+            bg_job_stop "${3:-}"
+        fi
+        exit 0
+        ;;
+    supervise)
+        [[ $# -eq 2 && "$1" == "--state-dir" ]] || usage_error
+        bg_job_paths "$2"
+        bg_job_supervise
+        exit 0
+        ;;
+    run)
+        parse_run_args "$@"
+        ;;
+    *)
+        usage_error
+        ;;
+esac
+
+unset DEVFLOW_CHANGED_FILES DEVFLOW_BASE DEVFLOW_TEST_FILES
 
 LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/run-tests-XXXXXX") \
     || { emit error error false "cannot create log dir under ${TMPDIR:-/tmp}" '[]' '[]'; exit 0; }

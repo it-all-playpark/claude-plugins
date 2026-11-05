@@ -33,7 +33,8 @@ async function run({ overrides = {}, withReimpl = true } = {}) {
 }
 
 const testLabels = (labels) => labels.filter((l) => l.startsWith('test#'));
-const postEvalTests = (labels) => labels.filter((l) => l.startsWith('test#post-eval'));
+// テストの実行回数（start の spawn。wait / stop の `.wait-<k>` / `.stop` は数えない）
+const postEvalTests = (labels) => labels.filter((l) => /^test#post-eval-\d+$/.test(l));
 const postEvalGreenFix = (labels) => labels.filter((l) => l.startsWith('green-fix#post-eval'));
 
 test('[post-eval-validate] reimpl ≥1 の run は最後の eval の後・PR 作成前にフルテストがちょうど 1 回走る', async () => {

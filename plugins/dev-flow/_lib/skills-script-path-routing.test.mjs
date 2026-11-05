@@ -98,5 +98,5 @@ test('[skills-script-path-routing] (c) test 実行 prompt は対象 repo の wor
   assert.ok(t, 'test#1 が無い');
   // 対象 repo の tests/run-*.sh の列挙・実行は exec-proxy run-tests が <WT>/tests から行う。
   // prompt には WT 絶対パスだけを渡す（WT 相対にすると exec-proxy が別 cwd で探してしまう）。
-  assert.ok(t.prompt.includes('\nrun-tests /tmp/wt'), 'test#1 prompt に `run-tests ${WT}`（WT 絶対パス）が無い（修正対象外の WT 相対パスまで書き換えた可能性）');
+  assert.ok(t.prompt.includes('\nrun-tests start /tmp/wt'), 'test#1 prompt に `run-tests start ${WT}`（WT 絶対パス）が無い（修正対象外の WT 相対パスまで書き換えた可能性）');
 });
