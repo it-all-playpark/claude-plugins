@@ -45,7 +45,7 @@ source "$PLUGIN_ROOT/_shared/scripts/devflow-config.sh"
 source "$PLUGIN_ROOT/_shared/scripts/security-reviewer-config.sh"
 
 usage() {
-    echo "Usage: dev-flow-prerun --issue <N> --worktree <abs-path> [--base <ref>]" >&2
+    echo "Usage: dev-flow-prerun --issue <N> --worktree <abs-path> [--base <ref>] [--slug <slug>]" >&2
 }
 
 # ============================================================================
@@ -55,6 +55,9 @@ usage() {
 ISSUE=""
 WT=""
 BASE_ARG=""
+# --slug: 作業ブランチ名の書式 "dev-flow".branch_format の {slug} に入れる英語の短い名前（wrapper の LLM が issue タイトルから
+# 作る）。形の検証は新しいブランチ名を作るときだけ行う（書式に {slug} が無い・既存ブランチを使うときは使わない）
+SLUG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -67,6 +70,9 @@ while [[ $# -gt 0 ]]; do
         --base)
             [[ $# -ge 2 ]] || { usage; exit 2; }
             BASE_ARG="$2"; shift 2 ;;
+        --slug)
+            [[ $# -ge 2 ]] || { usage; exit 2; }
+            SLUG="$2"; shift 2 ;;
         *)
             echo "Unknown option: $1" >&2
             usage
@@ -189,18 +195,36 @@ fi
 #   ci_verify: sandbox 内で実行できない検証を CI のどの check で判定するかの宣言（issue #861）
 #   local_verify: その検証を pg-broker の DB でローカル実行するコマンドの宣言（issue #863）
 #   pr_title_format: commit subject（= PR タイトル）のテンプレート
+#   branch_format: 作業ブランチ名の書式（未設定は feature/issue-{issue}。dev-flow-ready-set も同じ書式で実行中の issue を探す）
 # 値・形の検証は workflow 側（_lib/prerun-setup.mjs の security_reviewer の enum・normalizeCiVerify /
-# normalizeLocalVerify / normalizePrTitleFormat）が行い、不正なら fail-closed で止める。
+# normalizeLocalVerify / normalizePrTitleFormat）が行い、不正なら fail-closed で止める。branch_format は worktree を作る前に
+# ブランチ名を決めるので、ここで検証し（devflow_branch_format_of）、不正なら worktree を作らずに ok:false で止める。
 security_reviewer="$(security_reviewer_config "$ROOT" "$base")"
 ci_verify_json="$(devflow_config "$ROOT" "$base" ci_verify)"
 local_verify_json="$(devflow_config "$ROOT" "$base" local_verify)"
 pr_title_format_json="$(devflow_config "$ROOT" "$base" pr_title_format)"
+branch_format_json="$(devflow_config "$ROOT" "$base" branch_format)"
+branch_format_error=""
+BRANCH_FORMAT="$(devflow_branch_format_of "$branch_format_json")" || {
+    branch_format_error="$BRANCH_FORMAT"
+    BRANCH_FORMAT=""
+}
 
 # ============================================================================
 # Segment 2: worktree create/reuse + base-origin match verification + write probe
 # ============================================================================
 
-BRANCH="feature/issue-${ISSUE}"
+# 作業ブランチ名。書式に {slug} が無ければ issue 番号だけで決まる。{slug} があれば、書式に合う既存ブランチか --slug で
+# 決まるまで空（出力の branch は ok:true のときだけ下流が使う）
+BRANCH=""
+BRANCH_RE=""
+BRANCH_SHAPE=""
+if [[ -n "$BRANCH_FORMAT" ]]; then
+    [[ "$BRANCH_FORMAT" == *'{slug}'* ]] || BRANCH="$(devflow_branch_name "$BRANCH_FORMAT" "$ISSUE" '')"
+    BRANCH_RE="$(devflow_branch_regex "$BRANCH_FORMAT" "$ISSUE")"
+    # エラー文に出す、この issue のブランチ名の形（例: issue-12-{slug}、既定なら feature/issue-12）
+    BRANCH_SHAPE="$(devflow_branch_name "$BRANCH_FORMAT" "$ISSUE" '{slug}')"
+fi
 worktree_status=""
 worktree_error=""
 worktree_removed=false
@@ -209,14 +233,14 @@ SEG2_OK=false
 
 validate_start_point() {
     # branch の起点を reflog の最古の記録（`branch: Created from <ref>`）で判定する。sets global worktree_error on mismatch.
-    # origin/feature/issue-<N> は pr-iterate-prerun が PR head から作った branch。
+    # origin/<branch> は pr-iterate-prerun が PR head から作った branch。
     local br="$1" created start="" expected pushed
     created="$(git -C "$ROOT" log -g --format=%gs "refs/heads/${br}" -- 2>/dev/null | tail -n 1)" || created=""
     if [[ "$created" == "branch: Created from "* ]]; then
         start="${created#branch: Created from }"
     fi
     expected="origin/${base}"
-    pushed="origin/feature/issue-${ISSUE}"
+    pushed="origin/${br}"
     if [[ "$start" == "$expected" || "$start" == "$pushed" ]]; then
         return 0
     fi
@@ -226,6 +250,12 @@ validate_start_point() {
         worktree_error="既存 worktree の起点が一致しない。実際の起点: ${start} / 期待する起点: ${expected}。$(RECOVERY_STEPS_FOR "$WT" "$base")"
     fi
     return 1
+}
+
+slug_ok() {
+    # --slug の形: ^[a-z0-9]+(-[a-z0-9]+)*$ に合い 40 文字以内。LC_ALL=C で文字の範囲を ASCII に限る
+    local LC_ALL=C
+    [[ "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#1} -le 40 ]]
 }
 
 fast_forward_reused() {
@@ -255,7 +285,10 @@ fast_forward_reused() {
     return 0
 }
 
-if [[ "$BASE_OK" == true ]]; then
+if [[ "$BASE_OK" == true && -n "$branch_format_error" ]]; then
+    worktree_status="error"
+    worktree_error="$branch_format_error"
+elif [[ "$BASE_OK" == true ]]; then
     WTLIST2="$(git -C "$ROOT" worktree list --porcelain 2>&1)" || WTLIST2=""
     CANON_WT="$(canon_path "$WT")"
     BLOCK_INFO="$(printf '%s\n' "$WTLIST2" | awk -v target="worktree ${CANON_WT}" '
@@ -296,11 +329,13 @@ if [[ "$BASE_OK" == true ]]; then
         worktree_status="reused"
         if [[ -z "$BRANCH_FOUND" ]]; then
             worktree_error="既存 worktree の起点を判定できなかった（detached HEAD）。$(RECOVERY_STEPS_FOR "$WT" "$base")"
-        elif [[ "$BRANCH_FOUND" != "$BRANCH" ]]; then
-            # 出力の branch は feature/issue-<N> 固定で下流（pr-iterate の head_ref / fetch）が信頼する。
-            # 別 branch を checkout した worktree を ok:true で返すと存在しない branch を指すので fail-closed
-            worktree_error="既存 worktree の checkout branch が ${BRANCH} でない（実際: ${BRANCH_FOUND}）。$(RECOVERY_STEPS_FOR "$WT" "$base")"
+        elif [[ ! "$BRANCH_FOUND" =~ $BRANCH_RE ]]; then
+            # 出力の branch は下流（pr-iterate の head_ref / fetch）が信頼する。書式に合わない別 branch を
+            # checkout した worktree を ok:true で返すとこの issue の branch でないものを指すので fail-closed
+            worktree_error="既存 worktree の checkout branch が ${BRANCH_SHAPE} の形でない（実際: ${BRANCH_FOUND}）。$(RECOVERY_STEPS_FOR "$WT" "$base")"
         else
+            # 書式に合う branch（slug は問わない）を checkout していれば、その名前のまま使う
+            BRANCH="$BRANCH_FOUND"
             if validate_start_point "$BRANCH_FOUND" \
                 && worktree_error="$(partial_checkout_error "$WT")" \
                 && fast_forward_reused; then
@@ -315,38 +350,63 @@ if [[ "$BASE_OK" == true ]]; then
         if [[ -d "$WT" ]]; then
             worktree_status="error"
             worktree_error="path exists but is not a registered git worktree: ${WT}"
-        elif git -C "$ROOT" show-ref --verify --quiet "refs/heads/${BRANCH}"; then
-            if worktree_add "$ROOT" "$WT" "$BRANCH" ""; then
-                worktree_status="created"
-                CREATED_THIS_CALL=true
-                if validate_start_point "$BRANCH"; then
-                    SEG2_CORE_OK=true
-                fi
-            else
-                worktree_status="error"
-                worktree_error="$WT_ADD_ERR"
-            fi
         else
-            # origin に同名 branch（close 済み PR の head 等）が残っていると、origin/<base> から作った branch は
-            # 履歴を共有せず、PR phase の push（force なし）が non-fast-forward で必ず拒否される。remote の branch は
-            # 人の作業・PR の履歴なので消さず、worktree を作る前に止めて回復手順を返す。
-            # ls-remote が届かないときは base 解決と同じく先へ進めない（exit 2 = branch 無し だけを作成に倒す）
+            # 書式に合う同じ issue 番号の既存 branch（slug は問わない）を local と origin から探し、あれば新しい名前を作らず
+            # それを使う。origin は ls-remote に書式の glob（{slug} → *）を渡して読み、書式の正規表現で絞る。
+            # ls-remote が届かないときは base 解決と同じく先へ進めない（branch の有無を決められない）
             remote_rc=0
-            git -C "$ROOT" ls-remote --exit-code --heads origin "refs/heads/${BRANCH}" >/dev/null 2>&1 || remote_rc=$?
-            if [[ "$remote_rc" -eq 0 ]]; then
+            remote_heads="$(git -C "$ROOT" ls-remote --heads origin "refs/heads/$(devflow_branch_name "$BRANCH_FORMAT" "$ISSUE" '*')" 2>/dev/null)" || remote_rc=$?
+            local_heads="$(git -C "$ROOT" for-each-ref --format='%(refname:lstrip=2)' refs/heads/)" || local_heads=""
+            local_matches="$(grep -E -- "$BRANCH_RE" <<<"$local_heads" || true)"
+            remote_matches="$(awk '{ sub(/^refs\/heads\//, "", $2); print $2 }' <<<"$remote_heads" | grep -E -- "$BRANCH_RE" || true)"
+            matches="$(printf '%s\n%s\n' "$local_matches" "$remote_matches" | sed '/^$/d' | sort -u)"
+            match_count=0
+            [[ -z "$matches" ]] || match_count="$(wc -l <<<"$matches" | tr -d ' ')"
+            if [[ "$remote_rc" -ne 0 ]]; then
                 worktree_status="error"
-                # (15b) の静的 pin（push を呼ばない）に掛からないよう、表示用コマンドの subcommand は引数で渡す
-                worktree_error="$(printf 'origin に branch %s が残っている（close 済み PR の head 等）。origin/%s から作り直すと履歴を共有せず PR の push が non-fast-forward で拒否されるため worktree を作らずに止めた。次のどちらかで回復せよ: (1) この branch の open な PR があれば /pr-iterate <PR> で続ける、(2) 無ければ git %s origin --delete %s で remote の branch を消してから dev-flow を再実行する。' "$BRANCH" "$base" push "$BRANCH")"
-            elif [[ "$remote_rc" -ne 2 ]]; then
+                worktree_error="origin に書式 ${BRANCH_SHAPE} の branch があるかを git ls-remote で判定できなかった（exit ${remote_rc}）"
+            elif [[ "$match_count" -ge 2 ]]; then
+                # どれがこの issue の作業か決められない。黙って 1 本を選ぶと別の作業の上に実装を積む
                 worktree_status="error"
-                worktree_error="origin に branch ${BRANCH} があるかを git ls-remote で判定できなかった（exit ${remote_rc}）"
-            elif worktree_add "$ROOT" "$WT" "$BRANCH" "origin/${base}"; then
-                worktree_status="created"
-                CREATED_THIS_CALL=true
-                SEG2_CORE_OK=true
+                worktree_error="書式 ${BRANCH_SHAPE} に合う issue #${ISSUE} の branch が local・origin に ${match_count} 本ある（$(tr '\n' ' ' <<<"$matches" | sed 's/ $//')）。どれを使うか決められないため worktree を作らずに止めた。使わない branch を消して 1 本にしてから dev-flow を再実行せよ。"
+            elif [[ "$match_count" -eq 1 ]]; then
+                BRANCH="$matches"
+                if grep -qxF -- "$BRANCH" <<<"$local_matches"; then
+                    if worktree_add "$ROOT" "$WT" "$BRANCH" ""; then
+                        worktree_status="created"
+                        CREATED_THIS_CALL=true
+                        if validate_start_point "$BRANCH"; then
+                            SEG2_CORE_OK=true
+                        fi
+                    else
+                        worktree_status="error"
+                        worktree_error="$WT_ADD_ERR"
+                    fi
+                else
+                    # origin にだけ branch（close 済み PR の head 等）が残っていると、origin/<base> から作った branch は
+                    # 履歴を共有せず、PR phase の push（force なし）が non-fast-forward で必ず拒否される。remote の branch は
+                    # 人の作業・PR の履歴なので消さず、worktree を作る前に止めて回復手順を返す。
+                    worktree_status="error"
+                    # (15b) の静的 pin（push を呼ばない）に掛からないよう、表示用コマンドの subcommand は引数で渡す
+                    worktree_error="$(printf 'origin に branch %s が残っている（close 済み PR の head 等）。origin/%s から作り直すと履歴を共有せず PR の push が non-fast-forward で拒否されるため worktree を作らずに止めた。次のどちらかで回復せよ: (1) この branch の open な PR があれば /pr-iterate <PR> で続ける、(2) 無ければ git %s origin --delete %s で remote の branch を消してから dev-flow を再実行する。' "$BRANCH" "$base" push "$BRANCH")"
+                fi
+            elif [[ "$BRANCH_FORMAT" == *'{slug}'* && -z "$SLUG" ]]; then
+                # 新しい名前の slug は wrapper が作って渡す。prerun はタイトルから作らず、別の名前にも切り替えない
+                worktree_status="error"
+                worktree_error="書式 ${BRANCH_SHAPE} の新しい branch 名を作るのに --slug が要るが渡されていない。issue タイトルから英語の slug（^[a-z0-9]+(-[a-z0-9]+)*\$・40 文字以内）を作り、dev-flow-prerun に --slug <slug> を付けて再実行せよ。"
+            elif [[ "$BRANCH_FORMAT" == *'{slug}'* ]] && ! slug_ok "$SLUG"; then
+                worktree_status="error"
+                worktree_error="--slug が不正（受信: ${SLUG}）。^[a-z0-9]+(-[a-z0-9]+)*\$ に合う 40 文字以内の英語の slug を渡して再実行せよ。"
             else
-                worktree_status="error"
-                worktree_error="$WT_ADD_ERR"
+                BRANCH="$(devflow_branch_name "$BRANCH_FORMAT" "$ISSUE" "$SLUG")"
+                if worktree_add "$ROOT" "$WT" "$BRANCH" "origin/${base}"; then
+                    worktree_status="created"
+                    CREATED_THIS_CALL=true
+                    SEG2_CORE_OK=true
+                else
+                    worktree_status="error"
+                    worktree_error="$WT_ADD_ERR"
+                fi
             fi
         fi
     fi
@@ -482,6 +542,7 @@ OUT_JSON="$(jq -n \
     --argjson have_base "$HAVE_BASE" \
     --arg worktree "$WT" \
     --arg branch "$BRANCH" \
+    --argjson branch_format "$branch_format_json" \
     --arg head "$head" \
     --argjson have_head "$HAVE_HEAD" \
     --arg worktree_status "$worktree_status" \
@@ -503,7 +564,7 @@ OUT_JSON="$(jq -n \
     {ok: $ok, issue: $issue}
     + (if $have_repo then {repo: $repo} else {} end)
     + (if $have_base then {base: $base, base_source: $base_source} else {base_error: $base_error} end)
-    + {worktree: $worktree, branch: $branch}
+    + {worktree: $worktree, branch: $branch, branch_format: $branch_format}
     + (if $have_head then {head: $head} else {} end)
     + (if $have_worktree_error then {worktree_error: $worktree_error} else {} end)
     + {worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree}

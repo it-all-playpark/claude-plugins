@@ -883,3 +883,139 @@ JSON
     echo "$output" | jq -e '.ok == true and .worktree_status == "created"'
     echo "$output" | jq -e 'has("plugin_commit") and .plugin_commit == null'
 }
+
+# ---- (18) 作業ブランチ名の書式 "dev-flow".branch_format と --slug（issue #1220）----
+# 書式の検証とパターンの組み立ての細部は _shared/scripts/devflow-config.bats が見る。ここは prerun の経路。
+
+# ROOT の origin の URL を acme/app の GitHub の形にし（fetch は insteadOf で bare origin）、user 設定の repo 別の節に
+# 第 1 引数の branch_format を置く
+set_branch_format() {
+    git -C "$ROOT" remote set-url origin https://github.com/acme/app.git
+    git -C "$ROOT" config url."$ORIGIN".insteadOf https://github.com/acme/app.git
+    mkdir -p "$HOME/.claude"
+    jq -n --arg f "$1" '{"dev-flow": {repos: {"acme/app": {branch_format: $f}}}}' > "$HOME/.claude/skill-config.json"
+}
+
+# seed から origin へ第 1 引数の branch（origin/dev 起点）を push する
+push_origin_branch() {
+    git -C "$SEED" checkout -q -b "$1" dev
+    git -C "$SEED" push -q origin "$1"
+    git -C "$SEED" checkout -q dev
+}
+
+# ROOT の local branch のうち issue-1-* の名前
+issue1_local_branches() {
+    git -C "$ROOT" for-each-ref --format='%(refname:lstrip=2)' 'refs/heads/issue-1-*'
+}
+
+@test "(18a) branch_format \"issue-{issue}-{slug}\" で同じ issue の branch が無い -> --slug を埋めた名前で作り、worktree はその branch" {
+    set_branch_format 'issue-{issue}-{slug}'
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login-timeout
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .base == "dev"'
+    echo "$output" | jq -e '.branch == "issue-1-fix-login-timeout" and .branch_format == "issue-{issue}-{slug}"'
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "issue-1-fix-login-timeout" ]
+    echo "$output" | jq -e --arg h "$(git -C "$ROOT" rev-parse origin/dev)" '.head == $h'
+    jq -e '.branch == "issue-1-fix-login-timeout"' "$WT/.devflow-tmp/prerun-setup.json"
+}
+
+@test "(18b) 新しい名前が要るのに --slug が無い・不正 -> worktree も branch も作らず、--slug を名指しした ok:false" {
+    set_branch_format 'issue-{issue}-{slug}'
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | contains("--slug が要るが渡されていない")'
+    [ ! -e "$WT" ]
+    [ -z "$(issue1_local_branches)" ]
+
+    for slug in Fix_Login ログイン fix-login- "$(printf 'a%.0s' {1..41})"; do
+        run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug "$slug"
+        [ "$status" -eq 0 ]
+        echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+        echo "$output" | jq -e --arg s "$slug" '.worktree_error | contains("--slug が不正（受信: " + $s + "）")'
+        [ ! -e "$WT" ]
+        [ -z "$(issue1_local_branches)" ]
+    done
+
+    # 40 文字は受理する
+    slug40="$(printf 'a%.0s' {1..40})"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug "$slug40"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --arg b "issue-1-$slug40" '.ok == true and .branch == $b'
+}
+
+@test "(18c) 書式に {slug} が無ければ --slug は使わない（不正な値でも止めない）" {
+    set_branch_format 'issue-{issue}-dev-flow'
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug Fix_Login
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .branch == "issue-1-dev-flow"'
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "issue-1-dev-flow" ]
+}
+
+@test "(18d) 書式に合う別 slug の branch を checkout した既存 worktree -> reused・ok:true で、その branch 名。origin/<その branch> 起点も一致扱い" {
+    set_branch_format 'issue-{issue}-{slug}'
+    push_origin_branch issue-1-old-name
+    cd "$ROOT"
+    git fetch -q origin
+    git worktree add -q --no-track -b issue-1-old-name "$WT" origin/issue-1-old-name
+
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login-timeout
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .worktree_status == "reused" and .branch == "issue-1-old-name"'
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "issue-1-old-name" ]
+    [ "$(issue1_local_branches)" = "issue-1-old-name" ]
+}
+
+@test "(18e) worktree が無く書式に合う local branch だけある -> --slug（不正な値でも）を使わず、その branch で worktree を作る" {
+    set_branch_format 'issue-{issue}-{slug}'
+    cd "$ROOT"
+    git branch --no-track issue-1-old-name origin/dev
+    # 番号の違う issue の branch は数えない
+    git branch --no-track issue-10-other origin/dev
+
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug Fix_Login
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .branch == "issue-1-old-name"'
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "issue-1-old-name" ]
+    [ "$(issue1_local_branches)" = "issue-1-old-name" ]
+}
+
+@test "(18f) 書式に合う branch が origin にだけある -> 作らずに ok:false、worktree_error にその branch 名と回復手順" {
+    set_branch_format 'issue-{issue}-{slug}'
+    push_origin_branch issue-1-old-name
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login-timeout
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | contains("origin に branch issue-1-old-name が残っている")'
+    echo "$output" | jq -e '.worktree_error | contains("/pr-iterate <PR>")'
+    echo "$output" | jq -e '.worktree_error | contains("git push origin --delete issue-1-old-name")'
+    [ ! -e "$WT" ]
+    [ -z "$(issue1_local_branches)" ]
+}
+
+@test "(18g) 書式に合う同じ issue の branch が local・origin に 2 本以上 -> どれも使わず作らずに ok:false、エラー文に全部の名前" {
+    set_branch_format 'issue-{issue}-{slug}'
+    push_origin_branch issue-1-remote-name
+    cd "$ROOT"
+    git branch --no-track issue-1-local-name origin/dev
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login-timeout
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | contains("2 本") and contains("issue-1-local-name") and contains("issue-1-remote-name")'
+    [ ! -e "$WT" ]
+    [ "$(issue1_local_branches)" = "issue-1-local-name" ]
+}
+
+@test "(18h) 不正な branch_format -> worktree を作らずに ok:false、worktree_error に \"dev-flow\".branch_format と理由" {
+    set_branch_format 'issue-{slug}'
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login-timeout
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | contains("\"dev-flow\".branch_format が不正") and contains("{issue} が無い")'
+    [ ! -e "$WT" ]
+}

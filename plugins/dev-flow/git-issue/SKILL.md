@@ -317,7 +317,8 @@ python3 ${CLAUDE_PLUGIN_ROOT}/git-issue/scripts/create_issue.py \
 起票した agent issue のうち、今 `/dev-flow` を流してよく互いに変更対象パスが重ならないものを
 `dev-flow-ready-set` で判定し、Output Contract の `## Launch Order` に並べる。判定は dev-flow の並列実行
 （dev-flow SKILL.md「並列実行」節）と同じ基準で、渡した issue 同士のパス重なりと blocker に加え、
-`--with-in-flight` で他 issue の実行中 run（head が `feature/issue-<N>` の open PR・local branch・
+`--with-in-flight` で他 issue の実行中 run（head が作業ブランチの書式（既定 `feature/issue-<N>`、repo 設定
+`"dev-flow".branch_format` があればその書式。`{slug}` 部分は問わない）に合う open PR・local branch・
 `df-<N>` worktree）を自動で拾い、その変更対象パスとの衝突も判定する。
 
 Run（Phase 6 で起票した agent issue の番号を起票順に全部渡す。human issue は渡さない）:

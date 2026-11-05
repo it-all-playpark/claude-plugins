@@ -33,16 +33,21 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    存在すればそれを使う。どちらも存在しなければ既定候補を使う。**worktree ディレクトリ名は
    `df-<N>` 固定**（配置が既定/repo 外いずれでも共通）。
 
-2. **prerun 実行**: リポジトリルート（launch dir）で Bash 1 コマンドとして
-   `dev-flow-prerun --issue <N> --worktree <手順1で決めた絶対パス>` を実行する（`args.base` を
-   明示する場合のみ `--base <ref>` を付ける）。前置形（`cd X && ...` / `VAR=x ...` /
+2. **prerun 実行**: まず作業ブランチ名の `{slug}`（下の `branch_format`）に入れる slug を作る。
+   `gh issue view <N> --json title --jq .title` で issue タイトルを読み、作業の中身を表す 2〜5 語の英語を小文字・
+   ハイフン区切りにした slug（`^[a-z0-9]+(-[a-z0-9]+)*$`・40 文字以内。例: 「ログインのタイムアウトを直す」→
+   `fix-login-timeout`）を自分で作る（subagent は起動しない。タイトルが日本語でも訳して作る）。
+   次にリポジトリルート（launch dir）で Bash 1 コマンドとして
+   `dev-flow-prerun --issue <N> --worktree <手順1で決めた絶対パス> --slug <slug>` を実行する（`args.base` を
+   明示する場合のみ `--base <ref>` を付ける）。`--slug` は書式に `{slug}` があり新しいブランチ名を作るときだけ使われ、
+   書式に `{slug}` が無い・書式に合う既存ブランチを使うときは無視される。前置形（`cd X && ...` / `VAR=x ...` /
    `bash <path>` 等）は使わず、bare 名を先頭トークンにする。stdout の JSON 1 行で分岐する
    （`{ok, issue, base, worktree, worktree_status, stack, analyze, epoch, ...}`）。
    `dev-flow-prerun` は base 解決・worktree 作成/再利用・起点一致検証（独自コミット・未コミット変更の無い再利用 worktree は base へ fast-forward）・worktree 直下への
    書き込み probe・`.devflow-tmp` の clean・issue analyze（`analyze-issue --contract` の
    決定論 parse + Jev 有界判定）・framework 検出を 1 コマンドで行い、`ok:true` なら同じ JSON を
    `<worktree>/.devflow-tmp/prerun-setup.json` にも書く。deps install はしない（手順2b）。
-   repo 設定（`"dev-flow"` の `ci_verify` / `local_verify` / `pr_title_format` / `security_reviewer`）は、すべて
+   repo 設定（`"dev-flow"` の `ci_verify` / `local_verify` / `pr_title_format` / `security_reviewer` / `branch_format`）は、すべて
    `pr-iterate-prerun` と共通の `_shared/scripts/devflow-config.sh` で、キーごとに (1) user 設定の repo 別の節
    `"dev-flow".repos["<owner>/<repo>"].<key>` → (2) 解決した base の `origin/<base>` の `skill-config.json` →
    `.claude/skill-config.json` → (3) user 設定の `"dev-flow".<key>` の順に読み、最初に null でない値を使う。user 設定は
@@ -55,7 +60,7 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    大文字・小文字を区別せずに照合する（決められなければ (1) は読まない）。`repos` と節が object でなければ未設定、
    値の検証は repo に書いたときと同じ:
    ```json
-   {"dev-flow": {"repos": {"acme/app": {"security_reviewer": "codex", "pr_title_format": "#{issue} {title}",
+   {"dev-flow": {"repos": {"acme/app": {"security_reviewer": "codex", "pr_title_format": "#{issue} {title}", "branch_format": "issue-{issue}-{slug}",
      "local_verify": {"command": "pnpm test:e2e:local", "db": {"engine": "postgres", "version": "17"}, "env": "E2E_EXTERNAL_DATABASE_URL", "timeout_seconds": 1500}}}}}
    ```
    `security_reviewer` は nested pr-iterate の security review を回す CLI の opt-in（`"dev-flow".security_reviewer`。
@@ -63,6 +68,16 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    `references/security-review.md`。
    `pr_title_format` は PR タイトル（= commit subject）のテンプレート（`"dev-flow".pr_title_format`）。既定は `{prefix}: {title} (#{issue})`、例 `"#{issue} {title}"`。差し込みは `{prefix}`
    （`type(scope)` か `type`）・`{type}`・`{scope}`・`{title}`（必須）・`{issue}` で、不正な値は `dev-flow-run` が明示 error で止める。
+   `branch_format` は作業ブランチ名の書式（`"dev-flow".branch_format`）。既定は `feature/issue-{issue}`、例
+   `"issue-{issue}-{slug}"`（ブランチ名に `issue-<番号>-<名前>` を求める repo 向け）。差し込みは `{issue}`（必須・1 回）と
+   `{slug}`（1 回まで。`--slug` の値）で、文字は `A-Za-z0-9._/-`、展開した名前は `git check-ref-format --branch` を
+   通らなければならない。不正な値は `dev-flow-prerun` が worktree を作らずに `"dev-flow".branch_format` を名指しした
+   `ok:false` で止める（手順 (c)）。既存ブランチは名前の完全一致でなく、書式の `{slug}` を任意の名前とみなし issue 番号で
+   探して再利用する（slug は run ごとに作り直すので変わりうる）: 書式に合う branch を checkout した worktree は再利用、
+   local branch だけあればその branch で worktree を作り、origin にだけあれば止める。書式に合う branch が local・origin
+   合わせて 2 本以上あればどれも使わずに止める。どれも無いときだけ `--slug` で新しい名前を作り、書式に `{slug}` が
+   あるのに `--slug` が無い・不正なら止める（別の名前には切り替えない）。`dev-flow-ready-set` も同じ書式で実行中の
+   issue を探す。
    書けないパス（`.githooks` 等）を追跡する repo で full checkout が失敗したら、取り出せるパスだけを取り出して
    取り出せないパスに skip-worktree を付ける（`skip_worktree` に列挙）。再利用する worktree に未ステージの削除
    （部分 checkout）が残っていれば `ok:false`（手順 (c)）。
@@ -230,7 +245,7 @@ isolation probe が fail-closed abort する。
 
 1 セッションの中では並列にできない（Workflow tool は top-level 専用、EnterWorktree はセッションに 1 つ）。
 issue ごとに別セッションで `/dev-flow <N>` を起動すれば、各 run が自分の `df-<N>` worktree と
-`feature/issue-<N>` を持つので並列になる。どれを同時に流してよいかは `dev-flow-ready-set` が決める:
+作業ブランチ（既定 `feature/issue-<N>`。`branch_format` を設定した repo ではその書式の名前）を持つので並列になる。どれを同時に流してよいかは `dev-flow-ready-set` が決める:
 
 ```
 dev-flow-ready-set [--repo owner/repo] [--label <label>] [--with-in-flight] [<issue>...]
@@ -258,12 +273,14 @@ dev-flow-ready-set [--repo owner/repo] [--label <label>] [--with-in-flight] [<is
    in_flight の解消で `waiting[]` / `in_flight[]` にいた issue が launch に上がってくる
 
 分類は closed → 出力しない / `human-task` ラベル → waiting `human_task` / open な blocker → waiting `blocked_by`
-（判定は prerun と共有の `_lib/scripts/issue-blockers.sh`）/ open な linked PR・`feature/issue-<N>` の local branch・
-worktree → in_flight / それ以外 → ready。ready は番号の昇順に貪欲に選び、in_flight と既に選んだ issue の
+（判定は prerun と共有の `_lib/scripts/issue-blockers.sh`）/ open な linked PR・作業ブランチの書式に合う `<N>` の
+local branch・worktree → in_flight / それ以外 → ready。作業ブランチの書式は prerun と同じ `"dev-flow".branch_format`
+（既定 `feature/issue-{issue}`。`_shared/scripts/devflow-config.sh`）を読み、`{slug}` 部分は任意の名前として照合する
+（`"issue-{issue}-{slug}"` なら `issue-12-fix-login` は #12 で、`issue-12`・`feature/issue-12` は拾わない）。ready は番号の昇順に貪欲に選び、in_flight と既に選んだ issue の
 変更対象パスと重なるものは waiting `path_conflict` に回す。
 
-- **`--with-in-flight`**: 渡した候補に加え、今走っている他 issue（head が `feature/issue-<N>` の open PR・
-  `feature/issue-<N>` の local branch・その branch か `df-<N>` の worktree）を自動で in_flight に入れ、その
+- **`--with-in-flight`**: 渡した候補に加え、今走っている他 issue（head が作業ブランチの書式（既定 `feature/issue-<N>`）に
+  合う open PR・書式に合う local branch・その branch か `df-<N>` の worktree）を自動で in_flight に入れ、その
   変更対象パスを占有にする。無しでは渡した候補の中しか見ないので、別セッションで実行中の run とのパス衝突は
   検出されない。自動で拾った issue は human-task / blocker を見ずに in_flight とし（実際に走っているので占有
   から漏らさない）、closed は残骸として出力しない。`--with-in-flight` 単独なら実行中の一覧だけを返す

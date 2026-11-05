@@ -119,6 +119,10 @@ export function validatePrerunSetup(raw, issue) {
   }
 
   const repo = isNonEmptyString(raw.repo) ? raw.repo : null;
+  // branch は prerun が "dev-flow".branch_format（未設定は feature/issue-{issue}）で決めた作業ブランチ名。欠落時の
+  // feature/issue-<N> は書式が未設定のときだけ prerun の名前と一致する（設定した書式の名前は --slug や既存ブランチで
+  // 決まり、ここでは作れない）ので、書式があるのに branch が無ければ fail-closed で throw する
+  if (!isNonEmptyString(raw.branch) && raw.branch_format != null) fail('branch', raw.branch);
   const branch = isNonEmptyString(raw.branch) ? raw.branch : `feature/issue-${issue}`;
   const frameworks = raw.stack.frameworks.filter((f) => typeof f === 'string');
   const testRunners = raw.stack.test_runners.map((r) => ({ runner: r.runner, accept: [...r.accept], exclude: [...r.exclude], command: r.command }));
