@@ -62,7 +62,6 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-631' };
     if (label.startsWith('analyze')) return STANDARD_REQ;
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
@@ -91,7 +90,6 @@ function createResponder(overrides = {}) {
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't', files: ['src/x.ts'], summary: 's', concerns: [] };
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
-    if (label === 'issue-meta') return { ok: true, number: 631, title: 'stub-issue-title' };
     return null;
   };
 }

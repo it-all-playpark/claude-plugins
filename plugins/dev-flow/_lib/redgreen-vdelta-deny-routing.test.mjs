@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, prerunAnalyze, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, prerunAnalyze, runWorkflowCapture, assertNoCrash, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 import { isRedgreenCall, redgreenBatchResponse } from './test-helpers/redgreen-batch.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -41,9 +41,6 @@ function makeSandbox(analyzeReq, evaluatorResponse, redgreenResponseFor) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
     }
@@ -70,9 +67,6 @@ function makeSandbox(analyzeReq, evaluatorResponse, redgreenResponseFor) {
     }
     if (label.startsWith('pr')) {
       return { pr_url: 'http://x', pr_number: 1, committed: true };
-    }
-    if (label === 'changed-files') {
-      return { files: ['_lib/foo.test.mjs'] };
     }
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       return { posted: true, method: 'gh pr comment', url: 'http://x' };
@@ -104,21 +98,7 @@ function makeSandbox(analyzeReq, evaluatorResponse, redgreenResponseFor) {
     workflow: workflowStub,
     // REQ は args.setup.analyze から組まれる（Analyze phase は spawn しない）。AC 数を analyzeReq から給電する
     args: devFlowArgs('1', { analyze: prerunAnalyze({ acceptance_criteria: analyzeReq.acceptance_criteria, issue_type: analyzeReq.issue_type }) }),
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);

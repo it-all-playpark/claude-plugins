@@ -2,7 +2,7 @@
 // merge_tier_reasons に AC未検証文言が含まれることを VM sandbox で検証する（issue #233）。
 // post-summary prompt 本文への転記は devflow-summary-format.test.mjs（純関数出力テスト）が担うため
 // ここでは扱わない（issue #636 AC-1）。
-// test-helpers/vm-sandbox.mjs の VM sandbox パターン（makeRecordingSandbox / runDevFlowInSandbox）を踏襲。
+// test-helpers/vm-sandbox.mjs の VM sandbox パターン（makeRecordingSandbox / runWorkflowCapture）を踏襲。
 //
 // テスト構成:
 //   (A) micro AUTO run → merge_tier===AUTO かつ reasons に AC未検証文言 かつ evaluator 0 件
@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, JS_GLOBALS, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -59,7 +59,6 @@ function makeSandbox(analyzeReq, opts) {
     const agentType = agentOpts && agentOpts.agentType ? agentOpts.agentType : '';
     calls.push({ label, agentType, prompt: String(prompt || '') });
 
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-233' };
     if (label.startsWith('analyze')) return analyzeReq;
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
@@ -80,7 +79,6 @@ function makeSandbox(analyzeReq, opts) {
     };
     if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 'issue-1', files: realizedFiles, summary: '', concerns: [] };
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     return null;
   };
 
@@ -89,28 +87,10 @@ function makeSandbox(analyzeReq, opts) {
     phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
     pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: async () => iterateResult, args: devFlowArgs('1'),
-    console, JSON, Math, String, Number, Boolean, Array, Object, Error, RegExp, Promise, Symbol, Map, Set, Date,
+    ...JS_GLOBALS,
   };
   const ctx = vm.createContext(sandbox);
   return { ctx, calls };
-}
-
-async function runDevFlowInSandbox(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-  let caughtError = null;
-  let returned = null;
-  try {
-    const result = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (result && typeof result.then === 'function') {
-      returned = await result.catch((e) => { caughtError = e; return null; });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { error: caughtError, returned };
 }
 
 // ============================================================
@@ -122,7 +102,7 @@ test('[micro-auto-ac-disclosure] (A) micro AUTO run → merge_tier===AUTO かつ
     realizedFiles: ['docs/a.md'],
     changedFiles: ['docs/a.md'],
   });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
   }
@@ -146,7 +126,7 @@ test('[micro-auto-ac-disclosure] (B) standard run → merge_tier===REVIEW かつ
     realizedFiles: ['src/foo.ts'],
     changedFiles: ['src/foo.ts'],
   });
-  const { error, returned } = await runDevFlowInSandbox(src, ctx);
+  const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
   }
@@ -168,7 +148,7 @@ test('[micro-auto-ac-disclosure] (C) micro AUTO run → evaluator が 0 件（AC
     realizedFiles: ['docs/a.md'],
     changedFiles: ['docs/a.md'],
   });
-  const { error } = await runDevFlowInSandbox(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
   }

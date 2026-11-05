@@ -33,10 +33,6 @@ const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 function createResponder({ concerns, ciChecksResponse }) {
   return function ({ label, agentType }) {
     // Setup(worktree)
-    // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #550 案1）
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-297' };
     }
@@ -105,8 +101,6 @@ function createResponder({ concerns, ciChecksResponse }) {
         concerns,
       };
     }
-    // issue-meta（issue #451）: analyze provenance 突合 probe
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     // デフォルト（worktree-deps 等）
     return null;
   };

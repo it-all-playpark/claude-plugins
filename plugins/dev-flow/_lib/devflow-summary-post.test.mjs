@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, makeDevFlowSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -39,10 +39,6 @@ function makeSandbox(analyzeReq, postResult) {
     const agentType = opts?.agentType ?? '';
 
     // Setup(worktree)
-    // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #550 案1）
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
     }
@@ -86,9 +82,6 @@ function makeSandbox(analyzeReq, postResult) {
     }
     // Merge tier: changed-files
     // → docs/test-only でないファイルを返す（AUTO 除外）
-    if (label === 'changed-files') {
-      return { files: ['src/foo.ts'] };
-    }
     // post-summary（dev-runner-haiku）: 呼び出しカウンタをインクリメントし postResult を返す
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       postSummaryCallCount += 1;
@@ -100,8 +93,6 @@ function makeSandbox(analyzeReq, postResult) {
     }
     // diff-gate / diff-hash（issue #215）: need() による throw の回避
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false }
-    // issue-meta（issue #451）: analyze provenance 突合 probe
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     // デフォルト
     return null;
   };
@@ -124,21 +115,7 @@ function makeSandbox(analyzeReq, postResult) {
     // 引数（ISSUE 解決用）
     args: devFlowArgs('1'),
     // JS 組み込み
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);

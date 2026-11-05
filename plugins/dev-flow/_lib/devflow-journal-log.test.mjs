@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -42,10 +42,6 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     const agentType = opts?.agentType ?? '';
 
     // Setup(worktree)
-    // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #550 案1）
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-1', repo: 'acme/skills' };
     }
@@ -90,9 +86,6 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     }
     // Merge tier: changed-files
     // → docs/test-only でないファイルを返す（AUTO 除外）
-    if (label === 'changed-files') {
-      return { files: ['src/foo.ts'] };
-    }
     // post-summary（dev-runner-haiku）: posted:true 固定
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       return { posted: true, method: 'gh pr comment', url: 'http://x' };
@@ -111,8 +104,6 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     }
     // diff-gate / diff-hash（issue #215）: need() による throw の回避
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false }
-    // issue-meta（issue #451）: analyze provenance 突合 probe
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     // デフォルト: 未知の label は null を返す（journal-log が need() で包まれないことを前提）
     return null;
   };
@@ -135,21 +126,7 @@ function makeSandbox(analyzeReq, journalResult, evaluatorOverrides) {
     // 引数（ISSUE 解決用）
     args: devFlowArgs('1', { repo: 'acme/skills' }),
     // JS 組み込み（devflow-summary-post.test.mjs と同一セット）
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);

@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
+import { JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -28,21 +29,7 @@ function makeWorkflowSandbox(extraGlobals = {}) {
     parallel: async () => [],
     workflow: async () => null,
     args: null,
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
     ...extraGlobals,
   };
   return vm.createContext(sandbox);

@@ -46,7 +46,6 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-605' };
     if (label.startsWith('analyze')) return STANDARD_REQ;
     if (label === 'danger-grep') {
@@ -70,7 +69,6 @@ function createResponder(overrides = {}) {
     if (label === 'journal-log') return { saved: true, logged: true };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't', files: ['src/x.ts'], summary: 's', concerns: [] };
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
-    if (label === 'issue-meta') return { ok: true, number: 605, title: 'stub-issue-title' };
     return null;
   };
 }

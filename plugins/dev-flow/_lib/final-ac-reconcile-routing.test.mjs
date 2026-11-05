@@ -57,7 +57,6 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-331' };
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
@@ -87,8 +86,6 @@ function createResponder(overrides = {}) {
     if (label === 'changed-files-final') return { files: [] };
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
-    // journal-save (stage1, issue #494): 実際の telemetry payload はここに載る
-    if (label === 'journal-save') return { saved: true, path: '/tmp/wt/.devflow-tmp/payload-test.json' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't', files: ['src/x.ts'], summary: 's', concerns: [] };
     if (label === 'reconcile-sync') return { ok: true, head: 'deadbeef' };

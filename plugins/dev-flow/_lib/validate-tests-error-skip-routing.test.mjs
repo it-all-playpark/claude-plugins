@@ -41,12 +41,6 @@ function createResponder({ mode, gateEmpty }) {
   let mainCount = 0;
   let retryCount = 0;
   return function ({ label, agentType }) {
-    if (label === 'setup-base') {
-      return {
-        ok: true, default_branch: 'main', dev_exists: true, requested_exists: false,
-        worktree_exists: false, upstream_remote: '', upstream_merge: '',
-      };
-    }
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-627' };
     if (label.startsWith('analyze')) {
       return {
@@ -105,7 +99,6 @@ function createResponder({ mode, gateEmpty }) {
       return { files: ['src/foo.ts'] };
     }
     if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
-    if (label === 'issue-meta') return { ok: true, number: 627, title: 'stub-issue-title' };
     // それ以外（issue-labels 含む）→ null（非 cross-repo 扱い → 差し戻し1回 → retry 経路へ）
     return null;
   };

@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -41,10 +41,6 @@ function makeSandbox(analyzeReq, evaluatorResponse) {
     const agentType = opts?.agentType ?? '';
 
     // Setup(worktree)
-    // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #550 案1）
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
     }
@@ -91,8 +87,6 @@ function makeSandbox(analyzeReq, evaluatorResponse) {
     }
     // diff-gate / diff-hash（issue #215）: need() による throw の回避
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false }
-    // issue-meta（issue #451）: analyze provenance 突合 probe
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     // デフォルト
     return null;
   };
@@ -114,21 +108,7 @@ function makeSandbox(analyzeReq, evaluatorResponse) {
     // 引数（ISSUE 解決用）
     args: devFlowArgs('1'),
     // JS 組み込み
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);
@@ -317,10 +297,6 @@ test('[escalate-producer] テスト4: complex shape iteration 2 に初出 escala
       const label = opts?.label ?? '';
       const agentType = opts?.agentType ?? '';
 
-      // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #550 案1）
-      if (label === 'setup-base') {
-        return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-      }
       if (label === 'worktree') {
         return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
       }
@@ -400,7 +376,6 @@ test('[escalate-producer] テスト4: complex shape iteration 2 に初出 escala
       }
       // diff-gate / diff-hash（issue #215）: need() による throw の回避
       if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false }
-      if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
       return null;
     };
   }
@@ -416,21 +391,7 @@ test('[escalate-producer] テスト4: complex shape iteration 2 に初出 escala
     pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
     args: devFlowArgs('1'),
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);

@@ -25,7 +25,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -75,18 +75,8 @@ function makeSandbox(analyzeReq, epochMode) {
     }
     // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #298, #517, #550 案1）。
     // start mark の給電元（専用 clock#start probe は廃止、epoch は optional）。
-    if (label === 'setup-base') {
-      return withEpoch({
-        ok: true, default_branch: 'main', dev_exists: true, requested_exists: false,
-        worktree_exists: false, upstream_remote: '', upstream_merge: '',
-      });
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-1', repo: 'acme/skills' };
-    }
-    // worktree-deps: 旧 analyze 開始 mark の給電元（issue #443。issue #641 で撤去済み、防御的に残す）
-    if (label === 'worktree-deps') {
-      return withEpoch({ status: 'no_dependencies' });
     }
     // Setup 末尾の analyze ゲートは args.setup.analyze から REQ を組み spawn しない（issue #690）。
     // setup_end は args.setup.epoch_end から給電され implement 区間の起点になる（issue #695）。
@@ -127,9 +117,6 @@ function makeSandbox(analyzeReq, epochMode) {
     }
     // Merge tier: changed-files
     // → docs/test-only でないファイルを返す（AUTO 除外。給電対象ではない）
-    if (label === 'changed-files') {
-      return { files: ['src/foo.ts'] };
-    }
     // post-summary（issue #550 F3）: posted:true 固定 + end mark の給電元
     // （専用 clock#end probe 撤去に伴い、post-summary 応答の optional epoch から
     // feedClockMark('end', ...) へ給電される）。
@@ -181,21 +168,7 @@ function makeSandbox(analyzeReq, epochMode) {
     pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
     args: devFlowArgs('1'),
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);

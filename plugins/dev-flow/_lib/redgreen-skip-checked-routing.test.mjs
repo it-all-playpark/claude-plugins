@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, assertNoCrash, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 import { isRedgreenCall, redgreenBatchResponse } from './test-helpers/redgreen-batch.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -48,9 +48,6 @@ function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
     }
@@ -89,9 +86,6 @@ function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
     if (label.startsWith('pr')) {
       return { pr_url: 'http://x', pr_number: 1, committed: true };
     }
-    if (label === 'changed-files') {
-      return { files: ['_lib/foo.test.mjs'] };
-    }
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       return { posted: true, method: 'gh pr comment', url: 'http://x' };
     }
@@ -107,7 +101,6 @@ function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     return null;
   };
 
@@ -122,21 +115,7 @@ function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
     pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
     args: devFlowArgs('1'),
-    console,
-    JSON,
-    Math,
-    String,
-    Number,
-    Boolean,
-    Array,
-    Object,
-    Error,
-    RegExp,
-    Promise,
-    Symbol,
-    Map,
-    Set,
-    Date,
+    ...JS_GLOBALS,
   };
 
   const ctx = vm.createContext(sandbox);

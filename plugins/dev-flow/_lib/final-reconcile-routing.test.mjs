@@ -67,7 +67,6 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-320' };
     if (label.startsWith('analyze')) return STANDARD_REQ;
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
@@ -94,13 +93,10 @@ function createResponder(overrides = {}) {
     if (label === 'merge-tier-facts') return mergeTierFacts({ hash: 'H_MERGE', files: ['src/x.ts'] });
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
-    // journal-save (stage1, issue #494): 実際の telemetry payload はここに載る
-    if (label === 'journal-save') return { saved: true, path: '/tmp/wt/.devflow-tmp/payload-test.json' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't', files: ['src/x.ts'], summary: 's', concerns: [] };
     if (label === 'reconcile-sync') return { ok: true, head: 'deadbeef' };
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
-    if (label === 'issue-meta') return { ok: true, number: 320, title: 'stub-issue-title' };
     return null;
   };
 }

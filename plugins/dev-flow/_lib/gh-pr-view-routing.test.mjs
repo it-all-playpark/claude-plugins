@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -46,9 +46,6 @@ function createResponder(prMetaResponse) {
   return function (prompt, opts) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-405' };
     }
@@ -82,7 +79,6 @@ function createResponder(prMetaResponse) {
         : null;
       return mergeTierFacts({ pr, files: ['src/x.ts'] });
     }
-    if (label === 'issue-meta') return { ok: true, number: 405, title: 'stub-issue-title' };
     return null;
   };
 }
@@ -106,7 +102,7 @@ function makeSandbox(prMetaResponse) {
     pipeline,
     workflow,
     args: devFlowArgs('405'),
-    console, JSON, Math, String, Number, Boolean, Array, Object, Error, RegExp, Promise, Symbol, Map, Set, Date,
+    ...JS_GLOBALS,
   };
   const ctx = vm.createContext(sandbox);
   return { ctx, calls };

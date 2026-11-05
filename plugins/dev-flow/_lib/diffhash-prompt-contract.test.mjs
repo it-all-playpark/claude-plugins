@@ -39,11 +39,9 @@ const STANDARD_REQ = {
 // ============================================================
 function createResponder() {
   return function ({ label, agentType }) {
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: false, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
     if (label.startsWith('analyze')) return STANDARD_REQ;
     if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'H', empty: false } };
-    if (label === 'danger-grep-final') return { ok: true, hits: [] };
     if (agentType === 'dev-flow:evaluator') {
       return {
         verdict: 'pass', total: 100, threshold: 80, feedback: [],
@@ -56,13 +54,11 @@ function createResponder() {
       };
     }
     if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
-    if (label === 'changed-files') return { files: ['src/x.ts'] };
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't', files: ['src/x.ts'], summary: 's', concerns: [] };
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     return null;
   };
 }

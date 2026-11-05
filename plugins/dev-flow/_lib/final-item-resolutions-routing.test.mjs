@@ -67,7 +67,6 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'setup-base') return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-658' };
     if (label === 'isolation-probe') return { written: true };
     if (label.startsWith('analyze')) return STANDARD_REQ;
@@ -103,11 +102,9 @@ function createResponder(overrides = {}) {
     if (label === 'changed-files-final') return { files: [] };
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
-    if (label === 'journal-save') return { saved: true, path: '/tmp/wt/.devflow-tmp/payload-test.json' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
     if (label === 'reconcile-sync') return { ok: true, head: 'deadbeef' };
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
-    if (label === 'issue-meta') return { ok: true, number: 658, title: 'stub-issue-title' };
     return null;
   };
 }

@@ -35,10 +35,6 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 function createResponder() {
   return function({ label, agentType }) {
     // Setup(worktree)
-    // Setup(setup-base): base 解決 + 既存 worktree 起点検証 統合 probe（issue #550 案1）
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') {
       return { worktree: '/tmp/wt', branch: 'feature/issue-296' };
     }
@@ -119,8 +115,6 @@ function createResponder() {
         ],
       };
     }
-    // issue-meta（issue #451）: analyze provenance 突合 probe
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     // デフォルト
     return null;
   };
@@ -290,9 +284,6 @@ test('[eval-concern-resolutions][#614] triaged は ledger 収束を変えない�
 
 function createSingleConcernResponder(concernResolutions) {
   return function ({ label, agentType }) {
-    if (label === 'setup-base') {
-      return { ok: true, default_branch: 'main', dev_exists: true, requested_exists: false, worktree_exists: false, upstream_remote: '', upstream_merge: '' };
-    }
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-296-q' };
     if (label.startsWith('analyze')) {
       return {
@@ -323,7 +314,6 @@ function createSingleConcernResponder(concernResolutions) {
         concerns: ['CONCERN マーカー: 単一の未分類 concern'],
       };
     }
-    if (label === 'issue-meta') return { ok: true, number: 1, title: 'stub-issue-title' };
     return null;
   };
 }
