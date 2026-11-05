@@ -3,7 +3,7 @@
 // AC-7: waited_seconds/poll_attempts が終端サマリー / return に反映される。
 // issue #1046: 使った上限 ci_wait_ceiling_seconds と待ち秒数 ci_wait_seconds を、nested・単体起動とも
 // return と journal telemetry の両方に載せる。
-// issue #488: fetch は subagent の bare `gh pr checks`、check-ci.sh はその snapshot に対する
+// issue #488: fetch は subagent の bare `gh pr view --json statusCheckRollup`、check-ci.sh はその snapshot に対する
 // 純変換。ポーリングは pr-iterate.js の script 側 ci-wait ループが持つ（issue #663）。
 // dispatch された ci-check prompt の正負 grep は priterate-ci-failopen.test.mjs (c)（canonical との一致）と
 // ci-check.test.mjs（canonical 本文）が持つ。

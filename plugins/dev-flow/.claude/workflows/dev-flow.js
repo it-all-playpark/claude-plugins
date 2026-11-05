@@ -3496,11 +3496,16 @@ function checkNameArgs(flag, names) {
   return (Array.isArray(names) ? names : []).map((name) => ` ${flag} '${String(name).split("'").join("'\\''")}'`).join('');
 }
 
+function ciRollupCommand({ pr, repo, withLink = false }) {
+  const drop = withLink ? '.__typename,.completedAt' : '.__typename,.completedAt,.detailsUrl,.targetUrl';
+  return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop}))'`;
+}
+
 function ciFetchSteps({ pr, repo, n, exclude = [], only = [] }) {
   const withLink = Array.isArray(only) && only.length > 0;
-  return `${n}. \`gh pr checks ${pr}${repo ? ' --repo ' + repo : ''} --json name,state,bucket${withLink ? ',link' : ''}\` を gh を先頭トークンとする bare 単文で実行せよ`
+  return `${n}. \`${ciRollupCommand({ pr, repo, withLink })}\` を gh を先頭トークンとする bare 単文で実行せよ`
     + `（リダイレクト・パイプ・複合コマンドは使わない）。`
-    + `このコマンドの exit code を判定に使ってはならない（pending で 8、失敗ありで 1 を返す仕様であり、fetch 自体の成否とは無関係）。\n`
+    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。\n`
     + `${n + 1}. \`check-ci --checks-data '<手順${n}の stdout を一字一句そのまま。要約・整形・省略禁止>' `
     + `--fetch-error-data '<手順${n}の stderr を一字一句そのまま。stderr が空なら本オプション自体を省略>'`
     + `${checkNameArgs('--only', only)}${checkNameArgs('--exclude', exclude)}\` `
@@ -4356,7 +4361,7 @@ function closesCheckCommand({ pr, repo, issue }) {
   return `gh pr view ${pr}${repoArg} --json body --jq '.body | test("Closes #${Number(issue)}(\\\\D|$)")'`;
 }
 
-function mergeTierFactsPrompt({ wt, base, pr, repo, issue }) {
+function mergeTierFactsPrompt({ wt, base, pr, repo, issue, rollupCommand }) {
   const repoArg = repo ? ' --repo ' + repo : '';
   const bare = '（cd 前置・`bash` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止）';
   return `## Objective\nPR #${pr} の Merge tier 判定に使う事実を取得し、merge-tier-facts の stdout JSON をそのまま返せ。\n\n`
@@ -4367,8 +4372,9 @@ function mergeTierFactsPrompt({ wt, base, pr, repo, issue }) {
     + `- 読み取り専用。git mutation（commit/push/reset/fetch/pull 等）禁止。ファイルを変更しない\n\n`
     + `## Steps\n`
     + `1. \`gh pr view ${pr}${repoArg} --json mergeable,mergeStateStatus,headRefOid\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。stdout を <PR_VIEW> とする。\n`
-    + `2. \`gh pr checks ${pr}${repoArg} --json name,bucket\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
-    + `このコマンドの exit code を判定に使ってはならない（pending で 8、失敗ありで 1 を返す仕様であり、fetch 自体の成否とは無関係）。stdout を <CHECKS> とする。\n`
+    + `2. \`${rollupCommand}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
+    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。`
+    + `stdout を <CHECKS> とする。\n`
     + `3. \`${closesCheckCommand({ pr, repo, issue })}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
     + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。`
     + `stdout（\`true\` または \`false\`）を <CLOSES> とする。\n`
@@ -7989,8 +7995,8 @@ feedClockMark('final_end', finalEpochRes)
 // ============================================================
 phase('Merge tier')
 // Merge tier 統合 exec-proxy: Merge tier が使う read-only 事実（diff-hash / danger-grep / changed-files /
-// gh pr view / PR head tree OID / gh pr checks / PR body の Closes 有無）を label 'merge-tier-facts' の 1 spawn で採る。
-// subagent は gh pr view / gh pr checks を bare 単文で実行して stdout を argv で merge-tier-facts へ
+// gh pr view / PR head tree OID / statusCheckRollup / PR body の Closes 有無）を label 'merge-tier-facts' の 1 spawn で採る。
+// subagent は gh pr view を bare 単文で実行して stdout を argv で merge-tier-facts へ
 // verbatim 転写し（PR body は gh の --jq で true / false に畳んだ結果だけを渡す）、
 // merge-tier-facts はローカル read-only git との純変換で 7 サブ結果を {ok,value,error}
 // で返す（exec-proxy スクリプトは認証付き network I/O を内部に持たない）。判定は全て JS 側 —
@@ -8006,7 +8012,7 @@ let mergeFacts = null
 let mergeFactsContractViolation = false
 try {
   mergeFacts = await trackedAgent(
-    mergeTierFactsPrompt({ wt: WT, base: BASE, pr: pr.pr_number, repo: REPO, issue: ISSUE }),
+    mergeTierFactsPrompt({ wt: WT, base: BASE, pr: pr.pr_number, repo: REPO, issue: ISSUE, rollupCommand: ciRollupCommand({ pr: pr.pr_number, repo: REPO }) }),
     { agentType: 'dev-runner-haiku-ro', schema: MERGE_FACTS, label: 'merge-tier-facts', phase: 'Merge tier', retryOnContractViolation: true },
   )
 } catch (e) {
@@ -8211,7 +8217,7 @@ const mergeTier = classifyMergeTier({
   mergeableState,
   evalVerdictFail: state.evalResult?.verdict === 'fail',
   prClosesStatus,
-  // PR head の CI checks（merge-tier-facts の checks サブ結果）。fail / cancel / 未知 bucket が 1 件でもあれば
+  // PR head の CI checks（merge-tier-facts の checks サブ結果）。bucket が fail / cancel のものが 1 件でもあれば
   // HOLD（ci_checks_failed）、pending / 取得失敗は「CI 未完了」の開示のみ（fail-open）
   ciChecks: facts.checks,
 })
@@ -8228,7 +8234,7 @@ log(`merge tier: ${mergeTier.tier} — ${mergeTier.reasons.join(' / ')}`)
 const ciTargets = state.ledger.items.filter((it) =>
   it.dimension === 'environment' && it.checked !== true && CI_VERIFIABLE_ENV_KEYS.includes(it.env_key))
 if (ciTargets.length > 0) {
-  // checks は merge-tier-facts の checks サブ結果（gh pr checks --json name,bucket の stdout 転写。gh 追加呼び出しなし）
+  // checks は merge-tier-facts の checks サブ結果（statusCheckRollup を分類した {name, bucket}。gh 追加呼び出しなし）
   const ciChecks = facts.checks
   if (!ciChecks || ciChecks.ok !== true || !Array.isArray(ciChecks.checks)) {
     log(`⚠️ ci-checks: checks 取得失敗 (${ciChecks?.error ?? 'null/schema 不一致'}) — ENV item 据え置き（fail-open）`)
