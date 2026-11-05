@@ -54,6 +54,24 @@ test('[hold-recovery] 対象の run の security review は clear を観測し�
   assert.deepEqual(rows, ['- `security_review_unresolved` — ✅ 解消 — この run の security review: cleared']);
 });
 
+test('[hold-recovery] reviewed_sha が別の head の security review は critical があっても未解消と書かず、未確認にする', async () => {
+  const { result, rows } = await run(['security_review_unresolved'], {
+    'ci-check#1': ci('passed'), 'mergeable-check#1': mergeable('MERGEABLE'),
+    'security-review#1': { reviewed_sha: HEAD2, issues: [{ severity: 'critical', topic: 's1', file: 'src/a.js', line: 1, description: 'x', suggestion: 'y' }], summary: 'ng' },
+  }, { security_review: undefined });
+  assert.equal(result.status, 'security_unresolved');
+  assert.deepEqual(rows, ['- `security_review_unresolved` — ❔ 未確認 — この run の security review: unresolved — 観測した head が終端 head と同じか確かめられない']);
+});
+
+test('[hold-recovery] fix の後の LGTM の round で security-scope が対象外なら、その head の判定として解消にする', async () => {
+  const { result, rows } = await run(['security_review_unresolved'], {
+    'review#1': BLOCKING, 'ci-check#1': ci('failed'), 'commit-ensure#1': ENSURED_HEAD2,
+    'ci-check#2': ci('passed', HEAD2), 'mergeable-check#2': mergeable('MERGEABLE', HEAD2), 'security-scope#2': securityScopeResponse({ target: false, head: HEAD2 }),
+  });
+  assert.equal(result.status, 'lgtm');
+  assert.deepEqual(rows, ['- `security_review_unresolved` — ✅ 解消 — この run の security review: not_target']);
+});
+
 test('[hold-recovery] fix の後に上限で終えた run は、fix 前の head の CI・対象外の判定を未確認にし、最終 CI 状態の行に古い head と出す', async () => {
   const { result, post, rows } = await run(['ci_checks_failed', 'security_review_unresolved'], {
     'review#1': BLOCKING, 'ci-check#1': ci('failed'), 'commit-ensure#1': ENSURED_HEAD2,
