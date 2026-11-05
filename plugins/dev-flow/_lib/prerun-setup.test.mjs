@@ -46,8 +46,6 @@ function validAnalyze(overrides = {}) {
   return {
     ok: true, analyze_path: 'contract', jev_reasons: [],
     issue_title: 'feat: add thing', issue_type: 'feat', acceptance_criteria: ['a', 'b'],
-    scope: 'src', scope_truncated: false, scope_total_chars: 3,
-    issue_body: 'body', issue_body_truncated: false,
     breaking_keyword_scan: false, breaking_change: false, breaking_evidence: '',
     comment_count: 0, comment_overrides: [], comment_conflicts: [], uncertain: [],
     contract: 't1', ac_heading_near_miss: [], duration_seconds: 3,

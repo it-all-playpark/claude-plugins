@@ -18,15 +18,13 @@ Jev に聞く質問・comment の分類・確信の閾値は `prerun-analyze.sh`
 
 `--contract` の出力のうち prerun が読むのは、次の意味を持つ生シグナル:
 
-- **要件**: AC 節の項目（`acceptance_criteria`）、AC 節を除いた本文（`scope`）、AC 節を含む本文
-  （`issue_body`。Implement が dev-implementer へ issue 本文として渡す）。AC 見出しが許容表記に一致しない
-  ときは `acceptance_criteria` を空のまま、その見出し行を `ac_heading_near_miss` に載せる
+- **要件**: AC 節の項目（`acceptance_criteria`）と、AC 節を含む本文の全文（`issue_body`。切らない）。AC 見出しが
+  許容表記に一致しないときは `acceptance_criteria` を空のまま、その見出し行を `ac_heading_near_miss` に載せる
 - **互換性の手がかり**: title + body の決定論 keyword scan（`breaking_keyword_scan`）と、title の
   conventional prefix の `!`（`title_breaking_marker`）
 - **comment**: `comments`（各 comment の author・`author_association`・作成時刻・本文）と件数、issue 報告者
   （`issue_author`）、issue の最終更新時刻（`issue_updated_at`。comment の後に body が編集されたかの
   前後関係に使う）
-- **切断の事実**: 本文の抜粋を上限で切ったかの boolean と、切る前の総文字数
 
 prerun はこれを決定論で処理し、下記の判定だけを Jev に回して、ゲートに渡す
 `comment_overrides` / `comment_conflicts` / `uncertain` / `breaking_change` / `ac_observational` を組む。
@@ -55,7 +53,7 @@ merge tier が補償する（意図的な設計判断）。
 判定できない入力を「問題なし」と同一視しない。analyze ゲートは AC 空・`comment_conflicts` 非空・
 `uncertain` 非空のどれかで needs_clarification に倒し、人間に返す。
 
-- prerun の analyze 段の失敗（issue を取得できない・JSON 不正・blocker を読めない）は `ok:false` で返り、
+- prerun の analyze 段の失敗（issue を取得できない・JSON 不正・本文ファイルを書けない・blocker を読めない）は `ok:false` で返り、
   ゲートは spawn せず needs_clarification で終える
 - Jev が応答しない・低確信・無効（未導入・`DEVFLOW_JEV_DISABLE=1`）の互換性と comment の判定は
   `uncertain` に、権限の無い override・conflict・低確信の comment は `comment_conflicts` に積む。決定論は
@@ -87,12 +85,22 @@ comment が issue body から抽出した要件を黙って上書きできる。
 落ちる（prerun は `ok:false`）— 取得の欠落を comment 無しとして通すと、comment による訂正の読み落としが
 黙って起きる。
 
+## 本文の全文の渡し方
+
+prerun（`dev-flow-prerun`）は本文の全文を長さに関わらず `<worktree>/.devflow-tmp/issue-body.md` へ byte 一致で
+書く（`.devflow-tmp` の clean の後なので、再利用 worktree の再実行では最新の本文になる）。dev-implementer は
+このファイルを最初に Read し、互換性の明記行の判定と Jev の互換性・comment の判定は全文を入力にする。
+
+`args.setup.analyze` と REQ には本文・`scope` を載せない。`setup` は wrapper の LLM が Workflow の `args` へ
+書き写すので、載せると LLM に issue を転写させることになる。AC の採点軸は `acceptance_criteria` のままで、
+本文ファイルは実装中に書き換えられるので判定の根拠にしない。本文は `jq --arg` などの argv で渡さない
+（Linux の 1 引数 128KiB 上限で落ちる）。
+
 ## 本文の切断
 
-本文の抜粋（`scope` / `issue_body` 等）は context 予算のために上限で切る。切断は黙って行わない: 切った
-抜粋の末尾にマーカーを付け、加えて切断の boolean と総文字数を常時出力する — マーカー文字列を見ない下流
-（boolean だけを見る決定論ゲート）にも切断の事実が届く。`--dump-body <path>` を付けた呼び出しは、切断が
-あったときだけ body 全文をそのファイルに書いて `body_dump_path` に返す（無ければ `null`）。
+`scope` / `body_preview` は context 予算のために上限で切る（読むのは `analyze-clarify`）。切断は黙って行わない:
+切った抜粋の末尾にマーカーを付け、加えて切断の boolean と総文字数を常時出力する。`--dump-body <path>` を付けた
+呼び出しは、切断があったときだけ body 全文をそのファイルに書いて `body_dump_path` に返す（無ければ `null`）。
 `analyze-clarify` はそのファイルを Read してから要件を読み、issue を再取得しない。
 
 切断が黙っていると、issue 末尾に書かれた確定仕様が抜粋の外へ落ち、それを読めない analyze が

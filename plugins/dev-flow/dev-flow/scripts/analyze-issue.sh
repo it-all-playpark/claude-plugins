@@ -352,11 +352,8 @@ run_contract_mode() {
         ineligible_reason="comments present ($COMMENT_COUNT) — body/comment reconciliation is not decidable by the light path"
     fi
 
-    # scope truncated -> a spec written past the 4000-char cap can be silently
-    # cut out of the contract-mode `scope` excerpt. The light path has no way
-    # to notice this (it never reads the full body); the fact is surfaced via
-    # scope_truncated / issue_body_truncated so the consumer (dev-flow's implementer
-    # prompt) treats acceptance_criteria as authoritative for the cut region.
+    # scope truncated -> a spec written past the 4000-char cap can be cut out of the
+    # contract-mode `scope` excerpt, so the light path cannot vouch for the issue.
     if [[ "$eligible" == true && "$SCOPE_TRUNCATED" == true ]]; then
         eligible=false
         ineligible_reason="scope truncated"
@@ -400,7 +397,10 @@ run_contract_mode() {
     ac_items_json=$(printf '%s\n' "$ac_items" | grep -v '^[[:space:]]*$' | head -20 | json_array || true)
     [[ -z "$ac_items_json" ]] && ac_items_json="[]"
 
-    jq -n \
+    # issue_body is the raw body in full (AC section included, never capped): prerun-analyze.sh
+    # writes it to the worktree and feeds it to its judgements. jq reads it from the issue JSON on
+    # stdin, not from --arg: a long multibyte body exceeds Linux's 128KiB per-argument limit.
+    printf '%s' "$ISSUE_JSON" | jq \
         --arg contract "$contract" \
         --argjson eligible "$eligible" \
         --arg ineligible_reason "$ineligible_reason" \
@@ -411,8 +411,6 @@ run_contract_mode() {
         --arg scope "$SCOPE" \
         --argjson scope_truncated "$SCOPE_TRUNCATED" \
         --argjson scope_total_chars "$SCOPE_TOTAL_CHARS" \
-        --arg issue_body "$ISSUE_BODY" \
-        --argjson issue_body_truncated "$ISSUE_BODY_TRUNCATED" \
         --argjson breaking_keyword_scan "$BREAKING_KEYWORD_SCAN" \
         --argjson comment_count "$COMMENT_COUNT" \
         --argjson ac_heading_near_miss "$NEAR_MISS_JSON" \
@@ -431,8 +429,7 @@ run_contract_mode() {
           scope: $scope,
           scope_truncated: $scope_truncated,
           scope_total_chars: $scope_total_chars,
-          issue_body: $issue_body,
-          issue_body_truncated: $issue_body_truncated,
+          issue_body: (.body // ""),
           breaking_keyword_scan: $breaking_keyword_scan,
           title_breaking_marker: $title_breaking_marker,
           comment_count: $comment_count,
@@ -499,17 +496,6 @@ if (( BODY_TOTAL_CHARS > BODY_PREVIEW_MAX_CHARS )); then
     BODY_PREVIEW_TRUNCATED=true
     BODY_PREVIEW+="$(truncation_marker body_preview "$BODY_PREVIEW_MAX_CHARS" "$BODY_TOTAL_CHARS" "")"
 fi
-# issue_body (contract mode + standard/comprehensive depth): the raw body (AC section
-# INCLUDED, unlike `scope`) capped at SCOPE_MAX_CHARS with the same marker / boolean
-# convention as `scope`. dev-flow.js hands it to the plan+impl implementer
-# (dev-implementer, issue #668) as the issue text; the AC list travels separately,
-# so a truncated body still leaves the implementer with the full acceptance criteria.
-ISSUE_BODY="${BODY:0:$SCOPE_MAX_CHARS}"
-ISSUE_BODY_TRUNCATED=false
-if (( BODY_TOTAL_CHARS > SCOPE_MAX_CHARS )); then
-    ISSUE_BODY_TRUNCATED=true
-    ISSUE_BODY+="$(truncation_marker issue_body "$SCOPE_MAX_CHARS" "$BODY_TOTAL_CHARS" " of the issue body (AC section included)")"
-fi
 
 # --dump-body <file> (standard / comprehensive depth only): when any excerpt above was
 # truncated, write the raw body verbatim to <file> and report its absolute path as
@@ -518,7 +504,7 @@ fi
 # carry the whole body, and a stray file per run would only accumulate.
 BODY_DUMP_PATH_JSON=null
 if [[ -n "$DUMP_BODY_PATH" && "$CONTRACT_MODE" != true && "$DEPTH" != minimal ]] \
-    && [[ "$SCOPE_TRUNCATED" == true || "$BODY_PREVIEW_TRUNCATED" == true || "$ISSUE_BODY_TRUNCATED" == true ]]; then
+    && [[ "$SCOPE_TRUNCATED" == true || "$BODY_PREVIEW_TRUNCATED" == true ]]; then
     printf '%s' "$BODY" > "$DUMP_BODY_PATH" || die_json "--dump-body: cannot write $DUMP_BODY_PATH"
     BODY_DUMP_ABS="$(cd "$(dirname "$DUMP_BODY_PATH")" && pwd)/$(basename "$DUMP_BODY_PATH")"
     BODY_DUMP_PATH_JSON=$(json_escape "$BODY_DUMP_ABS")
@@ -599,8 +585,6 @@ if [[ "$DEPTH" == "standard" ]]; then
   "scope": $(printf '%s' "$SCOPE" | jq -Rs .),
   "scope_truncated": $SCOPE_TRUNCATED,
   "scope_total_chars": $SCOPE_TOTAL_CHARS,
-  "issue_body": $(printf '%s' "$ISSUE_BODY" | jq -Rs .),
-  "issue_body_truncated": $ISSUE_BODY_TRUNCATED,
   "body_dump_path": $BODY_DUMP_PATH_JSON
 }
 JSONEOF
@@ -636,8 +620,6 @@ cat <<JSONEOF
   "scope": $(printf '%s' "$SCOPE" | jq -Rs .),
   "scope_truncated": $SCOPE_TRUNCATED,
   "scope_total_chars": $SCOPE_TOTAL_CHARS,
-  "issue_body": $(printf '%s' "$ISSUE_BODY" | jq -Rs .),
-  "issue_body_truncated": $ISSUE_BODY_TRUNCATED,
   "body_dump_path": $BODY_DUMP_PATH_JSON
 }
 JSONEOF

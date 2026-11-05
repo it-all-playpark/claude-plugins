@@ -146,9 +146,57 @@ jev_calls() { grep -c '^call$' "$JEV_LOG" || true; }
     echo "$output" | jq -e '.ok == true and .analyze_path == "contract" and .jev_reasons == []'
     echo "$output" | jq -e '.acceptance_criteria == ["AC one", "AC two"] and .issue_type == "feat" and .issue_title == "feat: add button"'
     echo "$output" | jq -e '.breaking_change == false and .breaking_keyword_scan == false and .comment_overrides == [] and .comment_conflicts == [] and .uncertain == []'
-    echo "$output" | jq -e '(.issue_body | type) == "string" and .issue_body_truncated == false and .comment_count == 0 and .contract == "t1"'
+    echo "$output" | jq -e '.comment_count == 0 and .contract == "t1"'
     echo "$output" | jq -e '.ac_observational == [false, false] and .ac_observational_evidence == ["正規表現の絞り込みに当たらない", "正規表現の絞り込みに当たらない"]'
     [ "$(jev_calls)" -eq 0 ]
+    # setup は wrapper の LLM が Workflow の args へ書き写すので、本文・抜粋を載せない形で固定する
+    echo "$output" | jq -e 'keys == ["ac_heading_near_miss", "ac_observational", "ac_observational_evidence", "acceptance_criteria", "analyze_path", "blockers", "breaking_change", "breaking_evidence", "breaking_keyword_scan", "comment_conflicts", "comment_count", "comment_overrides", "contract", "issue_title", "issue_type", "jev_reasons", "ok", "uncertain"]'
+}
+
+# ---- 判定の入力は本文の全文（4000 字より後ろの目印で確かめる）----
+
+@test "全文入力: 4000 字より後ろの互換性の明記行で決まり、Jev に聞かない" {
+    local filler
+    filler="$(printf 'x%.0s' $(seq 1 4500))"
+    fixture "$WORK/i.json" "feat: schema migration" "$AC_BODY
+
+${filler}
+
+後方互換を保たない API / 形式の変更: なし
+既存データの変換: 不要"
+    run_analyze "$WORK/i.json"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.breaking_keyword_scan == true and .breaking_change == false and .uncertain == [] and .analyze_path == "contract"'
+    [ "$(jev_calls)" -eq 0 ]
+}
+
+@test "全文入力: Jev の互換性判定の state に 4000 字より後ろの目印が載る" {
+    local filler
+    filler="$(printf 'x%.0s' $(seq 1 4500))"
+    fixture "$WORK/i.json" "feat: schema migration" "$AC_BODY
+
+${filler}
+
+COMPAT-TAIL-MARKER [[jev:noul:0.02]]"
+    run_analyze "$WORK/i.json"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.breaking_change == false and .uncertain == []'
+    grep -q 'COMPAT-TAIL-MARKER' "$JEV_LOG.state"
+}
+
+@test "全文入力: Jev の comment 判定の state に 4000 字より後ろの目印が載る" {
+    local filler comments
+    filler="$(printf 'x%.0s' $(seq 1 4500))"
+    comments="[$(comment reporter OWNER '了解 [[jev:unrelated:0.97]]')]"
+    fixture "$WORK/i.json" "feat: add button" "$AC_BODY
+
+${filler}
+
+COMMENT-TAIL-MARKER" "$comments"
+    run_analyze "$WORK/i.json"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.comment_conflicts == [] and .uncertain == []'
+    grep -q 'COMMENT-TAIL-MARKER' "$JEV_LOG.state"
 }
 
 @test "AC 見出し無し -> ok:true で acceptance_criteria は空（ゲート判定は Workflow 側）" {

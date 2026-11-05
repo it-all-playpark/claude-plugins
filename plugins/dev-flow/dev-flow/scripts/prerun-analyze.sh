@@ -8,12 +8,14 @@
 # provenance 突合も comment_count 突合も要らない — その代わり breaking / comment の Jev の低確信・応答なし・無効は
 # 全て fail-closed で `uncertain[]` に積み、Workflow 側のゲートが needs_clarification に倒す）。
 #
-# Usage: prerun-analyze.sh --issue <N> [--repo <owner/name>]
+# Usage: prerun-analyze.sh --issue <N> [--repo <owner/name>] [--body-file <path>]
+#
+# --body-file: issue 本文の全文を byte 一致でこのパスに書く（書けなければ ok:false）。本文は stdout の JSON に載せない —
+# stdout は wrapper の LLM が Workflow の args へ書き写す setup に入るので、載せると LLM に issue を転写させることになる。
 #
 # 出力（常に exit 0。失敗は ok:false + reason で報告し prerun.sh は他段を巻き込まない）:
 #   { ok: true, analyze_path: "contract"|"jev", jev_reasons: [..],
-#     issue_title, issue_type, acceptance_criteria: [..], scope, scope_truncated, scope_total_chars,
-#     issue_body, issue_body_truncated, breaking_keyword_scan, breaking_change, breaking_evidence,
+#     issue_title, issue_type, acceptance_criteria: [..], breaking_keyword_scan, breaking_change, breaking_evidence,
 #     comment_count, comment_overrides: [..], comment_conflicts: [..], uncertain: [..],
 #     ac_observational: [true|false|null ..], ac_observational_evidence: [..],
 #     blockers: [{repo, number, state: "OPEN"|"CLOSED", source: "api"|"body", url}],
@@ -88,10 +90,12 @@ export JEV_MAX_TIME="${DEVFLOW_JEV_MAX_TIME:-10}"
 
 ISSUE=""
 REPO=""
+BODY_FILE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --issue) [[ $# -ge 2 ]] || { echo "--issue requires a value" >&2; exit 2; }; ISSUE="$2"; shift 2 ;;
         --repo) [[ $# -ge 2 ]] || { echo "--repo requires a value" >&2; exit 2; }; REPO="$2"; shift 2 ;;
+        --body-file) [[ $# -ge 2 ]] || { echo "--body-file requires a value" >&2; exit 2; }; BODY_FILE="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -121,6 +125,14 @@ if ! CONTRACT="$("$ANALYZE_ISSUE" "${ANALYZE_ARGS[@]}" 2>"$ERR_FILE")"; then
 fi
 if ! printf '%s' "$CONTRACT" | jq -e 'type == "object" and (.acceptance_criteria | type == "array") and (.title | type == "string")' >/dev/null 2>&1; then
     fail_json "analyze-issue --contract returned non-object / malformed JSON"
+fi
+
+# 本文の全文は dev-implementer がこのファイルで読む。書けないまま進めると、本文を読めない実装が走るので止める
+# （$(...) を挟むと末尾の改行が落ちるので jq から直接書く）
+if [[ -n "$BODY_FILE" ]]; then
+    if ! BODY_WRITE_ERR="$( { mkdir -p "$(dirname "$BODY_FILE")" && printf '%s' "$CONTRACT" | jq -j '.issue_body // ""' >"$BODY_FILE"; } 2>&1 )"; then
+        fail_json "issue 本文を ${BODY_FILE} に書けない: ${BODY_WRITE_ERR:-exit non-zero}"
+    fi
 fi
 
 # ============================================================================
@@ -453,11 +465,6 @@ printf '%s' "$CONTRACT" | jq -c \
       issue_title: .title,
       issue_type: .issue_type,
       acceptance_criteria: .acceptance_criteria,
-      scope: (.scope // ""),
-      scope_truncated: (.scope_truncated // false),
-      scope_total_chars: (.scope_total_chars // 0),
-      issue_body: (.issue_body // ""),
-      issue_body_truncated: (.issue_body_truncated // false),
       breaking_keyword_scan: (.breaking_keyword_scan // false),
       breaking_change: $breaking_change,
       breaking_evidence: $breaking_evidence,

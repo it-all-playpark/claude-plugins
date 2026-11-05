@@ -16,11 +16,6 @@ function baseAnalyze(overrides = {}) {
     issue_title: 'feat: add --contract mode to analyze-issue.sh',
     issue_type: 'feat',
     acceptance_criteria: ['AC1: parse t1/t2 contracts', 'AC2: fallback preserved'],
-    scope: '本文スコープ全文（AC 節除く）',
-    scope_truncated: false,
-    scope_total_chars: 20,
-    issue_body: '## 概要\n本文\n## 受け入れ基準\n- [ ] AC1',
-    issue_body_truncated: false,
     breaking_keyword_scan: false,
     breaking_change: false,
     breaking_evidence: '',
@@ -47,9 +42,6 @@ test('[analyze-contract] (1) contract 経路の正常系 → REQ 全キー検証
   assert.equal(req.issue_title, 'feat: add --contract mode to analyze-issue.sh');
   assert.equal(req.issue_type, 'feat');
   assert.deepEqual(req.acceptance_criteria, ['AC1: parse t1/t2 contracts', 'AC2: fallback preserved']);
-  assert.equal(req.scope, '本文スコープ全文（AC 節除く）');
-  assert.equal(req.scope_truncated, false);
-  assert.equal(req.scope_total_chars, 20);
   assert.equal(req.breaking_change, false);
   assert.equal(req.breaking_keyword_scan, false);
   assert.equal(req.breaking_evidence, '');
@@ -59,8 +51,10 @@ test('[analyze-contract] (1) contract 経路の正常系 → REQ 全キー検証
   assert.equal(req.analyze_path, 'contract');
   assert.deepEqual(req.jev_reasons, []);
   assert.equal(req.comment_count, 0);
-  assert.equal(req.issue_body, '## 概要\n本文\n## 受け入れ基準\n- [ ] AC1');
-  assert.equal(req.issue_body_truncated, false);
+  assert.deepEqual(Object.keys(req).sort(), [
+    'ac_observational', 'acceptance_criteria', 'analyze_path', 'blockers', 'breaking_change', 'breaking_evidence', 'breaking_keyword_scan',
+    'comment_conflicts', 'comment_count', 'comment_overrides', 'issue_number', 'issue_title', 'issue_type', 'jev_reasons', 'summary', 'uncertain',
+  ]);
 });
 
 test('[analyze-contract] (1b) issue_number は文字列で渡っても number になる（Workflow の ISSUE は string）', () => {
@@ -68,9 +62,9 @@ test('[analyze-contract] (1b) issue_number は文字列で渡っても number �
   assert.equal(req.issue_number, 690);
 });
 
-test('[analyze-contract] (1c) 未知キー（contract / ac_heading_near_miss / duration_seconds / ok）は REQ に混入しない', () => {
-  const req = buildReqFromContract(baseAnalyze({ shape: 'complex', estimated_change_file_count: 9 }), 690);
-  for (const k of ['ok', 'contract', 'ac_heading_near_miss', 'duration_seconds', 'shape', 'estimated_change_file_count']) {
+test('[analyze-contract] (1c) 未知キー（contract / ac_heading_near_miss / duration_seconds / ok / 本文・scope）は REQ に混入しない', () => {
+  const req = buildReqFromContract(baseAnalyze({ shape: 'complex', estimated_change_file_count: 9, issue_body: 'b', issue_body_truncated: false, scope: 's', scope_truncated: false, scope_total_chars: 1 }), 690);
+  for (const k of ['ok', 'contract', 'ac_heading_near_miss', 'duration_seconds', 'shape', 'estimated_change_file_count', 'issue_body', 'issue_body_truncated', 'scope', 'scope_truncated', 'scope_total_chars']) {
     assert.equal(Object.prototype.hasOwnProperty.call(req, k), false, `REQ に ${k} が混入している`);
   }
 });
@@ -168,11 +162,6 @@ test('[analyze-contract] (3i) comment_overrides / comment_conflicts / uncertain 
   }
 });
 
-test('[analyze-contract] (3j) scope が非 string / scope_truncated が非 boolean → null', () => {
-  assert.equal(buildReqFromContract(baseAnalyze({ scope: null }), 690), null);
-  assert.equal(buildReqFromContract(baseAnalyze({ scope_truncated: 'false' }), 690), null);
-});
-
 test('[analyze-contract] (3k) ac_observational は AC と同じ長さの true / false / null 配列、ac_observational_evidence は同じ長さの string 配列でなければ null', () => {
   const req = buildReqFromContract(baseAnalyze({ ac_observational: [true, null], ac_observational_evidence: ['Jev noul 観測型 p=0.95', 'Jev が低確信'] }), 690);
   assert.deepEqual(req.ac_observational, [true, null], 'null（prerun で確定しない AC）はそのまま REQ に運び、analyze ゲートが分類 agent に回す');
@@ -188,23 +177,9 @@ test('[analyze-contract] (3k) ac_observational は AC と同じ長さの true / 
 });
 
 // (4) optional キー
-test('[analyze-contract] (4a) scope_total_chars / comment_count は非負整数のときだけ REQ に載る', () => {
-  const a = baseAnalyze({ scope_total_chars: -1, comment_count: 'x' });
-  const req = buildReqFromContract(a, 690);
-  assert.equal(Object.prototype.hasOwnProperty.call(req, 'scope_total_chars'), false);
+test('[analyze-contract] (4a) comment_count は非負整数のときだけ REQ に載る', () => {
+  const req = buildReqFromContract(baseAnalyze({ comment_count: 'x' }), 690);
   assert.equal(Object.prototype.hasOwnProperty.call(req, 'comment_count'), false);
-});
-
-test('[analyze-contract] (4b) issue_body / issue_body_truncated は型が合うときだけ REQ に載る（欠落は実装 agent の prompt が AC を正とする）', () => {
-  const a = baseAnalyze(); delete a.issue_body; delete a.issue_body_truncated;
-  const req = buildReqFromContract(a, 690);
-  assert.equal(Object.prototype.hasOwnProperty.call(req, 'issue_body'), false);
-  assert.equal(Object.prototype.hasOwnProperty.call(req, 'issue_body_truncated'), false);
-  const req2 = buildReqFromContract(baseAnalyze({ issue_body: 42, issue_body_truncated: 'yes' }), 690);
-  assert.equal(Object.prototype.hasOwnProperty.call(req2, 'issue_body'), false);
-  assert.equal(Object.prototype.hasOwnProperty.call(req2, 'issue_body_truncated'), false);
-  const req3 = buildReqFromContract(baseAnalyze({ issue_body_truncated: true }), 690);
-  assert.equal(req3.issue_body_truncated, true);
 });
 
 test('[analyze-contract] (4c) breaking_evidence が非 string → 空文字', () => {
