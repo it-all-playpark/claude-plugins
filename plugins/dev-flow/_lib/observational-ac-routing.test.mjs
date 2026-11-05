@@ -9,6 +9,7 @@
 // Final reconcile の redgreen-final（issue #1146。Evaluate で実証できず pr-iterate の fix がテストを直した run）:
 //   (H) final evaluator が verified_by:test を返した観測型 AC → 最終 tree の red→green 実証で deterministic 昇格、HOLD しない
 //   (I) red→green 不成立・vdelta deny・spawn 失敗・results 欠落 → 昇格せず ac_human_pending の HOLD
+//   (H2) start が running → wait の結果で昇格 / (I2) 待機の上限・wait の読めない応答 → stop して昇格せず HOLD（issue #1226）
 //   (J) inspection の観測型 AC / (K) Evaluate で昇格済みの AC → redgreen-final を spawn しない
 // テストファイルを inline code で名指しした観測型 AC（issue #1147。actor agent）:
 //   (L) inspection の satisfied:true → 未達に倒れて dev-implementer へ差し戻し、上限後も未達なら ac_agent_unsatisfied の HOLD
@@ -25,6 +26,7 @@ import { dirname, join } from 'node:path';
 import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
 import { APP_REPO_REGRESSION_ACS } from './test-helpers/observational-ac-controls.mjs';
 import { AGENT_AC_REIMPL_MAX } from './ac-actor.mjs';
+import { REDGREEN_WAIT_POLLS } from './redgreen-targets.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude/workflows/dev-flow.js'), 'utf8');
@@ -136,7 +138,9 @@ test('[observational-ac] (H) fix 後の final evaluator が test で確かめた
   const rg = rgFinalCalls(calls);
   assert.equal(rg.length, 1, `redgreen-final が 1 回走らない: ${calls.map((c) => c.label).join(', ')}`);
   assert.equal(rg[0].agentType, 'dev-flow:dev-runner-haiku');
-  assert.equal(rg[0].prompt.split('\n')[1], "redgreen-verify --base origin/main /tmp/wt 'src/x.test.ts' 'src/x.ts'");
+  assert.equal(rg[0].prompt.split('\n')[1], "redgreen-verify start --state-dir /tmp/rg-state --base origin/main /tmp/wt 'src/x.test.ts' 'src/x.ts'");
+  // Evaluate と Final reconcile で同じ state dir を使う（同じ dir の start が前の実行の残りを止める）
+  assert.equal(calls.filter((c) => c.label === 'rg-state-dir').length, 1);
   // final evaluator に観測型 AC の扱いと test_files の受理条件を渡す
   const fa = calls.find((c) => c.label === 'final-ac-reconcile');
   assert.ok(fa.prompt.includes('観測型 AC（ac_index [0]。'), fa.prompt);
@@ -158,6 +162,42 @@ for (const [name, rgFinal] of [
     assert.equal(rgFinalCalls(calls).length, 1);
     assert.equal(reimplCalls(calls).length, 0);
     assert.equal(result?.final_ac_reconcile, 'reverified');
+    assert.equal(result?.merge_tier, 'HOLD');
+    assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
+    assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });
+  });
+}
+
+// redgreen-final の start → wait（issue #1226）: 結果は wait から受け取り、上限・読めない応答では stop して昇格しない
+const FINAL_RUNNING = { status: 'running', results: [] };
+const runFinalRedgreenWait = (overrides) => run({
+  'eval#1': evalWith([byTest(0), inspection(1)]),
+  redgreen: RG_NOT_RED,
+  ...FINAL_OK,
+  'final-ac-reconcile': { ac_results: [byTest(0), inspection(1)] },
+  'redgreen-final': FINAL_RUNNING,
+  ...overrides,
+}, { workflow: FIXED_ITERATE });
+
+test('[observational-ac] (H2) redgreen-final が running → wait で結果 → 昇格して HOLD せず、stop は呼ばない', async () => {
+  const { result, calls } = await runFinalRedgreenWait({ 'redgreen-final-wait#1': FINAL_RUNNING, 'redgreen-final-wait#2': RG_PROVEN });
+  const labels = calls.map((c) => c.label).filter((l) => l.startsWith('redgreen-final'));
+  assert.deepEqual(labels, ['redgreen-final', 'redgreen-final-wait#1', 'redgreen-final-wait#2']);
+  assert.equal(calls.find((c) => c.label === 'redgreen-final-wait#1').prompt.split('\n')[1], 'redgreen-verify wait --state-dir /tmp/rg-state --wait-sec 450');
+  assert.equal(result?.merge_tier, 'REVIEW', JSON.stringify(result?.merge_tier_hold_reasons));
+});
+
+const finalWaitCapped = {};
+for (let k = 1; k <= REDGREEN_WAIT_POLLS + 2; k++) finalWaitCapped[`redgreen-final-wait#${k}`] = FINAL_RUNNING;
+for (const [name, overrides, waits] of [
+  ['上限まで running', finalWaitCapped, REDGREEN_WAIT_POLLS],
+  ['wait が null', { 'redgreen-final-wait#1': null }, 1],
+  ['wait が schema に合わない', { 'redgreen-final-wait#1': { status: 'passed', results: [{ index: 0, red: true, green: true }] } }, 1],
+]) {
+  test(`[observational-ac] (I2) redgreen-final の ${name} → stop して昇格せず ac_human_pending の HOLD のまま`, async () => {
+    const { result, calls } = await runFinalRedgreenWait(overrides);
+    assert.equal(calls.filter((c) => c.label.startsWith('redgreen-final-wait#')).length, waits);
+    assert.equal(calls.filter((c) => c.label === 'redgreen-final-stop').length, 1);
     assert.equal(result?.merge_tier, 'HOLD');
     assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
     assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });

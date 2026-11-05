@@ -1,6 +1,6 @@
 /**
- * redgreen-batch.mjs — Evaluate の redgreen-verify バッチ呼び出し（label 'redgreen'、1 iteration 1 spawn）の
- * stub 共有モジュール（issue #683）。
+ * redgreen-batch.mjs — Evaluate の redgreen-verify バッチ呼び出し（label 'redgreen' = start の spawn、1 iteration 1 回）の
+ * stub 共有モジュール（issue #683）。start の応答に結果を返す stub は wait を経ずに終わる（実行がすぐ終わったときの start と同じ形）。
  *
  * dev-flow.js は対象 AC の (test_files, impl_files) を引数順に 1 prompt へ並べ、
  * `{results:[{index,red,green,...}]}` を受け取って results[k].index を rgTargets の添字に突合する。
@@ -20,7 +20,7 @@ export function isRedgreenCall(agentType, label) {
 }
 
 export function parseRedgreenPairs(prompt) {
-  const m = String(prompt ?? '').match(/redgreen-verify \S+ (.*)$/m);
+  const m = String(prompt ?? '').match(/^redgreen-verify start (.*)$/m);
   if (!m) return [];
   const args = [...m[1].matchAll(/'([^']*)'/g)].map((x) => x[1]);
   const pairs = [];

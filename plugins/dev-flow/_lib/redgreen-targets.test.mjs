@@ -9,7 +9,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
-  redgreenPairKey, buildRedgreenPairs, distributeRedgreenResults, redgreenVerifyPrompt,
+  redgreenPairKey, buildRedgreenPairs, distributeRedgreenResults, redgreenResults, redgreenJobSettled,
+  redgreenStateDirPrompt, redgreenStateDirFrom, redgreenStartPrompt, redgreenWaitPrompt, redgreenStopPrompt,
+  REDGREEN_WAIT_SEC, REDGREEN_WAIT_CAP_SEC, REDGREEN_WAIT_POLLS,
 } from './redgreen-targets.mjs';
 import {
   makeRecordingSandbox, runDevFlowInSandbox, devFlowResponder, analyzeArgs, assertNoCrash,
@@ -18,6 +20,7 @@ import { isRedgreenCall, parseRedgreenPairs } from './test-helpers/redgreen-batc
 
 const here = dirname(fileURLToPath(import.meta.url));
 const devFlowSrc = readFileSync(join(here, '..', '.claude/workflows/dev-flow.js'), 'utf8');
+const STATE_DIR = '/tmp/rg-state';
 
 const target = (acIndex, testFiles, implFiles) => ({
   r: { ac_index: acIndex, satisfied: true, verified_by: 'test', test_files: testFiles, impl_files: implFiles },
@@ -41,7 +44,7 @@ test('[redgreen-targets] 7 AC が同一ペア → redgreen 引数は 1 ペア、
   assert.deepEqual(pairs, [{ test_files: ['sample_case.bats'], impl_files: ['sample_case.py'] }]);
   assert.deepEqual(pairIndex, [0, 0, 0, 0, 0, 0, 0]);
 
-  const prompt = redgreenVerifyPrompt('/tmp/wt', pairs);
+  const prompt = redgreenStartPrompt('/tmp/wt', STATE_DIR, pairs);
   assert.deepEqual(parseRedgreenPairs(prompt), [{ test_csv: 'sample_case.bats', impl_csv: 'sample_case.py' }]);
 
   const result = { index: 0, red: true, green: true, reason: 'ok' };
@@ -60,8 +63,8 @@ test('[redgreen-targets] ペアが異なる場合は従来どおり（AC ごと�
   assert.deepEqual(pairs, targets.map(({ r }) => ({ test_files: r.test_files, impl_files: r.impl_files })));
   assert.deepEqual(pairIndex, [0, 1, 2]);
   // argv は dedupe 前の形（申告順・AC 順）と同じ byte 列
-  const prompt = redgreenVerifyPrompt('/tmp/wt', pairs);
-  assert.ok(prompt.endsWith("\nredgreen-verify /tmp/wt 't0.test.mjs' 'impl0.mjs' 't1.test.mjs,t1b.test.mjs' 'impl1.mjs' 't2.test.mjs' 'impl2.mjs,impl0.mjs'"), prompt);
+  const prompt = redgreenStartPrompt('/tmp/wt', STATE_DIR, pairs);
+  assert.ok(prompt.endsWith("\nredgreen-verify start --state-dir /tmp/rg-state /tmp/wt 't0.test.mjs' 'impl0.mjs' 't1.test.mjs,t1b.test.mjs' 'impl1.mjs' 't2.test.mjs' 'impl2.mjs,impl0.mjs'"), prompt);
 
   const results = [
     { index: 2, red: false, green: true, reason: 'no red' },
@@ -87,25 +90,58 @@ test('[redgreen-targets] 一部が同じ組のときは組ごとに 1 ペア・�
 
 // ---- prompt 文言 ----
 
-test('[redgreen-targets] prompt は Bash timeout: 600000 指定・run_in_background 禁止・再発行禁止を明記し、timeout 時は固定 JSON を返させる', () => {
-  const p = redgreenVerifyPrompt('/tmp/wt', [{ test_files: ['t.test.mjs'], impl_files: ['src/x.ts'] }]);
-  assert.ok(p.startsWith('cd /tmp/wt で作業。'), p);
-  assert.ok(p.includes('Bash tool の `timeout: 600000` を指定して実行し、`run_in_background` は使わない（禁止）。'), p);
-  assert.ok(p.includes('コマンドを再発行しない（timeout・background 化した場合も含む）。'), p);
-  assert.ok(p.includes('timeout に達した・stdout に JSON 1 行が無い場合だけは、{"results":[]} を一字一句そのまま返せ'), p);
-  assert.ok(p.includes('**stdout の JSON 1 行だけ** を verbatim で返せ'), p);
-  // 規約はコマンド行より前に置き、コマンドは最終行の bare 単文
-  const lines = p.split('\n');
-  assert.equal(lines.length, 2);
-  assert.equal(lines[1], "redgreen-verify /tmp/wt 't.test.mjs' 'src/x.ts'");
-  assert.ok(lines[0].includes('timeout: 600000'));
+test('[redgreen-targets] state-dir / start / wait / stop の prompt は Bash timeout: 600000 指定・run_in_background 禁止・再発行禁止を明記し、timeout 時は固定 JSON を返させる', () => {
+  for (const [p, fallback, command] of [
+    [redgreenStateDirPrompt('/tmp/wt'), '{"state_dir":""}', 'redgreen-verify state-dir'],
+    [redgreenStartPrompt('/tmp/wt', STATE_DIR, [{ test_files: ['t.test.mjs'], impl_files: ['src/x.ts'] }]), '{"results":[]}', `redgreen-verify start --state-dir ${STATE_DIR} /tmp/wt 't.test.mjs' 'src/x.ts'`],
+    [redgreenWaitPrompt('/tmp/wt', STATE_DIR), '{"results":[]}', `redgreen-verify wait --state-dir ${STATE_DIR} --wait-sec ${REDGREEN_WAIT_SEC}`],
+    [redgreenStopPrompt('/tmp/wt', STATE_DIR), '{"ok":false}', `redgreen-verify stop --state-dir ${STATE_DIR}`],
+  ]) {
+    assert.ok(p.startsWith('cd /tmp/wt で作業。'), p);
+    assert.ok(p.includes('Bash tool の `timeout: 600000` を指定して実行し、`run_in_background` は使わない（禁止）。& や nohup を足さない'), p);
+    assert.ok(p.includes('コマンドを再発行しない（timeout・background 化した場合も含む）。'), p);
+    assert.ok(p.includes(`timeout に達した・stdout に JSON 1 行が無い場合だけは、${fallback} を一字一句そのまま返せ`), p);
+    assert.ok(p.includes('**stdout の JSON 1 行だけ** を verbatim で返せ'), p);
+    // 規約はコマンド行より前に置き、コマンドは最終行の bare 単文
+    const lines = p.split('\n');
+    assert.equal(lines.length, 2);
+    assert.equal(lines[1], command);
+    assert.ok(lines[0].includes('timeout: 600000'));
+  }
 });
 
 test('[redgreen-targets] base を渡すとコマンド行に --base <base> を worktree の前に付け、ペアの解釈は変わらない', () => {
   const pairs = [{ test_files: ['t.test.mjs'], impl_files: ['src/x.ts'] }];
-  const p = redgreenVerifyPrompt('/tmp/wt', pairs, 'origin/main');
-  assert.equal(p.split('\n')[1], "redgreen-verify --base origin/main /tmp/wt 't.test.mjs' 'src/x.ts'");
+  const p = redgreenStartPrompt('/tmp/wt', STATE_DIR, pairs, 'origin/main');
+  assert.equal(p.split('\n')[1], "redgreen-verify start --state-dir /tmp/rg-state --base origin/main /tmp/wt 't.test.mjs' 'src/x.ts'");
   assert.deepEqual(parseRedgreenPairs(p), [{ test_csv: 't.test.mjs', impl_csv: 'src/x.ts' }]);
+});
+
+test('[redgreen-targets] 待機の累計の上限は既定 3600 秒で、wait 1 回は Bash 1 回の上限（600 秒）に収まる', () => {
+  assert.equal(REDGREEN_WAIT_CAP_SEC, 3600);
+  assert.ok(REDGREEN_WAIT_SEC < 600);
+  assert.equal(REDGREEN_WAIT_POLLS * REDGREEN_WAIT_SEC, REDGREEN_WAIT_CAP_SEC);
+});
+
+test('[redgreen-targets] redgreenResults は status の無い応答の results だけを結果とし、redgreenJobSettled は全ペアが揃ったときだけ true', () => {
+  const r0 = { index: 0, red: true, green: true };
+  assert.deepEqual(redgreenResults({ results: [r0] }), [r0]);
+  assert.equal(redgreenJobSettled({ results: [r0] }, 1), true);
+  for (const res of [
+    null,
+    undefined,
+    { ok: false, status: 'error', error: 'x' },
+    { status: 'running', results: [], wait_capped: true },
+    // running の応答に結果が載っていても終わった結果として読まない
+    { status: 'running', results: [r0], wait_capped: true },
+    { results: 'x' },
+  ]) {
+    assert.deepEqual(redgreenResults(res), [], JSON.stringify(res));
+    assert.equal(redgreenJobSettled(res, 1), false, JSON.stringify(res));
+  }
+  // proxy が返す固定文字列 {"results":[]} と欠けた results は実行が残っているかもしれない
+  assert.equal(redgreenJobSettled({ results: [] }, 1), false);
+  assert.equal(redgreenJobSettled({ results: [r0] }, 2), false);
 });
 
 // ---- dev-flow.js 配線（VM sandbox） ----
@@ -117,11 +153,18 @@ function evalResponse(acResults) {
   };
 }
 
-async function runWith(acResults, redgreenResultsFor) {
+async function runWith(acResults, redgreenResultsFor, overrides = {}) {
   const base = devFlowResponder();
   const redgreenPrompts = [];
+  const labels = [];
   const responder = (c) => {
+    labels.push(c.label);
     if (c.agentType === 'dev-flow:evaluator') return evalResponse(acResults);
+    if (Object.prototype.hasOwnProperty.call(overrides, c.label)) {
+      if (c.label === 'redgreen') redgreenPrompts.push(c.prompt);
+      const v = overrides[c.label];
+      return typeof v === 'function' ? v(c) : v;
+    }
     if (isRedgreenCall(c.agentType, c.label)) {
       redgreenPrompts.push(c.prompt);
       const pairs = parseRedgreenPairs(c.prompt);
@@ -135,7 +178,7 @@ async function runWith(acResults, redgreenResultsFor) {
   });
   const error = await runDevFlowInSandbox(devFlowSrc, ctx);
   assertNoCrash(error, 'redgreen-targets');
-  return { redgreenPrompts, logs };
+  return { redgreenPrompts, logs, labels: labels.filter((l) => l.startsWith('redgreen')) };
 }
 
 const sameAc = (i, testFiles = ['sample_case.bats'], implFiles = ['sample_case.py']) => ({
@@ -193,7 +236,7 @@ test('[redgreen-targets] dev-flow: test 実証 AC 3 件（別ペア）→ redgre
   const { redgreenPrompts, logs } = await runWith(distinctAcs(3), (p, k) => ({ index: k, red: true, green: true }));
   assert.equal(redgreenPrompts.length, 1, `redgreen は AC 数に関わらず 1 iteration 1 spawn であるべきだが ${redgreenPrompts.length} 回`);
   assert.ok(
-    redgreenPrompts[0].includes("redgreen-verify /tmp/wt 't0.test.mjs' 'impl0.mjs' 't1.test.mjs' 'impl1.mjs' 't2.test.mjs' 'impl2.mjs'"),
+    redgreenPrompts[0].includes(" /tmp/wt 't0.test.mjs' 'impl0.mjs' 't1.test.mjs' 'impl1.mjs' 't2.test.mjs' 'impl2.mjs'"),
     `prompt に 3 ペアが引数順で並ぶべきだが: ${redgreenPrompts[0]}`,
   );
   for (const ac of ['AC-1', 'AC-2', 'AC-3']) {
@@ -216,8 +259,99 @@ test('[redgreen-targets] dev-flow: results の欠落ペア（script 側の入力
   );
 });
 
-test('[redgreen-targets] dev-flow: redgreen の prompt は redgreenVerifyPrompt と同一 byte 列', async () => {
+test('[redgreen-targets] dev-flow: redgreen の prompt は redgreenStartPrompt と同一 byte 列', async () => {
   const acResults = [sameAc(0), sameAc(1)];
   const { redgreenPrompts } = await runWith(acResults, () => ({ index: 0, red: true, green: true }));
-  assert.equal(redgreenPrompts[0], redgreenVerifyPrompt('/tmp/wt', [{ test_files: ['sample_case.bats'], impl_files: ['sample_case.py'] }]));
+  assert.equal(redgreenPrompts[0], redgreenStartPrompt('/tmp/wt', STATE_DIR, [{ test_files: ['sample_case.bats'], impl_files: ['sample_case.py'] }]));
+});
+
+// ---- start → wait（issue #1226） ----
+
+const RUNNING = { status: 'running', results: [] };
+const noResults = () => { throw new Error('start の応答は overrides で返すので呼ばれない'); };
+const PROVEN = { results: [{ index: 0, red: true, green: true, reason: 'ok' }] };
+const notPromoted = (logs) => !logs.some((l) => l.includes('deterministic 昇格 + checked'));
+
+test('[redgreen-targets] dev-flow: start が running なら wait を結果が出るまで繰り返し、wait の結果で昇格する（stop は呼ばない）', async () => {
+  const { labels, logs } = await runWith([sameAc(0)], noResults, { redgreen: RUNNING, 'redgreen-wait#1': RUNNING, 'redgreen-wait#2': RUNNING, 'redgreen-wait#3': PROVEN });
+  assert.deepEqual(labels, ['redgreen', 'redgreen-wait#1', 'redgreen-wait#2', 'redgreen-wait#3']);
+  assert.ok(logs.some((l) => l.includes('AC-1: red→green 実証 → deterministic 昇格 + checked')), logs.join('\n'));
+});
+
+test('[redgreen-targets] dev-flow: 待機の累計が上限に達すると wait をやめて stop し、JSON が返らなかったときと同じ結果（results 0 件で inspection 据え置き）で終わる', async () => {
+  const overrides = { redgreen: RUNNING };
+  for (let k = 1; k <= REDGREEN_WAIT_POLLS + 2; k++) overrides[`redgreen-wait#${k}`] = RUNNING;
+  overrides['redgreen-stop'] = { ok: true, stopped: true, was_running: true };
+  const { labels, logs } = await runWith([sameAc(0)], noResults, overrides);
+  assert.equal(labels.filter((l) => l.startsWith('redgreen-wait#')).length, REDGREEN_WAIT_POLLS);
+  assert.equal(labels.at(-1), 'redgreen-stop');
+  assert.equal(labels.filter((l) => l === 'redgreen-stop').length, 1);
+  assert.ok(logs.some((l) => l.includes('redgreen-verify の results が 0 件（期待 1 件）')), logs.join('\n'));
+  assert.ok(logs.some((l) => l.includes('AC-1: red→green 未成立(null)→ inspection 据え置き')), logs.join('\n'));
+  assert.ok(notPromoted(logs), logs.join('\n'));
+});
+
+// waitBgJob が読めない応答として扱う形。実証できたとはみなさず、実行が残っているかもしれないので stop する
+const MALFORMED = [
+  ['null', null],
+  ['results の無い応答', { red: true, green: true }],
+  ['enum に無い status', { status: 'passed', results: PROVEN.results }],
+  ['results が配列でない', { results: 'ok' }],
+];
+
+for (const [name, bad] of MALFORMED) {
+  test(`[redgreen-targets] dev-flow: start が ${name} → wait せず stop し、昇格しない`, async () => {
+    const { labels, logs } = await runWith([sameAc(0)], noResults, { redgreen: bad, 'redgreen-wait#1': PROVEN });
+    assert.deepEqual(labels, ['redgreen', 'redgreen-stop']);
+    assert.ok(notPromoted(logs), logs.join('\n'));
+  });
+
+  test(`[redgreen-targets] dev-flow: wait が ${name} → 以後 wait せず stop し、昇格しない`, async () => {
+    const { labels, logs } = await runWith([sameAc(0)], noResults, { redgreen: RUNNING, 'redgreen-wait#1': bad, 'redgreen-wait#2': PROVEN });
+    assert.deepEqual(labels, ['redgreen', 'redgreen-wait#1', 'redgreen-stop']);
+    assert.ok(notPromoted(logs), logs.join('\n'));
+  });
+}
+
+test('[redgreen-targets] dev-flow: 上限まで running の応答に results が載っていても結果として読まず、昇格しない', async () => {
+  const overrides = { redgreen: RUNNING };
+  for (let k = 1; k <= REDGREEN_WAIT_POLLS; k++) overrides[`redgreen-wait#${k}`] = { status: 'running', results: PROVEN.results };
+  const { labels, logs } = await runWith([sameAc(0)], noResults, overrides);
+  assert.equal(labels.at(-1), 'redgreen-stop');
+  assert.ok(notPromoted(logs), logs.join('\n'));
+});
+
+test('[redgreen-targets] redgreenStateDirFrom は絶対パスで空白・メタ文字の無い値だけを受け取る', () => {
+  assert.equal(redgreenStateDirFrom({ state_dir: '/tmp/claude/redgreen-verify.AbC_1' }), '/tmp/claude/redgreen-verify.AbC_1');
+  for (const res of [null, {}, { state_dir: '' }, { state_dir: 'rel/dir' }, { state_dir: '/tmp/a b' }, { state_dir: '/tmp/a;id' }, { state_dir: 1 }]) {
+    assert.equal(redgreenStateDirFrom(res), null, JSON.stringify(res));
+  }
+});
+
+for (const [name, res] of [['null', null], ['空のパス', { state_dir: '' }], ['相対パス', { state_dir: '.devflow-tmp/redgreen-verify' }]]) {
+  test(`[redgreen-targets] dev-flow: state-dir の応答が ${name} → start も stop も呼ばず、昇格しない`, async () => {
+    const { labels, logs } = await runWith([sameAc(0)], noResults, { 'rg-state-dir': res });
+    assert.deepEqual(labels, []);
+    assert.ok(logs.some((l) => l.includes('redgreen: state dir を作れない')), logs.join('\n'));
+    assert.ok(notPromoted(logs), logs.join('\n'));
+  });
+}
+
+test('[redgreen-targets] dev-flow: state-dir の応答のパスを start / wait / stop に渡す', async () => {
+  const dir = '/tmp/claude/redgreen-verify.AbC';
+  const stateDirs = [];
+  const seen = (c) => { stateDirs.push(c.prompt.match(/--state-dir (\S+)/)?.[1]); return null; };
+  await runWith([sameAc(0)], noResults, {
+    'rg-state-dir': { state_dir: dir },
+    redgreen: (c) => { seen(c); return RUNNING; },
+    'redgreen-wait#1': (c) => { seen(c); return null; },
+    'redgreen-stop': seen,
+  });
+  assert.deepEqual(stateDirs, [dir, dir, dir]);
+});
+
+test('[redgreen-targets] dev-flow: stop の応答が取れなくても run は続き、昇格しない', async () => {
+  const { logs } = await runWith([sameAc(0)], noResults, { redgreen: null, 'redgreen-stop': null });
+  assert.ok(logs.some((l) => l.includes('redgreen-stop: 停止を確認できない')), logs.join('\n'));
+  assert.ok(notPromoted(logs), logs.join('\n'));
 });

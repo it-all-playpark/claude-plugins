@@ -369,6 +369,7 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
     // Setup phase の subagent は isolation-probe のみ（base / worktree / deps / cleanup は
     // dev-flow-prerun が run 前に済ませ args.setup で渡る — devFlowArgs 参照）
     if (label === 'isolation-probe') return { written: true };
+    if (label === 'rg-state-dir') return { state_dir: '/tmp/rg-state' };
     // Analyze phase は args.setup.analyze（prerunAnalyze）から REQ を組み、通常経路では spawn しない。
     // ゲート（AC 空 / comment_conflicts / uncertain）が引いたときだけ analyze-clarify#N（dev-runner）が
     // 人間向け missing_context を返す（issue #690）。

@@ -68,6 +68,7 @@ function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
       const idx = Math.min(evalCalls.length - 1, evaluatorResponses.length - 1);
       return evaluatorResponses[idx];
     }
+    if (label === 'rg-state-dir') return { state_dir: '/tmp/rg-state' };
     if (isRedgreenCall(agentType, label)) {
       // バッチ呼び出しの prompt に載った AC ペアごとに「当該 AC の呼び出し回数」を数える
       // （skip された AC は prompt に載らないので数えない）。

@@ -4106,11 +4106,13 @@ const SEC_CLEAR = {
     },
   },
 }
-// redgreen-verify の出力契約: 一意な AC ペアを 1 呼び出し（1 spawn）で判定し、results に引数順で返す。
+// redgreen-verify の出力契約: 一意な AC ペアを 1 つの実行で判定し、results に引数順で返す。
 // root を object にするのは agent() schema の制約（root object 必須）— haiku proxy に配列を包み直させない。
+// start / wait は終わっていなければ { status:'running', results:[] } を返す（status があるのはこの応答だけ）。
 const RG = {
   type: 'object', required: ['results'],
   properties: {
+    status: { type: 'string', enum: ['running'] },
     results: {
       type: 'array',
       items: {
@@ -4124,6 +4126,8 @@ const RG = {
     },
   },
 }
+const RG_STOP = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, stopped: { type: 'boolean' }, was_running: { type: 'boolean' }, error: { type: 'string' } } }
+const RG_STATE_DIR = { type: 'object', required: ['state_dir'], properties: { state_dir: { type: 'string' } } }
 const PRURL = {
   type: 'object', required: ['pr_url', 'pr_number'],
   properties: {
@@ -5340,6 +5344,10 @@ function finalTestRerunVerdict(first, rerun, files) {
 // ==== END inline: _lib/final-test-rerun.mjs ====
 // ==== BEGIN inline: _lib/redgreen-targets.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
+const REDGREEN_WAIT_SEC = 450;
+const REDGREEN_WAIT_CAP_SEC = 3600;
+const REDGREEN_WAIT_POLLS = Math.ceil(REDGREEN_WAIT_CAP_SEC / REDGREEN_WAIT_SEC);
+
 function redgreenPairKey(testFiles, implFiles) {
   const norm = (xs) => [...new Set(xs)].sort();
   return JSON.stringify([norm(testFiles), norm(implFiles)]);
@@ -5367,13 +5375,43 @@ function distributeRedgreenResults(pairIndex, results) {
   return pairIndex.map((k) => list.find((x) => x && x.index === k) ?? null);
 }
 
-function redgreenVerifyPrompt(wt, pairs, base = null) {
+function redgreenResults(res) {
+  return res && res.status == null && Array.isArray(res.results) ? res.results : [];
+}
+
+function redgreenJobSettled(res, pairCount) {
+  return redgreenResults(res).length === pairCount;
+}
+
+function redgreenProxyPrompt(wt, cmd, fallback) {
   return `cd ${wt} で作業。次のコマンドを 1 回だけ実行して **stdout の JSON 1 行だけ** を verbatim で返せ(判定や脚色をしない)。`
-    + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。`
+    + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない（常駐化はコマンド自身が行う）。`
     + `コマンドを再発行しない（timeout・background 化した場合も含む）。`
-    + `timeout に達した・stdout に JSON 1 行が無い場合だけは、{"results":[]} を一字一句そのまま返せ:\n`
-    + `redgreen-verify ${base ? `--base ${base} ` : ''}${wt} `
-    + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' ');
+    + `timeout に達した・stdout に JSON 1 行が無い場合だけは、${fallback} を一字一句そのまま返せ:\n${cmd}`;
+}
+
+function redgreenStateDirPrompt(wt) {
+  return redgreenProxyPrompt(wt, 'redgreen-verify state-dir', '{"state_dir":""}');
+}
+
+function redgreenStateDirFrom(res) {
+  const dir = res?.state_dir;
+  return typeof dir === 'string' && /^\/[\w./-]+$/.test(dir) ? dir : null;
+}
+
+function redgreenStartPrompt(wt, stateDir, pairs, base = null) {
+  return redgreenProxyPrompt(wt,
+    `redgreen-verify start --state-dir ${stateDir} ${base ? `--base ${base} ` : ''}${wt} `
+      + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' '),
+    '{"results":[]}');
+}
+
+function redgreenWaitPrompt(wt, stateDir) {
+  return redgreenProxyPrompt(wt, `redgreen-verify wait --state-dir ${stateDir} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
+}
+
+function redgreenStopPrompt(wt, stateDir) {
+  return redgreenProxyPrompt(wt, `redgreen-verify stop --state-dir ${stateDir}`, '{"ok":false}');
 }
 // ==== END inline: _lib/redgreen-targets.mjs ====
 // ==== BEGIN inline: _lib/security-scope.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
@@ -6365,6 +6403,37 @@ async function execValidatePhase(state) {
   return state
 }
 
+// redgreen-verify を start → wait（繰り返し）で実行し、results を返す（判定は呼び出し側。経路は Evaluate の redgreen と
+// Final reconcile の redgreen-final で共通で、spawn（throw を run の中断にするか null に倒すか）・base・label だけが違う）。
+// 待機の累計が上限に達した・応答が読めない・results が欠けたら stop する（実行が impl を退避したまま残っていると、以降の
+// phase がその tree を読む）。返すのは読めた results だけで、呼び出し側は無いペアを欠落として昇格させない。
+// state dir は run で 1 つ（worktree の外。作れなければ起動しない）。同じ dir の start が前の実行の残りを止める。
+let redgreenStateDir = null
+async function runRedgreenVerify(pairs, { spawn, label, phase, base = null }) {
+  redgreenStateDir ??= redgreenStateDirFrom(await spawn(redgreenStateDirPrompt(WT), { agentType: 'dev-runner-haiku', schema: RG_STATE_DIR, label: 'rg-state-dir', phase }))
+  const stateDir = redgreenStateDir
+  if (!stateDir) {
+    log(`⚠️ ${label}: state dir を作れない — redgreen-verify を起動しない`)
+    return []
+  }
+  let res = null
+  try {
+    const start = await spawn(redgreenStartPrompt(WT, stateDir, pairs, base), { agentType: 'dev-runner-haiku', schema: RG, label, phase })
+    res = await waitBgJob({
+      start,
+      wait: (k) => spawn(redgreenWaitPrompt(WT, stateDir), { agentType: 'dev-runner-haiku', schema: RG, label: `${label}-wait#${k}`, phase }),
+      maxPolls: REDGREEN_WAIT_POLLS,
+      schema: RG,
+    })
+  } finally {
+    if (!redgreenJobSettled(res, pairs.length)) {
+      const stop = await failOpenAgent(redgreenStopPrompt(WT, stateDir), { agentType: 'dev-runner-haiku', schema: RG_STOP, label: `${label}-stop`, phase })
+      if (!stop || stop.ok !== true) log(`⚠️ ${label}-stop: 停止を確認できない（${stop?.error ?? 'proxy の応答が無い'}）— 実行は redgreen-verify の supervisor の上限時間で止まる`)
+    }
+  }
+  return redgreenResults(res)
+}
+
 // ============================================================
 // local-verify: ci の AC（ci_verify で CI の check が判定する AC）を、repo が "dev-flow".local_verify を
 // 宣言した run だけ、Validate が green になった後・Evaluate の前に pg-broker の使い捨て Postgres に向けてローカル実行する
@@ -6989,7 +7058,7 @@ async function execEvaluatePhase(state) {
     }
     // W4: evaluator の per-AC 判定を ledger に反映。test 実証できる AC は red→green を
     // dev-runner-haiku で決定論検証し、取れたら deterministic 昇格(blocking)。
-    // 対象 AC を先に集めて redgreen-verify を 1 spawn で呼ぶ（AC ごとに spawn しない）。
+    // 対象 AC を先に集めて redgreen-verify を 1 つの実行で呼ぶ（AC ごとに分けない。start → wait は runRedgreenVerify）。
     // redgreen-verify は worktree の impl を退避→復元するため AC 間の並列化は不可で、AC ごとに分けても
     // spawn の固定コストと exec-proxy の失敗露出が AC 数倍になるだけで判定は何も変わらない。
     // 観測型 AC（req.ac_observational）は red→green 実証で deterministic 昇格したときだけ checked にする
@@ -7018,16 +7087,15 @@ async function execEvaluatePhase(state) {
         ledger = checkItem(ledger, acId, r.evidence ?? 'inspection')
       }
     }
-    // 1 spawn に一意な (test_files, impl_files) ペアだけを渡し、結果を同じ組を共有する全 AC に配る
+    // 1 つの実行に一意な (test_files, impl_files) ペアだけを渡し、結果を同じ組を共有する全 AC に配る
     // （buildRedgreenPairs / distributeRedgreenResults）。返却の results[k].index は引数順 = ペアの添字。
-    // spawn 失敗・results 欠落は当該ペアを使う AC が null（fail-safe: inspection 据え置き。deterministic 昇格しない）。
+    // start / wait の null・schema 不一致・待機の上限・results 欠落は当該ペアを使う AC が null
+    // （fail-safe: inspection 据え置き。deterministic 昇格しない）。
     let rgByTarget = []
     if (rgTargets.length) {
       const { pairs, pairIndex } = buildRedgreenPairs(rgTargets)
       if (pairs.length < rgTargets.length) log(`redgreen-verify: AC ${rgTargets.length} 件を一意な (test_files, impl_files) ${pairs.length} ペアに集約`)
-      const rgBatch = await trackedAgent(redgreenVerifyPrompt(WT, pairs),
-        { agentType: 'dev-runner-haiku', schema: RG, label: 'redgreen', phase: 'Evaluate' })
-      const rgResults = (rgBatch && Array.isArray(rgBatch.results)) ? rgBatch.results : []
+      const rgResults = await runRedgreenVerify(pairs, { spawn: trackedAgent, label: 'redgreen', phase: 'Evaluate' })
       if (rgResults.length !== pairs.length) {
         log(`⚠️ redgreen-verify の results が ${rgResults.length} 件（期待 ${pairs.length} 件）— 欠落ペアは inspection 据え置き`)
       }
@@ -7790,17 +7858,16 @@ if (_facDecision.run) {
   else {
     finalAcReconcile = 'reverified'
     // Evaluate で実証していない観測型 AC を final evaluator が test で確かめたと返したら（finalRedgreenTargets）、最終 tree
-    // （PR の commit 済み HEAD）で redgreen-verify を 1 spawn で実行する。経路は Evaluate と同じ（buildRedgreenPairs /
-    // redgreenVerifyPrompt / distributeRedgreenResults / vdeltaDenies）で、impl は origin/<BASE> との merge-base まで戻して
+    // （PR の commit 済み HEAD）で redgreen-verify を 1 つの実行で走らせる。経路は Evaluate と同じ（buildRedgreenPairs /
+    // runRedgreenVerify / distributeRedgreenResults / vdeltaDenies）で、impl は origin/<BASE> との merge-base まで戻して
     // red を測る。red・green が両方 true で vdelta が deny しない AC だけ deterministic 昇格して checked にする。
-    // spawn 失敗（throw・null）・results 欠落・red→green 不成立・deny は昇格しない（fail-safe: 人手 AC 待ちのまま）。
+    // start / wait の失敗（throw・null・schema 不一致）・待機の上限・results 欠落・red→green 不成立・deny は昇格しない
+    // （fail-safe: 人手 AC 待ちのまま）。
     const frgTargets = finalRedgreenTargets({ results: v.results, observational: req.ac_observational, provenIndexes: provenAtEval, ciIndexes: CI_AC_INDEXES })
       .map((r) => ({ r, acId: `AC-${r.ac_index + 1}` }))
     if (frgTargets.length) {
       const { pairs, pairIndex } = buildRedgreenPairs(frgTargets)
-      const rgBatch = await failOpenAgent(redgreenVerifyPrompt(WT, pairs, `origin/${BASE}`),
-        { agentType: 'dev-runner-haiku', schema: RG, label: 'redgreen-final', phase: 'Final reconcile' })
-      const rgResults = (rgBatch && Array.isArray(rgBatch.results)) ? rgBatch.results : []
+      const rgResults = await runRedgreenVerify(pairs, { spawn: failOpenAgent, label: 'redgreen-final', phase: 'Final reconcile', base: `origin/${BASE}` })
       if (rgResults.length !== pairs.length) log(`⚠️ redgreen-final の results が ${rgResults.length} 件（期待 ${pairs.length} 件）— 欠落ペアの観測型 AC は人手 AC 待ちのまま`)
       const rgByTarget = distributeRedgreenResults(pairIndex, rgResults)
       for (let k = 0; k < frgTargets.length; k++) {

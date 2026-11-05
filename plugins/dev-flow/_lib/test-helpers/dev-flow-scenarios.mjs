@@ -22,6 +22,16 @@ const AC2 = [
   { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
 ];
 
+// evaluator が test 実証 AC を返す（redgreen の経路に入る）
+const REDGREEN_EVAL = {
+  verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation',
+  ac_results: [
+    { ac_index: 0, satisfied: true, verified_by: 'test', evidence: 'ok', test_files: ['t.test.mjs'], impl_files: ['src/x.ts'] },
+    { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
+  ],
+  security_clearance: [], concern_resolutions: [],
+};
+
 export const DEV_FLOW_SCENARIOS = {
   baseline: {},
   // diff-gate が空 → diff-gate-retry
@@ -57,15 +67,25 @@ export const DEV_FLOW_SCENARIOS = {
   // evaluator が test 実証 AC を返す → redgreen（1 spawn バッチ。results[k].index は prompt のペア順）
   redgreen: {
     overrides: {
-      'eval#1': {
-        verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation',
-        ac_results: [
-          { ac_index: 0, satisfied: true, verified_by: 'test', evidence: 'ok', test_files: ['t.test.mjs'], impl_files: ['src/x.ts'] },
-          { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
-        ],
-        security_clearance: [], concern_resolutions: [],
-      },
+      'eval#1': REDGREEN_EVAL,
       redgreen: { results: [{ index: 0, red: true, green: true, reason: 'ok', testcmd_ran: true }] },
+    },
+  },
+  // start が running → wait で結果（issue #1226。stop は呼ばない）
+  'redgreen-wait': {
+    overrides: {
+      'eval#1': REDGREEN_EVAL,
+      redgreen: { status: 'running', results: [] },
+      'redgreen-wait#1': { results: [{ index: 0, red: true, green: true, reason: 'ok', testcmd_ran: true }] },
+    },
+  },
+  // wait の応答が読めない → stop（issue #1226）
+  'redgreen-stop': {
+    overrides: {
+      'eval#1': REDGREEN_EVAL,
+      redgreen: { status: 'running', results: [] },
+      'redgreen-wait#1': null,
+      'redgreen-stop': { ok: true, stopped: true, was_running: true },
     },
   },
   // dev-implementer が CI で検証可能な環境事象を concern に返す → ENV item → merge-tier-facts の checks で CI 委譲

@@ -57,6 +57,7 @@ function makeSandbox(analyzeReq, evaluatorResponse, redgreenResponseFor) {
       evalCalls.push({ label, agentType });
       return evaluatorResponse;
     }
+    if (label === 'rg-state-dir') return { state_dir: '/tmp/rg-state' };
     if (isRedgreenCall(agentType, label)) {
       redgreenCalls.push({ label, prompt });
       return redgreenBatchResponse(prompt, evaluatorResponse.ac_results, (acIndex) => redgreenResponseFor(acIndex));
