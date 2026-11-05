@@ -13,7 +13,7 @@
 //
 // ハーネスは _lib/ci-checks-routing.test.mjs の createResponder パターン（overrides の
 // hasOwnProperty 優先チェック）+ _lib/test-helpers/vm-sandbox.mjs の makeRecordingSandbox、
-// 実行部分は _lib/final-reconcile-routing.test.mjs のローカル runDevFlowCapture
+// 実行部分は _lib/final-reconcile-routing.test.mjs の共有の runWorkflowCapture
 // （{result, error} を返す vm 実行）を踏襲する。
 //
 // テストケース:
@@ -33,45 +33,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { makeRecordingSandbox, devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
-
-// ============================================================
-// runDevFlowCapture: strip + wrap + vm 実行し {result, error} を返す
-// （final-reconcile-routing.test.mjs / merge-tier-security-clearance-routing.test.mjs と同型）
-// ============================================================
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
-function assertNoCrash(error, name) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`[${name}] dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
 
 // standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
 const STANDARD_REQ = {
@@ -150,7 +117,7 @@ function makeSandbox({ overrides = {} } = {}) {
 
 test('[diffhash-reuse] (1) 完全一致 → facts.risk の hit は使われず（再利用）REVIEW、merge-tier-facts は 1 回、workflow 完走', async () => {
   const { ctx, calls, logs } = makeSandbox();
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '1');
   assert.ok(result !== null, '(1) workflow は return object を返すべきだが null だった');
 
@@ -171,7 +138,7 @@ test("[diffhash-reuse] (2) hash 不一致 → facts.risk（hit）で再判定さ
       'merge-tier-facts': mergeTierFacts({ hash: 'B', risk: FACTS_RISK_HIT, files: ['src/x.ts'] }),
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '2');
   assert.ok(result !== null, '(2) workflow は return object を返すべきだが null だった');
 
@@ -188,7 +155,7 @@ test("[diffhash-reuse] (3) facts の diffhash が ok:false（取得失敗） →
   const { ctx, logs } = makeSandbox({
     overrides: { 'merge-tier-facts': mergeTierFacts({ hash: null, risk: FACTS_RISK_HIT, files: ['src/x.ts'] }) },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '3');
   assert.ok(result !== null, '(3) workflow は return object を返すべきだが null だった');
 
@@ -208,7 +175,7 @@ test("[diffhash-reuse] (4) Diff triage fail-closed → 再利用 log 無し・fa
       'merge-tier-facts': mergeTierFacts({ risk: { ok: false, hits: [], error: 'merge tier stub fail' }, files: ['src/x.ts'] }),
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '4');
   assert.ok(result !== null, '(4) workflow は return object を返すべきだが null だった');
 
@@ -234,7 +201,7 @@ test("[diffhash-reuse] (5) hash 一致 + Diff triage で danger hit → 再利�
       'merge-tier-facts': mergeTierFacts({ hash: 'SAMEHASH', risk: { ok: true, hits: [] }, files: ['src/x.ts'] }),
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '5');
   assert.ok(result !== null, '(5) workflow は return object を返すべきだが null だった');
 

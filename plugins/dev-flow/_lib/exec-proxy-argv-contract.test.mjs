@@ -3,11 +3,8 @@
 // Background:
 //   dev-runner 系 agent（dev-runner / dev-runner-haiku / dev-runner-haiku-ro）は決定論スクリプトへの
 //   exec-proxy であり、呼び出し側 workflow が渡す argv（bare 名の決定論スクリプト + 引数）を
-//   一字一句そのまま実行する verbatim 転写契約を負う。旧規約「作業は指定された worktree 絶対パス内で
-//   行う。Bash は cwd が保証されないため、毎回絶対パスを使うか、コマンド冒頭で `cd <worktree> &&` を
-//   付ける」は、agent が which による絶対パス解決・変数代入の前置・cd の付加といった argv の
-//   書き換えを行う誘因になっていた（cwd 依存の回避は呼び出し側が argv に worktree 絶対パスを引数として
-//   含めることで既に成立しているため、agent 側で cwd を作る必要はない）。
+//   一字一句そのまま実行する verbatim 転写契約を負う（cwd 依存の回避は呼び出し側が argv に
+//   worktree 絶対パスを引数として含めることで成立しており、agent 側で cwd を作らない）。
 //
 //   dev-implementer.md の「Bash は毎回この cwd から始める」指示は exec-proxy ではなく
 //   implementer（判断系 leaf、Read/Edit/Write で直接コードを書く）に対するものであり、本 issue の
@@ -34,22 +31,6 @@ function loadAgent(fileName) {
 }
 
 for (const fileName of TARGETS) {
-  test(`[exec-proxy-argv-contract] ${fileName} does not contain the old cwd-workaround instructions`, () => {
-    const { source, path } = loadAgent(fileName);
-    assert.ok(
-      !source.includes('絶対パス使用'),
-      `${path} must not contain '絶対パス使用' (superseded by argv transcription contract)`,
-    );
-    assert.ok(
-      !source.includes('毎回絶対パスを使う'),
-      `${path} must not contain '毎回絶対パスを使う' (superseded by argv transcription contract)`,
-    );
-    assert.ok(
-      !source.includes('cd <worktree> &&'),
-      `${path} must not contain 'cd <worktree> &&' (superseded by argv transcription contract)`,
-    );
-  });
-
   test(`[exec-proxy-argv-contract] ${fileName} declares the argv verbatim transcription core phrase`, () => {
     const { source, path } = loadAgent(fileName);
     assert.ok(

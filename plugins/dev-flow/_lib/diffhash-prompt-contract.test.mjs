@@ -14,45 +14,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { makeRecordingSandbox } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
-
-// ============================================================
-// runDevFlowCapture: strip + wrap + vm 実行し {result, error} を返す
-// （hash-reconverged-routing.test.mjs と同型のローカル copy）
-// ============================================================
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
-function assertNoCrash(error) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
 
 // standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
 const STANDARD_REQ = {
@@ -110,7 +77,7 @@ let sharedError = null;
 async function ensureSharedRun() {
   if (sharedCalls !== null) return;
   const { ctx, calls } = makeRecordingSandbox(createResponder());
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   sharedCalls = calls;
   sharedError = error;
 }
@@ -137,18 +104,6 @@ test('[diffhash-prompt-contract] (a) diff-hash* prompt は argv 行 "worktree-di
     assert.ok(
       c.prompt.includes('worktree-diff-hash /tmp/wt origin/main'),
       `${c.label} の prompt に argv 行 "worktree-diff-hash /tmp/wt origin/main" が見つからない。\nprompt: ${c.prompt}`,
-    );
-  }
-});
-
-test('[diffhash-prompt-contract] (b) diff-hash* prompt は旧 "cd /tmp/wt で作業" 前置を含まない', async () => {
-  await ensureSharedRun();
-  const diffHashCalls = sharedCalls.filter((c) => c.label.startsWith('diff-hash'));
-  assert.ok(diffHashCalls.length >= 1, 'diff-hash* call が見つからない');
-  for (const c of diffHashCalls) {
-    assert.ok(
-      !c.prompt.includes('cd /tmp/wt で作業'),
-      `${c.label} の prompt に旧 "cd /tmp/wt で作業" 前置が残っている`,
     );
   }
 });

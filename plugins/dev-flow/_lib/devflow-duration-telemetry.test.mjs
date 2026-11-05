@@ -1,5 +1,5 @@
 // issue #371 F2 / issue #443 F7: dev-flow.js の duration telemetry 配線を検証する実行ベース統合テスト。
-// devflow-journal-log.test.mjs の makeSandbox / runDevFlowCapture / ANALYZE_REQ を同型コピーし
+// devflow-journal-log.test.mjs の makeSandbox / runWorkflowCapture / ANALYZE_REQ を同型コピーし
 // (repo precedent はテストごとの helper 複製)、agentStub に専用 clock# probe 分岐と
 // 給電（feedClockMark）対象 label への optional epoch 付与を追加する。
 //
@@ -25,13 +25,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 
-// ---- VM sandbox helpers（devflow-journal-log.test.mjs の makeSandbox / runDevFlowCapture と同型）----
+// ---- VM sandbox helpers（devflow-journal-log.test.mjs の makeSandbox / runWorkflowCapture と同型）----
 
 /**
  * duration telemetry 検証専用の VM sandbox を組む。
@@ -214,36 +214,6 @@ function extractPhaseDurations(prompt) {
   return m ? JSON.parse(m[1]) : null;
 }
 
-/**
- * dev-flow.js ソースを strip して async IIFE でラップし vm sandbox で実行する。
- * devflow-journal-log.test.mjs の runDevFlowCapture と同型。
- *
- * @param {string} src - dev-flow.js の raw ソース
- * @param {vm.Context} ctx - vm コンテキスト
- * @returns {Promise<{ result: object|null, error: Error|null }>}
- */
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
 // ============================================================
 // テストケース
 // ============================================================
@@ -264,7 +234,7 @@ const src = readFileSync(devFlowPath, 'utf8');
 test('[duration-telemetry] epochMode=ok: clock# 専用 probe は 0 件起動、journal-log prompt に duration_seconds/phase_durations が含まれる（final キーは fixes_applied=0 の Final reconcile skip で欠落する）', async () => {
   const { ctx, getJournalPrompts, getClockCalls, getLogLines, getImplEpochs } = makeSandbox(ANALYZE_REQ, 'ok');
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -330,7 +300,7 @@ test('[duration-telemetry] epochMode=ok: clock# 専用 probe は 0 件起動、j
 test('[duration-telemetry] epochMode=fail: clock# 専用 probe は null を返し、他の給電元 stub も epoch を省略する（fail-open）ため journal-log prompt に duration_seconds/phase_durations が現れず、result.merge_tier は正常に返る', async () => {
   const { ctx, getJournalPrompts, getClockCalls } = makeSandbox(ANALYZE_REQ, 'fail');
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);

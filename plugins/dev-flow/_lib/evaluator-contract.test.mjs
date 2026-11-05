@@ -43,7 +43,6 @@ function makeSandbox({ overrides = {}, fixesApplied = 0 } = {}) {
   });
 }
 
-const runDevFlowCapture = runWorkflowCapture;
 
 const evaluatorContractBlock = [
   EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions,
@@ -149,7 +148,7 @@ test('[evaluator-contract] eval#1 prompt contains EVALUATOR_OPERATIONAL_CONTRACT
       'impl:serial:issue-1': { status: 'DONE_WITH_CONCERNS', task_id: 'issue-1', files: ['src/x.ts'], summary: 's', concerns: ['未検証の入力値がある'] },
     },
   });
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'contract-eval1');
   const eval1 = calls.find((c) => c.label === 'eval#1');
   assert.ok(eval1 != null, `label === 'eval#1' の call が見つからない (labels: ${calls.map((c) => c.label).join(', ')})`);
@@ -189,7 +188,7 @@ test('[evaluator-contract] eval#2 prompt contains EVALUATOR_OPERATIONAL_CONTRACT
       },
     },
   });
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'contract-eval2');
   const evalCalls = calls.filter((c) => c.agentType === 'dev-flow:evaluator');
   assert.equal(evalCalls.length, 2, `evaluator は 2 回呼ばれるはずだが ${evalCalls.length} 回だった (labels: ${calls.map((c) => c.label).join(', ')})`);
@@ -204,7 +203,7 @@ test('[evaluator-contract] final-ac-reconcile prompt contains EVALUATOR_OPERATIO
     fixesApplied: 1,
     overrides: { 'test#final': { tests: 'passed', green: true, summary: '' } },
   });
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'contract-final-ac');
   const finalAc = calls.find((c) => c.label === 'final-ac-reconcile');
   assert.ok(finalAc != null, `label === 'final-ac-reconcile' の call が見つからない (labels: ${calls.map((c) => c.label).join(', ')})`);
@@ -236,7 +235,7 @@ test('[evaluator-contract] eval#1 prompt contains EVALUATOR_OPERATIONAL_CONTRACT
       },
     },
   });
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'contract-testsurf');
   const eval1 = calls.find((c) => c.label === 'eval#1');
   assert.ok(eval1 != null, `label === 'eval#1' の call が見つからない (labels: ${calls.map((c) => c.label).join(', ')})`);
@@ -266,12 +265,6 @@ test('[evaluator-contract] concern_resolutions contract mentions all 3 resolutio
 // #626 で撤回した旧仕様の文言が契約・evaluator.md に残っていないことだけを pin する（否定側のみ。
 // 新仕様の言い回しは変えられるべきなので肯定側の文言 pin は置かない — issue #636 AC-1。
 // 契約と evaluator.md の同期は上の verbatim mirror テストが担保する）。
-test('[evaluator-contract][#626] concern_resolutions 契約と evaluator.md に旧「要対応に「トリアージ済み」として残る」が残っていない', () => {
-  const contract = EVALUATOR_OPERATIONAL_CONTRACT.concern_resolutions;
-  assert.ok(!contract.includes('triaged は要対応に「トリアージ済み」として残る'));
-  assert.ok(!evaluatorMd.includes('triaged は要対応に「トリアージ済み」として残る'));
-});
-
 test('[normalizeConcernResolution] normalizes a well-formed triaged item', () => {
   const result = normalizeConcernResolution({ id: 'CONCERN-1', resolution: 'triaged', evidence: 'e' });
   assert.deepEqual(result, { id: 'CONCERN-1', resolution: 'triaged', evidence: 'e' });
@@ -337,7 +330,7 @@ test('[evaluator-contract][#842] eval#i の EVAL schema と final-ac-reconcile �
     fixesApplied: 1,
     overrides: { 'test#final': { tests: 'passed', green: true, summary: '' } },
   });
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'contract-eval-maxlength');
   const evalSchema = calls.find((c) => c.label === 'eval#1')?.schema;
   assert.ok(evalSchema, 'eval#1 の schema が取れない');

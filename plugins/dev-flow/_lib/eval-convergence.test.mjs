@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
 import { EVALUATOR_OPERATIONAL_CONTRACT } from './evaluator-contract.mjs';
-import { devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -144,36 +144,6 @@ function makeSandbox(analyzeReq, responses) {
   };
 }
 
-/**
- * dev-flow.js ソースを strip して async IIFE でラップし vm sandbox で実行する。
- * IIFE の **resolved 値（return object）を捕捉して返す**。
- *
- * @param {string} src - dev-flow.js の raw ソース
- * @param {vm.Context} ctx - vm コンテキスト
- * @returns {Promise<{ result: object|null, error: Error|null }>}
- */
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
 // ============================================================
 // テストケース
 // ============================================================
@@ -220,7 +190,7 @@ test('[eval-convergence] AC#1: complex 経路・minor のみ feedback・AC 全 s
 
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, counters } = makeSandbox(analyzeReq, responses);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -285,7 +255,7 @@ test('[eval-convergence] AC#2: 沈黙 critical → EVAL_MAX(10 回)まで差し�
 
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, counters } = makeSandbox(analyzeReq, responses);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -361,7 +331,7 @@ test('[eval-convergence] AC#3: critical_resolutions {resolved:true, evidence} �
 
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, counters } = makeSandbox(analyzeReq, responses);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
@@ -433,7 +403,7 @@ test('[eval-convergence] contract: eval#2 prompt に EVALUATOR_OPERATIONAL_CONTR
 
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, counters } = makeSandbox(analyzeReq, [firstResponse, secondResponse]);
-  const { error } = await runDevFlowCapture(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);

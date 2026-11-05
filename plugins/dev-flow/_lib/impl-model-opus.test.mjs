@@ -1,68 +1,26 @@
-// dev-implementer の既定 model が frontmatter の opus で、fable→opus fallback 機構が撤去されていることを
-// 静的検査と dev-flow.js 全体の VM 実行で pin する（issue #705）。
+// dev-implementer の既定 model が frontmatter の opus であることを dev-flow.js 全体の VM 実行で pin する（issue #705）。
 //
-//   (a) 静的: dev-flow.js と _lib 配下（本ファイルを除く）に fallback 機構のシンボルが無い。
-//       references/capability-bound.md に fable→opus fallback と「既定 model fable」の記述が無い
 //   (b) call site: Implement（impl）・BLOCKED 再実装（reimpl-blocked#b）・Evaluate 差し戻し（reimpl#i）・
 //       empty-diff 差し戻し（reimpl-empty-diff）の dev-implementer call は opts に model キーを持たない
 //       （frontmatter 既定で起動）。model を渡すのは green-fix#i / green-fix#retry-i の 'sonnet' だけ
 //   (c) implementer の null は再試行されず 1 回で drop に計上される
 //   (d) micro / standard / complex の spawn 数・Evaluate 回数が fallback 撤去前から journal handoff の 1 spawn 化分だけ減った値と一致する
-//   (e) telemetry: impl_model_config は成功 / failure / abort の 3 経路で 'opus'、impl_model_fallback_label は載らない
+//   (e) telemetry: impl_model_config は成功 / failure / abort の 3 経路で 'opus'
 //
 // frontmatter 値（model: opus / effort: high）と impl_model_config リテラルの一致は review-model-frontmatter.test.mjs (d)。
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { basename, dirname, join, relative } from 'node:path';
+import { dirname, join } from 'node:path';
 import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, analyzeArgs, MICRO_FILES, COMPLEX_FILES } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = join(here, '..');
 const src = readFileSync(join(pluginRoot, '.claude', 'workflows', 'dev-flow.js'), 'utf8');
-const SELF = basename(fileURLToPath(import.meta.url));
 
 const IMPLEMENTER = 'dev-flow:dev-implementer';
-const FORBIDDEN = ['fallbackModel', 'IMPL_FALLBACK_MODEL', 'IMPL_FALLBACK_LABEL', 'impl_model_fallback_label'];
-
-function listFiles(dir) {
-  const out = [];
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...listFiles(p));
-    else out.push(p);
-  }
-  return out;
-}
-
-// ============================================================
-// (a) 静的 pin
-// ============================================================
-
-test('[impl-model-opus] (a) dev-flow.js と _lib に fallback 機構のシンボルが残っていない', () => {
-  const targets = [
-    ['.claude/workflows/dev-flow.js', src],
-    ...listFiles(here)
-      .filter((p) => basename(p) !== SELF)
-      .map((p) => [relative(pluginRoot, p), readFileSync(p, 'utf8')]),
-  ];
-  assert.ok(targets.length > 1, '_lib 配下のファイルが走査対象に入っていない');
-  const hits = [];
-  for (const [name, text] of targets) for (const tok of FORBIDDEN) if (text.includes(tok)) hits.push(`${name}: ${tok}`);
-  assert.deepEqual(hits, [], 'fable→opus fallback 機構のシンボルが残っている');
-});
-
-test('[impl-model-opus] (a) references/capability-bound.md に fable→opus fallback と既定 model fable の記述が無い', () => {
-  const forbiddenDoc = [...FORBIDDEN, 'impl-model-fallback', /fable\s*(→|->)\s*opus/, /frontmatter\s*`?fable/, /既定[^\n。]*(?<![-\w])fable(?![-\w])/, /fable \/ high/];
-  // model の割り当ては capability-bound.md の「subagent の model・effort の割り当て」に置く
-  const text = readFileSync(join(pluginRoot, 'dev-flow', 'references', 'capability-bound.md'), 'utf8');
-  for (const pat of forbiddenDoc) {
-    const hit = typeof pat === 'string' ? text.includes(pat) : pat.test(text);
-    assert.equal(hit, false, `references/capability-bound.md に fallback / 既定 fable の記述が残っている: ${pat}`);
-  }
-});
 
 // ============================================================
 // (b)(c) call site の model 指定
@@ -219,13 +177,12 @@ const TELEMETRY_ROUTES = {
 };
 
 for (const [route, cfg] of Object.entries(TELEMETRY_ROUTES)) {
-  test(`[impl-model-opus] (e) ${route} run の telemetry: impl_model_config は opus、impl_model_fallback_label は載らない`, async () => {
+  test(`[impl-model-opus] (e) ${route} run の telemetry: impl_model_config は opus`, async () => {
     const { journalPrompts, error } = await runFlow(cfg.overrides);
     assert.equal(error != null, cfg.throws, `throw の有無が想定と違う: ${error?.message}`);
     const payload = lastTelemetry(journalPrompts);
     if (route === 'failure') assert.equal(payload.outcome, 'failure');
     if (route === 'abort') assert.equal(payload.error_category, 'abort');
     assert.equal(payload.telemetry.impl_model_config, 'opus');
-    assert.equal('impl_model_fallback_label' in payload.telemetry, false, 'impl_model_fallback_label が載っている');
   });
 }

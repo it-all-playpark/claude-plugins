@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -138,36 +138,6 @@ function makeSandbox(analyzeReq, evaluatorResponse) {
   };
 }
 
-/**
- * dev-flow.js ソースを strip して async IIFE でラップし vm sandbox で実行する。
- * IIFE の **resolved 値（return object）を捕捉して返す**。
- *
- * @param {string} src - dev-flow.js の raw ソース
- * @param {vm.Context} ctx - vm コンテキスト
- * @returns {Promise<{ result: object|null, error: Error|null }>}
- */
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
 // standard に落ちる analyzeReq（count=3, ac=1件, type='feat' → floor='standard'）
 // AC は 1 件以上必須（dev-flow.js L793 付近で acceptance_criteria を ledger に積む）
 const standardAnalyzeReq = {
@@ -205,7 +175,7 @@ test('[escalate-producer] AC#1: escalate:true の major feedback → merge_tier 
 
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx } = makeSandbox(standardAnalyzeReq, evaluatorResponse);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -252,7 +222,7 @@ test('[escalate-producer] AC#2: escalate なしの major feedback → merge_tier
 
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx } = makeSandbox(standardAnalyzeReq, evaluatorResponse);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -293,7 +263,7 @@ test('[escalate-producer] テスト3: escalate:true の major → post-summary p
 
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, getCapturedPostSummaryPrompt } = makeSandbox(standardAnalyzeReq, evaluatorResponse);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -469,7 +439,7 @@ test('[escalate-producer] テスト4: complex shape iteration 2 に初出 escala
     'utf8',
   );
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
     assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);

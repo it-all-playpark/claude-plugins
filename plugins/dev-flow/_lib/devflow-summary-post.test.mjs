@@ -148,36 +148,6 @@ function makeSandbox(analyzeReq, postResult) {
   };
 }
 
-/**
- * dev-flow.js ソースを strip して async IIFE でラップし vm sandbox で実行する。
- * IIFE の **resolved 値（return object）を捕捉して返す**。
- *
- * @param {string} src - dev-flow.js の raw ソース
- * @param {vm.Context} ctx - vm コンテキスト
- * @returns {Promise<{ result: object|null, error: Error|null }>}
- */
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
 // ============================================================
 // テストケース
 // ============================================================
@@ -199,7 +169,7 @@ test('[summary-post] Merge tier phase 後に post-summary dev-runner-haiku 呼�
   const postResult = { posted: true, method: 'gh pr comment', url: 'http://x' };
   const { ctx, getPostSummaryCallCount } = makeSandbox(ANALYZE_REQ, postResult);
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる（sandbox クラッシュ検出）
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
@@ -219,7 +189,7 @@ test('[summary-post] post-summary stub が posted:false を返しても result.m
   const postResult = { posted: false };
   const { ctx } = makeSandbox(ANALYZE_REQ, postResult);
 
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる（sandbox クラッシュ検出）
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {

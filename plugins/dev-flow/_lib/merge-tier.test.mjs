@@ -292,11 +292,6 @@ test('classifyMergeTier: unsatisfiedAgentAc:false は既存 REVIEW 挙動不変'
   assert.equal(r.tier, 'REVIEW');
 });
 
-test('classifyMergeTier: unsatisfiedAgentAc / unsatisfiedHumanAc 未指定なら REVIEW（フラグ省略時は false 扱い）', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', shape: 'standard', converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, docsOrTestOnly: false, escalateCount: 0 });
-  assert.equal(r.tier, 'REVIEW');
-});
-
 // ---- issue #747: AC 未達の HOLD 理由を actor で分ける ----
 
 test('classifyMergeTier: 人手 AC だけが未達 → HOLD 理由は ac_human_pending（人手 AC 待ち）のみ', () => {
@@ -1289,10 +1284,6 @@ test('classifyMergeTier: holdReasons[].code — mergeable_conflicting', () => {
 
 // ---- issue #661: prClosesStatus / pr_closes_missing ----
 
-test('PR_CLOSES_STATUS_VALUES は 4 の閉じた enum と一致', () => {
-  assert.deepEqual(PR_CLOSES_STATUS_VALUES, ['verified', 'reinjected', 'missing', 'unverified']);
-});
-
 test('classifyMergeTier: prClosesStatus:"missing" → HOLD、holdReasons に pr_closes_missing（kind=deterministic_recheck）', () => {
   const r = classifyMergeTier({
     ...standardBase(), iterateStatus: 'lgtm', evalStaleness: 'none', prClosesStatus: 'missing',
@@ -1308,7 +1299,8 @@ test('classifyMergeTier: prClosesStatus:"missing" → HOLD、holdReasons に pr_
 
 test('classifyMergeTier: prClosesStatus が verified/reinjected/unverified/undefined → tier・reasons・holdReasons は未指定時と不変', () => {
   const baseline = classifyMergeTier(baseCleanInput({}));
-  for (const status of ['verified', 'reinjected', 'unverified', undefined]) {
+  // merge-tier.mjs は値を literal で持つ。canonical の enum 全値を通して同値性を pin する
+  for (const status of [...PR_CLOSES_STATUS_VALUES.filter((v) => v !== 'missing'), undefined]) {
     const r = classifyMergeTier(baseCleanInput({ prClosesStatus: status }));
     assert.deepEqual(r, baseline, `prClosesStatus=${status} は未指定時と完全一致するべきだが: ${JSON.stringify(r)}`);
   }

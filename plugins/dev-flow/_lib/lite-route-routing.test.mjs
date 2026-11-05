@@ -31,7 +31,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runDevFlowInSandbox } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -194,26 +194,6 @@ function makeLiteRouteSandbox(analyzeReq, opts = {}) {
 
   const ctx = vm.createContext(sandbox);
   return { ctx, calls, workflowCalls };
-}
-
-async function runDevFlowInSandbox(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  try {
-    const result = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (result && typeof result.then === 'function') {
-      await result.catch((e) => {
-        caughtError = e;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return caughtError;
 }
 
 function failOnStructuralCrash(err) {

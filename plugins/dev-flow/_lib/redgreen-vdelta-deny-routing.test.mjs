@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, prerunAnalyze, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 import { isRedgreenCall, redgreenBatchResponse } from './test-helpers/redgreen-batch.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -133,34 +133,6 @@ function makeSandbox(analyzeReq, evaluatorResponse, redgreenResponseFor) {
   };
 }
 
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
-function assertNoCrash(error) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
-
 // ============================================================
 // フィクスチャ
 // ============================================================
@@ -208,7 +180,7 @@ function evalTestVerified(acCount) {
 test('[redgreen-vdelta] (a) verdict 無し（{red:true,green:true}のみ）→ 素の昇格（deterministic 昇格 + checked ログ）', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, counters } = makeSandbox(ANALYZE_REQ_1AC, evalTestVerified(1), () => ({ red: true, green: true }));
-  const { error } = await runDevFlowCapture(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   const logs = counters.logs();
@@ -222,7 +194,7 @@ test('[redgreen-vdelta] (b) verdict clean object → 昇格（deterministic 昇�
   const src = readFileSync(devFlowPath, 'utf8');
   const cleanVerdict = { comparability: 'exact', transitions: {}, verification_surface: { status: 'intact' } };
   const { ctx, counters } = makeSandbox(ANALYZE_REQ_1AC, evalTestVerified(1), () => ({ red: true, green: true, verdict: cleanVerdict }));
-  const { error } = await runDevFlowCapture(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   const logs = counters.logs();
@@ -240,7 +212,7 @@ test('[redgreen-vdelta] (c) verdict deny 対象（repaired_with_test_change + su
     verification_surface: { status: 'changed' },
   };
   const { ctx, counters } = makeSandbox(ANALYZE_REQ_1AC, evalTestVerified(1), () => ({ red: true, green: true, verdict: denyVerdict }));
-  const { error } = await runDevFlowCapture(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   const logs = counters.logs();
@@ -257,7 +229,7 @@ test('[redgreen-vdelta] (c) verdict deny 対象（repaired_with_test_change + su
 test('[redgreen-vdelta] (d) verdict が不正 JSON 文字列 → fail-open で昇格', async () => {
   const src = readFileSync(devFlowPath, 'utf8');
   const { ctx, counters } = makeSandbox(ANALYZE_REQ_1AC, evalTestVerified(1), () => ({ red: true, green: true, verdict: 'not-json{' }));
-  const { error } = await runDevFlowCapture(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   const logs = counters.logs();
@@ -275,7 +247,7 @@ test('[redgreen-vdelta] (e) AC 2 件 → AC ごとの verdict で両 AC とも�
     evalTestVerified(2),
     (acIndex) => ({ red: true, green: true, verdict: verdictFor(acIndex) }),
   );
-  const { error } = await runDevFlowCapture(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   const logs = counters.logs();

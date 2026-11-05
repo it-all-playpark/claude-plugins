@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -143,34 +143,6 @@ function makeSandbox(analyzeReq, dangerGrepPre, dangerGrepFinal, evaluatorRespon
   };
 }
 
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
-function assertNoCrash(error) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
-
 // ============================================================
 // 固定データ
 // ============================================================
@@ -210,7 +182,7 @@ test('[merge-tier-sec-clearance] シナリオ1: PR#16 再現 — cleared:true+ev
     security_clearance: [{ danger_class: 'config', cleared: true, evidence: 'diff 精査: secret 平文なし' }],
   };
   const { ctx, counters } = makeSandbox(ANALYZE_REQ, DANGER_CLEAN, DANGER_HIT_CONFIG, EVAL_RESPONSE_CLEAN, clearanceResponse);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.equal(
@@ -261,7 +233,7 @@ test('[merge-tier-sec-clearance] シナリオ2: cleared:false — SEC-CONFIG unc
     security_clearance: [{ danger_class: 'config', cleared: false, evidence: '' }],
   };
   const { ctx, counters } = makeSandbox(ANALYZE_REQ, DANGER_CLEAN, DANGER_HIT_CONFIG, EVAL_RESPONSE_CLEAN, clearanceResponse);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.equal(counters.clearanceCalls(), 1, `security-clearance-final は 1 回呼ばれるべきだが ${counters.clearanceCalls()} 回だった`);
@@ -278,7 +250,7 @@ test('[merge-tier-sec-clearance] シナリオ2: cleared:false — SEC-CONFIG unc
 // ============================================================
 test('[merge-tier-sec-clearance] シナリオ3: clearance null — HOLD かつ workflow は完走する', async () => {
   const { ctx, counters } = makeSandbox(ANALYZE_REQ, DANGER_CLEAN, DANGER_HIT_CONFIG, EVAL_RESPONSE_CLEAN, null);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.equal(counters.clearanceCalls(), 1, `security-clearance-final は null でも再試行せず 1 回だけ呼ばれるべきだが ${counters.clearanceCalls()} 回だった`);
@@ -299,7 +271,7 @@ test('[merge-tier-sec-clearance] シナリオ4: merge-tier-facts risk fail-close
     security_clearance: [{ danger_class: 'config', cleared: true, evidence: 'should not be called' }],
   };
   const { ctx, counters } = makeSandbox(ANALYZE_REQ, DANGER_CLEAN, DANGER_FAIL_CLOSED, EVAL_RESPONSE_CLEAN, clearanceResponse);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.equal(
@@ -319,7 +291,7 @@ test('[merge-tier-sec-clearance] シナリオ4: merge-tier-facts risk fail-close
 // ============================================================
 test('[merge-tier-sec-clearance] シナリオ5 regression: Evaluate 前・Merge tier 最終ともに clean — clearance 呼び出しなし、HOLD にならない', async () => {
   const { ctx, counters } = makeSandbox(ANALYZE_REQ, DANGER_CLEAN, DANGER_CLEAN, EVAL_RESPONSE_CLEAN, null);
-  const { result, error } = await runDevFlowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.equal(

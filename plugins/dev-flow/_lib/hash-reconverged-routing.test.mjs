@@ -5,7 +5,7 @@
 // による hash_reconverged への置換を検証する。
 //
 // ハーネスは _lib/merge-tier-diffhash-reuse-routing.test.mjs の makeRecordingSandbox（共有
-// test-helpers/vm-sandbox.mjs）+ ローカル runDevFlowCapture / assertNoCrash / createResponder
+// test-helpers/vm-sandbox.mjs）+ 共有の runWorkflowCapture / assertNoCrash / createResponder
 // パターンを踏襲する。
 //
 // テストケース:
@@ -31,45 +31,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { makeRecordingSandbox, devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
-
-// ============================================================
-// runDevFlowCapture: strip + wrap + vm 実行し {result, error} を返す
-// （merge-tier-diffhash-reuse-routing.test.mjs と同型）
-// ============================================================
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
-function assertNoCrash(error, name) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`[${name}] dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
 
 const HEAD_REF_OID = 'a'.repeat(40);
 
@@ -142,7 +109,7 @@ function makeSandbox({ overrides = {}, workflow } = {}) {
 
 test('[hash-reconverged] (a) 既定(3条件成立) → eval_staleness=hash_reconverged、merge_tier=REVIEW、hash_mismatch reason なし、probe 各1回', async () => {
   const { ctx, calls } = makeSandbox();
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'a');
   assert.ok(result !== null, '(a) workflow は return object を返すべきだが null だった');
 
@@ -171,7 +138,7 @@ test('[hash-reconverged] (b) facts.head_tree が evalDiffHash と不一致 → h
   const { ctx, calls } = makeSandbox({
     overrides: { 'merge-tier-facts': mergeTierFacts({ hash: 'AAA', tree: 'BBB', files: ['src/x.ts'], pr: { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: HEAD_REF_OID } }) },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'b');
   assert.ok(result !== null, '(b) workflow は return object を返すべきだが null だった');
 
@@ -194,7 +161,7 @@ test('[hash-reconverged] (c) facts.diffhash が取得失敗(mergeDiffHash null) 
   const { ctx, logs } = makeSandbox({
     overrides: { 'merge-tier-facts': mergeTierFacts({ hash: null, tree: 'AAA', files: ['src/x.ts'], pr: { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: HEAD_REF_OID } }) },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'c');
   assert.ok(result !== null, '(c) workflow は return object を返すべきだが null だった');
 
@@ -208,7 +175,7 @@ test('[hash-reconverged] (c-2) facts.diffhash の error（script が添えた st
   const facts = mergeTierFacts({ hash: null, tree: 'AAA', files: ['src/x.ts'], pr: { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: HEAD_REF_OID } });
   facts.diffhash = { ok: false, value: null, error: diffhashError };
   const { ctx, logs } = makeSandbox({ overrides: { 'merge-tier-facts': facts } });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'c-2');
   assert.ok(result !== null, '(c-2) workflow は return object を返すべきだが null だった');
 
@@ -227,7 +194,7 @@ test('[hash-reconverged] (d) facts.pr に headRefOid が無い → head_tree が
   const { ctx, logs } = makeSandbox({
     overrides: { 'merge-tier-facts': mergeTierFacts({ hash: 'AAA', tree: 'AAA', files: ['src/x.ts'], pr: { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' } }) },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'd');
   assert.ok(result !== null, '(d) workflow は return object を返すべきだが null だった');
 
@@ -244,7 +211,7 @@ test("[hash-reconverged] (d') facts.head_tree が取得失敗 → hash_mismatch 
   const { ctx } = makeSandbox({
     overrides: { 'merge-tier-facts': mergeTierFacts({ hash: 'AAA', tree: null, files: ['src/x.ts'], pr: { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: HEAD_REF_OID } }) },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, "d'");
   assert.ok(result !== null, "(d') workflow は return object を返すべきだが null だった");
 
@@ -260,7 +227,7 @@ test('[hash-reconverged] (e) tree-diff-numstat が null でも 3 条件成立な
   const { ctx } = makeSandbox({
     overrides: { 'tree-diff-numstat': null },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'e-1');
   assert.ok(result !== null, '(e-1) workflow は return object を返すべきだが null だった');
 
@@ -274,7 +241,7 @@ test('[hash-reconverged] (e) tree-diff-numstat が null + facts.head_tree 不一
       'merge-tier-facts': mergeTierFacts({ hash: 'AAA', tree: 'BBB', files: ['src/x.ts'], pr: { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: HEAD_REF_OID } }),
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'e-2');
   assert.ok(result !== null, '(e-2) workflow は return object を返すべきだが null だった');
 
@@ -292,7 +259,7 @@ test('[hash-reconverged] (e) tree-diff-numstat が null + facts.head_tree 不一
 
 test('[hash-reconverged] (f) dispatch pin: tree-diff-numstat / merge-tier-facts の agentType・prompt', async () => {
   const { ctx, calls } = makeSandbox();
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'f');
 
   const numstatCall = calls.find((c) => c.label === 'tree-diff-numstat');
@@ -325,7 +292,7 @@ test('[hash-reconverged] (g) diff-hash-pr が diff-hash-eval と一致 → tree-
   const { ctx, calls } = makeSandbox({
     overrides: { 'diff-hash-pr': { hash: 'AAA', empty: false } },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'g');
   assert.ok(result !== null, '(g) workflow は return object を返すべきだが null だった');
 
@@ -342,7 +309,7 @@ test('[hash-reconverged] (h) fixes_applied>0 でも 3 条件成立なら eval_st
   const { ctx } = makeSandbox({
     workflow: async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }),
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'h');
   assert.ok(result !== null, '(h) workflow は return object を返すべきだが null だった');
 

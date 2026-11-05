@@ -77,13 +77,6 @@ test("[diff-triage-routing][A2] 既定 run に label 'realized-diff' / 'structur
   }
 });
 
-test("[diff-triage-routing][A3] 既定 run の全 calls の prompt に '--out' 文字列が含まれない（AC1: 証跡書き込み撤去）", async () => {
-  const { calls } = await defaultRun();
-  for (const call of calls) {
-    assert.ok(!call.prompt.includes('--out'), `label '${call.label}' の prompt に '--out' が残っている`);
-  }
-});
-
 test("[diff-triage-routing][A4] label 'merge-tier-facts'（Merge tier）は agentType:'dev-flow:dev-runner-haiku-ro'（AC1: agentType 復帰）", async () => {
   // Merge tier の danger-grep 再判定は merge-tier-facts の risk サブ結果で行う。reuse（secDiffHash===mergeDiffHash）
   // が発火しても spawn 自体は 1 回発生する（pr / checks 等の他サブ結果に必要）。

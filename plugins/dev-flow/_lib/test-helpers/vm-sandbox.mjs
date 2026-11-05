@@ -1,7 +1,7 @@
 /**
  * vm-sandbox.mjs — VM sandbox ハーネス共有モジュール
  *
- * green-fix 系 4 ファイルで byte 完全一致していた sandbox ヘルパーを抽出した共有モジュール。
+ * workflow を VM で実行する routing test の共有ヘルパー。
  * 差分（agentStub の返り値ロジック）は呼び出し側の responder 関数に委譲する。
  *
  * Export:
@@ -178,7 +178,6 @@ export function makeRecordingSandbox(responder, extraSandbox = {}, { calls = [] 
 
 // ============================================================
 // runDevFlowInSandbox: dev-flow.js ソースを strip して sandbox 実行する
-// （既存 green-fix 4 ファイルの当該関数を verbatim 移植）
 // ============================================================
 
 /**
@@ -210,8 +209,7 @@ export async function runDevFlowInSandbox(src, ctx) {
 
 // ============================================================
 // runWorkflowCapture: strip + wrap + vm 実行し {result, error} を返す
-// （hash-reconverged-routing.test.mjs の runDevFlowCapture と同一ロジック。
-// dev-flow.js / pr-iterate.js 共用のため filename を引数化する）
+// （dev-flow.js / pr-iterate.js 共用のため filename を引数化する）
 // ============================================================
 
 /**
@@ -254,11 +252,11 @@ export async function runWorkflowCapture(src, ctx, filename = '.claude/workflows
  * ReferenceError/SyntaxError（sandbox 実行自体のクラッシュ）であれば assert.fail する。
  *
  * @param {Error|null} error
- * @param {string} name - fail メッセージに含めるテストケース識別子
+ * @param {string} [name] - fail メッセージに含めるテストケース識別子
  */
 export function assertNoCrash(error, name) {
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`[${name}] workflow が sandbox でクラッシュ: ${error.name}: ${error.message}`);
+    assert.fail(`${name ? `[${name}] ` : ''}workflow が sandbox でクラッシュ: ${error.name}: ${error.message}`);
   }
 }
 
@@ -568,4 +566,3 @@ export function makePrIterateSandbox({ overrides = {}, rounds = null, args = '5'
     ...extra,
   }, { calls });
 }
-

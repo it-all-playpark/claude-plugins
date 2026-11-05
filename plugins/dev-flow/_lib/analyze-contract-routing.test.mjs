@@ -130,6 +130,23 @@ test('[analyze-routing] (c) analyze.ok:false → needs_clarification（source=an
   assert.ok(logs.some((l) => l.includes('source=analyze_prerun')));
 });
 
+// ---- (c2) ゲートの 3 経路とも failure handoff の spawn は Setup に帰属する（analyze ゲートは Setup の末尾にある）----
+test('[analyze-routing] (c2) analyze_prerun / blocked_by / analyze の journal-log-failure は phase が Setup', async () => {
+  const cases = {
+    analyze_prerun: { args: devFlowArgs(1, { analyze: { ok: false, reason: 'gh: HTTP 502', analyze_path: 'contract', duration_seconds: 2 } }) },
+    blocked_by: { analyze: { blockers: [OPEN_BLOCKER] } },
+    analyze: { analyze: { acceptance_criteria: [] } },
+  };
+  for (const [source, input] of Object.entries(cases)) {
+    const { calls, result, error } = await run(input);
+    assert.equal(error, null, `${source}: run が throw してはならないが: ${error?.message}`);
+    assert.equal(result.source, source);
+    const handoff = calls.find((c) => c.label === 'journal-log-failure');
+    assert.ok(handoff, `${source}: journal-log-failure が無い: ${calls.map((c) => c.label).join(', ')}`);
+    assert.equal(handoff.opts.phase, 'Setup', source);
+  }
+});
+
 // ---- (d) clarify agent の失敗は fail-open ----
 test('[analyze-routing] (d) analyze-clarify#1 が null / throw でもゲート理由をそのまま missing_context にして needs_clarification を返す', async () => {
   for (const [kind, override] of [['null', null], ['throw', () => { throw new Error('boom'); }]]) {

@@ -5,7 +5,7 @@
 // まま）、終端サマリーの「現状」欄にのみ反映されることを実証する。
 //
 // ハーネスは _lib/final-ac-reconcile-routing.test.mjs の構造（makeRecordingSandbox + devFlowArgs +
-// mergeTierFacts、ローカル runDevFlowCapture + assertNoCrash、responder で label ごとに応答を返す）
+// mergeTierFacts、共有の runWorkflowCapture + assertNoCrash、responder で label ごとに応答を返す）
 // を丸ごと踏襲する。
 //
 // テストケース:
@@ -23,45 +23,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { makeRecordingSandbox, devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
-
-// ============================================================
-// runDevFlowCapture: strip + wrap + vm 実行し {result, error} を返す
-// （_lib/final-ac-reconcile-routing.test.mjs と同型のローカル copy）
-// ============================================================
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
-function assertNoCrash(error, name) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`[${name}] dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
 
 // standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
 const STANDARD_REQ = {
@@ -162,7 +129,7 @@ test('[final-item-resolutions] (a)(b)(c) escalate + fix 後 resolved → prompt 
     fixesApplied: 1,
     overrides: { 'test#final': { tests: 'passed', green: true, summary: '' } },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'a-b-c');
   assert.ok(result !== null, '(a)(b)(c) workflow は return object を返すべきだが null だった');
 
@@ -202,7 +169,7 @@ test("[final-item-resolutions] (d) item_resolutions 無し → post-summary body
       },
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'd');
   assert.ok(result !== null, '(d) workflow は return object を返すべきだが null だった');
 
@@ -233,7 +200,7 @@ test("[final-item-resolutions] (e) escalate なし + fixes=0 → final-ac-reconc
       },
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'e');
   assert.ok(result !== null, '(e) workflow は return object を返すべきだが null だった');
 
@@ -263,7 +230,7 @@ test('[final-item-resolutions] (f) item_resolutions 未知 id → crash せず f
       },
     },
   });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'f');
   assert.ok(result !== null, '(f) workflow は return object を返すべきだが null だった（未知 id で crash した可能性）');
   assert.equal(error, null, `(f) 未知 id を含めても throw してはならないが error=${error}`);

@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 import { isRedgreenCall, redgreenBatchResponse } from './test-helpers/redgreen-batch.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -151,34 +151,6 @@ function makeSandbox(analyzeReq, evaluatorResponses, redgreenResponseFor) {
   };
 }
 
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
-function assertNoCrash(error) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
-
 // ============================================================
 // フィクスチャ
 // ============================================================
@@ -230,7 +202,7 @@ test('[redgreen-skip] T1: deterministic 昇格 + checked 済み AC は iteration
   const redgreenResponseFor = () => ({ red: true, green: true, verdict: CLEAN_VERDICT });
 
   const { ctx, counters } = makeSandbox(ANALYZE_REQ_1AC, responses, redgreenResponseFor);
-  const { error } = await runDevFlowCapture(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.equal(
@@ -258,7 +230,7 @@ test('[redgreen-skip] T3: inspection 据え置き AC（checked だが kind!==det
   );
 
   const { ctx, counters } = makeSandbox(ANALYZE_REQ_1AC, responses, redgreenResponseFor);
-  const { error } = await runDevFlowCapture(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.equal(
@@ -288,7 +260,7 @@ test('[redgreen-skip] T4: 未 checked AC は従来どおり起動される', asy
   const redgreenResponseFor = () => ({ red: true, green: true, verdict: CLEAN_VERDICT });
 
   const { ctx, counters } = makeSandbox(ANALYZE_REQ_1AC, responses, redgreenResponseFor);
-  const { error } = await runDevFlowCapture(src, ctx);
+  const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error);
 
   assert.equal(

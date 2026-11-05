@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makePrIterateSandbox, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude/workflows/pr-iterate.js'), 'utf8');
@@ -25,12 +25,6 @@ function makeSandbox({ rounds, agentCalls }) {
 }
 
 const runPrIterate = (ctx) => runWorkflowCapture(src, ctx, '.claude/workflows/pr-iterate.js');
-
-function assertNoSandboxCrash(error) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`pr-iterate.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
 
 // reviewerStub(label) は throw も返す（契約違反の模擬）。commit-ensure は未応答（null）のまま。
 function buildAgentStub({ reviewerStub, ciStub, fixStub, agentCalls }) {
@@ -63,7 +57,7 @@ test('[T1] review#1 throw -> review#1-schema-retry 成功 -> pr-reviewer 2回、
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const reviewerCalls = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
@@ -87,7 +81,7 @@ test('[T2] review#1 throw -> review#1-schema-retry も throw -> error null、pr-
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   assert.equal(error, null, `run 全体が例外終了してはならないが error が発生: ${error?.name}: ${error?.message}`);
 
   const reviewerCalls = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
@@ -118,7 +112,7 @@ test('[T3] review#1 が null を返し続ける(throwでなくnull) -> schema-re
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   assert.equal(error, null, `run 全体が例外終了してはならないが error が発生: ${error?.name}: ${error?.message}`);
 
   const reviewerCalls = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
@@ -145,7 +139,7 @@ test('[T4] review#1 contract mismatch -> review#1-contract-retry throw -> schema
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   assert.equal(error, null, `run 全体が例外終了してはならないが error が発生: ${error?.name}: ${error?.message}`);
 
   const reviewerCalls = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
@@ -165,7 +159,7 @@ test('[T5 回帰] 正常経路(review#1 approve+issues:[])では schema-retry �
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
-  assertNoSandboxCrash(error);
+  assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
   const schemaRetryCalls = agentCalls.filter((c) => c.label.includes('schema-retry'));

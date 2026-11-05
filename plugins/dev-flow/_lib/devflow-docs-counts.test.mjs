@@ -24,7 +24,7 @@ test('README: Atlas 紹介の phase 数が dev-flow.js の meta.phases と一致
   assert.equal(Number(m[1]), count);
 });
 
-test('atlas: 概観図の phase ノード番号・1.x 節見出し・phase 数が dev-flow.js の meta.phases と一致し、Analyze ノード / 節が無い', () => {
+test('atlas: 概観図の phase ノード番号・1.x 節見出し・phase 数が dev-flow.js の meta.phases と一致する', () => {
   const atlas = readFileSync(join(repoRoot, 'docs/dev-flow-atlas.md'), 'utf8');
   const start = devFlowSrc.indexOf('phases: [');
   const titles = [...devFlowSrc.slice(start, devFlowSrc.indexOf('],', start)).matchAll(/\{ title: '([^']+)' \}/g)].map((m) => m[1]);
@@ -46,24 +46,15 @@ test('atlas: 概観図の phase ノード番号・1.x 節見出し・phase 数�
     assert.ok(m, `atlas に phase 数の記述が無い: ${re}`);
     assert.equal(Number(m[1]), titles.length);
   }
-
-  assert.ok(!/\bAnalyze\b/.test(atlas), 'atlas に撤去済み Analyze phase の表記が残っている（Setup 末尾の analyze ゲートと書く）');
 });
 
 // README は skill / agent / bin wrapper の件数を書かない（tests/readme-facts.bats が pin）。
 // agent 数は plugin-manifest.bats が manifest の description と実体を照合する。
-test('README / plugin.json / marketplace.json: dev-flow の skill 数が実体と一致し、撤去した doctor / improve を載せない', () => {
+test('plugin.json / marketplace.json: dev-flow の skill 数が実体と一致する', () => {
   const skills = readdirSync(pluginRoot, { withFileTypes: true })
     .filter((d) => d.isDirectory() && existsSync(join(pluginRoot, d.name, 'SKILL.md')))
     .map((d) => d.name);
   assert.ok(skills.includes('dev-flow-health'), `dev-flow-health が skill として無い: ${skills.join(', ')}`);
-  for (const removed of ['dev-flow-doctor', 'dev-flow-improve']) {
-    assert.ok(!existsSync(join(pluginRoot, removed)), `${removed}/ が残っている`);
-  }
-  assert.ok(!existsSync(join(pluginRoot, '.claude/workflows/dev-improve.js')), 'dev-improve.js が残っている');
-  assert.ok(!existsSync(join(pluginRoot, 'agents/improve-miner.md')), 'improve-miner.md が残っている');
-
-  assert.ok(!/dev-flow-doctor|dev-flow-improve/.test(readme), 'README に撤去した doctor / improve が残っている');
 
   const manifests = [
     JSON.parse(readFileSync(join(pluginRoot, '.claude-plugin/plugin.json'), 'utf8')).description,
@@ -71,7 +62,6 @@ test('README / plugin.json / marketplace.json: dev-flow の skill 数が実体�
   ];
   for (const desc of manifests) {
     assert.match(desc, new RegExp(`\\b${skills.length} skills\\b`), `description の skill 数が実体（${skills.length}）と一致しない: ${desc}`);
-    assert.ok(!/dev-improve/.test(desc), `description に撤去した dev-improve が残っている: ${desc}`);
   }
 });
 

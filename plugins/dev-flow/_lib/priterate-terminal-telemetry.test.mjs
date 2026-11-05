@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { PLUGIN_VERSION } from './plugin-version.mjs';
-import { makePrIterateSandbox, prIterateRounds, runWorkflowCapture, securityScopeResponse } from './test-helpers/vm-sandbox.mjs';
+import { makePrIterateSandbox, prIterateRounds, runWorkflowCapture, securityScopeResponse, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude/workflows/pr-iterate.js'), 'utf8');
@@ -39,12 +39,6 @@ function makeSandbox({ reviewerStub, fixSequence = [], commitEnsureResult, ciRes
 }
 
 const runPrIterateCapture = (source, ctx) => runWorkflowCapture(source, ctx, '.claude/workflows/pr-iterate.js');
-
-function assertNoCrash(error) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`pr-iterate.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
 
 test('[terminal-telemetry] CI 経路 applied_false: fix_terminal_reason=applied_false / terminal_path=ci', async () => {
   const { ctx } = makeSandbox({

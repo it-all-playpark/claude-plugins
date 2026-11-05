@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, runDevFlowInSandbox, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, runDevFlowInSandbox, mergeTierFacts, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 import { gateLane, isConvergedUnderPolicy, DEFAULT_GATE_POLICY } from './gate-policy.mjs';
 import { makeLedger, appendItem, checkItem } from './goal-ledger.mjs';
 import { ciRollupCommand } from './ci-check.mjs';
@@ -116,12 +116,6 @@ async function runScenario({ concerns, ciChecksResponse }) {
   const { ctx, calls, logs } = makeRecordingSandbox(createResponder({ concerns, ciChecksResponse }));
   const err = await runDevFlowInSandbox(devFlowSrc, ctx);
   return { calls, logs, err };
-}
-
-function assertNoCrash(err, scenarioName) {
-  if (err && (err.name === 'ReferenceError' || err.name === 'SyntaxError')) {
-    assert.fail(`[${scenarioName}] dev-flow.js が sandbox でクラッシュ: ${err.name}: ${err.message}`);
-  }
 }
 
 // post-summary の環境ノートはグループ件数のみを表示する。env_key ごとの auto-close / 据え置きは

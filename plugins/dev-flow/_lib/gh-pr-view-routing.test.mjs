@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -112,41 +112,13 @@ function makeSandbox(prMetaResponse) {
   return { ctx, calls };
 }
 
-async function runDevFlowCapture(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  let resolvedResult = null;
-  try {
-    const resultPromise = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (resultPromise && typeof resultPromise.then === 'function') {
-      resolvedResult = await resultPromise.catch((e) => {
-        caughtError = e;
-        return null;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return { result: resolvedResult, error: caughtError };
-}
-
-function assertNoCrash(error, name) {
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`[${name}] dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-}
-
 // ============================================================
 // (1) dispatch pin
 // ============================================================
 
 test('[gh-pr-view][1] dispatch: merge-tier-facts が agentType=dev-runner-haiku-ro, phase=Merge tier, schema(MERGE_FACTS), prompt に gh pr view コマンドを含む', async () => {
   const { ctx, calls } = makeSandbox({ ok: true, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' });
-  const { error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '1');
 
   const factCalls = calls.filter((c) => c.label === 'merge-tier-facts');
@@ -179,7 +151,7 @@ test('[gh-pr-view][1] dispatch: merge-tier-facts が agentType=dev-runner-haiku-
 
 test('[gh-pr-view][2] mergeable=CONFLICTING → merge_tier=HOLD、reasons に conflict 文言', async () => {
   const { ctx } = makeSandbox({ ok: true, mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '2');
 
   assert.equal(result?.merge_tier, 'HOLD', `mergeable=CONFLICTING の場合 merge_tier は HOLD のはずだが '${result?.merge_tier}' だった`);
@@ -195,7 +167,7 @@ test('[gh-pr-view][2] mergeable=CONFLICTING → merge_tier=HOLD、reasons に co
 
 test('[gh-pr-view][3] mergeStateStatus=DIRTY(mergeable 未設定) → merge_tier=HOLD', async () => {
   const { ctx } = makeSandbox({ ok: true, mergeStateStatus: 'DIRTY' });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '3');
 
   assert.equal(result?.merge_tier, 'HOLD', `mergeStateStatus=DIRTY の場合 merge_tier は HOLD のはずだが '${result?.merge_tier}' だった`);
@@ -207,7 +179,7 @@ test('[gh-pr-view][3] mergeStateStatus=DIRTY(mergeable 未設定) → merge_tier
 
 test('[gh-pr-view][4] regression: mergeable=MERGEABLE(clean) → merge_tier は conflict 起因で HOLD にならない', async () => {
   const { ctx } = makeSandbox({ ok: true, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '4');
 
   assert.equal(result?.merge_tier, 'REVIEW', `clean 状態(standard shape, 収束済)なら merge_tier は REVIEW のはずだが '${result?.merge_tier}' だった（reasons: ${JSON.stringify(result?.merge_tier_reasons)}）`);
@@ -223,7 +195,7 @@ test('[gh-pr-view][4] regression: mergeable=MERGEABLE(clean) → merge_tier は 
 
 test('[gh-pr-view][5] fail-open: pr サブ結果が ok:false(gh pr view 失敗) → merge_tier は conflict 起因で HOLD にならない', async () => {
   const { ctx } = makeSandbox({ ok: false, error: 'stub: gh pr view failed' });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '5-ok-false');
 
   assert.equal(result?.merge_tier, 'REVIEW', `proxy 失敗(ok:false)は fail-open のため merge_tier は REVIEW のはずだが '${result?.merge_tier}' だった（reasons: ${JSON.stringify(result?.merge_tier_reasons)}）`);
@@ -235,7 +207,7 @@ test('[gh-pr-view][5] fail-open: pr サブ結果が ok:false(gh pr view 失敗) 
 
 test('[gh-pr-view][5] fail-open: pr サブ結果が null(取得失敗) → merge_tier は conflict 起因で HOLD にならない', async () => {
   const { ctx } = makeSandbox(null);
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '5-null');
 
   assert.equal(result?.merge_tier, 'REVIEW', `pr サブ結果が null の場合も fail-open のため merge_tier は REVIEW のはずだが '${result?.merge_tier}' だった（reasons: ${JSON.stringify(result?.merge_tier_reasons)}）`);
@@ -247,7 +219,7 @@ test('[gh-pr-view][5] merge-tier-facts 全体が null(agent throw 等) → confl
   // calls 記録後に label を見て null を返す wrapper を ctx.agent に上書きする
   const origAgent = ctx.agent;
   ctx.agent = async (prompt, opts) => (opts?.label === 'merge-tier-facts' ? (calls.push({ label: 'merge-tier-facts', agentType: opts.agentType, phase: opts.phase, schema: opts.schema, prompt }), null) : origAgent(prompt, opts));
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '5-facts-null');
 
   assert.equal(result?.merge_tier, 'HOLD', `facts 全体が null なら risk fail-closed で HOLD のはずだが '${result?.merge_tier}'`);
@@ -264,7 +236,7 @@ test('[gh-pr-view][5] merge-tier-facts 全体が null(agent throw 等) → confl
 
 test('[gh-pr-view][6] fail-open: mergeable=UNKNOWN(GitHub 側未計算) → merge_tier は conflict 起因で HOLD にならない', async () => {
   const { ctx } = makeSandbox({ ok: true, mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' });
-  const { result, error } = await runDevFlowCapture(devFlowSrc, ctx);
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '6');
 
   assert.equal(result?.merge_tier, 'REVIEW', `mergeable=UNKNOWN は fail-open のため merge_tier は REVIEW のはずだが '${result?.merge_tier}' だった（reasons: ${JSON.stringify(result?.merge_tier_reasons)}）`);
