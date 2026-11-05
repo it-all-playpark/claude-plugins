@@ -1472,6 +1472,27 @@ function mergeAcVerifyGaps(byActor, entries) {
   return { ...src, agent: agent.sort((a, b) => a - b), human: [...human].sort((a, b) => a - b) }
 }
 // ==== END inline: _lib/local-verify.mjs ====
+// ==== BEGIN inline: _lib/bg-job-wait.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+
+function bgJobJsonType(value) {
+  return value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
+}
+
+function bgJobResponseFits(res, schema) {
+  if (bgJobJsonType(res) !== 'object') return false
+  if (!(schema.required ?? []).every((key) => key in res)) return false
+  return Object.entries(schema.properties ?? {}).every(([key, prop]) => !(key in res)
+    || ((prop.type == null || [prop.type].flat().includes(bgJobJsonType(res[key])))
+      && (prop.enum == null || prop.enum.includes(res[key]))))
+}
+
+async function waitBgJob({ start, wait, maxPolls, schema }) {
+  let res = start
+  for (let k = 1; bgJobResponseFits(res, schema) && res.status === 'running' && k <= maxPolls; k++) res = await wait(k)
+  if (!bgJobResponseFits(res, schema)) return { ok: false, status: 'error', error: 'proxy の応答が無い・形が不正' }
+  return res.status === 'running' ? { ...res, wait_capped: true } : res
+}
+// ==== END inline: _lib/bg-job-wait.mjs ====
 
 // ==== BEGIN inline: _lib/final-ac-reconcile.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
@@ -6316,17 +6337,19 @@ async function runLocalVerifyOnce(attempt, phaseName = 'Validate', { cfg = LOCAL
     + `（判定や脚色をしない。失敗時に ok:true を生成してはならない。& や nohup を足さない — 常駐化はコマンド自身が行う）:\n${cmd}`
   let res = null
   try {
-    res = await failOpenAgent(
+    const start = await failOpenAgent(
       proxy(`local-verify start --worktree '${WT}' --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_START_WAIT_SEC} --config-pct ${localVerifyConfigArg(cfg)}`),
       { agentType: 'dev-runner-haiku', schema: LOCALVERIFY, label: labels.start(attempt), phase: phaseName },
     )
-    const polls = localVerifyWaitPolls(cfg.timeout_seconds)
-    for (let k = 1; localVerifyVerdict(res) === 'running' && k <= polls; k++) {
-      res = await failOpenAgent(
+    res = await waitBgJob({
+      start,
+      wait: (k) => failOpenAgent(
         proxy(`local-verify wait --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_WAIT_SEC}`),
         { agentType: 'dev-runner-haiku', schema: LOCALVERIFY, label: labels.wait(attempt, k), phase: phaseName },
-      )
-    }
+      ),
+      maxPolls: localVerifyWaitPolls(cfg.timeout_seconds),
+      schema: LOCALVERIFY,
+    })
   } finally {
     const stop = await failOpenAgent(
       proxy(`local-verify stop --state-dir '${stateDir}'`),
