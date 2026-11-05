@@ -44,37 +44,38 @@ export function appendItem(ledger, item) {
   return { ledger: { ...ledger, items }, accepted: true };
 }
 
-export function checkItem(ledger, id, evidence) {
+function ledgerItemIndex(ledger, id) {
   const idx = ledger.items.findIndex((it) => it.id === id);
   if (idx < 0) throw new Error(`goal-ledger: 未知の item id "${id}"`);
+  return idx;
+}
+
+function patchLedgerItem(ledger, id, patch) {
+  const idx = ledgerItemIndex(ledger, id);
   const items = ledger.items.slice();
-  items[idx] = { ...items[idx], checked: true, evidence: evidence ?? null };
+  items[idx] = { ...items[idx], ...patch };
   return { ...ledger, items };
+}
+
+export function checkItem(ledger, id, evidence) {
+  return patchLedgerItem(ledger, id, { checked: true, evidence: evidence ?? null });
 }
 
 // reopenItem: LLM 判断で checked になった item の解消根拠が、後の変更（post-eval green-fix / pr-iterate fix）で
 // 崩れた・確かめられなかったときに未解消へ戻す。gate を厳しくする方向にだけ動く。決定論で checked になった
 // item（seed / check.kind:'deterministic'）は最終 tree の決定論再判定が担うので戻さない（呼ぶと throw）。
 export function reopenItem(ledger, id, evidence) {
-  const idx = ledger.items.findIndex((it) => it.id === id);
-  if (idx < 0) throw new Error(`goal-ledger: 未知の item id "${id}"`);
-  const it = ledger.items[idx];
+  const it = ledger.items[ledgerItemIndex(ledger, id)];
   if (it.source === 'seed' || (it.check && it.check.kind === 'deterministic')) {
     throw new Error(`goal-ledger: 決定論 item "${id}" は reopen しない`);
   }
-  const items = ledger.items.slice();
-  items[idx] = { ...it, checked: false, evidence: evidence ?? null };
-  return { ...ledger, items };
+  return patchLedgerItem(ledger, id, { checked: false, evidence: evidence ?? null });
 }
 
 // triaged: evaluator が「再検証済み・対応不要」と判断した item に付ける表示専用フラグ（issue #614）。
 // checked / evidence は変えない（ゲート・収束・merge tier・lane 分類の入力にならない）。
 export function triageItem(ledger, id, evidence) {
-  const idx = ledger.items.findIndex((it) => it.id === id);
-  if (idx < 0) throw new Error(`goal-ledger: 未知の item id "${id}"`);
-  const items = ledger.items.slice();
-  items[idx] = { ...items[idx], triaged: true, triaged_evidence: evidence ?? null };
-  return { ...ledger, items };
+  return patchLedgerItem(ledger, id, { triaged: true, triaged_evidence: evidence ?? null });
 }
 
 // final_resolution: Final AC reconcile evaluator が「fix 後の最終 tree で再検証した結果」を付ける
@@ -83,19 +84,11 @@ export function triageItem(ledger, id, evidence) {
 export function setFinalResolution(ledger, id, resolution, evidence) {
   // FINAL_ITEM_RESOLUTIONS は _lib/final-ac-reconcile.mjs（canonical は import 不可のため重複定義）
   if (!['resolved', 'unresolved'].includes(resolution)) throw new Error(`goal-ledger: 不正な final_resolution "${resolution}"`);
-  const idx = ledger.items.findIndex((it) => it.id === id);
-  if (idx < 0) throw new Error(`goal-ledger: 未知の item id "${id}"`);
-  const items = ledger.items.slice();
-  items[idx] = { ...items[idx], final_resolution: resolution, final_evidence: evidence ?? null };
-  return { ...ledger, items };
+  return patchLedgerItem(ledger, id, { final_resolution: resolution, final_evidence: evidence ?? null });
 }
 
 export function setCheck(ledger, id, check) {
-  const idx = ledger.items.findIndex((it) => it.id === id);
-  if (idx < 0) throw new Error(`goal-ledger: 未知の item id "${id}"`);
-  const items = ledger.items.slice();
-  items[idx] = { ...items[idx], check };
-  return { ...ledger, items };
+  return patchLedgerItem(ledger, id, { check });
 }
 
 export function nextRound(ledger) {

@@ -305,22 +305,6 @@ head_sha="$PR_HEAD_OID"
 # Segment 3: worktree 用意（再利用 / 作成 / 書けない場合の退避）
 # ============================================================================
 
-# git worktree list --porcelain はシンボリックリンク解決済みの物理パスを報告する（macOS の /var 等）
-canon_path() {
-    local p="$1" dir base
-    if [[ -e "$p" ]]; then
-        (cd "$p" 2>/dev/null && pwd -P) || printf '%s' "$p"
-    else
-        dir="$(dirname "$p")"
-        base="$(basename "$p")"
-        if [[ -d "$dir" ]]; then
-            printf '%s/%s' "$(cd "$dir" && pwd -P)" "$base"
-        else
-            printf '%s' "$p"
-        fi
-    fi
-}
-
 # 登録済み worktree を「path<TAB>branch<TAB>prunable」で列挙する（detached は branch 空）
 list_worktrees() {
     git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '
