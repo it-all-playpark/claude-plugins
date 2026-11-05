@@ -11,8 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { devFlowArgs, JS_GLOBALS, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -49,12 +48,10 @@ function makeCountingSandbox(config) {
     return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'journal-log-failure': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
-  const sandbox = {
-    phase: () => {}, log: () => {}, agent: agentStub,
+  const ctx = makeWorkflowContext({
+    agent: agentStub,
     workflow: async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 }), args: devFlowArgs('1'),
-    ...JS_GLOBALS,
-  };
-  const ctx = vm.createContext(sandbox);
+  });
   return { ctx, calls };
 }
 

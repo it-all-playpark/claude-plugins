@@ -12,8 +12,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { devFlowArgs, JS_GLOBALS, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -52,12 +51,10 @@ function makeCountingSandbox(diffHashConfig) {
     return devFlowResponder({ 'commit-hook#1': null, 'commit-hook#retry-1': null, 'isolation-probe': null, 'journal-log-failure': null, 'post-summary': null })({ label, agentType, prompt });
   };
 
-  const sandbox = {
-    phase: () => {}, log: () => {}, agent: agentStub,
+  const ctx = makeWorkflowContext({
+    agent: agentStub,
     workflow: async () => iterateResult, args: devFlowArgs('1'),
-    ...JS_GLOBALS,
-  };
-  const ctx = vm.createContext(sandbox);
+  });
   return { ctx, calls };
 }
 
@@ -248,7 +245,7 @@ test('[empty-diff] (L) hash 不一致 + iterate fix 同時発生 → eval_stalen
 
 // (M) micro path（runEval=false）で iterate fix があっても stale 関連の行が一切出ない（AC-4）
 test('[empty-diff] (M) micro path（runEval=false）+ iterate fix あり → eval_staleness===none・stale 行なし', async () => {
-  // realized 1 件 + AC 1 → micro（runEval=false）
+  // realized 1 件 → micro（runEval=false）
   const { ctx } = makeCountingSandbox({
     gateEmpty: false,
     evalHash: 'AAA',

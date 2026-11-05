@@ -14,8 +14,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts, runWorkflowCapture, JS_GLOBALS, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -29,7 +28,7 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * post-summary の prompt を capture するために agentStub を拡張している。
  *
  * @param {object} evaluatorResponse - evaluator stub が返すレスポンス
- * @returns {{ ctx: vm.Context, getCapturedPostSummaryPrompt: () => string|null }}
+ * @returns {{ ctx: import('node:vm').Context, getCapturedPostSummaryPrompt: () => string|null }}
  */
 function makeSandbox(evaluatorResponse) {
   let capturedPostSummaryPrompt = null;
@@ -334,16 +333,11 @@ test('[escalate-producer] テスト4: complex shape iteration 2 に初出 escala
 
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
-  const sandbox = {
-    phase: () => {},
-    log: () => {},
+  const ctx = makeWorkflowContext({
     agent: makeAgentStub(),
     workflow: workflowStub,
     args: devFlowArgs('1'),
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   const src = readFileSync(
     join(repoRoot, '.claude/workflows/dev-flow.js'),
     'utf8',

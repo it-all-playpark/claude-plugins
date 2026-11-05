@@ -34,7 +34,6 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 function makeSandbox(riskResponse, evaluatorResponse) {
   const evalCalls = [];
   const evalPrompts = [];
-  const journalPrompts = [];
 
   const agentStub = async (prompt, opts) => {
     const label = opts?.label ?? '';
@@ -83,7 +82,6 @@ function makeSandbox(riskResponse, evaluatorResponse) {
     counters: {
       evaluatorCalls: () => evalCalls.length,
       evaluatorPrompts: () => evalPrompts,
-      journalPrompts: () => journalPrompts,
     },
   };
 }

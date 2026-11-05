@@ -32,7 +32,6 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  */
 function makeSandbox(analyzeReq, evaluatorResponse, redgreenResponseFor) {
   const logs = [];
-  const journalPrompts = [];
   const evalCalls = [];
   const redgreenCalls = [];
 
@@ -80,7 +79,6 @@ function makeSandbox(analyzeReq, evaluatorResponse, redgreenResponseFor) {
       evaluatorCalls: () => evalCalls.length,
       redgreenCalls: () => redgreenCalls,
       logs: () => logs,
-      journalPrompts: () => journalPrompts,
     },
   };
 }

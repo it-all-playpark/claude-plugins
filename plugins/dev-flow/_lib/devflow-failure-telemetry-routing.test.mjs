@@ -13,8 +13,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { devFlowArgs, prerunAnalyze, makeDevFlowSandbox, runWorkflowCapture, JS_GLOBALS, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, prerunAnalyze, makeDevFlowSandbox, runWorkflowCapture, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 import { PLUGIN_VERSION } from './plugin-version.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -61,14 +60,11 @@ function makeSandbox({ analyzeReq, implementerFn, diffGateConfig, journalLogFail
 
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
-  const sandbox = {
-    phase: () => {}, log: () => {}, agent: agentStub,
+  const ctx = makeWorkflowContext({
+    agent: agentStub,
     // REQ は args.setup.analyze から組まれる（Analyze phase は spawn しない）
     workflow: workflowStub, args: devFlowArgs('1', { repo: 'acme/skills', analyze: prerunAnalyze({ acceptance_criteria: analyzeReq.acceptance_criteria, issue_type: analyzeReq.issue_type }) }),
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return { ctx, calls };
 }
 
