@@ -28,16 +28,20 @@ PATHS_HEADING_RE = re.compile(r"^##[ \t]+変更対象パス[ \t]*$", re.MULTILIN
 NEXT_SECTION_RE = re.compile(r"^#{1,2}[ \t]", re.MULTILINE)
 PATH_ENTRY_RE = re.compile(r"^-[ \t]+(\S.*?)[ \t]*$", re.MULTILINE)
 ISSUE_URL_RE = re.compile(r"/issues/(\d+)$")
-# dev-flow の analyze（dev-flow/scripts/analyze-issue.sh の SCOPE_MAX_CHARS）は AC 節を除いた本文を
-# この字数で切り、切られた部分は implementer に届かない。agent issue はこの上限内でしか起票しない。
-# 字数は analyze-issue.sh の scope_total_chars と同じ規則で数える（下の 3 正規表現と scope_total_chars()）。
-SCOPE_MAX_CHARS = 4000
+# agent issue の本文の文章の上限。本文をゴールと境界条件に絞るためのもので、調査結果や実装計画を書き写した
+# 長い本文を止める。モック・スキーマ・出力例のような仕様の例は長くてよいので、閉じたコードフェンスの中身は数えない
+# （中身が仕様の例かは決定論で判定できないので、issue-plan-reviewer が devils-advocate-checklist.md の項目で判定する）。
+# AC 節の境界は dev-flow の analyze-issue.sh と同じ規則で決める（下の 3 正規表現と split_ac_section()）。
+PROSE_MAX_CHARS = 4000
 AC_HEADING_LINE_RE = re.compile(
     r"^#{2,6}[ \t\n\v\f\r]+(acceptance criteria|受け入れ基準|受け入れ条件|受入基準|受入条件|完了条件)",
     re.IGNORECASE,
 )
 HEADING_LINE_RE = re.compile(r"^#{1,6}[ \t\n\v\f\r]+")
 FENCE_LINE_RE = re.compile(r"^[ \t\n\v\f\r]{0,3}(`{3,}|~{3,})")
+# 字数から除くコードフェンスの開始行と閉じ行。GitHub が描画するフェンス（CommonMark）と同じ規則で対応を取る
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 # AC 節の checkbox 行。analyze-issue.sh の extract_contract_ac_items（checkbox）と同じ規則で marker を除いた本文を取る
 AC_CHECKBOX_RE = re.compile(r"^[ \t\n\v\f\r]*[-*][ \t\n\v\f\r]*\[[ xX]\][ \t\n\v\f\r]*")
 # 対象 repo の owner/name を origin の URL から取る（dev-flow/scripts/prerun.sh の repo 解決と同じ形）
@@ -193,18 +197,46 @@ def split_ac_section(body: str) -> tuple[list[str], list[str]]:
     return kept, section
 
 
-def scope_total_chars(body: str) -> int:
-    """AC 節を除いた本文の字数。analyze-issue.sh の ${#SCOPE_FULL} の移植（出力の末尾改行は数えない）。"""
+def drop_closed_fence_content(lines: list[str]) -> list[str]:
+    """閉じたコードフェンスの中身の行を落とす。フェンス行は残す。
+
+    閉じていないフェンスの中身は残す（閉じ忘れで字数検査を抜けられないようにする）。
+    閉じ行は開始行と同じ文字で同じ長さ以上の、info string の無い行に限る（``` は ~~~ や ```html では閉じない）。
+    """
+    kept: list[str] = []
+    content: list[str] = []
+    fence = None
+    for line in lines:
+        if fence is None:
+            kept.append(line)
+            opened = FENCE_OPEN_RE.match(line)
+            # ``` の info string に ` があれば行内コードでフェンスではない
+            if opened and not (opened[1][0] == "`" and "`" in opened[2]):
+                fence = opened[1]
+            continue
+        closed = FENCE_CLOSE_RE.match(line)
+        if closed and closed[1][0] == fence[0] and len(closed[1]) >= len(fence):
+            kept.append(line)
+            content = []
+            fence = None
+            continue
+        content.append(line)
+    return kept + content
+
+
+def prose_chars(body: str) -> int:
+    """AC 節と閉じたコードフェンスの中身を除いた本文の字数（末尾の改行は数えない）。"""
     kept, _ = split_ac_section(body)
-    return len("\n".join(kept).rstrip("\n"))
+    return len("\n".join(drop_closed_fence_content(kept)).rstrip("\n"))
 
 
-def check_scope_chars(body: str) -> None:
-    total = scope_total_chars(body)
-    if total > SCOPE_MAX_CHARS:
+def check_prose_chars(body: str) -> None:
+    total = prose_chars(body)
+    if total > PROSE_MAX_CHARS:
         raise ValueError(
-            f"agent issue の本文（AC 節を除く）が {total} 字で、上限 {SCOPE_MAX_CHARS} 字を {total - SCOPE_MAX_CHARS} 字超えている。"
-            "dev-flow の analyze は超えた部分を切り、implementer に届かない。"
+            f"agent issue の本文の文章（AC 節と閉じたコードフェンスの中身を除く）が {total} 字で、"
+            f"上限 {PROSE_MAX_CHARS} 字を {total - PROSE_MAX_CHARS} 字超えている。"
+            f"{PROSE_MAX_CHARS} 字は本文の文章をゴールと境界条件に絞るための上限で、閉じていないフェンスの中身は文章として数える。"
             "調査結果・実装計画・レビュー履歴を書き写さず、ゴールと制約・取らないことに要点を絞って書き直す"
         )
 
@@ -426,8 +458,8 @@ def run(args: argparse.Namespace) -> int:
     blocked_by = parse_blocked_by(args.blocked_by)
     final_body = ensure_blocked_by_lines(body, blocked_by)
     if args.kind == "agent":
-        # 起票される本文（先頭に足す Blocked by 行を含む）を analyze が読むので、追記後の本文で数える
-        check_scope_chars(final_body)
+        # 起票される本文（先頭に足す Blocked by 行を含む）で数える
+        check_prose_chars(final_body)
 
     if args.dry_run:
         preview = final_body.splitlines()
@@ -506,7 +538,8 @@ def parse_args() -> argparse.Namespace:
         choices=["agent", "human"],
         default="agent",
         help="agent: implementation issue (rejects `executor: human` and ACs dev-flow treats as human/mixed, "
-        "requires `## 変更対象パス`, caps the non-AC body at 4000 chars) / human: human-task issue",
+        "requires `## 変更対象パス`, caps the body prose at 4000 chars, not counting the AC section or the contents "
+        "of closed code fences; the contents of an unclosed fence count) / human: human-task issue",
     )
     parser.add_argument("--blocked-by", help="Comma-separated issue numbers this issue is blocked by")
     parser.add_argument("--dry-run", action="store_true", help="Preview only")

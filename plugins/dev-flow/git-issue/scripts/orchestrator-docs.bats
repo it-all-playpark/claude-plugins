@@ -48,6 +48,11 @@
 # - reviewer を spawn できない・判定の形でないときは起票せず、## Plan Quality Gate で返す
 # - issue 間の依存は本文ファイルの Blocked by 行に書いて Phase 6 で --blocked-by に写し、reviewer は issue 間の項目を
 #   兄弟の本文ファイルを読んで判定する
+#
+# 字数検査はコードフェンスの外の文章だけ。見た目のモックを載せる節（issue #1219）:
+# - issue-template.md に任意の ## 完成イメージ があり、<details> とフェンスの例に定型の制約行を添える
+# - devils-advocate-checklist.md の Blocking Categories に、フェンスに仕様の例以外の文章を入れるのを止める項目がある
+# - 4000 字の説明が SKILL.md・issue-template.md・devils-advocate-checklist.md で create_issue.py の挙動と揃う
 
 setup() {
     command -v python3 >/dev/null || skip "python3 not available"
@@ -261,14 +266,15 @@ AGENT_BODY_SECTIONS="## ゴール
 ## 受け入れ基準（Acceptance Criteria）
 ## 制約・取らないこと
 ## 変更対象パス
-## 未解決事項（Open Questions）"
+## 未解決事項（Open Questions）
+## 完成イメージ"
 
-@test "(15) 実装 issue テンプレートの節は ゴール / なぜ / 受け入れ基準 / 制約・取らないこと / 変更対象パス / 未解決事項 だけ" {
+@test "(15) 実装 issue テンプレートの節は ゴール / なぜ / 受け入れ基準 / 制約・取らないこと / 変更対象パス / 未解決事項 / 完成イメージ だけ" {
     headings="$(extract_fence "$TEMPLATE" "^# GitHub Issue Template" | grep -E '^#+ ')"
     [ "$headings" = "$AGENT_BODY_SECTIONS" ]
 }
 
-@test "(16) SKILL.md Phase 5 の本文に含めるものは 6 節で、Phase 2・Phase 4 の結果は AC と制約に反映させるだけで書き写さない" {
+@test "(16) SKILL.md Phase 5 の本文に含めるものはテンプレートと同じ節で、Phase 2・Phase 4 の結果は AC と制約に反映させるだけで書き写さない" {
     phase5="$(extract_section "$SKILL_MD" "### Phase 5")"
     listed="$(awk '/^本文に含めるもの/ { f = 1; next } f && /^- / { print; next } f { exit }' <<<"$phase5" \
         | sed -E 's/^- `([^`]*)`.*/\1/')"
@@ -535,4 +541,33 @@ frontmatter_value() {
     # issue 間の項目は checklist の Blocking Categories にあり、reviewer が判定する対象
     section="$(awk '/^## Blocking Categories/ { f = 1; next } f && /^## / { exit } f { print }' "$CHECKLIST")"
     [[ "$section" == *"agent issue 間の依存が循環している / 先行 issue の成果物を使うのに Blocked by が無い"* ]]
+}
+
+@test "(35) issue-template.md に任意の ## 完成イメージ があり、<details> とフェンスの例に定型の制約行を添える。SKILL.md Phase 5 の一覧にもある" {
+    fence="$(extract_fence "$TEMPLATE" "^# GitHub Issue Template")"
+    image="$(awk '/^## 完成イメージ$/ { f = 1; next } f && /^## / { exit } f { print }' <<<"$fence")"
+    printf '%s\n' "$image" | grep -qxF "モックは見た目の仕様。HTML の構造・クラス名・CSS は転写せず、既存のコンポーネントで実装する"
+    [[ "$image" == *"<details>"*"~~~html"*"~~~"*"</details>"* ]]
+    # 任意の節であること
+    grep -qF '`## 完成イメージ` は任意' "$TEMPLATE"
+    phase5="$(extract_section "$SKILL_MD" "### Phase 5")"
+    printf '%s\n' "$phase5" | grep -qE '^- `## 完成イメージ` — 任意。'
+}
+
+@test "(36) devils-advocate-checklist の Blocking Categories に、フェンスに仕様の例以外の文章を入れるのを止める項目がある" {
+    section="$(awk '/^## Blocking Categories/ { f = 1; next } f && /^## / { exit } f { print }' "$CHECKLIST")"
+    [[ "$section" == *"- コードフェンスに仕様の例（モック・スキーマ・出力例など）以外の、調査結果や実装計画の文章が入っている"* ]]
+}
+
+@test "(37) 4000 字の説明は SKILL.md・issue-template.md・checklist で create_issue.py の挙動（閉じたフェンスの中身を除く・閉じていないものは数える）と揃う" {
+    phase5="$(extract_section "$SKILL_MD" "### Phase 5")"
+    [[ "$phase5" == *"AC 節と閉じたコードフェンスの中身を除いた本文の文章は 4000 字以内"*"4000 字は本文の文章をゴールと境界条件に絞るための上限"* ]]
+    phase6="$(extract_section "$SKILL_MD" "### Phase 6")"
+    [[ "$phase6" == *"AC 節と閉じたコードフェンスの中身を除いた本文の文章"*"4000 字を超える場合も"* ]]
+    [[ "$phase6" == *"フェンスの外の文章と閉じていないフェンスの中身は数える"* ]]
+    template="$(tr -d '\n' <"$TEMPLATE")"
+    [[ "$template" == *"AC 節と閉じたコードフェンスの中身を除いた本文の文章は 4000 字以内。4000 字は本文の文章をゴールと境界条件に絞るための"*"上限"* ]]
+    [[ "$template" == *"フェンスの外の文章と、閉じていないフェンスの中身は数える"* ]]
+    checklist="$(tr -d '\n' <"$CHECKLIST")"
+    [[ "$checklist" == *"AC 節と閉じたコードフェンスの中身を除いた本文の文章が 4000 字を超える（4000 字は本文の文章をゴールと境界条件に絞るための"*"閉じていないフェンスの中身は数える"* ]]
 }
