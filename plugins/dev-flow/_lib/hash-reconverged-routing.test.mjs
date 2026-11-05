@@ -31,7 +31,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -39,16 +39,6 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 
 const HEAD_REF_OID = 'a'.repeat(40);
-
-// standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
-const STANDARD_REQ = {
-  summary: 's',
-  acceptance_criteria: ['a', 'b'],
-  issue_type: 'fix',
-  scope: 'src',
-  issue_number: 631,
-  issue_title: 'stub-issue-title',
-};
 
 // ============================================================
 // responder factory: merge-tier-diffhash-reuse-routing.test.mjs の createResponder を踏襲。
@@ -62,35 +52,18 @@ function createResponder(overrides = {}) {
       if (typeof v === 'function') return v({ prompt, agentType, label });
       return v;
     }
-    if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-631' };
-    if (label.startsWith('analyze')) return STANDARD_REQ;
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     if (label === 'danger-grep') {
       return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'AAA', empty: false } };
     }
-    if (agentType === 'dev-flow:evaluator') {
-      return {
-        verdict: 'pass', total: 100, threshold: 80, feedback: [],
-        feedback_level: 'implementation',
-        ac_results: [
-          { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
-          { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
-        ],
-        security_clearance: [], concern_resolutions: [],
-      };
-    }
-    if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
     if (label === 'diff-hash-eval') return { hash: 'AAA', empty: false };
     if (label === 'diff-hash-pr') return { hash: 'BBB', empty: false };
-    if (label === 'merge-tier-facts') return mergeTierFacts({ hash: 'AAA', tree: 'AAA', files: ['src/x.ts'], pr: { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: HEAD_REF_OID } });
     if (label === 'tree-diff-numstat') return { ok: true, lines: ['0\t500\tdocs/a.md', '0\t360\tdocs/b.md'] };
     if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
     if (label === 'journal-log') return { logged: true, summary: 'ok' };
-    if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 't', files: ['src/x.ts'], summary: 's', concerns: [] };
-    if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null })({ label, agentType, prompt });
   };
 }
 

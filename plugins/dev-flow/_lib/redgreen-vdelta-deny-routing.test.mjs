@@ -12,8 +12,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { devFlowArgs, prerunAnalyze, runWorkflowCapture, assertNoCrash, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, prerunAnalyze, runWorkflowCapture, assertNoCrash, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 import { isRedgreenCall, redgreenBatchResponse } from './test-helpers/redgreen-batch.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -41,9 +40,6 @@ function makeSandbox(analyzeReq, evaluatorResponse, redgreenResponseFor) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
-    }
     if (label.startsWith('danger-grep')) {
       return { ok: true, hits: [] };
     }
@@ -54,27 +50,12 @@ function makeSandbox(analyzeReq, evaluatorResponse, redgreenResponseFor) {
       evalCalls.push({ label, agentType });
       return evaluatorResponse;
     }
-    if (label === 'rg-state-dir') return { state_dir: '/tmp/rg-state' };
     if (isRedgreenCall(agentType, label)) {
       redgreenCalls.push({ label, prompt });
       return redgreenBatchResponse(prompt, evaluatorResponse.ac_results, (acIndex) => redgreenResponseFor(acIndex));
     }
-    if (agentType === 'dev-flow:dev-runner-haiku-ro' && label === 'realized-diff') {
-      return { files: ['_lib/foo.test.mjs'] };
-    }
-    if (agentType === 'dev-flow:dev-runner-haiku' && label === 'declared-path-check') {
-      return { files: ['_lib/foo.test.mjs'] };
-    }
-    if (label.startsWith('pr')) {
-      return { pr_url: 'http://x', pr_number: 1, committed: true };
-    }
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       return { posted: true, method: 'gh pr comment', url: 'http://x' };
-    }
-    // journal-save (stage1, issue #494): 実際の telemetry payload はここに載る
-    if (label === 'journal-save' && agentType === 'dev-flow:dev-runner-haiku') {
-      journalPrompts.push(prompt);
-      return { saved: true, path: '/tmp/wt/.devflow-tmp/payload-test.json' };
     }
     if (label === 'journal-log' && agentType === 'dev-flow:dev-runner-haiku') {
       return { logged: true, summary: 'ok' };
@@ -82,26 +63,17 @@ function makeSandbox(analyzeReq, evaluatorResponse, redgreenResponseFor) {
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false };
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
-  const sandbox = {
-    phase: () => {},
+  const ctx = makeWorkflowContext({
     log: (m) => logs.push(String(m)),
     agent: agentStub,
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
-    // REQ は args.setup.analyze から組まれる（Analyze phase は spawn しない）。AC 数を analyzeReq から給電する
     args: devFlowArgs('1', { analyze: prerunAnalyze({ acceptance_criteria: analyzeReq.acceptance_criteria, issue_type: analyzeReq.issue_type }) }),
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return {
     ctx,
     counters: {

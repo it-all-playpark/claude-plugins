@@ -21,16 +21,6 @@ const repoRoot = join(here, '..');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 
-// standard に落ちる req（count=3 ≤ 5, ac.length=2 ≤ 6, type=fix → floor='standard'）
-const STANDARD_REQ = {
-  summary: 's',
-  acceptance_criteria: ['a', 'b'],
-  issue_type: 'fix',
-  scope: 'src',
-  issue_number: 1,
-  issue_title: 'stub-issue-title',
-};
-
 // ============================================================
 // responder: hash-reconverged-routing.test.mjs の createResponder パターンを踏襲。
 // diff-hash-eval / diff-hash-pr / diff-hash-merge の 3 call を全て発火させるため、
@@ -39,8 +29,6 @@ const STANDARD_REQ = {
 // ============================================================
 function createResponder() {
   return function ({ label, agentType }) {
-    if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
-    if (label.startsWith('analyze')) return STANDARD_REQ;
     if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'H', empty: false } };
     if (agentType === 'dev-flow:evaluator') {
       return {

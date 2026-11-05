@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, prerunAnalyze, makeDevFlowSandbox, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, prerunAnalyze, makeDevFlowSandbox, runWorkflowCapture, JS_GLOBALS, devFlowResponder } from './test-helpers/vm-sandbox.mjs';
 import { PLUGIN_VERSION } from './plugin-version.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -26,33 +26,26 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 function makeSandbox({ analyzeReq, implementerFn, diffGateConfig, journalLogFailureResult } = {}) {
   const calls = [];
   let implementerCallIndex = 0;
-  const { gateEmpty = false, retryEmpty = false } = diffGateConfig || {};
+  const { gateEmpty = false } = diffGateConfig || {};
 
   const agentStub = async (prompt, opts) => {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
     calls.push({ label, agentType, prompt: String(prompt ?? '') });
 
-    if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-1', repo: 'acme/skills' };
     if (label.startsWith('danger-grep')) return { ok: true, hits: [] };
-    if (label === 'realized-diff') return { files: ['src/foo.ts'] };
-    if (label === 'declared-path-check') return { files: [] };
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
-    if (label.startsWith('redgreen')) return { red: false, green: false, reason: 'stub' };
     if (agentType === 'dev-flow:evaluator') {
       return {
         verdict: 'pass', total: 100, threshold: 80,
         feedback: [], feedback_level: 'implementation', ac_results: [], security_clearance: [],
       };
     }
-    if (label.startsWith('pr')) return { pr_url: 'http://x', pr_number: 1, committed: true };
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };
-    if (label === 'journal-log' && agentType === 'dev-flow:dev-runner-haiku') return { saved: true, logged: true };
     // journal-log-failure: 既定は null を返す（null 容認設計を確認するため）。
     // journalLogFailureResult でケースごとに上書き可能。
     if (label === 'journal-log-failure') return journalLogFailureResult !== undefined ? journalLogFailureResult : null;
     if (label === 'diff-gate') return { hash: gateEmpty ? 'EMPTY' : 'H', empty: gateEmpty };
-    if (label === 'diff-gate-retry') return { hash: retryEmpty ? 'EMPTY' : 'H', empty: retryEmpty };
     if (label.startsWith('diff-hash')) return { hash: 'H', empty: false };
     if (agentType === 'dev-flow:dev-implementer') {
       const fn = implementerFn ?? (() => ({
@@ -63,15 +56,13 @@ function makeSandbox({ analyzeReq, implementerFn, diffGateConfig, journalLogFail
       implementerCallIndex++;
       return result;
     }
-    return null;
+    return devFlowResponder({ 'analyze-clarify#1': null, 'commit-hook#1': null, 'isolation-probe': null, 'merge-tier-facts': null, 'security-scope': null })({ label, agentType, prompt });
   };
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
   const sandbox = {
-    phase: () => {}, log: () => {}, agent: agentStub, parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
+    phase: () => {}, log: () => {}, agent: agentStub,
     // REQ は args.setup.analyze から組まれる（Analyze phase は spawn しない）
     workflow: workflowStub, args: devFlowArgs('1', { repo: 'acme/skills', analyze: prerunAnalyze({ acceptance_criteria: analyzeReq.acceptance_criteria, issue_type: analyzeReq.issue_type }) }),
     ...JS_GLOBALS,

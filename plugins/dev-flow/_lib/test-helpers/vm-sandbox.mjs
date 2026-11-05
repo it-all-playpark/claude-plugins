@@ -15,6 +15,7 @@
  *     （AC 2 件 / type fix / breaking なし / comment なし → Analyze phase は spawn 0 で通過）。
  *     REQ を変えたい test は devFlowArgs(issue, { analyze: prerunAnalyze({...}) }) を extra.args に渡す
  *   - analyzeArgs(issue?, analyzeOverrides?): 上記の薄い wrapper（args 全体を返す）
+ *   - makeWorkflowContext(sandbox): 独自の agent stub を持つ test 用の VM context を作る
  *   - runDevFlowInSandbox(src, ctx): dev-flow.js ソースを strip して sandbox 実行する
  *   - runWorkflowCapture(src, ctx, filename?): strip + wrap + vm 実行し {result, error} を返す
  *     （dev-flow.js / pr-iterate.js 共用。filename 既定は '.claude/workflows/dev-flow.js'）
@@ -174,6 +175,16 @@ export function makeRecordingSandbox(responder, extraSandbox = {}, { calls = [] 
 
   const ctx = vm.createContext(sandbox);
   return { ctx, calls, logs, phases };
+}
+
+/**
+ * 独自の agent stub を持つ test 用の VM context を作る。phase / log は既定で何もしない（sandbox で上書きできる）。
+ *
+ * @param {Record<string, unknown>} sandbox - agent / workflow / args など
+ * @returns {vm.Context}
+ */
+export function makeWorkflowContext(sandbox) {
+  return vm.createContext({ phase: () => {}, log: () => {}, ...JS_GLOBALS, ...sandbox });
 }
 
 // ============================================================

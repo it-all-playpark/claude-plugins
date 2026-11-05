@@ -34,21 +34,6 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 
 function createResponder() {
   return function({ label, agentType }) {
-    // Setup(worktree)
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-296' };
-    }
-    // Analyze: 必ず standard（micro だと Evaluate が skip され eval#1 が発生しない）
-    if (label.startsWith('analyze')) {
-      return {
-        summary: 's',
-        acceptance_criteria: ['a', 'b', 'c', 'd'],
-        issue_type: 'fix',
-        scope: 'src',
-        issue_number: 1,
-        issue_title: 'stub-issue-title',
-      };
-    }
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // Diff triage / danger-grep 系
@@ -81,10 +66,6 @@ function createResponder() {
           { id: 'ENV-TURBOPACK-SANDBOX', resolution: 'resolved', evidence: 'x' },
         ],
       };
-    }
-    // realized-diff / declared-path-check / changed-files → files: [] で undeclared を発生させない
-    if (label === 'realized-diff' || label === 'declared-path-check') {
-      return { files: [] };
     }
     if (label === 'merge-tier-facts') return mergeTierFacts({ files: [] });
     // PR 系

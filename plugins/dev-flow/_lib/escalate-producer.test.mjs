@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
-import { devFlowArgs, mergeTierFacts, runWorkflowCapture, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, runWorkflowCapture, JS_GLOBALS, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -28,11 +28,10 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * evaluator stub が引数 evaluatorResponse を返すように改変。
  * post-summary の prompt を capture するために agentStub を拡張している。
  *
- * @param {object} analyzeReq - analyze フェーズの agent が返す req オブジェクト（SHAPE を決定する）
  * @param {object} evaluatorResponse - evaluator stub が返すレスポンス
  * @returns {{ ctx: vm.Context, getCapturedPostSummaryPrompt: () => string|null }}
  */
-function makeSandbox(analyzeReq, evaluatorResponse) {
+function makeSandbox(evaluatorResponse) {
   let capturedPostSummaryPrompt = null;
 
   // agent() stub: opts.label / opts.agentType を見て phase 別に最小スキーマを返す
@@ -40,14 +39,6 @@ function makeSandbox(analyzeReq, evaluatorResponse) {
     const label = opts?.label ?? '';
     const agentType = opts?.agentType ?? '';
 
-    // Setup(worktree)
-    if (label === 'worktree') {
-      return { worktree: '/tmp/wt', branch: 'feature/issue-1' };
-    }
-    // Analyze: label が 'analyze' で始まる
-    if (label.startsWith('analyze')) {
-      return analyzeReq;
-    }
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // Diff triage / Merge tier: danger-grep 系（label が 'danger-grep' で始まる）
@@ -63,19 +54,6 @@ function makeSandbox(analyzeReq, evaluatorResponse) {
     if (agentType === 'dev-flow:evaluator') {
       return evaluatorResponse;
     }
-    // redgreen-verify は呼ばれないはずだが念のため（verified_by:'inspection' で回避）
-    if (agentType === 'dev-flow:dev-runner-haiku' && label.startsWith('redgreen')) {
-      return { red: false, green: false, reason: 'stub' };
-    }
-    // PR: label が 'pr' で始まる
-    if (label.startsWith('pr')) {
-      return { pr_url: 'http://x', pr_number: 1, committed: true };
-    }
-    // Merge tier: merge-tier-facts（changed）
-    // → docs/test-only でないファイルを返す（AUTO 除外。HOLD 要因を escalate のみに絞る）
-    if (label === 'merge-tier-facts') {
-      return mergeTierFacts({ files: ['src/foo.ts'] });
-    }
     // post-summary: prompt を capture して投稿成功を返す
     if (label === 'post-summary') {
       capturedPostSummaryPrompt = prompt;
@@ -85,49 +63,23 @@ function makeSandbox(analyzeReq, evaluatorResponse) {
     if (agentType === 'dev-flow:dev-implementer') {
       return { status: 'DONE', task_id: 't', files: [], summary: '', concerns: [] };
     }
-    // diff-gate / diff-hash（issue #215）: need() による throw の回避
-    if (label.startsWith('diff-gate') || label.startsWith('diff-hash')) return { hash: 'H', empty: false }
     // デフォルト
-    return null;
+    return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'journal-log': null })({ label, agentType, prompt });
   };
-
-  // parallel() stub: runImplement が parallel(par) を呼ぶため（par が空なら []）
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
 
   // pr-iterate stub: workflow() の呼び出し
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
-  const sandbox = {
-    // workflow 制御関数
-    phase: () => {},
-    log: () => {},
+  const ctx = makeWorkflowContext({
     agent: agentStub,
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
-    // 引数（ISSUE 解決用）
     args: devFlowArgs('1'),
-    // JS 組み込み
-    ...JS_GLOBALS,
-  };
-
-  const ctx = vm.createContext(sandbox);
+  });
   return {
     ctx,
     getCapturedPostSummaryPrompt: () => capturedPostSummaryPrompt,
   };
 }
-
-// standard に落ちる analyzeReq（count=3, ac=1件, type='feat' → floor='standard'）
-// AC は 1 件以上必須（dev-flow.js L793 付近で acceptance_criteria を ledger に積む）
-const standardAnalyzeReq = {
-  summary: 'add naming convention for api',
-  acceptance_criteria: ['API naming convention is enforced'],
-  issue_type: 'feat',
-  scope: 'src',
-  issue_number: 1,
-  issue_title: 'stub-issue-title',
-};
 
 // ============================================================
 // テスト 1（AC#1）: escalate:true の major → merge_tier === 'HOLD'
@@ -154,7 +106,7 @@ test('[escalate-producer] AC#1: escalate:true の major feedback → merge_tier 
   };
 
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx } = makeSandbox(standardAnalyzeReq, evaluatorResponse);
+  const { ctx } = makeSandbox(evaluatorResponse);
   const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる
@@ -201,7 +153,7 @@ test('[escalate-producer] AC#2: escalate なしの major feedback → merge_tier
   };
 
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx } = makeSandbox(standardAnalyzeReq, evaluatorResponse);
+  const { ctx } = makeSandbox(evaluatorResponse);
   const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる
@@ -242,7 +194,7 @@ test('[escalate-producer] テスト3: escalate:true の major → post-summary p
   };
 
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx, getCapturedPostSummaryPrompt } = makeSandbox(standardAnalyzeReq, evaluatorResponse);
+  const { ctx, getCapturedPostSummaryPrompt } = makeSandbox(evaluatorResponse);
   const { result, error } = await runWorkflowCapture(src, ctx);
 
   // ReferenceError / SyntaxError は構造的に壊れているので即 fail させる
@@ -380,15 +332,12 @@ test('[escalate-producer] テスト4: complex shape iteration 2 に初出 escala
     };
   }
 
-  const parallelStub = async (fns) => Promise.all((fns || []).map((f) => f()));
   const workflowStub = async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0 });
 
   const sandbox = {
     phase: () => {},
     log: () => {},
     agent: makeAgentStub(),
-    parallel: parallelStub,
-    pipeline: async (items, cb) => Promise.all((items || []).map(async (item, i) => { try { const r = await cb(item, i); return r === undefined ? null : r; } catch { return null; } })),
     workflow: workflowStub,
     args: devFlowArgs('1'),
     ...JS_GLOBALS,
