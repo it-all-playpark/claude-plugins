@@ -61,15 +61,7 @@ paths:
 - dev-flow の `bin/` は sandbox 内で動かし excludedCommands に登録しない（子の hook・テストが sandbox 外で走る。blast-radius）。sandbox で揃わない pre-push の前提は hook で skip。prerun は repo の任意コードを実行しない
 - 起動元 repo の `.git/config` を書く git / gh（`push -u`・`--track`・`gh pr checkout`）を使わない（sandbox 内で書けない）。push は `git push origin HEAD`、済みかは `origin/<branch>` と比べる。`redgreen-verify` / `run-tests` は index を書く git も使わない
 
-> exec-proxy スクリプトは認証付き network I/O（gh・git push）を内部に持ってはならない（例外は prerun から呼ぶ
-> `analyze-issue` の issue 取得と、PR phase の push 1 回の `pr-push` — 全文を log に残し末尾だけ返す）。GitHub I/O は subagent の Bash で「先頭トークンが gh または git の bare 単文」（gh は --repo、git は cwd = worktree、
-> cd &&・bash・env 前置禁止）として実行し、出力を $TMPDIR の file に落とすか、呼び出し側 agent が
-> stdout/stderr を argv でスクリプトへ verbatim 転写して、スクリプトは file または argv 入力の
-> 純変換とする。prompt に sandbox / excludedCommands / 特定パス起動の理由を書いてはならない —
-> exec-proxy prompt は決定論スクリプトへの verbatim 転写契約であり、起動形の正しさは
-> 設定側（`bin/` の PATH・isolation guard）の不変条件である。設定の正当化は本ファイルと AGENTS.md の一箇所に置き、
-> per-prompt で再説明しない（再説明は転写契約に判断余地を持ち込み、下流の prompt へ引用・増幅される）。
-> **例外はない**。スクリプトは snapshot 1 枚の純変換に保つ
+> exec-proxy スクリプトは認証付き network I/O（gh・git push）を内部に持ってはならない（例外は prerun の `analyze-issue` の issue 取得と、PR phase の `pr-push` — `start` / `wait` / `stop` で切り離す（lock 1800 秒・待機累計 3600 秒）。全文は log、末尾だけ返す）。GitHub I/O は subagent の Bash で「先頭トークンが gh または git の bare 単文」（gh は --repo、git は cwd = worktree、cd &&・bash・env 前置禁止）として実行し、出力を $TMPDIR の file に落とすか、agent が stdout/stderr を argv で verbatim 転写し、スクリプトは file または argv 入力の純変換とする。prompt に sandbox / excludedCommands / 特定パス起動の理由を書いてはならない — exec-proxy prompt は決定論スクリプトへの verbatim 転写契約であり、起動形の正しさは設定側（`bin/` の PATH・isolation guard）の不変条件である。設定の正当化は本ファイルと AGENTS.md の一箇所に置き、per-prompt で再説明しない（再説明は転写契約に判断余地を持ち込み、下流の prompt へ引用・増幅される）。**例外はない**。スクリプトは snapshot 1 枚の純変換に保つ
 
 ## inline 生成区間
 

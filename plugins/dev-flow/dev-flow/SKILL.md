@@ -199,8 +199,11 @@ workflow・スクリプトで動き、PR 自身が書き換えられるため、
 ## PR phase 失敗の扱い（`error_category: "pr_phase_failed"`）
 
 PR phase（commit / push / `gh pr create`）が失敗した run は throw せず、`status` / `error_category` が
-`"pr_phase_failed"` の返り値で終わる（PR は無く、pr-iterate・Merge tier・終端サマリは走っていない）。返り値には
-`failed_step`（`commit` / `push` / `pr-create` / `unknown`）・`failure_reason`（失敗コマンドの stderr 末尾 verbatim）・
+`"pr_phase_failed"` の返り値で終わる（PR は無く、pr-iterate・Merge tier・終端サマリは走っていない）。push は
+`pr-push start <log>` で切り離して `pr-push wait <log> --wait-sec <n>` で待ち（lock の待ち上限 1800 秒）、待機の累計が 3600 秒に
+達したら `pr-push stop <log>` で止めて同じ終端になる。返り値には
+`failed_step`（`commit` / `push` / `pr-create` / `unknown`）・`failure_reason`（失敗コマンドの stderr 末尾 verbatim。push は pr-push が
+返した末尾行の verbatim か固定文言）・
 `committed`・`head_sha`（取れた場合）・`push_log`（push 失敗時。pr-push が出力全文を残したファイル。proxy が
 pr-push を経ずに push した場合は載らず、`failure_reason` が `pr-push not invoked` で始まる固定文言になる）・`branch`・
 `worktree`・`shape`・`eval_verdict`・`phase_durations`・`recovery_commands`・`issue_comment` が載る。

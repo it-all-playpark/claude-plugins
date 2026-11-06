@@ -171,20 +171,21 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 
 - **判定**: commit message と PR 本文を state から純関数で組み（`buildCommitMessage` / `buildPrBody`）、proxy に verbatim で保存・
   commit・push・`gh pr create` させる。PR 本文の見える部分は人間向けの要約（`behavior_changes` / `review_points` / `out_of_scope` と
-  `Closes #N`）に限り、受入条件・設計判断・検証・`pr_sections` は `<details>` に畳む。builder はどの欄も字数で切らない（1 行要約欄の
-  長さは IMPL schema の `maxLength` で書き手に収めさせる）。ci AC がある run は PR に `ci_verify.label` を付ける。
+  `Closes #N`）に限り、受入条件・設計判断・検証・`pr_sections` は `<details>` に畳む。ci AC がある run は PR に `ci_verify.label` を付ける。
+  - push は `pr-push start <log>` → `wait <log> --wait-sec <n>`（lock 上限 1800 秒。`running` なら wait と `gh pr create` の spawn が増える）
   - **micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target`
     の run は、フル pr-iterate の代わりに `pr-review-lite`（pr-reviewer の 1-pass review）→ `ci-check-lite`（CI の 1 回判定）の 2 spawn で
     終える。review が null か blocking（critical/major）を返したら CI を読まずにフル pr-iterate へ昇格し、CI が passed / no_checks で
-    なければ（failed・pending・error・null）同じく昇格する。どちらも clean なら lgtm で終える
+    なければ（failed・pending・error・null）同じく昇格する
   - それ以外の run は nested の `workflow('dev-flow:pr-iterate-run')`（`prIterateArgs()`。`nested.caller: 'dev-flow'`）
 - **失敗の扱い**:
   - commit・push・PR 作成の中断（`committed:false`・PR 番号なし）は throw せず `pr_phase_failed` の failure で終える（fail-closed。
-    nested pr-iterate・Merge tier は走らせない。成果物・所要・回収コマンドを返り値と journal に残し、回収は wrapper が issue コメントで人間に渡す。
+    nested pr-iterate・Merge tier は走らせない。成果物・所要・回収コマンドを返り値と journal に残し、回収は wrapper が issue コメントで渡す。
     push の再発行・force push 等の fallback は持たない）
-  - lite の review・CI が判定できないときはフル pr-iterate へ昇格する（fail-safe。lite route の critical/major で昇格するのは blast-radius）
+  - push の待機累計 3600 秒・読めない結果・throw は `pr-push stop`
+  - lite の review・CI が判定できないときはフル pr-iterate へ昇格する（fail-safe）
 - **コード**: `phase('PR')`・`prPhasePrompt`・`prPhaseFailure`・`prIterateArgs`（`.claude/workflows/dev-flow.js`）、`buildPrBody`・
-  `buildCommitMessage`（`_lib/pr-artifacts.mjs`）、`classifyLiteReview`（`_lib/lite-route.mjs`）、`ciEffectiveStatus`（`_lib/ci-check.mjs`）
+  `buildCommitMessage`・`prPhaseJob`（`_lib/pr-artifacts.mjs`）、`classifyLiteReview`（`_lib/lite-route.mjs`）、`ciEffectiveStatus`（`_lib/ci-check.mjs`）
 
 ## pr-iterate
 

@@ -4128,9 +4128,8 @@ const PRURL = {
     // （成功時は空文字）。prPhaseFailure が abort のエラー文に載せる（fail-closed。need() は null 判定のみ）。
     failed_step: { type: 'string', enum: ['', 'commit', 'push', 'pr-create'] },
     failure_reason: { type: 'string' },
-    // push_header: pr-push が stdout 1 行目に出す `pr-push: exit=<rc> log=<path>` の verbatim。push 失敗で
-    // これが無ければ pr-push を経ていない（prPhaseFailureFacts が reason を固定文言にし push log を案内しない）。
-    push_header: { type: 'string' },
+    // push_result: pr-push の stdout の JSON の verbatim。形は prPhaseFailureFacts が見る（無ければ pr-push を経ていない）。
+    push_result: { type: 'object' },
     epoch: { type: 'number' },
   },
 }
@@ -4884,15 +4883,42 @@ function prBodyEditPrompt({ wt, pr, repo, prBody, fileName }) {
 
 const PR_STAGE_COMMANDS = ['git add -A', 'git reset -q -- .devflow-tmp'];
 const PR_PUSH_LOG_NAME = 'push-output.log';
-const PR_PUSH_TAIL_BEGIN = '<<<PUSH_TAIL_BEGIN>>>';
-const PR_PUSH_TAIL_END = '<<<PUSH_TAIL_END>>>';
-const PR_PUSH_TAIL_UNAVAILABLE = 'push failed; output tail not available (tool output truncated)';
-const PR_PUSH_TIMEOUT_REASON = 'push timed out after 600s; output tail not available';
-const PR_PUSH_HEADER_PREFIX = 'pr-push: exit=';
-const PR_PUSH_NOT_INVOKED_REASON = 'pr-push not invoked: proxy returned no "pr-push: exit=" header (push ran outside pr-push or its output was not relayed); no push output log to point to';
+const PR_PUSH_WAIT_SEC = 450;
+const PR_PUSH_MAX_WAIT_SEC = 3600;
+const PR_PUSH_TAIL_UNAVAILABLE = 'push failed; output tail not available';
+const PR_PUSH_WAIT_CAPPED_REASON = `push did not finish within ${PR_PUSH_MAX_WAIT_SEC}s of waiting; pr-push stop was called`;
+const PR_PUSH_NOT_INVOKED_REASON = 'pr-push not invoked: proxy returned no pr-push result JSON (push ran outside pr-push or its output was not relayed); no push output log to point to';
 
 function prPushLogPath(wt) {
   return `${wt}/.devflow-tmp/${PR_PUSH_LOG_NAME}`;
+}
+
+const PR_PUSH_RESULT_SCHEMA = {
+  type: 'object', required: ['status', 'log'],
+  properties: {
+    status: { type: 'string', enum: ['running', 'passed', 'failed', 'timeout', 'stopped', 'error'] },
+    exit_code: { type: ['number', 'null'] },
+    log: { type: 'string' },
+    tail: { type: 'string' },
+    epoch: { type: 'number' },
+  },
+};
+
+const PR_PUSH_STOP_SCHEMA = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } };
+
+function isPrPushResult(res) {
+  return res != null && typeof res === 'object'
+    && PR_PUSH_RESULT_SCHEMA.properties.status.enum.includes(res.status)
+    && typeof res.log === 'string' && res.log !== '';
+}
+
+function isPrPushSettled(res) {
+  return isPrPushResult(res) && ['passed', 'failed', 'timeout', 'stopped'].includes(res.status);
+}
+
+function prPushFailureReason(res) {
+  if (res.wait_capped === true) return PR_PUSH_WAIT_CAPPED_REASON;
+  return str(res.tail).trim() || PR_PUSH_TAIL_UNAVAILABLE;
 }
 
 function prLabelArg(label) {
@@ -4904,10 +4930,7 @@ function prPhasePrompt({ wt, base, branch, repo, issue, commitMessage, prBody, l
   const msgFile = `${wt}/.devflow-tmp/commit-msg.txt`;
   const bodyFile = `${wt}/.devflow-tmp/pr-body.md`;
   const pushLog = prPushLogPath(wt);
-  const title = str(commitMessage).split('\n')[0].replace(/"/g, '\\"');
-  const repoArg = repo ? ` --repo ${repo}` : '';
-  const labelArg = prLabelArg(label);
-  const bare = '（cd 前置・`bash` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクト禁止。cwd は worktree（EnterWorktree 済み））';
+  const prCreate = prCreateCommand({ wt, base, branch, repo, commitMessage, label });
   return `## Objective\nissue #${issue} の変更を commit + push し draft PR を作成して、PR URL と番号を返す。\n\n`
     + `## 本文の保存\n`
     + `**Write tool** を使い、下記 2 つの delimiter 内の本文を **一字一句そのまま**（要約・整形・追記・改変・shell 経由の書き出し禁止）保存せよ。\n`
@@ -4915,32 +4938,104 @@ function prPhasePrompt({ wt, base, branch, repo, issue, commitMessage, prBody, l
     + `2. <<<PR_BODY_BEGIN>>> 〜 <<<PR_BODY_END>>> の本文 → \`${bodyFile}\`\n`
     + `<<<COMMIT_MSG_BEGIN>>>\n${commitMessage}<<<COMMIT_MSG_END>>>\n`
     + `<<<PR_BODY_BEGIN>>>\n${prBody}<<<PR_BODY_END>>>\n\n`
-    + `## Steps\n**手順 0（branch 確認・中断判定）**を bare 単文で実行せよ${bare}: \`git rev-parse --abbrev-ref HEAD\` の stdout（末尾改行を除く）が \`${branch}\` と一致するか確認する。`
+    + `## Steps\n**手順 0（branch 確認・中断判定）**を bare 単文で実行せよ${PR_BARE_NOTE}: \`git rev-parse --abbrev-ref HEAD\` の stdout（末尾改行を除く）が \`${branch}\` と一致するか確認する。`
     + `一致しなければ cwd が対象 worktree でない（resume・直接起動等で共有 checkout のまま実行している）ため、`
     + `git add 等の後続手順を一切実行せず、failed_step:"commit"、failure_reason に \`"cwd branch mismatch: expected ${branch}, got <rev-parse の実際の出力>"\` を入れて中断する`
     + `（pr_url は空文字、pr_number は 0、committed は false、head_sha は空文字）。\n`
-    + `一致したら以下を順に bare 単文で実行せよ${bare}。手順 1〜4 のいずれかが失敗（exit 非0）したら**そこで中断**し、後続の手順を実行せず、failed_step にその手順名（1〜2 → "commit"、3 → "push"、4 → "pr-create"）、failure_reason に失敗したコマンドの stderr 末尾 1〜3 行を**一字一句そのまま**（要約・言い換え禁止。手順 3 は手順 3 の指示に従う）入れて返す。中断時は pr_url は空文字、pr_number は 0、committed は手順 2 が成功済みなら true・それ以外は false、head_sha は committed が true なら手順 6 の \`git rev-parse HEAD\` だけを実行してその stdout・それ以外は空文字:\n`
+    + `一致したら以下を順に bare 単文で実行せよ${PR_BARE_NOTE}。手順 1〜4 のいずれかが失敗（exit 非0）したら**そこで中断**し、後続の手順を実行せず、failed_step にその手順名（1〜2 → "commit"、3 → "push"、4 → "pr-create"）、failure_reason に失敗したコマンドの stderr 末尾 1〜3 行を**一字一句そのまま**（要約・言い換え禁止。手順 3 は手順 3 の指示に従う）入れて返す。中断時は pr_url は空文字、pr_number は 0、committed は手順 2 が成功済みなら true・それ以外は false、head_sha は committed が true なら手順 6 の \`git rev-parse HEAD\` だけを実行してその stdout・それ以外は空文字:\n`
     + `1. ${PR_STAGE_COMMANDS.map((c) => `\`${c}\``).join(' → ')}（run の一時ファイル置き場を stage から外す。どちらかの失敗は failed_step:"commit" で中断）\n`
     + `2. \`git commit -F ${msgFile}\`（exit 非0 かつ stdout/stderr に "nothing to commit" があれば commit 済みとして続行。それ以外の失敗は failed_step:"commit" で中断）\n`
-    + `3. \`pr-push ${pushLog}\`（push はこのコマンドだけで行い、git の push サブコマンドを直接実行しない。`
-    + `pr-push は出力全文を \`${pushLog}\` に残し、stdout の 1 行目に \`${PR_PUSH_HEADER_PREFIX}<終了コード> log=<path>\` を出して、出力の末尾行だけを \`${PR_PUSH_TAIL_BEGIN}\` 〜 \`${PR_PUSH_TAIL_END}\` の間に返す。`
-    + `成功・失敗にかかわらず、stdout の \`${PR_PUSH_HEADER_PREFIX}\` で始まる行を一字一句そのまま push_header に入れる（見えなければ空文字）。`
-    + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。`
-    + `push の結果が返るまで手順 4（\`gh pr create\`）を実行しない。push を再発行しない（timeout・background 化した場合も含む）。\`--no-verify\` は付けない。`
-    + `600 秒の timeout に達した場合はリトライせず、failed_step:"push"、failure_reason に \`"${PR_PUSH_TIMEOUT_REASON}"\` を一字一句そのまま入れて中断する。`
-    + `それ以外の失敗（exit 非0）は failed_step:"push" で中断し、failure_reason は次の 2 通りのどちらかにする — `
-    + `(a) 出力に \`${PR_PUSH_TAIL_BEGIN}\` と \`${PR_PUSH_TAIL_END}\` が両方見えるなら、その間の行を一字一句そのまま（改行も保持）入れる。`
-    + `(b) 両マーカーが揃って見えない（出力が途中で切れた・コマンドが起動しなかった等）なら \`"${PR_PUSH_TAIL_UNAVAILABLE}"\` を一字一句そのまま入れる。`
-    + `どちらの場合も、マーカーの外にある出力（hook の途中経過等）から理由を推測・要約して書かない）\n`
-    + `4. \`gh pr create${repoArg} --draft --base ${base} --head ${branch} --title "${title}" --body-file ${bodyFile}${labelArg}\`（失敗は failed_step:"pr-create" で中断）\n`
+    + `3. \`pr-push start ${pushLog}\` → \`pr-push wait ${pushLog} --wait-sec ${PR_PUSH_WAIT_SEC}\` の順に 1 回ずつ実行する（push はこの 2 コマンドだけで行い、git の push サブコマンドを直接実行しない。`
+    + `どちらも stdout は JSON 1 行。どちらも Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない。`
+    + `最後に実行したコマンド（start の status が running でなければ start、それ以外は wait）の stdout の JSON を、キーの追加・削除・値の書き換えをせず push_result に入れる。`
+    + `Bash の timeout に達した・stdout に JSON 1 行が無いときだけは ${JSON.stringify(prPushNoResult(pushLog))} を一字一句そのまま push_result に入れる。`
+    + `次は push_result の status で決まる: "passed" なら手順 4 へ進む。`
+    + `"running" なら手順 4 を実行せず、wait も再実行せずに、failed_step と failure_reason は空文字、pr_url は空文字、pr_number は 0、committed は true、head_sha は手順 6 の \`git rev-parse HEAD\` の stdout にして返す（待ち続けるのは呼び出し側）。`
+    + `それ以外は failed_step:"push" で中断する。failure_reason は空文字にする（push の理由は呼び出し側が push_result から決める。hook の途中経過等から推測・要約して書かない）。`
+    + `push の結果が返るまで手順 4（\`gh pr create\`）を実行しない。push を再発行しない（timeout・background 化した場合も含む）。\`--no-verify\` は付けない）\n`
+    + `4. \`${prCreate}\`（失敗は failed_step:"pr-create" で中断）\n`
     + `5. 手順 4 の stdout の PR URL を pr_url、その末尾の数字を pr_number として返す。\n`
     + `6. \`git rev-parse HEAD\` の stdout（40 桁 hex）をそのまま head_sha として返す（失敗時は空文字）。\n\n`
-    + `## Output format\n{ "pr_url": string, "pr_number": number, "committed": boolean, "head_sha": string, "failed_step": "" | "commit" | "push" | "pr-create", "failure_reason": string, "push_header": string, "epoch": number }\n`
-    + `failed_step / failure_reason は成功時は空文字。failure_reason は失敗コマンドの stderr 末尾 1〜3 行 verbatim（push は手順 3 の (a) / (b) / timeout 文言のいずれか）。`
-    + `push_header は手順 3 の stdout の \`${PR_PUSH_HEADER_PREFIX}\` で始まる行 verbatim（手順 3 に到達しなかった・行が見えないときは空文字）。prose 禁止。JSON のみ返せ。\n\n`
+    + `## Output format\n{ "pr_url": string, "pr_number": number, "committed": boolean, "head_sha": string, "failed_step": "" | "commit" | "push" | "pr-create", "failure_reason": string, "push_result": object, "epoch": number }\n`
+    + `failed_step / failure_reason は成功時は空文字。failure_reason は失敗コマンドの stderr 末尾 1〜3 行 verbatim（push は手順 3 のとおり空文字）。`
+    + `push_result は手順 3 の JSON（手順 3 に到達しなかったときはキーごと省く）。prose 禁止。JSON のみ返せ。\n\n`
     + `## Tools\n使用可: Bash, Write\n\n`
     + `## Boundary\n上記 2 ファイル以外を書かない（\`${pushLog}\` は pr-push が書く）。上記以外の git / gh 操作禁止。本文の要約・判断・書き換え禁止。\n\n`
     + `## Token cap\nJSON のみ。1 行以内。`;
+}
+
+const PR_BARE_NOTE = '（cd 前置・`bash` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクト禁止。cwd は worktree（EnterWorktree 済み））';
+
+function prCreateCommand({ wt, base, branch, repo, commitMessage, label }) {
+  const title = str(commitMessage).split('\n')[0].replace(/"/g, '\\"');
+  const repoArg = repo ? ` --repo ${repo}` : '';
+  return `gh pr create${repoArg} --draft --base ${base} --head ${branch} --title "${title}" --body-file ${wt}/.devflow-tmp/pr-body.md${prLabelArg(label)}`;
+}
+
+function prPushNoResult(pushLog) {
+  return { status: 'error', exit_code: null, log: pushLog, tail: '' };
+}
+
+function prPushCommandPrompt(command, noJson) {
+  return `次のコマンドを bare 単文${PR_BARE_NOTE}で 1 回だけ実行し、**stdout の JSON 1 行だけ** を verbatim で返せ（キーの追加・削除・値の書き換えをしない）。`
+    + `Bash tool の \`timeout: 600000\` を指定し、\`run_in_background\` は使わない（禁止）。再実行しない。`
+    + `timeout に達した・stdout に JSON 1 行が無い場合だけは、${noJson} を一字一句そのまま返せ:\n`
+    + command;
+}
+
+function prPushWaitPrompt(wt) {
+  const pushLog = prPushLogPath(wt);
+  return prPushCommandPrompt(`pr-push wait ${pushLog} --wait-sec ${PR_PUSH_WAIT_SEC}`, JSON.stringify(prPushNoResult(pushLog)));
+}
+
+function prPushStopPrompt(wt) {
+  return prPushCommandPrompt(`pr-push stop ${prPushLogPath(wt)}`, '{"ok":false,"error":"pr-push did not return JSON"}');
+}
+
+function prCreatePrompt({ wt, base, branch, repo, issue, commitMessage, label = null }) {
+  return `## Objective\nissue #${issue} の push 済みの branch から draft PR を作成して、PR URL と番号を返す。\n\n`
+    + `## Steps\n以下を順に bare 単文で実行せよ${PR_BARE_NOTE}:\n`
+    + `1. \`${prCreateCommand({ wt, base, branch, repo, commitMessage, label })}\`（失敗したら failed_step:"pr-create"、failure_reason に stderr 末尾 1〜3 行を**一字一句そのまま**入れ、pr_url は空文字、pr_number は 0 にする）。stdout の PR URL を pr_url、その末尾の数字を pr_number とする。\n`
+    + `2. \`git rev-parse HEAD\` の stdout を head_sha とする（失敗時は空文字）。\n\n`
+    + `## Output format\n{ "pr_url": string, "pr_number": number, "committed": true, "head_sha": string, "failed_step": "" | "pr-create", "failure_reason": string, "epoch": number }\n`
+    + `failed_step / failure_reason は成功時は空文字。prose 禁止。JSON のみ返せ。\n\n`
+    + `## Boundary\nファイルを書かない。上記以外の git / gh 操作禁止。`;
+}
+
+async function prPhaseJob({ wt, issue, prompt, createPrompt, schema, waitJob, spawn, spawnStop }) {
+  const label = `pr#${issue}`;
+  const stop = () => spawnStop(prPushStopPrompt(wt), { schema: PR_PUSH_STOP_SCHEMA, label: `${label}.stop` });
+  try {
+    const first = await spawn(prompt, { schema, label });
+    if (first == null) {
+      await stop();
+      return first;
+    }
+    const pushed = first.push_result;
+    if (pushed?.status !== 'running') {
+      const pushFailed = first.failed_step === 'push' || (isPrPushResult(pushed) && pushed.status !== 'passed');
+      if (pushFailed && !isPrPushSettled(pushed)) await stop();
+      return pushFailed ? { ...first, failed_step: 'push' } : first;
+    }
+    const res = await waitJob({
+      start: pushed,
+      wait: (k) => spawn(prPushWaitPrompt(wt), { schema: PR_PUSH_RESULT_SCHEMA, label: `${label}.wait-${k}` }),
+      maxPolls: Math.ceil(PR_PUSH_MAX_WAIT_SEC / PR_PUSH_WAIT_SEC) - 1,
+      schema: PR_PUSH_RESULT_SCHEMA,
+    });
+    if (res.status === 'passed') {
+      const created = await spawn(createPrompt, { schema, label: `${label}.create` });
+      return created == null ? created : { ...created, committed: true, push_result: res };
+    }
+    const failed = { ...first, pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: '' };
+    if (Number.isFinite(res.epoch)) failed.epoch = res.epoch;
+    if (isPrPushSettled(res)) return { ...failed, push_result: res };
+    await stop();
+    return { ...failed, push_result: isPrPushResult(res) ? res : prPushNoResult(prPushLogPath(wt)) };
+  } catch (e) {
+    await stop();
+    throw e;
+  }
 }
 
 const PR_FAILED_STEP_VALUES = ['commit', 'push', 'pr-create'];
@@ -4954,14 +5049,13 @@ function prPhaseFailureFacts(pr, { pushLog } = {}) {
   const failedStep = str(pr?.failed_step).trim();
   const step = PR_FAILED_STEP_VALUES.includes(failedStep) ? failedStep : 'unknown';
   const headSha = str(pr?.head_sha).trim();
-  const reason = str(pr?.failure_reason).trim();
-  const pushNotInvoked = step === 'push'
-    && !str(pr?.push_header).trim().startsWith(PR_PUSH_HEADER_PREFIX)
-    && reason !== PR_PUSH_TIMEOUT_REASON;
+  const pushNotInvoked = step === 'push' && !isPrPushResult(pr?.push_result);
   const log = pushNotInvoked ? '' : str(pushLog).trim();
+  const reason = step !== 'push' ? (str(pr?.failure_reason).trim() || '（proxy が failure_reason を返さず）')
+    : pushNotInvoked ? PR_PUSH_NOT_INVOKED_REASON : prPushFailureReason(pr.push_result);
   return {
     failed_step: step,
-    failure_reason: pushNotInvoked ? PR_PUSH_NOT_INVOKED_REASON : (reason || '（proxy が failure_reason を返さず）'),
+    failure_reason: reason,
     committed: pr?.committed === true,
     ...(headSha ? { head_sha: headSha } : {}),
     ...(step === 'push' && log ? { push_log: log } : {}),
@@ -7423,11 +7517,23 @@ const prBody = buildPrBody({
 // ci の AC がある run だけ PR に ci_verify.label を付ける（CI がこのラベルで ci_verify.checks の job を回す）。
 const PR_LABEL = CI_AC_INDEXES.length ? CI_VERIFY.label : null
 if (PR_LABEL) log(`PR: ci の AC ${CI_AC_INDEXES.length} 件 — PR に label "${PR_LABEL}" を付ける`)
-const pr = need(await trackedAgent(
-  prPhasePrompt({ wt: WT, base: BASE, branch: state.setup.branch, repo: REPO, issue: ISSUE, commitMessage: prCommitMessage, prBody, label: PR_LABEL })
-  + '\n' + EPOCH_INSTRUCTION,
-  { agentType: 'dev-runner-haiku', schema: PRURL, label: `pr#${ISSUE}`, phase: 'PR' },
-), 'PR')
+const prSpawnOpts = { agentType: 'dev-runner-haiku', phase: 'PR' }
+const pr = need(await prPhaseJob({
+  wt: WT, issue: ISSUE,
+  prompt: prPhasePrompt({ wt: WT, base: BASE, branch: state.setup.branch, repo: REPO, issue: ISSUE, commitMessage: prCommitMessage, prBody, label: PR_LABEL })
+    + '\n' + EPOCH_INSTRUCTION,
+  createPrompt: prCreatePrompt({ wt: WT, base: BASE, branch: state.setup.branch, repo: REPO, issue: ISSUE, commitMessage: prCommitMessage, label: PR_LABEL })
+    + '\n' + EPOCH_INSTRUCTION,
+  schema: PRURL, waitJob: waitBgJob,
+  spawn: (prompt, o) => trackedAgent(prompt, { ...prSpawnOpts, ...o }),
+  spawnStop: async (prompt, o) => {
+    // stop の spawn で abort の記録先（落ちた spawn の label）を上書きしない
+    const abortLabel = ABORT_CTX.label
+    const stopped = await failOpenAgent(prompt, { ...prSpawnOpts, ...o })
+    ABORT_CTX.label = abortLabel
+    return stopped
+  },
+}), 'PR')
 // proxy の中断応答（committed:false / pr_url 空 / pr_number 非正）は throw せず、failure 終端
 // （error_category: pr_phase_failed）で run を終える。need() は null 判定のみで PR 固有の形は見ない —
 // 通すと nested pr-iterate が `pr: 0` の引数検証で abort し、proxy の失敗 step / stderr

@@ -35,16 +35,14 @@ import {
   planWithoutPrBodyMaterial,
   prPushLogPath,
   PR_PUSH_LOG_NAME,
-  PR_PUSH_TAIL_BEGIN,
-  PR_PUSH_TAIL_END,
   PR_PUSH_TAIL_UNAVAILABLE,
-  PR_PUSH_TIMEOUT_REASON,
-  PR_PUSH_HEADER_PREFIX,
+  PR_PUSH_WAIT_SEC,
+  PR_PUSH_WAIT_CAPPED_REASON,
   PR_PUSH_NOT_INVOKED_REASON,
 } from './pr-artifacts.mjs';
 
-// pr-push が stdout 1 行目に出す行（pr-push 経由の push 失敗であることの証拠）
-const PUSH_HEADER = 'pr-push: exit=1 log=/wt/.devflow-tmp/push-output.log';
+// pr-push wait の stdout（pr-push 経由の push 失敗であることの証拠）
+const pushResult = (tail) => ({ status: 'failed', exit_code: 1, log: '/wt/.devflow-tmp/push-output.log', tail, epoch: 1 });
 
 function req(o = {}) {
   return {
@@ -588,7 +586,7 @@ test('[pr-artifacts] prompt: 本文を verbatim 転写させ bare 単文の git 
   // git は cwd（worktree）で実行する bare 単文
   assert.ok(p.includes('1. `git add -A` → `git reset -q -- .devflow-tmp`'), '手順 1 の add が bare 形でない');
   assert.ok(p.includes('`git commit -F /tmp/wt/.devflow-tmp/commit-msg.txt`'), '手順 2 の commit が bare 形でない');
-  assert.ok(p.includes('3. `pr-push /tmp/wt/.devflow-tmp/push-output.log`'), '手順 3 の push が bare 名 pr-push でない');
+  assert.ok(p.includes(`3. \`pr-push start /tmp/wt/.devflow-tmp/push-output.log\` → \`pr-push wait /tmp/wt/.devflow-tmp/push-output.log --wait-sec ${PR_PUSH_WAIT_SEC}\``), '手順 3 の push が bare 名 pr-push の start → wait でない');
   assert.ok(p.includes('`git rev-parse HEAD`'), '手順 6 の rev-parse が bare 形でない');
   assert.ok(p.includes('cwd は worktree（EnterWorktree 済み）'), 'bare 注記が cwd=worktree 前提の文言になっていない');
   assert.ok(p.includes('`gh pr create --repo o/r --draft --base main --head feature/issue-642 --title "refactor(dev-flow): PR phase を純関数で生成する (#642)" --body-file /tmp/wt/.devflow-tmp/pr-body.md`'));
@@ -621,17 +619,17 @@ test('[pr-artifacts] prompt: 手順 2〜4 の失敗で failed_step / failure_rea
 
 // ---- prPhasePrompt の push timeout / 再発行禁止（issue #804） ----
 
-test('[pr-artifacts] prompt: 手順 3 の push は Bash timeout: 600000 指定・run_in_background 禁止・完了前の gh pr create と再発行を禁じ、timeout はリトライせず failed_step:"push" で中断する', () => {
+test('[pr-artifacts] prompt: 手順 3 の push は Bash timeout: 600000 指定・run_in_background 禁止・完了前の gh pr create と再発行を禁じ、running なら wait を再実行せず返す', () => {
   const p = prPhasePrompt({ wt: '/w', base: 'main', branch: 'b', repo: 'o/r', issue: 1, commitMessage: 'x (#1)\n', prBody: 'y' });
   const step3 = p.split('\n').find((l) => l.startsWith('3. `pr-push '));
   assert.ok(step3, `手順 3 の push 行が無い: ${p}`);
-  assert.ok(step3.includes('Bash tool の `timeout: 600000` を指定して実行'), `手順 3 に timeout: 600000 指定が無い: ${step3}`);
+  assert.ok(step3.includes('どちらも Bash tool の `timeout: 600000` を指定して実行'), `手順 3 に timeout: 600000 指定が無い: ${step3}`);
   assert.ok(step3.includes('`run_in_background` は使わない（禁止）'), `手順 3 に run_in_background 禁止が無い: ${step3}`);
   assert.ok(step3.includes('push の結果が返るまで手順 4（`gh pr create`）を実行しない'), `push 完了前の gh pr create 禁止が無い: ${step3}`);
   assert.ok(step3.includes('push を再発行しない（timeout・background 化した場合も含む）'), `push 再発行禁止が無い: ${step3}`);
-  assert.ok(step3.includes('600 秒の timeout に達した場合はリトライせず、failed_step:"push"'), `timeout 到達時の中断（リトライしない）が無い: ${step3}`);
-  assert.ok(step3.includes(`failure_reason に \`"${PR_PUSH_TIMEOUT_REASON}"\` を一字一句そのまま入れて中断する`), `failure_reason に timeout の固定文言を入れる指示が無い: ${step3}`);
-  assert.ok(PR_PUSH_TIMEOUT_REASON.startsWith('push timed out after 600s'), PR_PUSH_TIMEOUT_REASON);
+  assert.ok(step3.includes('"passed" なら手順 4 へ進む'), step3);
+  assert.ok(step3.includes('"running" なら手順 4 を実行せず、wait も再実行せずに'), step3);
+  assert.ok(step3.includes('それ以外は failed_step:"push" で中断する'), step3);
   // --no-verify は使わない（hook の検査を捨てない）: 付けない指示はあるが、付けた形の実行指示は無い
   assert.ok(step3.includes('`--no-verify` は付けない'), `--no-verify 不使用の指示が無い: ${step3}`);
   assert.ok(!/(git push|pr-push)[^`]*--no-verify/.test(p), 'push に --no-verify を付けた形がある');
@@ -641,31 +639,28 @@ test('[pr-artifacts] prompt: 手順 3 の push は Bash timeout: 600000 指定�
 
 // ---- prPhasePrompt の push 出力末尾（issue #819） ----
 
-test('[pr-artifacts] prompt: 手順 3 は pr-push に push log を渡し、failure_reason は PUSH_TAIL マーカー間の行を verbatim、マーカーが揃わなければ固定文言にして推測させない', () => {
+test('[pr-artifacts] prompt: 手順 3 は pr-push に push log を渡し、JSON を push_result に verbatim で返させ、push の failure_reason は書かせない', () => {
   const p = prPhasePrompt({ wt: '/w', base: 'main', branch: 'b', repo: 'o/r', issue: 1, commitMessage: 'x (#1)\n', prBody: 'y' });
   const step3 = p.split('\n').find((l) => l.startsWith('3. `pr-push '));
   assert.ok(step3, `手順 3 の push 行が無い: ${p}`);
   // push log は .devflow-tmp/ 配下（ephemeral。realized-diff から除外される）
   assert.equal(prPushLogPath('/w'), `/w/.devflow-tmp/${PR_PUSH_LOG_NAME}`);
-  assert.ok(step3.startsWith('3. `pr-push /w/.devflow-tmp/push-output.log`'), step3);
+  assert.ok(step3.startsWith(`3. \`pr-push start /w/.devflow-tmp/push-output.log\` → \`pr-push wait /w/.devflow-tmp/push-output.log --wait-sec ${PR_PUSH_WAIT_SEC}\``), step3);
   // push は bare `git push` 単文として実行させない（出力が tool 上限で切れて末尾が見えない）
   assert.ok(!p.split('\n').some((l) => /^\d+\. `git push/.test(l)), 'bare git push を手順として実行させている');
-  // (a) マーカーが揃えば間の行を verbatim
-  assert.ok(step3.includes(`(a) 出力に \`${PR_PUSH_TAIL_BEGIN}\` と \`${PR_PUSH_TAIL_END}\` が両方見えるなら、その間の行を一字一句そのまま`), step3);
-  // (b) マーカーが揃わなければ固定文言
-  assert.equal(PR_PUSH_TAIL_UNAVAILABLE, 'push failed; output tail not available (tool output truncated)');
-  assert.ok(step3.includes(`(b) 両マーカーが揃って見えない（出力が途中で切れた・コマンドが起動しなかった等）なら \`"${PR_PUSH_TAIL_UNAVAILABLE}"\` を一字一句そのまま入れる`), step3);
-  // マーカーの外から理由を推測・要約させない
-  assert.ok(step3.includes('マーカーの外にある出力（hook の途中経過等）から理由を推測・要約して書かない'), step3);
-  // マーカー定数は pr-push.sh が出す行と一致する（script 側と prompt 側のずれ防止）
+  assert.ok(step3.includes('stdout の JSON を、キーの追加・削除・値の書き換えをせず push_result に入れる'), step3);
+  // JSON が見えなければ固定の JSON（推測させない）
+  assert.ok(step3.includes('{"status":"error","exit_code":null,"log":"/w/.devflow-tmp/push-output.log","tail":""} を一字一句そのまま push_result に入れる'), step3);
+  assert.ok(step3.includes('failure_reason は空文字にする（push の理由は呼び出し側が push_result から決める。hook の途中経過等から推測・要約して書かない）'), step3);
+  assert.ok(p.includes('"failure_reason": string, "push_result": object'), 'Output format に push_result が無い');
+  // 定数は pr-push.sh の実体と一致する（script 側と prompt 側のずれ防止）
   const script = readFileSync(join(here, '..', 'dev-flow', 'scripts', 'pr-push.sh'), 'utf8');
-  assert.ok(script.includes(`echo "${PR_PUSH_TAIL_BEGIN}"`) && script.includes(`echo "${PR_PUSH_TAIL_END}"`), 'pr-push.sh のマーカーが定数と一致しない');
   assert.ok(script.includes('git push origin HEAD'), 'pr-push.sh が git push origin HEAD を実行しない');
 });
 
 test('[pr-artifacts] prPhaseFailure: step:push なら pushLog のパスをエラー文に載せ、他の step・pushLog 未指定では載せない', () => {
   const pushLog = prPushLogPath('/wt');
-  const pushFail = { pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: PR_PUSH_TAIL_UNAVAILABLE, push_header: PUSH_HEADER };
+  const pushFail = { pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: '', push_result: pushResult('') };
   const msg = prPhaseFailure(pushFail, { pushLog });
   assert.ok(msg.includes(`step: push、reason: ${PR_PUSH_TAIL_UNAVAILABLE}、push 出力全文: /wt/.devflow-tmp/push-output.log）`), msg);
   assert.ok(!prPhaseFailure({ ...pushFail, failed_step: 'commit' }, { pushLog }).includes('push 出力全文'));
@@ -676,26 +671,21 @@ test('[pr-artifacts] prPhaseFailure: step:push なら pushLog のパスをエラ
 
 // ---- pr-push を経ない push の検出（issue #852） ----
 
-test('[pr-artifacts] prompt: push を行う git コマンドを literal で書かず（haiku が pr-push の代わりに叩く）、pr-push の header 行を push_header として verbatim で返させる', () => {
+test('[pr-artifacts] prompt: push を行う git コマンドを literal で書かない（haiku が pr-push の代わりに叩く）', () => {
   const p = prPhasePrompt({ wt: '/w', base: 'main', branch: 'b', repo: 'o/r', issue: 1, commitMessage: 'x (#1)\n', prBody: 'y' });
   assert.ok(!p.includes('git push'), `prompt に git push が現れる: ${p.match(/[^\n]*git push[^\n]*/)?.[0]}`);
   const step3 = p.split('\n').find((l) => l.startsWith('3. `pr-push '));
-  assert.ok(step3.includes('push はこのコマンドだけで行い、git の push サブコマンドを直接実行しない'), step3);
-  assert.ok(step3.includes(`stdout の \`${PR_PUSH_HEADER_PREFIX}\` で始まる行を一字一句そのまま push_header に入れる`), step3);
-  assert.ok(p.includes('"failure_reason": string, "push_header": string'), 'Output format に push_header が無い');
-  // header の接頭辞は pr-push.sh が stdout 1 行目に出す行と一致する
-  const script = readFileSync(join(here, '..', 'dev-flow', 'scripts', 'pr-push.sh'), 'utf8');
-  assert.ok(script.includes(`echo "${PR_PUSH_HEADER_PREFIX}\${rc} log=\${log}"`), 'pr-push.sh の header 行が PR_PUSH_HEADER_PREFIX と一致しない');
+  assert.ok(step3.includes('push はこの 2 コマンドだけで行い、git の push サブコマンドを直接実行しない'), step3);
 });
 
-test('[pr-artifacts] prPhaseFailure: step:push で push_header が pr-push: exit= で始まらなければ reason は pr-push not invoked の固定文言、push log は案内しない', () => {
+test('[pr-artifacts] prPhaseFailure: step:push で push_result が pr-push の JSON でなければ reason は pr-push not invoked の固定文言、push log は案内しない（proxy の文は使わない）', () => {
   const pushLog = prPushLogPath('/wt');
   assert.ok(PR_PUSH_NOT_INVOKED_REASON.startsWith('pr-push not invoked'), PR_PUSH_NOT_INVOKED_REASON);
-  const base = { pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: PR_PUSH_TAIL_UNAVAILABLE };
-  for (const header of [undefined, '', '  ', 'To github.com:o/r.git', 'error: failed to push some refs']) {
-    const pr = header === undefined ? base : { ...base, push_header: header };
+  const base = { pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: 'proxy が作文した理由' };
+  for (const result of [undefined, null, '', 'pr-push: exit=1', {}, { status: 'failed' }, { status: 'bogus', log: '/l' }, { status: 'failed', log: '' }]) {
+    const pr = result === undefined ? base : { ...base, push_result: result };
     const facts = prPhaseFailureFacts(pr, { pushLog });
-    assert.deepEqual(facts, { failed_step: 'push', failure_reason: PR_PUSH_NOT_INVOKED_REASON, committed: true }, `header=${JSON.stringify(header)}`);
+    assert.deepEqual(facts, { failed_step: 'push', failure_reason: PR_PUSH_NOT_INVOKED_REASON, committed: true }, `result=${JSON.stringify(result)}`);
     const msg = prPhaseFailure(pr, { pushLog });
     assert.ok(msg.includes(`step: push、reason: ${PR_PUSH_NOT_INVOKED_REASON}）`), msg);
     assert.ok(!msg.includes('push 出力全文') && !msg.includes(pushLog), msg);
@@ -703,21 +693,23 @@ test('[pr-artifacts] prPhaseFailure: step:push で push_header が pr-push: exit
     assert.ok(comment.includes(`\`\`\`\n${PR_PUSH_NOT_INVOKED_REASON}\n\`\`\``), comment);
     assert.ok(!comment.includes('push 出力全文') && !comment.includes(pushLog), comment);
   }
-  // push 以外の段は push_header を見ない
+  // push 以外の段は push_result を見ない
   assert.equal(prPhaseFailureFacts({ ...base, failed_step: 'commit', failure_reason: 'x' }, { pushLog }).failure_reason, 'x');
 });
 
-test('[pr-artifacts] prPhaseFailure: push_header が pr-push: exit= で始まれば (a) / (b) / timeout の reason と push log をそのまま載せる', () => {
+test('[pr-artifacts] prPhaseFailure: push_result が pr-push の JSON なら reason は末尾行の verbatim か固定文言で、proxy の文は使わず push log を載せる', () => {
   const pushLog = prPushLogPath('/wt');
   const tail = '❌ Pre-push checks failed\nerror: failed to push some refs';
-  for (const reason of [tail, PR_PUSH_TAIL_UNAVAILABLE, PR_PUSH_TIMEOUT_REASON]) {
-    const pr = { pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: reason, push_header: PUSH_HEADER };
+  for (const [result, reason] of [
+    [pushResult(tail), tail],
+    [pushResult(''), PR_PUSH_TAIL_UNAVAILABLE],
+    [{ status: 'error', exit_code: null, log: pushLog, tail: '' }, PR_PUSH_TAIL_UNAVAILABLE],
+    [{ status: 'running', exit_code: null, log: pushLog, tail: '', wait_capped: true }, PR_PUSH_WAIT_CAPPED_REASON],
+  ]) {
+    const pr = { pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: 'proxy が作文した理由', push_result: result };
     assert.deepEqual(prPhaseFailureFacts(pr, { pushLog }), { failed_step: 'push', failure_reason: reason, committed: true, push_log: pushLog });
     assert.ok(prPhaseFailure(pr, { pushLog }).includes(`step: push、reason: ${reason}、push 出力全文: ${pushLog}）`));
   }
-  // timeout は header 無しでも timeout のまま: pr-push は push 完了後に header を出すので、timeout で打ち切られた正規の起動でも header は返らない
-  const timeout = prPhaseFailureFacts({ pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: PR_PUSH_TIMEOUT_REASON }, { pushLog });
-  assert.deepEqual(timeout, { failed_step: 'push', failure_reason: PR_PUSH_TIMEOUT_REASON, committed: true, push_log: pushLog });
 });
 
 // ---- prPhasePrompt の cwd branch 照合（issue #700） ----
@@ -745,7 +737,7 @@ test('[pr-artifacts] prPhaseFailure: committed:false / pr_url 空 / pr_number �
   assert.ok(msg.startsWith('dev-flow: PR phase 失敗（step: commit、reason: ' + reason + '）'), msg);
   assert.ok(msg.includes('pr_url=""') && msg.includes('pr_number=0') && msg.includes('committed=false'), msg);
   // 個別条件: どれか 1 つでも fail-closed
-  assert.ok(prPhaseFailure({ pr_url: 'http://x/pull/1', pr_number: 1, committed: false, failed_step: 'push', failure_reason: 'remote: 403', push_header: PUSH_HEADER }).includes('step: push、reason: remote: 403'));
+  assert.ok(prPhaseFailure({ pr_url: 'http://x/pull/1', pr_number: 1, committed: false, failed_step: 'push', push_result: pushResult('remote: 403') }).includes('step: push、reason: remote: 403'));
   assert.ok(prPhaseFailure({ pr_url: '', pr_number: 1, committed: true, failed_step: 'pr-create', failure_reason: 'GraphQL: base branch not found' }).includes('step: pr-create、reason: GraphQL: base branch not found'));
   assert.ok(prPhaseFailure({ pr_url: 'http://x/pull/1', pr_number: 0, committed: true }) !== null);
   assert.ok(prPhaseFailure({ pr_url: 'http://x/pull/1', pr_number: 'abc', committed: true }) !== null);
@@ -770,7 +762,7 @@ test('[pr-artifacts] prompt: 中断時の head_sha は committed:true なら手�
 test('[pr-artifacts] prPhaseFailureFacts: 成功は null、失敗は failed_step / failure_reason / committed と取れた head_sha・push log だけを返す', () => {
   assert.equal(prPhaseFailureFacts({ pr_url: 'http://x/pull/1', pr_number: 1, committed: true }), null);
   const pushLog = prPushLogPath('/wt');
-  const push = prPhaseFailureFacts({ pr_url: '', pr_number: 0, committed: true, head_sha: ' abc123 ', failed_step: 'push', failure_reason: 'remote: 403\n', push_header: PUSH_HEADER }, { pushLog });
+  const push = prPhaseFailureFacts({ pr_url: '', pr_number: 0, committed: true, head_sha: ' abc123 ', failed_step: 'push', failure_reason: '', push_result: pushResult('remote: 403\n') }, { pushLog });
   assert.deepEqual(push, { failed_step: 'push', failure_reason: 'remote: 403', committed: true, head_sha: 'abc123', push_log: '/wt/.devflow-tmp/push-output.log' });
   // head_sha が空・step が push 以外なら head_sha / push_log キー自体を持たない
   const commit = prPhaseFailureFacts({ pr_url: '', pr_number: 0, committed: false, head_sha: '', failed_step: 'commit', failure_reason: 'x' }, { pushLog });

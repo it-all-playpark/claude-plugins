@@ -105,7 +105,8 @@ wait_supervisor_done() {
 }
 
 @test "timeout_seconds を超えたら command を止めて timeout を返し、DB を DELETE する" {
-    declare_local_verify 'echo started; sleep 30' 1
+    # supervisor の時計は秒精度（date +%s）なので、timeout 1 は 0〜1 秒で切れ、負荷時は echo の前に止まる
+    declare_local_verify 'echo started; sleep 30' 3
     start_verify
     wait_verify
     echo "$output" | jq -e '.ok == false and .status == "timeout"'
