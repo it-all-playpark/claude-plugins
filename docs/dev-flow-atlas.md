@@ -12,8 +12,7 @@ GitHub issue から LGTM までを 8 phase で駆動する `dev-flow` の実処�
 
 どのモデル世代でも緩めない。
 
-- **merge は常に人間。** LGTM 後にユーザーが merge する。AUTO tier も「推奨ラベル」であって
-  自動 merge ではない。全 tier で例外なし
+- **merge は常に人間。** LGTM 後にユーザーが merge する。全 tier で例外なし
 - **1 issue = 1 PR。** Implement は全 shape で `dev-implementer` を単一 worktree に 1 spawn する
   （parallel fan-out は持たない）。issue 分割も integration branch も使わない
 - **軸A invariant。** 決定論オラクル・danger-grep の fail-closed・critical アイテムはどの `gate_policy` でも
@@ -309,9 +308,9 @@ flowchart TD
 
 | shape | Implement | Evaluate | merge tier |
 | --- | --- | --- | --- |
-| `micro` | Setup 末尾の analyze ゲート直後に issue から単一 task の plan を合成（`implement#synth-plan`）→ Implement で `dev-implementer` を 1 spawn | skip（evaluator 0 回）。danger-grep hit 時は security path で強制実行 | `AUTO`（docs・test-only + danger clean + 収束時のみ） |
-| `standard` | 同上 | 1 パスのみ。差し戻しなし。未解消 critical は merge tier HOLD で担保。agent AC の未達だけは `AGENT_AC_REIMPL_MAX` 回まで延長して差し戻す | `REVIEW` |
-| `complex` | 同上 | 差し戻し loop（`EVAL_MAX` 上限、design 差し戻しは `DESIGN_REPLAN_MAX` まで。差し戻し先は同じ `dev-implementer`） | `REVIEW` / `HOLD`（danger・breaking 検出時） |
+| `micro` | Setup 末尾の analyze ゲート直後に issue から単一 task の plan を合成（`implement#synth-plan`）→ Implement で `dev-implementer` を 1 spawn | skip（evaluator 0 回）。danger-grep hit 時は security path で強制実行 | `REVIEW` / `HOLD`（evaluator 0 回の `REVIEW` は AC 未検証を開示） |
+| `standard` | 同上 | 1 パスのみ。差し戻しなし。未解消 critical は merge tier HOLD で担保。agent AC の未達だけは `AGENT_AC_REIMPL_MAX` 回まで延長して差し戻す | `REVIEW` / `HOLD` |
+| `complex` | 同上 | 差し戻し loop（`EVAL_MAX` 上限、design 差し戻しは `DESIGN_REPLAN_MAX` まで。差し戻し先は同じ `dev-implementer`） | `REVIEW` / `HOLD` |
 
 micro のうち `runEval=false` かつ danger clean かつ ci の AC（`ci_verify` の check で判定する AC。
 `CI_AC_INDEXES`）を持たず、敵対的 security review の対象外（merge-base 基準の diff が許可リストだけ）のものだけが
@@ -394,21 +393,17 @@ flowchart TD
 
 ## 4. merge tier 判定
 
-`classifyMergeTier` は純関数で、HOLD 理由の配列が空でなければ無条件に HOLD を返す。
-AUTO は micro かつ docs/test-only かつすべての HOLD 条件が不成立のときだけで、それでも
-「推奨ラベル」であり **merge 操作そのものは人間が行う**。
+`classifyMergeTier` は純関数で、tier は HOLD / REVIEW の 2 値。HOLD 理由の配列が空でなければ無条件に HOLD、
+空なら REVIEW を返す。どちらでも **merge 操作そのものは人間が行う**。
 
 ```mermaid
 flowchart TD
     IN["classifyMergeTier の入力<br/>ledger / danger / AC / iterate status / mergeable ほか"] --> H{"HOLD 理由が<br/>1 つでも成立 ?<br/>（下表）"}
 
     H -->|"1 つでも成立"| HOLD["HOLD<br/>人間 review 必須"]
-    H -->|"すべて不成立"| A{"shape が micro かつ<br/>docs / test-only ?"}
-    A -->|yes| AUTO["AUTO<br/>推奨ラベル<br/>micro eval skip なら AC 未検証を開示"]
-    A -->|no| REVIEW["REVIEW<br/>標準 — 人間が LGTM"]
+    H -->|"すべて不成立"| REVIEW["REVIEW<br/>標準 — 人間が LGTM<br/>micro eval skip なら AC 未検証を開示"]
 
     HOLD --> D["開示行を reasons に追記<br/>tier 判定値は不変"]
-    AUTO --> D
     REVIEW --> D
     D --> M["merge 操作は常に人間<br/>全 tier 共通の不変条件"]
 ```

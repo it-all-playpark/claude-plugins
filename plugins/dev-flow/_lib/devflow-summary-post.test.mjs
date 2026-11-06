@@ -63,7 +63,6 @@ function makeSandbox(postResult) {
       };
     }
     // Merge tier: changed-files
-    // → docs/test-only でないファイルを返す（AUTO 除外）
     // post-summary（dev-runner-haiku）: 呼び出しカウンタをインクリメントし postResult を返す
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       postSummaryCallCount += 1;
@@ -135,10 +134,10 @@ test('[summary-post] post-summary stub が posted:false を返しても result.m
     `投稿失敗（posted:false）でも workflow は return object を解決するべきだが null/undefined だった`,
   );
 
-  // result.merge_tier が文字列（'HOLD'|'REVIEW'|'AUTO' のいずれか）として返ること
+  // result.merge_tier が文字列（'HOLD'|'REVIEW' のいずれか）として返ること
   assert.ok(
-    typeof result?.merge_tier === 'string' && ['HOLD', 'REVIEW', 'AUTO'].includes(result.merge_tier),
-    `投稿失敗でも result.merge_tier は 'HOLD'|'REVIEW'|'AUTO' のいずれかであるべきだが '${result?.merge_tier}' だった`,
+    typeof result?.merge_tier === 'string' && ['HOLD', 'REVIEW'].includes(result.merge_tier),
+    `投稿失敗でも result.merge_tier は 'HOLD'|'REVIEW' のいずれかであるべきだが '${result?.merge_tier}' だった`,
   );
 });
 

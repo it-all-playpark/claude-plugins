@@ -528,6 +528,16 @@ comment_json() {
     echo "$output" | jq -e '.prior_devflow == {tier: "REVIEW", codes: [], url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: null}'
 }
 
+# 2 値化より前の PR コメントには AUTO の marker が残っている。読み手は tier === 'HOLD' だけを見るので tier はそのまま渡す
+@test "(5g2) 過去の PR コメントの dev-flow:AUTO marker は tier をそのまま読み、HOLD 以外（codes:[]）になる" {
+    write_pr_fixture "$HEAD_SHA" "[$(comment_json '<!-- dev-flow:AUTO -->' "https://github.com/acme/skills/pull/5#issuecomment-1")]"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.prior_devflow == {tier: "AUTO", codes: [], url: "https://github.com/acme/skills/pull/5#issuecomment-1", head_sha: null}'
+    echo "$output" | jq -e '.prior_devflow.tier != "HOLD"'
+}
+
 @test "(5h) dev-flow marker を持つコメントが無ければ prior_devflow は null" {
     write_pr_fixture "$HEAD_SHA" "[$(comment_json $'## PR #5 — pr-iterate 終了レポート\n<!-- pr-iterate:lgtm:1 -->' "https://github.com/acme/skills/pull/5#issuecomment-1")]"
     cd "$ROOT"

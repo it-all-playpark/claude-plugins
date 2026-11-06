@@ -129,7 +129,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - Evaluate を走らせるか（`runEval`）— micro 以外、または danger-grep / testsurf の hit・green-fix・drop・宣言外変更がある run
   - 宣言外変更 — implementer が申告しなかった変更を concern に積み、evaluator の重点監査に回す
   - 敵対的 security review の対象か（security-scope。`security-review.md`）— lite route の入口と nested pr-iterate の引数になる
-- shape は Evaluate の深さと Merge tier の入力になる: micro は evaluator を回さない（`runEval` で強制されたときだけ回す）、standard は
+- shape は Evaluate の深さを決める: micro は evaluator を回さない（`runEval` で強制されたときだけ回す）、standard は
   差し戻さない（例外は agent AC の未達）、complex は差し戻しループを回す
 - **失敗の扱い**:
   - danger-grep の失敗・契約外の形は全 SEC seed を unchecked にして HOLD へ（fail-closed。軸A）。proxy の null・例外は abort せず
@@ -253,9 +253,8 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 ## Merge tier
 
 - **判定**: fix 後の最終 tree に対して `merge-tier-facts`（danger-grep の再実行・changed-files・PR の mergeable・CI checks・Closes 行）を 1 回で
-  読み、danger を reconcile し直して `classifyMergeTier` が tier を決める。micro + docs/test-only + danger clean + 収束は AUTO 推奨ラベル、
-  標準は REVIEW、blocking が残れば HOLD。HOLD 理由の code は `_lib/merge-tier.mjs` の `pushBlocking` が持つ（一覧は
-  `docs/dev-flow-atlas.md` の HOLD 理由表）。どの tier でも merge は人間
+  読み、danger を reconcile し直して `classifyMergeTier` が tier を決める。2 値で、blocking が残れば HOLD、それ以外は REVIEW（`runEval` が false の run は AC 未検証を理由に開示）。
+  HOLD 理由の code は `_lib/merge-tier.mjs` の `pushBlocking` が持つ（一覧は `docs/dev-flow-atlas.md` の HOLD 理由表）。どの tier でも merge は人間
   - 敵対的 security review の対象の run（Diff triage か pr-iterate のどちらかで対象）は、pr-iterate が lgtm かつ security review が
     今の head で cleared でなければ HOLD（`security_review_unresolved`。gate_policy に依らない）
   - PR 本文に `Closes #N` が無ければ、run が決定論で組んだ最新の本文で入れ直す

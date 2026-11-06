@@ -76,12 +76,10 @@ test('AC3/AC5: llm-major-blocking では triaged にしても CONCERN-1(major) �
 
 function mergeTierInput(ledger) {
   return {
-    shape: 'standard',
     converged: isConvergedUnderPolicy(ledger, 'llm-major-advisory'),
     unresolvedDanger: false,
     breakingStructured: false,
     breakingKeyword: false,
-    docsOrTestOnly: false,
     escalateCount: 0,
     iterateStatus: 'lgtm',
     evalStaleness: 'none',

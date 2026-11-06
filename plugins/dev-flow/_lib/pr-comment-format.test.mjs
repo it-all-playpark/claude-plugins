@@ -904,7 +904,6 @@ test('buildTerminalSummaryBody: priorDevflow が null・HOLD 以外なら終了�
   const base = buildTerminalSummaryBody(opts);
   assert.equal(buildTerminalSummaryBody({ ...opts, priorDevflow: null }), base);
   assert.equal(buildTerminalSummaryBody({ ...opts, priorDevflow: { tier: 'REVIEW', codes: [], url: PRIOR_URL } }), base);
-  assert.equal(buildTerminalSummaryBody({ ...opts, priorDevflow: { tier: 'AUTO', codes: [], url: PRIOR_URL } }), base);
 });
 
 // --- final_test_red の確認範囲と未解消の文言の出し分け（issue #1180） ---------------------

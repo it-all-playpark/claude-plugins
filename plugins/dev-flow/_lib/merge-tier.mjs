@@ -107,15 +107,6 @@ export function newlyUncheckedSecClasses(before, after) {
   return result;
 }
 
-// 変更ファイルが docs(.md/.mdx/.txt, docs/) か test(*test*, *spec*, .bats, *_spec.rb / *_test.rb, *Test.php) のみか。
-export function isDocsOrTestOnly(files) {
-  if (!Array.isArray(files) || files.length === 0) return false;
-  return files.every((f) =>
-    /\.(md|mdx|txt)$/i.test(f) || /(^|\/)docs\//i.test(f)
-    || /(^|\/|\.)(test|spec)([./]|$)/i.test(f) || /\.bats$/i.test(f)
-    || /_(test|spec)\.rb$/.test(f) || /Test\.php$/.test(f));
-}
-
 // Final reconcile（pr-iterate fix 適用後の最終 tree 再検証、issue #320）の finalReconcile enum。
 // 'skipped': fixes_applied=0 で Final reconcile 自体を実行しなかった（zero-overhead routing）。
 // 'reverified': 最終 tree に対して sync + test 再実行を行った。
@@ -201,14 +192,13 @@ export function classifyMergeableState(meta) {
   return 'unknown';
 }
 
-// merge tier を算出する。merge は全 tier 人間(AUTO も推奨ラベルのみ。真 auto-merge は W6)。
+// merge tier を算出する。merge は全 tier 人間。
 // HOLD: 未収束 / 未解消 danger / breaking / ESCALATE 項目あり（人間 required-block）。
 // breaking は analyze 構造化判定 (breakingStructured) と issue title/body keyword scan
 // (breakingKeyword) の 2 入力で、reason で由来を区別する（issue #278）。
-// AUTO: micro かつ docs/test-only かつ danger clean かつ収束（推奨ラベル）。
 // REVIEW: それ以外（標準。人間が LGTM して merge）。
-// s.evalSkipped (optional boolean): true の場合、AUTO branch で AC 未検証開示 reason を追記する。
-//   micro path は evaluator 0 回で AC を判定していないため、AUTO 推奨でもその事実を開示する（issue #233）。
+// s.evalSkipped (optional boolean): true の場合、REVIEW の reasons に AC 未検証開示を追記する。
+//   micro path は evaluator 0 回で AC を判定していないため、レビューする人間にその事実を開示する（issue #233）。
 //   danger-grep hit / green-fix で security path により eval が強制実行された場合は false にして虚偽開示を避ける。
 // s.unsatisfiedAgentAc / s.unsatisfiedHumanAc (optional boolean): 最終の AC 判定で satisfied:false の AC が
 //   actor（_lib/ac-actor.mjs）別に 1 件以上あるか（issue #747）。どちらも gate_policy に依らず HOLD だが、
@@ -257,7 +247,7 @@ export function classifyMergeableState(meta) {
 // s.iterateStatus (string|null): pr-iterate の終端 status（'lgtm'|'stuck'|'fix_failed'|
 //   'max_reached'|'ci_error'|'ci_pending'|null）。'lgtm' 以外（未知値・null 含む）は
 //   決定論的 HOLD（fail-safe、allowlist しない厳格判定）。blast-radius クラス（issue #319）—
-//   merge 直前の最終ゲートが LGTM 未到達のまま AUTO/REVIEW を出すと既知の指摘が未解消のまま
+//   merge 直前の最終ゲートが LGTM 未到達のまま REVIEW を出すと既知の指摘が未解消のまま
 //   出荷されるため、gate_policy で緩和しない（軸A 不変）。
 // s.evalStaleness (string): 'none'|'hash_mismatch'|'hash_reconverged'|'iterate_incomplete'|
 //   'iterate_fixed'（issue #288 の 4 値 + issue #631 の hash_reconverged。EVAL_STALENESS_VALUES）。
@@ -289,12 +279,12 @@ export function classifyMergeableState(meta) {
 // s.mergeableState (optional 'clean'|'conflicting'|'unknown'): classifyMergeableState() が
 //   gh pr view --json mergeable,mergeStateStatus を写像した結果（issue #405）。'conflicting' は
 //   他条件によらず無条件 HOLD reason を追記する（blast-radius クラス、gate_policy に依らず不変 —
-//   base branch と conflict した状態で AUTO/REVIEW を出すと merge 不能な PR を出荷することになる）。
+//   base branch と conflict した状態で REVIEW を出すと merge 不能な PR を出荷することになる）。
 //   'clean'/'unknown'/未指定は reason 追加なし（fail-open no-op、regression なし）。'unknown' は
 //   proxy 失敗や GitHub 側 mergeability 未計算を含むため conflict と決めつけない。out-of-enum は
 //   明示 error（後方互換 scaffolding 禁止規約）。
 // s.evalVerdictFail (optional boolean): true の場合、evaluate phase が verdict=fail のまま PR へ
-//   進んだ事実を開示する専用 reason を HOLD/AUTO/REVIEW 全分岐の reasons に追記する
+//   進んだ事実を開示する専用 reason を HOLD/REVIEW 両分岐の reasons に追記する
 //   （keywordAloneDisclosure と同型 — issue #536）。未解消 findings は ledger/HOLD 条件が別途
 //   担保するため tier 判定値は変えない（可視化のみ）。未指定/null/false = reason 追加なし、
 //   tier 判定値も従来と完全同一（regression なし）。boolean 以外は明示 error
@@ -328,11 +318,11 @@ export function classifyMergeableState(meta) {
 //   依らず不変。boolean 以外は明示 error。
 // 返り値: { tier, reasons, holdReasons, holdKind, disclosures }（issue #599 で holdReasons/holdKind、
 //   issue #658 で disclosures を追加）。
-//   reasons は従来どおり string[]（HOLD 時は blocking 文言 + 可視化行、AUTO/REVIEW 時は従来文言 +
+//   reasons は従来どおり string[]（HOLD 時は blocking 文言 + 可視化行、REVIEW 時は従来文言 +
 //   可視化行）。holdReasons は HOLD 時のみ blocking 文言の [{ code, reason, kind }]（可視化行は
-//   含めない）、AUTO/REVIEW 時は []。code は HOLD_REASON_CODES の閉じた enum（summary 側の
+//   含めない）、REVIEW 時は []。code は HOLD_REASON_CODES の閉じた enum（summary 側の
 //   現状/対応写像キー）。holdKind は aggregateHoldKind(holdReasons)（HOLD 以外は null）。
-//   disclosures は HOLD/AUTO/REVIEW 全 3 分岐共通で、可視化のみ（tier 判定に寄与しない）の開示
+//   disclosures は HOLD/REVIEW 両分岐共通で、可視化のみ（tier 判定に寄与しない）の開示
 //   文言 string[]（keywordAloneDisclosure / evalFailDisclosure / ciIncompleteDisclosure / finalTestFlakyDisclosure のうち
 //   非 null のもの）。reasons の内容・順序（可視化行を末尾に含む従来形）は不変 — disclosures は
 //   reasons の部分集合を別途複製したものであり、reasons から可視化行を除去するものではない。
@@ -481,20 +471,12 @@ export function classifyMergeTier(s) {
     if (finalTestFlakyDisclosure) reasons.push(finalTestFlakyDisclosure);
     return { tier: 'HOLD', reasons, holdReasons: blockingReasons, holdKind: aggregateHoldKind(blockingReasons), disclosures };
   }
-  if (s.shape === 'micro' && s.docsOrTestOnly) {
-    const autoReasons = ['micro + docs/test-only + danger clean + 収束済 — 推奨ラベル（merge は人間）'];
-    // micro path は evaluator 0 回で AC を判定していない — AUTO 推奨でもその事実を開示する（issue #233）。
-    // evalSkipped は optional（未指定 = falsy = 開示なし）。tier 判定値は変更しない（ゲート境界不変）。
-    // 注: evalSkipped 開示行は disclosures には含めない（tier 判断（micro eval skip）に関わる情報のため）。
-    if (s.evalSkipped === true) autoReasons.push('AC は未検証（micro eval skip）— evaluator 0 回のため acceptance_criteria の充足は判定していない');
-    if (keywordAloneDisclosure) autoReasons.push(keywordAloneDisclosure);
-    if (evalFailDisclosure) autoReasons.push(evalFailDisclosure);
-    if (ciIncompleteDisclosure) autoReasons.push(ciIncompleteDisclosure);
-    return { tier: 'AUTO', reasons: autoReasons, holdReasons: [], holdKind: null, disclosures };
-  }
-  // REVIEW / AUTO の既定文は終端サマリーが「理由の節を出さない」判定に使う（devflow-summary-format.mjs の
-  // DEFAULT_TIER_REASONS）。文言を変えるときは両方を揃える（不一致は summary 側のテストが落とす）。
+  // REVIEW の既定文は終端サマリーが「理由の節を出さない」判定に使う（devflow-summary-format.mjs の
+  // DEFAULT_TIER_REASON）。文言を変えるときは両方を揃える（不一致は summary 側のテストが落とす）。
   const reviewReasons = ['標準 — 人間が LGTM して merge'];
+  // micro path は evaluator 0 回で AC を判定していない — レビューする人間にその事実を開示する（issue #233）。
+  // 注: evalSkipped 開示行は disclosures には含めない（「参考」へ回さず理由の節に出す）。
+  if (s.evalSkipped === true) reviewReasons.push('AC は未検証（micro eval skip）— evaluator 0 回のため acceptance_criteria の充足は判定していない');
   if (keywordAloneDisclosure) reviewReasons.push(keywordAloneDisclosure);
   if (evalFailDisclosure) reviewReasons.push(evalFailDisclosure);
   if (ciIncompleteDisclosure) reviewReasons.push(ciIncompleteDisclosure);

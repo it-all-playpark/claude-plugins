@@ -53,7 +53,6 @@ function makeSandbox(dangerGrepResponse, evaluatorResponse) {
       return { risk: dangerGrepResponse, files: ['src/foo.ts'], struct: null, diffhash: null };
     }
     // Merge tier: label 'merge-tier-facts'（統合呼び出し）は dangerGrepResponse を risk サブ結果に包んで返す。
-    // changed は docs/test-only でないファイル（AUTO 除外。HOLD 要因を danger のみに絞る）
     if (label === 'merge-tier-facts') {
       return mergeTierFacts({ risk: dangerGrepResponse, files: ['src/foo.ts'] });
     }

@@ -18,14 +18,11 @@ const POST_MERGE_CHECK = {
   'test-weakening': 'テスト弱体化の疑いを含む — マージ後の CI で当該テストが実行されていること（skip / only が残っていないこと）を確認する',
 };
 
-// classifyMergeTier（merge-tier.mjs）が REVIEW / AUTO で必ず先頭に積む既定の理由文。tier を言い換えた
+// classifyMergeTier（merge-tier.mjs）が REVIEW で必ず先頭に積む既定の理由文。tier を言い換えた
 // だけで情報が無いため、理由がこれだけなら「Merge tier 理由」の節を出さない。canonical は merge-tier.mjs
 // で、import できないため重複定義する（同値性は devflow-summary-format.test.mjs が classifyMergeTier の
 // 返り値と突き合わせて pin する）。
-const DEFAULT_TIER_REASONS = [
-  '標準 — 人間が LGTM して merge',
-  'micro + docs/test-only + danger clean + 収束済 — 推奨ラベル（merge は人間）',
-];
+const DEFAULT_TIER_REASON = '標準 — 人間が LGTM して merge';
 
 // 解消済み証跡の折りたたみ表の上限（issue #707）。GitHub のコメント本文上限（65536 文字）を
 // 解消済み項目の件数・evidence 長で超えないよう、行数とセル長の両方を決定論で切る。
@@ -109,7 +106,7 @@ function resolvedCell(v) {
  * dev-flow 終端サマリー markdown を生成する。
  * @param {object} opts
  * @param {number|string} opts.pr - PR 番号
- * @param {string} opts.mergeTier - 'HOLD'|'REVIEW'|'AUTO'
+ * @param {string} opts.mergeTier - 'HOLD'|'REVIEW'
  * @param {string[]} opts.mergeTierReasons - 理由文字列の配列
  * @param {string} opts.gatePolicy - gate policy 文字列（例 'llm-major-advisory'）。本文には出さず末尾の HTML コメントに置く
  * @param {Array<{id,text,severity,checked,dimension,evidence,source,floor,danger_class,fail_closed}>} opts.blockingItems - blocking items。
@@ -457,17 +454,14 @@ export function buildDevflowSummaryBody({
 
   const lines = [];
 
-  const TIER_EMOJI = { 'HOLD': '🔶', 'REVIEW': '🔷', 'AUTO': '✅' };
+  const TIER_EMOJI = { 'HOLD': '🔶', 'REVIEW': '🔷' };
 
   // 1. 見出し
   lines.push(`## dev-flow 終端サマリー — PR #${pr}`);
   lines.push('');
 
   // 2. 結論行（issue #658 AC-1）。要対応テーブルより前・at-a-glance 表より前に置く。
-  let tierPhrase;
-  if (mergeTier === 'HOLD') tierPhrase = '自動マージ対象外（HOLD）';
-  else if (mergeTier === 'REVIEW') tierPhrase = '人間レビュー後にマージ（REVIEW）';
-  else tierPhrase = '低リスク・AUTO 推奨（merge は人間）';
+  const tierPhrase = mergeTier === 'HOLD' ? '自動マージ対象外（HOLD）' : '人間レビュー後にマージ（REVIEW）';
 
   let fixPhrase;
   // 修正が要るときも助言の件数を「任意」と添え、「要対応」の ❌ と「任意の確認事項」の分け方に揃える（issue #738）。
@@ -617,10 +611,8 @@ export function buildDevflowSummaryBody({
   } else if (mergeTier === 'HOLD' && !fixRequired) {
     youDoLines.push('1. 下記「HOLD になった理由と現状」を確認し、対応列が「不要」以外の行を判断する');
     youDoLines.push(`2. diff 確認 → \`gh pr ready ${pr}\` → マージ`);
-  } else if (mergeTier === 'REVIEW') {
-    youDoLines.push(`1. diff を review し LGTM → \`gh pr ready ${pr}\` → マージ`);
   } else {
-    youDoLines.push(`1. diff を一読 → \`gh pr ready ${pr}\` → マージ`);
+    youDoLines.push(`1. diff を review し LGTM → \`gh pr ready ${pr}\` → マージ`);
   }
   let youDoN = youDoLines.length + 1;
   // ci の AC をローカル実行で satisfied にした run は、PR に付けた label の CI（full-ci の build / docker-build / 全 unit テスト等）の
@@ -653,7 +645,7 @@ export function buildDevflowSummaryBody({
   // classifyMergeTier の既定文（tier そのものの言い換え）だけなら理由の節自体を出さない。
   const disclosureSet = new Set(Array.isArray(disclosures) ? disclosures : []);
   const nonHoldReasons = (mergeTierReasons || []).filter((r) => !disclosureSet.has(r));
-  const showNonHoldReasons = nonHoldReasons.some((r) => !DEFAULT_TIER_REASONS.includes(r));
+  const showNonHoldReasons = nonHoldReasons.some((r) => r !== DEFAULT_TIER_REASON);
   if (mergeTier === 'HOLD' || showNonHoldReasons) lines.push('');
   if (mergeTier === 'HOLD' && Array.isArray(holdReasons) && holdReasons.length > 0) {
     lines.push('### HOLD になった理由と現状');

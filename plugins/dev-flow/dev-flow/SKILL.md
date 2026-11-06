@@ -237,7 +237,7 @@ AC か、AC が指定した検証コマンドを聞く観測型 AC があると�
 1 spawn する。BLOCKED 再実装（`reimpl-blocked#b`）・Validate の green-fix・Evaluate の差し戻し（`reimpl#i`）も
 同じ agent への再 spawn。shape（micro / standard / complex）は analyze ゲートでは決めず、Diff triage で
 realized diff の file 数 + AC 数 / issue_type / 構造化 breaking_change から決定論に決める
-（Evaluate の深さ・LITE gate・merge tier の入力）。詳細は `references/pipeline.md` の「Diff triage」節。
+（Evaluate の深さ・LITE gate の入力）。詳細は `references/pipeline.md` の「Diff triage」節。
 
 ## 直列複数 issue 実行時の worktree 切替
 
