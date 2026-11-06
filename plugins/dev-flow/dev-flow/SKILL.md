@@ -81,6 +81,8 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    書けないパス（`.githooks` 等）を追跡する repo で full checkout が失敗したら、取り出せるパスだけを取り出して
    取り出せないパスに skip-worktree を付ける（`skip_worktree` に列挙）。再利用する worktree に未ステージの削除
    （部分 checkout）が残っていれば `ok:false`（手順 (c)）。
+   `hooks_not_running` は repo が追跡している git hook のうち worktree で動かない event 名の配列（無ければ `[]`）。
+   run を止めず、merge tier にも使わず、終端サマリーの「参考」に載るだけ。
    `analyze` 段が失敗（GitHub 到達不能 / JSON 不正）しても prerun は `ok:true` のまま
    `analyze.ok:false` + `reason` を返し、`dev-flow-run` が needs_clarification（source=analyze_prerun）で
    人間へ返す。private repo 等で issue 本文を Jev（外部 API）に送りたくない場合は
@@ -113,7 +115,8 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
 2b. **deps install**: 手順2 とは**別の** Bash 呼び出しで、bare 名を先頭トークンにして
    `ensure-worktree-deps --setup <prerun 出力の worktree>/.devflow-tmp/prerun-setup.json` を 1 回実行する
    （前置形は使わない。手順2 のコマンドに `&&` / `;` / パイプで繋がない）。stdout の JSON 1 行が prerun の出力に
-   `deps`（`{ok, note}`）と `epoch_end`（install 完了後の時刻）を足した **setup** で、手順4 にこれを渡す。
+   `deps`（`{ok, note}`）と `epoch_end`（install 完了後の時刻）を足し、`hooks_not_running` を install 後の状態で
+   上書きした **setup** で、手順4 にこれを渡す。
    install は依存の postinstall（対象 repo の任意コード）を走らせるので、`dev-flow-prerun`（repo の
    任意コードを実行しない）の子にせず、この呼び出しで回す。`deps.ok:false` は advisory なので停止しない
    （run 内で implementer への警告になる）。exit 2（stdout 空）は setup ファイルが読めない場合で、

@@ -81,7 +81,7 @@ teardown() {
 make_setup() {
     WT="$TMP_DIR/wt"
     mkdir -p "$WT/.devflow-tmp"
-    jq -n --arg wt "$WT" '{ok: true, issue: 1, base: "dev", worktree: $wt, branch: "feature/issue-1", head: "abc", worktree_status: "created", worktree_removed: false, clean: {ok: true}, stack: {frameworks: []}, analyze: {ok: true}, ci_verify: null, local_verify: null, epoch: 1000, plugin_commit: null}' \
+    jq -n --arg wt "$WT" '{ok: true, issue: 1, base: "dev", worktree: $wt, branch: "feature/issue-1", head: "abc", worktree_status: "created", worktree_removed: false, hooks_not_running: [], clean: {ok: true}, stack: {frameworks: []}, analyze: {ok: true}, ci_verify: null, local_verify: null, epoch: 1000, plugin_commit: null}' \
         >"$WT/.devflow-tmp/prerun-setup.json"
     export DEVFLOW_DEPS_CACHE_DIR="$TMP_DIR/deps-cache"
     STUB_DIR="$TMP_DIR/stub-bin"
@@ -156,4 +156,49 @@ STUB
     make_setup
     run "$SCRIPT" --setup "$WT/.devflow-tmp/prerun-setup.json" --path "$WT"
     [ "$status" -eq 2 ]
+}
+
+# husky の形の repo を worktree に作る。.husky/_ が無いので、prerun の時点の hooks_not_running は ["pre-commit"]
+make_husky_setup() {
+    make_setup
+    git init -q -b main "$WT"
+    git -C "$WT" config user.name "Test"
+    git -C "$WT" config user.email "test@example.com"
+    git -C "$WT" config core.hooksPath .husky/_
+    mkdir -p "$WT/.husky"
+    echo "#!/bin/sh" >"$WT/.husky/pre-commit"
+    echo '{"name":"t","version":"1.0.0"}' >"$WT/package.json"
+    echo '{"lockfileVersion":3}' >"$WT/package-lock.json"
+    git -C "$WT" add .husky package.json package-lock.json
+    git -C "$WT" commit -q -m "track husky hook"
+    jq '.hooks_not_running = ["pre-commit"]' "$WT/.devflow-tmp/prerun-setup.json" >"$TMP_DIR/setup.json"
+    cp "$TMP_DIR/setup.json" "$WT/.devflow-tmp/prerun-setup.json"
+}
+
+@test "(s5) --setup: install の prepare が .husky/_ を生成すると hooks_not_running は []" {
+    make_husky_setup
+    cat >"$STUB_DIR/npm" <<'STUB'
+#!/usr/bin/env bash
+mkdir -p "$PWD/node_modules" "$PWD/.husky/_"
+printf '#!/bin/sh\nexit 0\n' >"$PWD/.husky/_/pre-commit"
+chmod +x "$PWD/.husky/_/pre-commit"
+STUB
+    chmod +x "$STUB_DIR/npm"
+
+    PATH="$STUB_DIR:$PATH" run --separate-stderr "$SCRIPT" --setup "$WT/.devflow-tmp/prerun-setup.json"
+    [ "$status" -eq 0 ]
+    printf '%s' "$output" | jq -e '.hooks_not_running == []'
+}
+
+@test "(s6) --setup: install が .husky/_ を生成しなければ hooks_not_running は残る" {
+    make_husky_setup
+    cat >"$STUB_DIR/npm" <<'STUB'
+#!/usr/bin/env bash
+mkdir -p "$PWD/node_modules"
+STUB
+    chmod +x "$STUB_DIR/npm"
+
+    PATH="$STUB_DIR:$PATH" run --separate-stderr "$SCRIPT" --setup "$WT/.devflow-tmp/prerun-setup.json"
+    [ "$status" -eq 0 ]
+    printf '%s' "$output" | jq -e '.hooks_not_running == ["pre-commit"]'
 }

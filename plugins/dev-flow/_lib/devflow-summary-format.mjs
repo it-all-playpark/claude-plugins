@@ -193,6 +193,8 @@ function resolvedCell(v) {
  *   変わった指示ファイルを一覧する固定の確認コマンドと、`security-review-isolated <PR>` の実行案内を出す
  * @param {string|null|undefined} [opts.headSha] - merge tier の結論を出した PR head の commit sha（merge-tier-facts の headRefOid）。
  *   40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる（issue #1065）
+ * @param {string[]|null|undefined} [opts.hooksNotRunning] - repo が追跡している git hook のうち worktree で動かない event 名
+ *   （prerun の hooks_not_running）。非空なら「参考」に event 名と直し方を出す（表示専用。merge tier の入力にしない）
  * @returns {string}
  */
 export function buildDevflowSummaryBody({
@@ -240,6 +242,7 @@ export function buildDevflowSummaryBody({
   conflictAutoresolve,
   securityReview,
   headSha,
+  hooksNotRunning,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -1065,6 +1068,10 @@ export function buildDevflowSummaryBody({
   const referenceLines = [];
   if (Array.isArray(disclosures)) {
     for (const line of disclosures) referenceLines.push(`- ${line}`);
+  }
+  // 失敗が出ないので、ここに書かないと hook の検査が run から消えたことに誰も気付けない。
+  if (Array.isArray(hooksNotRunning) && hooksNotRunning.length > 0) {
+    referenceLines.push(`- 動いていない git hook: ${hooksNotRunning.map((e) => `\`${mdCell(e)}\``).join(', ')} — repo が追跡しているが、この worktree では git が hook なしと解決した（この run では動いていない）。メイン checkout 側の絶対パスを \`core.hooksPath\` に設定すれば worktree からも解決される`);
   }
   if (baseFailing.length > 0) {
     referenceLines.push(`- base でも失敗する既存の失敗 ${baseFailing.length} 件（diff と無関係のため green 要件から除外）: ${baseFailing.map((f) => '`' + f + '`').join(', ')}`);
