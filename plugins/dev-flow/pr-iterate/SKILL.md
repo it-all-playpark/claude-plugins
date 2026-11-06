@@ -168,6 +168,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 ## 実行環境
 
 `pr-iterate-prerun` は `dev-flow-prerun` と同じく sandbox 内で動く（gh / git は sandbox 内で認証される）。
-起動元 repo の `.git/config` は sandbox 内から書けないので、worktree は upstream を書かずに作り、fix の push は
-`git push origin HEAD` で同名 branch へ送る（`gh pr checkout` / `git push -u` は使わない）。gh / git が失敗した
+起動元 repo の `.git/config` は sandbox 内から書けないので、worktree は upstream を書かずに作り（`gh pr checkout` /
+`git push -u` は使わない）、fix・commit-ensure・conflict-resolve の push は `pr-push start <log>` → `pr-push wait <log> --wait-sec <n>`
+で同名 branch へ送る。pre-push hook を含む push が Bash 1 回の上限を超えても待ち続ける（待機の累計 3600 秒で `pr-push stop`）。gh / git が失敗した
 場合は `error` に載って `ok:false` で止まる — 手順1 (b) のとおり人間に報告して終える。

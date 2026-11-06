@@ -236,7 +236,7 @@ test('[AC-5] ci-check が throw しても review の blocking は失われず fi
 
 // ---- AC-6: spawn 数 ----
 test('[AC-6] 1 round の spawn 数は並列化しても増えない（head 既知で並列 = head 不明で直列、LGTM round / blocking round とも）', async () => {
-  const roundSpawns = (labels) => labels.filter((l) => /^(review|ci-check|ci-wait-check|fix|commit-ensure)#1\b/.test(l)).length;
+  const roundSpawns = (labels) => labels.filter((l) => /^(review|ci-check|ci-wait-check|fix|commit-ensure)#1\b/.test(l) && !l.endsWith('.stop')).length;
 
   const lgtmPar = await run({ 'ci-check#1': ci('passed', HEAD1) });
   const lgtmSer = await run({ 'ci-check#1': ci('passed') }, { headKnown: false });

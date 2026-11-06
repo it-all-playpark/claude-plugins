@@ -494,6 +494,8 @@ const EXPECTED_PR_ITERATE = {
   'ci-check#2': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはstatus:errorに合成しci_errorへ流す' },
   // ── issue #605 review（PR #645）: retry 系 / 非 lgtm 終端の call site ──
   'fix#1-retry': { config: PR_B3, policy: 'continue', reason: 'callFixAgent内try/catchで吸収しnullとしてfix_failed終端へ倒すfail-safe経路（fix-null-retry）' },
+  'fix#1.stop': { config: PR_B3, policy: 'continue', reason: 'failOpenAgent経由。pr-push stopのthrow/nullは警告だけでretryへ進む（切り離したpushはpr-push側の打ち切りで止まる）' },
+  'fix#1-retry.stop': { config: PR_B5, policy: 'continue', reason: 'failOpenAgent経由。pr-push stopのthrow/nullは警告だけでfix_failed終端へ進む' },
   'review#1-schema-retry': { config: PR_B4, policy: 'continue', reason: 'callReviewAgent内try/catchで吸収しnullとしてreview_contract_error終端へ倒すfail-safe経路' },
   'worktree-dirty-check': { config: PR_B5, policy: 'continue', reason: 'failOpenAgent経由。非lgtm終端のdirty検出はadvisory telemetryでunknownへ倒すfail-open' },
   // ── issue #663 / #805: CI gate の script 側 poll ループ（2 回目以降は待機 + 判定の 1 spawn）──

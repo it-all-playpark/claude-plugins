@@ -6,7 +6,7 @@
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証する。
 //
 // 型の判定と解消は決定論スクリプト `conflict-autoresolve`（_shared/scripts/conflict-autoresolve.sh）だけが行い、
-// agent は fetch / script / push の bare 単文を転写するだけにする。base 側が非空の hunk をどちらで解くかは仕様判断で、
+// agent は fetch / script / pr-push の bare 単文を転写するだけにする。base 側が非空の hunk をどちらで解くかは仕様判断で、
 // LLM に解かせると PR 側を黙って捨てる解消が起き得る（incentive-structural）。解けない conflict は従来どおり
 // dev-flow の Merge tier が `mergeable_conflicting` で HOLD にする（判定は変えない）。
 
@@ -18,13 +18,15 @@ export const MERGEABLE_STATE = {
   properties: { mergeable: { type: 'string' }, mergeStateStatus: { type: 'string' }, headRefOid: { type: 'string' } },
 };
 
-// conflict-resolve#i（dev-runner-haiku）の応答。result は conflict-autoresolve の stdout JSON。
+// conflict-resolve#i（dev-runner-haiku）の応答。result は conflict-autoresolve の stdout JSON、push_result は pr-push の stdout JSON
+// （status が running なら workflow が wait を繰り返す。中身の検証は workflow の待機ループが行う）。
 export const CONFLICT_RESOLVE = {
   type: 'object',
   required: ['fetched', 'pushed'],
   properties: {
     fetched: { type: 'boolean' },
     pushed: { type: 'boolean' },
+    push_result: { type: 'object' },
     result: {
       type: 'object',
       properties: {
@@ -104,19 +106,19 @@ export function mergeableCheckPrompt({ pr, repo }) {
 
 /**
  * conflict-resolve#i の prompt。fetch と push は agent の bare 単文、merge・判定・解消は conflict-autoresolve が行う。
- * @param {{pr: number|string, wt: string, base: string, pushRule: string}} p
- *   wt: PR branch を checkout 済みの worktree の絶対パス / base: base branch 名 / pushRule: push の実行規約（timeout・再発行禁止）
+ * @param {{pr: number|string, wt: string, base: string, pushSteps: string}} p
+ *   wt: PR branch を checkout 済みの worktree の絶対パス / base: base branch 名 / pushSteps: pr-push の start / wait の手順と規約（push_result の返し方を含む）
  * @returns {string}
  */
-export function conflictResolvePrompt({ pr, wt, base, pushRule }) {
+export function conflictResolvePrompt({ pr, wt, base, pushSteps }) {
   return `## Objective\nPR #${pr} の branch に base branch（\`${base}\`）を merge し、conflict が機械的に解ける型だけなら決定論スクリプトで解消して push する。\n\n`
-    + `## Steps\n以下を順に bare 単文（先頭トークンが git または conflict-autoresolve。cd 前置・bash 前置・環境変数代入前置・&& 連結禁止）で実行せよ:\n`
+    + `## Steps\n以下を順に bare 単文（先頭トークンが git、conflict-autoresolve または pr-push。cd 前置・bash 前置・環境変数代入前置・&& 連結禁止）で実行せよ:\n`
     + `1. \`git fetch origin ${base}\` を実行する。失敗したら fetched:false, pushed:false として手順 2・3 を実行せずに返す。\n`
     + `2. \`conflict-autoresolve --worktree ${wt} --base-ref origin/${base}\` を実行し、stdout の JSON 1 行を一字一句そのまま result に入れる（要約・整形・フィールドの追加と削除は禁止）。\n`
-    + `3. result.status が "resolved" のときだけ \`git push origin HEAD\` を実行する。${pushRule}`
-    + `push が成功したら pushed:true、失敗・timeout なら pushed:false。resolved 以外は push せず pushed:false。\n`
+    + `3. result.status が "resolved" のときだけ ${pushSteps}`
+    + `push_result の status が "passed" なら pushed:true、それ以外は pushed:false。resolved 以外は push せず pushed:false（push_result はキーごと省く）。\n`
     + `merge・衝突の解消・\`git merge --abort\` を自分で行わない（スクリプトが行う）。ファイルを編集しない。\n\n`
-    + `## Output format\n{ "fetched": boolean, "result": <手順 2 の stdout JSON>, "pushed": boolean }\nprose 禁止。JSON のみ返せ。\n\n`
+    + `## Output format\n{ "fetched": boolean, "result": <手順 2 の stdout JSON>, "pushed": boolean, "push_result": <手順 3 の JSON> }\nprose 禁止。JSON のみ返せ。\n\n`
     + `## Tools\n使用可: Bash, Read\n\n`
     + `## Boundary\n上記コマンド以外のファイル変更・git 操作禁止。\n\n`
     + `## Token cap\nJSON のみ。`;

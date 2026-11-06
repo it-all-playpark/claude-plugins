@@ -3,7 +3,7 @@ bats_require_minimum_version 1.5.0
 
 # Tests for dev-flow/scripts/pr-push.sh
 #
-# PR phase の push は pre-push hook を含めて Bash 1 回の上限を超えうるので、start で切り離して wait で待つ。
+# push は pre-push hook を含めて Bash 1 回の上限を超えうるので、start で切り離して wait で待つ。
 # hook の出力が tool 出力上限を超えると末尾（hook の最終行と git の `failed to push` 行）が agent から見えなくなるので、
 # pr-push は出力全文を log に残し、末尾行だけを JSON で返す。出力全体の長さに関係なく、返す量は末尾数行に固定される。
 
@@ -122,6 +122,38 @@ remote_has_branch() {
     [ ! -e "$BATS_TEST_TMPDIR/hook-finished" ]
     remote_has_branch && false
     true
+}
+
+@test "同じ worktree で push が走っている間の start は新しい push を起動せず running を返し、走っている push の結果を wait で受け取る" {
+    events="$BATS_TEST_TMPDIR/hook-events"
+    install_hook "echo run >>'$events'; sleep 2; exit 0"
+    cd "$WT"
+    run bash "$SCRIPT" start "$LOG" 3>&-
+    [ "$(field .status)" = running ]
+    for ((i = 0; i < 100; i++)); do
+        [ -s "$events" ] && break
+        sleep 0.1
+    done
+    [ -s "$events" ]
+    run bash "$SCRIPT" start "$LOG" 3>&-
+    [ "$status" -eq 0 ]
+    [ "$(field .status)" = running ]
+    [ "$(field .exit_code)" = null ]
+    [ "$(field .log)" = "$LOG" ]
+    wait_until_done "$LOG"
+    [ "$(field .status)" = passed ]
+    [ "$(wc -l <"$events" | tr -d ' ')" -eq 1 ]
+    [ "$(git -C "$REMOTE" rev-parse refs/heads/feature/issue-1)" = "$(git -C "$WT" rev-parse HEAD)" ]
+}
+
+@test "前の push が終わった後の start は新しい push を起動する" {
+    install_hook 'exit 0'
+    push_and_wait
+    [ "$(field .status)" = passed ]
+    git -C "$WT" commit -q --allow-empty -m second
+    push_and_wait
+    [ "$(field .status)" = passed ]
+    [ "$(git -C "$REMOTE" rev-parse refs/heads/feature/issue-1)" = "$(git -C "$WT" rev-parse HEAD)" ]
 }
 
 @test "start していない log の stop は何もせず ok を返し、wait は error を返す" {

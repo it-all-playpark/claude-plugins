@@ -193,13 +193,14 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   review の approve・CI gate（passed / no_checks）・conflict なし・security review の clear（対象の run のみ）がそろった round で確定する。
   終端の status は `STATUS_HEADLINE` が持つ。
   - delta review — review#i（i ≥ 2）は前 round の review 時点の head から今の head までの fix delta だけを読む（`resolveReviewScope`）。
-    sha が確定できない round は full review。full review が critical を 1 件以上返したら、次の round は delta 範囲を渡さない full review に戻す（`nextCriticalPending`）。
+    sha が確定できない round は full review。full review が critical を 1 件以上返したら、次の round は full review に戻す（`nextCriticalPending`）。
     critical を返さない full review を経るまで delta review に戻さず LGTM にもしない — critical の fix を
-    delta review が approve しただけでは LGTM にならない（delta review は delta 外の新規指摘を出さないので、critical が出た PR は他にもある前提で扱う）
-  - fix — `pr-fixer` に blocking と CI 失敗をまとめて 1 回で渡す。review の finding の文は決定論でスクラブしてから渡す
+    delta review が approve しただけでは LGTM にならない（delta review は delta 外を指摘しないので、critical が出た PR は他にもある前提で扱う）
+  - fix — `pr-fixer` に blocking と CI 失敗をまとめて 1 回で渡す。finding の文は決定論でスクラブして渡す
     （`_lib/review-finding-scrub.mjs`）。worktree の外を指す finding は fix から外し、返り値 `human_followups` と終端サマリーの
     「人間側 follow-up」に載せる（`excludeOutsideWorktree`）
-  - ci AC — 宣言された check を各 round の CI 判定から外し、LGTM 後に別ループで完了を待つ（`waitCiVerify`。local-verify で決着した run は待たない）
+  - push — fix・commit-ensure・conflict-resolve も `pr-push start` → `wait`（`running` は fix が自分で、他は workflow が待つ）
+  - ci AC — 宣言された check を各 round の CI 判定から外し、LGTM 後に完了を待つ（`waitCiVerify`。local-verify で決着した run は待たない）
   - base との conflict — LGTM の候補の round で CONFLICTING / DIRTY なら base を merge し、`conflict-autoresolve` が衝突ファイルを型 A
     （全 hunk の base 側が空 → 和集合）/ 型 B（inline 生成区間内だけ → `sync-inlines --write` で再生成）に分類する。全ファイルが A / B なら
     push して次 round の review・CI gate を通してから LGTM。それ以外は merge を戻す — base の行を両側が書き換えた hunk は仕様判断なので LLM に解かせない
@@ -209,14 +210,14 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
     確かめられない code は未確認で人に返す（`priorHoldRecovery`）。`prior_summary` の head が今の head と違えば、review の前に「再 review 中」コメントを足す（古い LGTM を今の head の根拠にさせない）。`--direction <file>` の修正方針は prerun が PR の worktree の
     外で読み、fix の prompt にだけ入れる（判定者には渡さない）
 - **失敗の扱い**:
-  - review の null・throw は同じ prompt で 1 回だけ再試行し、だめなら `review_contract_error`、fix の null は 1 回再試行して `fix_failed`、
-    fix の commit・push を保証できなければ `fix_failed`（fail-closed。LGTM にしない）
+  - review の null・throw は 1 回再試行し、だめなら `review_contract_error`。fix の null（1 回再試行）と commit・push を保証できない fix は `fix_failed`（fail-closed）
+  - その spawn の throw・null・push 未完了・待機累計 3600 秒は `pr-push stop`
   - CI を確定できない・上限まで pending は LGTM にしない（fail-closed）
-  - security review を clear にできない run は LGTM にしない（fail-closed。`security-review.md`）
-  - mergeable の取得失敗は conflict の自動解消を試みない（fail-open。definitive な conflict は Merge tier が HOLD にする）。自動解消できない
+  - security review を clear にできない run は LGTM にしない（fail-closed）
+  - mergeable の取得失敗は conflict の自動解消を試みない（fail-open）。自動解消できない
     conflict は LGTM で終え、Merge tier の HOLD に任せる（fail-safe）
   - `nested.caller` の欠落・out-of-enum（`NESTED_CALLERS`）、`--direction` の不正は throw（fail-closed）
-  - isolation probe の `written:false` は throw（fail-closed）。直前の cleanup と「再 review 中」コメントの投稿の失敗は fail-open
+  - isolation probe の `written:false` は throw（fail-closed）。cleanup と「再 review 中」コメントの投稿の失敗は fail-open
 - **コード**: `.claude/workflows/pr-iterate.js`（`callReviewAgent`・`callFixAgent`・`ensureFixCommitted`・`applyCiFix`・`waitCiVerify`・
   `autoResolveConflict`・`securityRound`・`buildTerminalSummaryBody`）、`_lib/review-delta.mjs`、`_lib/review-normalize.mjs`、
   `_lib/ci-check.mjs`、`_lib/conflict-autoresolve.mjs`、`_lib/security-review.mjs`、`_lib/pr-comment-format.mjs`

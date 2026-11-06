@@ -78,7 +78,7 @@ test.each(CASES)('[fix-retry] $name', async ({ reviewer, ci, fix, want }) => {
   assertNoCrash(error, 'priterate-fix-retry');
   assert.equal(error, null, `run 全体が例外終了してはならないが error が発生: ${error?.name}: ${error?.message}`);
 
-  const fixCallsMade = calls.filter((c) => c.label.startsWith('fix#'));
+  const fixCallsMade = calls.filter((c) => c.label.startsWith('fix#') && !c.label.endsWith('.stop'));
   assert.equal(result?.status, want.status, `status は ${want.status} であるべきだが '${result?.status}' だった`);
   assert.deepEqual(fixCallsMade.map((c) => c.label), want.fixCalls, `fix agent の呼び出し列が想定と違う`);
   if ('iterations' in want) assert.equal(result?.iterations, want.iterations, `iterations は ${want.iterations} であるべきだが ${result?.iterations} だった`);

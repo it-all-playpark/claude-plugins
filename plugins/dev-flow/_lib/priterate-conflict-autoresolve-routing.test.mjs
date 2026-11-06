@@ -1,6 +1,6 @@
 // pr-iterate の LGTM 確定前の base conflict 自動解消（issue #916）の経路を VM 挙動で pin する。
 //
-// [routing] CI gate 通過後に mergeable が CONFLICTING → conflict-resolve（fetch → conflict-autoresolve → push）→
+// [routing] CI gate 通過後に mergeable が CONFLICTING → conflict-resolve（fetch → conflict-autoresolve → pr-push）→
 //           次 iteration の review（remerge-diff の範囲）→ CI gate → mergeable 再確認 → lgtm の順に進む
 // [unresolved] 自動解消できない conflict では lgtm 確定経路が conflict の無い run と同じで、dev-flow の Merge tier は
 //           mergeable_conflicting で HOLD になり、HOLD 理由の横に止めたファイルと型が出る
@@ -73,7 +73,7 @@ test('[routing] CI gate 通過後に mergeable が CONFLICTING なら conflict-r
 
   const resolve = calls.find((c) => c.label === 'conflict-resolve#1');
   assert.equal(resolve.agentType, 'dev-flow:dev-runner-haiku');
-  for (const step of ['`git fetch origin main`', '`conflict-autoresolve --worktree /tmp/wt --base-ref origin/main`', '`git push origin HEAD`']) {
+  for (const step of ['`git fetch origin main`', '`conflict-autoresolve --worktree /tmp/wt --base-ref origin/main`', '`pr-push start /tmp/wt/.devflow-tmp/push-output.log`']) {
     assert.ok(resolve.prompt.includes(step), `conflict-resolve#1 の prompt に ${step} が無い:\n${resolve.prompt}`);
   }
 

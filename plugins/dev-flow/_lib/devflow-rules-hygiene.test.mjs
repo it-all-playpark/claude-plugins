@@ -213,7 +213,7 @@ test('(n) 起動形と GitHub I/O の規範は rules にだけ置き、exec-prox
     .map(([name]) => name);
   assert.deepEqual(holders, ['rules'], `GitHub I/O の規範が rules 以外にもある: ${holders.join(', ')}`);
   const exec = rulesSrc.split('\n## exec-proxy')[1] ?? '';
-  for (const s of ['`git push origin HEAD`', '`origin/<branch>`', 'index を書く git', 'prerun は repo の任意コードを実行しない', '`security-review-isolated`']) {
+  for (const s of ['push は `pr-push`（`git push origin HEAD`）', '`origin/<branch>`', 'index を書く git', 'prerun は repo の任意コードを実行しない', '`security-review-isolated`']) {
     assert.ok(exec.includes(s), `rules の exec-proxy 節に「${s}」が無い`);
   }
   assert.ok(execProxySrc.includes('`.claude/rules/dev-flow.md`'), 'exec-proxy.md が rules を指していない');

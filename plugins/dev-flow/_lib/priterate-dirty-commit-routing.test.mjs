@@ -105,19 +105,18 @@ test('[D1][AC-3] fix applied:true + commit-ensure dirty:false -> commit-ensure#1
       `commit-ensure#1 の prompt は '${forbidden}' を含んではならない。先頭400文字: ${commitEnsurePrompt.slice(0, 400)}`,
     );
   }
-  // add / commit / push は cwd で実行する bare 単文。worktree は upstream を持たない（起動元 repo の .git/config は
-  // sandbox 内から書けない）ので、push は remote と HEAD を明示し、push 済みの判定は origin/<head_ref> と比べる
+  // add / commit / pr-push は cwd で実行する bare 単文。worktree は upstream を持たない（起動元 repo の .git/config は
+  // sandbox 内から書けない）ので、push 済みの判定は origin/<head_ref> と比べる
   const gitCmds = commitEnsurePrompt.match(/`git [^`]*`/g) ?? [];
   assert.ok(
     gitCmds.includes(ADD_NEW_PATHS) && commitEnsurePrompt.includes('`git commit -m "fix(pr-5)')
-      && gitCmds.includes('`git push origin HEAD`'),
-    `commit-ensure#1 の prompt は bare ${ADD_NEW_PATHS} / \`git commit\` / \`git push origin HEAD\` を含むべき: ${gitCmds.join(' | ')}`,
+      && commitEnsurePrompt.includes('`pr-push start /tmp/wt/.devflow-tmp/push-output.log`'),
+    `commit-ensure#1 の prompt は bare ${ADD_NEW_PATHS} / \`git commit\` / \`pr-push start\` を含むべき: ${gitCmds.join(' | ')}`,
   );
   // 未ステージの削除を stage する add（-A / --all / -u 等）も worktree 全体（.）の add も使わない（issue #875 / #1201）
   assert.deepEqual(gitCmds.filter((c) => / add /.test(c)), [ADD_NEW_PATHS],
     `commit-ensure#1 の add は新規行のパスだけを stage する ${ADD_NEW_PATHS} だけ: ${gitCmds.join(' | ')}`);
-  assert.deepEqual([...new Set(gitCmds.filter((c) => c.includes(' push')))], ['`git push origin HEAD`'],
-    `commit-ensure#1 の push は \`git push origin HEAD\` だけ（-u を付けない）: ${gitCmds.join(' | ')}`);
+  assert.deepEqual(gitCmds.filter((c) => c.includes(' push')), [], `commit-ensure#1 の push は pr-push だけで行う: ${gitCmds.join(' | ')}`);
   assert.ok(
     commitEnsurePrompt.includes('`git -C /tmp/wt rev-list "origin/feature/x"..HEAD --count`'),
     `commit-ensure#1 の push 済み判定は origin/<head_ref> と比べるべき: ${gitCmds.join(' | ')}`,

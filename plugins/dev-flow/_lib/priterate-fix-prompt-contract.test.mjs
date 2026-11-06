@@ -6,7 +6,7 @@
 //   (a) fix_loop の fix#1 prompt（VM で実 prompt を観測）
 //   (b) ci_gate の fix#1 prompt（同上）
 //   (c) 静的: callFixAgent に渡す prompt は fixPrompt() で組んだものだけ（5 要素を持たない prompt を足させない）
-//   (d)(e) fix#1 / commit-ensure#1 の push は timeout: 600000 指定・run_in_background 禁止・再発行禁止（issue #804）
+//   (d)(e) fix#1 / commit-ensure#1 の push は pr-push の start / wait だけで行い、timeout: 600000 指定・run_in_background 禁止・再発行禁止
 //   (f) AC がある run の security review の指摘を含む fix#1 にだけ、AC の番号付き一覧と AC とぶつかる指摘を人に返させる指示が入る（issue #1163）
 
 import { test } from 'vitest';
@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash, securityReviewHeadOf } from './test-helpers/vm-sandbox.mjs';
+import { PR_PUSH_MAX_WAIT_SEC, PR_PUSH_WAIT_SEC, prPushLogPath } from './pr-artifacts.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const prIterateSrc = readFileSync(join(here, '..', '.claude/workflows/pr-iterate.js'), 'utf8');
@@ -77,16 +78,18 @@ test('[fix-prompt-contract] (b) ci_gate の fix#1 prompt も同じ 5 要素と B
   assert.ok(prompt.includes('ci::bats'), 'CI 失敗が prompt に届いていない');
 });
 
-// push は Bash timeout: 600000 指定・run_in_background 禁止・再発行禁止（issue #804）
+// push は pr-push の start / wait だけで行い、Bash timeout: 600000 指定・run_in_background 禁止
+const PUSH_LOG = prPushLogPath('/tmp/wt');
+const WAIT_COMMAND = `pr-push wait ${PUSH_LOG} --wait-sec ${PR_PUSH_WAIT_SEC}`;
 function assertPushRule(prompt, label) {
-  assert.ok(prompt.includes('Bash tool の `timeout: 600000` を指定して実行'), `${label}: push の timeout: 600000 指定が無い: ${prompt}`);
+  assert.ok(prompt.includes(`\`pr-push start ${PUSH_LOG}\` → \`${WAIT_COMMAND}\``), `${label}: push の start / wait が無い: ${prompt}`);
+  assert.ok(prompt.includes('git の push サブコマンドを直接実行しない'), `${label}: pr-push 以外で push させない指示が無い`);
+  assert.ok(prompt.includes('Bash tool の `timeout: 600000` を指定して実行'), `${label}: timeout: 600000 指定が無い: ${prompt}`);
   assert.ok(prompt.includes('`run_in_background` は使わない（禁止）'), `${label}: run_in_background 禁止が無い`);
-  assert.ok(prompt.includes('push の結果が返るまで次の手順を実行しない'), `${label}: push 完了待ちの指示が無い`);
-  assert.ok(prompt.includes('push を再発行しない（timeout・background 化した場合も含む）'), `${label}: push 再発行禁止が無い`);
-  assert.ok(prompt.includes('600 秒の timeout に達した場合もリトライしない'), `${label}: timeout 到達時のリトライ禁止が無い`);
+  assert.ok(prompt.includes('`--no-verify` は付けない'), `${label}: --no-verify 禁止が無い`);
 }
 
-test('[fix-prompt-contract] (d) fix_loop / ci_gate の fix#1 prompt は push に timeout: 600000 を指定させ、background 化・再発行を禁じ、timeout は applied:false で中断させる', async () => {
+test('[fix-prompt-contract] (d) AC-4: fix_loop / ci_gate の fix#1 prompt は running の間 pr-push wait を繰り返させ、push を再発行させず、failed は読んで直させ、待ち切れなければ applied:false で中断させる', async () => {
   const prompts = {
     fix_loop: await fixPromptOf({
       'review#1': { decision: 'request-changes', issues: [{ severity: 'major', topic: 't', file: 'src/a.js', line: 1, description: 'd', suggestion: '' }], summary: 'ng' },
@@ -100,15 +103,24 @@ test('[fix-prompt-contract] (d) fix_loop / ci_gate の fix#1 prompt は push に
   for (const [label, prompt] of Object.entries(prompts)) {
     const steps = sectionOf(prompt, '## Steps');
     assertPushRule(steps, label);
-    assert.ok(steps.indexOf('`git push origin HEAD`') < steps.indexOf('timeout: 600000'), `${label}: push 規約が git push 手順の後に無い`);
+    assert.ok(steps.includes(`\`running\` の間は \`${WAIT_COMMAND}\` を繰り返す`), `${label}: running の間 wait を繰り返す指示が無い: ${steps}`);
+    assert.ok(steps.includes('push を再発行しない — start を実行し直さない'), `${label}: push 再発行禁止が無い: ${steps}`);
+    assert.ok(steps.includes('push の結果が返るまで次の手順を実行しない'), `${label}: push 完了待ちの指示が無い`);
+    assert.ok(steps.includes('`failed` なら JSON の `tail` と `log`（出力全文のファイル）を読み、直せるなら直して commit してから start から実行する'), `${label}: hook の失敗を読んで直す指示が無い: ${steps}`);
+    assert.ok(steps.includes(`wait を ${PR_PUSH_MAX_WAIT_SEC / PR_PUSH_WAIT_SEC} 回（待機の累計 ${PR_PUSH_MAX_WAIT_SEC} 秒）`) && steps.includes('applied:false とし、summary に status と `tail` を書く'), `${label}: 待ち切れないときの中断の指示が無い: ${steps}`);
     // 作業ツリーは PR head の branch で用意済み。checkout させず（.git/config に追跡設定を書く）、そのまま修正させる
     assert.ok(steps.includes('作業ツリー（/tmp/wt）は PR ブランチ（`feature/x`）を checkout 済み。branch を切り替えずに、(1) 下記の'), `${label}: checkout 済み前提の手順になっていない: ${steps}`);
     assert.doesNotMatch(prompt, /gh pr checkout/, `${label}: fix prompt が gh pr checkout を指示している`);
-    assert.ok(steps.includes('timeout に達した場合はそこで中断し、applied:false とし、summary に timeout に達した旨と push の stderr 末尾を書く'), `${label}: timeout 到達時の報告指示が無い: ${steps}`);
   }
 });
 
-test('[fix-prompt-contract] (e) commit-ensure#1 prompt の push も timeout: 600000 指定・background 化と再発行の禁止を持ち、失敗・timeout でも再発行しない', async () => {
+test('[fix-prompt-contract] (d) AC-4: agents/pr-fixer.md も running の間 pr-push wait を繰り返し、push を再発行しないと指示する', () => {
+  const agentDoc = readFileSync(join(here, '..', 'agents', 'pr-fixer.md'), 'utf8');
+  assert.ok(agentDoc.includes('`running` の間は `pr-push wait` を繰り返し、push を再発行しない'), agentDoc);
+  assert.ok(agentDoc.includes('`failed` は `tail` と log を読み、'), agentDoc);
+});
+
+test('[fix-prompt-contract] (e) commit-ensure#1 prompt の push は最初の wait までで push_result を返させ、wait の反復・push の再発行をさせない', async () => {
   const { ctx, calls } = makePrIterateSandbox({
     overrides: {
       'review#1': { decision: 'request-changes', issues: [{ severity: 'major', topic: 't', file: 'src/a.js', line: 1, description: 'd', suggestion: '' }], summary: 'ng' },
@@ -122,7 +134,9 @@ test('[fix-prompt-contract] (e) commit-ensure#1 prompt の push も timeout: 600
   assert.ok(ensure, `commit-ensure#1 が dispatch されていない: ${calls.map((c) => c.label).join(', ')}`);
   const steps = sectionOf(ensure.prompt, '## Steps');
   assertPushRule(steps, 'commit-ensure');
-  assert.ok(steps.includes('`git push origin HEAD`（失敗・timeout でも再発行せず手順 3 へ進む）'), `commit-ensure: push 失敗・timeout 時に再発行しない指示が無い: ${steps}`);
+  assert.ok(steps.includes('stdout の JSON を、キーの追加・削除・値の書き換えをせず push_result に入れる'), `commit-ensure: push_result の verbatim 転写の指示が無い: ${steps}`);
+  assert.ok(steps.includes('push_result の status が running でも wait を繰り返さない（待ち続けるのは呼び出し側）。push を再発行しない（timeout・background 化した場合も含む）'), `commit-ensure: wait の反復・再発行の禁止が無い: ${steps}`);
+  assert.ok(steps.includes('失敗・timeout・running でも手順 3 へ進む'), `commit-ensure: push の結果によらず手順 3 へ進む指示が無い: ${steps}`);
 });
 
 // AC がある run の security review の指摘を含む fix は、AC を書き換えて指摘を塞がず、ぶつかる指摘を人に返す（issue #1163）
