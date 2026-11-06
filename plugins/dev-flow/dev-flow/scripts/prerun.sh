@@ -13,7 +13,7 @@
 # detect-stack（+ detect-test-runner の受理パターンを stack.test_runners に載せる）。各段は独立に ok/error を報告し、後続段を巻き込まない。
 # worktree 作成で取り出せないパスには skip-worktree を付け（出力の skip_worktree）、未ステージの削除が残る再利用 worktree は
 # ok:false で止める（_shared/scripts/worktree-checkout.sh）。repo が追跡している hook のうち worktree で動かない event を
-# 出力の hooks_not_running に載せる（終端サマリーへの開示だけで、run を止めず gate の入力にもしない）。
+# 出力の hooks_not_running に載せる（終端サマリーへの開示だけで、run を止めず gate の入力にもしない。deps 段が install 後の状態で上書きする）。
 #
 # deps install はここで行わない（issue #868）。install は対象 repo の依存の postinstall（任意コード）を走らせる。
 # このスクリプトは repo の任意コードを実行しない — install は wrapper が別の Bash 呼び出しで回す。

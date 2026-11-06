@@ -115,7 +115,8 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
 2b. **deps install**: 手順2 とは**別の** Bash 呼び出しで、bare 名を先頭トークンにして
    `ensure-worktree-deps --setup <prerun 出力の worktree>/.devflow-tmp/prerun-setup.json` を 1 回実行する
    （前置形は使わない。手順2 のコマンドに `&&` / `;` / パイプで繋がない）。stdout の JSON 1 行が prerun の出力に
-   `deps`（`{ok, note}`）と `epoch_end`（install 完了後の時刻）を足した **setup** で、手順4 にこれを渡す。
+   `deps`（`{ok, note}`）と `epoch_end`（install 完了後の時刻）を足し、`hooks_not_running` を install 後の状態で
+   上書きした **setup** で、手順4 にこれを渡す。
    install は依存の postinstall（対象 repo の任意コード）を走らせるので、`dev-flow-prerun`（repo の
    任意コードを実行しない）の子にせず、この呼び出しで回す。`deps.ok:false` は advisory なので停止しない
    （run 内で implementer への警告になる）。exit 2（stdout 空）は setup ファイルが読めない場合で、
