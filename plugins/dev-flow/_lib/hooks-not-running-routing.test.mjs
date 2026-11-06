@@ -3,7 +3,7 @@
 // 開示だけで判定を変えないことを VM 実行で pin する。
 //   (a) 非空の run: 投稿する終端サマリーに event 名と core.hooksPath の直し方が載る
 //   (b) 空の run: 載らない
-//   (c) merge tier（REVIEW / AUTO / HOLD）・理由は空の run と変わらず、サマリーの差はその 1 行だけ
+//   (c) merge tier（REVIEW / HOLD）・理由は空の run と変わらず、サマリーの差はその 1 行だけ
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -16,7 +16,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude/workflows/dev-flow.js'), 'utf8');
 
 const NOT_RUNNING = ['pre-commit', 'commit-msg', 'pre-push'];
-const DOCS_FILES = ['docs/a.md'];
 
 async function run(hooksNotRunning, overrides = {}) {
   const { ctx, calls } = makeDevFlowSandbox({
@@ -45,12 +44,6 @@ test('[hooks-not-running] (b) 空の run は載らない', async () => {
 
 test.each([
   ['REVIEW', {}],
-  ['AUTO', {
-    'impl:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: DOCS_FILES, summary: 's', concerns: [] },
-    'danger-grep': { risk: { ok: true, hits: [] }, files: DOCS_FILES, struct: null, diffhash: { hash: 'AAA', empty: false } },
-    'merge-tier-facts': mergeTierFacts({ files: DOCS_FILES }),
-    'ci-check-lite': { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], waited_seconds: 0, poll_attempts: 0 },
-  }],
   ['HOLD', { 'merge-tier-facts': mergeTierFacts({ pr: { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', headRefOid: 'a'.repeat(40) } }) }],
 ])('[hooks-not-running] (c) %s の run は非空でも merge tier・理由が変わらず、サマリーの差は開示の 1 行だけ', async (tier, overrides) => {
   const without = await run([], overrides);

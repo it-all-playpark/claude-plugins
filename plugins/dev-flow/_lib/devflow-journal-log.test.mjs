@@ -71,7 +71,6 @@ function makeSandbox(journalResult, evaluatorOverrides) {
       return { pr_url: 'https://github.com/acme/skills/pull/1', pr_number: 1, committed: true };
     }
     // Merge tier: changed-files
-    // → docs/test-only でないファイルを返す（AUTO 除外）
     // post-summary（dev-runner-haiku）: posted:true 固定
     if (label === 'post-summary' && agentType === 'dev-flow:dev-runner-haiku') {
       return { posted: true, method: 'gh pr comment', url: 'http://x' };
@@ -180,10 +179,10 @@ test('[journal-log] AC#3: journal-log stub が saved:true / logged:false を返�
     `ログ失敗（logged:false）でも workflow は return object を解決するべきだが null/undefined だった`,
   );
 
-  // result.merge_tier が文字列（'HOLD'|'REVIEW'|'AUTO' のいずれか）として返ること
+  // result.merge_tier が文字列（'HOLD'|'REVIEW' のいずれか）として返ること
   assert.ok(
-    typeof result?.merge_tier === 'string' && ['HOLD', 'REVIEW', 'AUTO'].includes(result.merge_tier),
-    `ログ失敗でも result.merge_tier は 'HOLD'|'REVIEW'|'AUTO' のいずれかであるべきだが '${result?.merge_tier}' だった`,
+    typeof result?.merge_tier === 'string' && ['HOLD', 'REVIEW'].includes(result.merge_tier),
+    `ログ失敗でも result.merge_tier は 'HOLD'|'REVIEW' のいずれかであるべきだが '${result?.merge_tier}' だった`,
   );
   // journal-log が logged:false を返すため result.journal_log_status は 'log_failed'
   assert.equal(

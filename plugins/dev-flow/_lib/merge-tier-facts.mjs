@@ -19,8 +19,8 @@
 //                   組でしか ok:true を出さない以上 subagent の StructuredOutput 転記で落ちたもの（issue #746）。
 //                   danger-grep 実行不能と区別するため error を MERGE_FACTS_RISK_DROPPED_ERROR にし、
 //                   isRiskValueDropped で判別させる。
-//   changedFiles  - fail-safe。changed.ok===true かつ value.files が string[] のときのみ採用、それ以外 null
-//                   （null は isDocsOrTestOnly が false を返し AUTO 昇格しない安全側）。
+//   changedFiles  - fail-open。changed.ok===true かつ value.files が string[] のときのみ採用、それ以外 null
+//                   （tier には効かない。null は終端サマリーの .github/workflows/ 変更の確認行を出さないだけ）。
 //   prMeta        - fail-open。pr.ok===true かつ value が object のときのみ {ok:true, mergeable,
 //                   mergeStateStatus, headRefOid}、それ以外 {ok:false, error}
 //                   （classifyMergeableState が 'unknown' → conflict gate は HOLD しない）。

@@ -87,7 +87,7 @@ function makeSandbox(epochMode) {
       return withEpoch({ pr_url: 'https://github.com/acme/skills/pull/1', pr_number: 1, committed: true });
     }
     // Merge tier: changed-files
-    // → docs/test-only でないファイルを返す（AUTO 除外。給電対象ではない）
+    // → 給電対象ではない
     // post-summary（issue #550 F3）: posted:true 固定 + end mark の給電元
     // （post-summary 応答の optional epoch から feedClockMark('end', ...) へ給電される）。
     if (label === 'post-summary') {
@@ -220,8 +220,8 @@ test('[duration-telemetry] epochMode=fail: 給電元 stub が epoch を省略す
     `給電元 stub 全滅（fail-open）でも workflow は return object を解決するべきだが null/undefined だった（error: ${error?.name}: ${error?.message}）`,
   );
   assert.ok(
-    typeof result?.merge_tier === 'string' && ['HOLD', 'REVIEW', 'AUTO'].includes(result.merge_tier),
-    `給電元 stub 全滅でも result.merge_tier は 'HOLD'|'REVIEW'|'AUTO' のいずれかであるべきだが '${result?.merge_tier}' だった`,
+    typeof result?.merge_tier === 'string' && ['HOLD', 'REVIEW'].includes(result.merge_tier),
+    `給電元 stub 全滅でも result.merge_tier は 'HOLD'|'REVIEW' のいずれかであるべきだが '${result?.merge_tier}' だった`,
   );
 
   const capturedPrompt = getJournalPrompts()[0] ?? '';

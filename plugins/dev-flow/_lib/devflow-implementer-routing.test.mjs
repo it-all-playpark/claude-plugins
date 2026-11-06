@@ -161,7 +161,7 @@ const implementerStubWith = (files) => ({ prompt }) => {
   return { status: 'DONE', task_id: m ? m[1] : 'unknown', files, summary: 's', concerns: [] };
 };
 
-test('[implementer] micro（clean, docs-only）: LITE 経路 — pr-review-lite 1 回・workflow(pr-iterate) 0 回・merge_tier AUTO に AC 未検証開示', async () => {
+test('[implementer] micro（clean, docs-only）: LITE 経路 — pr-review-lite 1 回・workflow(pr-iterate) 0 回・merge_tier REVIEW に AC 未検証開示', async () => {
   const DOCS = ['docs/x.md'];
   const { calls, result, error, workflowCalls } = await runMicro({
     'impl:serial:issue-1': implementerStubWith(DOCS),
@@ -176,8 +176,8 @@ test('[implementer] micro（clean, docs-only）: LITE 経路 — pr-review-lite 
   assert.equal(reviewers.length, 1, `pr-reviewer は lite 1 回のはず: ${reviewers.map((c) => c.label).join(', ')}`);
   assert.ok(/lite/i.test(reviewers[0].label), `pr-reviewer の label が lite 経路でない: ${reviewers[0].label}`);
   assert.equal(workflowCalls.length, 0, `clean micro で workflow('pr-iterate') が呼ばれた: ${workflowCalls.map((w) => w.name).join(', ')}`);
-  assert.equal(result?.merge_tier, 'AUTO', `merge_tier は AUTO のはず: ${result?.merge_tier} (${JSON.stringify(result?.merge_tier_reasons)})`);
-  assert.ok((result?.merge_tier_reasons ?? []).some((r) => r.includes('AC は未検証')), `AUTO の理由に AC 未検証開示が無い: ${JSON.stringify(result?.merge_tier_reasons)}`);
+  assert.equal(result?.merge_tier, 'REVIEW', `merge_tier は REVIEW のはず: ${result?.merge_tier} (${JSON.stringify(result?.merge_tier_reasons)})`);
+  assert.ok((result?.merge_tier_reasons ?? []).some((r) => r.includes('AC は未検証')), `REVIEW の理由に AC 未検証開示が無い: ${JSON.stringify(result?.merge_tier_reasons)}`);
   assert.equal(result?.shape, 'micro', `clean micro の実効 shape が micro でない: ${result?.shape}`);
 });
 

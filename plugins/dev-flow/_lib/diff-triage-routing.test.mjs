@@ -125,7 +125,7 @@ function reconcileAndClassify(risk) {
   const secItems = ledger.items.filter((it) => it.source === 'seed' && it.dimension === 'security');
   const blocking = policyBlockingItems(ledger, DEFAULT_GATE_POLICY);
   const converged = blocking.every((it) => it.checked);
-  const { tier } = classifyMergeTier({ converged, shape: 'micro', docsOrTestOnly: false });
+  const { tier } = classifyMergeTier({ converged });
   return { secItems, converged, tier };
 }
 

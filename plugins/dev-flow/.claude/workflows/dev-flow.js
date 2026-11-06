@@ -778,14 +778,6 @@ function newlyUncheckedSecClasses(before, after) {
   return result;
 }
 
-function isDocsOrTestOnly(files) {
-  if (!Array.isArray(files) || files.length === 0) return false;
-  return files.every((f) =>
-    /\.(md|mdx|txt)$/i.test(f) || /(^|\/)docs\//i.test(f)
-    || /(^|\/|\.)(test|spec)([./]|$)/i.test(f) || /\.bats$/i.test(f)
-    || /_(test|spec)\.rb$/.test(f) || /Test\.php$/.test(f));
-}
-
 const FINAL_RECONCILE_VALUES = ['skipped', 'reverified', 'unavailable'];
 
 const HOLD_REASON_KINDS = ['deterministic_recheck', 'human_judgment'];
@@ -977,15 +969,8 @@ function classifyMergeTier(s) {
     if (finalTestFlakyDisclosure) reasons.push(finalTestFlakyDisclosure);
     return { tier: 'HOLD', reasons, holdReasons: blockingReasons, holdKind: aggregateHoldKind(blockingReasons), disclosures };
   }
-  if (s.shape === 'micro' && s.docsOrTestOnly) {
-    const autoReasons = ['micro + docs/test-only + danger clean + 収束済 — 推奨ラベル（merge は人間）'];
-    if (s.evalSkipped === true) autoReasons.push('AC は未検証（micro eval skip）— evaluator 0 回のため acceptance_criteria の充足は判定していない');
-    if (keywordAloneDisclosure) autoReasons.push(keywordAloneDisclosure);
-    if (evalFailDisclosure) autoReasons.push(evalFailDisclosure);
-    if (ciIncompleteDisclosure) autoReasons.push(ciIncompleteDisclosure);
-    return { tier: 'AUTO', reasons: autoReasons, holdReasons: [], holdKind: null, disclosures };
-  }
   const reviewReasons = ['標準 — 人間が LGTM して merge'];
+  if (s.evalSkipped === true) reviewReasons.push('AC は未検証（micro eval skip）— evaluator 0 回のため acceptance_criteria の充足は判定していない');
   if (keywordAloneDisclosure) reviewReasons.push(keywordAloneDisclosure);
   if (evalFailDisclosure) reviewReasons.push(evalFailDisclosure);
   if (ciIncompleteDisclosure) reviewReasons.push(ciIncompleteDisclosure);
@@ -2367,10 +2352,7 @@ const POST_MERGE_CHECK = {
   'test-weakening': 'テスト弱体化の疑いを含む — マージ後の CI で当該テストが実行されていること（skip / only が残っていないこと）を確認する',
 };
 
-const DEFAULT_TIER_REASONS = [
-  '標準 — 人間が LGTM して merge',
-  'micro + docs/test-only + danger clean + 収束済 — 推奨ラベル（merge は人間）',
-];
+const DEFAULT_TIER_REASON = '標準 — 人間が LGTM して merge';
 
 const RESOLVED_ROWS_MAX = 30;
 const RESOLVED_CELL_MAX = 200;
@@ -2641,15 +2623,12 @@ function buildDevflowSummaryBody({
 
   const lines = [];
 
-  const TIER_EMOJI = { 'HOLD': '🔶', 'REVIEW': '🔷', 'AUTO': '✅' };
+  const TIER_EMOJI = { 'HOLD': '🔶', 'REVIEW': '🔷' };
 
   lines.push(`## dev-flow 終端サマリー — PR #${pr}`);
   lines.push('');
 
-  let tierPhrase;
-  if (mergeTier === 'HOLD') tierPhrase = '自動マージ対象外（HOLD）';
-  else if (mergeTier === 'REVIEW') tierPhrase = '人間レビュー後にマージ（REVIEW）';
-  else tierPhrase = '低リスク・AUTO 推奨（merge は人間）';
+  const tierPhrase = mergeTier === 'HOLD' ? '自動マージ対象外（HOLD）' : '人間レビュー後にマージ（REVIEW）';
 
   let fixPhrase;
   if (fixRequired) fixPhrase = unresolvedAdvisory.length > 0 ? `修正作業が必要です（助言 ${unresolvedAdvisory.length} 件は任意）` : '修正作業が必要です';
@@ -2775,10 +2754,8 @@ function buildDevflowSummaryBody({
   } else if (mergeTier === 'HOLD' && !fixRequired) {
     youDoLines.push('1. 下記「HOLD になった理由と現状」を確認し、対応列が「不要」以外の行を判断する');
     youDoLines.push(`2. diff 確認 → \`gh pr ready ${pr}\` → マージ`);
-  } else if (mergeTier === 'REVIEW') {
-    youDoLines.push(`1. diff を review し LGTM → \`gh pr ready ${pr}\` → マージ`);
   } else {
-    youDoLines.push(`1. diff を一読 → \`gh pr ready ${pr}\` → マージ`);
+    youDoLines.push(`1. diff を review し LGTM → \`gh pr ready ${pr}\` → マージ`);
   }
   let youDoN = youDoLines.length + 1;
   if (localVerify != null && localVerify.status === 'passed') {
@@ -2804,7 +2781,7 @@ function buildDevflowSummaryBody({
 
   const disclosureSet = new Set(Array.isArray(disclosures) ? disclosures : []);
   const nonHoldReasons = (mergeTierReasons || []).filter((r) => !disclosureSet.has(r));
-  const showNonHoldReasons = nonHoldReasons.some((r) => !DEFAULT_TIER_REASONS.includes(r));
+  const showNonHoldReasons = nonHoldReasons.some((r) => r !== DEFAULT_TIER_REASON);
   if (mergeTier === 'HOLD' || showNonHoldReasons) lines.push('');
   if (mergeTier === 'HOLD' && Array.isArray(holdReasons) && holdReasons.length > 0) {
     lines.push('### HOLD になった理由と現状');
@@ -8086,7 +8063,7 @@ feedClockMark('final_end', finalEpochRes)
 
 // ============================================================
 // Phase Merge tier: 最終 diff に danger-grep を再実行し、merge tier を算出して提示する(W5)。
-// merge は全 tier 人間。AUTO は推奨ラベルのみ(真 auto-merge は W6 earned-autonomy)。
+// merge は全 tier 人間。
 // ============================================================
 phase('Merge tier')
 // Merge tier 統合 exec-proxy: Merge tier が使う read-only 事実（diff-hash / danger-grep / changed-files /
@@ -8157,7 +8134,7 @@ if (reuseDiffTriage) {
     log('Merge tier: Final reconcile の changed-files-final を再利用（同一 tree）')
   } else {
     changed = { files: facts.changedFiles }
-    if (facts.changedFiles == null) log('⚠️ changed-files の取得に失敗 — docs/test-only 判定は不成立扱い（AUTO 昇格しない安全側）')
+    if (facts.changedFiles == null) log('⚠️ changed-files の取得に失敗 — 終端サマリーの .github/workflows/ 変更の確認行は出ない（tier には効かない）')
   }
 }
 const dangerHitsFinal = riskFinal.ok === true ? [...new Set(secHitsOf(riskFinal).map((h) => h.class))] : []
@@ -8279,12 +8256,10 @@ const securityReviewFinal = {
 const securityReviewUnresolved = securityReviewFinal.target && securityReviewFinal.status !== 'cleared'
 if (securityReviewUnresolved) log(`⚠️ security review: 対象だが今の PR head で clear になっていない（iterate status=${iterate?.status ?? 'null'} / security status=${securityReviewFinal.status}）— HOLD`)
 const mergeTier = classifyMergeTier({
-  shape: state.EFFECTIVE_SHAPE,
   converged: isConvergedUnderPolicy(state.ledger, GATE_POLICY),
   unresolvedDanger,
   breakingStructured,
   breakingKeyword,
-  docsOrTestOnly: isDocsOrTestOnly(changed.files ?? []),
   escalateCount,
   unsatisfiedAgentAc: acGapsFinal.agent.length > 0,
   unsatisfiedHumanAc: acGapsFinal.human.length > 0,
@@ -8536,8 +8511,6 @@ return {
   journal_log_status: journalLogStatus,
   note: (mergeTier.tier === 'HOLD'
     ? `HOLD（${mergeTier.holdKind === 'deterministic_recheck' ? '決定論再チェックで解消しうる — CI 完了 / 再取得後に再確認' : '人間判断必須'}）: 人間 review 必須。merge 前に reasons を確認してください（${mergeTier.reasons.join(' / ')}）`
-    : mergeTier.tier === 'AUTO'
-    ? 'AUTO 推奨（低リスク）。最終判断と merge は人間が行ってください'
     : 'REVIEW: 人間が LGTM を確認して merge してください')
     + (summaryPosted ? '' : `。⚠️ 終端サマリ未投稿: PR #${pr.pr_number} に dev-flow の終端サマリコメントが無い（post-summary 失敗）`),
 }

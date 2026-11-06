@@ -8,8 +8,7 @@
 //   (C) realized 1 件（宣言済み）→ shape=micro + evaluator 0 回 + lite route
 //   (D) danger-grep の files が null（count 欠損）→ shape=complex + evaluator >= 1 回
 //   (E) breaking_change=true + realized 1 件 → shape=complex + evaluator >= 1 回
-//   (F) realized 4 docs/test-only + changed-files docs-only → shape=standard → merge_tier=REVIEW（AUTO 禁止）
-//   (G) realized 1 docs + changed-files docs-only → shape=micro → merge_tier=AUTO
+//   (F) realized 4 docs/test-only → shape=standard（evaluator を回すので AC 未検証を開示しない）
 //   (H) req.shape='complex' + estimated 7 でも realized 1 件なら micro（LLM raise は無い）
 //   (I) return object / journal telemetry に事前見積もり由来のキー（effective_shape / shape_refloored /
 //       triviality / estimated_file_count）が無い
@@ -121,17 +120,12 @@ test('[realized-shape] (E) breaking_change=true + realized 1 file → shape=comp
   assert.match(returned.shape_reason, /breaking change detected/);
 });
 
-test('[realized-shape] (F) realized 4 docs/test-only + changed-files docs-only → shape=standard → merge_tier=REVIEW（AUTO 禁止）', async () => {
+test('[realized-shape] (F) realized 4 docs/test-only → shape=standard → merge_tier=REVIEW、AC 未検証の開示なし', async () => {
   const docsTestFiles = ['docs/a.md', 'docs/b.md', 'README.md', '_lib/foo.test.mjs'];
   const { returned } = await run({ ...filesOverrides(docsTestFiles) });
   assert.equal(returned.shape, 'standard');
-  assert.equal(returned.merge_tier, 'REVIEW', `4 files は standard なので docs-only でも AUTO にしない（got ${returned.merge_tier}）`);
-});
-
-test('[realized-shape] (G) realized 1 docs + changed-files docs-only → shape=micro → merge_tier=AUTO', async () => {
-  const { returned } = await run({ ...filesOverrides(['docs/a.md']) });
-  assert.equal(returned.shape, 'micro');
-  assert.equal(returned.merge_tier, 'AUTO', `genuine micro + docs-only は AUTO（got ${returned.merge_tier}: ${(returned.merge_tier_reasons ?? []).join(' / ')}）`);
+  assert.equal(returned.merge_tier, 'REVIEW');
+  assert.ok(!returned.merge_tier_reasons.some((r) => r.includes('AC は未検証')), JSON.stringify(returned.merge_tier_reasons));
 });
 
 test("[realized-shape] (H) req.shape='complex' + estimated_change_file_count=7 でも realized 1 file なら micro（LLM raise 廃止）", async () => {

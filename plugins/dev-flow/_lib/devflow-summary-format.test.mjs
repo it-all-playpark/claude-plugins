@@ -73,7 +73,6 @@ const SIX_SATISFIED_AC = Array.from({ length: 6 }, (_, i) => (
 const AT_A_GLANCE_CASES = [
   { name: 'mergeTier=HOLD', input: { mergeTier: 'HOLD', mergeTierReasons: ['danger hit detected'] }, want: '🔶 **HOLD**' },
   { name: 'mergeTier=REVIEW', input: { mergeTier: 'REVIEW' }, want: '🔷 **REVIEW**' },
-  { name: 'mergeTier=AUTO', input: { mergeTier: 'AUTO', mergeTierReasons: [] }, want: '✅ **AUTO**' },
   { name: 'testGreen=true', input: { testGreen: true }, want: '✅ green' },
   { name: 'testGreen=false', input: { testGreen: false }, want: '❌ red' },
   { name: 'testGreen=null', input: { testGreen: null }, want: '不明' },
@@ -125,18 +124,16 @@ test('dangerHits 0件 -> 「検出クラス:」行を含まない', () => {
 
 // ─── Merge tier 理由 ──────────────────────────────────────────────────────────
 
-test('mergeTierReasons が空の場合、HOLD（holdReasons なしのフォールバック）は「理由記載なし」を出し、AUTO / REVIEW は理由の節を出さない', () => {
+test('mergeTierReasons が空の場合、HOLD（holdReasons なしのフォールバック）は「理由記載なし」を出し、REVIEW は理由の節を出さない', () => {
   const hold = buildDevflowSummaryBody({
     ...BASE_INPUT,
     mergeTier: 'HOLD',
     mergeTierReasons: [],
   });
   assert.ok(hold.includes('理由記載なし'), 'HOLD は reasons 空時も理由の節を残す');
-  for (const tier of ['AUTO', 'REVIEW']) {
-    const body = buildDevflowSummaryBody({ ...BASE_INPUT, mergeTier: tier, mergeTierReasons: [] });
-    assert.ok(!body.includes('**Merge tier 理由**'), `${tier}: 理由の節を出さない`);
-    assert.ok(!body.includes('理由記載なし'), `${tier}: 情報ゼロの定型行を出さない`);
-  }
+  const review = buildDevflowSummaryBody({ ...BASE_INPUT, mergeTier: 'REVIEW', mergeTierReasons: [] });
+  assert.ok(!review.includes('**Merge tier 理由**'), 'REVIEW: 理由の節を出さない');
+  assert.ok(!review.includes('理由記載なし'), 'REVIEW: 情報ゼロの定型行を出さない');
 });
 
 test('mergeTierReasons が複数件の場合はすべてを含む', () => {
@@ -678,18 +675,15 @@ test('blockingItems に非 SEC item のみ含まれる -> 「Security clearance:
 
 // ─── 末尾マーカー (AC-5) ──────────────────────────────────────────────────────
 
-test('末尾マーカーが /<!-- dev-flow:(REVIEW|AUTO) -->$/ で末尾一致', () => {
-  for (const tier of ['REVIEW', 'AUTO']) {
-    const body = buildDevflowSummaryBody({ ...BASE_INPUT, mergeTier: tier, mergeTierReasons: [] });
-    const pattern = new RegExp(`<!-- dev-flow:${tier} -->$`);
-    assert.match(body, pattern, `${tier} のマーカーが末尾一致`);
-  }
+test('末尾マーカーが /<!-- dev-flow:REVIEW -->$/ で末尾一致', () => {
+  const body = buildDevflowSummaryBody({ ...BASE_INPUT, mergeTier: 'REVIEW', mergeTierReasons: [] });
+  assert.match(body, /<!-- dev-flow:REVIEW -->$/, 'REVIEW のマーカーが末尾一致');
 });
 
 test('issue #930: HOLD の末尾マーカーは merge tier の holdReasons の code を順に並べた <!-- dev-flow:HOLD codes=... -->', () => {
   const mt = classifyMergeTier({
-    shape: 'standard', converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false,
-    docsOrTestOnly: false, escalateCount: 0, evalStaleness: 'none', unsatisfiedAgentAc: false,
+    converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false,
+    escalateCount: 0, evalStaleness: 'none', unsatisfiedAgentAc: false,
     iterateStatus: 'stuck', unsatisfiedHumanAc: true, ciChecks: { ok: true, checks: [{ name: 'Bats Tests', bucket: 'fail' }] },
   });
   assert.equal(mt.tier, 'HOLD');
@@ -1749,7 +1743,7 @@ test('AC5 pin: unchecked SEC seed 混在時、未確認行が全文で常時可�
 });
 
 test('AC4 不変性 pin: 再帰 freeze した入力で throw せず、各 tier で末尾マーカー・at-a-glance・入力不変を保つ', () => {
-  for (const tier of ['HOLD', 'REVIEW', 'AUTO']) {
+  for (const tier of ['HOLD', 'REVIEW']) {
     const blockingItems = deepFreeze([
       { id: 'B1', text: 'unresolved', severity: 'critical', checked: false, dimension: 'security', evidence: 'e1' },
       { id: 'B2', text: 'resolved', severity: 'major', checked: true, dimension: 'quality', evidence: 'e2' },
@@ -2138,9 +2132,9 @@ test('issue #625: evalCell 反転後も iterate_fixed 注記行は残る（確�
 // 確定仕様5（理由欄は消さない）+ AC4（merge tier 不変・byte 一致）。
 test('issue #625 確定仕様5+AC4: merge tier は不変のまま at-a-glance 表示のみ最終状態を反映する', () => {
   const tierInput = {
-    shape: 'standard', converged: true, unresolvedDanger: false,
+    converged: true, unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
-    docsOrTestOnly: false, escalateCount: 0,
+    escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'iterate_fixed', evalVerdictFail: true,
     finalReconcile: 'reverified', finalTestGreen: true, finalAcReconcile: 'reverified',
   };
@@ -2188,9 +2182,9 @@ test('issue #625 確定仕様5+AC4: merge tier は不変のまま at-a-glance �
 
 test('issue #625: 決定性 — 確定仕様5+AC4 と同一入力で 2 回呼んでも byte 一致', () => {
   const tierInput = {
-    shape: 'standard', converged: true, unresolvedDanger: false,
+    converged: true, unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
-    docsOrTestOnly: false, escalateCount: 0,
+    escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'iterate_fixed', evalVerdictFail: true,
     finalReconcile: 'reverified', finalTestGreen: true, finalAcReconcile: 'reverified',
   };
@@ -2829,8 +2823,8 @@ test('issue #738 AC5: 結論行・「あなたがやること」が指す「要�
 
 test('issue #747 AC4: HOLD 理由の表でエージェント AC 未達（取りこぼし）と人手 AC 待ちが別の現状・対応で出る', () => {
   const mt = classifyMergeTier({
-    iterateStatus: 'lgtm', shape: 'standard', converged: true, unresolvedDanger: false, breakingStructured: false,
-    breakingKeyword: false, docsOrTestOnly: false, escalateCount: 0, evalStaleness: 'none',
+    iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false,
+    breakingKeyword: false, escalateCount: 0, evalStaleness: 'none',
     unsatisfiedAgentAc: true, unsatisfiedHumanAc: true,
   });
   const body = buildDevflowSummaryBody({
@@ -2900,8 +2894,8 @@ const UNLINKED_E_794 = { id: 'E1', text: 'naming', severity: 'major', checked: f
 
 function input794({ blockingItems = [AC4_FINAL_794], advisoryItems = [AC4_ESC_794], agent = [3], human = [] } = {}) {
   const mt = classifyMergeTier({
-    iterateStatus: 'lgtm', shape: 'standard', converged: false, unresolvedDanger: false, breakingStructured: false,
-    breakingKeyword: false, docsOrTestOnly: false, escalateCount: advisoryItems.filter((it) => it.escalate === true).length,
+    iterateStatus: 'lgtm', converged: false, unresolvedDanger: false, breakingStructured: false,
+    breakingKeyword: false, escalateCount: advisoryItems.filter((it) => it.escalate === true).length,
     evalStaleness: 'none', unsatisfiedAgentAc: agent.length > 0, unsatisfiedHumanAc: human.length > 0,
   });
   return {
@@ -2987,8 +2981,8 @@ const OBS_ACTION_844 = '実行して AC の主張を確認する（例: merge �
 
 function input844({ human = [0], observational = [0] } = {}) {
   const mt = classifyMergeTier({
-    iterateStatus: 'lgtm', shape: 'standard', converged: true, unresolvedDanger: false, breakingStructured: false,
-    breakingKeyword: false, docsOrTestOnly: false, escalateCount: 0, evalStaleness: 'none',
+    iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false,
+    breakingKeyword: false, escalateCount: 0, evalStaleness: 'none',
     unsatisfiedAgentAc: false, unsatisfiedHumanAc: human.length > 0,
   });
   return {
@@ -3061,13 +3055,13 @@ test('issue #1208: 同じ AC にまとめた行でも、AC 判定の現状にコ
 
 // ─── issue #829: 終端サマリの定型行・二重掲載・矛盾する注記を formatter で消す ───────────
 // 直近の dev-flow 製 PR の終端サマリに出ていた形（REVIEW の fix 適用後 reverified・REVIEW の fix なし・
-// AUTO の micro docs・HOLD の security hit + 未解消混在）を formatter の入力として再構成した fixture。
+// REVIEW の micro docs・HOLD の security hit + 未解消混在）を formatter の入力として再構成した fixture。
 // SEC seed は seedSecurityLedger → reconcileDanger、Merge tier の理由は classifyMergeTier の返り値を
 // そのまま渡す（workflow と同じ経路で作るので、既定文や clean の evidence が変わればここで落ちる）。
 
 const CLASSIFY_BASE_829 = {
-  iterateStatus: 'lgtm', shape: 'standard', converged: true, unresolvedDanger: false, breakingStructured: false,
-  breakingKeyword: false, docsOrTestOnly: false, escalateCount: 0, evalStaleness: 'none',
+  iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false,
+  breakingKeyword: false, escalateCount: 0, evalStaleness: 'none',
   unsatisfiedAgentAc: false, unsatisfiedHumanAc: false,
 };
 
@@ -3119,9 +3113,8 @@ const FIXTURES_829 = {
     acResults: AC_ALL_OK_829,
     iterateStatus: 'lgtm',
   }),
-  // AUTO: micro の docs only
-  autoMicro: fixture829({
-    classify: { shape: 'micro', docsOrTestOnly: true },
+  // REVIEW: micro の docs only
+  reviewMicro: fixture829({
     shape: 'micro',
     blockingItems: secItems829(),
     iterateStatus: 'lgtm',
@@ -3152,7 +3145,7 @@ const FIXTURES_829 = {
     finalAcReconcile: 'unavailable',
   }),
 };
-const NON_HOLD_829 = ['reviewFixedReverified', 'reviewPlain', 'autoMicro'];
+const NON_HOLD_829 = ['reviewFixedReverified', 'reviewPlain', 'reviewMicro'];
 
 // 表の行をセルに分ける（fixture のセルは | を含まない）
 function cells829(row) {
@@ -3166,7 +3159,7 @@ function countOf(body, s) {
 test('issue #829 fixture: Merge tier は意図した tier になる（formatter の入力が workflow と同じ経路で作れている）', () => {
   assert.equal(FIXTURES_829.reviewFixedReverified.mergeTier, 'REVIEW');
   assert.equal(FIXTURES_829.reviewPlain.mergeTier, 'REVIEW');
-  assert.equal(FIXTURES_829.autoMicro.mergeTier, 'AUTO');
+  assert.equal(FIXTURES_829.reviewMicro.mergeTier, 'REVIEW');
   assert.equal(FIXTURES_829.holdMixed.mergeTier, 'HOLD');
   assert.deepEqual(FIXTURES_829.holdMixed.holdReasons.map((r) => r.code), ['ledger_unconverged', 'escalate', 'ac_agent_unsatisfied', 'final_ac_unavailable']);
 });
@@ -3223,7 +3216,7 @@ test('issue #829 AC3: finalAcReconcile=reverified のバナーは「AC は最終
 
 test('issue #829 AC4: 「未解消」は blocking の行にだけ使い、advisory の現状列は「未対応（任意）」になる', () => {
   for (const name of NON_HOLD_829) {
-    assert.equal(countOf(buildDevflowSummaryBody(FIXTURES_829[name]), '未解消'), 0, `${name}: REVIEW / AUTO に「未解消」の語が無い`);
+    assert.equal(countOf(buildDevflowSummaryBody(FIXTURES_829[name]), '未解消'), 0, `${name}: REVIEW に「未解消」の語が無い`);
   }
   for (const name of ['reviewFixedReverified', 'reviewPlain', 'holdMixed']) {
     const body = buildDevflowSummaryBody(FIXTURES_829[name]);
@@ -3242,7 +3235,7 @@ test('issue #829 AC4: 「未解消」は blocking の行にだけ使い、adviso
   assert.ok(hold.includes(`| ⚠️ 要判断 | 要判断（advisory ESCALATE） | design | ${ESCALATE_OPEN_829.text} | 未判断 | 要判断（preference） |`), 'ESCALATE は「任意」にせず未判断');
 });
 
-test('issue #829 AC5: REVIEW / AUTO で理由が既定文だけなら理由の節を出さず、gate_policy は末尾の HTML コメントに置き、結論行に行動指示を書かない', () => {
+test('issue #829 AC5: REVIEW で理由が既定文だけなら理由の節を出さず、gate_policy は末尾の HTML コメントに置き、結論行に行動指示を書かない', () => {
   assert.deepEqual(FIXTURES_829.reviewPlain.mergeTierReasons, ['標準 — 人間が LGTM して merge'], 'REVIEW の既定文');
   for (const name of NON_HOLD_829) {
     const input = FIXTURES_829[name];
@@ -3256,9 +3249,9 @@ test('issue #829 AC5: REVIEW / AUTO で理由が既定文だけなら理由の�
     assert.ok(!conclusion.includes('してください') && !conclusion.includes('diff') && !conclusion.includes('マージして'), `${name}: 結論行に行動指示が無い: ${conclusion}`);
     assert.ok(body.includes(`\`gh pr ready ${input.pr}\``), `${name}: 行動指示は「あなたがやること」にある`);
   }
-  // 既定文以外の理由（AUTO の AC 未検証開示）があれば理由の節は残る
-  const mt = classifyMergeTier({ ...CLASSIFY_BASE_829, shape: 'micro', docsOrTestOnly: true, evalSkipped: true });
-  const body = buildDevflowSummaryBody({ ...FIXTURES_829.autoMicro, mergeTierReasons: mt.reasons });
+  // 既定文以外の理由（evaluator を回していない run の AC 未検証開示）があれば理由の節は残る
+  const mt = classifyMergeTier({ ...CLASSIFY_BASE_829, evalSkipped: true });
+  const body = buildDevflowSummaryBody({ ...FIXTURES_829.reviewMicro, mergeTierReasons: mt.reasons, disclosures: mt.disclosures });
   assert.ok(body.includes('**Merge tier 理由**:'), '既定文以外があれば理由の節を出す');
   assert.ok(body.includes('- AC は未検証（micro eval skip）'), '既定文以外の理由を出す');
 });
@@ -3289,12 +3282,9 @@ test('issue #829 AC6: HOLD の理由・blocking・ESCALATE・未達 AC は 1 件
   for (const r of input.mergeTierReasons) assert.ok(fallback.includes(`- ${r}`), `フォールバックの理由が残る: ${r}`);
 });
 
-test('issue #829: summary の既定理由文は classifyMergeTier の REVIEW / AUTO の既定文と一致する（重複定義の同値性 pin）', () => {
-  const review = classifyMergeTier({ ...CLASSIFY_BASE_829 });
-  const auto = classifyMergeTier({ ...CLASSIFY_BASE_829, shape: 'micro', docsOrTestOnly: true });
-  for (const mt of [review, auto]) {
-    assert.equal(mt.reasons.length, 1, `${mt.tier}: 既定文だけ`);
-    const body = buildDevflowSummaryBody({ ...BASE_INPUT, mergeTier: mt.tier, mergeTierReasons: mt.reasons });
-    assert.ok(!body.includes(mt.reasons[0]), `${mt.tier}: 既定文「${mt.reasons[0]}」を既定として扱う`);
-  }
+test('issue #829: summary の既定理由文は classifyMergeTier の REVIEW の既定文と一致する（重複定義の同値性 pin）', () => {
+  const mt = classifyMergeTier({ ...CLASSIFY_BASE_829 });
+  assert.equal(mt.reasons.length, 1, `${mt.tier}: 既定文だけ`);
+  const body = buildDevflowSummaryBody({ ...BASE_INPUT, mergeTier: mt.tier, mergeTierReasons: mt.reasons });
+  assert.ok(!body.includes(mt.reasons[0]), `${mt.tier}: 既定文「${mt.reasons[0]}」を既定として扱う`);
 });

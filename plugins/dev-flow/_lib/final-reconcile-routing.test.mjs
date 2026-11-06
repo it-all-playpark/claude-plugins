@@ -422,7 +422,7 @@ test("[final-reconcile] (n) test#final red + failed_files の単体再実行 gre
 
   // 終端サマリー: テスト欄は red に flake 候補を添え、参考に再実行したファイルと HOLD を解除しない旨が出る
   const body = summaryBodyOf(calls);
-  const glance = body.split('\n').find((l) => l.startsWith('| ') && /\*\*(HOLD|REVIEW|AUTO)\*\*/.test(l));
+  const glance = body.split('\n').find((l) => l.startsWith('| ') && /\*\*(HOLD|REVIEW)\*\*/.test(l));
   assert.equal(glance.split('|').slice(1, -1).map((s) => s.trim())[2], '❌ red（単体再実行は green — flake 候補）');
   assert.ok(body.includes('test flake 候補（単体再実行は green）: plugins/dev-flow/_shared/scripts/diff-risk-classify.bats'), '(n) 参考に flake 候補の開示行（ファイル）が出る');
   assert.ok(body.includes('HOLD は解除しない（final_test_red のまま'), '(n) 開示行に HOLD を解除しない旨が出る');

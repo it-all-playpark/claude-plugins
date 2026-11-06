@@ -44,7 +44,7 @@ async function run(overrides = {}, workflow, extra) {
   const post = calls.find((c) => c.label === 'post-summary');
   assert.ok(post, 'post-summary が呼ばれるはず');
   const body = post.prompt.slice(post.prompt.indexOf('<<<DEV_FLOW_BODY_BEGIN>>>'), post.prompt.indexOf('<<<DEV_FLOW_BODY_END>>>'));
-  const glance = body.split('\n').find((l) => l.startsWith('| ') && /\*\*(HOLD|REVIEW|AUTO)\*\*/.test(l));
+  const glance = body.split('\n').find((l) => l.startsWith('| ') && /\*\*(HOLD|REVIEW)\*\*/.test(l));
   const testCell = glance.split('|').slice(1, -1).map((s) => s.trim())[2];
   const conclusion = body.split('\n').find((l) => l.startsWith('**結論: '));
   return { result, calls, body, testCell, conclusion };
