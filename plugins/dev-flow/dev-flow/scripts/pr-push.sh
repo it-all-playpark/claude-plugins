@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pr-push.sh - dev-flow PR phase の push を切り離して実行し、出力全文を log に残して末尾行だけを JSON で返す
+# pr-push.sh - dev-flow の PR phase と pr-iterate の push を切り離して実行し、出力全文を log に残して末尾行だけを JSON で返す
 #
 # Usage:
 #   pr-push start <log-file>
@@ -7,12 +7,14 @@
 #   pr-push stop  <log-file> [--timeout-sec <n=60>]
 #   （内部）pr-push supervise --state-dir <dir> / pr-push run
 #
-# cwd（PR phase の worktree）で `git push origin HEAD` を 1 回だけ実行する（--no-verify は付けない・
+# cwd（PR の worktree）で `git push origin HEAD` を 1 回だけ実行する（--no-verify は付けない・
 # リトライしない。-u は付けない — 起動元 repo の .git/config は sandbox 内から書けないので upstream を書かない）。
 #
 # 切り離し実行: lock 待ちと pre-push hook を含む push は Bash 1 回の上限（600 秒）を超えうるので、start は push を
 # 切り離して起動してすぐ返り、wait が最大 --wait-sec 待つ。stop は push を止める（TERM は hook まで届き、lock も解放する）。
-# supervisor・状態ファイルは _lib/scripts/bg-job.sh が持ち、state dir は <log-file>.job（前回の残りは start が止めて作り直す）。
+# supervisor・状態ファイルは _lib/scripts/bg-job.sh が持ち、state dir は <log-file>.job（終わった前回の残りは start が作り直す）。
+# 同じ log の push が走っている間の start は新しい push を起動せず running を返し、走っている push はそのまま続ける（結果は wait で受け取る）。
+# fix#i-retry のような再 spawn が start から実行し直しても、push を二重にせず、途中まで進んだ hook も捨てない。
 # 止まらないまま残らないよう、切り離した push は PR_PUSH_TIMEOUT_SEC で打ち切る（status "timeout"）。workflow の待機の累計上限
 # （PR_PUSH_MAX_WAIT_SEC）より長くして、普段は workflow の stop で止まる。これは run が落ちて stop が呼ばれないときのための上限。
 #
@@ -116,11 +118,21 @@ emit_job_response() {
     emit "${status:-error}" "${code:-null}" "$tail"
 }
 
+push_running() {
+    [[ -f "$BG_JOB_STATE" ]] || return 1
+    bg_job_is_alive "$(bg_job_read_field "$BG_JOB_STATE" .supervisor_pid)" \
+        && [[ "$(bg_job_read_field "$BG_JOB_STATE" .phase)" != done ]]
+}
+
 cmd_start() {
     local reset cmd
     if ! git rev-parse --path-format=absolute --git-common-dir >/dev/null 2>&1; then
         emit error null "not a git repository: $PWD"
         exit 2
+    fi
+    if push_running; then
+        emit running null ""
+        return
     fi
     reset="$(bg_job_reset "$PWD")" || { emit_job_response "$reset"; return; }
     : >"$log"

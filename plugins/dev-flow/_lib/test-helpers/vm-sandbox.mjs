@@ -482,6 +482,8 @@ export function prIterateResponder(overrides = {}, rounds = null) {
       const v = overrides[label];
       return typeof v === 'function' ? v(callCtx) : v;
     }
+    // pr-push stop（fix#i.stop 等）は fix#i の応答列を消費させない
+    if (label.endsWith('.stop')) return { ok: true, stopped: false, was_running: false };
     if (rounds) {
       const r = rounds(callCtx);
       if (r !== undefined) return r;

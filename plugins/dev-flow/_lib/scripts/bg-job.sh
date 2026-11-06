@@ -5,7 +5,7 @@
 #   detached な supervisor を 1 本起こし、command の起動・停止・後片付けはすべて supervisor が行う。
 #   止めるときは state dir に stop file を置く。結果は supervisor が result.json に atomic に書く。
 #   生存確認は kill -0 だけで行う（pgrep 等のプロセス一覧は sandbox 内で失敗する）。
-#   sandbox 内で動かすので、source するスクリプトを excludedCommands に入れない。認証付きの network I/O は、PR phase の push を
+#   sandbox 内で動かすので、source するスクリプトを excludedCommands に入れない。認証付きの network I/O は、PR の push を
 #   切り離す pr-push（`pr-push start <log>` / `wait <log> --wait-sec <n>` / `stop <log>`。lock の待ち上限 1800 秒・workflow の
 #   待機の累計上限 3600 秒）だけが例外で持ち、source する他のスクリプトは持たない。
 #

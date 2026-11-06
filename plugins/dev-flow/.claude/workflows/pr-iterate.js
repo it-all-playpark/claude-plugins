@@ -1311,6 +1311,7 @@ const CONFLICT_RESOLVE = {
   properties: {
     fetched: { type: 'boolean' },
     pushed: { type: 'boolean' },
+    push_result: { type: 'object' },
     result: {
       type: 'object',
       properties: {
@@ -1362,15 +1363,15 @@ function mergeableCheckPrompt({ pr, repo }) {
     + `## Token cap\nJSON のみ。1 行以内。`;
 }
 
-function conflictResolvePrompt({ pr, wt, base, pushRule }) {
+function conflictResolvePrompt({ pr, wt, base, pushSteps }) {
   return `## Objective\nPR #${pr} の branch に base branch（\`${base}\`）を merge し、conflict が機械的に解ける型だけなら決定論スクリプトで解消して push する。\n\n`
-    + `## Steps\n以下を順に bare 単文（先頭トークンが git または conflict-autoresolve。cd 前置・bash 前置・環境変数代入前置・&& 連結禁止）で実行せよ:\n`
+    + `## Steps\n以下を順に bare 単文（先頭トークンが git、conflict-autoresolve または pr-push。cd 前置・bash 前置・環境変数代入前置・&& 連結禁止）で実行せよ:\n`
     + `1. \`git fetch origin ${base}\` を実行する。失敗したら fetched:false, pushed:false として手順 2・3 を実行せずに返す。\n`
     + `2. \`conflict-autoresolve --worktree ${wt} --base-ref origin/${base}\` を実行し、stdout の JSON 1 行を一字一句そのまま result に入れる（要約・整形・フィールドの追加と削除は禁止）。\n`
-    + `3. result.status が "resolved" のときだけ \`git push origin HEAD\` を実行する。${pushRule}`
-    + `push が成功したら pushed:true、失敗・timeout なら pushed:false。resolved 以外は push せず pushed:false。\n`
+    + `3. result.status が "resolved" のときだけ ${pushSteps}`
+    + `push_result の status が "passed" なら pushed:true、それ以外は pushed:false。resolved 以外は push せず pushed:false（push_result はキーごと省く）。\n`
     + `merge・衝突の解消・\`git merge --abort\` を自分で行わない（スクリプトが行う）。ファイルを編集しない。\n\n`
-    + `## Output format\n{ "fetched": boolean, "result": <手順 2 の stdout JSON>, "pushed": boolean }\nprose 禁止。JSON のみ返せ。\n\n`
+    + `## Output format\n{ "fetched": boolean, "result": <手順 2 の stdout JSON>, "pushed": boolean, "push_result": <手順 3 の JSON> }\nprose 禁止。JSON のみ返せ。\n\n`
     + `## Tools\n使用可: Bash, Read\n\n`
     + `## Boundary\n上記コマンド以外のファイル変更・git 操作禁止。\n\n`
     + `## Token cap\nJSON のみ。`;
@@ -1477,8 +1478,21 @@ const COMMIT_ENSURE = {
     dirty: { type: 'boolean' }, committed: { type: 'boolean' }, pushed: { type: 'boolean' },
     head_sha: { type: 'string' }, delta_shortstat: { type: 'string' },
     porcelain: { type: 'array', items: { type: 'string' } }, porcelain_after: { type: 'array', items: { type: 'string' } },
+    push_result: { type: 'object' },
   },
 }
+// pr-push start / wait の stdout（status は pr-push.sh の閉じた enum）と stop の応答。stop の結果は run の行き先を変えない（止まらなくても pr-push 側の打ち切りで止まる）。
+const PR_PUSH_RESULT_SCHEMA = {
+  type: 'object', required: ['status', 'log'],
+  properties: {
+    status: { type: 'string', enum: ['running', 'passed', 'failed', 'timeout', 'stopped', 'error'] },
+    exit_code: { type: ['number', 'null'] },
+    log: { type: 'string' },
+    tail: { type: 'string' },
+    epoch: { type: 'number' },
+  },
+}
+const PR_PUSH_STOP_SCHEMA = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } }
 
 // CI 待ちの上限（秒）: prerun が PR の base branch の CI 所要時間から決めた値。dev-flow（nested）は
 // args.setup の値を、単体起動の wrapper は pr-iterate-prerun の出力を args.ci_wait_ceiling_seconds で渡す。
@@ -2324,14 +2338,75 @@ function ciFixGuidance({ pr, base }) {
     + `\`git fetch origin\` の後 \`git merge ${baseRef}\` で base をマージした状態を作って再現を確認し、その状態で修正すること`
     + `${base ? '' : '（base branch 名は `gh pr view ' + pr + ' --json baseRefName` で確認）'}。\n`
 }
-// push の実行規約（fix prompt と commit-ensure prompt で共有）。pre-push hook が Bash tool の既定 timeout
-// （120 秒）を超える repo では push が background に回され、push 再発行で hook が並走し、完了前の後続操作が
-// 未 push の head を前提に失敗する。timeout を明示し、background 化・再発行を禁じる。
-// push は `git push origin HEAD`: worktree は upstream 無しで作られ（起動元 repo の .git/config は sandbox 内から
-// 書けない）、remote と HEAD を明示すれば push.default に依らず同名 branch へ届き、upstream も書かない。
-const PUSH_RULE = 'push（`git push origin HEAD`）は Bash tool の `timeout: 600000` を指定して実行し、`run_in_background` は使わない（禁止）。'
-  + 'push の結果が返るまで次の手順を実行しない。push を再発行しない（timeout・background 化した場合も含む）。'
-  + '600 秒の timeout に達した場合もリトライしない。'
+// push（fix・commit-ensure・conflict-resolve）は PR phase と同じく pr-push の start / wait で行う。lock 待ちと pre-push hook を含む push は
+// Bash 1 回の上限（600 秒）を超えうるので、切り離して起動して待つ。実行する git コマンド・upstream を書かないことは pr-push.sh が持つ。
+// log のパスと待機の値は _lib/pr-artifacts.mjs と同じにする（pr-artifacts は PR 本文の builder ごと inline になるので持ち込まない。
+// 一致は priterate-push-routing.test.mjs が pin）。
+// timeout を明示し background 化を禁じる: 未指定だと Bash が background に回され、agent が待った後に同じコマンドを再発行する。
+const PR_PUSH_LOG = `${isoWt}/.devflow-tmp/push-output.log`
+const PR_PUSH_WAIT_SEC = 450
+const PR_PUSH_MAX_WAIT_SEC = 3600
+const PR_PUSH_MAX_WAITS = Math.ceil(PR_PUSH_MAX_WAIT_SEC / PR_PUSH_WAIT_SEC)
+// push が終わった（pr-push が exit code で結果を決めた）status。それ以外は push がまだ走っているかもしれない。
+const PR_PUSH_SETTLED = ['passed', 'failed', 'timeout', 'stopped']
+const PR_PUSH_NO_RESULT = JSON.stringify({ status: 'error', exit_code: null, log: PR_PUSH_LOG, tail: '' })
+const PR_PUSH_START_WAIT = `\`pr-push start ${PR_PUSH_LOG}\` → \`pr-push wait ${PR_PUSH_LOG} --wait-sec ${PR_PUSH_WAIT_SEC}\``
+const PR_PUSH_INVOCATION_RULE = 'push はこの 2 コマンドだけで行い、git の push サブコマンドを直接実行しない。どちらも stdout は JSON 1 行。'
+  + 'どちらも Bash tool の `timeout: 600000` を指定して実行し、`run_in_background` は使わない（禁止）。& や nohup を足さない。`--no-verify` は付けない。'
+// fix は hook の失敗を読んで直すので、push の結果まで自分で待つ（workflow は applied だけを読む）。
+const FIX_PUSH_STEPS = `${PR_PUSH_INVOCATION_RULE}push の結果が返るまで次の手順を実行しない。`
+  + `start・wait の status が \`running\` の間は \`pr-push wait ${PR_PUSH_LOG} --wait-sec ${PR_PUSH_WAIT_SEC}\` を繰り返す（push はまだ走っている。push を再発行しない — start を実行し直さない。Bash の timeout に達した場合も同じ）。`
+  + `\`passed\` なら push は完了。\`failed\` なら JSON の \`tail\` と \`log\`（出力全文のファイル）を読み、直せるなら直して commit してから start から実行する（変更なしに同じ push を再発行しない）。`
+  + `wait を ${PR_PUSH_MAX_WAITS} 回（待機の累計 ${PR_PUSH_MAX_WAIT_SEC} 秒）繰り返しても \`running\` のとき、\`timeout\`・\`stopped\`・\`error\` のとき、\`failed\` を直せないときはそこで中断し、applied:false とし、summary に status と \`tail\` を書く。`
+// commit-ensure・conflict-resolve の proxy は最初の wait までを行い、push_result を返す。その先の待機・停止は workflow が持つ（settlePush）。
+const PROXY_PUSH_STEPS = `${PR_PUSH_START_WAIT} の順に 1 回ずつ実行する。${PR_PUSH_INVOCATION_RULE}`
+  + `最後に実行したコマンド（start の status が running でなければ start、それ以外は wait）の stdout の JSON を、キーの追加・削除・値の書き換えをせず push_result に入れる。`
+  + `Bash の timeout に達した・stdout に JSON 1 行が無いときだけは ${PR_PUSH_NO_RESULT} を一字一句そのまま push_result に入れる。`
+  + `push_result の status が running でも wait を繰り返さない（待ち続けるのは呼び出し側）。push を再発行しない（timeout・background 化した場合も含む）。`
+function prPushCommandPrompt(command, noJson) {
+  return `次のコマンドを bare 単文（cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクト禁止）で 1 回だけ実行し、**stdout の JSON 1 行だけ** を verbatim で返せ（キーの追加・削除・値の書き換えをしない）。`
+    + `Bash tool の \`timeout: 600000\` を指定し、\`run_in_background\` は使わない（禁止）。再実行しない。`
+    + `timeout に達した・stdout に JSON 1 行が無い場合だけは、${noJson} を一字一句そのまま返せ:\n`
+    + command
+}
+// push を止める。spawn が結果を返さず終わった push・待ち切れなかった push を残すと hook が lock を握り続け、次の push が待たされる。
+// 止まらなくても run は進める（切り離した push は pr-push 側の打ち切りで止まる）。
+async function stopPush(label) {
+  const stopped = await failOpenAgent(
+    prPushCommandPrompt(`pr-push stop ${PR_PUSH_LOG}`, '{"ok":false,"error":"pr-push did not return JSON"}'),
+    { agentType: 'dev-runner-haiku', schema: PR_PUSH_STOP_SCHEMA, label: `${label}.stop`, phase: 'Iterate' },
+  )
+  if (stopped?.ok !== true) log(`⚠️ ${label}.stop で push の停止を確認できない — 切り離した push は pr-push 側の打ち切りで止まる`)
+}
+// commit-ensure・conflict-resolve の応答の push を確定させた応答を返す（push_result があれば pushed は最後の pr-push の status で決める）。
+//   - 最初の push_result が passed: 応答の pushed も要る（push の後に確かめた値。走っていた push に start が合流して新しい commit が未 push なら false）
+//   - push_result が running: wait の spawn を繰り返す（最初の wait は push を起動した spawn の中で済んでいる）
+//   - 待機の累計が上限に達した・応答が読めない: push がまだ走っているかもしれないので stop して pushed:false
+//   - 応答が null（throw を含む）・push_result が無いのに push が済んでいない（pushExpected）: stop する
+async function settlePush(label, res, pushExpected) {
+  if (res == null) {
+    await stopPush(label)
+    return res
+  }
+  if (res.push_result == null) {
+    if (pushExpected(res)) await stopPush(label)
+    return res
+  }
+  const last = await waitBgJob({
+    start: res.push_result,
+    wait: (k) => failOpenAgent(
+      prPushCommandPrompt(`pr-push wait ${PR_PUSH_LOG} --wait-sec ${PR_PUSH_WAIT_SEC}`, PR_PUSH_NO_RESULT),
+      { agentType: 'dev-runner-haiku', schema: PR_PUSH_RESULT_SCHEMA, label: `${label}.wait-${k}`, phase: 'Iterate' },
+    ),
+    maxPolls: PR_PUSH_MAX_WAITS - 1,
+    schema: PR_PUSH_RESULT_SCHEMA,
+  })
+  if (!PR_PUSH_SETTLED.includes(last.status)) {
+    log(`⚠️ ${label}: ${last.wait_capped === true ? `push が待機の累計 ${PR_PUSH_MAX_WAIT_SEC} 秒までに終わらない` : `pr-push の結果を確定できない（status=${last.status}）`} — pr-push stop で止める`)
+    await stopPush(label)
+  }
+  return { ...res, pushed: last.status === 'passed' && (res.push_result.status !== 'passed' || res.pushed === true) }
+}
 
 // fix agent の prompt（review 指摘・CI 失敗の両経路）。必須 5 要素（Objective / Output format / Tools / Boundary /
 // Token cap）を揃える。Boundary は incentive-structural — fix agent は直せない指摘を前に worktree の外や
@@ -2357,14 +2432,14 @@ function fixPrompt({ objective, issuesHeading, issuesText, guidance = '' }) {
   const headRef = prMeta?.head_ref || ''
   return `## Objective\n${objective}\n\n`
     + `## Steps\n作業ツリー（${isoWt}）は PR ブランチ${headRef ? `（\`${headRef}\`）` : ''}を checkout 済み。branch を切り替えずに、`
-    + `(1) 下記の${issuesHeading}を修正、(2) Conventional Commits 形式で commit、(3) \`git push origin HEAD\` で push。\n`
-    + `${PUSH_RULE}timeout に達した場合はそこで中断し、applied:false とし、summary に timeout に達した旨と push の stderr 末尾を書く。\n\n`
+    + `(1) 下記の${issuesHeading}を修正、(2) Conventional Commits 形式で commit、(3) ${PR_PUSH_START_WAIT} で push。\n`
+    + `${FIX_PUSH_STEPS}\n\n`
     + `解消すべき${issuesHeading}:\n${issuesText}\n`
     + (guidance ? `\n${guidance}` : '')
     + (FIX_DIRECTION != null ? fixDirectionSection(FIX_DIRECTION) : '')
     + `\n## Output format\n{ "applied": boolean, "files": string[], "summary": string, "deferred_security_topics": string[] }。applied は修正を commit・push まで終えたときだけ true。files は変更したファイルの repo 相対パス。`
     + `deferred_security_topics は security review の指摘のうち直さずに人の判断に返したものの topic（その指摘行の \`[topic: <topic>]\` の <topic> を一字も変えずに）で、security review の指摘が無い fix・全部直した fix では空の配列 [] にする（省略しない）。JSON のみ返せ。\n`
-    + `\n## Tools\n使用可: Read, Edit, Write, Grep, Glob, Bash（git、\`gh pr checks\` / \`gh pr view\` / \`gh run view\`、テスト実行）。subagent の起動は禁止。\n`
+    + `\n## Tools\n使用可: Read, Edit, Write, Grep, Glob, Bash（git、\`pr-push\`、\`gh pr checks\` / \`gh pr view\` / \`gh run view\`、テスト実行）。subagent の起動は禁止。\n`
     + `\n## Boundary\n`
     + `- 書き込みは worktree（${isoWt}）の中だけ。worktree の外のファイル・他 repo（別の clone や worktree を含む）を変更しない\n`
     + `- ブランチを作らない（\`git branch\` / \`git checkout -b\` / \`git switch -c\` / \`git worktree add\` を使わない）。commit・push は PR ブランチにだけ行う\n`
@@ -2473,10 +2548,10 @@ async function autoResolveConflict(iteration) {
     if (mergeable == null) log(`⚠️ iteration ${iteration}: mergeable-check#${iteration} が結果を返さず — conflict の自動解消は試みない（fail-open）`)
     return null
   }
-  const res = await failOpenAgent(
-    conflictResolvePrompt({ pr: PR, wt: isoWt, base, pushRule: PUSH_RULE }),
+  const res = await settlePush(`conflict-resolve#${iteration}`, await failOpenAgent(
+    conflictResolvePrompt({ pr: PR, wt: isoWt, base, pushSteps: PROXY_PUSH_STEPS }),
     { agentType: 'dev-runner-haiku', schema: CONFLICT_RESOLVE, label: `conflict-resolve#${iteration}`, phase: 'Iterate' },
-  )
+  ), (r) => r.result?.status === 'resolved' && r.pushed !== true)
   const rec = conflictAutoresolveRecord(res, iteration)
   conflictAttempts.push(rec)
   mergeableLast = mergeableAfterAttempt(mergeableLast, rec)
@@ -2551,6 +2626,8 @@ async function callFixAgent(prompt, i) {
   } catch (e) {
     log(`⚠️ fix#${i} が例外を投げた（StructuredOutput 契約違反等）: ${e?.message ?? e}`)
   }
+  // applied は push まで終えたときだけ true。それ以外は fix が起動した push が走っているかもしれない
+  if (fix?.applied !== true) await stopPush(`fix#${i}`)
   let retried = false
   if (fix == null) {
     retried = true
@@ -2561,6 +2638,7 @@ async function callFixAgent(prompt, i) {
     } catch (e) {
       log(`⚠️ fix#${i}-retry も例外: ${e?.message ?? e}`)
     }
+    if (fix?.applied !== true) await stopPush(`fix#${i}-retry`)
   }
   return { fix, retried }
 }
@@ -2693,9 +2771,10 @@ function onlyBaselineLines(lines, baseline) {
 // （新規 agent spawn を増やさない）。shaPrev（この round の review 時点の head sha）が確定している
 // ときだけ shortstat 手順を含める。返り値 { ensured, headSha, deltaLines } の headSha / deltaLines は
 // 取得失敗で null（次 round は resolveReviewScope が full にフォールバックする）。
-// add / commit / push は cwd（isoWt。agent 自身の pwd / nested は NESTED.cwd）で実行し、読み取りのみの
+// add / commit / pr-push は cwd（isoWt。agent 自身の pwd / nested は NESTED.cwd）で実行し、読み取りのみの
 // status / rev-list / rev-parse / diff は -C ${isoWt} を付ける。worktree は upstream を持たない（起動元 repo の
 // .git/config は sandbox 内から書けない）ので、push 済みの判定は `@{u}` ではなく origin/<head_ref> と比べる。
+// push が最初の wait で終わらない round は手順 4 が pushed:false を返し、workflow が settlePush で待ち切って pushed を決める。
 // status の dirty 判定は PORCELAIN_DIRTY_RULE の porcelain 行のうち基準線（fixBaseline）に無い新規行で行う。
 // agent が基準線を無視して dirty と答えても、返した porcelain 行が基準線の行だけなら workflow が dirty を外す（onlyBaselineLines）。
 // 回収の stage は新規行のパスだけ（`.` や `-A` で worktree 全体を stage しない）: 基準線の未追跡ファイルを PR に commit せず、
@@ -2716,17 +2795,18 @@ async function ensureFixCommitted(i, shaPrev) {
     ? `\`${addCmd}\`（workflow が組み立てた add。一字一句そのまま 1 回実行し、パスを書き換え・追加・削除しない。ほかの add は実行しない）`
     : '（stage するパスは無い。add は実行しない）'
   const step2 = recover
-    ? `順に実行: ${addStep} →\`git commit -m "fix(pr-${PR}): commit leftover review fixes (iteration ${i})"\` → \`git push origin HEAD\`（失敗・timeout でも再発行せず手順 3 へ進む）。${PUSH_RULE}`
+    ? `順に実行: ${addStep} →\`git commit -m "fix(pr-${PR}): commit leftover review fixes (iteration ${i})"\` → push。push は ${PROXY_PUSH_STEPS}失敗・timeout・running でも手順 3 へ進む。`
     : 'add・commit・push は実行せず（この round は回収しない）手順 3 へ進む。'
   let ensured = null
   try {
     ensured = await trackedAgent(
-      `## Objective\nfix#${i} 適用後の作業ツリーに fix の未コミット変更が残っていないことを保証し（残っていれば commit + push で回収する）、commit 後の head sha${withDelta ? ' と fix delta の行数' : ''}を返す。\n\n## Steps\n以下を順に bare 単文（先頭トークンが git。cd 前置・bash 前置・env 代入前置・&& 連結禁止）で実行せよ:\n${PORCELAIN_DIRTY_RULE}\n${porcelainBaselineRule(baseline, `fix#${i} の前`)}\n1. \`git -C ${isoWt} status --porcelain --untracked-files=all\` を実行し、判定基準で数える porcelain 行を先頭の空白を含めて一字一句そのまま porcelain とする。新規行が 0 行なら dirty:false, committed:false, pushed:false, porcelain_after: [] として手順 5 へ進む。\n2. 新規行が 1 行以上、または exit 非0 なら dirty:true とし、${step2}\n3. \`git -C ${isoWt} status --porcelain --untracked-files=all\` を再実行し、判定基準で数える porcelain 行を一字一句そのまま porcelain_after とする。手順 1 と同じ判定基準で、新規行が 0 行なら committed:true、新規行が残る（または exit 非0）なら dirty なので committed:false。\n4. \`git -C ${isoWt} rev-list "origin/${prMeta?.head_ref || ''}"..HEAD --count\` を実行する。警告行を除いた出力が 0 なら pushed:true。コマンド失敗または非数値出力なら pushed:false。dirty:true とする。\n5. \`git -C ${isoWt} rev-parse HEAD\` を実行し、stdout の 40 桁 hex をそのまま head_sha とする（失敗時は空文字）。\n${withDelta ? `6. \`git -C ${isoWt} diff --shortstat ${shaPrev.trim()}..HEAD\` を実行し、stdout の 1 行を一字一句そのまま delta_shortstat とする（stdout が空なら空文字。失敗時はキーを省略）。\n7. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果>, "delta_shortstat": <6の結果>, "porcelain": <1の porcelain>, "porcelain_after": <3の porcelain_after> } を返す。` : `6. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果>, "porcelain": <1の porcelain>, "porcelain_after": <3の porcelain_after> } を返す。`}\n\n## Output format\n{ "dirty": boolean, "committed": boolean, "pushed": boolean, "head_sha": string${withDelta ? ', "delta_shortstat": string' : ''}, "porcelain": string[], "porcelain_after": string[] }\nprose 禁止。JSON のみ返せ。\n\n## Tools\n使用可: Bash, Read\n\n## Boundary\n上記 git コマンド以外のファイル変更・git 操作禁止。\n\n## Token cap\nJSON のみ。1 行以内。`,
+      `## Objective\nfix#${i} 適用後の作業ツリーに fix の未コミット変更が残っていないことを保証し（残っていれば commit + push で回収する）、commit 後の head sha${withDelta ? ' と fix delta の行数' : ''}を返す。\n\n## Steps\n以下を順に bare 単文（先頭トークンが git または pr-push。cd 前置・bash 前置・env 代入前置・&& 連結禁止）で実行せよ:\n${PORCELAIN_DIRTY_RULE}\n${porcelainBaselineRule(baseline, `fix#${i} の前`)}\n1. \`git -C ${isoWt} status --porcelain --untracked-files=all\` を実行し、判定基準で数える porcelain 行を先頭の空白を含めて一字一句そのまま porcelain とする。新規行が 0 行なら dirty:false, committed:false, pushed:false, porcelain_after: [] として手順 5 へ進む。\n2. 新規行が 1 行以上、または exit 非0 なら dirty:true とし、${step2}\n3. \`git -C ${isoWt} status --porcelain --untracked-files=all\` を再実行し、判定基準で数える porcelain 行を一字一句そのまま porcelain_after とする。手順 1 と同じ判定基準で、新規行が 0 行なら committed:true、新規行が残る（または exit 非0）なら dirty なので committed:false。\n4. \`git -C ${isoWt} rev-list "origin/${prMeta?.head_ref || ''}"..HEAD --count\` を実行する。警告行を除いた出力が 0 なら pushed:true。コマンド失敗または非数値出力なら pushed:false。dirty:true とする。\n5. \`git -C ${isoWt} rev-parse HEAD\` を実行し、stdout の 40 桁 hex をそのまま head_sha とする（失敗時は空文字）。\n${withDelta ? `6. \`git -C ${isoWt} diff --shortstat ${shaPrev.trim()}..HEAD\` を実行し、stdout の 1 行を一字一句そのまま delta_shortstat とする（stdout が空なら空文字。失敗時はキーを省略）。\n7. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果>, "delta_shortstat": <6の結果>, "porcelain": <1の porcelain>, "porcelain_after": <3の porcelain_after>, "push_result": <2の push_result。手順 2 で push しなければキーごと省く> } を返す。` : `6. { "dirty": <1の結果>, "committed": <3の結果>, "pushed": <4の結果>, "head_sha": <5の結果>, "porcelain": <1の porcelain>, "porcelain_after": <3の porcelain_after>, "push_result": <2の push_result。手順 2 で push しなければキーごと省く> } を返す。`}\n\n## Output format\n{ "dirty": boolean, "committed": boolean, "pushed": boolean, "head_sha": string${withDelta ? ', "delta_shortstat": string' : ''}, "porcelain": string[], "porcelain_after": string[], "push_result": object }\nprose 禁止。JSON のみ返せ。\n\n## Tools\n使用可: Bash, Read\n\n## Boundary\n上記コマンド以外のファイル変更・git 操作禁止。\n\n## Token cap\nJSON のみ。1 行以内。`,
       { agentType: 'dev-runner-haiku', schema: COMMIT_ENSURE, label: `commit-ensure#${i}`, phase: 'Iterate' },
     )
   } catch (e) {
     log(`⚠️ commit-ensure#${i} が例外: ${e?.message ?? e}`)
   }
+  ensured = await settlePush(`commit-ensure#${i}`, ensured, (r) => recover && r.dirty !== false && r.pushed !== true)
   const headSha = isDeltaSha(ensured?.head_sha) ? ensured.head_sha.trim() : null
   const deltaLines = withDelta ? parseShortstatLines(ensured?.delta_shortstat) : null
   if (ensured == null) return { ensured: false, headSha, deltaLines }
