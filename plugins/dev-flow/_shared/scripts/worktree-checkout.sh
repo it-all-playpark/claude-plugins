@@ -10,6 +10,14 @@
 WT_SKIP_WORKTREE=()
 WT_ADD_ERR=""
 
+# githooks(5) のクライアント側の hook 名（サーバー側の pre-receive / update 等は worktree の commit・push で動かない）
+WT_CLIENT_HOOK_EVENTS=(
+    applypatch-msg pre-applypatch post-applypatch
+    pre-commit pre-merge-commit prepare-commit-msg commit-msg post-commit
+    pre-rebase post-checkout post-merge pre-push
+    reference-transaction pre-auto-gc post-rewrite sendemail-validate post-index-change
+)
+
 # git worktree list --porcelain はシンボリックリンク解決済みの物理パスを報告する（macOS の /var -> /private/var 等）。
 # 登録済み worktree との突合せはこの物理パスで行う。
 canon_path() {
@@ -78,6 +86,31 @@ skip_worktree_json() {
         return
     fi
     printf '%s\n' "${WT_SKIP_WORKTREE[@]}" | jq -R . | jq -sc .
+}
+
+# hooks_not_running_json <wt>
+#   repo が追跡している hook のうち、worktree で動かない event を JSON 配列で出す（無ければ []）。追跡の判定は basename が
+#   WT_CLIENT_HOOK_EVENTS に一致するファイル（skip-worktree の有無を問わない）。動かない判定は `git hook list <event>` の
+#   exit 1 だけ（0 = ある。それ以外は git が判定できていないので数えない）。相対の core.hooksPath は worktree の中で解決されるので、
+#   `.husky` を取り出せない worktree や生成物の `.husky/_` が無い worktree では失敗を出さずに hook なしになる。開示専用で、
+#   失敗しても run を止めない。`git hook list` は hook を実行しない（prerun は repo の任意コードを実行しない）。
+hooks_not_running_json() {
+    local wt="$1" tracked event rc
+    local events=()
+    tracked="$(git -C "$wt" ls-files -z 2>/dev/null | tr '\0' '\n' | sed 's|.*/||')" || tracked=""
+    for event in "${WT_CLIENT_HOOK_EVENTS[@]}"; do
+        grep -qxF -- "$event" <<<"$tracked" || continue
+        rc=0
+        git -C "$wt" hook list "$event" >/dev/null 2>&1 || rc=$?
+        if [[ "$rc" -eq 1 ]]; then
+            events+=("$event")
+        fi
+    done
+    if [[ ${#events[@]} -eq 0 ]]; then
+        printf '[]'
+        return
+    fi
+    printf '%s\n' "${events[@]}" | jq -R . | jq -sc .
 }
 
 # partial_checkout_error <wt>

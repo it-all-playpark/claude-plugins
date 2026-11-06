@@ -2862,6 +2862,16 @@ test('baseFailingTests: 空・未指定ならテスト欄も参考セクショ�
   }
 });
 
+test('hooksNotRunning: 非空なら「参考」に event 名と core.hooksPath の直し方を出し、空・欠落なら byte 一致', () => {
+  const body = buildDevflowSummaryBody({ ...BASE_INPUT, hooksNotRunning: ['pre-commit', 'pre-push'] });
+  const ref = sectionOf(body, '**参考（可視化のみ — merge tier 判定に不使用）**:');
+  assert.ok(ref.includes('- 動いていない git hook: `pre-commit`, `pre-push` — '), body);
+  assert.ok(ref.includes('メイン checkout 側の絶対パスを `core.hooksPath` に設定すれば worktree からも解決される'), body);
+  for (const hooksNotRunning of [undefined, null, []]) {
+    assert.equal(buildDevflowSummaryBody({ ...BASE_INPUT, hooksNotRunning }), buildDevflowSummaryBody(BASE_INPUT));
+  }
+});
+
 // issue #793: 範囲外にした作業（out_of_scope）と人間側 follow-up（pr-iterate が worktree 外として fix から外した指摘）
 test('outOfScope: 非空なら「この PR に含めなかったもの」節に各項目をそのまま出し、空・欠落なら byte 一致', () => {
   const body = buildDevflowSummaryBody({ ...BASE_INPUT, outOfScope: ['telemetry キーの削除（AC 外）', '  ', 'a|b'] });

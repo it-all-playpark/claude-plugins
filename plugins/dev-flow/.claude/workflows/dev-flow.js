@@ -184,7 +184,7 @@ function resolvePositiveIntArg(args, name) {
 // ==== END inline: _lib/resolve-arg.mjs ====
 // ==== BEGIN inline: _lib/prerun-setup.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
-const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer'];
+const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer', 'hooks_not_running'];
 
 const SECURITY_REVIEWERS = ['claude', 'codex'];
 
@@ -259,6 +259,7 @@ function validatePrerunSetup(raw, issue) {
   if (!SECURITY_REVIEWERS.includes(raw.security_reviewer)) {
     throw new Error(`dev-flow: args.setup の必須キーが欠落/型不正: security_reviewer（${SECURITY_REVIEWERS.join(' | ')}。受信: ${stringifyForError(raw.security_reviewer)}）— skill-config の "dev-flow".security_reviewer を直して dev-flow-prerun を再実行せよ`);
   }
+  if (!isStringList(raw.hooks_not_running)) fail('hooks_not_running', raw.hooks_not_running);
 
   const repo = isNonEmptyString(raw.repo) ? raw.repo : null;
   if (!isNonEmptyString(raw.branch) && raw.branch_format != null) fail('branch', raw.branch);
@@ -283,6 +284,7 @@ function validatePrerunSetup(raw, issue) {
     epoch_end: raw.epoch_end,
     ci_wait_ceiling_seconds: raw.ci_wait_ceiling_seconds,
     security_reviewer: raw.security_reviewer,
+    hooks_not_running: [...raw.hooks_not_running],
     ci_verify: ciVerify,
     local_verify: localVerify,
     pr_title_format: prTitleFormat,
@@ -2474,6 +2476,7 @@ function buildDevflowSummaryBody({
   conflictAutoresolve,
   securityReview,
   headSha,
+  hooksNotRunning,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -3168,6 +3171,9 @@ function buildDevflowSummaryBody({
   const referenceLines = [];
   if (Array.isArray(disclosures)) {
     for (const line of disclosures) referenceLines.push(`- ${line}`);
+  }
+  if (Array.isArray(hooksNotRunning) && hooksNotRunning.length > 0) {
+    referenceLines.push(`- 動いていない git hook: ${hooksNotRunning.map((e) => `\`${mdCell(e)}\``).join(', ')} — repo が追跡しているが、この worktree では git が hook なしと解決した（この run では動いていない）。メイン checkout 側の絶対パスを \`core.hooksPath\` に設定すれば worktree からも解決される`);
   }
   if (baseFailing.length > 0) {
     referenceLines.push(`- base でも失敗する既存の失敗 ${baseFailing.length} 件（diff と無関係のため green 要件から除外）: ${baseFailing.map((f) => '`' + f + '`').join(', ')}`);
@@ -8394,6 +8400,7 @@ const summaryBody = buildDevflowSummaryBody({
   // merge tier を判定した PR head（merge-tier-facts の headRefOid）。取得失敗は marker に head を載せない
   // → 単体 pr-iterate の再実行時は食い違い扱い（安全側）
   headSha: prMeta?.ok === true ? prMeta.headRefOid : null,
+  hooksNotRunning: PRERUN.hooks_not_running,
 })
 // 終端サマリーコメント投稿: bodySaveInstr で body を worktree の .devflow-tmp/ 固定パスへ保存し
 // gh pr comment --body-file を bare 単文で投稿する。投稿失敗は posted:false で fail-open だが、

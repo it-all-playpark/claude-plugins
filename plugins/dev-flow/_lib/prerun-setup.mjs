@@ -27,7 +27,7 @@
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
 // 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。
 
-export const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer'];
+export const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer', 'hooks_not_running'];
 
 // security_reviewer の閉じた enum（pr-iterate の parseSecurityReviewArg と同じ値）
 export const SECURITY_REVIEWERS = ['claude', 'codex'];
@@ -117,6 +117,9 @@ export function validatePrerunSetup(raw, issue) {
   if (!SECURITY_REVIEWERS.includes(raw.security_reviewer)) {
     throw new Error(`dev-flow: args.setup の必須キーが欠落/型不正: security_reviewer（${SECURITY_REVIEWERS.join(' | ')}。受信: ${stringifyForError(raw.security_reviewer)}）— skill-config の "dev-flow".security_reviewer を直して dev-flow-prerun を再実行せよ`);
   }
+  // hooks_not_running は repo が追跡している hook のうち worktree で動かない event 名（worktree-checkout.sh）。終端サマリーへの
+  // 開示だけに使い、gate の入力にしない。欠落を [] に倒すと「動いている」と区別できないので必須にする
+  if (!isStringList(raw.hooks_not_running)) fail('hooks_not_running', raw.hooks_not_running);
 
   const repo = isNonEmptyString(raw.repo) ? raw.repo : null;
   // branch は prerun が "dev-flow".branch_format（未設定は feature/issue-{issue}）で決めた作業ブランチ名。欠落時の
@@ -144,6 +147,7 @@ export function validatePrerunSetup(raw, issue) {
     epoch_end: raw.epoch_end,
     ci_wait_ceiling_seconds: raw.ci_wait_ceiling_seconds,
     security_reviewer: raw.security_reviewer,
+    hooks_not_running: [...raw.hooks_not_running],
     ci_verify: ciVerify,
     local_verify: localVerify,
     pr_title_format: prTitleFormat,

@@ -106,6 +106,8 @@ make_issue_fixture() {
     # 書けないパスが無ければ full checkout で、skip-worktree を付けない
     echo "$output" | jq -e '.skip_worktree == []'
     [ -z "$(git -C "$WT" ls-files -v | grep '^S' || true)" ]
+    # hook を追跡しない repo
+    echo "$output" | jq -e '.hooks_not_running == []'
 }
 
 # ---- (1c) 起動元 repo の .git/config に書かない ----
@@ -555,6 +557,8 @@ track_unwritable_githooks() {
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "created"'
     echo "$output" | jq -e '.skip_worktree == [".githooks/pre-commit", ".githooks/pre-push"]'
+    # 追跡している hook が worktree で動かないことは run を止めず（ok:true）、event 名を出力に載せる
+    echo "$output" | jq -e '.hooks_not_running == ["pre-commit", "pre-push"]'
     echo "$output" | jq -e --arg h "$(git -C "$ROOT" rev-parse origin/dev)" '.head == $h'
     [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "feature/issue-1" ]
     [ -f "$WT/README.md" ]

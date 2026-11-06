@@ -12,7 +12,8 @@
 # （issue 取得 + 本文全文を .devflow-tmp/issue-body.md へ書く + contract parse + Jev 有界判定。prerun-analyze.sh。detect-stack と並列）‖
 # detect-stack（+ detect-test-runner の受理パターンを stack.test_runners に載せる）。各段は独立に ok/error を報告し、後続段を巻き込まない。
 # worktree 作成で取り出せないパスには skip-worktree を付け（出力の skip_worktree）、未ステージの削除が残る再利用 worktree は
-# ok:false で止める（_shared/scripts/worktree-checkout.sh）。
+# ok:false で止める（_shared/scripts/worktree-checkout.sh）。repo が追跡している hook のうち worktree で動かない event を
+# 出力の hooks_not_running に載せる（終端サマリーへの開示だけで、run を止めず gate の入力にもしない）。
 #
 # deps install はここで行わない（issue #868）。install は対象 repo の依存の postinstall（任意コード）を走らせる。
 # このスクリプトは repo の任意コードを実行しない — install は wrapper が別の Bash 呼び出しで回す。
@@ -422,6 +423,7 @@ fi
 # Segment 3: .devflow-tmp の git clean -fdx (段2成功時のみ)
 # ============================================================================
 
+hooks_not_running='[]'
 if [[ "$SEG2_OK" == true ]]; then
     # scratch を対象 repo の .gitignore に依らず commit から外す（worktree-checkout.sh）。失敗は stderr に出して進む
     exclude_devflow_tmp "$WT" || true
@@ -430,6 +432,7 @@ if [[ "$SEG2_OK" == true ]]; then
     else
         clean_json="$(jq -n --arg e "$CLEAN_ERR" '{ok:false, error:$e}')"
     fi
+    hooks_not_running="$(hooks_not_running_json "$WT")"
 else
     clean_json='{"ok":false,"error":"skipped: worktree unavailable"}'
 fi
@@ -541,6 +544,7 @@ OUT_JSON="$(jq -n \
     --argjson local_verify "$local_verify_json" \
     --argjson pr_title_format "$pr_title_format_json" \
     --argjson skip_worktree "$(skip_worktree_json)" \
+    --argjson hooks_not_running "$hooks_not_running" \
     --argjson epoch "$epoch" \
     --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
     --argjson security_reviewer "$security_reviewer" \
@@ -552,7 +556,7 @@ OUT_JSON="$(jq -n \
     + {worktree: $worktree, branch: $branch, branch_format: $branch_format}
     + (if $have_head then {head: $head} else {} end)
     + (if $have_worktree_error then {worktree_error: $worktree_error} else {} end)
-    + {worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree}
+    + {worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree, hooks_not_running: $hooks_not_running}
     + {clean: $clean, stack: $stack, analyze: $analyze, ci_verify: $ci_verify, local_verify: $local_verify, pr_title_format: $pr_title_format, epoch: $epoch}
     + {ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds, security_reviewer: $security_reviewer}
     + {plugin_commit: (if ($plugin_commit | test("^[0-9a-f]{12}$")) then $plugin_commit else null end)}

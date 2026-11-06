@@ -37,6 +37,7 @@ function validRaw(overrides = {}) {
     epoch_end: 1787000060,
     ci_wait_ceiling_seconds: 515,
     security_reviewer: 'claude',
+    hooks_not_running: [],
     ...overrides,
   };
 }
@@ -71,6 +72,11 @@ test('validatePrerunSetup: 正常な setup は各値をそのまま返し framew
   assert.equal(result.ci_wait_ceiling_seconds, 515);
   assert.equal(result.security_reviewer, 'claude');
   assert.deepEqual(result.analyze, validAnalyze());
+  assert.deepEqual(result.hooks_not_running, []);
+});
+
+test('validatePrerunSetup: hooks_not_running の event 名をそのまま返す', () => {
+  assert.deepEqual(validatePrerunSetup(validRaw({ hooks_not_running: ['pre-commit', 'pre-push'] }), 641).hooks_not_running, ['pre-commit', 'pre-push']);
 });
 
 // ── validatePrerunSetup: security_reviewer（issue #1125）─────────────────────
@@ -180,6 +186,10 @@ const REQUIRED_KEY_CASES = [
   ['ci_wait_ceiling_seconds 欠落', { ci_wait_ceiling_seconds: DELETE }, 'ci_wait_ceiling_seconds'],
   ['ci_wait_ceiling_seconds が文字列("300")', { ci_wait_ceiling_seconds: '300' }, 'ci_wait_ceiling_seconds'],
   ['ci_wait_ceiling_seconds が 0', { ci_wait_ceiling_seconds: 0 }, 'ci_wait_ceiling_seconds'],
+  ['hooks_not_running 欠落', { hooks_not_running: DELETE }, 'hooks_not_running'],
+  ['hooks_not_running が文字列("pre-commit")', { hooks_not_running: 'pre-commit' }, 'hooks_not_running'],
+  ['hooks_not_running が null', { hooks_not_running: null }, 'hooks_not_running'],
+  ['hooks_not_running の要素が非文字列', { hooks_not_running: ['pre-commit', 1] }, 'hooks_not_running'],
 ];
 
 test.each(REQUIRED_KEY_CASES)('validatePrerunSetup: %s は「必須キーが欠落/型不正: <key>」で throw する', (_name, overrides, key) => {
@@ -244,7 +254,7 @@ test('validatePrerunSetup: 未知キーがあっても throw しない', () => {
 // ── PRERUN_SETUP_REQUIRED ───────────────────────────────────────────────────
 
 test('PRERUN_SETUP_REQUIRED: 必須キー一覧を定義する', () => {
-  assert.deepEqual(PRERUN_SETUP_REQUIRED, ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer']);
+  assert.deepEqual(PRERUN_SETUP_REQUIRED, ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer', 'hooks_not_running']);
 });
 
 // ── rejectLegacyBaseArg ──────────────────────────────────────────────────────
