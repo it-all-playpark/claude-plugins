@@ -125,7 +125,8 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    - Codex 経路の前提: codex は Claude Code の sandbox の中で動かす（PR に制御される入力を sandbox の外で実行しない —
      `dev-flow/references/security-review.md` の「守る要件と境界」の R3）。Claude Code の設定（settings.json）で:
      - `codex` を `sandbox.excludedCommands` に入れない
-     - `sandbox.network.allowedDomains` に codex が通信するホスト（`chatgpt.com`・`api.openai.com`）を足す
+     - `sandbox.network.allowedDomains` に codex が通信するホスト（`chatgpt.com`・`api.openai.com`・`auth.openai.com`）を足す。`auth.openai.com` は token の更新に使い、
+       無いと token の期限切れの後は codex を起動できない
      - `env.CODEX_HOME` を sandbox から書ける専用のディレクトリ（例: `~/.local/state/codex-sandbox`）にし、そのディレクトリを
        sandbox の書き込み許可に足す。`~/.codex` 自体は書き込み許可に入れない（sandbox の外で使う codex の設定を、sandbox の中の
        プロセスに書き換えさせない）。そのディレクトリで 1 回ログインする（`CODEX_HOME=<dir> codex login`）
