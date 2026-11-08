@@ -150,9 +150,9 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - 差し戻しの上限は `EVAL_PASSES`（shape から決まる。上限 `EVAL_MAX`）、design 差し戻しは `DESIGN_REPLAN_MAX`、同じ topic の反復は
     `EVAL_STUCK` で stuck。既出の指摘を渡して蒸し返しを抑える
   - Validate と同じ tree の eval#N には Validate の結果と `run-tests` の各 script のログパス（`scripts[].log`。worktree の外）を渡す。
-    evaluator はログに載った AC 関連テストを再実行せずログの行を根拠にする
-    （`validateResultPromptBlock`）。ログを根拠にできるのは realized diff が変更したファイルだけ（ログの中身はテストが
-    自由に書けるので、変更していないファイルの結果は偽の行と区別できない）。tree が違う・ログか変更ファイルが無いときは
+    evaluator は realized diff が変更したテストファイルのログ行を evidence に使ってよい（`validateResultPromptBlock`）。
+    ログもテストの出力なので、テストの本体と対象実装を読んで assert を確かめたときだけ根拠にし、再実行するかもそこで決める。
+    tree が違う・ログか変更ファイルが無いときは
     AC 関連テストファイルを実行させる
   - agent AC の `satisfied:false` は gate_policy に依らず差し戻す（`AGENT_AC_REIMPL_MAX` まで延長）。human AC は差し戻さない。
     観測型 AC は redgreen-verify で red→green を実証して deterministic 昇格したときだけ checked（`demoteUnprovenObservationalAc`）。

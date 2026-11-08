@@ -74,14 +74,17 @@ function stageShapeErrors(value, spec, path = '') {
 // ==== END inline: _lib/stage-contract.mjs ====
 
 // ==== BEGIN inline: _lib/evaluator-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
-const TEST_LOG_EVIDENCE_LIMIT = 'ログの行を根拠にできるのは「ログを根拠にできるテストファイル」（この diff が変更したファイル）に載るファイルだけで、'
+const TEST_LOG_EVIDENCE_LIMIT = 'ログの行はテストが自由に出力できるので、ログの行だけを AC 達成の根拠にしない。'
+  + 'ログの行を evidence に使えるのは「ログを根拠にできるテストファイル」（この diff が変更したファイル）に載るファイルだけで、'
   + 'そのファイルがランナーの実行対象一覧（run-all-bats の Discovered / Selected の一覧等）に載り、'
   + '引用するテスト名が評価対象の tree（working tree）のそのファイルに実在するときに限る。満たさないファイルはログに載っていても実行する。'
+  + 'ログの行を使うときも実行するときも、先にそのテストの本体と対象実装を読み、テストが対象実装を実際に呼んで結果を assert していること'
+  + '（条件分岐で実行を避けていない・成功の行を自分で出力していない）を確かめる。確かめられないテストはログの行も実行結果も verified_by:"test" の根拠にしない。'
   + '集計行（`Test Files N passed`・`Summary: N passed` 等）はファイルごとの実行結果として扱わない。'
-const TEST_LOG_REUSE = 'テストログに AC に関係するテストファイルの実行結果が載っていれば、そのファイルは再実行せず、'
-  + 'ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とせよ。'
+const TEST_LOG_REUSE = 'テストログに AC に関係するテストファイルの実行結果が載っていれば、'
+  + 'ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" としてよい（実行するかはテストの本体を読んで決めよ）。'
   + TEST_LOG_EVIDENCE_LIMIT
-  + 'ログに載っていない AC に関係するテストファイルだけを実行せよ。ログが読めなければ AC に関係するテストファイルを実行せよ。'
+  + 'ログに載っていない AC に関係するテストファイルは実行せよ。ログが読めなければ AC に関係するテストファイルを実行せよ。'
 
 const EVALUATOR_OPERATIONAL_CONTRACT = {
   critical_resolutions: [
@@ -127,7 +130,7 @@ const EVALUATOR_OPERATIONAL_CONTRACT = {
     '- 新規 finding の報告・feedback の付与・コード修正・追加検証 loop の要求は禁止（出力は ac_results のみが使われる）。',
     '- satisfied:true / false のいずれでも非空 evidence 必須（file:line / テスト名 / 実行結果）。index 不完全・evidence 欠落は出力全体が unavailable 扱いとなり merge tier が HOLD になる。',
     '- verified_by:"test" とした AC は、その AC を守るテストと対象実装を test_files / impl_files（worktree 相対パス）で返す。観測型 AC はこの組で最終 tree の red→green を実証できたときだけ達成扱いになる。',
-    '- prompt に「テストログ」が渡された場合、ログに実行結果が載っている AC 関連テストファイルは再実行せず、ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" とする。' + TEST_LOG_EVIDENCE_LIMIT + 'ログに載っていない AC 関連テストファイルだけを実行する。テストログが渡されない・読めない場合は AC に関係するテストファイルを実行して根拠にする。',
+    '- prompt に「テストログ」が渡された場合、ログに実行結果が載っている AC 関連テストファイルは、ログの該当行（テスト名と ok / not ok）を evidence にして verified_by:"test" としてよい（実行するかはテストの本体を読んで決める）。' + TEST_LOG_EVIDENCE_LIMIT + 'ログに載っていない AC 関連テストファイルは実行する。テストログが渡されない・読めない場合は AC に関係するテストファイルを実行して根拠にする。',
     '- prompt に「final 再評価対象 item 一覧」が渡された場合、各 item を fix 後の最終 PR tree で再検証し、item_resolutions:[{id, resolution, evidence}] で全件返す。resolution は resolved（指摘内容が最終 tree で解消されている — revert / 修正済み等）/ unresolved の 2 値のみ。最終 tree で確かめられない item（ローカルで実行できない build / compose / e2e 等）は unresolved にする。',
     '- id は渡された id をそのまま返す。resolved は具体的 evidence 必須（commit / file:line）。evidence のない resolved は無視され未解消のまま表示される。',
     '- item_resolutions は表示専用で checked / merge tier / HOLD 判定は変えない（ESCALATE は解消済みでも HOLD のまま人がマージ可否を判断する）。',
@@ -2033,7 +2036,7 @@ function checkNameArgs(flag, names) {
 
 function ciRollupCommand({ pr, repo, withLink = false }) {
   const drop = withLink ? '.__typename,.completedAt' : '.__typename,.completedAt,.detailsUrl,.targetUrl';
-  return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop}))'`;
+  return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop})) | tojson | gsub("\\u0027"; "\\\\u0027")'`;
 }
 
 function ciFetchSteps({ pr, repo, n, exclude = [], only = [] }) {

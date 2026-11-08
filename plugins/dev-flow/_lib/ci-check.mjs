@@ -115,9 +115,12 @@ function checkNameArgs(flag, names) {
 // CI 判定の入力を取るコマンド（ciFetchSteps / Merge tier の mergeTierFactsPrompt が共有する）。gh pr checks --json は
 // conclusion を返さず、status が COMPLETED でない check の結果を bucket に落とすので使わない。rollup は null になりうるので
 // [] に直す。--jq で判定に要らないキーを落とし、haiku が argv に転写する量を抑える。URL が要るのは ci-verify だけ（withLink）。
+// stdout は単一引用符で囲んだ argv に転写されるので、--jq の最後で JSON 文字列中の単一引用符を ' に置き換え、
+// stdout に単一引用符を出さない（check 名は PR の workflow が決められ、引用を閉じてコマンド置換を走らせうる。
+// ' は JSON として同じ文字に読まれるので check-ci / merge-tier-facts の判定は変わらない）。
 export function ciRollupCommand({ pr, repo, withLink = false }) {
   const drop = withLink ? '.__typename,.completedAt' : '.__typename,.completedAt,.detailsUrl,.targetUrl';
-  return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop}))'`;
+  return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop})) | tojson | gsub("\\u0027"; "\\\\u0027")'`;
 }
 
 // exclude: check-ci に --exclude で渡す check 名（ci_verify.checks。review ⇄ fix の round の CI 判定から外す）。

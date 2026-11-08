@@ -25,7 +25,8 @@
 # no redirection, no pipes):
 #
 #   gh pr view <pr> --repo <owner/repo> --json statusCheckRollup \
-#     --jq '.statusCheckRollup // [] | map(del(.__typename,.completedAt,.detailsUrl,.targetUrl))'
+#     --jq '.statusCheckRollup // [] | map(del(.__typename,.completedAt,.detailsUrl,.targetUrl)) | tojson | gsub("'"; "\\u0027")'
+#   (the trailing gsub keeps single quotes out of the stdout that is relayed inside single quotes)
 #   check-ci.sh --checks-data '<that stdout, verbatim>' \
 #     --fetch-error-data '<that stderr, verbatim, if the gh call failed>' \
 #     --attempt <n> --max-attempts <k> --poll-seconds <m>
