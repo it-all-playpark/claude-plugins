@@ -30,8 +30,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
-import { devFlowArgs, runDevFlowInSandbox, JS_GLOBALS } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, runDevFlowInSandbox, JS_GLOBALS, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -166,7 +165,8 @@ function makeLiteRouteSandbox(analyzeReq, opts = {}) {
     ...JS_GLOBALS,
   };
 
-  const ctx = vm.createContext(sandbox);
+  // 工程の workflow（dev-flow-finalize）は stub に数えず、同じ agent stub で実行する
+  const ctx = makeWorkflowContext(sandbox);
   return { ctx, calls, workflowCalls };
 }
 

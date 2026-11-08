@@ -15,7 +15,8 @@ import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
  *   2. failOpenAgent wrapper 内 — throw を吸収し null へ倒す（fail-open、continue）。
  *   3. ローカル try{}/pipeline() 包囲 — throw を吸収し継続する bare 呼び出し（fail-safe、continue）。
  *   4. 上記いずれでもない bare 呼び出し — throw は吸収されず run 全体の安全網 try まで伝播し abort する
- *      （fail-closed「据え置き」）。
+ *      （fail-closed「据え置き」）。工程の workflow（dev-flow-finalize.js）の bare 呼び出しは子の throw として
+ *      親の workflow() で受け、merge tier HOLD・終端サマリー未投稿で返る（stage_hold）。
  *
  * 各 label に対し実際に agent() を throw させて run を実行し、continue（error===null）/
  * abort（error!==null かつ abort handoff が発火）/ needs_clarification のいずれになるかを
@@ -163,7 +164,7 @@ const EXPECTED_DEV_FLOW = {
       assert.equal(result?.danger_fail_closed, true, 'merge-tier-facts throw は danger_fail_closed:true になるべき');
     },
   },
-  'post-summary': { config: DF_B1, policy: 'abort', reason: 'bare据え置き。投稿失敗の吸収整備は別issueの検討対象' },
+  'post-summary': { config: DF_B1, policy: 'stage_hold', reason: 'dev-flow-finalize.jsのbare呼び出し。子のthrowは親がHOLD・終端サマリー未投稿で返す' },
   'journal-log': {
     config: DF_B1,
     policy: 'continue',
@@ -172,11 +173,11 @@ const EXPECTED_DEV_FLOW = {
       assert.equal(result?.journal_log_status, 'save_failed', "journal-log throw 時は journal_log_status が 'save_failed' になるべき");
     },
   },
-  'reconcile-sync': { config: DF_B2, policy: 'abort', reason: 'bare据え置き。worktree同期不能のままFinal reconcileを進めない' },
+  'reconcile-sync': { config: DF_B2, policy: 'stage_hold', reason: 'dev-flow-finalize.jsのbare呼び出し。worktree同期不能のままFinal reconcileを進めず、親がHOLDで返す' },
   'test#final': { config: DF_B2, policy: 'continue', reason: 'try/catchで吸収しunavailable扱い（merge tier HOLD）へ倒すfail-safe経路' },
-  'changed-files-final': { config: DF_B2, policy: 'abort', reason: 'bare据え置き。最終changed-files取得失敗のfail-open化は別issueの検討対象' },
-  'final-ac-reconcile': { config: DF_B2, policy: 'abort', reason: 'bare据え置き。最終AC再検証不能のままmerge tierを確定しない契約' },
-  'security-clearance-final': { config: DF_B5, policy: 'abort', reason: 'bare据え置き。security clearance不能をclearと同一視しない契約' },
+  'changed-files-final': { config: DF_B2, policy: 'stage_hold', reason: 'dev-flow-finalize.jsのbare呼び出し。最終changed-files取得失敗は子のthrowとして親がHOLDで返す' },
+  'final-ac-reconcile': { config: DF_B2, policy: 'stage_hold', reason: 'dev-flow-finalize.jsのbare呼び出し。最終AC再検証不能のままmerge tierを確定せず、親がHOLDで返す' },
+  'security-clearance-final': { config: DF_B5, policy: 'stage_hold', reason: 'dev-flow-finalize.jsのbare呼び出し。security clearance不能をclearと同一視せず、親がHOLDで返す' },
   'closes-reinject': {
     config: DF_CLOSES,
     policy: 'continue',
@@ -341,6 +342,15 @@ for (const [label, spec] of Object.entries(EXPECTED_DEV_FLOW)) {
         calls.slice(thrownIdx + 1).some((c) => c.label?.startsWith('journal-')),
         `label '${label}' の throw 後に abort handoff（label が 'journal-' で始まる call）が見つからない`,
       );
+    } else if (spec.policy === 'stage_hold') {
+      // 工程の workflow（dev-flow-finalize.js）の bare 呼び出し: 子の throw は abort にせず、親が HOLD・終端サマリー未投稿で返し
+      // journal handoff は 1 回（abort handoff は書かない）
+      assert.equal(error, null, `label '${label}' の throw は工程の workflow の throw として HOLD で返るべきだが run が abort した: ${error?.message}`);
+      assert.equal(result?.merge_tier, 'HOLD', `label '${label}' throw 後の merge_tier が HOLD でない`);
+      assert.equal(result?.summary_posted, false);
+      assert.match(result?.note ?? '', /終端サマリー未投稿/);
+      assert.match(result?.finalize_error ?? '', /injected/);
+      assert.deepEqual(calls.filter((c) => c.label.startsWith('journal-')).map((c) => c.label), ['journal-log']);
     } else if (spec.policy === 'needs_clarification') {
       assert.equal(error, null, `label '${label}' は throw を吸収し needs_clarification で終端するべき: ${error?.message}`);
       assert.equal(result?.status, 'needs_clarification', `label '${label}' throw 後の result.status が needs_clarification でない: ${result?.status}`);

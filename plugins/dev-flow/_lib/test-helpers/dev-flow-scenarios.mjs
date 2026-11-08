@@ -6,9 +6,12 @@
  * 使う。新しい exec-proxy label / 経路を dev-flow.js に足したら、ここに到達 scenario を足す
  * （exec-proxy-routing の「EXPECTED 全 label 到達」assert が未登録を検出する）。
  *
+ * makeDevFlowSandbox は dev-flow.js と pr-iterate 後の工程の workflow（dev-flow-finalize.js）をつないで実行するので、
+ * Final reconcile / Merge tier の label も同じ override で届く（chainStageWorkflows）。
+ *
  * 各 scenario: { overrides, workflow?, extra?, expectError? }
  *   overrides   — makeDevFlowSandbox の label 単位 override
- *   workflow    — nested workflow() stub（省略時は lgtm / fixes_applied:0）
+ *   workflow    — nested pr-iterate の workflow() stub（省略時は lgtm / fixes_applied:0）
  *   extra       — makeDevFlowSandbox の extra（args.setup.analyze を差し替える scenario が使う）
  *   expectError — run が throw で終端することを期待する scenario（abort / empty-diff）
  */
