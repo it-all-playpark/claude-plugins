@@ -84,8 +84,9 @@ function conflictStoppedNote(conflictAutoresolve) {
   return `（自動解消せず: ${mdCell(last.reason || last.status)}${shown.length ? ` — ${shown.map(conflictFileCell).join(' / ')}` : ''}）`;
 }
 
-// final_test_red / validate_test_red の HOLD 理由の「現状」に添える、全件実行（test#final / Validate）で落ちたテストファイル
-// （issue #1181）。単体再実行の結果では増減させない。テストの出力本文は載せない（ファイル名だけ）。空なら何も添えない。
+// final_test_red / validate_test_red の「現状」に全件実行で落ちたテストファイルの件数と名前（出力本文は載せない）を添える。
+// diff が原因だと示す証拠は、落ちたファイルを diff が触れたか base 再実行で base では同じように落ちなかったかだけ（issue #1248。
+// 単体再実行の green・evaluator の判断は使わない）。withBase: base 再実行の結果を持つ（Validate）
 const HOLD_FAILED_FILES_MAX = 20;
 function failedFilesNote(files) {
   const list = (Array.isArray(files) ? files : []).filter((f) => typeof f === 'string' && f !== '');
@@ -94,6 +95,18 @@ function failedFilesNote(files) {
   const rest = list.length - HOLD_FAILED_FILES_MAX;
   return `（落ちたファイル: ${shown}${rest > 0 ? ` ほか ${rest} 件` : ''}）`;
 }
+const TEST_RED_UNKNOWN_ACTION = '原因未確定 — 人が確認して判断する';
+// 返り値: note は「現状」に添える文、evidence は証拠が 1 件以上あるか
+function testRedFacts(ev, withBase) {
+  const [failed, touched, differs, same] = ['failedFiles', 'diffTouched', 'baseDiffers', 'baseSame'].map((k) => (Array.isArray(ev?.[k]) ? ev[k].length : 0));
+  if (!failed) return { note: ' — 落ちたテストファイルを特定できなかった（failed_files が空）', evidence: false };
+  const parts = [ev.diffTouched ? `diff が触れた ${touched} 件` : 'diff との照合なし（一覧の取得失敗）', ...(withBase
+    ? [`base 再実行で base では同じように落ちなかった ${differs} 件`, `base でも同じように落ちた ${same} 件`, `base で確かめていない ${failed - touched - differs - same} 件`]
+    : ['base との比較はしていない'])];
+  return { note: ` — 落ちたテストファイル ${failed} 件: ${parts.join('・')}${failedFilesNote(ev.failedFiles)}`, evidence: touched + (withBase ? differs : 0) > 0 };
+}
+// validate_test_red / final_test_red の {現状, 対応}
+const testRedRow = (current, f, fixAction) => ({ current: current + f.note, action: f.evidence ? fixAction : TEST_RED_UNKNOWN_ACTION });
 
 function resolvedCell(v) {
   if (v == null) return '';
@@ -141,10 +154,12 @@ function resolvedCell(v) {
  * @param {{files:string[], logs:string[]}|null|undefined} [opts.finalTestFlaky] - 全件実行（test#final / skip の run の
  *   Validate）が red で、落ちたファイルだけの単体再実行が green だった記録。red のテスト欄と Final reconcile 行に
  *   flake 候補であることを添える（表示専用。merge tier の開示行は disclosures 側で出る）
- * @param {string[]|null|undefined} [opts.finalTestFailedFiles] - test#final が tests:'failed' を返したときの failed_files
- *   （normalizeTestPaths 済み）。final_test_red の HOLD 理由の「現状」に先頭 20 件までを添える（空なら添えない。表示専用。issue #1181）
- * @param {string[]|null|undefined} [opts.validateTestFailedFiles] - Validate が tests:'failed' のときの failed_files
- *   （normalizeTestPaths 済み）。validate_test_red の HOLD 理由の「現状」に同じ規則で添える（表示専用。issue #1181）
+ * @param {{failedFiles:string[], diffTouched:string[]|null}|null|undefined} [opts.finalTestEvidence] - test#final が red のときの
+ *   failed_files（normalizeTestPaths 済み）と、そのうち最終 diff が触れたファイル（null は diff 一覧の取得失敗）。final_test_red の
+ *   「現状」に件数と先頭 20 件のファイル名を出し、diff が触れたファイルがあるときだけ対応列・結論行を「修正が必要」にする（表示専用）
+ * @param {{failedFiles:string[], diffTouched:string[]|null, baseDiffers:string[], baseSame:string[]}|null|undefined} [opts.validateTestEvidence] -
+ *   Validate の最後の全件実行の failed_files と triageBaseFailures の突き合わせ（baseDiffers: base 再実行で base では同じように
+ *   落ちなかった、baseSame: base でも同じように落ちた）。validate_test_red に同じ規則で使い、baseDiffers も証拠に数える（表示専用）
  * @param {string|null|undefined} opts.finalAcReconcile - Final AC reconcile 結果（'skipped'|'reverified'|'unavailable'。issue #331）
  * @param {{decision:string|null, ci:string, summary:string|null}|null|undefined} [opts.liteReview] - dev-flow lite 経路の pr-review-lite 結果。非 null の場合のみ「lite レビュー」セクションを描画する（issue #392 AC-6）
  * @param {string|null|undefined} [opts.iterateStatus] - pr-iterate 終端 status（'lgtm'|'stuck'|'fix_failed'|'max_reached'|'ci_error'|'ci_pending'|'review_contract_error'。非 'lgtm' のときのみ未解消指摘セクションを描画する。issue #602）
@@ -218,8 +233,8 @@ export function buildDevflowSummaryBody({
   finalReconcile,
   finalTestGreen,
   finalTestFlaky,
-  finalTestFailedFiles,
-  validateTestFailedFiles,
+  finalTestEvidence,
+  validateTestEvidence,
   finalAcReconcile,
   liteReview,
   iterateStatus,
@@ -425,32 +440,33 @@ export function buildDevflowSummaryBody({
 
   const uncleared = securityClearance.filter(sc => sc.cleared !== true);
 
-  // fixRequired: 結論行・あなたがやること の分岐に使う「修正作業」の要否（escalate/advisory の
-  // 要判断・助言は含めない — 人間の判断のみで済む項目は「修正」ではない）。
-  // holdReasons に conflict/final_test_red/iterate_non_lgtm/pr_closes_missing の code があれば、
-  // 他の指標が空でも修正必須と判定する（PR #662 レビュー: mergeable_conflicting 単独 HOLD で
-  // 結論行「修正作業は不要です」と HOLD 理由テーブルの対応列「conflict を解消して push する」が
-  // 自己矛盾していた。pr_closes_missing も同型 — issue #661）。
-  const FIX_REQUIRED_HOLD_CODES = ['mergeable_conflicting', 'final_test_red', 'validate_test_red', 'iterate_non_lgtm', 'pr_closes_missing', 'ci_checks_failed'];
+  // fixRequired: 結論行・あなたがやること の分岐に使う「修正作業」の要否（escalate/advisory の要判断・助言は含めない）。
+  // 原因が確定している HOLD は他の指標が空でも修正必須。red は testRedFacts の証拠があるときだけで、証拠の無い red と
+  // ci_checks_failed（run は原因を確かめていない）は causeUnknownHold
   const testsurfUncleared = testsurfClearance.some(tc => !tc.cleared);
-  const fixRequiredHold = Array.isArray(holdReasons) && holdReasons.some(hr => FIX_REQUIRED_HOLD_CODES.includes(hr && hr.code));
+  const holdCodeAll = new Set((holdReasons || []).map((hr) => hr && hr.code));
+  const redFacts = { validate_test_red: testRedFacts(validateTestEvidence, true), final_test_red: testRedFacts(finalTestEvidence, false) };
+  const redCodes = Object.keys(redFacts).filter((c) => holdCodeAll.has(c));
+  const fixRequiredHold = ['mergeable_conflicting', 'iterate_non_lgtm', 'pr_closes_missing'].some((c) => holdCodeAll.has(c))
+    || redCodes.some((c) => redFacts[c].evidence);
+  const causeUnknownHold = holdCodeAll.has('ci_checks_failed') || redCodes.some((c) => !redFacts[c].evidence);
   const fixRequired = uncheckedBlocking.length > 0
     || fixableUnsatisfiedAC.length > 0
     || uncleared.length > 0
     || testsurfUncleared
-    || finalTestGreen === false
     || (iterateStatus != null && iterateStatus !== 'lgtm')
     || fixRequiredHold;
 
   // hasRequiredItems: 見出し「⚠️ 要対応」の判定。必須項目（unchecked blocking / 未解消 escalate /
-  // AC 未達 / 未クリアの security・testsurf / 修正必須の HOLD reason）だけで決める。advisory（任意）
+  // AC 未達 / 未クリアの security・testsurf / 修正必須か原因未確定の HOLD reason）だけで決める。advisory（任意）
   // だけのときは「ℹ️ 任意の確認事項」にして、結論行の「助言 N 件は任意」と矛盾させない（issue #707）。
   const hasRequiredItems = uncheckedBlocking.length > 0
     || unresolvedEscalate.length > 0
     || unsatisfiedAC.length > 0
     || uncleared.length > 0
     || testsurfUncleared
-    || fixRequiredHold;
+    || fixRequiredHold
+    || causeUnknownHold;
 
   const lines = [];
 
@@ -465,8 +481,10 @@ export function buildDevflowSummaryBody({
 
   let fixPhrase;
   // 修正が要るときも助言の件数を「任意」と添え、「要対応」の ❌ と「任意の確認事項」の分け方に揃える（issue #738）。
-  if (fixRequired) fixPhrase = unresolvedAdvisory.length > 0 ? `修正作業が必要です（助言 ${unresolvedAdvisory.length} 件は任意）` : '修正作業が必要です';
-  else if (unresolvedAdvisory.length > 0) fixPhrase = `必須の修正作業はありません（助言 ${unresolvedAdvisory.length} 件は任意）`;
+  const adv = unresolvedAdvisory.length > 0 ? `（助言 ${unresolvedAdvisory.length} 件は任意）` : '';
+  if (fixRequired) fixPhrase = `修正作業が必要です${adv}`;
+  else if (causeUnknownHold) fixPhrase = `原因未確定の失敗があり、人の確認が必要です${adv}`;
+  else if (adv) fixPhrase = `必須の修正作業はありません${adv}`;
   else fixPhrase = '修正作業は不要です';
   // 行動指示は直下の「あなたがやること」にだけ書く（結論行で同じ指示を繰り返さない）。
 
@@ -707,8 +725,7 @@ export function buildDevflowSummaryBody({
         ciVerify,
         conflictAutoresolve,
         securityReview,
-        finalTestFailedFiles,
-        validateTestFailedFiles,
+        redFacts,
       });
       lines.push(`| ${mdCell(hr && hr.reason)} | ${current} | ${action} |`);
     }
@@ -1175,9 +1192,9 @@ function holdReasonDisplay(code, ctx) {
     case 'final_reconcile_unavailable':
       return { current: '最終 tree のテスト状態が未確認', action: '最終 tree でテストを手動実行する' };
     case 'final_test_red':
-      return { current: `fix 後の最終 tree でテスト失敗${failedFilesNote(ctx.finalTestFailedFiles)}`, action: '修正が必要' };
+      return testRedRow('fix 後の最終 tree でテスト失敗', ctx.redFacts[code], '修正が必要');
     case 'validate_test_red':
-      return { current: `Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）${failedFilesNote(ctx.validateTestFailedFiles)}`, action: '修正が必要（落ちたテストを直して push する）' };
+      return testRedRow('Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', ctx.redFacts[code], '修正が必要（落ちたテストを直して push する）');
     case 'validate_tests_not_run':
       return { current: 'テストが 1 件も実行されていない（ローカルは起動失敗）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
     case 'final_ac_unavailable':
@@ -1197,8 +1214,9 @@ function holdReasonDisplay(code, ctx) {
       };
     case 'ci_checks_failed':
       return {
-        current: 'PR head の CI checks が失敗（fail / cancel）',
-        action: `\`gh pr checks ${ctx.pr}\` で失敗した check を確認し、修正して push する`,
+        // run は CI の失敗の原因（diff か、環境・既存の失敗か）を確かめる材料を持たないので、修正 push を断定しない
+        current: 'PR head の CI checks が失敗（fail / cancel）— 原因は run で未確認',
+        action: `\`gh pr checks ${ctx.pr}\` で失敗した check を確認し、diff が原因か判断する`,
       };
     case 'security_review_unresolved': {
       const s = ctx.securityReview;
