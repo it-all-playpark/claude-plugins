@@ -85,11 +85,17 @@ report と比べて読む。
 
 ### inline generator の橋
 
-- **何をするか**: `_lib` の canonical を `tools/sync-inlines.mjs` が workflow の `// ==== BEGIN inline:` 区間へ全文生成する。
+- **何をするか**: `_lib` の canonical のうち、その workflow から参照される最上位宣言だけを `tools/sync-inlines.mjs` が
+  workflow の `// ==== BEGIN inline:` 区間へ canonical の宣言順で生成する。参照は手書き部分の識別子から、生成した宣言の本文の
+  識別子をたどって区間をまたいで決める（文字列・テンプレートの中も数える）。宣言名を決められない最上位の文は常に残す。
+  宣言が 1 つも残らない区間は `--write` / `--check` が非 0 で止まるので `--remove` で区間ごと消す。区間との一致は generator と
+  同じ `planInlineRegions` で `_lib/workflow-inlines.sync.test.mjs` が検証する。
   生成時にコメントを落とす（`dropComments`。literal の中身は保つ）ので、意図・理由のコメントは canonical 側に書く。
   区間の編集・canonical の構造制約・guard の不変条件は rules
-- **なぜ**: workflow loader が ESM import を受け付けない。コメントを落とすのは、Workflow tool が上限サイズ以上の script を
-  登録せず起動不能にするため（上限は `_lib/workflow-inlines.sync.test.mjs` の `WORKFLOW_SCRIPT_MAX_BYTES`）
+- **なぜ**: workflow loader が ESM import を受け付けない。コメントと参照されない宣言を落とすのは、Workflow tool が上限サイズ
+  以上の script を登録せず起動不能にするため（上限は `_lib/workflow-inlines.sync.test.mjs` の `WORKFLOW_SCRIPT_MAX_BYTES`。
+  上限はファイルごとにかかり、工程を別 workflow に切り出すと同じ canonical が各ファイルに入る）。識別子の数え方は余分に
+  残す側に倒す — 取りこぼしは実行時の ReferenceError になる
 - **sunset トリガ**: `dev-flow-canary` の `direct_import` が pass
 - **次のモデル世代での測り直し方**: Claude Code の更新後に `dev-flow-canary` を回す。report の
   `bridge_sunset.inline_generator_removable` が true ならマーカー区間を `import` 文に

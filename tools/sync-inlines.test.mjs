@@ -23,6 +23,8 @@ import {
   collectTopLevelDeclNames,
   insertMarkerPair,
   removeMarkerPair,
+  selectReferencedDecls,
+  splitTopLevelStatements,
 } from './sync-inlines.mjs';
 
 const SCRIPT_PATH = join(dirname(fileURLToPath(import.meta.url)), 'sync-inlines.mjs');
@@ -144,7 +146,7 @@ test('--write then --check exits 0 (no drift)', () => {
   const canonical = `export const VALUE = 99;\n`;
   const markerBegin = `// ==== BEGIN inline: _lib/fake.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
   const markerEnd = `// ==== END inline: _lib/fake.mjs ====`;
-  const wf = `${markerBegin}\n// old content\n${markerEnd}\n`;
+  const wf = `${markerBegin}\n// old content\n${markerEnd}\nuse(VALUE);\n`;
   const tmp = makeFixtureRepo(canonical, wf);
   try {
     const writeResult = runCli(['--write', '--root', tmp]);
@@ -162,7 +164,7 @@ test('--check exits 1 when inline section has 1-byte drift', () => {
   const markerEnd = `// ==== END inline: _lib/fake.mjs ====`;
   // After transform, inline should be: `const VALUE = 99;\n`
   // We put a 1-byte drift: `const VALUE = 98;\n`
-  const wf = `${markerBegin}\nconst VALUE = 98;\n${markerEnd}\n`;
+  const wf = `${markerBegin}\nconst VALUE = 98;\n${markerEnd}\nuse(VALUE);\n`;
   const tmp = makeFixtureRepo(canonical, wf);
   try {
     const checkResult = runCli(['--check', '--root', tmp]);
@@ -340,8 +342,8 @@ test('syncRepo regenerates inline in both workflow files when canonical shared',
   const canonical = `export const SHARED = 'hello';\n`;
   const markerBegin = `// ==== BEGIN inline: _lib/fake.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
   const markerEnd = `// ==== END inline: _lib/fake.mjs ====`;
-  const wf1 = `before\n${markerBegin}\nold content 1\n${markerEnd}\nafter\n`;
-  const wf2 = `before\n${markerBegin}\nold content 2\n${markerEnd}\nafter\n`;
+  const wf1 = `before\n${markerBegin}\nold content 1\n${markerEnd}\nuse(SHARED);\n`;
+  const wf2 = `before\n${markerBegin}\nold content 2\n${markerEnd}\nuse(SHARED);\n`;
   const tmp = makeFixtureRepo(canonical, wf1, { multiWf: true, secondWfContent: wf2 });
   try {
     const result = syncRepo(tmp, { write: true });
@@ -378,6 +380,140 @@ test('syncRepo leaves workflow file with no markers unchanged', () => {
     // File content unchanged
     const written = readFileSync(join(tmp, '.claude', 'workflows', 'wf.js'), 'utf8');
     assert.equal(written, wf);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Only the declarations the workflow references are generated (issue #1268)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('--write generates only the declarations reachable from the hand-written part, in canonical order', () => {
+  const canonical = [
+    '// header comment',
+    'export function used() { return helper(); }',
+    '',
+    'export function unused() { return 2; }',
+    '',
+    'export function helper() { return 1; }',
+    '',
+  ].join('\n');
+  const markerBegin = `// ==== BEGIN inline: _lib/fake.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
+  const markerEnd = `// ==== END inline: _lib/fake.mjs ====`;
+  const wf = `const r = used();\n${markerBegin}\n${markerEnd}\n`;
+  const tmp = makeFixtureRepo(canonical, wf);
+  try {
+    const writeResult = runCli(['--write', '--root', tmp]);
+    assert.equal(writeResult.status, 0, `--write failed: ${writeResult.stderr}`);
+    const written = readFileSync(join(tmp, '.claude', 'workflows', 'wf.js'), 'utf8');
+    assert.equal(
+      written,
+      `const r = used();\n${markerBegin}\nfunction used() { return helper(); }\n\nfunction helper() { return 1; }\n${markerEnd}\n`,
+    );
+    const checkResult = runCli(['--check', '--root', tmp]);
+    assert.equal(checkResult.status, 0, `--check should pass after --write: ${checkResult.stderr}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('--check fails when a declaration nothing references is added to an inline region by hand', () => {
+  const canonical = `export const USED = 1;\n\nexport const UNUSED = 2;\n`;
+  const markerBegin = `// ==== BEGIN inline: _lib/fake.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
+  const markerEnd = `// ==== END inline: _lib/fake.mjs ====`;
+  const wf = `${markerBegin}\nconst USED = 1;\n\nconst UNUSED = 2;\n${markerEnd}\nuse(USED);\n`;
+  const tmp = makeFixtureRepo(canonical, wf);
+  try {
+    const checkResult = runCli(['--check', '--root', tmp]);
+    assert.equal(checkResult.status, 1, `--check should report drift: ${checkResult.stderr}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('selectReferencedDecls counts identifiers inside string and template literals', () => {
+  const regions = [{
+    source: '_lib/fake.mjs',
+    transformed: [
+      'function fromString() { return 1; }',
+      'function fromTemplate() { return `${viaNested()}`; }',
+      'function viaNested() { return 2; }',
+      'function dropped() { return 3; }',
+      '',
+    ].join('\n'),
+  }];
+  const [region] = selectReferencedDecls("const a = 'fromString';\nconst b = `x ${fromTemplate()}`;\n", regions);
+  assert.equal(
+    region.body,
+    'function fromString() { return 1; }\nfunction fromTemplate() { return `${viaNested()}`; }\nfunction viaNested() { return 2; }\n',
+  );
+});
+
+test('selectReferencedDecls always keeps statements whose declared name cannot be decided, and follows them', () => {
+  const regions = [{
+    source: '_lib/fake.mjs',
+    transformed: [
+      'const [first] = [seed()];',
+      'const a = 1, b = 2;',
+      'function seed() { return 0; }',
+      'function dropped() { return 3; }',
+      '',
+    ].join('\n'),
+  }];
+  const [region] = selectReferencedDecls('run();\n', regions);
+  assert.equal(region.body, 'const [first] = [seed()];\nconst a = 1, b = 2;\nfunction seed() { return 0; }\n');
+});
+
+test('selectReferencedDecls follows references across inline regions of the same workflow', () => {
+  const regions = [
+    { source: '_lib/a.mjs', transformed: 'function outer() { return inner(); }\nfunction notUsed() {}\n' },
+    { source: '_lib/b.mjs', transformed: 'function inner() { return 1; }\nfunction alsoNotUsed() {}\n' },
+  ];
+  const result = selectReferencedDecls('outer();\n', regions);
+  assert.deepEqual(result, [
+    { source: '_lib/a.mjs', body: 'function outer() { return inner(); }\n' },
+    { source: '_lib/b.mjs', body: 'function inner() { return 1; }\n' },
+  ]);
+});
+
+test('splitTopLevelStatements keeps multi-line literals and nested blocks inside one statement', () => {
+  const src = [
+    'const T = `',
+    'function notTopLevel() {}',
+    '`;',
+    'const C = `continued\\',
+    'function alsoNotTopLevel() {}`;',
+    '',
+    'const O = {',
+    'x: 1,',
+    '};',
+    'function f() {',
+    '  return /}/.test(T);',
+    '}',
+    '',
+  ].join('\n');
+  const stmts = splitTopLevelStatements(src);
+  assert.deepEqual(stmts.map(s => s.name), ['T', 'C', 'O', 'f']);
+  assert.equal(stmts.flatMap(s => s.lines).join('\n'), src);
+});
+
+test('--write / --check exit non-zero naming the workflow and canonical when a region keeps no declaration, and suggest --remove', () => {
+  const canonical = `export const NOBODY_USES_THIS = 1;\n`;
+  const markerBegin = `// ==== BEGIN inline: _lib/fake.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
+  const markerEnd = `// ==== END inline: _lib/fake.mjs ====`;
+  const wf = `${markerBegin}\nconst NOBODY_USES_THIS = 1;\n${markerEnd}\nrun();\n`;
+  const tmp = makeFixtureRepo(canonical, wf);
+  try {
+    for (const mode of ['--write', '--check']) {
+      const result = runCli([mode, '--root', tmp]);
+      assert.notEqual(result.status, 0, `${mode} should fail on an empty region`);
+      assert.match(result.stderr, /wf\.js/, `${mode}: workflow name missing: ${result.stderr}`);
+      assert.match(result.stderr, /_lib\/fake\.mjs/, `${mode}: canonical path missing: ${result.stderr}`);
+      assert.match(result.stderr, /--remove _lib\/fake\.mjs --from wf\.js/, `${mode}: --remove hint missing: ${result.stderr}`);
+    }
+    const written = readFileSync(join(tmp, '.claude', 'workflows', 'wf.js'), 'utf8');
+    assert.equal(written, wf, '--write must leave the workflow unchanged');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -437,7 +573,7 @@ test('syncRepo throws on function declaration collision between two canonicals',
   const markerEnd1 = `// ==== END inline: _lib/fake.mjs ====`;
   const markerBegin2 = `// ==== BEGIN inline: _lib/fake2.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
   const markerEnd2 = `// ==== END inline: _lib/fake2.mjs ====`;
-  const wf = `${markerBegin1}\n${markerEnd1}\n${markerBegin2}\n${markerEnd2}\n`;
+  const wf = `${markerBegin1}\n${markerEnd1}\n${markerBegin2}\n${markerEnd2}\nuse(topicKey);\n`;
   const tmp = makeFixtureRepo(canonical1, wf, { extraCanonicals: { 'fake2.mjs': canonical2 } });
   try {
     assert.throws(() => syncRepo(tmp, { write: false }), /collision/i);
@@ -457,7 +593,7 @@ test('syncRepo throws on const collision between two canonicals with explicit co
   const markerEnd1 = `// ==== END inline: _lib/fake.mjs ====`;
   const markerBegin2 = `// ==== BEGIN inline: _lib/fake2.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
   const markerEnd2 = `// ==== END inline: _lib/fake2.mjs ====`;
-  const wf = `${markerBegin1}\n${markerEnd1}\n${markerBegin2}\n${markerEnd2}\n`;
+  const wf = `${markerBegin1}\n${markerEnd1}\n${markerBegin2}\n${markerEnd2}\nuse(topicKey);\n`;
   const tmp = makeFixtureRepo(canonical1, wf, { extraCanonicals: { 'fake2.mjs': canonical2 } });
   try {
     assert.throws(() => syncRepo(tmp, { write: false }), /collision/i);
@@ -474,7 +610,7 @@ test('syncRepo throws with /syntax/i on canonical with syntax error', () => {
   const canonical = `export const X = ;\n`;
   const markerBegin = `// ==== BEGIN inline: _lib/fake.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
   const markerEnd = `// ==== END inline: _lib/fake.mjs ====`;
-  const wf = `${markerBegin}\n${markerEnd}\n`;
+  const wf = `${markerBegin}\n${markerEnd}\nuse(X);\n`;
   const tmp = makeFixtureRepo(canonical, wf);
   try {
     assert.throws(() => syncRepo(tmp, { write: false }), /syntax/i);
@@ -494,7 +630,7 @@ test('syncRepo succeeds when two canonicals have no collision', () => {
   const markerEnd1 = `// ==== END inline: _lib/fake.mjs ====`;
   const markerBegin2 = `// ==== BEGIN inline: _lib/fake2.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
   const markerEnd2 = `// ==== END inline: _lib/fake2.mjs ====`;
-  const wf = `${markerBegin1}\n// old A\n${markerEnd1}\n${markerBegin2}\n// old B\n${markerEnd2}\n`;
+  const wf = `${markerBegin1}\n// old A\n${markerEnd1}\n${markerBegin2}\n// old B\n${markerEnd2}\nuse(A, B);\n`;
   const tmp = makeFixtureRepo(canonical1, wf, { extraCanonicals: { 'fake2.mjs': canonical2 } });
   try {
     assert.doesNotThrow(() => syncRepo(tmp, { write: true }));
@@ -515,8 +651,8 @@ test('syncRepo does NOT collision-error when same canonical is inlined in two di
   const canonical = `export function topicKey(x) { return x; }\n`;
   const markerBegin = `// ==== BEGIN inline: _lib/fake.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
   const markerEnd = `// ==== END inline: _lib/fake.mjs ====`;
-  const wf1 = `${markerBegin}\n// old 1\n${markerEnd}\n`;
-  const wf2 = `${markerBegin}\n// old 2\n${markerEnd}\n`;
+  const wf1 = `${markerBegin}\n// old 1\n${markerEnd}\nuse(topicKey);\n`;
+  const wf2 = `${markerBegin}\n// old 2\n${markerEnd}\nuse(topicKey);\n`;
   const tmp = makeFixtureRepo(canonical, wf1, { multiWf: true, secondWfContent: wf2 });
   try {
     assert.doesNotThrow(() => syncRepo(tmp, { write: true }));
@@ -550,7 +686,7 @@ test('bare-form spawnSync (no node prefix) runs --check successfully against a f
   const canonical = `export const A = 1;\n`;
   const markerBegin = `// ==== BEGIN inline: _lib/fake.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
   const markerEnd = `// ==== END inline: _lib/fake.mjs ====`;
-  const wf = `${markerBegin}\nconst A = 1;\n${markerEnd}\n`;
+  const wf = `${markerBegin}\nconst A = 1;\n${markerEnd}\nuse(A);\n`;
   const tmp = makeFixtureRepo(canonical, wf);
   try {
     const result = spawnSync(SCRIPT_PATH, ['--check', '--root', tmp], { encoding: 'utf8' });
@@ -565,7 +701,7 @@ test('bare-form spawnSync via a symlink to the script also runs main (realpath-a
   const canonical = `export const A = 1;\n`;
   const markerBegin = `// ==== BEGIN inline: _lib/fake.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====`;
   const markerEnd = `// ==== END inline: _lib/fake.mjs ====`;
-  const wf = `${markerBegin}\nconst A = 1;\n${markerEnd}\n`;
+  const wf = `${markerBegin}\nconst A = 1;\n${markerEnd}\nuse(A);\n`;
   const tmp = makeFixtureRepo(canonical, wf);
   const symlinkDir = mkdtempSync(join(os.tmpdir(), 'sync-inlines-symlink-'));
   const symlinkPath = join(symlinkDir, 'sync-inlines-link.mjs');
@@ -640,7 +776,7 @@ test('insertMarkerPair allows anchoring on the END line of an existing region (i
 
 test('--add inserts a new inline region, fills it, and --check passes afterwards', () => {
   const anchor = 'const anchor = 1;';
-  const wfContent = `// header\n${anchor}\n// footer\n`;
+  const wfContent = `// header\n${anchor}\nuse(NEW_VALUE);\n`;
   const unusedCanonical = `export const UNUSED = 0;\n`;
   const newCanonical = `export const NEW_VALUE = 42;\n`;
   const tmp = makeFixtureRepo(unusedCanonical, wfContent, { extraCanonicals: { 'fake2.mjs': newCanonical } });

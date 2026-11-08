@@ -1,17 +1,18 @@
 // _lib/workflow-inlines.sync.test.mjs
-// Integration test: each inline zone in every .claude/workflows/*.js matches
-// transformCanonical(readFileSync(sourcePath)) byte-for-byte.
+// Integration test: each inline zone in every .claude/workflows/*.js matches, byte-for-byte,
+// what the generator plans for it — the canonical's top-level declarations that the
+// workflow references, in canonical order.
 //
-// Replaces the 8 per-canonical sync tests that used fragile function-name extraction.
-// Uses scanMarkers / transformCanonical from tools/sync-inlines.mjs (the same logic
+// Uses scanMarkers / planInlineRegions from tools/sync-inlines.mjs (the same logic
 // used by the generator) so the test and the writer share a single implementation.
+// A declaration nothing references, added to a zone by hand, makes the zone differ.
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { scanMarkers, transformCanonical, stripComments } from '../../../tools/sync-inlines.mjs';
+import { scanMarkers, planInlineRegions, stripComments } from '../../../tools/sync-inlines.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const wfDir = join(repoRoot, '.claude', 'workflows');
@@ -53,8 +54,8 @@ for (const requiredWf of ['dev-flow.js', 'pr-iterate.js']) {
 
 // -----------------------------------------------------------------------------
 // Per-zone tests: dynamically generated for every marker found in every workflow.
-// Each test asserts byte-for-byte equality between the zone body and
-// transformCanonical(readFileSync(canonicalPath)).
+// Each test asserts byte-for-byte equality between the zone body and the body
+// planInlineRegions computes from the canonical and the workflow's hand-written part.
 // -----------------------------------------------------------------------------
 for (const wfFile of wfFiles) {
   const wfPath = join(wfDir, wfFile);
@@ -63,9 +64,9 @@ for (const wfFile of wfFiles) {
 
   for (const marker of markers) {
     const { source } = marker;
-    test(`${wfFile}: inline zone '${source}' matches transformCanonical`, () => {
-      const canonicalSrc = readFileSync(join(repoRoot, source), 'utf8');
-      const expected = transformCanonical(canonicalSrc, source);
+    test(`${wfFile}: inline zone '${source}' matches the referenced declarations of the canonical`, () => {
+      const planned = planInlineRegions(repoRoot, wfFile, wfSrc).find(r => r.source === source);
+      const expected = planned.body;
       const actual = extractZoneBody(wfSrc, marker);
       assert.equal(
         actual,
