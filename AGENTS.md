@@ -88,7 +88,7 @@ JS で保持し、中間 state は script 変数に持つ (外部 state JSON は
 /dev-flow <issue>   → [wrapper preflight] → Setup(末尾で決定論 analyze ゲート)
                       → Implement(dev-implementer 1 spawn) → Validate(test green)
                       → Diff triage(realized diff から shape 判定) → Evaluate → PR → workflow('dev-flow:pr-iterate-run')
-                      → Final reconcile(fixes_applied>0 のみ) → Merge tier
+                      → workflow('dev-flow:dev-flow-finalize-run'): Final reconcile(fixes_applied>0 のみ) → Merge tier
 /pr-iterate <pr>    → [wrapper preflight: pr-iterate-prerun → EnterWorktree] → Workflow('dev-flow:pr-iterate-run') で
                       review ⇄ fix loop (LGTM まで, 上限10)。dev-flow からは nested 起動
 日次 launchd         → [macOS のみ。dev-flow-health/scripts/install-schedule.sh --install --repo <skills checkout> を
@@ -103,6 +103,11 @@ JS で保持し、中間 state は script 変数に持つ (外部 state JSON は
 - **軸A invariant** — deterministic oracle / seed / critical アイテムは全 `gate_policy` で blocking。
   danger-grep の fail-closed（失敗は全 SEC seed unchecked → HOLD）と決定論ゲートを policy で緩めない。
 - **1 issue = 1 PR**。Implement は全 shape で `dev-implementer`（plan+impl 統合）を単一 worktree に 1 spawn する（planner ⇄ reviewer ループ・parallel fan-out は持たない）。
+- **`dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐だけを持つ** — 工程の処理（agent の起動・prompt の組み立て・判定）は
+  その工程の workflow（`plugins/dev-flow/.claude/workflows/dev-flow-<工程>.js`。pr-iterate 後は `dev-flow-finalize.js`）に書く。
+  Workflow の script 上限（524288 bytes）はファイルごとにかかり、超えると `/dev-flow` が起動しない。工程の workflow は `workflow()` で
+  1 回起動し、引数と返り値の形は `_lib/stage-args.mjs` で検証する（子の失敗は HOLD）。journal handoff は親だけが行う。
+  新しい workflow の inline 区間も `tools/sync-inlines.mjs --write`（新規区間は `--add`）で生成し `--check` を通す。
 - **後方互換 scaffolding を作らない** — out-of-enum 値は明示 error (legacy fallback / version 分岐なし)。
 - `plugins/dev-flow/.claude/workflows/*.js` の `// ==== BEGIN inline: <path> ====` 〜
   `// ==== END inline: <path> ====` 区間は**生成物であり直接編集禁止**。編集は `_lib` の

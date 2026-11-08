@@ -144,9 +144,10 @@ plugin_json_path() {
     [ "$output" = '["./.claude/workflows"]' ]
 }
 
-@test "dev-flow の workflows ディレクトリに 4 本の js が存在し、撤去した dev-improve.js は無い" {
+@test "dev-flow の workflows ディレクトリに 5 本の js が存在し、撤去した dev-improve.js は無い" {
     dir="$REPO_ROOT/plugins/dev-flow/.claude/workflows"
     [ -f "$dir/dev-flow.js" ]
+    [ -f "$dir/dev-flow-finalize.js" ]
     [ -f "$dir/pr-iterate.js" ]
     [ -f "$dir/dev-flow-canary.js" ]
     [ -f "$dir/dev-flow-canary-child.js" ]

@@ -77,6 +77,9 @@ telemetry とは別に、handoff の top-level に失敗の型（journal の `.e
   `dev-flow/SKILL.md`「PR phase 失敗の扱い」）
 - abort（handoff 前の throw）は top-level の try/catch が `_lib/journal-handoff.mjs` の `buildAbortHandoffPayload` で記録し、
   元の例外を rethrow する。handoff の失敗は run の終了を妨げない（fail-open）
+- pr-iterate 後の工程の workflow（`.claude/workflows/dev-flow-finalize.js`）は handoff しない。その throw・返り値の形の不正は
+  dev-flow.js が abort と同じ型（phase `Final reconcile`・label `dev-flow-finalize`）に `merge_tier` HOLD を載せて 1 回だけ記録し、
+  run は rethrow せず HOLD で返す
 
 ## run 返り値との関係
 

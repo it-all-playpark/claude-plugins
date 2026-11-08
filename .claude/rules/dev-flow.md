@@ -26,13 +26,13 @@ paths:
 
 - Claude 専用（workflow 依存）。cross-vendor 放棄は dev-flow / pr-iterate のみ
 - skill wrapper が isolation preflight → `Workflow({ name: 'dev-flow:dev-flow-run' })`。orchestration と中間 state は workflow script の JS 変数のみ
+- `dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐だけを持ち、工程の処理（agent の起動・prompt の組み立て・判定）は工程の workflow に書く（script 上限はファイルごと）
 - `meta.name` は `dev-flow-run` でも telemetry handoff の `skill` は `'dev-flow'` 固定（集計連続性）
-- `agent()` の agentType は `nsAgentOpts()` でのみ namespace 付与（bare 名は起動直後 abort）。routing test は論理名（bare）を保持。dev-flow-canary.js のみ namespaced id 直書き
+- `agent()` の agentType は `nsAgentOpts()` でのみ namespace 付与（bare 名は起動直後 abort）。dev-flow-canary.js のみ namespaced id 直書き
 - 1 issue = 1 PR。Implement は全 shape で `dev-implementer` を単一 worktree に 1 spawn（Plan phase・planner ⇄ reviewer ループ・parallel fan-out は持たない）。BLOCKED 再実装・green-fix・Evaluate 差し戻しも同じ agent
-- model 既定は frontmatter。override は green-fix（`'sonnet'`）のみ（pr-iterate の fix は `pr-fixer` の frontmatter）。品質ゲート agent には渡さない — gate の判定モデルを credit で黙って変えない
+- model 既定は frontmatter。override は green-fix（`'sonnet'`）のみ。品質ゲート agent には渡さない — gate の判定モデルを credit で黙って変えない
 - merge は常に人間（全 tier）
 - 後方互換 scaffolding を作らない — out-of-enum は明示 error
-- worktree の後片付けは `worktree-teardown`
 
 ## ゲート（fail-closed / fail-safe の理由）
 
@@ -43,7 +43,7 @@ paths:
 - empty-diff gate は fail-closed（cross-repo は人間ラベル opt-in + 決定論 dirty 検証が揃った場合のみ graceful 終端）
 - block_class は `approach_mismatch` / `guard_blocked` の閉じた enum。guard_blocked は replan ループから除外し evaluator focus へ直行
 - isolation probe: `written:false` は fail-closed（throw）。probe 自体の失敗は fail-open。`bgIsolation:"none"` による guard 無効化は採らない（共有 checkout 汚染は blast-radius。設定緩和で sunset しない）
-- telemetry は Stop hook が `--telemetry-json` 一本で journal へ渡す（キー別 flag・検証は持たない）。workflow が書くキーは telemetry.md の一覧に限る（`_lib/telemetry-keys.test.mjs` が pin）。読み手の無いキーを足さない — 読まれない値の計算・転記コードが残るため
+- telemetry は Stop hook が `--telemetry-json` 一本で journal へ渡す（キー別 flag・検証は持たない）。workflow が書くキーは telemetry.md の一覧に限る。読み手の無いキーを足さない — 読まれない値の計算・転記コードが残るため
 
 ## 正当化クラス（W7）
 
@@ -65,7 +65,7 @@ paths:
 
 ## inline 生成区間
 
-- `// ==== BEGIN inline:` 〜 `END inline` は生成物で直接編集禁止。`_lib` canonical を直し `tools/sync-inlines.mjs --write`（先頭トークン=スクリプトパスの bare 形、node/cd/bash 前置なし。既定 root は `plugins/dev-flow`）。新規区間は `--add <_lib/x.mjs> --into <workflow.js> --after '<一意な行>'`。全文一致は `_lib/workflow-inlines.sync.test.mjs` が CI で検証
+- `// ==== BEGIN inline:` 〜 `END inline` は生成物で直接編集禁止。`_lib` canonical を直し `tools/sync-inlines.mjs --write`（先頭トークン=スクリプトパスの bare 形、node/cd/bash 前置なし）。新規区間は `--add <_lib/x.mjs> --into <workflow.js> --after '<一意な行>'`。全文一致は `_lib/workflow-inlines.sync.test.mjs` が CI で検証
 - canonical 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ（export default / export { } 不可）。ファイル全体が inline 可能
 - git plumbing による guard 迂回禁止（手編集が次回 --write で黙って消える事故防止）。guard は `hooks/hooks.json` の inline-edit-guard / inline-commit-gate で、plugin disable で両方が同時に失われる
 

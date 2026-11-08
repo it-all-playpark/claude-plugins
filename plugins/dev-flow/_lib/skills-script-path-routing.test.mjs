@@ -9,7 +9,7 @@
 // 検証は (a) の一部を dev-flow.js / pr-iterate.js 全文に対する静的否定 assert で、
 // 残りを dev-flow.js を VM で実行し agent() に実際に渡った prompt を観測することで行う
 // （WT は既定 responder の '/tmp/wt'）:
-//   (a-static) devFlowSrc / prIterateSrc 全文のどこにも `${WT}/dev-flow/scripts/`
+//   (a-static) devFlowSrc / finalizeSrc / prIterateSrc 全文のどこにも `${WT}/dev-flow/scripts/`
 //       `${WT}/journal/` という禁止パターン（テンプレートリテラル埋め込み）が無い
 //       — success run 1 本の prompt 観測だけでは未到達分岐（abort / empty-diff 等）への
 //       再混入を検出できないため、VM 観測とは独立に全文走査で pin する
@@ -29,6 +29,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const workflowDir = join(here, '..', '.claude', 'workflows');
 const devFlowSrc = readFileSync(join(workflowDir, 'dev-flow.js'), 'utf8');
 const prIterateSrc = readFileSync(join(workflowDir, 'pr-iterate.js'), 'utf8');
+const finalizeSrc = readFileSync(join(workflowDir, 'dev-flow-finalize.js'), 'utf8');
 
 // 3 call site に対応する run: success / empty-diff failure（writeFailureTelemetry）/ abort
 const RUNS = {
@@ -51,10 +52,10 @@ async function run(name) {
 // ---- (a) 禁止パターン不在: WT 相対で skills 内部 script を呼んではならない ----
 
 // (a-static): success run 1 本の prompt 観測だけでは未到達分岐（abort / empty-diff 等）への
-// 再混入を検出できないため、devFlowSrc / prIterateSrc 全文に対する静的否定 assert を
+// 再混入を検出できないため、devFlowSrc / finalizeSrc / prIterateSrc 全文に対する静的否定 assert を
 // VM 観測とは独立に並置する。
-test('[skills-script-path-routing] (a-static) devFlowSrc / prIterateSrc 全文に `${WT}/dev-flow/scripts/` `${WT}/journal/` という禁止パターンが無い', () => {
-  for (const [name, src] of [['dev-flow.js', devFlowSrc], ['pr-iterate.js', prIterateSrc]]) {
+test('[skills-script-path-routing] (a-static) devFlowSrc / finalizeSrc / prIterateSrc 全文に `${WT}/dev-flow/scripts/` `${WT}/journal/` という禁止パターンが無い', () => {
+  for (const [name, src] of [['dev-flow.js', devFlowSrc], ['dev-flow-finalize.js', finalizeSrc], ['pr-iterate.js', prIterateSrc]]) {
     for (const forbidden of ['${WT}/dev-flow/scripts/', '${WT}/journal/']) {
       assert.ok(!src.includes(forbidden), `${name} に禁止パターン ${forbidden} が静的に含まれる（対象 repo が skills 以外だと Exit 127）`);
     }

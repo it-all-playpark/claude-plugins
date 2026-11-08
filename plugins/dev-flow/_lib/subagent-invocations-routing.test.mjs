@@ -25,6 +25,7 @@ const DEV_FLOW_PATH = join(HERE, '..', '.claude', 'workflows', 'dev-flow.js');
 const PR_ITERATE_PATH = join(HERE, '..', '.claude', 'workflows', 'pr-iterate.js');
 const devFlowSrc = readFileSync(DEV_FLOW_PATH, 'utf8');
 const prIterateSrc = readFileSync(PR_ITERATE_PATH, 'utf8');
+const finalizeSrc = readFileSync(join(HERE, '..', '.claude', 'workflows', 'dev-flow-finalize.js'), 'utf8');
 
 // ============================================================
 // (0) 否定 pin: bare agent( は trackedAgent wrapper 内の 2 箇所のみ
@@ -33,7 +34,7 @@ const prIterateSrc = readFileSync(PR_ITERATE_PATH, 'utf8');
 // stripComments（tools/sync-inlines.mjs）は regex literal を regex context として解釈しない既知の制約が
 // あるため、前段で test-helpers/source-scan.mjs の neutralizeRegexLiterals を通して迂回する。
 
-for (const [name, rawSrc] of [['dev-flow.js', devFlowSrc], ['pr-iterate.js', prIterateSrc]]) {
+for (const [name, rawSrc] of [['dev-flow.js', devFlowSrc], ['dev-flow-finalize.js', finalizeSrc], ['pr-iterate.js', prIterateSrc]]) {
   test(`${name}: bare agent( 呼び出しは trackedAgent wrapper 内の 2 箇所のみ（wrapper 外の call site は禁止）`, () => {
     const strippedSrc = stripComments(neutralizeRegexLiterals(rawSrc));
     const bareAgentCallRe = /(?<![A-Za-z0-9_$])agent\s*\(/g;

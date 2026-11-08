@@ -92,6 +92,7 @@ test('[bin-bare-name-routing][AC1] _lib/*.mjs に skills 絶対パスが 0 箇�
 
 const devFlowSrc = readFileSync(join(workflowsDir, 'dev-flow.js'), 'utf8');
 const prIterateSrc = readFileSync(join(workflowsDir, 'pr-iterate.js'), 'utf8');
+const finalizeSrc = readFileSync(join(workflowsDir, 'dev-flow-finalize.js'), 'utf8');
 
 const PASS_EVAL_TEST_AC = {
   verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation',
@@ -177,6 +178,7 @@ const dotShRe = new RegExp('(' + BARE.join('|') + ')\\.sh (\\$\\{|origin/|--|sta
 
 for (const [name, src] of [
   ['dev-flow.js', devFlowSrc],
+  ['dev-flow-finalize.js', finalizeSrc],
   ['pr-iterate.js', prIterateSrc],
 ]) {
   test(`[bin-bare-name-routing][first-token] ${name} に bash 前置の bare 名呼び出しが残っていない`, () => {

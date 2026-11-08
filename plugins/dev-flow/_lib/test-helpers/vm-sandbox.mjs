@@ -22,8 +22,11 @@
  *     独自の responder を持つ test は label 'ac-observational#N' にこれを返す
  *   - makeWorkflowContext(sandbox): 独自の agent stub を持つ test 用の VM context を作る
  *   - runDevFlowInSandbox(src, ctx): dev-flow.js ソースを strip して sandbox 実行する
- *   - runWorkflowCapture(src, ctx, filename?): strip + wrap + vm 実行し {result, error} を返す
+ *   - runWorkflowCapture(src, ctx, filename?, {connectFinalize?}?): strip + wrap + vm 実行し {result, error} を返す
  *     （dev-flow.js / pr-iterate.js 共用。filename 既定は '.claude/workflows/dev-flow.js'）
+ *   - FINALIZE_WORKFLOW: dev-flow.js が pr-iterate 後の工程を起動する nested workflow 名
+ *     （dev-flow.js の run は、この名前の workflow() を同じ context で dev-flow-finalize.js を実行する呼び出しにつなぐ —
+ *     connectFinalize。connectFinalize:false を渡した run だけ test の workflow stub が受ける）
  *   - assertNoCrash(error, name): error が ReferenceError/SyntaxError なら assert.fail する
  *   - mergeTierFacts(overrides?): Merge tier 統合 exec-proxy（label 'merge-tier-facts'）の応答を組み立てる
  *   - devFlowResponder(overrides?, {issue?}?): dev-flow.js 標準経路（shape 'standard'）の既定 responder
@@ -42,6 +45,9 @@
 
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 // ============================================================
 // JS_GLOBALS: VM sandbox に expose する JS 組み込み 15 個
@@ -216,34 +222,58 @@ export function makeWorkflowContext(sandbox) {
 }
 
 // ============================================================
+// connectFinalize: dev-flow.js → dev-flow-finalize.js の nested workflow() をつなぐ
+// ============================================================
+
+export const FINALIZE_WORKFLOW = 'dev-flow:dev-flow-finalize-run';
+const FINALIZE_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '.claude', 'workflows', 'dev-flow-finalize.js');
+
+function stripExports(src) {
+  return src
+    .replace(/^export\s+const\s+/gm, 'const ')
+    .replace(/^export\s+function\s+/gm, 'function ');
+}
+
+/**
+ * ctx の workflow を包み、FINALIZE_WORKFLOW の呼び出しだけを同じ context（agent / log / phase の記録を共有）での
+ * dev-flow-finalize.js の実行にする。それ以外の名前は test の stub に渡す。args と返り値は JSON で往復させる
+ * （workflow() の境界を越えるのは JSON の値だけ — 関数・undefined・親の object の参照を子に渡さない）。
+ * 子の ReferenceError / SyntaxError は親が HOLD に倒して隠すので、crash.error に記録して run の error にする。
+ *
+ * @param {vm.Context} ctx
+ * @returns {{error: Error|null}}
+ */
+function connectFinalize(ctx) {
+  const stub = ctx.workflow;
+  const crash = { error: null };
+  ctx.workflow = async (name, a) => {
+    if (name !== FINALIZE_WORKFLOW) return stub(name, a);
+    const child = vm.runInContext(`(async (args) => {\n${stripExports(readFileSync(FINALIZE_PATH, 'utf8'))}\n})`, ctx, { filename: '.claude/workflows/dev-flow-finalize.js' });
+    try {
+      const res = await child(a === undefined ? a : JSON.parse(JSON.stringify(a)));
+      return res === undefined ? res : JSON.parse(JSON.stringify(res));
+    } catch (e) {
+      if (e && (e.name === 'ReferenceError' || e.name === 'SyntaxError')) crash.error = e;
+      throw e;
+    }
+  };
+  return crash;
+}
+
+// ============================================================
 // runDevFlowInSandbox: dev-flow.js ソースを strip して sandbox 実行する
 // ============================================================
 
 /**
- * dev-flow.js ソースを strip して async IIFE でラップし vm sandbox で実行する。
+ * dev-flow.js ソースを strip して async IIFE でラップし vm sandbox で実行する（FINALIZE_WORKFLOW は connectFinalize でつなぐ）。
  *
  * @param {string} src - dev-flow.js の raw ソース
  * @param {vm.Context} ctx - vm コンテキスト
  * @returns {Promise<Error|null>} エラーがあれば Error、無ければ null
  */
 export async function runDevFlowInSandbox(src, ctx) {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
-
-  let caughtError = null;
-  try {
-    const result = vm.runInContext(wrapped, ctx, { filename: '.claude/workflows/dev-flow.js' });
-    if (result && typeof result.then === 'function') {
-      await result.catch((e) => {
-        caughtError = e;
-      });
-    }
-  } catch (e) {
-    caughtError = e;
-  }
-  return caughtError;
+  const { error } = await runWorkflowCapture(src, ctx);
+  return error;
 }
 
 // ============================================================
@@ -258,13 +288,13 @@ export async function runDevFlowInSandbox(src, ctx) {
  * @param {string} src - workflow の raw ソース（dev-flow.js / pr-iterate.js）
  * @param {vm.Context} ctx - vm コンテキスト
  * @param {string} [filename='.claude/workflows/dev-flow.js'] - vm.runInContext に渡す filename
+ * @param {{connectFinalize?: boolean}} [opts] - dev-flow.js の run で FINALIZE_WORKFLOW を dev-flow-finalize.js の実行に
+ *   つなぐか（既定 true。false は test の workflow stub が子の返り値・throw を決める run）
  * @returns {Promise<{ result: unknown, error: Error|null }>}
  */
-export async function runWorkflowCapture(src, ctx, filename = '.claude/workflows/dev-flow.js') {
-  const stripped = src
-    .replace(/^export\s+const\s+/gm, 'const ')
-    .replace(/^export\s+function\s+/gm, 'function ');
-  const wrapped = `(async () => {\n${stripped}\n})();`;
+export async function runWorkflowCapture(src, ctx, filename = '.claude/workflows/dev-flow.js', { connectFinalize: connect = true } = {}) {
+  const wrapped = `(async () => {\n${stripExports(src)}\n})();`;
+  const crash = connect && filename.endsWith('/dev-flow.js') ? connectFinalize(ctx) : { error: null };
 
   let caughtError = null;
   let resolvedResult = null;
@@ -279,7 +309,7 @@ export async function runWorkflowCapture(src, ctx, filename = '.claude/workflows
   } catch (e) {
     caughtError = e;
   }
-  return { result: resolvedResult, error: caughtError };
+  return { result: resolvedResult, error: caughtError ?? crash.error };
 }
 
 // ============================================================

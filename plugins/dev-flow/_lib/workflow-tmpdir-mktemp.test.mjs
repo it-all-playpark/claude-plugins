@@ -7,7 +7,7 @@
 //
 // 検証:
 //   (a-static) bodySaveInstr の canonical に `mktemp` が現れない（2 workflow の全呼び出し元をまとめて pin）。
-//       2 workflow 全文に旧形式 `mktemp /tmp/` も現れない
+//       各 workflow 全文に旧形式 `mktemp /tmp/` も現れない
 //   (b) 投稿 prompt 2 箇所（dev-flow post-summary / pr-iterate post-summary）が
 //       mktemp を含まず、bare 単文の禁止句と `--repo <REPO>` 付きの gh コマンドを渡す
 //   (c) dev-flow / pr-iterate は worktree の `.devflow-tmp/` 固定パスへ保存させる
@@ -25,6 +25,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const workflowDir = join(here, '..', '.claude/workflows');
 const devFlowSrc = readFileSync(join(workflowDir, 'dev-flow.js'), 'utf8');
 const prIterateSrc = readFileSync(join(workflowDir, 'pr-iterate.js'), 'utf8');
+const finalizeSrc = readFileSync(join(workflowDir, 'dev-flow-finalize.js'), 'utf8');
 const postHelpersSrc = readFileSync(join(here, 'workflow-post-helpers.mjs'), 'utf8');
 
 const BARE_RULE = '先頭トークンが gh の bare 単文で 1 回だけ実行せよ（cd 前置・bash 前置・環境変数代入前置・&& 連結・パイプ・リダイレクト禁止）';
@@ -54,9 +55,9 @@ test('[comment-post] (a-static) _lib/workflow-post-helpers.mjs（2 workflow の 
   assert.ok(!postHelpersSrc.includes('mktemp'), 'workflow-post-helpers.mjs に mktemp が残存している（固定パスへの Write tool 新規作成に置き換えること）');
 });
 
-// (a-static) 旧形式 `mktemp /tmp/`（sandbox で /tmp 直書きが拒否される）が 2 workflow 全文に無い
-test('[comment-post] (a-static) dev-flow.js / pr-iterate.js 全文に `mktemp /tmp/` という旧形式が無い', () => {
-  for (const [name, src] of [['dev-flow.js', devFlowSrc], ['pr-iterate.js', prIterateSrc]]) {
+// (a-static) 旧形式 `mktemp /tmp/`（sandbox で /tmp 直書きが拒否される）が各 workflow 全文に無い
+test('[comment-post] (a-static) dev-flow.js / dev-flow-finalize.js / pr-iterate.js 全文に `mktemp /tmp/` という旧形式が無い', () => {
+  for (const [name, src] of [['dev-flow.js', devFlowSrc], ['dev-flow-finalize.js', finalizeSrc], ['pr-iterate.js', prIterateSrc]]) {
     assert.ok(!src.includes('mktemp /tmp/'), `${name} に \`mktemp /tmp/\` という旧形式が静的に残存している`);
   }
 });

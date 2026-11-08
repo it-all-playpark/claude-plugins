@@ -2,6 +2,7 @@
 
 GitHub issue から LGTM までを 8 phase で駆動する `dev-flow` の実処理を図で示す。
 すべて実装ソース（`plugins/dev-flow/.claude/workflows/dev-flow.js` /
+`plugins/dev-flow/.claude/workflows/dev-flow-finalize.js` /
 `plugins/dev-flow/.claude/workflows/pr-iterate.js` /
 `.claude/rules/dev-flow.md`）から起こしたもので、要約や理想形ではない。
 
@@ -25,7 +26,9 @@ GitHub issue から LGTM までを 8 phase で駆動する `dev-flow` の実処�
 
 wrapper skill が worktree を用意して `EnterWorktree` した上で、dynamic workflow `dev-flow-run` を
 起動する。phase 遷移とループは workflow script が JS で保持し、中間 state は外部 JSON ではなく
-script 変数に持つ。
+script 変数に持つ。`dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐だけを持ち、pr-iterate から
+戻ったあとの Final reconcile と Merge tier（終端サマリーの投稿まで）は `dev-flow.js` が `workflow()` で 1 回起動する
+`dev-flow-finalize-run` が持つ。journal telemetry の記録は `dev-flow.js` が子の返り値から 1 回だけ行う。
 
 まず概観を示し、続いて 8 phase を 1 phase 1 節で展開する。
 
@@ -258,8 +261,10 @@ flowchart TD
     M0 --> M1["danger 再 reconcile<br/>one-shot security clearance"]
     M1 --> M2["classifyMergeTier"]
     M2 --> M3["終端サマリを PR へ投稿"]
-    M3 --> M4["journal telemetry 記録"]
+    M3 --> M4["journal telemetry 記録<br/>(dev-flow.js が子の返り値から 1 回)"]
     M4 --> HU["merge は常に人間"]
+    IN -.->|"dev-flow-finalize の throw /<br/>返り値の形が不正"| FH["merge tier HOLD<br/>終端サマリ未投稿の注記"]
+    FH -.-> M4
 ```
 
 `merge-tier-facts` の diffhash が Diff triage 時点の tree OID と一致すれば、facts の risk / changed
@@ -500,7 +505,7 @@ model は subagent の frontmatter で決める。品質ゲート agent の call
 
 effort も subagent の frontmatter で決める。`agent()` の `opts.effort` は frontmatter より優先して
 実効値に反映される（transcript で確認済み。`dev-flow-canary` の `agent_opts_effort_accepted` probe は
-受理可否だけを測る）が、dev-flow.js / pr-iterate.js の call site は opts で effort を渡さない。
+受理可否だけを測る）が、dev-flow.js / dev-flow-finalize.js / pr-iterate.js の call site は opts で effort を渡さない。
 
 ---
 

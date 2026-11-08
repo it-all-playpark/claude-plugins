@@ -31,13 +31,12 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
                       → workflow('dev-flow:pr-iterate-run') で review ⇄ fix loop (LGTM まで) → 終端サマリー
 ```
 
-- orchestration（phase 遷移・各ループ）と中間 state は workflow script（`.claude/workflows/dev-flow.js` / `.claude/workflows/pr-iterate.js`）の
-  JS 変数だけに持つ。phase の並びは `dev-flow.js` の `meta.phases`。pr-iterate は親 meta に現れないサブ workflow で、自分の `Iterate` phase を持つ
+- orchestration（phase 遷移・各ループ）と中間 state は workflow script（`.claude/workflows/*.js`）の JS 変数だけに持つ。phase の並びは `dev-flow.js` の `meta.phases`。pr-iterate は親 meta に現れないサブ workflow で、自分の `Iterate` phase を持つ
+- 構造の規約: `dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐だけを持ち、工程の処理（agent の起動・prompt の組み立て・判定）は
+  その工程の workflow に書く（例: `dev-flow-finalize.js`。子の失敗は HOLD）。inline 区間は `tools/sync-inlines.mjs --write` で生成し `--check` を通す
 - 起動名は namespaced（`dev-flow:dev-flow-run` / `dev-flow:pr-iterate-run`）。telemetry handoff の `skill` は `'dev-flow'` / `'pr-iterate'` のまま
 - `agent()` の agentType は `nsAgentOpts()`（`_lib/agent-namespace.mjs`）でだけ namespace を付ける。判断系 leaf は `agents/` の subagent
-- model は subagent の frontmatter で決め、品質ゲート agent の call site は `opts.model` を渡さない。override は Validate の green-fix の
-  sonnet だけ（`_lib/impl-model-opus.test.mjs` が pin）。割り当ての判断は `capability-bound.md`
-- effort は frontmatter で決め、call site は opts で渡さない（`_lib/agent-frontmatter.test.mjs` が pin）
+- model・effort は subagent の frontmatter で決め、call site は渡さない（例外は green-fix の sonnet。判断は `capability-bound.md`）
 - 決定論処理は `bin/` の bare 名の script を dev-runner 系 subagent に実行させる（exec-proxy。`exec-proxy.md`）
 - worktree の後片付けは `_shared/scripts/worktree-teardown.sh`。merge は常に人間
 
@@ -59,7 +58,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
     AC の文面と issue タイトルだけを読む分類 agent に 1 回で渡して決める（diff・evaluator の結果は渡さない — 実装を見た判定は抜け道になる。
     候補を絞らない — 取りこぼしがコード読みで達成扱いになる）。ci AC は repo の `"dev-flow".ci_verify` の宣言に当たる AC（`matchesCiVerify`）
   - isolation probe — ゲート通過後・Implement の前に、tools を Write だけにした `dev-runner-haiku-wo` が worktree 直下
-    `.devflow-tmp/.isolation-probe-<token>` に書けるかを確かめる（implementer と同じ Write tool の経路の検証。token は `args.setup.epoch`）
+    `.devflow-tmp/.isolation-probe-<token>` に書けるかを確かめる（implementer と同じ Write tool の経路の検証）
 - **失敗の扱い**:
   - `args.setup` の欠落・`ok:false`・型不正、analyze の whitelist 不合格は throw（fail-closed。workflow 内に fallback を置かない）
   - analyze 段の失敗・open な blocker・analyze ゲートは needs_clarification で終端（fail-closed。REQ を推測で組まない。決定論は意味的矛盾の
@@ -126,7 +125,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - danger-grep（security の危険パターン）と test-surface の hit — hit は SEC seed / TESTSURF として ledger に積む
   - 実効 shape — `classifyShape` が realized diff の file 数・行数と issue 由来の決定論特徴量（AC 数・`issue_type`・構造化 `breaking_change`）で
     1 回で決める。数える file は ephemeral・宣言外を除いたもの。安全 floor（count 欠損・AC 欠落・out-of-enum の
-    `issue_type`・`breaking_change === true` → complex）を通った run だけ、行数で下げ方向にだけ補正する。LLM の事前見積もりは使わない
+    `issue_type`・`breaking_change === true` → complex）を通った run だけ、行数で下げ方向にだけ補正する
   - Evaluate を走らせるか（`runEval`）— micro 以外、または danger-grep / testsurf の hit・green-fix・drop・宣言外変更がある run
   - 宣言外変更 — implementer が申告しなかった変更を concern に積み、evaluator の重点監査に回す
   - 敵対的 security review の対象か（security-scope。`security-review.md`）— lite route の入口と nested pr-iterate の引数になる
@@ -229,14 +228,13 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - worktree を PR の最終 HEAD に同期し、Validate と同じ start / wait を 1 回だけ実行する（green-fix はしない）。red で
     落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake 候補として開示する（HOLD・`EVAL-*` は外さない。
     PR が書いたテストの出力。`_lib/final-test-rerun.mjs`）
-  - テストを実行できなければ `unavailable`。PR の CI の success では代えない
-    （PR が CI を書き換えうる）
+  - テストを実行できなければ `unavailable`（PR が書き換えうる PR の CI の success では代えない）
   - 最終の changed-files で宣言外変更を監査し直す
   - final test が green（no_tests を含む）の run（`reverified`）だけ、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
     解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は test#final green を head sha に pin した
     evidence で checked にする（evaluator は fix 後に再実行されないため。`finalEvalBlockingResolutions`）。SEC seed・TESTSURF・AC-FINAL は LLM の判断で解消しない
   - Evaluate で red→green を実証していない観測型 AC に Final AC reconcile が `verified_by:'test'` と `test_files` / `impl_files` を返したら、
-    最終 tree で redgreen-verify（`redgreen-final`。impl は `origin/<base>` との merge-base まで戻す）を `start` / `wait` で実行し、red→green が成立して
+    最終 tree で redgreen-verify（`redgreen-final`。impl は `origin/<base>` との merge-base まで戻す）を実行し、red→green が成立して
     vdelta が deny しなければ deterministic に昇格する（`finalRedgreenTargets`）。fix がテストを直した run を人手 AC 待ちにしないため
   - test#final が green か no_tests なら、Final AC reconcile に test#final の `tests` / `green` と各 script のログパスを渡し、
     実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）
@@ -248,7 +246,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - Final AC reconcile の応答が検証に通らなければ `unavailable`（fail-closed → HOLD）
   - `redgreen-final` の失敗（Evaluate と同じ + throw）・red→green 不成立・vdelta の deny は昇格せず、観測型 AC は人手 AC 待ちのまま（fail-safe）
   - changed-files の取得失敗は宣言外の再監査を skip（fail-open。test gate は維持）。PR 本文の AC checkbox の更新失敗も fail-open
-- **コード**: `phase('Final reconcile')`（`.claude/workflows/dev-flow.js`）、`_lib/final-test-rerun.mjs`、
+- **コード**: `phase('Final reconcile')`（`.claude/workflows/dev-flow-finalize.js`）、`_lib/final-test-rerun.mjs`、
   `_lib/final-ac-reconcile.mjs`（`finalEvalBlockingResolutions`・`finalRedgreenTargets`）、`_lib/redgreen-targets.mjs`、`_lib/post-eval-recheck.mjs`
 
 ## Merge tier
@@ -268,5 +266,5 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - mergeable が確定しないときは HOLD しない（fail-open。definitive な CONFLICTING / DIRTY だけ HOLD）
   - Closes 行の取得失敗は未検証（fail-open）。欠落は入れ直し、入れ直せなければ HOLD（fail-closed）
   - CI checks の取得失敗・終端サマリーの投稿失敗・journal handoff の失敗は fail-open（gate・tier に影響しない）
-- **コード**: `phase('Merge tier')`（`.claude/workflows/dev-flow.js`）、`classifyMergeTier`（`_lib/merge-tier.mjs`）、`_lib/merge-tier-facts.mjs`、
+- **コード**: `phase('Merge tier')`（`.claude/workflows/dev-flow-finalize.js`）、`classifyMergeTier`（`_lib/merge-tier.mjs`）、`_lib/merge-tier-facts.mjs`、
   `_lib/devflow-summary-format.mjs`、`_lib/journal-handoff.mjs`

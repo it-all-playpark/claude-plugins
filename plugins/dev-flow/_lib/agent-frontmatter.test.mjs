@@ -150,14 +150,15 @@ for (const spec of AGENTS) {
 }
 
 // Static pin: effort は frontmatter で決める（pr-iterate の fix も pr-fixer の frontmatter で medium）。
-// dev-flow.js / pr-iterate.js のコメント以外の行は `effort:` を渡さない。
-test('[agent-frontmatter][opts-pin] dev-flow.js / pr-iterate.js の agent() call site は opts で effort を渡さない', () => {
+// dev-flow.js / dev-flow-finalize.js / pr-iterate.js のコメント以外の行は `effort:` を渡さない。
+test('[agent-frontmatter][opts-pin] dev-flow.js / dev-flow-finalize.js / pr-iterate.js の agent() call site は opts で effort を渡さない', () => {
   const workflowsDir = join(repoRoot, '.claude', 'workflows');
   const effortLines = (file) =>
     readFileSync(join(workflowsDir, file), 'utf8')
       .split('\n')
       .filter((l) => !l.trim().startsWith('//') && /\beffort:/.test(l));
   assert.deepEqual(effortLines('dev-flow.js'), [], 'dev-flow.js の agent() call site は effort を渡さない');
+  assert.deepEqual(effortLines('dev-flow-finalize.js'), [], 'dev-flow-finalize.js の agent() call site は effort を渡さない');
   assert.deepEqual(effortLines('pr-iterate.js'), [], 'pr-iterate.js の agent() call site は effort を渡さない');
 });
 

@@ -244,7 +244,7 @@ test('[journal-log] journal-log が throw した場合 run は完走し result.j
 // 存在し、call site 側に手写しが残っていないこと（否定 pin）。call site の label（journal-log /
 // journal-log-failure / journal-log-abort）と handoff の挙動は各 workflow の VM テスト
 // （本ファイル / priterate-journal-log.test.mjs）と exec-proxy-routing.test.mjs が観測する。
-test.each(['dev-flow.js', 'pr-iterate.js'])('[journal-log] inline 整合: %s の inline 区間外に journal handoff choreography の手写しが残っていない', (file) => {
+test.each(['dev-flow.js', 'dev-flow-finalize.js', 'pr-iterate.js'])('[journal-log] inline 整合: %s の inline 区間外に journal handoff choreography の手写しが残っていない', (file) => {
   const workflowSrc = readFileSync(join(repoRoot, '.claude/workflows', file), 'utf8');
   const anchor = workflowSrc.indexOf('==== END inline: _lib/journal-handoff.mjs ====');
   assert.ok(anchor >= 0, `${file}: journal-handoff inline END marker が見つからない`);
