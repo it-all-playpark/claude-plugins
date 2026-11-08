@@ -28,7 +28,11 @@
 #       - a changed path is not `.mjs` / `.js` / `.md` (shell, bats, json, ...)
 #       - a changed `.mjs` / `.js` / `.md` basename appears in a shell-side
 #         file (`*.sh`, `bin/**`, `hooks/**`; `*.bats` excluded), since those
-#         call scripts by name and their own bats would not mention it
+#         call scripts by name and their own bats would not mention it.
+#         Lines starting with `#` (leading whitespace ignored) are left out of
+#         this shell-side match, so a mention only in comments doesn't force
+#         the full suite. This is line-based: a `#`-leading line inside a
+#         heredoc body is left out too.
 #     Matching is a plain basename string match (no import analysis). The
 #     decision is printed as one `[run-all-bats] Selection:` line on stdout.
 #     CI and manual runs don't set the variable, so they always run everything.
@@ -124,7 +128,7 @@ select_by_changed_files() {
             \( -name "*.sh" -o -path "*/bin/*" -o -path "*/hooks/*" \) -print | sort
     )
 
-    local base hit
+    local base hit f body
     for p in "${changed[@]}"; do
         if [[ "/$p" == */tests/* ]]; then
             echo "[run-all-bats] Selection: all ($p: under tests/)"
@@ -143,7 +147,16 @@ select_by_changed_files() {
         esac
         base="${p##*/}"
         if [[ ${#shell_files[@]} -gt 0 ]]; then
-            hit="$(grep -lF -e "$base" -- "${shell_files[@]}" 2>/dev/null | head -n 1)"
+            # grep -l narrows the candidates; the comment-line exclusion is a
+            # second pass so the reported file is the first non-comment hit.
+            hit=""
+            while IFS= read -r f; do
+                body="$(grep -vE '^[[:space:]]*#' -- "$f")"
+                if [[ "$body" == *"$base"* ]]; then
+                    hit="$f"
+                    break
+                fi
+            done < <(grep -lF -e "$base" -- "${shell_files[@]}" 2>/dev/null)
             if [[ -n "$hit" ]]; then
                 echo "[run-all-bats] Selection: all ($p: basename referenced by shell-side file ${hit#$REPO_ROOT/})"
                 return
