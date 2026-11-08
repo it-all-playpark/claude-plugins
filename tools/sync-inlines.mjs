@@ -8,11 +8,22 @@
 // root は plugin root（`_lib/` と `.claude/workflows/` を直下に持つ dir）。既定は
 // `<repo>/plugins/dev-flow`。
 //
+// Each inline region holds only the canonical's top-level declarations that its workflow
+// references (directly from the hand-written part, or through other generated
+// declarations), in canonical order — not the whole canonical. The Workflow script size
+// limit applies per file, so an unused declaration costs bytes in every workflow it is in.
+//
 // Named exports (pure functions):
 //   stripComments(src)              - remove JS comments for forbidden-token scanning
 //   checkForbiddenTokens(src, lbl)  - error if import/require/Date.now/Math.random in code
 //   dropComments(src)               - remove comments from generated code, literals intact
 //   transformCanonical(src, lbl)    - strip 'export ' prefix, drop comments, normalize trailing newline
+//   splitTopLevelStatements(src)    - split inline code into top-level statements + declared name
+//   collectIdentifiers(src)         - identifier-shaped words, literals included
+//   selectReferencedDecls(hand, regions)
+//                                   - keep the statements reachable from the hand-written part
+//   planInlineRegions(root, wf, src)
+//                                   - body of every region of one workflow (generator + sync test)
 //   scanMarkers(wfSrc, wfLabel)     - parse BEGIN/END markers, return [{source, beginLine, endLine}]
 //   insertMarkerPair(wfSrc, source, anchor, wfLabel)
 //                                   - insert a new BEGIN/END marker pair after a unique
@@ -329,10 +340,209 @@ export function collectTopLevelDeclNames(src) {
   return names;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// splitTopLevelStatements(src): split comment-free inline code (transformCanonical
+// output) into top-level statements, in source order.
+// Returns: [{ lines: string[], name: string | null }]
+//
+// A statement starts on a line that begins at column 0 while no bracket, string,
+// template or regex is open. Each statement owns the lines up to the next start
+// (trailing blank lines included), so concatenating every statement reproduces
+// src minus the blank lines before the first one.
+//
+// `name` is the single declared name, or null when it cannot be decided (destructuring,
+// multiple declarators, several statements on one line, a non-declaration statement).
+// Unnamed statements are always generated: dropping one would drop a declaration or a
+// side effect that nothing can be traced to.
+// ─────────────────────────────────────────────────────────────────────────────
+export function splitTopLevelStatements(src) {
+  const lines = src.split('\n');
+  const topLevelLine = new Array(lines.length).fill(false);
+  topLevelLine[0] = true;
+  // Line index of every depth-0 ',' and of every depth-0 ';' followed by more code.
+  const commaLines = new Set();
+  const midSemicolonLines = new Set();
+
+  let line = 0;
+  let depth = 0;
+  let prev = '';
+  let prevWord = '';
+  const braceStack = [];
+  let inTemplate = false;
+  const n = src.length;
+  const regexAllowed = () => {
+    if (prev === '') return true;
+    if (prev === 'word') return REGEX_AFTER_KEYWORDS.has(prevWord);
+    if (prev === 'literal') return false;
+    return prev !== ')' && prev !== ']' && prev !== '}';
+  };
+
+  let i = 0;
+  while (i < n) {
+    const ch = src[i];
+    if (ch === '\n') {
+      line++;
+      topLevelLine[line] = !inTemplate && depth === 0 && braceStack.length === 0;
+      i++;
+      continue;
+    }
+    if (inTemplate) {
+      if (ch === '\\') {
+        if (src[i + 1] === '\n') line++;
+        i += 2;
+        continue;
+      }
+      if (ch === '`') { inTemplate = false; prev = 'literal'; i++; continue; }
+      if (ch === '$' && src[i + 1] === '{') {
+        braceStack.push(0);
+        inTemplate = false;
+        prev = '{';
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < n && src[j] !== ch) {
+        if (src[j] === '\\') j++;
+        if (src[j] === '\n') line++;  // line continuation inside the string
+        j++;
+      }
+      i = j + 1;
+      prev = 'literal';
+      continue;
+    }
+    if (ch === '`') { inTemplate = true; i++; continue; }
+    if (ch === '/' && regexAllowed()) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < n && src[j] !== '\n') {
+        const c = src[j];
+        if (c === '\\') { j += 2; continue; }
+        if (inClass) { if (c === ']') inClass = false; }
+        else if (c === '[') inClass = true;
+        else if (c === '/') break;
+        j++;
+      }
+      j++;
+      while (j < n && /[A-Za-z]/.test(src[j])) j++;
+      i = j;
+      prev = 'literal';
+      continue;
+    }
+    if (/[A-Za-z0-9_$\u0080-￿]/.test(ch)) {
+      let j = i + 1;
+      while (j < n && /[A-Za-z0-9_$\u0080-￿]/.test(src[j])) j++;
+      prevWord = src.slice(i, j);
+      prev = 'word';
+      i = j;
+      continue;
+    }
+    if (/\s/.test(ch)) { i++; continue; }
+    if (ch === '{' && braceStack.length > 0) {
+      braceStack[braceStack.length - 1]++;
+    } else if (ch === '}' && braceStack.length > 0) {
+      if (braceStack[braceStack.length - 1] === 0) {
+        braceStack.pop();
+        inTemplate = true;
+        i++;
+        continue;
+      }
+      braceStack[braceStack.length - 1]--;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (depth === 0 && braceStack.length === 0) {
+      if (ch === ',') commaLines.add(line);
+      else if (ch === ';') {
+        const eol = src.indexOf('\n', i);
+        if (src.slice(i + 1, eol === -1 ? n : eol).trim() !== '') midSemicolonLines.add(line);
+      }
+    }
+    prev = ch;
+    i++;
+  }
+
+  const starts = [];
+  for (let k = 0; k < lines.length; k++) {
+    if (topLevelLine[k] && /^[^\s})\]]/.test(lines[k])) starts.push(k);
+  }
+
+  return starts.map((start, s) => {
+    const end = s + 1 < starts.length ? starts[s + 1] : lines.length;
+    let ambiguous = false;
+    for (let k = start; k < end; k++) {
+      if (commaLines.has(k) || midSemicolonLines.has(k)) ambiguous = true;
+    }
+    const names = collectTopLevelDeclNames(lines[start]);
+    const destructuring = /^(?:const|let|var)\s*[{[]/.test(lines[start]);
+    const name = !ambiguous && !destructuring && names.length === 1 ? names[0] : null;
+    return { lines: lines.slice(start, end), name };
+  });
+}
+
+// collectIdentifiers(src): every identifier-shaped word in src, including words inside
+// string / template / regex literals. Over-collecting only keeps an extra declaration;
+// under-collecting drops one the workflow calls (a ReferenceError at run time).
+export function collectIdentifiers(src) {
+  return new Set(src.match(/[A-Za-z_$][\w$]*/g) ?? []);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// selectReferencedDecls(handWrittenSrc, regions): decide what each inline region of one
+// workflow generates.
+//   regions: [{ source, transformed }] (transformCanonical output, one per region)
+// Starting from the identifiers of the hand-written part (everything outside the inline
+// regions) plus those of the unnamed statements, a named top-level statement is kept when
+// its name is reached; its own identifiers are then followed, across regions.
+// Returns: [{ source, body }] in region order; body keeps the canonical statement order and
+// is '' when nothing in the region is kept.
+// ─────────────────────────────────────────────────────────────────────────────
+export function selectReferencedDecls(handWrittenSrc, regions) {
+  const split = regions.map(r => splitTopLevelStatements(r.transformed));
+  const kept = split.map(stmts => stmts.map(st => st.name === null));
+  const byName = new Map();
+  split.forEach((stmts, r) => stmts.forEach((st, s) => {
+    if (st.name === null) return;
+    if (!byName.has(st.name)) byName.set(st.name, []);
+    byName.get(st.name).push([r, s]);
+  }));
+
+  const seen = new Set();
+  const queue = [];
+  const visit = (text) => {
+    for (const id of collectIdentifiers(text)) {
+      if (!seen.has(id)) { seen.add(id); queue.push(id); }
+    }
+  };
+  visit(handWrittenSrc);
+  split.forEach((stmts, r) => stmts.forEach((st, s) => {
+    if (kept[r][s]) visit(st.lines.join('\n'));
+  }));
+  while (queue.length > 0) {
+    for (const [r, s] of byName.get(queue.pop()) ?? []) {
+      if (kept[r][s]) continue;
+      kept[r][s] = true;
+      visit(split[r][s].lines.join('\n'));
+    }
+  }
+
+  return regions.map((region, r) => {
+    const body = split[r]
+      .filter((_, s) => kept[r][s])
+      .flatMap(st => st.lines)
+      .join('\n')
+      .trimEnd();
+    return { source: region.source, body: body === '' ? '' : body + '\n' };
+  });
+}
+
 function validateInlineDeclCollisions(wfFile, inlineRegions) {
   const seen = new Map();
   for (const region of inlineRegions) {
-    for (const name of collectTopLevelDeclNames(region.transformed)) {
+    for (const name of collectTopLevelDeclNames(region.body)) {
       const firstSource = seen.get(name);
       if (firstSource) {
         throw new Error(
@@ -514,31 +724,19 @@ export function removeMarkerPair(wfSrc, source, wfLabel) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// syncWorkflowSource(root, wfFile, wfSrc): fill all BEGIN/END inline regions in a
-// single workflow file source against canonicals under root/_lib, running the
-// full validation pipeline (forbidden tokens -> transform -> decl collisions ->
-// generated syntax) before returning. Shared by syncRepo (multi-file
-// orchestration) and the --add CLI mode (single newly-inserted marker pair).
+// planInlineRegions(root, wfFile, wfSrc): compute the body every BEGIN/END inline region
+// of one workflow must hold: forbidden tokens -> transform -> keep only the top-level
+// statements referenced from the workflow (selectReferencedDecls) -> empty-region check
+// -> decl collisions. The generator and _lib/workflow-inlines.sync.test.mjs both use it.
 //
-// Returns: { newSrc, changed, markerSources }
-//   markerSources preserves scan order (top-to-bottom); the reverse-order splice
-//   processing used internally is an implementation detail.
+// A region left with nothing to generate is an error rather than an empty region: the
+// workflow no longer uses that canonical, so its marker pair should go (--remove).
+//
+// Returns: [{ source, beginLine, endLine, body }] in scan order.
 // ─────────────────────────────────────────────────────────────────────────────
-function syncWorkflowSource(root, wfFile, wfSrc) {
+export function planInlineRegions(root, wfFile, wfSrc) {
   const markers = scanMarkers(wfSrc, wfFile);
-
-  if (markers.length === 0) {
-    validateGeneratedWorkflowSyntax(wfFile, wfSrc);
-    return { newSrc: wfSrc, changed: false, markerSources: [] };
-  }
-
-  // Build new file content by replacing each marker zone
-  const lines = wfSrc.split('\n');
-  const inlineRegions = [];
-  // We need to process in reverse order to preserve line indices
-  const sortedMarkers = [...markers].sort((a, b) => b.beginLine - a.beginLine);
-
-  for (const marker of sortedMarkers) {
+  const regions = markers.map(marker => {
     const canonicalPath = join(root, marker.source);
     if (!existsSync(canonicalPath)) {
       throw new Error(
@@ -546,28 +744,63 @@ function syncWorkflowSource(root, wfFile, wfSrc) {
       );
     }
     const canonicalSrc = readFileSync(canonicalPath, 'utf8');
-    // Check forbidden tokens in canonical BEFORE transforming
     checkForbiddenTokens(canonicalSrc, marker.source);
-    // Transform: strip export prefix, normalize trailing newline
-    const transformed = transformCanonical(canonicalSrc, marker.source);
-    inlineRegions.push({ source: marker.source, transformed });
-    // Replace: keep BEGIN line, replace body, keep END line
-    const beginLine = lines[marker.beginLine];
-    const endLine = lines[marker.endLine];
-    // New region: BEGIN line + newline + transformed content + END line
-    // transformed already ends with \n, so join with no extra separator
-    const newRegion = [beginLine, ...transformed.split('\n').slice(0, -1), endLine];
-    lines.splice(marker.beginLine, marker.endLine - marker.beginLine + 1, ...newRegion);
+    return { source: marker.source, transformed: transformCanonical(canonicalSrc, marker.source) };
+  });
+
+  const handWritten = wfSrc
+    .split('\n')
+    .filter((_, i) => !markers.some(m => i >= m.beginLine && i <= m.endLine))
+    .join('\n');
+  const selected = selectReferencedDecls(handWritten, regions);
+
+  const unused = selected.filter(r => r.body === '');
+  if (unused.length > 0) {
+    throw new Error(
+      `${wfFile}: inline region generates no declaration (nothing in it is referenced from the workflow): ` +
+      unused.map(r => r.source).join(', ') +
+      ` — remove it with: ${unused.map(r => `--remove ${r.source} --from ${wfFile}`).join(' / ')}`,
+    );
+  }
+  validateInlineDeclCollisions(wfFile, selected);
+
+  return markers.map((marker, k) => ({ ...marker, body: selected[k].body }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// syncWorkflowSource(root, wfFile, wfSrc): fill all BEGIN/END inline regions in a
+// single workflow file source (planInlineRegions) and check the generated syntax.
+// Shared by syncRepo (multi-file orchestration) and the --add / --remove CLI modes.
+//
+// Returns: { newSrc, changed, markerSources }
+//   markerSources preserves scan order (top-to-bottom).
+// ─────────────────────────────────────────────────────────────────────────────
+function syncWorkflowSource(root, wfFile, wfSrc) {
+  const planned = planInlineRegions(root, wfFile, wfSrc);
+
+  if (planned.length === 0) {
+    validateGeneratedWorkflowSyntax(wfFile, wfSrc);
+    return { newSrc: wfSrc, changed: false, markerSources: [] };
+  }
+
+  const lines = wfSrc.split('\n');
+  // Splice bottom-up so earlier regions' line indices stay valid.
+  for (const region of [...planned].reverse()) {
+    const newRegion = [
+      lines[region.beginLine],
+      ...region.body.split('\n').slice(0, -1),
+      lines[region.endLine],
+    ];
+    lines.splice(region.beginLine, region.endLine - region.beginLine + 1, ...newRegion);
   }
 
   const newSrc = lines.join('\n');
-  validateInlineDeclCollisions(wfFile, inlineRegions);
   validateGeneratedWorkflowSyntax(wfFile, newSrc);
 
   return {
     newSrc,
     changed: newSrc !== wfSrc,
-    markerSources: markers.map(m => m.source),
+    markerSources: planned.map(m => m.source),
   };
 }
 

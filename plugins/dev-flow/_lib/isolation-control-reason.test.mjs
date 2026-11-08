@@ -10,9 +10,11 @@
 // context に入り（bg job では task-notification として転写される）、次の run の prompt と合成して
 // 判定されるため、同じ規範を適用する。
 //
-// 検査対象は canonical（_lib/isolation-probe.mjs の関数出力）と、そこから生成される
-// .claude/workflows/{dev-flow,pr-iterate}.js の inline 区間の双方。inline 側はコメント行を
-// 除去してから検査する（コメントは prompt 文字列ではなく、規範そのものの説明を含みうるため）。
+// 検査対象は canonical（_lib/isolation-probe.mjs）の関数出力と、workflow の inline 区間の
+// 生成元であるコメント除去後のコード（transformCanonical）の双方。inline 区間は workflow が
+// 参照する宣言だけを持つ部分集合で、全文一致は workflow-inlines.sync.test.mjs が見るため、
+// 生成元のコードを検査すれば全 workflow の inline 区間を覆う（コメントは prompt 文字列では
+// なく、規範そのものの説明を含みうるため除去してから検査する）。
 //
 // 許容: 'bg-isolation guard の可能性' — これは失敗の診断（何が起きたか）であって、
 // 「制御が塞いでいるから別経路を使え」という指示ではない。診断の削除は issue #493 の非目標。
@@ -28,6 +30,7 @@ import {
   isolationFailureMessage,
   ISOLATION_PROBE_CLEANUP_GLOB,
 } from './isolation-probe.mjs';
+import { transformCanonical } from '../../../tools/sync-inlines.mjs';
 // isolationErrorKind は prompt/メッセージ文字列を生成しないため（純粋な分類関数）、
 // このファイルの検査対象（FORBIDDEN スキャン）には含めない。
 
@@ -95,40 +98,17 @@ for (const [label, text] of CANONICAL_SAMPLES) {
   });
 }
 
-// ---- inline 生成区間（両 workflow） ----
+// ---- inline 区間の生成元（コメント除去後の canonical コード） ----
 
-const INLINE_TARGETS = [
-  '.claude/workflows/dev-flow.js',
-  '.claude/workflows/pr-iterate.js',
-];
+const CANONICAL = '_lib/isolation-probe.mjs';
+const inlineSourceCode = transformCanonical(readFileSync(join(here, 'isolation-probe.mjs'), 'utf8'), CANONICAL);
 
-const BEGIN = '// ==== BEGIN inline: _lib/isolation-probe.mjs';
-const END = '// ==== END inline: _lib/isolation-probe.mjs ====';
+test(`[isolation-control-reason] ${CANONICAL} の inline 生成元が 3 関数を含む`, () => {
+  assert.match(inlineSourceCode, /function isolationCleanupPrompt\(/);
+  assert.match(inlineSourceCode, /function isolationProbePrompt\(/);
+  assert.match(inlineSourceCode, /function isolationFailureMessage\(/);
+});
 
-function extractInlineRegion(relPath) {
-  const src = readFileSync(join(here, '..', relPath), 'utf8');
-  const start = src.indexOf(BEGIN);
-  assert.ok(start >= 0, `${relPath} に isolation-probe の inline 開始マーカーが見つからない`);
-  const end = src.indexOf(END, start);
-  assert.ok(end >= 0, `${relPath} に isolation-probe の inline 終了マーカーが見つからない`);
-  return src.slice(start, end + END.length);
-}
-
-// コメント行（行頭空白 + //）を落とし、prompt 文字列を含むコード行のみを残す。
-function stripCommentLines(region) {
-  return region.split('\n').filter((line) => !/^\s*\/\//.test(line)).join('\n');
-}
-
-for (const relPath of INLINE_TARGETS) {
-  test(`[isolation-control-reason] ${relPath} の inline 区間が 3 関数を含む`, () => {
-    const code = stripCommentLines(extractInlineRegion(relPath));
-    assert.match(code, /function isolationCleanupPrompt\(/);
-    assert.match(code, /function isolationProbePrompt\(/);
-    assert.match(code, /function isolationFailureMessage\(/);
-  });
-
-  test(`[isolation-control-reason] ${relPath} の inline 区間が実行制御の理由記述を含まない`, () => {
-    const code = stripCommentLines(extractInlineRegion(relPath));
-    assertNoControlReason(code, `${relPath} の inline 区間`);
-  });
-}
+test(`[isolation-control-reason] ${CANONICAL} の inline 生成元が実行制御の理由記述を含まない`, () => {
+  assertNoControlReason(inlineSourceCode, `${CANONICAL} の inline 生成元`);
+});

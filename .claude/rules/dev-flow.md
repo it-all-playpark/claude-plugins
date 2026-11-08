@@ -65,7 +65,7 @@ paths:
 
 ## inline 生成区間
 
-- `// ==== BEGIN inline:` 〜 `END inline` は生成物で直接編集禁止。`_lib` canonical を直し `tools/sync-inlines.mjs --write`（先頭トークン=スクリプトパスの bare 形、node/cd/bash 前置なし。既定 root は `plugins/dev-flow`）。新規区間は `--add <_lib/x.mjs> --into <workflow.js> --after '<一意な行>'`。全文一致は `_lib/workflow-inlines.sync.test.mjs` が CI で検証
+- `// ==== BEGIN inline:` 〜 `END inline` は生成物で直接編集禁止。`_lib` canonical を直し `tools/sync-inlines.mjs --write`（先頭トークン=スクリプトの bare 形、node/cd/bash 前置なし。既定 root は `plugins/dev-flow`）。新規区間は `--add <_lib/x.mjs> --into <workflow.js> --after '<一意な行>'`。参照宣言のみ生成し一致は `_lib/workflow-inlines.sync.test.mjs` が CI 検証
 - canonical 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ（export default / export { } 不可）。ファイル全体が inline 可能
 - git plumbing による guard 迂回禁止（手編集が次回 --write で黙って消える事故防止）。guard は `hooks/hooks.json` の inline-edit-guard / inline-commit-gate で、plugin disable で両方が同時に失われる
 
