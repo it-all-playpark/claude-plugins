@@ -7,8 +7,8 @@
  * Export:
  *   - JS_GLOBALS: VM sandbox に expose する 15 個の JS 組み込みをまとめた object
  *   - DEV_FLOW_STAGE_WORKFLOWS / chainStageWorkflows(stub, host): dev-flow.js が workflow() で起動する工程の workflow
- *     （dev-flow-finalize.js）を stub にせず同じ agent / log / phase で実行する workflow()。makeRecordingSandbox と
- *     makeWorkflowContext は既定でこれを使い、2 つの workflow をつないで実行する（pr-iterate は stub のまま）
+ *     （dev-flow-evaluate.js / dev-flow-finalize.js）を stub にせず同じ agent / log / phase で実行する workflow()。
+ *     makeRecordingSandbox と makeWorkflowContext は既定でこれを使い、親と工程の workflow をつないで実行する（pr-iterate は stub のまま）
  *   - makeRecordingSandbox(responder, extraSandbox?): {ctx, calls, logs, phases} を返す
  *     （calls の各要素は {label, agentType, prompt, opts, schema}。opts は agent() に渡された
  *     opts をそのまま、schema は opts?.schema ?? null）
@@ -79,6 +79,7 @@ const WORKFLOWS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 
 
 /** dev-flow.js が workflow() で起動する工程の workflow（起動名 → ファイル名）。pr-iterate は test の stub に任せる。 */
 export const DEV_FLOW_STAGE_WORKFLOWS = {
+  'dev-flow:dev-flow-evaluate-run': 'dev-flow-evaluate.js',
   'dev-flow:dev-flow-finalize-run': 'dev-flow-finalize.js',
 };
 

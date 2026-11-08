@@ -74,12 +74,12 @@ test('[workflow-name] VM: 成功 run の journal-log prompt JSON が "skill":"de
 // devflow-failure-telemetry-routing.test.mjs (3) の共有 run が検査する。
 
 test('[workflow-name] VM: abort run の journal-log 系 prompt JSON が "skill":"dev-flow" かつ "error_category":"abort" を含む', async () => {
-  // need() で包まれた evaluator（'eval#1'）の throw は top-level catch で abort handoff 後に rethrow される。
+  // need() で包まれた PR phase の proxy（'pr#1'）の throw は top-level catch で abort handoff 後に rethrow される。
   const { ctx, calls } = makeDevFlowSandbox({
-    overrides: { 'eval#1': () => { throw new Error('injected') } },
+    overrides: { 'pr#1': () => { throw new Error('injected') } },
   });
   const { error } = await runWorkflowCapture(devFlowSrc, ctx);
-  assert.ok(error !== null, 'eval#1 の throw は top-level catch で abort handoff 後に rethrow されるはずだが error が null だった');
+  assert.ok(error !== null, 'pr#1 の throw は top-level catch で abort handoff 後に rethrow されるはずだが error が null だった');
 
   const journalSave = calls.find((c) => c.label.startsWith('journal-log'));
   assert.ok(journalSave != null, 'abort run に journal-log の call が見つからない');

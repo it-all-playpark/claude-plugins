@@ -7,6 +7,8 @@
 // test.mjs の パターンを踏襲し、throwAt / journalLogAbortThrows / journal-log-abort stub を追加する。
 // PR phase の失敗（pr#<issue> の中断応答）は abort にせず、throw しない failure 終端
 // （error_category: pr_phase_failed）で返り値と journal に成果物・所要時間・回収手順を残す（(8)、issue #823）。
+// Evaluate の throw は工程の workflow（dev-flow-evaluate.js）の throw として親が受け、PR を作らない HOLD 終端
+// （error_category: evaluate_failed）になる（(2)）。
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -153,28 +155,33 @@ test('[abort-telemetry] (1) Validate で diff-gate proxy が throw → abort ent
 // ============================================================
 // (2) Evaluate で evaluator が throw
 // ============================================================
-test('[abort-telemetry] (2) Evaluate で evaluator が throw → abort entry 1 件（eval#1 / shape:standard（実効））', async () => {
+// Evaluate は工程の workflow（dev-flow-evaluate.js）が持つ。子の throw は abort にせず、親が PR を作らずに HOLD で終え、
+// failure entry（error_category: evaluate_failed）を 1 件だけ書く（abort entry は書かない）。
+test('[abort-telemetry] (2) Evaluate で evaluator が throw → abort にせず evaluate_failed の failure entry 1 件（PR は作らない）', async () => {
   const { ctx, calls } = makeSandbox({
     analyzeReq: STANDARD_ANALYZE_REQ,
     throwAt: { label: 'eval#1', error: new Error('evaluator boom') },
   });
-  const { error } = await runWorkflowCapture(src, ctx);
+  const { result, error } = await runWorkflowCapture(src, ctx);
 
-  assert.ok(error !== null, '(2) evaluator throw で workflow が abort すべきだが error が null だった');
-  assert.ok(String(error?.message ?? '').includes('evaluator boom'),
-    `(2) error.message に 'evaluator boom' を含むべきだが: ${error?.message}`);
+  assert.equal(error, null, `(2) evaluator throw は HOLD 終端になるべきだが abort した: ${error?.message}`);
+  assert.equal(result?.merge_tier, 'HOLD');
+  assert.match(result?.evaluate_error ?? '', /evaluator boom/);
+  assert.ok(!calls.some((c) => /^pr#/.test(c.label)), '(2) Evaluate の throw 後に PR を作ろうとした');
 
-  const saveCalls = calls.filter((c) => c.label === 'journal-log-abort' && c.agentType === 'dev-flow:dev-runner-haiku');
-  assert.equal(saveCalls.length, 1, `(2) journal-log-abort は 1 回のはずだが ${saveCalls.length} 回だった`);
+  assert.equal(calls.filter((c) => c.label === 'journal-log-abort').length, 0, '(2) abort entry は書かない');
+  const saveCalls = calls.filter((c) => c.label === 'journal-log-failure' && c.agentType === 'dev-flow:dev-runner-haiku');
+  assert.equal(saveCalls.length, 1, `(2) journal-log-failure は 1 回のはずだが ${saveCalls.length} 回だった`);
 
   const savePrompt = saveCalls[0]?.prompt ?? '';
   for (const key of [
-    '"error_msg":"abort@Evaluate/eval#1: evaluator boom"', '"error_phase":"Evaluate"',
-    '"shape":"standard"',
+    '"outcome":"failure"', '"error_category":"evaluate_failed"', '"error_phase":"Diff triage"', '"merge_tier":"HOLD"',
+    '"plugin_version"', '"eval_model_config":"opus"',
   ]) {
     assert.ok(savePrompt.includes(key),
-      `(2) journal-log-abort prompt に '${key}' が含まれるべきだが含まれていなかった。prompt:\n${savePrompt.slice(0, 800)}`);
+      `(2) journal-log-failure prompt に '${key}' が含まれるべきだが含まれていなかった。prompt:\n${savePrompt.slice(0, 800)}`);
   }
+  assert.ok(savePrompt.includes('evaluator boom'), `(2) error_msg に子の throw の理由が無い。prompt:\n${savePrompt.slice(0, 800)}`);
 });
 
 // ============================================================

@@ -37,7 +37,7 @@ const RUNS = {
     overrides: { 'diff-gate': { hash: 'H', empty: true }, 'diff-gate-retry': { hash: 'H', empty: true }, 'issue-labels': null },
     expectError: true,
   },
-  abort: { overrides: { 'eval#1': () => { throw new Error('injected'); } }, expectError: true },
+  abort: { overrides: { 'pr#1': () => { throw new Error('injected'); } }, expectError: true },
 };
 
 async function run(name) {

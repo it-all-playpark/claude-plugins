@@ -17,6 +17,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const atlasPath = join(REPO_ROOT, 'docs/dev-flow-atlas.md');
 const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
+const evaluatePath = join(repoRoot, '.claude/workflows/dev-flow-evaluate.js');
 const prIteratePath = join(repoRoot, '.claude/workflows/pr-iterate.js');
 
 const BEGIN = '<!-- atlas:loop-constants:begin -->';
@@ -26,9 +27,9 @@ const END = '<!-- atlas:loop-constants:end -->';
 // ここに列挙した集合と表の行集合が完全一致することを検証するため、
 // 片方だけに定数を足しても落ちる（新規定数の記載漏れ・表の余剰行の両方を検出する）。
 const EXPECTED_SOURCE = {
-  EVAL_MAX: devFlowPath,
-  EVAL_STUCK: devFlowPath,
-  DESIGN_REPLAN_MAX: devFlowPath,
+  EVAL_MAX: evaluatePath,
+  EVAL_STUCK: evaluatePath,
+  DESIGN_REPLAN_MAX: evaluatePath,
   GREEN_MAX: devFlowPath,
   BLOCK_MAX: devFlowPath,
   AGENT_AC_REIMPL_MAX: devFlowPath,

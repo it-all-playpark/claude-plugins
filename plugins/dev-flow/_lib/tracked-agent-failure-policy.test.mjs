@@ -16,7 +16,8 @@ import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
  *   3. ローカル try{}/pipeline() 包囲 — throw を吸収し継続する bare 呼び出し（fail-safe、continue）。
  *   4. 上記いずれでもない bare 呼び出し — throw は吸収されず run 全体の安全網 try まで伝播し abort する
  *      （fail-closed「据え置き」）。工程の workflow（dev-flow-finalize.js）の bare 呼び出しは子の throw として
- *      親の workflow() で受け、merge tier HOLD・終端サマリー未投稿で返る（stage_hold）。
+ *      親の workflow() で受け、merge tier HOLD・終端サマリー未投稿で返る（stage_hold）。dev-flow-evaluate.js の
+ *      bare / need() 呼び出しは子の throw として親が受け、PR を作らずに HOLD で返る（evaluate_hold）。
  *
  * 各 label に対し実際に agent() を throw させて run を実行し、continue（error===null）/
  * abort（error!==null かつ abort handoff が発火）/ needs_clarification のいずれになるかを
@@ -88,7 +89,7 @@ const DF_LOCAL_VERIFY_REIMPL = DEV_FLOW_SCENARIOS['local-verify-reimpl'];
 // トリガ throw message が THROW 定数と同じ 'injected' のため使うと自身の throw が吸収されたのか
 // 元の abort が伝播したのか区別できない。message を変えた専用 base で「元の error message が
 // そのまま残る（＝journal-log-abort 自身の throw は吸収された）」ことを検証する。
-const DF_JOURNAL_ABORT_BASE = { overrides: { 'eval#1': () => { throw new Error('outer-trigger') } } };
+const DF_JOURNAL_ABORT_BASE = { overrides: { 'pr#1': () => { throw new Error('outer-trigger') } } };
 
 async function runDevFlowBaseline(config) {
   const { ctx, calls } = makeDevFlowSandbox({ issue: 1, overrides: config.overrides, workflow: config.workflow, extra: config.extra ?? {} });
@@ -152,7 +153,7 @@ const EXPECTED_DEV_FLOW = {
     },
   },
   'diff-hash-eval': { config: DF_B1, policy: 'continue', reason: 'failOpenAgent経由。stale検出をskipするだけのadvisory信号' },
-  'eval#1': { config: DF_B1, policy: 'abort', reason: 'need()包み。評価取得不能のままPRへ進めない致命契約' },
+  'eval#1': { config: DF_B1, policy: 'evaluate_hold', reason: 'dev-flow-evaluate.jsのneed()包み。評価取得不能のままPRへ進めず、親がPRを作らずHOLDで返す' },
   'diff-hash-pr': { config: DF_B1, policy: 'continue', reason: 'failOpenAgent経由。stale検出をskipするだけのadvisory信号' },
   'pr#1': { config: DF_B1, policy: 'abort', reason: 'need()包み。PR作成失敗のまま継続しない致命契約' },
   'merge-tier-facts': {
@@ -211,7 +212,7 @@ const EXPECTED_DEV_FLOW = {
     reason: 'try/catchで合成redへ変換しgreen-fixループへ継続するfail-safe経路（post-eval経路）',
   },
   'tree-diff-numstat': { config: DF_HASH_MISMATCH, policy: 'continue', reason: 'failOpenAgent経由。hash_mismatch時の差分一覧取得失敗はHOLD理由の可読性補助を欠くのみ' },
-  'green-fix#post-eval-1': { config: DF_POST_EVAL_GREEN_FIX, policy: 'abort', reason: 'bare据え置き。green-fix実装呼び出しはtry/catchで吸収されずrunを中断させる（post-eval経路）' },
+  'green-fix#post-eval-1': { config: DF_POST_EVAL_GREEN_FIX, policy: 'evaluate_hold', reason: 'dev-flow-evaluate.jsのbare呼び出し。green-fix実装呼び出しの例外は子のthrowとして親がPRを作らずHOLDで返す（post-eval経路）' },
   'test#post-eval-2': {
     config: DF_POST_EVAL_GREEN_FIX,
     policy: 'continue',
@@ -270,19 +271,19 @@ const EXPECTED_DEV_FLOW = {
   'local-verify-start#2': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。差し戻し後のローカル実行の起動結果が無ければfail-openでCIのcheck待ちに回す' },
   'local-verify-wait#2.1': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。差し戻し後のローカル実行の結果が無ければfail-openでCIのcheck待ちに回す' },
   'local-verify-stop#2': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。停止確認の失敗はlogのみでDBの削除はlocal-verifyのtrapに委ねる（差し戻し後）' },
-  'rg-state-dir': { config: DF_REDGREEN, policy: 'abort', reason: 'bare据え置き。startと同じspawnで呼び、例外は吸収されずrunを中断させる（何も起動していない）' },
-  'redgreen': { config: DF_REDGREEN, policy: 'abort', reason: 'bare据え置き。red→green実証呼び出し自体の例外は吸収されずrunを中断させる' },
+  'rg-state-dir': { config: DF_REDGREEN, policy: 'evaluate_hold', reason: 'dev-flow-evaluate.jsのbare呼び出し。startと同じspawnで呼び、例外は子のthrowとして親がHOLDで返す（何も起動していない）' },
+  'redgreen': { config: DF_REDGREEN, policy: 'evaluate_hold', reason: 'dev-flow-evaluate.jsのbare呼び出し。red→green実証呼び出し自体の例外は子のthrowとして親がHOLDで返す' },
   'redgreen-wait#1': {
     config: DEV_FLOW_SCENARIOS['redgreen-wait'],
-    policy: 'abort',
-    reason: 'bare据え置き。start と同じくwaitの例外も吸収せず、finallyでstopしてからrunを中断させる',
+    policy: 'evaluate_hold',
+    reason: 'dev-flow-evaluate.jsのbare呼び出し。startと同じくwaitの例外も吸収せず、finallyでstopしてから子がthrowする',
     extra: async ({ calls }) => {
       assert.ok(calls.some((c) => c.label === 'redgreen-stop'), 'wait の throw では実行が残りうるので stop してから中断する');
     },
   },
   'redgreen-stop': { config: DEV_FLOW_SCENARIOS['redgreen-stop'], policy: 'continue', reason: 'failOpenAgent経由。停止確認の失敗はlogのみで実行はsupervisorの上限時間で止まる' },
   'reimpl#1:serial:issue-1': { config: DF_COMPLEX_FIX, policy: 'continue', reason: 'failOpenAgent経由。evaluator差し戻しのdev-implementer失敗はnullとしてdropし継続する' },
-  'eval#2': { config: DF_COMPLEX_FIX, policy: 'abort', reason: 'need()包み。2周目の評価取得不能のままPRへ進めない致命契約' },
+  'eval#2': { config: DF_COMPLEX_FIX, policy: 'evaluate_hold', reason: 'dev-flow-evaluate.jsのneed()包み。2周目の評価取得不能のままPRへ進めず、親がPRを作らずHOLDで返す' },
   'green-fix#1': { config: DF_GREEN_FIX, policy: 'abort', reason: 'bare据え置き。green-fix実装呼び出しはtry/catchで吸収されずrunを中断させる' },
   'test#2': {
     config: DF_GREEN_FIX,
@@ -323,6 +324,11 @@ const EXPECTED_DEV_FLOW = {
     policy: 'continue-in-abort',
     reason: 'runJournalHandoff内のtry/catchで吸収し元のabortエラーをそのまま再throwするfail-open経路',
   },
+  'pr#1.stop': {
+    config: DF_JOURNAL_ABORT_BASE,
+    policy: 'continue-in-abort',
+    reason: 'pr#1のthrow後にpushを止めるspawnStopはfailOpenAgent経由。停止確認の失敗は吸収し元のabortエラーをそのまま再throwする',
+  },
 };
 
 for (const [label, spec] of Object.entries(EXPECTED_DEV_FLOW)) {
@@ -351,6 +357,16 @@ for (const [label, spec] of Object.entries(EXPECTED_DEV_FLOW)) {
       assert.match(result?.note ?? '', /終端サマリー未投稿/);
       assert.match(result?.finalize_error ?? '', /injected/);
       assert.deepEqual(calls.filter((c) => c.label.startsWith('journal-')).map((c) => c.label), ['journal-log']);
+    } else if (spec.policy === 'evaluate_hold') {
+      // 工程の workflow（dev-flow-evaluate.js）の bare / need() 呼び出し: 子の throw は abort にせず、評価を通ったものとして
+      // 扱わずに PR を作らず HOLD で返し、journal handoff は親が 1 回（abort handoff は書かない）
+      assert.equal(error, null, `label '${label}' の throw は工程の workflow の throw として HOLD で返るべきだが run が abort した: ${error?.message}`);
+      assert.equal(result?.status, 'evaluate_failed');
+      assert.equal(result?.merge_tier, 'HOLD', `label '${label}' throw 後の merge_tier が HOLD でない`);
+      assert.equal(result?.pr_url, null);
+      assert.match(result?.evaluate_error ?? '', /injected/);
+      assert.ok(!calls.some((c) => /^pr#/.test(c.label)), `label '${label}' throw 後に PR を作ろうとした`);
+      assert.deepEqual(calls.filter((c) => c.label.startsWith('journal-')).map((c) => c.label), ['journal-log-failure']);
     } else if (spec.policy === 'needs_clarification') {
       assert.equal(error, null, `label '${label}' は throw を吸収し needs_clarification で終端するべき: ${error?.message}`);
       assert.equal(result?.status, 'needs_clarification', `label '${label}' throw 後の result.status が needs_clarification でない: ${result?.status}`);

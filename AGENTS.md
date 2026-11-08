@@ -83,12 +83,14 @@ bats が見つからない環境でも `tests/run-all-bats.sh` は exit 0 を返
 `EnterWorktree`）を行い、orchestration 本体は dynamic workflow `dev-flow-run`
 (`plugins/dev-flow/.claude/workflows/dev-flow.js`) が持つ。phase 遷移 / 各ループは workflow script が
 JS で保持し、中間 state は script 変数と `workflow()` の引数・返り値に持つ (外部 state JSON は持たない)。
-pr-iterate の後の工程は工程の workflow `dev-flow-finalize-run`（`dev-flow-finalize.js`）が持つ。
+Diff triage・Evaluate は工程の workflow `dev-flow-evaluate-run`（`dev-flow-evaluate.js`）、pr-iterate の後の工程は
+`dev-flow-finalize-run`（`dev-flow-finalize.js`）が持つ。
 
 ```
 /dev-flow <issue>   → [wrapper preflight] → Setup(末尾で決定論 analyze ゲート)
                       → Implement(dev-implementer 1 spawn) → Validate(test green)
-                      → Diff triage(realized diff から shape 判定) → Evaluate → PR → workflow('dev-flow:pr-iterate-run')
+                      → workflow('dev-flow:dev-flow-evaluate-run'): Diff triage(realized diff から shape 判定) → Evaluate
+                      → PR → workflow('dev-flow:pr-iterate-run')
                       → workflow('dev-flow:dev-flow-finalize-run'): Final reconcile(fixes_applied>0 のみ) → Merge tier → 終端サマリー
 /pr-iterate <pr>    → [wrapper preflight: pr-iterate-prerun → EnterWorktree] → Workflow('dev-flow:pr-iterate-run') で
                       review ⇄ fix loop (LGTM まで, 上限10)。dev-flow からは nested 起動
