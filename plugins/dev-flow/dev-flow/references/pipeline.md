@@ -47,7 +47,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   起点検証・書き込み probe・`.devflow-tmp` の clean・issue analyze（`analyze-issue --contract` の決定論 parse + Jev 有界判定）・
   framework 検出を済ませ、別の Bash 呼び出しの `ensure-worktree-deps --setup <worktree>/.devflow-tmp/prerun-setup.json` で deps を入れる
   （install は repo の任意コードを走らせるので prerun の子にしない）。`EnterWorktree` → `Workflow({ args: { issue, setup } })` の順で起動し、
-  Setup は `args.setup` を検証して REQ を組み、次のゲートを順に判定する（通常経路の spawn は 0）:
+  Setup は `args.setup` を検証して REQ を組み、次のゲートを順に判定する（通過後の spawn は分類 agent と isolation probe 各 1 回）:
   - blocked_by ゲート — `args.setup.analyze.blockers` に open な issue が 1 つでもあれば止める
   - analyze ゲート — AC 空 / comment_conflicts 非空 / uncertain 非空 / repo 内外が混ざった AC。引いたときだけ missing_context を書く
     agent を 1 spawn する。repo 内外の混在は `classifyAcScope` が決定論で判定し、
@@ -55,9 +55,9 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
     （1 issue = 1 PR・単一 worktree では repo 外を満たせず、Evaluate 後に agent AC の取りこぼしと誤分類されるため）。依存の向きは、
     merge 前に人がやる作業なら実装 issue に `Blocked by #<human issue>`、merge 後に確認する作業なら human issue に `Blocked by #<実装 issue>`。
     `（人手）` と明記した AC は混在していても human
-  - AC の actor — `agent` / `human` / `ci`（`_lib/ac-actor.mjs`）。観測型 AC（実行して観測しないと確かめられない AC）は prerun の
-    正規表現 + Jev で決め、決まらない AC だけを AC の文面と issue タイトルだけを読む分類 agent に 1 回で渡す（diff・evaluator の結果は渡さない —
-    実装を見た判定は抜け道になる）。ci AC は repo の `"dev-flow".ci_verify` の宣言に当たる AC（`matchesCiVerify`）
+  - AC の actor — `agent` / `human` / `ci`（`_lib/ac-actor.mjs`）。観測型 AC（実行して観測しないと確かめられない AC）は、全 AC を
+    AC の文面と issue タイトルだけを読む分類 agent に 1 回で渡して決める（diff・evaluator の結果は渡さない — 実装を見た判定は抜け道になる。
+    候補を絞らない — 取りこぼしがコード読みで達成扱いになる）。ci AC は repo の `"dev-flow".ci_verify` の宣言に当たる AC（`matchesCiVerify`）
   - isolation probe — ゲート通過後・Implement の前に、tools を Write だけにした `dev-runner-haiku-wo` が worktree 直下
     `.devflow-tmp/.isolation-probe-<token>` に書けるかを確かめる（implementer と同じ Write tool の経路の検証。token は `args.setup.epoch`）
 - **失敗の扱い**:
@@ -65,7 +65,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - analyze 段の失敗・open な blocker・analyze ゲートは needs_clarification で終端（fail-closed。REQ を推測で組まない。決定論は意味的矛盾の
     要否を判定できず、LLM に黙って片方を採らせると訂正が実装に反映されない）。missing_context を書く agent の失敗は fail-open
     （ゲート理由をそのまま返す）
-  - 観測型の分類 agent が決められない AC は観測型にする（fail-safe。evaluator のコード読みで達成扱いにしない側）
+  - 分類 agent の null・応答に無い AC・agent の失敗は観測型にする（fail-safe。コード読みで達成扱いにしない側）
   - isolation probe の `written:false` は throw（fail-closed）。回避手順（別の worktree を作る → `EnterWorktree` → prerun からやり直す）は
     `isolationFailureMessage` が throw メッセージに載せる。probe 自体の失敗（null）は fail-open
 - **コード**: `phase('Setup')`（`.claude/workflows/dev-flow.js`）、`validatePrerunSetup`（`_lib/prerun-setup.mjs`）、`buildReqFromContract`・

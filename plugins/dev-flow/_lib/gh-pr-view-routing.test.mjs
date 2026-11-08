@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, mergeTierFacts, assertNoCrash, runWorkflowCapture, makeWorkflowContext, acObservationalNone } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -36,6 +36,7 @@ function createResponder(prMetaResponse) {
     const agentType = opts?.agentType ?? '';
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
+    if (label.startsWith('ac-observational#')) return acObservationalNone(prompt);
     if (label === 'danger-grep') return { ok: true, hits: [] };
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
     if (agentType === 'dev-flow:evaluator') {

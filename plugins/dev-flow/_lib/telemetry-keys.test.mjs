@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { stripComments } from '../../../tools/sync-inlines.mjs';
 import { neutralizeRegexLiterals, blankStringLiterals } from './test-helpers/source-scan.mjs';
-import { makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze, acObservationalResponse } from './test-helpers/vm-sandbox.mjs';
 import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -174,14 +174,16 @@ test('[telemetry-keys] 挙動: dev-flow.js 成功 run の telemetry は merge_ti
 // HOLD 理由（hold_reason_codes）と、人手 AC 待ちに文面以外（観測型・unreachable_env）で人手になった AC があるか
 // （hold_ac_human_judged）は HOLD の run だけに載る。dev-flow-health の health-report.sh が HOLD 由来の signature にする入力。
 const HOLD_ACS = ['実 run の journal に `duration_seconds` が記録される', '（人手）staging で動作を確認する'];
+const HOLD_OBS = acObservationalResponse([true, false]);
 const holdRun = (acResults) => makeDevFlowSandbox({
   overrides: {
+    'ac-observational#1': HOLD_OBS,
     'eval#1': {
       verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation',
       ac_results: acResults, security_clearance: [], concern_resolutions: [],
     },
   },
-  extra: { args: devFlowArgs(1, { analyze: prerunAnalyze({ acceptance_criteria: HOLD_ACS, ac_observational: [true, false], ac_observational_evidence: ['Jev 観測型 p=0.97', '正規表現の絞り込みに当たらない'] }) }) },
+  extra: { args: devFlowArgs(1, { analyze: prerunAnalyze({ acceptance_criteria: HOLD_ACS }) }) },
 });
 const acResult = (i, satisfied) => ({ ac_index: i, satisfied, verified_by: 'inspection', evidence: satisfied ? 'ok' : '未達' });
 
@@ -205,6 +207,7 @@ test('[telemetry-keys] 挙動: 文面で人手になった AC だけが未達の
   // 観測型 AC は red→green 実証済み（deterministic 昇格）で達成、（人手）staging の AC だけが未達
   const { ctx, calls } = makeDevFlowSandbox({
     overrides: {
+      'ac-observational#1': HOLD_OBS,
       'eval#1': {
         verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation',
         ac_results: [
@@ -215,7 +218,7 @@ test('[telemetry-keys] 挙動: 文面で人手になった AC だけが未達の
       },
       redgreen: { results: [{ index: 0, red: true, green: true }] },
     },
-    extra: { args: devFlowArgs(1, { analyze: prerunAnalyze({ acceptance_criteria: HOLD_ACS, ac_observational: [true, false], ac_observational_evidence: ['Jev 観測型 p=0.97', '正規表現の絞り込みに当たらない'] }) }) },
+    extra: { args: devFlowArgs(1, { analyze: prerunAnalyze({ acceptance_criteria: HOLD_ACS }) }) },
   });
   const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
   assert.equal(error, null, `run が throw した: ${error?.message}`);

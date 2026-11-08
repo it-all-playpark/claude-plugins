@@ -1081,34 +1081,6 @@ function classifyAcScope(ac, opts = {}) {
   return EXPLICIT_HUMAN_RE.test(String(ac ?? '').replace(INLINE_CODE_RE, ' ')) ? 'external' : 'mixed'
 }
 
-const OBS_STRONG_RE = /(実測|計測)(する|し|で|でき|を行|に基づ|[）)]|$)|A\/B\s*(を|で|テスト|比較)|比較表|(実|修正後の|直近の?)\s*(dev-flow\s*)?run\s*([（(][^）)]*[）)])?\s*(で|において|の)|1\s*件以上\s*(現れ|記録|残|出)/i
-const OBS_STRONG_NEG_RE = /(実測|計測|A\/B)\S{0,4}(しない|不要|しなくてよい)/
-const OBS_WEAK_RE = /生成される|記録される|出力される|journal|telemetry|receipt|verdict|件数/i
-const OBS_NEG_RE = /しない|せず|[てで]いない|ない(こと|$)|載せない|残さない|書かない|出さない|読まない|使わない|渡さない|含めない/
-const OBS_MENTION_EXTRA_RE = /を\s*(削除|外す|撤去|消す)|(削除|撤去)する|記載|明記|整合|一致|canonical|化され|扱い|キー名|識別子|表記/
-const QUOTE_RE = /「[^」]*」/g
-
-function isObservationalAc(ac) {
-  const text = String(ac ?? '').replace(INLINE_CODE_RE, ' ').replace(QUOTE_RE, ' ')
-  return text.split(CLAUSE_SEP_RE).some((clause) => {
-    if (OBS_STRONG_RE.test(clause) && !OBS_STRONG_NEG_RE.test(clause)) return true
-    if (OBS_NEG_RE.test(clause) || OBS_MENTION_EXTRA_RE.test(clause)) return false
-    if (MENTION_CLAUSE_PATTERNS.some((re) => re.test(clause))) return false
-    return OBS_WEAK_RE.test(clause)
-  })
-}
-
-function acObservationalOf(acceptanceCriteria) {
-  return (Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []).map((ac) => isObservationalAc(ac))
-}
-
-function pendingAcObservationalIndexes(acObservational) {
-  const out = []
-  const list = Array.isArray(acObservational) ? acObservational : []
-  for (let i = 0; i < list.length; i++) if (typeof list[i] !== 'boolean') out.push(i)
-  return out
-}
-
 function acVerifyCandidateIndexes(acceptanceCriteria, acObservational, opts = {}) {
   const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
   const obs = Array.isArray(acObservational) ? acObservational : []
@@ -1158,10 +1130,9 @@ function freezeAcVerify(acceptanceCriteria, agentResult) {
   })
 }
 
-function resolveAcObservational(acObservational, agentResult) {
+function resolveAcObservational(acceptanceCriteria, agentResult) {
   const results = Array.isArray(agentResult?.results) ? agentResult.results : []
-  return (Array.isArray(acObservational) ? acObservational : []).map((v, i) => {
-    if (typeof v === 'boolean') return v
+  return (Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []).map((_, i) => {
     const r = results.find((x) => x && x.ac_index === i)
     return typeof r?.observational === 'boolean' ? r.observational : true
   })
@@ -2029,10 +2000,6 @@ function buildReqFromContract(analyze, issueNumber) {
   if (!isStringArray(analyze.uncertain)) return null
   if (!isStringArray(analyze.jev_reasons)) return null
   if (!Array.isArray(analyze.blockers) || !analyze.blockers.every(isBlocker)) return null
-  const acCount = analyze.acceptance_criteria.length
-  if (!Array.isArray(analyze.ac_observational) || analyze.ac_observational.length !== acCount) return null
-  if (!analyze.ac_observational.every((v) => v === true || v === false || v === null)) return null
-  if (!isStringArray(analyze.ac_observational_evidence) || analyze.ac_observational_evidence.length !== acCount) return null
 
   const req = {
     summary: `Issue #${issueNumber}: ${analyze.issue_title}`,
@@ -2040,7 +2007,6 @@ function buildReqFromContract(analyze, issueNumber) {
     issue_title: analyze.issue_title,
     issue_type: analyze.issue_type,
     acceptance_criteria: analyze.acceptance_criteria.slice(0, 20),
-    ac_observational: analyze.ac_observational.slice(0, 20),
     breaking_change: analyze.breaking_change,
     breaking_keyword_scan: analyze.breaking_keyword_scan,
     breaking_evidence: typeof analyze.breaking_evidence === 'string' ? analyze.breaking_evidence : '',
@@ -3785,9 +3751,8 @@ const CLARIFY = {
     epoch: { type: 'number' },
   },
 }
-// Setup 末尾の analyze ゲート通過後、prerun で観測型判定が確定しない（null の）AC か、観測型で文面上の actor が agent の
-// AC があるときだけ 1 spawn する分類 agent のスキーマ（acObservationalPrompt）。observational:null は判定できない AC で、
-// true として扱う。verify_command / expect_paths は AC の inline code の写しで、freezeAcVerify が完全一致だけを凍結する。
+// Setup 末尾の analyze ゲート通過後、全 AC を渡して 1 spawn する分類 agent のスキーマ（acObservationalPrompt）。
+// observational:null は判定できない AC で、true として扱う。verify_command / expect_paths は AC の inline code の写しで、freezeAcVerify が完全一致だけを凍結する。
 const AC_OBSERVATIONAL = {
   type: 'object',
   required: ['results'],
@@ -5919,26 +5884,21 @@ if (gateReasons.length) {
   }
 }
 
-// 観測型 AC（実行して出力・記録を観測しないと確かめられない。actor は human）。prerun が正規表現の
-// 絞り込み + Jev で出した analyze.ac_observational を使い、null（Jev 低確信・Jev に届かない）の AC だけを
-// AC の文面と issue のタイトルだけを読む分類 agent に 1 回で渡す。agent が判定できない AC は true（resolveAcObservational）。
-// 同じ agent に、観測型で文面上の actor が human / ci でない AC（acVerifyCandidateIndexes）について、AC 自体が inline code で
-// 指定した検証コマンド（verify_command / expect_paths）も聞く。AC の inline code と完全一致するものだけをここで凍結し
-// （freezeAcVerify → AC_VERIFY）、実装後に読み直さない。
-// null も候補も無ければ spawn しない。needs_clarification で終わる run に spawn を使わないようゲート通過後に置く。
+// 観測型 AC（実行して出力・記録を観測しないと確かめられない。actor は human）。全 AC を AC の文面と issue のタイトルだけを読む
+// 分類 agent に 1 回で渡して判定する（絞り込みで候補を減らすと、取りこぼした観測型 AC が agent に回らず
+// 「観測型でない」で確定し、Evaluate のコード読みで達成扱いになるため）。agent が null を返した・応答に無い・agent 自体が
+// 失敗した AC は true（resolveAcObservational）。
+// 同じ agent に、AC 自体が inline code で指定した検証コマンド（verify_command / expect_paths）も聞く。AC の inline code と
+// 完全一致するものだけをここで凍結し（freezeAcVerify → AC_VERIFY）、実装後に読み直さない。実行するのは観測型で文面上の
+// actor が human / ci でない AC だけ（AC_VERIFY_INDEXES）。
+// needs_clarification で終わる run に spawn を使わないようゲート通過後に置く（AC 空はゲートで止まるので、ここでは AC が 1 件以上）。
 // Evaluate / Final reconcile は red→green 実証で deterministic 昇格したときだけ checked にし、inspection の satisfied:true は
 // 人手 AC 待ちに倒す（AC コマンドの exit 0 でも倒す — 終端サマリーに確認材料として開示するだけ）。
-if (req.ac_observational.length) log(`analyze: 観測型判定（prerun）: ${req.ac_observational.map((o, i) => `AC-${i + 1}=${JSON.stringify(o)}（${ANALYZE.ac_observational_evidence[i]}）`).join(' / ')}`)
-const acObsPending = pendingAcObservationalIndexes(req.ac_observational)
-const acVerifyCandidates = acVerifyCandidateIndexes(req.acceptance_criteria, req.ac_observational, { repo: REPO, ciVerify: PRERUN.ci_verify })
-const acClassifyIndexes = [...new Set([...acObsPending, ...acVerifyCandidates])].sort((a, b) => a - b)
-let acObsAgent = null
-if (acClassifyIndexes.length) {
-  log(`analyze: 観測型判定が prerun で確定しない AC ${acObsPending.length} 件${acObsPending.length ? `（AC-${acObsPending.map((i) => i + 1).join(', AC-')}）` : ''} / AC の検証コマンドを聞く観測型 AC ${acVerifyCandidates.length} 件${acVerifyCandidates.length ? `（AC-${acVerifyCandidates.map((i) => i + 1).join(', AC-')}）` : ''} — AC の文面だけを読む分類 agent に 1 回で渡す`)
-  acObsAgent = await failOpenAgent(acObservationalPrompt(req.issue_title, req.acceptance_criteria, acClassifyIndexes), { agentType: 'dev-runner', schema: AC_OBSERVATIONAL, label: `ac-observational#${ISSUE}`, phase: 'Setup' })
-  if (!acObsAgent) log('⚠️ analyze: 観測型の分類 agent が null — 未確定の AC は観測型として扱い、AC の検証コマンドは無しとする')
-  if (acObsPending.length) req.ac_observational = resolveAcObservational(req.ac_observational, acObsAgent)
-}
+const acClassifyIndexes = req.acceptance_criteria.map((_, i) => i)
+log(`analyze: 全 AC ${acClassifyIndexes.length} 件を AC の文面だけを読む分類 agent に 1 回で渡す（観測型の判定と AC の検証コマンド）`)
+const acObsAgent = await failOpenAgent(acObservationalPrompt(req.issue_title, req.acceptance_criteria, acClassifyIndexes), { agentType: 'dev-runner', schema: AC_OBSERVATIONAL, label: `ac-observational#${ISSUE}`, phase: 'Setup' })
+if (!acObsAgent) log('⚠️ analyze: 観測型の分類 agent が null — 全 AC を観測型として扱い、AC の検証コマンドは無しとする')
+req.ac_observational = resolveAcObservational(req.acceptance_criteria, acObsAgent)
 const AC_VERIFY = freezeAcVerify(req.acceptance_criteria, acObsAgent)
 if (req.ac_observational.includes(true)) log(`analyze: 観測型 AC ${req.ac_observational.filter(Boolean).length} 件（AC-${req.ac_observational.map((o, i) => o ? i + 1 : null).filter((n) => n != null).join(', AC-')}）— red→green 実証が無ければ inspection で達成扱いにせず人手 AC 待ちへ回す`)
 // AC ごとの actor（'agent' | 'human'。_lib/ac-actor.mjs）。analyze ゲートで AC と一緒に freeze し、Evaluate の

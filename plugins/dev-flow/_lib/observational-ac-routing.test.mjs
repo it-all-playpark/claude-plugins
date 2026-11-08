@@ -13,17 +13,19 @@
 //   (J) inspection の観測型 AC / (K) Evaluate で昇格済みの AC → redgreen-final を spawn しない
 // テストファイルを inline code で名指しした観測型 AC（issue #1147。actor agent）:
 //   (L) inspection の satisfied:true → 未達に倒れて dev-implementer へ差し戻し、上限後も未達なら ac_agent_unsatisfied の HOLD
-// 観測型判定の確定（issue #859。prerun の ac_observational が null の AC と、観測型で文面上の actor が agent の AC を分類 agent に回す）:
-//   (F) 回帰（acme/webapp）: null の AC と観測型 AC を title と AC 文面で 1 回渡し、確定値が evaluator と actor に効く
+// 観測型判定の確定（issue #1259。analyze ゲート通過後に全 AC を分類 agent に 1 回で渡す）:
+//   (M) AC 3 件の issue で分類 agent は 1 回だけ呼ばれ、渡る index は 0・1・2
+//   (N) agent が null を返した AC・応答に無い AC・agent 自体が失敗した run では、その AC を観測型（true）として扱う
+//   (F) 回帰（acme/webapp）: 全 AC を title と AC 文面で 1 回渡し、確定値が evaluator と actor に効く
 //       （観測型 AC の検証コマンドが無ければ human のままなことは (A) で見る）
-//   (G) 分類 agent の失敗は未確定の AC を観測型に倒す
+//   (G) 分類 agent の失敗は全 AC を観測型に倒す
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze, acObservationalResponse, acObservationalPromptIndexes } from './test-helpers/vm-sandbox.mjs';
 import { APP_REPO_REGRESSION_ACS } from './test-helpers/observational-ac-controls.mjs';
 import { AGENT_AC_REIMPL_MAX } from './ac-actor.mjs';
 import { REDGREEN_WAIT_POLLS } from './redgreen-targets.mjs';
@@ -50,11 +52,12 @@ const reimplCalls = (calls) => calls.filter((c) => /^reimpl#\d+:serial:issue-1$/
 const evalCalls = (calls) => calls.filter((c) => c.agentType === 'dev-flow:evaluator' && c.label.startsWith('eval#'));
 const acObsCalls = (calls) => calls.filter((c) => c.label.startsWith('ac-observational#'));
 
+// 分類 agent の応答は既定で AC-1 だけ観測型（opts.acObs で差し替える。overrides に 'ac-observational#1' があればそれを使う）
 async function run(overrides, opts = {}) {
-  const analyze = opts.analyze ?? prerunAnalyze({ acceptance_criteria: [OBS_AC, CODE_AC], ac_observational: [true, false], ac_observational_evidence: ['Jev noul 観測型 p=0.97', '正規表現の絞り込みに当たらない'] });
+  const analyze = opts.analyze ?? prerunAnalyze({ acceptance_criteria: [OBS_AC, CODE_AC] });
   const { ctx, calls, logs } = makeDevFlowSandbox({
     ...(opts.workflow ? { workflow: opts.workflow } : {}),
-    overrides,
+    overrides: { 'ac-observational#1': 'acObs' in opts ? opts.acObs : acObservationalResponse([true, false]), ...overrides },
     extra: { args: devFlowArgs(1, { analyze }) },
   });
   const { result, error } = await runWorkflowCapture(src, ctx);
@@ -70,12 +73,11 @@ test('[observational-ac] (A) inspection の satisfied:true → checked にせず
   const { result, calls } = await run({ 'eval#1': evalWith([inspection(0), inspection(1)]) });
   assert.equal(reimplCalls(calls).length, 0, `観測型 AC で差し戻した: ${calls.map((c) => c.label).join(', ')}`);
   assert.equal(evalCalls(calls).length, 1);
-  // 観測型で文面上の actor が agent の AC があるので、AC の検証コマンドを聞く分類 agent を 1 回だけ spawn する（issue #1208）。
-  // 応答が無い（verify_command なし）なら actor は human のまま
+  // 分類 agent は全 AC を 1 回で受け取る（issue #1259）。verify_command が無ければ観測型 AC の actor は human のまま
   const obs = acObsCalls(calls);
   assert.equal(obs.length, 1, `分類 agent は 1 回: ${calls.map((c) => c.label).join(', ')}`);
   assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: 0, ac: OBS_AC })), obs[0].prompt);
-  assert.ok(!obs[0].prompt.includes(CODE_AC), `観測型でない AC を渡している: ${obs[0].prompt}`);
+  assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: 1, ac: CODE_AC })), obs[0].prompt);
   assert.ok(!calls.some((c) => c.label.startsWith('ac-verify-')), 'verify_command が無ければ AC コマンドを実行しない');
   assert.equal(result?.merge_tier, 'HOLD');
   assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
@@ -233,9 +235,7 @@ test('[observational-ac] (E) Evaluate で red→green 実証済みの観測型 A
 test('[observational-ac] (L) テストファイルを名指しした観測型 AC の inspection 判定 → 差し戻し、上限後も未達なら ac_agent_unsatisfied の HOLD（人手 AC 待ちにしない）', async () => {
   const TEST_OBS_AC = '`journal.bats` に足すテストで、実 run の journal に `duration_seconds` が記録されることを確かめる';
   const evals = Object.fromEntries(Array.from({ length: AGENT_AC_REIMPL_MAX + 1 }, (_, k) => [`eval#${k + 1}`, evalWith([inspection(0), inspection(1)])]));
-  const { result, calls } = await run(evals, {
-    analyze: prerunAnalyze({ acceptance_criteria: [TEST_OBS_AC, CODE_AC], ac_observational: [true, false], ac_observational_evidence: ['Jev noul 観測型 p=0.97', '正規表現の絞り込みに当たらない'] }),
-  });
+  const { result, calls } = await run(evals, { analyze: prerunAnalyze({ acceptance_criteria: [TEST_OBS_AC, CODE_AC] }) });
   const reimpl = reimplCalls(calls);
   assert.equal(reimpl.length, AGENT_AC_REIMPL_MAX, `差し戻しは上限 ${AGENT_AC_REIMPL_MAX} 回: ${calls.map((c) => c.label).join(', ')}`);
   assert.match(reimpl[0].prompt, /AC-1 未達/);
@@ -246,32 +246,50 @@ test('[observational-ac] (L) テストファイルを名指しした観測型 AC
   assert.ok(prCall.prompt.includes(`- [ ] ${TEST_OBS_AC}`), `PR 本文で red→green 実証の無い観測型 AC が checked になった: ${prCall.prompt}`);
 });
 
-// 回帰（issue #859）: acme/webapp の AC。prerun の判定は prerun-analyze.bats の Jev スタブと同じ値
-// （本番コード… = 絞り込みに当たらず false / ログの件数表示 = Jev p=0.04 で false / エラー件数… = Jev 低確信で null /
-// 実行ログに 1 件以上 = Jev p=0.96 で true / #104 AC#2 = Jev p=0.03 で false）。
+// AC 3 件の issue（issue #1259）。AC-1 は旧来の正規表現の絞り込みが取りこぼした観測型 AC（plugin の install）
+const ACS3 = ['plugin を install すると skill 一覧に出る', CODE_AC, '`launchctl` に登録され、翌朝 07:00 に起動する'];
+const EVAL3 = { 'eval#1': evalWith(ACS3.map((_, i) => inspection(i))) };
+const run3 = (acObs) => run(EVAL3, { analyze: prerunAnalyze({ acceptance_criteria: ACS3 }), acObs });
+const reqObservational = (calls) => evalCalls(calls)[0].prompt.match(/"ac_observational":(\[[^\]]*\])/)?.[1];
+
+test('[observational-ac] (M) AC 3 件の issue で分類 agent は 1 回だけ呼ばれ、全 AC（index 0・1・2）を受け取る', async () => {
+  const { calls } = await run3(acObservationalResponse([true, false, true]));
+  const obs = acObsCalls(calls);
+  assert.equal(obs.length, 1, `分類 agent は 1 回: ${calls.map((c) => c.label).join(', ')}`);
+  assert.deepEqual(acObservationalPromptIndexes(obs[0].prompt), [0, 1, 2]);
+  for (const [i, ac] of ACS3.entries()) assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: i, ac })), obs[0].prompt);
+  assert.equal(reqObservational(calls), '[true,false,true]', '分類 agent の boolean をそのまま採る');
+});
+
+for (const [name, acObs, observational, human] of [
+  ['agent が null を返した AC', { results: [{ ac_index: 0, observational: null, verify_command: null, expect_paths: [] }, { ac_index: 1, observational: false, verify_command: null, expect_paths: [] }, { ac_index: 2, observational: false, verify_command: null, expect_paths: [] }] }, '[true,false,false]', [0]],
+  ['agent の応答に無い AC', acObservationalResponse([false, false]), '[false,false,true]', [2]],
+  ['agent が失敗（null）した run', null, '[true,true,true]', [0, 1, 2]],
+  ['agent が throw した run', () => { throw new Error('injected'); }, '[true,true,true]', [0, 1, 2]],
+]) {
+  test(`[observational-ac] (N) ${name} → その AC を観測型（true）として扱い、inspection の達成は人手 AC 待ちに倒す`, async () => {
+    const { result, calls } = await run3(acObs);
+    assert.equal(acObsCalls(calls).length, 1);
+    assert.equal(reqObservational(calls), observational, evalCalls(calls)[0].prompt.slice(0, 2000));
+    assert.equal(reimplCalls(calls).length, 0);
+    assert.equal(result?.merge_tier, 'HOLD');
+    assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human, ci: [] });
+  });
+}
+
+// 回帰（issue #859）: acme/webapp の AC。分類 agent の応答は observational-ac-controls.mjs の正しい観測型判定と同じ値
 const REG_ACS = APP_REPO_REGRESSION_ACS.map((r) => r.ac);
 const REG_TITLE = 'test(video): テストの件数の直書きを整理する';
-const REG_ANALYZE = prerunAnalyze({
-  issue_title: REG_TITLE,
-  acceptance_criteria: REG_ACS,
-  ac_observational: [false, false, null, true, false],
-  ac_observational_evidence: ['正規表現の絞り込みに当たらない', 'Jev noul 観測型 p=0.04', 'Jev が低確信（観測型 p=0.5）', 'Jev noul 観測型 p=0.96', 'Jev noul 観測型 p=0.03'],
-});
+const REG_ANALYZE = prerunAnalyze({ issue_title: REG_TITLE, acceptance_criteria: REG_ACS });
 const REG_EVAL = { 'eval#1': evalWith(REG_ACS.map((_, i) => inspection(i))) };
 
-test('[observational-ac] (F) 回帰: null の AC だけを AC 文面 + title で分類 agent に 1 回渡し、#104 AC#2 は観測型にせず HOLD は観測型の AC だけ', async () => {
-  const { result, calls } = await run({
-    ...REG_EVAL,
-    'ac-observational#1': { results: [{ ac_index: 2, observational: false }] },
-  }, { analyze: REG_ANALYZE });
+test('[observational-ac] (F) 回帰: 全 AC を AC 文面 + title で分類 agent に 1 回渡し、#104 AC#2 は観測型にせず HOLD は観測型の AC だけ', async () => {
+  const { result, calls } = await run(REG_EVAL, { analyze: REG_ANALYZE, acObs: acObservationalResponse(APP_REPO_REGRESSION_ACS.map((r) => r.observational)) });
   const obs = acObsCalls(calls);
   assert.equal(obs.length, 1, `分類 agent は 1 回: ${calls.map((c) => c.label).join(', ')}`);
   assert.equal(obs[0].agentType, 'dev-flow:dev-runner');
   assert.ok(obs[0].prompt.includes(JSON.stringify(REG_TITLE)), `title が渡っていない: ${obs[0].prompt}`);
-  assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: 2, ac: REG_ACS[2] })), `null の AC が渡っていない: ${obs[0].prompt}`);
-  // prerun で観測型 true の AC-4（文面上の actor は agent）は、AC の検証コマンドを聞くために同じ 1 回に含める（issue #1208）
-  assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: 3, ac: REG_ACS[3] })), `観測型で actor agent の AC が渡っていない: ${obs[0].prompt}`);
-  for (const i of [0, 1, 4]) assert.ok(!obs[0].prompt.includes(REG_ACS[i]), `prerun で観測型 false と確定した AC-${i + 1} を渡している: ${obs[0].prompt}`);
+  for (const [i, ac] of REG_ACS.entries()) assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: i, ac })), `AC-${i + 1} が渡っていない: ${obs[0].prompt}`);
   assert.ok(!obs[0].prompt.includes('issue-body.md'), 'issue 本文のファイルを読ませている');
   // diff・evaluator の結果が存在する前（isolation-probe・実装・評価より前）に 1 回だけ走る
   const at = (pred) => calls.findIndex(pred);
@@ -286,10 +304,10 @@ test('[observational-ac] (F) 回帰: null の AC だけを AC 文面 + title で
   assert.ok(prCall.prompt.includes(`- [x] ${REG_ACS[4]}`), `#104 AC#2 が達成扱いにならない: ${prCall.prompt}`);
 });
 
-test('[observational-ac] (G) 分類 agent が失敗（null）なら未確定の AC は観測型（true）として人手 AC 待ちに回す', async () => {
+test('[observational-ac] (G) 分類 agent が失敗（null）なら全 AC を観測型（true）として人手 AC 待ちに回す', async () => {
   const { result, calls } = await run({ ...REG_EVAL, 'ac-observational#1': null }, { analyze: REG_ANALYZE });
   assert.equal(acObsCalls(calls).length, 1);
   assert.equal(reimplCalls(calls).length, 0);
   assert.equal(result?.merge_tier, 'HOLD');
-  assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [2, 3], ci: [] });
+  assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [0, 1, 2, 3, 4], ci: [] });
 });

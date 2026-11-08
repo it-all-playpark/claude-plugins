@@ -66,7 +66,7 @@ issue analyze・stack 検出）は run 前に wrapper skill が top-level の Ba
 `deps` / `epoch_end` を足したもの）を `args.setup` として渡す。analyze 段（`prerun-analyze.sh`:
 `analyze-issue --contract` の決定論 parse + Jev 有界判定）は stack 検出（detect-stack）と並列に走る。
 Setup phase の spawn は末尾の analyze ゲート判定後だけ: ゲートが引いたときは `analyze-clarify#N` 1 本で終端し、
-通過したときは観測型判定が prerun で確定しない AC があれば `ac-observational#N` を 1 本、続けて isolation probe を 1 本。
+通過したときは全 AC を渡す `ac-observational#N` を 1 本、続けて isolation probe を 1 本。
 
 ```mermaid
 flowchart TD
@@ -101,10 +101,8 @@ flowchart TD
     A1 --> A2{"AC 空 / comment_conflicts 非空 /<br/>uncertain 非空 / repo 内外が混ざった AC ?"}
     A2 -->|yes| A3["analyze-clarify（dev-runner）1 spawn<br/>人間向け missing_context を生成"]
     A3 --> NC2["needs_clarification<br/>source=analyze<br/>isolation-probe / 実装 agent は spawn しない"]
-    A2 -->|no| AO{"ac_observational に<br/>null（prerun で未確定）?"}
-    AO -->|yes| AOA["ac-observational（dev-runner）1 spawn<br/>AC の文面だけで観測型を判定<br/>失敗・判定不能は観測型"]
-    AOA --> A4
-    AO -->|no| A4["isolation probe<br/>Write tool で書けるか<br/>token = setup.epoch"]
+    A2 -->|no| AOA["ac-observational（dev-runner）1 spawn<br/>全 AC を AC の文面だけで観測型か判定<br/>失敗・判定不能・応答なしは観測型"]
+    AOA --> A4["isolation probe<br/>Write tool で書けるか<br/>token = setup.epoch"]
     A4 -->|"written:false"| AB
     A4 --> OUT["Implement へ"]
 ```
@@ -120,9 +118,9 @@ override だが権限なし / conflict / 低確信 → `comment_conflicts`、本
 `DEVFLOW_JEV_DISABLE=1` は `uncertain` に倒す（fail-closed。応答なしは jev-classify の `--reason-file` が返す
 原因 — jev-broker に接続できない / jev-broker 経由の失敗 / 鍵なし / Keychain に届かない / Keychain 読み取り失敗 /
 タイムアウト / 通信失敗 / 応答不正 — を文言に載せる）。ゲートが引いたときだけ sonnet を
-1 spawn（`analyze-clarify#N`）して人間向けの質問文を作る。ゲートを通過した run でも、観測型 AC の判定が prerun で
-確定しない（`ac_observational` が null — Jev 低確信・Jev に届かない）AC があれば、AC の文面と issue タイトルだけを読む
-`ac-observational#N`（dev-runner）を 1 spawn する（失敗・判定不能の AC は観測型として扱う）。telemetry の `analyze_path` は `contract` / `jev` /
+1 spawn（`analyze-clarify#N`）して人間向けの質問文を作る。ゲートを通過した run は、全 AC を AC の文面と issue タイトルだけを読む
+`ac-observational#N`（dev-runner）に 1 回で渡して観測型かを判定する（正規表現・Jev で候補を絞らない。失敗・判定不能・
+応答に無い AC は観測型として扱う）。telemetry の `analyze_path` は `contract` / `jev` /
 `sonnet`（ゲート後のみ）の 3 値。
 
 ### 1.3 Implement
@@ -492,7 +490,7 @@ pr-iterate の `MAX`（review ⇄ fix 反復、既定 10）は `args.max_iterati
 | `pr-reviewer` | PR レビュー | opus / high |
 | `security-reviewer` | 敵対的 security review（LGTM の前。PR 全 diff を worktree の外で読み取り専用に読む） | opus / high |
 | `pr-fixer` | pr-iterate の fix（`fix#i` / `fix#i-retry`。maxTurns 100） | opus / medium |
-| `dev-runner` | Setup 末尾の analyze ゲート後の `analyze-clarify#N`（missing_context 生成）と `ac-observational#N`（観測型 AC の分類）。通常経路の Setup では起動しない | sonnet / high |
+| `dev-runner` | Setup 末尾の analyze ゲート後の `analyze-clarify#N`（missing_context 生成。ゲートが引いたときだけ）と `ac-observational#N`（全 AC の観測型の分類。ゲート通過後に毎 run 1 回） | sonnet / high |
 | `dev-runner-haiku` | 書き込み・Skill 呼び出しを伴う exec-proxy | haiku / low |
 | `dev-runner-haiku-ro` | read-only exec-proxy | haiku / low |
 | `dev-runner-haiku-wo` | isolation probe 専任（Write のみ） | haiku / low |

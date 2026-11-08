@@ -147,10 +147,9 @@ jev_calls() { grep -c '^call$' "$JEV_LOG" || true; }
     echo "$output" | jq -e '.acceptance_criteria == ["AC one", "AC two"] and .issue_type == "feat" and .issue_title == "feat: add button"'
     echo "$output" | jq -e '.breaking_change == false and .breaking_keyword_scan == false and .comment_overrides == [] and .comment_conflicts == [] and .uncertain == []'
     echo "$output" | jq -e '.comment_count == 0 and .contract == "t1"'
-    echo "$output" | jq -e '.ac_observational == [false, false] and .ac_observational_evidence == ["正規表現の絞り込みに当たらない", "正規表現の絞り込みに当たらない"]'
     [ "$(jev_calls)" -eq 0 ]
     # setup は wrapper の LLM が Workflow の args へ書き写すので、本文・抜粋を載せない形で固定する
-    echo "$output" | jq -e 'keys == ["ac_heading_near_miss", "ac_observational", "ac_observational_evidence", "acceptance_criteria", "analyze_path", "blockers", "breaking_change", "breaking_evidence", "breaking_keyword_scan", "comment_conflicts", "comment_count", "comment_overrides", "contract", "issue_title", "issue_type", "jev_reasons", "ok", "uncertain"]'
+    echo "$output" | jq -e 'keys == ["ac_heading_near_miss", "acceptance_criteria", "analyze_path", "blockers", "breaking_change", "breaking_evidence", "breaking_keyword_scan", "comment_conflicts", "comment_count", "comment_overrides", "contract", "issue_title", "issue_type", "jev_reasons", "ok", "uncertain"]'
 }
 
 # ---- 判定の入力は本文の全文（4000 字より後ろの目印で確かめる）----
@@ -661,24 +660,22 @@ ${decl}
     echo "$output" | jq -e '.breaking_change == true and (.comment_overrides | length) == 1'
 }
 
-@test "Jev は常に --redact と --reason-file 付きで呼ぶ（breaking / comment / 観測型 AC の全経路）" {
-    # AC-3 は観測型の絞り込みに当たる（APP_REPO_REGRESSION_ACS の table-4）
+@test "Jev は常に --redact と --reason-file 付きで呼ぶ（breaking / comment の全経路）" {
     fixture "$WORK/i.json" "feat: migration" "$AC_BODY
-- [ ] 実行ログに 1 件以上記録される
 
 [[jev:noul:0.95]]" "[$(comment reporter NONE '訂正 [[jev:override:0.95]]')]" reporter
     run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.jev_reasons == ["breaking_keyword_scan true", "comments present (1)", "observational_ac prefilter hit (AC-3)"]'
-    [ "$(jev_calls)" -eq 3 ]
-    [ "$(wc -l <"$JEV_LOG.argv")" -eq 3 ]
-    [ "$(grep -c -- '--redact' "$JEV_LOG.argv")" -eq 3 ]
-    [ "$(grep -c -- '--reason-file ' "$JEV_LOG.argv")" -eq 3 ]
+    echo "$output" | jq -e '.jev_reasons == ["breaking_keyword_scan true", "comments present (1)"]'
+    [ "$(jev_calls)" -eq 2 ]
+    [ "$(wc -l <"$JEV_LOG.argv")" -eq 2 ]
+    [ "$(grep -c -- '--redact' "$JEV_LOG.argv")" -eq 2 ]
+    [ "$(grep -c -- '--reason-file ' "$JEV_LOG.argv")" -eq 2 ]
 }
 
-# ---- 観測型 AC（issue #859）: 正規表現の絞り込み → Jev ----
+# ---- 観測型 AC（issue #1259）: prerun では判定しない ----
+# 観測型の判定は analyze ゲートの分類 agent（dev-flow.js）が全 AC について行う。prerun は Jev に聞かず、出力にも持たない。
 # 対照 AC は _lib/test-helpers/observational-ac-controls.mjs（vitest と共有）を node で読む。
-# Jev の応答は title に埋めたマーカー（質問 id は ac_<n>）で AC ごとに固定する。
 
 CONTROLS="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/_lib/test-helpers/observational-ac-controls.mjs"
 
@@ -692,80 +689,14 @@ ac_body() {
     jq -r '"## 概要\n\n説明。\n\n## 受け入れ基準\n\n" + (map("- [ ] " + .) | join("\n"))'
 }
 
-REG_MARKERS="[[jev:ac_2:0.04]] [[jev:ac_3:0.5]] [[jev:ac_4:0.96]] [[jev:ac_5:0.03]]"
-
-@test "観測型 AC の positive / negative control（issue #844）: 絞り込み + Jev スタブで positive は全て true、negative は全て false" {
+@test "観測型 AC: 観測型の positive / negative control を持つ issue でも Jev に観測型を聞かない（出力のキーは contract 経路の test が固定）" {
     ACS="$(controls_json '[...Object.values(m.KNOWN_OBSERVATIONAL_ACS), ...Object.values(m.NON_OBSERVATIONAL_ACS)]')"
-    NPOS="$(controls_json 'Object.keys(m.KNOWN_OBSERVATIONAL_ACS).length')"
-    # Jev は positive（AC-1..AC-NPOS）にだけ観測型 p=0.97、それ以外に聞かれたら p=0.03 を返す
-    MARKERS="$(jq -rn --argjson n "$NPOS" '[range(1; $n + 1) | "[[jev:ac_\(.):0.97]]"] | join(" ")') [[jev:noul:0.03]]"
-    fixture "$WORK/i.json" "test: controls ${MARKERS}" "$(printf '%s' "$ACS" | ac_body)"
+    # Jev に聞かれたら観測型 p=0.97 を返すマーカー（聞かれないことを見る）
+    fixture "$WORK/i.json" "test: controls [[jev:noul:0.97]]" "$(printf '%s' "$ACS" | ac_body)"
     run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e --argjson acs "$ACS" '.acceptance_criteria == $acs'
-    echo "$output" | jq -e --argjson n "$NPOS" '(.ac_observational | length) == ($n + 5) and (.ac_observational[:$n] | all(. == true)) and (.ac_observational[$n:] | all(. == false))'
-    echo "$output" | jq -e --argjson n "$NPOS" 'all(.ac_observational_evidence[:$n][]; test("Jev noul 観測型 p=0.97"))'
-    echo "$output" | jq -e '.uncertain == [] and .analyze_path == "jev"'
-    [ "$(jev_calls)" -eq 1 ]
-}
-
-@test "観測型 AC の回帰（acme/webapp）: 絞り込みに当たった AC だけを title と AC 文面で 1 request に聞き、Jev の p で true / false / null に振り分ける" {
-    ACS="$(controls_json 'm.APP_REPO_REGRESSION_ACS.map((r) => r.ac)')"
-    fixture "$WORK/i.json" "test(video): 件数の直書きを整理 ${REG_MARKERS}" "$(printf '%s' "$ACS" | ac_body)"
-    run_analyze "$WORK/i.json" --repo acme/webapp
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e --argjson acs "$ACS" '.acceptance_criteria == $acs'
-    # 本番コード… = 絞り込みに当たらない / ログの件数表示 p=0.04 / エラー件数… 低確信 / 1 件以上記録 p=0.96 / #104 AC#2 p=0.03
-    echo "$output" | jq -e '.ac_observational == [false, false, null, true, false]'
-    echo "$output" | jq -e '.ac_observational_evidence[0] == "正規表現の絞り込みに当たらない" and (.ac_observational_evidence[1] | test("p=0.04")) and (.ac_observational_evidence[2] | test("低確信") and test("p=0.5") and test("分類 agent")) and (.ac_observational_evidence[3] | test("p=0.96"))'
-    echo "$output" | jq -e '.jev_reasons == ["observational_ac prefilter hit (AC-2, AC-3, AC-4, AC-5)"] and .analyze_path == "jev"'
-    echo "$output" | jq -e '.uncertain == [] and .comment_conflicts == []' # null は needs_clarification にしない
-    [ "$(jev_calls)" -eq 1 ]
-    jq -e '(keys | sort) == ["ac_2", "ac_3", "ac_4", "ac_5"] and all(.[]; .type == "noul")' "$JEV_LOG.questions"
-    jq -e '.ac_5.instructions | test("AC-5") and test("コードとテストを読むだけでは確かめられず、実行した結果・ログ・計測を観測しないと確かめられないか") and test("テストコードやソースコード自体の書き方・構成について述べているなら no")' "$JEV_LOG.questions"
-    # state は title と当たった AC の文面だけ（当たらない AC と本文は送らない）
-    grep -q 'AC-5: 件数の直書きを、元データ（GUIDE_SLUGS 等）の長さとの比較か、件数に依存しない不変条件に置き換える' "$JEV_LOG.state"
-    ! grep -q '本番コードは変更しない' "$JEV_LOG.state" || false
-    ! grep -q '説明。' "$JEV_LOG.state" || false
-}
-
-@test "観測型 AC: Jev が応答しない（bg セッション等）-> 当たった AC は null（uncertain には積まない）、理由を根拠に載せる" {
-    ACS="$(controls_json 'm.APP_REPO_REGRESSION_ACS.map((r) => r.ac)')"
-    fixture "$WORK/i.json" "test(video): 件数の直書きを整理" "$(printf '%s' "$ACS" | ac_body)"
-    FAKE_JEV_REASON='timeout (curl exit 28, --max-time 10s)' run_analyze "$WORK/i.json"
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ac_observational == [false, null, null, null, null] and .uncertain == []'
-    echo "$output" | jq -e 'all(.ac_observational_evidence[1:][]; test("Jev 応答なし") and test("タイムアウト") and test("分類 agent"))'
-}
-
-@test "観測型 AC: Jev の noul が true / 文字列（数値でない）-> 当たった AC は null（false に倒さない、issue #940）" {
-    ACS="$(controls_json 'm.APP_REPO_REGRESSION_ACS.map((r) => r.ac)')"
-    fixture "$WORK/i.json" "test(video): 件数の直書きを整理 [[jev:ac_2:true]] [[jev:ac_3:\"0.95\"]] [[jev:ac_4:0.96]] [[jev:ac_5:true]]" "$(printf '%s' "$ACS" | ac_body)"
-    run_analyze "$WORK/i.json"
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ac_observational == [false, null, null, true, null] and .uncertain == []'
-    echo "$output" | jq -e '[.ac_observational_evidence[1, 2, 4]] | all(test("Jev 応答なし") and test("分類 agent"))'
-}
-
-@test "観測型 AC: DEVFLOW_JEV_DISABLE=1 -> Jev を呼ばず当たった AC は null" {
-    ACS="$(controls_json 'm.APP_REPO_REGRESSION_ACS.map((r) => r.ac)')"
-    fixture "$WORK/i.json" "test(video): 件数の直書きを整理 ${REG_MARKERS}" "$(printf '%s' "$ACS" | ac_body)"
-    DEVFLOW_JEV_DISABLE=1 run_analyze "$WORK/i.json"
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ac_observational == [false, null, null, null, null] and .uncertain == []'
-    echo "$output" | jq -e 'all(.ac_observational_evidence[1:][]; test("DEVFLOW_JEV_DISABLE=1"))'
-    [ "$(jev_calls)" -eq 0 ]
-}
-
-@test "観測型 AC: 正規表現の絞り込みが実行できない（node 失敗）-> 全 AC を null にして分類 agent に回す" {
-    ACS="$(controls_json 'm.APP_REPO_REGRESSION_ACS.map((r) => r.ac)')"
-    fixture "$WORK/i.json" "test(video): 件数の直書きを整理 ${REG_MARKERS}" "$(printf '%s' "$ACS" | ac_body)"
-    printf '#!/usr/bin/env bash\necho "node: broken" >&2\nexit 1\n' >"$WORK/bin/node"
-    chmod +x "$WORK/bin/node"
-    run_analyze "$WORK/i.json"
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .ac_observational == [null, null, null, null, null] and .uncertain == []'
-    echo "$output" | jq -e 'all(.ac_observational_evidence[]; test("正規表現の絞り込みを実行できない") and test("node: broken"))'
+    echo "$output" | jq -e --argjson acs "$ACS" '.ok == true and .acceptance_criteria == $acs'
+    echo "$output" | jq -e '.jev_reasons == [] and .analyze_path == "contract" and .uncertain == []'
     [ "$(jev_calls)" -eq 0 ]
 }
 
@@ -790,19 +721,14 @@ path_without_node() {
     printf '%s' "$out"
 }
 
-@test "観測型 AC: PATH に node が無い -> uncertain に node を実行できない旨を積み、全 AC を null（確定させない、issue #1048）" {
+@test "観測型 AC: PATH に node が無くても観測型の uncertain を出さない" {
     fixture "$WORK/i.json" "feat: add button" "$AC_BODY"
     NO_NODE_PATH="$(path_without_node)"
     ! PATH="$NO_NODE_PATH" command -v node || false
     PATH="$NO_NODE_PATH" run_analyze "$WORK/i.json"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .acceptance_criteria == ["AC one", "AC two"]'
-    # analyze ゲートが needs_clarification に倒す入力: node を実行できないことを示す uncertain が 1 件以上
-    echo "$output" | jq -e '[.uncertain[] | select(test("node"))] | length >= 1'
-    echo "$output" | jq -e '.uncertain[0] | test("node を実行できない")'
-    # 各 AC は true / false に確定させない（分類 agent が確定済みとして扱わない）
-    echo "$output" | jq -e '(.ac_observational | length) == 2 and all(.ac_observational[]; . != true and . != false)'
-    echo "$output" | jq -e 'all(.ac_observational_evidence[]; test("node を実行できない"))'
+    echo "$output" | jq -e '.uncertain == []'
     [ "$(jev_calls)" -eq 0 ]
 }
 

@@ -180,11 +180,6 @@ export const DEV_FLOW_SCENARIOS = {
   'analyze-clarify': {
     extra: { args: analyzeArgs(1, { analyze_path: 'jev', jev_reasons: ['comments present (1)'], comment_count: 1, comment_conflicts: ['conflict: comment #1 by alice（OWNER, 2026-01-01T00:00:00Z）: hmm'] }) },
   },
-  // prerun で観測型判定が確定しない（null の）AC → analyze ゲート通過後に ac-observational#1（dev-runner）1 spawn（issue #859）
-  'ac-observational': {
-    overrides: { 'ac-observational#1': { results: [{ ac_index: 1, observational: false }] } },
-    extra: { args: analyzeArgs(1, { ac_observational: [false, null], ac_observational_evidence: ['正規表現の絞り込みに当たらない', 'Jev が低確信（観測型 p=0.5）'] }) },
-  },
   // ci の AC + repo の local_verify 宣言 → Validate green 後に local-verify start / wait / stop（dev-runner-haiku。issue #863）
   'local-verify': {
     overrides: {

@@ -4,14 +4,15 @@
 // 3 条件ゲートだけを判定する（固有の phase は持たない）。
 //
 //   (a) 通常経路（AC 抽出成功・conflict 無し・uncertain 空）: analyze ゲートの agent spawn が 0 件、
-//       旧 label（contract-probe# / analyze# / issue-meta / analyze-retrunc# / analyze-retry#）が 0 件、run は完走
+//       旧 label（contract-probe# / analyze# / issue-meta / analyze-retrunc# / analyze-retry#）が 0 件、run は完走。
+//       dev-runner はゲート通過後の観測型の分類 agent（ac-observational#1）だけ
 //   (b) ゲート（AC 空 / comment_conflicts 非空 / uncertain 非空）: needs_clarification が isolation-probe より前に
 //       確定し、isolation-probe / dev-implementer / pr の spawn が 0 件、ゲート後の sonnet spawn
 //       （analyze-clarify#1, dev-runner）はちょうど 1 回
 //   (c) analyze.ok:false（gh 到達不能 / JSON 不正）: needs_clarification（source=analyze_prerun）で sonnet も
 //       isolation-probe も spawn しない
 //   (d) clarify agent の null / throw は fail-open（ゲート理由をそのまま missing_context にする）
-//   (e) 通常経路の isolation-probe は Analyze ゲート後・Implement 前に 1 回（needs_clarification 経路では 0 回）
+//   (e) 通常経路の isolation-probe は Analyze ゲート後（分類 agent の後）・Implement 前に 1 回（needs_clarification 経路では 0 回）
 //   (f) args.setup.analyze が ok:true だが whitelist 不合格 → fail-closed throw（推測で REQ を組まない）
 //   (g) clarify prompt はゲート理由を verbatim で含み、issue は analyze-issue の直接実行（切断時は dump を Read）で読ませ、
 //       issue 転写（gh の直接実行 / sandbox 語）を指示しない
@@ -66,7 +67,7 @@ test('[analyze-routing] (a) 通常経路: analyze ゲートの agent spawn は 0
   assert.equal(error, null, `run が throw してはならないが: ${error?.message}`);
   assert.equal(analyzeGateCalls(calls).length, 0, `analyze ゲートの spawn: ${analyzeGateCalls(calls).map((c) => c.label).join(', ')}`);
   assert.equal(legacyCalls(calls).length, 0, `旧 analyze 系 label: ${legacyCalls(calls).map((c) => c.label).join(', ')}`);
-  assert.equal(calls.filter((c) => c.agentType === 'dev-flow:dev-runner').length, 0, '通常経路で dev-runner（sonnet）が spawn されている');
+  assert.deepEqual(calls.filter((c) => c.agentType === 'dev-flow:dev-runner').map((c) => c.label), ['ac-observational#1'], '通常経路の dev-runner（sonnet）はゲート通過後の分類 agent だけ');
   assert.ok(result && typeof result === 'object' && result.status !== 'needs_clarification', `run は完走するはず: ${JSON.stringify(result?.status)}`);
   assert.ok(logs.some((l) => l.includes('analyze ゲートの spawn 0')), 'analyze ゲートの spawn 0 の log が無い');
 });
@@ -167,8 +168,8 @@ test('[analyze-routing] (e) 通常経路の isolation-probe は Analyze ゲー�
   const implIdx = calls.findIndex((c) => c.agentType === 'dev-flow:dev-implementer');
   assert.equal(calls.filter((c) => c.label === 'isolation-probe').length, 1);
   assert.ok(probeIdx >= 0 && implIdx > probeIdx, `isolation-probe(${probeIdx}) は dev-implementer(${implIdx}) より前のはず`);
-  // probe より前の spawn は 0（Setup / Analyze は decision-only）
-  assert.equal(probeIdx, 0, `isolation-probe より前に spawn がある: ${calls.slice(0, probeIdx).map((c) => c.label).join(', ')}`);
+  // probe より前の spawn はゲート通過後の観測型の分類 agent だけ（Setup / Analyze ゲートは decision-only）
+  assert.deepEqual(calls.slice(0, probeIdx).map((c) => c.label), ['ac-observational#1'], `isolation-probe より前の spawn: ${calls.slice(0, probeIdx).map((c) => c.label).join(', ')}`);
   assert.equal(calls[probeIdx].agentType, 'dev-flow:dev-runner-haiku-wo');
 });
 
