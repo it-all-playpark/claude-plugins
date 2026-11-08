@@ -149,3 +149,28 @@ test('[finalize-stage] 静的: dev-flow-finalize.js の手書き部分は journa
   }
   assert.equal(devFlowSrc.split(`workflow('${FINALIZE_WORKFLOW}'`).length - 1, 1, 'dev-flow.js は dev-flow-finalize を 1 か所で起動するはず');
 });
+
+// Validate / Evaluate（dev-flow.js）と Final reconcile（dev-flow-finalize.js）は同じ exec-proxy を同じ手順で起動する。
+// 副作用の無い schema は _lib/stage-schemas.mjs の inline で共有し、agent を起動する helper は両ファイルの定義が
+// byte 一致することをここで pin する（片方だけ直すと Final reconcile が Validate とずれる）。
+// trackedAgent は親だけが ABORT_CTX を持つので対象外。
+const SHARED_HELPERS = [
+  'failOpenAgent', 'RECHECK_RESOLUTIONS_SCHEMA', 'TEST_RUN_PROMPT', 'runTestsAgent', 'runRedgreenVerify',
+  'runLocalVerifyOnce', 'runAcVerifyOnce', 'acVerifyOutcome', 'recordAcVerify', 'localVerifyTreeHash', 'treeDiffNumstatPrompt',
+];
+function topLevelDefinition(src, name) {
+  const lines = src.replace(/\/\/ ==== BEGIN inline: [^\n]*\n[\s\S]*?\/\/ ==== END inline: [^\n]*\n?/g, '').split('\n');
+  const head = new RegExp(`^(?:async function|function|const|let) ${name}\\b`);
+  const starts = lines.flatMap((l, i) => (head.test(l) ? [i] : []));
+  assert.equal(starts.length, 1, `${name} の top-level 定義が 1 つでない（${starts.length} 件）`);
+  const i = starts[0];
+  if (!lines[i].endsWith('{')) return lines[i];
+  const end = lines.findIndex((l, k) => k > i && /^}/.test(l));
+  return lines.slice(i, end + 1).join('\n');
+}
+
+test('[finalize-stage] 静的: Validate と Final reconcile が共有する helper は dev-flow.js と dev-flow-finalize.js で byte 一致する', () => {
+  for (const name of SHARED_HELPERS) {
+    assert.equal(topLevelDefinition(finalizeSrc, name), topLevelDefinition(devFlowSrc, name), `${name} の定義が dev-flow.js と dev-flow-finalize.js でずれている`);
+  }
+});

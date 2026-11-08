@@ -212,6 +212,63 @@ function validateStageArgs(stage, value, spec) {
   return value;
 }
 // ==== END inline: _lib/stage-args.mjs ====
+// ==== BEGIN inline: _lib/stage-schemas.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+
+const EPOCH_INSTRUCTION = '作業完了後、最後に Bash で `date +%s` を 1 回実行し、出力の整数を epoch フィールドとして返せ。取得に失敗した場合は epoch を省略してよい（本来の作業・判定には一切影響させるな）。\n'
+
+const GREEN = {
+  type: 'object', required: ['tests', 'green'],
+  properties: {
+    status: { type: 'string', enum: ['running', 'passed', 'failed', 'error'] },
+    tests: { type: 'string', enum: ['running', 'passed', 'failed', 'no_tests', 'error'] },
+    green: { type: 'boolean' },
+    summary: { type: 'string' },
+    scripts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { path: { type: 'string' }, exit: { type: 'number' }, launch_failed: { type: 'boolean' }, log: { type: 'string' } },
+      },
+    },
+    failed_files: { type: 'array', items: { type: 'string' } },
+    epoch: { type: 'number' },
+  },
+}
+
+const RG = {
+  type: 'object', required: ['results'],
+  properties: {
+    status: { type: 'string', enum: ['running'] },
+    results: {
+      type: 'array',
+      items: {
+        type: 'object', required: ['index', 'red', 'green'],
+        properties: {
+          index: { type: 'number' },
+          red: { type: 'boolean' }, green: { type: 'boolean' }, reason: { type: 'string' }, verdict: {},
+          testcmd_ran: { type: 'boolean' }, headdiff: { type: 'object' },
+        },
+      },
+    },
+  },
+}
+const RG_STOP = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, stopped: { type: 'boolean' }, was_running: { type: 'boolean' }, error: { type: 'string' } } }
+const RG_STATE_DIR = { type: 'object', required: ['state_dir'], properties: { state_dir: { type: 'string' } } }
+
+const DIFFHASH = {
+  type: 'object', required: ['hash', 'empty'],
+  properties: { hash: { type: 'string' }, empty: { type: 'boolean' }, epoch: { type: 'number' } },
+}
+const TREE_DIFF_LINES = {
+  type: 'object', required: ['ok'],
+  properties: { ok: { type: 'boolean' }, lines: { type: 'array', items: { type: 'string' } }, error: { type: 'string' } },
+}
+
+const LOCALVERIFY = { type: 'object', required: ['ok', 'status'], properties: { ok: { type: 'boolean' }, status: { type: 'string', enum: ['running', 'passed', 'failed', 'timeout', 'stopped', 'unavailable', 'error'] }, exit_code: { type: ['number', 'null'] }, log_path: { type: 'string' }, log_tail: { type: 'string' }, reason: { type: 'string' }, error: { type: 'string' }, db_deleted: { type: ['boolean', 'null'] } } }
+const LOCALVERIFY_STOP = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, stopped: { type: 'boolean' }, was_running: { type: 'boolean' }, db_deleted: { type: ['boolean', 'null'] }, error: { type: 'string' } } }
+const LOCAL_VERIFY_LABELS = { start: (a) => `local-verify-start#${a}`, wait: (a, k) => `local-verify-wait#${a}.${k}`, stop: (a) => `local-verify-stop#${a}` }
+const AC_VERIFY_LABELS = { start: (a) => `ac-verify-start#${a}`, wait: (a, k) => `ac-verify-wait#${a}.${k}`, stop: (a) => `ac-verify-stop#${a}` }
+// ==== END inline: _lib/stage-schemas.mjs ====
 // ==== BEGIN inline: _lib/prerun-setup.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
 const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer', 'hooks_not_running'];
@@ -2676,26 +2733,6 @@ const IMPL = {
     epoch: { type: 'number' },
   },
 }
-// failed_files: runValidateLoop が「base でも落ちる既存の失敗」を green 要件から外す材料（省略時は全失敗が green-fix 対象）。
-// scripts[].log は同じ tree を判定する eval#N / final-ac-reconcile に渡し、実行済みのテストを evaluator に再実行させない。
-const GREEN = {
-  type: 'object', required: ['tests', 'green'],
-  properties: {
-    status: { type: 'string', enum: ['running', 'passed', 'failed', 'error'] },
-    tests: { type: 'string', enum: ['running', 'passed', 'failed', 'no_tests', 'error'] },
-    green: { type: 'boolean' },
-    summary: { type: 'string' },
-    scripts: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: { path: { type: 'string' }, exit: { type: 'number' }, launch_failed: { type: 'boolean' }, log: { type: 'string' } },
-      },
-    },
-    failed_files: { type: 'array', items: { type: 'string' } },
-    epoch: { type: 'number' },
-  },
-}
 // base-rerun#<iter> の出力: 失敗したテストファイルを base tree で同じように再実行した結果（ファイルごと）。
 const BASE_RERUN = {
   type: 'object', required: ['results'],
@@ -2848,27 +2885,6 @@ const GREEN_FIX_RECHECK = {
     epoch: { type: 'number' },
   },
 }
-// redgreen-verify の出力: 一意な AC ペアを 1 実行で判定し results に引数順で返す。root が object なのは agent() schema の
-// 制約（haiku proxy に配列を包み直させない）。start / wait は未完了なら { status:'running', results:[] } を返す。
-const RG = {
-  type: 'object', required: ['results'],
-  properties: {
-    status: { type: 'string', enum: ['running'] },
-    results: {
-      type: 'array',
-      items: {
-        type: 'object', required: ['index', 'red', 'green'],
-        properties: {
-          index: { type: 'number' },
-          red: { type: 'boolean' }, green: { type: 'boolean' }, reason: { type: 'string' }, verdict: {},
-          testcmd_ran: { type: 'boolean' }, headdiff: { type: 'object' },
-        },
-      },
-    },
-  },
-}
-const RG_STOP = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, stopped: { type: 'boolean' }, was_running: { type: 'boolean' }, error: { type: 'string' } } }
-const RG_STATE_DIR = { type: 'object', required: ['state_dir'], properties: { state_dir: { type: 'string' } } }
 const PRURL = {
   type: 'object', required: ['pr_url', 'pr_number'],
   properties: {
@@ -2910,15 +2926,6 @@ const REVIEW = {
     confidence: { type: 'number', minimum: 0, maximum: 1 },
     epoch: { type: 'number' },
   },
-}
-const DIFFHASH = {
-  type: 'object', required: ['hash', 'empty'],
-  properties: { hash: { type: 'string' }, empty: { type: 'boolean' }, epoch: { type: 'number' } },
-}
-// TREE_DIFF_LINES: `git diff --numstat <eval> <pr>` の stdout 各行の verbatim 転写。required は 'ok' のみ（fail-open: staleDiffFiles=null）。
-const TREE_DIFF_LINES = {
-  type: 'object', required: ['ok'],
-  properties: { ok: { type: 'boolean' }, lines: { type: 'array', items: { type: 'string' } }, error: { type: 'string' } },
 }
 // DIFF_TRIAGE: diff-triage.sh の応答。fail-closed の `risk` だけ required にし、形状不一致を契約違反として
 // retryOnContractViolation で再試行させる（required:[] だと一発で fail-closed に倒れ診断もできない）。
@@ -3008,9 +3015,6 @@ const CROSSREPO_ARTIFACTS = {
   type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, found: { type: 'number' }, artifacts: { type: 'array' }, error: { type: 'string' } },
 }
-// local-verify start / wait / stop の stdout JSON（_shared/scripts/local-verify.sh）。
-const LOCALVERIFY = { type: 'object', required: ['ok', 'status'], properties: { ok: { type: 'boolean' }, status: { type: 'string', enum: ['running', 'passed', 'failed', 'timeout', 'stopped', 'unavailable', 'error'] }, exit_code: { type: ['number', 'null'] }, log_path: { type: 'string' }, log_tail: { type: 'string' }, reason: { type: 'string' }, error: { type: 'string' }, db_deleted: { type: ['boolean', 'null'] } } }
-const LOCALVERIFY_STOP = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, stopped: { type: 'boolean' }, was_running: { type: 'boolean' }, db_deleted: { type: ['boolean', 'null'] }, error: { type: 'string' } } }
 // ==== BEGIN inline: _lib/pr-artifacts.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 
 const CONVENTIONAL_PREFIX_RE = /^([a-z]+)(?:\(([^)]*)\))?!?:\s*(.+)$/;
@@ -4022,9 +4026,6 @@ let TURBOPACK_NOTE = '' // Setup(stack) で確定。対象 repo が Next.js の�
 let TEST_DISCOVERY_NOTE = '' // Setup(stack) で確定。evaluator の test_files 受理条件（args.setup.stack.test_runners = detect-test-runner の判定）
 let DELETION_HINT_NOTE = '' // Implement で確定。ファイル削除を理由に guard_blocked で止まった run のみ GIT_RM_DELETION_HINT、それ以外は空文字
 
-// 決定論 proxy が隣接しない境界（implement_end / evaluate_end / pr_end 等）は prompt 末尾にこの 1 文を注入して epoch を
-// 返させる（fail-open — 取得失敗は mark null になるだけで、判断・schema required に影響しない）。
-const EPOCH_INSTRUCTION = '作業完了後、最後に Bash で `date +%s` を 1 回実行し、出力の整数を epoch フィールドとして返せ。取得に失敗した場合は epoch を省略してよい（本来の作業・判定には一切影響させるな）。\n'
 
 // worktree 内の一時ファイルは realized-diff を膨らませ、実効 shape の誤判定・宣言外 concern の原因になる。agent 定義は
 // sandbox write-deny なので workflow が全実装 spawn prompt に注入する。.devflow-tmp/ は isEphemeralPath が除外するので
@@ -4782,9 +4783,7 @@ async function runRedgreenVerify(pairs, { spawn, label, phase, base = null }) {
 //   unavailable / error / Validate red: fail-open（pr-iterate が CI の check を待つ）
 // stop は finally で必ず呼ぶ（呼ばれなくても supervisor の trap が DB を DELETE する）。
 // start には Setup で検証した宣言を --config-pct で渡す — 実装が command を書き換えて ci の AC を satisfied にできないように。
-const LOCAL_VERIFY_LABELS = { start: (a) => `local-verify-start#${a}`, wait: (a, k) => `local-verify-wait#${a}.${k}`, stop: (a) => `local-verify-stop#${a}` }
-const AC_VERIFY_LABELS = { start: (a) => `ac-verify-start#${a}`, wait: (a, k) => `ac-verify-wait#${a}.${k}`, stop: (a) => `ac-verify-stop#${a}` }
-async function runLocalVerifyOnce(attempt, phaseName = 'Validate', { cfg = LOCAL_VERIFY, stateDir = `${WT}/${LOCAL_VERIFY_STATE_DIR}`, labels = LOCAL_VERIFY_LABELS } = {}) {
+async function runLocalVerifyOnce(attempt, phaseName, { cfg = LOCAL_VERIFY, stateDir = `${WT}/${LOCAL_VERIFY_STATE_DIR}`, labels = LOCAL_VERIFY_LABELS } = {}) {
   const proxy = (cmd) => `cd ${WT} で作業。次を Bash で **timeout 600000** を指定して 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ`
     + `（判定や脚色をしない。失敗時に ok:true を生成してはならない。& や nohup を足さない — 常駐化はコマンド自身が行う）:\n${cmd}`
   let res = null
@@ -4900,7 +4899,7 @@ async function execLocalVerify(state) {
   let treeHash = state.validateDiffHash ?? null
   for (let attempt = 1; ; attempt++) {
     if (treeHash == null) treeHash = await localVerifyTreeHash(state.dhPrompt, `diff-hash-local-verify#${attempt}`, 'Validate')
-    const res = await runLocalVerifyOnce(attempt)
+    const res = await runLocalVerifyOnce(attempt, 'Validate')
     const verdict = localVerifyVerdict(res)
     if (verdict === 'unavailable') return fallBack('unavailable', `pg-broker に届かない（${res.reason ?? '理由不明'}）`)
     if (verdict === 'running') return fallBack('error', `local-verify が ${LOCAL_VERIFY.timeout_seconds}s を過ぎても終わらない`)
