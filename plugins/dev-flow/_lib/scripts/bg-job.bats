@@ -75,8 +75,9 @@ supervisor_pid() { jq -r '.supervisor_pid' "$STATE_DIR/state.json"; }
 
 @test "start: command の終了を待たずに JSON 1 行を返し、呼び出し元の shell が終わった後に結果ファイルができる" {
     # command は gate ができるまで終わらないので、start が返った時点の未完了を秒数に頼らず確かめられる。
-    # gate が来なければ command は上限で exit 1 するので、command の終了を待つ start でもハングせずに落ちる
-    start_job 'i=0; while [ ! -e "$PWD/gate" ]; do i=$((i+1)); [ $i -le 300 ] || exit 1; sleep 0.1; done; echo finished; exit 7'
+    # gate が来なければ command は上限で exit 1 するので、command の終了を待つ start でもハングせずに落ちる。
+    # wait-sec は gate の上限（30 秒以上）より長くする。短いと「終了か wait-sec まで待つ」start も running を返して通ってしまう
+    run bash "$HOST" start "$STATE_DIR" "$CWD" 60 600 'i=0; while [ ! -e "$PWD/gate" ]; do i=$((i+1)); [ $i -le 300 ] || exit 1; sleep 0.1; done; echo finished; exit 7' 3>&-
     [ "$status" -eq 0 ]
     [ "${#lines[@]}" -eq 1 ]
     echo "$output" | jq -e '.ok == true and .status == "running"'
