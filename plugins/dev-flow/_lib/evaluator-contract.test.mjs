@@ -83,29 +83,33 @@ test('[evaluator-contract][#1168] final_ac_reconcile 契約の item_resolutions 
   assert.ok(contract.includes('最終 tree で確かめられない item（ローカルで実行できない build / compose / e2e 等）は unresolved にする'), contract);
 });
 
-// issue #1144: テストログに載っている AC 関連テストファイルは再実行せずログの行を根拠にし、載っていないものだけ実行する
+// issue #1144: テストログに載っている AC 関連テストファイルはログの行を evidence に使ってよく、載っていないものは実行する。
+// ログの行も実行結果も PR が書いたテストの出力なので、テストの本体と対象実装を読んで assert を確かめたときだけ根拠にする
 const LOG_EVIDENCE = 'ログの該当行（テスト名と ok / not ok）を evidence にして';
-test('[evaluator-contract][#1144] TEST_LOG_REUSE と final_ac_reconcile 契約は、ログにあるものは再実行せずログの行を根拠にし、無いものだけ実行させる', () => {
+const TEST_BODY_CHECK = '実行するかはテストの本体を読んで決め';
+test('[evaluator-contract][#1144] TEST_LOG_REUSE と final_ac_reconcile 契約は、ログの行を使うか実行するかをテストの本体を読んで決めさせ、ログに無いものは実行させる', () => {
   for (const [name, text] of [['TEST_LOG_REUSE', TEST_LOG_REUSE], ['final_ac_reconcile', EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile]]) {
-    assert.ok(text.includes('再実行せず'), `${name}: 再実行しない指示が無い`);
+    assert.ok(text.includes(TEST_BODY_CHECK), `${name}: 実行するかをテストの本体で決める指示が無い`);
     assert.ok(text.includes(LOG_EVIDENCE) && text.includes('verified_by:"test"'), `${name}: ログの行を evidence にして verified_by:"test" とする指示が無い`);
-    assert.ok(/ログに載っていない AC (に関係する|関連)テストファイルだけを実行/.test(text), `${name}: ログに無いものだけ実行する指示が無い`);
+    assert.ok(/ログに載っていない AC (に関係する|関連)テストファイルは実行/.test(text), `${name}: ログに無いものを実行する指示が無い`);
     // ログはテストが自由に書けるので、この diff が変更したファイルの、実行対象一覧とファイルの実体で裏を取れる行だけを根拠にする
     assert.ok(text.includes(TEST_LOG_EVIDENCE_LIMIT), `${name}: ログ行の裏取りの指示が無い`);
   }
   for (const s of ['「ログを根拠にできるテストファイル」（この diff が変更したファイル）に載るファイルだけ', 'ログに載っていても実行する',
-    '集計行', '実行対象一覧', '評価対象の tree（working tree）のそのファイルに実在する']) {
+    '集計行', '実行対象一覧', '評価対象の tree（working tree）のそのファイルに実在する',
+    'ログの行だけを AC 達成の根拠にしない', 'テストの本体と対象実装を読み', '条件分岐で実行を避けていない・成功の行を自分で出力していない',
+    '確かめられないテストはログの行も実行結果も verified_by:"test" の根拠にしない']) {
     assert.ok(TEST_LOG_EVIDENCE_LIMIT.includes(s), `${s}: ${TEST_LOG_EVIDENCE_LIMIT}`);
   }
   // 契約はテストログが渡されたときに限る（渡されない・読めないときは AC 関連テストを実行する）
   assert.ok(EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile.includes('テストログが渡されない・読めない場合は AC に関係するテストファイルを実行'));
 });
 
-test('[evaluator-contract][#1144] evaluator.md の「進め方」2 はテストログにある AC 関連テストを再実行せずログの行を根拠にする', () => {
+test('[evaluator-contract][#1144] evaluator.md の「進め方」2 はテストログの行を使うか実行するかをテストの本体を読んで決める', () => {
   const steps = evaluatorMd.slice(evaluatorMd.indexOf('## 進め方'), evaluatorMd.indexOf('## 判定'));
   const step2 = steps.slice(steps.indexOf('\n2. '), steps.indexOf('\n3. ')).replace(/\n\s+/g, '');
-  assert.ok(step2.includes('再実行せず') && step2.includes(LOG_EVIDENCE) && step2.includes('`verified_by: "test"`'), step2);
-  assert.ok(step2.includes('ログに載っていない AC に関係するテストファイルだけを実行する'), step2);
+  assert.ok(step2.includes(TEST_BODY_CHECK) && step2.includes(LOG_EVIDENCE) && step2.includes('`verified_by: "test"`'), step2);
+  assert.ok(step2.includes('ログに載っていない AC に関係するテストファイルは実行する'), step2);
   assert.ok(step2.includes(TEST_LOG_EVIDENCE_LIMIT), step2);
   assert.ok(step2.includes('ログが渡されない・読めないときは AC に関係するテストファイルを実行する'), step2);
 });

@@ -26,9 +26,10 @@ paths:
 
 - Claude 専用（workflow 依存）。cross-vendor 放棄は dev-flow / pr-iterate のみ
 - skill wrapper が isolation preflight → `Workflow({ name: 'dev-flow:dev-flow-run' })`。orchestration と中間 state は workflow script の JS 変数のみ
+- `dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐のみ。工程の処理（agent の起動・prompt の組み立て・判定）は工程の workflow に書く（script 上限はファイルごと）
 - `meta.name` は `dev-flow-run` でも telemetry handoff の `skill` は `'dev-flow'` 固定（集計連続性）
-- `agent()` の agentType は `nsAgentOpts()` でのみ namespace 付与（bare 名は起動直後 abort）。routing test は論理名（bare）を保持。dev-flow-canary.js のみ namespaced id 直書き
-- 1 issue = 1 PR。Implement は全 shape で `dev-implementer` を単一 worktree に 1 spawn（Plan phase・planner ⇄ reviewer ループ・parallel fan-out は持たない）。BLOCKED 再実装・green-fix・Evaluate 差し戻しも同じ agent
+- `agent()` の agentType は `nsAgentOpts()` でのみ namespace 付与（bare 名は起動直後 abort）。dev-flow-canary.js のみ namespaced id 直書き
+- 1 issue = 1 PR。Implement は全 shape で `dev-implementer` を単一 worktree に 1 spawn。BLOCKED 再実装・green-fix・Evaluate 差し戻しも同じ agent
 - model 既定は frontmatter。override は green-fix（`'sonnet'`）のみ（pr-iterate の fix は `pr-fixer` の frontmatter）。品質ゲート agent には渡さない — gate の判定モデルを credit で黙って変えない
 - merge は常に人間（全 tier）
 - 後方互換 scaffolding を作らない — out-of-enum は明示 error
@@ -43,7 +44,7 @@ paths:
 - empty-diff gate は fail-closed（cross-repo は人間ラベル opt-in + 決定論 dirty 検証が揃った場合のみ graceful 終端）
 - block_class は `approach_mismatch` / `guard_blocked` の閉じた enum。guard_blocked は replan ループから除外し evaluator focus へ直行
 - isolation probe: `written:false` は fail-closed（throw）。probe 自体の失敗は fail-open。`bgIsolation:"none"` による guard 無効化は採らない（共有 checkout 汚染は blast-radius。設定緩和で sunset しない）
-- telemetry は Stop hook が `--telemetry-json` 一本で journal へ渡す（キー別 flag・検証は持たない）。workflow が書くキーは telemetry.md の一覧に限る（`_lib/telemetry-keys.test.mjs` が pin）。読み手の無いキーを足さない — 読まれない値の計算・転記コードが残るため
+- telemetry は Stop hook が `--telemetry-json` 一本で journal へ渡す。workflow が書くキーは telemetry.md の一覧に限る。読み手の無いキーを足さない — 読まれない値の計算・転記コードが残るため
 
 ## 正当化クラス（W7）
 
@@ -61,7 +62,7 @@ paths:
 - dev-flow の `bin/` は sandbox 内で動かし excludedCommands に登録しない（子の hook・テストが sandbox 外で走る。blast-radius）。sandbox で揃わない pre-push の前提は hook で skip。prerun は repo の任意コードを実行しない
 - 起動元 repo の `.git/config` を書く git / gh（`push -u`・`--track`・`gh pr checkout`）を使わない（sandbox 内で書けない）。push は `pr-push`（`git push origin HEAD`）、済みかは `origin/<branch>` と比べる。`redgreen-verify` / `run-tests` は index を書く git も使わない
 
-> exec-proxy スクリプトは認証付き network I/O（gh・git push）を内部に持ってはならない（例外は prerun の `analyze-issue` の issue 取得と、`pr-push` — `start` / `wait` / `stop` で切り離す（lock 1800 秒・待機累計 3600 秒）。全文は log、末尾を返す）。GitHub I/O は subagent の Bash で「先頭トークンが gh または git の bare 単文」（gh は --repo、git は cwd = worktree、cd &&・bash・env 前置禁止）として実行し、出力を $TMPDIR の file に落とすか、agent が stdout/stderr を argv で verbatim 転写し、スクリプトは file または argv 入力の純変換とする。prompt に sandbox / excludedCommands / 特定パス起動の理由を書いてはならない — exec-proxy prompt は決定論スクリプトへの verbatim 転写契約であり、起動形の正しさは設定側（`bin/` の PATH・isolation guard）の不変条件である。設定の正当化は本ファイルと AGENTS.md の一箇所に置き、per-prompt で再説明しない（再説明は転写契約に判断余地を持ち込み、下流の prompt へ引用・増幅される）。**例外はない**。スクリプトは snapshot 1 枚の純変換に保つ
+> exec-proxy スクリプトは認証付き network I/O（gh・git push）を内部に持ってはならない（例外は prerun の `analyze-issue` の issue 取得と、`pr-push` — `start` / `wait` / `stop` で切り離す（lock 1800 秒・待機累計 3600 秒）。全文は log、末尾を返す）。GitHub I/O は subagent の Bash で「先頭トークンが gh または git の bare 単文」（gh は --repo、git は cwd = worktree、cd &&・bash・env 前置禁止）として実行し、出力を $TMPDIR の file に落とすか、agent が stdout/stderr を argv で verbatim 転写し、スクリプトは file または argv 入力の純変換とする。prompt に sandbox / excludedCommands / 特定パス起動の理由を書いてはならない — exec-proxy prompt は決定論スクリプトへの verbatim 転写契約であり、起動形の正しさは設定側（`bin/` の PATH・isolation guard）の不変条件。設定の正当化は本ファイルと AGENTS.md の一箇所に置き、per-prompt で再説明しない（再説明は転写契約に判断余地を持ち込み、下流の prompt へ引用・増幅される）。**例外はない**。スクリプトは snapshot 1 枚の純変換に保つ
 
 ## inline 生成区間
 

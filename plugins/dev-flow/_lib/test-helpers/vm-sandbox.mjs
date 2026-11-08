@@ -6,6 +6,9 @@
  *
  * Export:
  *   - JS_GLOBALS: VM sandbox に expose する 15 個の JS 組み込みをまとめた object
+ *   - DEV_FLOW_STAGE_WORKFLOWS / chainStageWorkflows(stub, host): dev-flow.js が workflow() で起動する工程の workflow
+ *     （dev-flow-finalize.js）を stub にせず同じ agent / log / phase で実行する workflow()。makeRecordingSandbox と
+ *     makeWorkflowContext は既定でこれを使い、2 つの workflow をつないで実行する（pr-iterate は stub のまま）
  *   - makeRecordingSandbox(responder, extraSandbox?): {ctx, calls, logs, phases} を返す
  *     （calls の各要素は {label, agentType, prompt, opts, schema}。opts は agent() に渡された
  *     opts をそのまま、schema は opts?.schema ?? null）
@@ -42,6 +45,9 @@
 
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 // ============================================================
 // JS_GLOBALS: VM sandbox に expose する JS 組み込み 15 個
@@ -64,6 +70,44 @@ export const JS_GLOBALS = {
   Set,
   Date,
 };
+
+// ============================================================
+// 工程の workflow: dev-flow.js が workflow() で起動する子を同じ agent stub で実行する
+// ============================================================
+
+const WORKFLOWS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '.claude', 'workflows');
+
+/** dev-flow.js が workflow() で起動する工程の workflow（起動名 → ファイル名）。pr-iterate は test の stub に任せる。 */
+export const DEV_FLOW_STAGE_WORKFLOWS = {
+  'dev-flow:dev-flow-finalize-run': 'dev-flow-finalize.js',
+};
+
+/**
+ * 工程の workflow を親と同じ agent / log / phase で実行する workflow() を返す。工程以外の起動名（pr-iterate）は stub に渡す。
+ * 引数は JSON で複製して渡す（子が親の object を共有して動く前提を持ち込まない）。子の workflow() は 2 段目のネストなので throw する。
+ * 子の throw はそのまま親の workflow() の throw になる。
+ *
+ * @param {Function} stub - 工程以外の workflow() の stub
+ * @param {{agent: Function, log: Function, phase: Function}} host - 子に渡す agent / log / phase を持つ object（呼び出し時に読む）
+ * @returns {(name: string, wargs: unknown) => Promise<unknown>}
+ */
+export function chainStageWorkflows(stub, host) {
+  return async (name, wargs) => {
+    const file = DEV_FLOW_STAGE_WORKFLOWS[name];
+    if (!file) return stub(name, wargs);
+    const ctx = vm.createContext({
+      ...JS_GLOBALS,
+      agent: (prompt, opts) => host.agent(prompt, opts),
+      log: (m) => host.log(m),
+      phase: (t) => host.phase(t),
+      workflow: async (n) => { throw new Error(`workflow('${n}'): 工程の workflow からの workflow() はネスト 2 段で起動できない`); },
+      args: JSON.parse(JSON.stringify(wargs)),
+    });
+    const { result, error } = await runWorkflowCapture(readFileSync(join(WORKFLOWS_DIR, file), 'utf8'), ctx, `.claude/workflows/${file}`);
+    if (error) throw error;
+    return result;
+  };
+}
 
 // ============================================================
 // prerunAnalyze: dev-flow-prerun の analyze 段（prerun-analyze.sh）の ok:true 出力
@@ -200,6 +244,8 @@ export function makeRecordingSandbox(responder, extraSandbox = {}, { calls = [] 
     // caller の上書き（args 等）
     ...extraSandbox,
   };
+  // 工程の workflow（dev-flow-finalize 等）は stub にせず、同じ agent stub で実行して親とつなぐ
+  sandbox.workflow = chainStageWorkflows(sandbox.workflow, sandbox);
 
   const ctx = vm.createContext(sandbox);
   return { ctx, calls, logs, phases };
@@ -212,7 +258,9 @@ export function makeRecordingSandbox(responder, extraSandbox = {}, { calls = [] 
  * @returns {vm.Context}
  */
 export function makeWorkflowContext(sandbox) {
-  return vm.createContext({ phase: () => {}, log: () => {}, ...JS_GLOBALS, ...sandbox });
+  const host = { phase: () => {}, log: () => {}, ...JS_GLOBALS, ...sandbox };
+  if (host.workflow) host.workflow = chainStageWorkflows(host.workflow, host);
+  return vm.createContext(host);
 }
 
 // ============================================================

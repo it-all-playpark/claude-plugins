@@ -14,20 +14,26 @@ const repoRoot = join(pluginRoot, '..', '..');
 
 const readme = readFileSync(join(repoRoot, 'README.md'), 'utf8');
 const devFlowSrc = readFileSync(join(pluginRoot, '.claude/workflows/dev-flow.js'), 'utf8');
+const finalizeSrc = readFileSync(join(pluginRoot, '.claude/workflows/dev-flow-finalize.js'), 'utf8');
 
-test('README: Atlas 紹介の phase 数が dev-flow.js の meta.phases と一致する', () => {
-  const metaPhases = devFlowSrc.slice(devFlowSrc.indexOf('phases: ['), devFlowSrc.indexOf('],', devFlowSrc.indexOf('phases: [')));
-  const count = (metaPhases.match(/\{ title: '/g) ?? []).length;
+const metaPhaseTitles = (src) => {
+  const start = src.indexOf('phases: [');
+  return [...src.slice(start, src.indexOf('],', start)).matchAll(/\{ title: '([^']+)' \}/g)].map((m) => m[1]);
+};
+// dev-flow の run の phase: dev-flow.js の meta.phases の後に、pr-iterate の後の工程の workflow（dev-flow-finalize.js）の phase が続く
+const runPhaseTitles = () => [...metaPhaseTitles(devFlowSrc), ...metaPhaseTitles(finalizeSrc)];
+
+test('README: Atlas 紹介の phase 数が dev-flow の run の phase（dev-flow.js と dev-flow-finalize.js の meta.phases）と一致する', () => {
+  const count = runPhaseTitles().length;
   assert.ok(count > 0, 'meta.phases が読めない');
   const m = readme.match(/dev-flow Pipeline Atlas\]\(docs\/dev-flow-atlas\.md\)\*\* — (\d+) phase/);
   assert.ok(m, 'README に Atlas 紹介の phase 数が無い');
   assert.equal(Number(m[1]), count);
 });
 
-test('atlas: 概観図の phase ノード番号・1.x 節見出し・phase 数が dev-flow.js の meta.phases と一致する', () => {
+test('atlas: 概観図の phase ノード番号・1.x 節見出し・phase 数が dev-flow の run の phase と一致する', () => {
   const atlas = readFileSync(join(repoRoot, 'docs/dev-flow-atlas.md'), 'utf8');
-  const start = devFlowSrc.indexOf('phases: [');
-  const titles = [...devFlowSrc.slice(start, devFlowSrc.indexOf('],', start)).matchAll(/\{ title: '([^']+)' \}/g)].map((m) => m[1]);
+  const titles = runPhaseTitles();
   assert.ok(titles.length > 0, 'meta.phases が読めない');
 
   // 1.1 概観の mermaid ノード `X["<n>. <title>"]` が meta.phases の順・番号と完全一致する
@@ -245,9 +251,8 @@ const fieldOf = (section, label) => {
   return next === -1 ? rest : rest.slice(0, next);
 };
 
-test('pipeline.md: phase ごとの ## 節（meta.phases と PR の後の pr-iterate）を持ち、各節に判定・失敗の扱い・実在するコードの場所を書く', () => {
-  const start = devFlowSrc.indexOf('phases: [');
-  const titles = [...devFlowSrc.slice(start, devFlowSrc.indexOf('],', start)).matchAll(/\{ title: '([^']+)' \}/g)].map((m) => m[1]);
+test('pipeline.md: phase ごとの ## 節（run の phase と PR の後の pr-iterate）を持ち、各節に判定・失敗の扱い・実在するコードの場所を書く', () => {
+  const titles = runPhaseTitles();
   assert.ok(titles.includes('PR'), `meta.phases が読めない: ${titles.join(', ')}`);
   const expected = [...titles.slice(0, titles.indexOf('PR') + 1), 'pr-iterate', ...titles.slice(titles.indexOf('PR') + 1)];
   const headings = [...pipelineMd.matchAll(/^## (.+)$/gm)].map((m) => m[1].trim());
@@ -268,7 +273,7 @@ test('pipeline.md: phase ごとの ## 節（meta.phases と PR の後の pr-iter
     assert.ok(paths.length + idents.length > 0, `pipeline.md「${phase}」のコードの場所がファイルも関数も指していない`);
     for (const p of paths) assert.ok(existsSync(join(pluginRoot, p)), `pipeline.md「${phase}」のコードの場所 ${p} が実在しない`);
     for (const id of idents) {
-      assert.ok([devFlowSrc, prIterateWorkflowSrc, libSrc].some((s) => new RegExp(`(function|const) ${id}\\b`).test(s)), `pipeline.md「${phase}」のコードの場所 ${id} が workflow / _lib の関数に無い`);
+      assert.ok([devFlowSrc, finalizeSrc, prIterateWorkflowSrc, libSrc].some((s) => new RegExp(`(function|const) ${id}\\b`).test(s)), `pipeline.md「${phase}」のコードの場所 ${id} が workflow / _lib の関数に無い`);
     }
   }
 });

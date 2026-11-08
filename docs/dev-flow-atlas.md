@@ -2,6 +2,7 @@
 
 GitHub issue から LGTM までを 8 phase で駆動する `dev-flow` の実処理を図で示す。
 すべて実装ソース（`plugins/dev-flow/.claude/workflows/dev-flow.js` /
+`plugins/dev-flow/.claude/workflows/dev-flow-finalize.js` /
 `plugins/dev-flow/.claude/workflows/pr-iterate.js` /
 `.claude/rules/dev-flow.md`）から起こしたもので、要約や理想形ではない。
 
@@ -25,7 +26,9 @@ GitHub issue から LGTM までを 8 phase で駆動する `dev-flow` の実処�
 
 wrapper skill が worktree を用意して `EnterWorktree` した上で、dynamic workflow `dev-flow-run` を
 起動する。phase 遷移とループは workflow script が JS で保持し、中間 state は外部 JSON ではなく
-script 変数に持つ。
+script 変数と `workflow()` の引数・返り値に持つ。`dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐だけを持ち、
+工程の処理は工程の workflow に書く — pr-iterate の後の 7〜8 と終端サマリーの投稿は `workflow('dev-flow:dev-flow-finalize-run')`
+（`dev-flow-finalize.js`）が持ち、その返り値が dev-flow の返り値になる。
 
 まず概観を示し、続いて 8 phase を 1 phase 1 節で展開する。
 
@@ -258,12 +261,16 @@ flowchart TD
     M0 --> M1["danger 再 reconcile<br/>one-shot security clearance"]
     M1 --> M2["classifyMergeTier"]
     M2 --> M3["終端サマリを PR へ投稿"]
-    M3 --> M4["journal telemetry 記録"]
+    M3 --> RET["dev-flow-run へ返す<br/>(返り値 + handoff の値)"]
+    RET --> M4["journal telemetry 記録<br/>(dev-flow-run が run ごとに 1 回)"]
     M4 --> HU["merge は常に人間"]
+    IN -.->|"dev-flow-finalize-run の throw /<br/>返り値の形が不正"| FH["HOLD + 終端サマリー未投稿の注記<br/>(handoff は HOLD の値で 1 回)"]
 ```
 
 `merge-tier-facts` の diffhash が Diff triage 時点の tree OID と一致すれば、facts の risk / changed
 を使わず Diff triage の結果を再利用する。tier の判定ロジックは [4. merge tier 判定](#4-merge-tier-判定) を参照。
+Final reconcile と Merge tier は `dev-flow-finalize-run` の中で走るので、その throw や形の不正な返り値は
+`dev-flow-run` が受けて HOLD にする（受け渡しの形は `_lib/stage-contract.mjs` が検証する）。
 
 ---
 

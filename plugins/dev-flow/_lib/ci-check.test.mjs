@@ -234,10 +234,22 @@ const RAW_ROLLUP = {
     { __typename: 'StatusContext', context: 'vercel', state: 'SUCCESS', startedAt: '2026-01-01T00:00:00Z', targetUrl: 'https://x/2' },
   ],
 };
-const foldWith = (command, input) => {
+// gh の --jq は文字列の結果を引用符なしで出すので jq -r で同じ stdout を作る。
+const foldStdout = (command, input) => {
   const filter = command.match(/--jq '(.+)'$/)[1];
-  return JSON.parse(execFileSync('jq', ['-c', filter], { input: JSON.stringify(input), encoding: 'utf8' }));
+  return execFileSync('jq', ['-r', filter], { input: JSON.stringify(input), encoding: 'utf8' });
 };
+const foldWith = (command, input) => JSON.parse(foldStdout(command, input));
+
+test('[ci-check] ciRollupCommand: check 名の単一引用符は stdout に出ず、JSON としては同じ名前に読まれる', () => {
+  const name = "x'$(touch /tmp/pwned)'y";
+  const input = { statusCheckRollup: [{ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion: 'SUCCESS' }] };
+  for (const withLink of [false, true]) {
+    const out = foldStdout(ciRollupCommand({ pr: 1, repo: null, withLink }), input);
+    assert.ok(!out.includes("'"), out);
+    assert.equal(JSON.parse(out)[0].name, name);
+  }
+});
 
 test('[ci-check] ciRollupCommand: --jq は判定に要るキーだけを残し、URL は withLink のときだけ残す', () => {
   const folded = foldWith(ciRollupCommand({ pr: 1, repo: null }), RAW_ROLLUP);
