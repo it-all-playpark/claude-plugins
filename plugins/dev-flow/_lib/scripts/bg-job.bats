@@ -74,9 +74,9 @@ wait_file() {
 supervisor_pid() { jq -r '.supervisor_pid' "$STATE_DIR/state.json"; }
 
 @test "start: command の終了を待たずに JSON 1 行を返し、呼び出し元の shell が終わった後に結果ファイルができる" {
-    local began=$SECONDS
-    start_job 'sleep 4; echo finished; exit 7'
-    [ $(( SECONDS - began )) -lt 4 ]
+    # command は gate ができるまで終わらないので、start が返った時点の未完了を秒数に頼らず確かめられる。
+    # gate が来なければ command は上限で exit 1 するので、command の終了を待つ start でもハングせずに落ちる
+    start_job 'i=0; while [ ! -e "$PWD/gate" ]; do i=$((i+1)); [ $i -le 300 ] || exit 1; sleep 0.1; done; echo finished; exit 7'
     [ "$status" -eq 0 ]
     [ "${#lines[@]}" -eq 1 ]
     echo "$output" | jq -e '.ok == true and .status == "running"'
@@ -85,6 +85,7 @@ supervisor_pid() { jq -r '.supervisor_pid' "$STATE_DIR/state.json"; }
 
     # start を呼んだ shell（run の子）はもう居ない。wait も呼ばずに、残った supervisor が結果を書く
     kill -0 "$(supervisor_pid)"
+    touch "$CWD/gate"
     wait_file "$STATE_DIR/result.json"
     jq -e '.status == "failed" and .exit_code == 7' "$STATE_DIR/result.json"
     grep -q finished "$STATE_DIR/logs/command.log"
@@ -145,10 +146,20 @@ EOF
     kill -KILL "$sup"
     wait_gone "$sup"
 
-    local began=$SECONDS
-    wait_job 20
+    # --wait-sec の待ちは sleep の poll で回る。sleep を呼ぶと印を残す sleep に差し替え、
+    # 1 度も待たずに返ったことを秒数に頼らず確かめる（待ってから返す wait は --wait-sec の後に落ちる）
+    local real_sleep slept="$BATS_TEST_TMPDIR/slept"
+    real_sleep="$(command -v sleep)"
+    mkdir -p "$BATS_TEST_TMPDIR/marking-bin"
+    cat > "$BATS_TEST_TMPDIR/marking-bin/sleep" <<EOF
+#!/usr/bin/env bash
+touch "$slept"
+exec "$real_sleep" "\$@"
+EOF
+    chmod +x "$BATS_TEST_TMPDIR/marking-bin/sleep"
+    PATH="$BATS_TEST_TMPDIR/marking-bin:$PATH" wait_job 20
     [ "$status" -eq 0 ]
-    [ $(( SECONDS - began )) -lt 10 ]
+    [ ! -e "$slept" ]
     echo "$output" | jq -e '.ok == false and .status == "error" and (.error | contains("結果を残さず"))'
     # trap を走らせずに消えた supervisor の command は残るので、ここで片付ける
     kill -KILL "$(cat "$CWD/cmd.pid")"

@@ -43,15 +43,13 @@ field() {
     jq -r "$1" <<<"$output"
 }
 
-# wait を status が running でなくなるまで繰り返す。最後の JSON を $output に残し、running の回数を WAIT_RUNNING に残す。$1 は log。
+# wait を status が running でなくなるまで繰り返す。最後の JSON を $output に残す。$1 は log。
 wait_until_done() {
     local i
-    WAIT_RUNNING=0
     for ((i = 0; i < 100; i++)); do
         run bash "$SCRIPT" wait "$1" --wait-sec 1 3>&-
         [ "$status" -eq 0 ]
         [ "$(field .status)" = running ] || return 0
-        WAIT_RUNNING=$((WAIT_RUNNING + 1))
     done
     echo "wait が終わらない: $output" >&2
     return 1
@@ -71,19 +69,26 @@ remote_has_branch() {
 }
 
 @test "start は pre-push hook の完了を待たずに返り、1 回の wait より長い hook を wait の反復で待ち切って remote に届く" {
-    install_hook 'sleep 3; echo "✓ all checks passed"; exit 0'
+    # hook は gate ができるまで終わらないので、start が返った時点の未完了を秒数に頼らず確かめられる。
+    # gate が来なければ hook は上限で exit 1 するので、hook の完了を待つ start でもハングせずに落ちる
+    gate="$BATS_TEST_TMPDIR/hook-gate"
+    finished="$BATS_TEST_TMPDIR/hook-finished"
+    install_hook "i=0; while [ ! -e '$gate' ]; do i=\$((i+1)); [ \$i -le 300 ] || exit 1; sleep 0.1; done; touch '$finished'; echo \"✓ all checks passed\"; exit 0"
     cd "$WT"
-    started=$SECONDS
     run bash "$SCRIPT" start "$LOG" 3>&-
     [ "$status" -eq 0 ]
     [ "$(field .status)" = running ]
     [ "$(field .exit_code)" = null ]
     [ "$(field .log)" = "$LOG" ]
-    [ $((SECONDS - started)) -lt 3 ]
+    [ ! -e "$finished" ]
     run remote_has_branch
     [ "$status" -ne 0 ]
+    # 1 回の wait では hook が終わらず running が返り、gate を置いた後の wait の反復で待ち切る
+    run bash "$SCRIPT" wait "$LOG" --wait-sec 1 3>&-
+    [ "$status" -eq 0 ]
+    [ "$(field .status)" = running ]
+    touch "$gate"
     wait_until_done "$LOG"
-    [ "$WAIT_RUNNING" -ge 1 ]
     [ "$(field .status)" = passed ]
     [ "$(field .exit_code)" = 0 ]
     [ "$(git -C "$REMOTE" rev-parse refs/heads/feature/issue-1)" = "$(git -C "$WT" rev-parse HEAD)" ]
