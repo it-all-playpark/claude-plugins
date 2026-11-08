@@ -14,6 +14,8 @@
 //   (f) Validate red（failed_files 非空）+ fixes_applied=0 + 単体再実行（test#validate-rerun）green → final_test_flaky に記録・
 //       validate_test_red の HOLD は不変・テスト欄は '❌ red（単体再実行は green — flake 候補）'（issue #1138）
 //   (g) Validate red でもファイルが空・安全に渡せないパス・再実行の throw / null / red は記録しない（HOLD 不変）
+//   (h) Validate red の落ちたファイル・diff の一覧・base 再実行の結果が validate_test_red の行の件数と対応列に届く
+//       （証拠あり → 修正が必要 / 証拠なし → 原因未確定。issue #1248）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -35,6 +37,12 @@ const CI_GREEN = {
   'ci-test-display': { ok: true, headRefOid: SHA40, statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }] },
 };
 const UNAVAILABLE_CELL = '⚠️ unavailable（最終 tree で再検証不能）・未検証';
+const VALIDATE_RED_CURRENT = '| Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）';
+const RED_UNKNOWN = '原因未確定 — 人が確認して判断する';
+// validate-diff#N の既定応答は null（diff 一覧の取得失敗）— base 再実行をせず、落ちたファイルはすべて base で確かめていない
+const noDiffNote = (files) => ` — 落ちたテストファイル ${files.length} 件: diff との照合なし（一覧の取得失敗）・`
+  + `base 再実行で base では同じように落ちなかった 0 件・base でも同じように落ちた 0 件・base で確かめていない ${files.length} 件`
+  + `（落ちたファイル: ${files.map((f) => `\`${f}\``).join(', ')}）`;
 
 async function run(overrides = {}, workflow, extra) {
   const { ctx, calls } = makeDevFlowSandbox({ overrides: { ...SCENARIO.overrides, ...overrides }, workflow, extra });
@@ -91,8 +99,8 @@ test("[summary-test-cell] (c) Validate tests:'failed'（本物の red）→ テ�
   // green-fix 後も red のまま（GREEN_MAX 到達）にする
   const red = { tests: 'failed', green: false, summary: 'assert mismatch' };
   const { result, testCell, body } = await run({ 'test#1': red, 'test#2': red, 'test#3': red });
-  // failed_files が取れない red は validate_test_red の行を従来の文言のまま出す（issue #1181）
-  assert.ok(body.includes('| Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし） | 修正が必要'), body);
+  // failed_files が取れない red は落ちたファイルを特定できなかったと書き、原因未確定にする（issue #1248）
+  assert.ok(body.includes(`${VALIDATE_RED_CURRENT} — 落ちたテストファイルを特定できなかった（failed_files が空） | ${RED_UNKNOWN} |`), body);
   assert.equal(testCell, '❌ red');
   assert.equal(result?.validate_tests, 'failed');
   assert.equal(result?.test_green, false);
@@ -134,7 +142,6 @@ const validateRedRun = (first, rerun) => {
   return run(o);
 };
 const validateReruns = (calls) => calls.filter((c) => c.label === 'test#validate-rerun');
-const VALIDATE_RED_CURRENT = '| Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）';
 
 test('[summary-test-cell] (f) Validate red + 単体再実行 green → final_test_flaky に記録、validate_test_red の HOLD は変えずテスト欄は red に flake 候補を添える', async () => {
   const { result, calls, body, testCell } = await validateRedRun(VALIDATE_RED_FILES, { tests: 'passed', green: true, summary: 'passed' });
@@ -153,22 +160,23 @@ test('[summary-test-cell] (f) Validate red + 単体再実行 green → final_tes
   assert.equal(testCell, '❌ red（単体再実行は green — flake 候補）');
   assert.ok(body.includes('test flake 候補（単体再実行は green）: plugins/dev-flow/_lib/ready-set.bats'), '参考に flake 候補の開示行が出る');
   assert.ok(body.includes('HOLD は解除しない（validate_test_red のまま'), '開示行に HOLD を解除しない旨が出る');
-  // validate_test_red の行の「現状」に Validate の全件実行の failed_files が出る（単体再実行の green で消さない。issue #1181）
-  assert.ok(body.includes(`${VALIDATE_RED_CURRENT}（落ちたファイル: \`plugins/dev-flow/_lib/ready-set.bats\`） | 修正が必要`), body);
+  // validate_test_red の行の「現状」に Validate の全件実行の failed_files が出る（単体再実行の green で消さない。issue #1181）。
+  // 単体再実行の green は原因の証拠にも反証にもしない（issue #1248）
+  assert.ok(body.includes(`${VALIDATE_RED_CURRENT}${noDiffNote(VALIDATE_RED_FILES.failed_files)} | ${RED_UNKNOWN} |`), body);
 });
 
 test('[summary-test-cell] (g) Validate red でもファイルが空・安全に渡せないパス・再実行の throw / null / red は記録せず、validate_test_red の HOLD のまま', async () => {
   const variants = {
-    empty: { first: { ...VALIDATE_RED_FILES, failed_files: [] }, rerun: undefined, reruns: 0, files: '' },
-    unsafe: { first: { ...VALIDATE_RED_FILES, failed_files: ['a.bats', 'b c.bats'] }, rerun: undefined, reruns: 0, files: '（落ちたファイル: `a.bats`, `b c.bats`）' },
-    throw: { first: VALIDATE_RED_FILES, rerun: () => { throw new Error('EPERM'); }, reruns: 1, files: '（落ちたファイル: `plugins/dev-flow/_lib/ready-set.bats`）' },
-    null: { first: VALIDATE_RED_FILES, rerun: null, reruns: 1, files: '（落ちたファイル: `plugins/dev-flow/_lib/ready-set.bats`）' },
+    empty: { first: { ...VALIDATE_RED_FILES, failed_files: [] }, rerun: undefined, reruns: 0, note: ' — 落ちたテストファイルを特定できなかった（failed_files が空）' },
+    unsafe: { first: { ...VALIDATE_RED_FILES, failed_files: ['a.bats', 'b c.bats'] }, rerun: undefined, reruns: 0, note: noDiffNote(['a.bats', 'b c.bats']) },
+    throw: { first: VALIDATE_RED_FILES, rerun: () => { throw new Error('EPERM'); }, reruns: 1, note: noDiffNote(VALIDATE_RED_FILES.failed_files) },
+    null: { first: VALIDATE_RED_FILES, rerun: null, reruns: 1, note: noDiffNote(VALIDATE_RED_FILES.failed_files) },
     // 再実行の failed_files に別のファイルが混ざっても validate_test_red の行は Validate の failed_files のまま（issue #1181）
-    red: { first: VALIDATE_RED_FILES, rerun: { tests: 'failed', green: false, summary: 'still red', failed_files: [...VALIDATE_RED_FILES.failed_files, 'tests/rerun-only.bats'] }, reruns: 1, files: '（落ちたファイル: `plugins/dev-flow/_lib/ready-set.bats`）' },
+    red: { first: VALIDATE_RED_FILES, rerun: { tests: 'failed', green: false, summary: 'still red', failed_files: [...VALIDATE_RED_FILES.failed_files, 'tests/rerun-only.bats'] }, reruns: 1, note: noDiffNote(VALIDATE_RED_FILES.failed_files) },
   };
-  for (const [name, { first, rerun, reruns, files }] of Object.entries(variants)) {
+  for (const [name, { first, rerun, reruns, note }] of Object.entries(variants)) {
     const { result, calls, testCell, body } = await validateRedRun(first, rerun);
-    assert.ok(body.includes(`${VALIDATE_RED_CURRENT}${files} | 修正が必要`), `(g-${name}) ${body}`);
+    assert.ok(body.includes(`${VALIDATE_RED_CURRENT}${note} | ${RED_UNKNOWN} |`), `(g-${name}) ${body}`);
     assert.equal(validateReruns(calls).length, reruns, `(g-${name}) test#validate-rerun の回数`);
     assert.equal(result?.final_test_flaky, null, `(g-${name}) final_test_flaky は null のはず`);
     assert.equal(result?.merge_tier, 'HOLD', `(g-${name}) ${tierFacts(result)}`);
@@ -178,6 +186,51 @@ test('[summary-test-cell] (g) Validate red でもファイルが空・安全に�
   // Validate が red でない run（tests:'error'）は再実行しない
   const { calls } = await run(CI_GREEN);
   assert.equal(validateReruns(calls).length, 0, 'Validate tests:error の run は test#validate-rerun を呼ばない');
+});
+
+// (h) Validate の最後の全件実行の落ちたファイル・diff の一覧・base 再実行の結果が validate_test_red の行に届き、
+// diff が触れたか base では同じように落ちなかったファイルがあるときだけ「修正が必要」になる（issue #1248）
+const validateTriageRun = (failedFiles, baseResults, diffLines = ['src/x.ts', 'src/y.ts', 'src/z.ts']) => {
+  const red = { tests: 'failed', green: false, summary: 'red', failed_files: failedFiles };
+  const o = { 'test#validate-rerun': { tests: 'failed', green: false, summary: 'still red', failed_files: failedFiles } };
+  for (const i of [1, 2, 3]) {
+    o[`test#${i}`] = red;
+    o[`validate-diff#${i}`] = { ok: true, lines: diffLines };
+    o[`base-rerun#${i}`] = { results: baseResults };
+  }
+  return run(o);
+};
+
+test('[summary-test-cell] (h) 証拠あり: diff が触れたテスト対象のソース・base 再実行で base では同じように落ちなかったファイルを validate_test_red の行に数え、「修正が必要」・結論行は修正作業が必要', async () => {
+  const { result, body, conclusion } = await validateTriageRun(
+    ['src/x.test.ts', 'tests/other.bats', 'tests/base.bats', 'tests/unrun.bats'],
+    [
+      { file: 'tests/other.bats', ran: true, base_failed: false, same_failure: false, summary: 'base では pass' },
+      { file: 'tests/base.bats', ran: true, base_failed: true, same_failure: true, summary: 'same' },
+      { file: 'tests/unrun.bats', ran: false, base_failed: false, same_failure: false, summary: 'D に無い' },
+    ],
+  );
+  // src/x.test.ts は diff の src/x.ts のテスト（isTestSubjectOf）。tests/other.bats は前の回の base 再実行の結果を引き継ぐ
+  assert.ok(body.includes(`${VALIDATE_RED_CURRENT} — 落ちたテストファイル 4 件: diff が触れた 1 件・base 再実行で base では同じように落ちなかった 1 件・`
+    + 'base でも同じように落ちた 1 件・base で確かめていない 1 件（落ちたファイル: `src/x.test.ts`, `tests/other.bats`, `tests/base.bats`, `tests/unrun.bats`） | 修正が必要（落ちたテストを直して push する） |'), body);
+  assert.equal(conclusion, '**結論: 自動マージ対象外（HOLD）。修正作業が必要です（助言 1 件は任意）。**'); // 助言は green-fix のテスト弱体化監査
+  assert.equal(result?.merge_tier, 'HOLD', tierFacts(result));
+  assert.equal(holdOf(result, 'validate_test_red').map((r) => r.kind).join(','), 'human_judgment', tierFacts(result));
+});
+
+test('[summary-test-cell] (h) 証拠なし: diff が触れず base でも同じように落ちるか base で確かめていないファイルだけの red は原因未確定・結論行は人の確認が必要', async () => {
+  const { result, body, conclusion } = await validateTriageRun(
+    ['tests/base.bats', 'tests/unrun.bats'],
+    [
+      { file: 'tests/base.bats', ran: true, base_failed: true, same_failure: true, summary: 'same' },
+      { file: 'tests/unrun.bats', ran: false, base_failed: false, same_failure: false, summary: '起動失敗' },
+    ],
+  );
+  assert.ok(body.includes(`${VALIDATE_RED_CURRENT} — 落ちたテストファイル 2 件: diff が触れた 0 件・base 再実行で base では同じように落ちなかった 0 件・`
+    + `base でも同じように落ちた 1 件・base で確かめていない 1 件（落ちたファイル: \`tests/base.bats\`, \`tests/unrun.bats\`） | ${RED_UNKNOWN} |`), body);
+  assert.equal(conclusion, '**結論: 自動マージ対象外（HOLD）。原因未確定の失敗があり、人の確認が必要です（助言 1 件は任意）。**'); // 助言は green-fix のテスト弱体化監査
+  assert.equal(result?.merge_tier, 'HOLD', tierFacts(result));
+  assert.equal(holdOf(result, 'validate_test_red').map((r) => r.kind).join(','), 'human_judgment', tierFacts(result));
 });
 
 test('[summary-test-cell] (d) dev-flow SKILL.md に返り値 validate_tests の読み方が載っている', () => {

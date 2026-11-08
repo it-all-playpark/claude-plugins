@@ -912,7 +912,7 @@ function classifyMergeTier(s) {
   }
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
   if (validateRed) {
-    pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
+    pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後もテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   }
   if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'error') {
     const depsPart = s.setupDeps?.ok === false
@@ -2405,6 +2405,16 @@ function failedFilesNote(files) {
   const rest = list.length - HOLD_FAILED_FILES_MAX;
   return `（落ちたファイル: ${shown}${rest > 0 ? ` ほか ${rest} 件` : ''}）`;
 }
+const TEST_RED_UNKNOWN_ACTION = '原因未確定 — 人が確認して判断する';
+function testRedFacts(ev, withBase) {
+  const [failed, touched, differs, same] = ['failedFiles', 'diffTouched', 'baseDiffers', 'baseSame'].map((k) => (Array.isArray(ev?.[k]) ? ev[k].length : 0));
+  if (!failed) return { note: ' — 落ちたテストファイルを特定できなかった（failed_files が空）', evidence: false };
+  const parts = [ev.diffTouched ? `diff が触れた ${touched} 件` : 'diff との照合なし（一覧の取得失敗）', ...(withBase
+    ? [`base 再実行で base では同じように落ちなかった ${differs} 件`, `base でも同じように落ちた ${same} 件`, `base で確かめていない ${failed - touched - differs - same} 件`]
+    : ['base との比較はしていない'])];
+  return { note: ` — 落ちたテストファイル ${failed} 件: ${parts.join('・')}${failedFilesNote(ev.failedFiles)}`, evidence: touched + (withBase ? differs : 0) > 0 };
+}
+const testRedRow = (current, f, fixAction) => ({ current: current + f.note, action: f.evidence ? fixAction : TEST_RED_UNKNOWN_ACTION });
 
 function resolvedCell(v) {
   if (v == null) return '';
@@ -2437,8 +2447,8 @@ function buildDevflowSummaryBody({
   finalReconcile,
   finalTestGreen,
   finalTestFlaky,
-  finalTestFailedFiles,
-  validateTestFailedFiles,
+  finalTestEvidence,
+  validateTestEvidence,
   finalAcReconcile,
   liteReview,
   iterateStatus,
@@ -2603,14 +2613,17 @@ function buildDevflowSummaryBody({
 
   const uncleared = securityClearance.filter(sc => sc.cleared !== true);
 
-  const FIX_REQUIRED_HOLD_CODES = ['mergeable_conflicting', 'final_test_red', 'validate_test_red', 'iterate_non_lgtm', 'pr_closes_missing', 'ci_checks_failed'];
   const testsurfUncleared = testsurfClearance.some(tc => !tc.cleared);
-  const fixRequiredHold = Array.isArray(holdReasons) && holdReasons.some(hr => FIX_REQUIRED_HOLD_CODES.includes(hr && hr.code));
+  const holdCodeAll = new Set((holdReasons || []).map((hr) => hr && hr.code));
+  const redFacts = { validate_test_red: testRedFacts(validateTestEvidence, true), final_test_red: testRedFacts(finalTestEvidence, false) };
+  const redCodes = Object.keys(redFacts).filter((c) => holdCodeAll.has(c));
+  const fixRequiredHold = ['mergeable_conflicting', 'iterate_non_lgtm', 'pr_closes_missing'].some((c) => holdCodeAll.has(c))
+    || redCodes.some((c) => redFacts[c].evidence);
+  const causeUnknownHold = holdCodeAll.has('ci_checks_failed') || redCodes.some((c) => !redFacts[c].evidence);
   const fixRequired = uncheckedBlocking.length > 0
     || fixableUnsatisfiedAC.length > 0
     || uncleared.length > 0
     || testsurfUncleared
-    || finalTestGreen === false
     || (iterateStatus != null && iterateStatus !== 'lgtm')
     || fixRequiredHold;
 
@@ -2619,7 +2632,8 @@ function buildDevflowSummaryBody({
     || unsatisfiedAC.length > 0
     || uncleared.length > 0
     || testsurfUncleared
-    || fixRequiredHold;
+    || fixRequiredHold
+    || causeUnknownHold;
 
   const lines = [];
 
@@ -2631,8 +2645,10 @@ function buildDevflowSummaryBody({
   const tierPhrase = mergeTier === 'HOLD' ? '自動マージ対象外（HOLD）' : '人間レビュー後にマージ（REVIEW）';
 
   let fixPhrase;
-  if (fixRequired) fixPhrase = unresolvedAdvisory.length > 0 ? `修正作業が必要です（助言 ${unresolvedAdvisory.length} 件は任意）` : '修正作業が必要です';
-  else if (unresolvedAdvisory.length > 0) fixPhrase = `必須の修正作業はありません（助言 ${unresolvedAdvisory.length} 件は任意）`;
+  const adv = unresolvedAdvisory.length > 0 ? `（助言 ${unresolvedAdvisory.length} 件は任意）` : '';
+  if (fixRequired) fixPhrase = `修正作業が必要です${adv}`;
+  else if (causeUnknownHold) fixPhrase = `原因未確定の失敗があり、人の確認が必要です${adv}`;
+  else if (adv) fixPhrase = `必須の修正作業はありません${adv}`;
   else fixPhrase = '修正作業は不要です';
 
   const baseFailing = Array.isArray(baseFailingTests) ? baseFailingTests.filter((f) => typeof f === 'string' && f.length > 0) : [];
@@ -2840,8 +2856,7 @@ function buildDevflowSummaryBody({
         ciVerify,
         conflictAutoresolve,
         securityReview,
-        finalTestFailedFiles,
-        validateTestFailedFiles,
+        redFacts,
       });
       lines.push(`| ${mdCell(hr && hr.reason)} | ${current} | ${action} |`);
     }
@@ -3249,9 +3264,9 @@ function holdReasonDisplay(code, ctx) {
     case 'final_reconcile_unavailable':
       return { current: '最終 tree のテスト状態が未確認', action: '最終 tree でテストを手動実行する' };
     case 'final_test_red':
-      return { current: `fix 後の最終 tree でテスト失敗${failedFilesNote(ctx.finalTestFailedFiles)}`, action: '修正が必要' };
+      return testRedRow('fix 後の最終 tree でテスト失敗', ctx.redFacts[code], '修正が必要');
     case 'validate_test_red':
-      return { current: `Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）${failedFilesNote(ctx.validateTestFailedFiles)}`, action: '修正が必要（落ちたテストを直して push する）' };
+      return testRedRow('Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', ctx.redFacts[code], '修正が必要（落ちたテストを直して push する）');
     case 'validate_tests_not_run':
       return { current: 'テストが 1 件も実行されていない（ローカルは起動失敗）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
     case 'final_ac_unavailable':
@@ -3271,8 +3286,8 @@ function holdReasonDisplay(code, ctx) {
       };
     case 'ci_checks_failed':
       return {
-        current: 'PR head の CI checks が失敗（fail / cancel）',
-        action: `\`gh pr checks ${ctx.pr}\` で失敗した check を確認し、修正して push する`,
+        current: 'PR head の CI checks が失敗（fail / cancel）— 原因は run で未確認',
+        action: `\`gh pr checks ${ctx.pr}\` で失敗した check を確認し、diff が原因か判断する`,
       };
     case 'security_review_unresolved': {
       const s = ctx.securityReview;
@@ -6200,18 +6215,21 @@ function baseRerunPrompt(files) {
 // tests:'failed' の失敗を diff・base 再実行と突き合わせ、既存の失敗（ENV）と green-fix の対象に分ける。
 // baseFailing は run 内で共有する { env, ran }（ENV と判定済みのファイル / base 再実行済みで ENV でなかったファイル）。
 // failed_files の欠落・diff 一覧の取得失敗・base 再実行の失敗はいずれも「ENV なし」に倒す（green 要件を緩めない）。
+// evidence は終端サマリーの validateTestEvidence。
 async function triageBaseFailures(v, baseFailing, iterLabel, phaseName) {
   const failed = normalizeTestPaths(v.failed_files)
-  if (!failed.length) return { env: [], code: [] }
+  const evidence = { failedFiles: failed, diffTouched: null }
+  if (!failed.length) return { env: [], code: [], evidence }
   const diff = await failOpenAgent(validateDiffFilesPrompt(),
     { agentType: 'dev-runner-haiku-ro', schema: TREE_DIFF_LINES, label: `validate-diff#${iterLabel}`, phase: phaseName, retryOnContractViolation: true })
   if (diff?.ok !== true || !Array.isArray(diff.lines)) {
     log(`⚠️ ${phaseName}: diff のファイル一覧を取得できず（${diff?.error ?? 'null / schema 不一致'}）— base 再実行をせず失敗はすべて green-fix の対象にする`)
-    return { env: [], code: failed }
+    return { env: [], code: failed, evidence }
   }
   const plan = planBaseRerun({ failedFiles: failed, diffFiles: diff.lines, knownEnv: baseFailing.env, knownBaseRan: baseFailing.ran })
   let env = plan.env
   const code = [...plan.touched, ...plan.code]
+  const baseDiffers = [...plan.code]
   if (plan.rerun.length) {
     const br = await failOpenAgent(baseRerunPrompt(plan.rerun),
       { agentType: 'dev-runner-haiku', schema: BASE_RERUN, label: `base-rerun#${iterLabel}`, phase: phaseName })
@@ -6220,12 +6238,13 @@ async function triageBaseFailures(v, baseFailing, iterLabel, phaseName) {
     env = [...env, ...cls.env]
     code.push(...cls.code)
     for (const f of cls.ran) if (!cls.env.includes(f) && !baseFailing.ran.includes(f)) baseFailing.ran.push(f)
+    baseDiffers.push(...cls.ran.filter((f) => !cls.env.includes(f)))
   }
   // diff が触るようになったファイルは既存の失敗から外す（diff と無関係ではなくなった）
   baseFailing.env = baseFailing.env.filter((f) => !plan.touched.includes(f))
   for (const f of env) if (!baseFailing.env.includes(f)) baseFailing.env.push(f)
   log(`${phaseName}: 失敗したテストファイル ${failed.length} 件 — diff が触った ${plan.touched.length} / ${BASE_FAILING_LABEL} ${env.length} / green-fix の対象 ${code.length}`)
-  return { env, code }
+  return { env, code, evidence: { failedFiles: failed, diffTouched: plan.touched, baseDiffers, baseSame: env } }
 }
 
 async function runValidateLoop(kind, { concerns, greenFixIterations, phaseName, baseFailing }) {
@@ -6272,6 +6291,7 @@ async function runValidateLoop(kind, { concerns, greenFixIterations, phaseName, 
     let envNote = ''
     if (v.tests === 'failed') {
       const tri = await triageBaseFailures(v, baseFailing, iterLabel, phaseName)
+      v = { ...v, red_evidence: tri.evidence }
       if (tri.env.length && !tri.code.length) {
         if (!hookFail) {
           log(`${phaseName}: 失敗はすべて diff と無関係で base でも同じように落ちる ${BASE_FAILING_LABEL}（${tri.env.join(', ')}）— ENV 項目として green 要件から外し green-fix を起動しない`)
@@ -7745,9 +7765,8 @@ let finalTestGreen = null        // true|false|null（null = 未実行/no_tests/
 // final_test_red / validate_test_red の HOLD は変えない（単体再実行の green は PR が書いたテストの出力 — 全件実行の
 // ときだけ落ちるテストを書けば決定的な失敗でも green になる）。null = 再実行していない / 再実行も red
 let finalTestFlaky = null
-// test#final が tests:'failed' を返したときの failed_files（normalizeTestPaths 済み）。final_test_red の HOLD 理由の行に
-// ファイル名を出すだけに使う。全件実行の結果だけを持ち、test#final-rerun の結果では増減させない
-let finalTestFailedFiles = []
+// test#final red の failed_files と diff の突き合わせ（終端サマリー用。rerun では変えない）
+let finalTestEvidence = null
 // test#final が green か no_tests のときの返り値。final-ac-reconcile は同期後の同じ tree を判定するので、tests / green と
 // 各 script のログパスを渡して実行済みのテストファイルを再実行させない。red（flake を含む）・error・未実行は null
 // （1 回目のログに AC の根拠が揃っていない — evaluator は AC に関係するテストファイルを実行する）
@@ -7805,7 +7824,7 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
       finalReconcile = 'reverified'
       finalTestGreen = ft.tests === 'no_tests' ? null : ft.green === true
       if (ft.tests === 'no_tests' || (ft.tests === 'passed' && ft.green === true)) finalTestForEval = ft
-      if (ft.tests === 'failed') finalTestFailedFiles = normalizeTestPaths(ft.failed_files)
+      if (finalTestGreen === false) finalTestEvidence = { failedFiles: normalizeTestPaths(ft.failed_files), diffTouched: null }
       log(`Final reconcile: test#final tests=${ft.tests} green=${ft.green}`)
       // Step2b 落ちたファイルだけを 1 回流し直し、green なら flake 候補として開示する（final_test_red は外さない）。
       // 全件は流し直さない（並列負荷の flake は全件で再発する）。failed_files が空・安全に渡せないパスを含む red は再実行しない。
@@ -7830,6 +7849,7 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
       // Merge tier へ持ち越す。ephemeral 除去前の raw を渡す — Merge tier の
       // changed-files は元々 filter せず raw を使うため、加工すると挙動が変わる。
       changedFilesFinal = changedFinal.files
+      if (finalTestEvidence) finalTestEvidence.diffTouched = planBaseRerun({ failedFiles: finalTestEvidence.failedFiles, diffFiles: changedFinal.files }).touched
       const filesFinal = filterEphemeralPaths(changedFinal.files)
       // Step4 宣言外パス再監査（advisory）: Diff triage 時点の undeclared に無い新規分のみ集約 1 item
       const planAllTasksF = state.plan.serial ?? []
@@ -8353,9 +8373,8 @@ const summaryBody = buildDevflowSummaryBody({
   finalReconcile,
   finalTestGreen,
   finalTestFlaky,
-  finalTestFailedFiles,
-  // skip の run の validate_test_red の行に出す Validate の全件実行の failed_files（test#validate-rerun の結果では増減させない）
-  validateTestFailedFiles: state.val?.tests === 'failed' ? normalizeTestPaths(state.val.failed_files) : [],
+  finalTestEvidence,
+  validateTestEvidence: state.val?.tests === 'failed' ? state.val.red_evidence : null,
   finalAcReconcile,
   liteReview: state.liteReview ?? null,
   holdReasons: mergeTier.holdReasons,

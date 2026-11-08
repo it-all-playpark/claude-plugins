@@ -226,8 +226,8 @@ export function classifyMergeableState(meta) {
 // s.validateResult (optional { tests: 'passed'|'failed'|'no_tests'|'error', green: boolean }): Validate の最新の
 //   test 結果（workflow の state.val。issue #1086）。finalReconcile === 'skipped'（fixes_applied=0 で最終 tree を
 //   再検証していない）かつ tests:'failed' + green:false のとき 'validate_test_red'（human_judgment）で HOLD —
-//   GREEN_MAX 到達で red のまま PR へ進んだ run で、この Validate の結果が PR tree のテスト状態そのもの
-//   （base でも落ちる既存失敗は Validate が green:true にして抜けるので、ここに来る red は diff 起因）。
+//   GREEN_MAX 到達で red のまま PR へ進んだ run で、この Validate の結果が PR tree のテスト状態そのもの。
+//   red の原因は未確定（failed_files が空・diff 一覧の取得失敗・base 再実行の失敗では base との切り分けが済まないまま残る）。
 //   tests:'error'（起動失敗 = テストが 1 件も実行されていない）は常に 'validate_tests_not_run'（human_judgment）で
 //   HOLD — テストを 1 件も確かめないまま REVIEW にしない（PR の CI の success では代替しない）。finalReconcile が
 //   skipped 以外のときは最終 tree の判定（final_test_red / final_reconcile_unavailable）が持つので見ない。
@@ -413,7 +413,7 @@ export function classifyMergeTier(s) {
   }
   if (s.finalTestGreen === false) pushBlocking('final_test_red', 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）', 'human_judgment');
   if (validateRed) {
-    pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
+    pushBlocking('validate_test_red', 'Validate test red（green-fix の上限後もテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   }
   if (s.finalReconcile === 'skipped' && s.validateResult?.tests === 'error') {
     const depsPart = s.setupDeps?.ok === false

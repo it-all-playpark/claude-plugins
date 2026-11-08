@@ -33,6 +33,8 @@
 //       red に flake 候補を添える（issue #1138）
 //   (o) 単体再実行も red / null / throw / error → final_test_flaky を記録せず final_test_red で HOLD（issue #865）
 //   (p) failed_files が空・欠落・安全に渡せないパスの red → 再実行せず final_test_red で HOLD（issue #865）
+//   (q) test#final の落ちたファイルと changed-files-final の突き合わせが final_test_red の行の件数と対応列に届く
+//       （diff が触れた → 修正が必要 / 触れない・取れない → 原因未確定。issue #1248）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -367,6 +369,12 @@ const FLAKY_FIRST = {
   failed_files: ['plugins/dev-flow/_shared/scripts/diff-risk-classify.bats'],
 };
 
+const FINAL_RED_CUR = 'fix 後の最終 tree でテスト失敗';
+const RED_UNKNOWN = '原因未確定 — 人が確認して判断する';
+// FLAKY_FIRST の 1 ファイルが落ちた final_test_red の行の「現状」（touched: 最終 diff が触れた件数）
+const finalRedNote = (touched) => `${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff が触れた ${touched} 件・base との比較はしていない`
+  + `（落ちたファイル: \`${FLAKY_FIRST.failed_files[0]}\`）`;
+
 function summaryBodyOf(calls) {
   const post = calls.find((c) => c.label === 'post-summary');
   assert.ok(post, "'post-summary' が呼ばれるはず");
@@ -426,9 +434,9 @@ test("[final-reconcile] (n) test#final red + failed_files の単体再実行 gre
   assert.equal(glance.split('|').slice(1, -1).map((s) => s.trim())[2], '❌ red（単体再実行は green — flake 候補）');
   assert.ok(body.includes('test flake 候補（単体再実行は green）: plugins/dev-flow/_shared/scripts/diff-risk-classify.bats'), '(n) 参考に flake 候補の開示行（ファイル）が出る');
   assert.ok(body.includes('HOLD は解除しない（final_test_red のまま'), '(n) 開示行に HOLD を解除しない旨が出る');
-  assert.ok(body.includes('修正が必要'), '(n) final_test_red の HOLD は「修正が必要」のまま');
-  // HOLD 理由の行の「現状」に test#final の failed_files が出る（単体再実行の green で消さない。issue #1181）
-  assert.ok(body.includes('| fix 後の最終 tree でテスト失敗（落ちたファイル: `plugins/dev-flow/_shared/scripts/diff-risk-classify.bats`） | 修正が必要 |'), body);
+  // HOLD 理由の行の「現状」に test#final の failed_files が出る（単体再実行の green で消さない。issue #1181）。
+  // changed-files-final の既定応答（files 空）は落ちたファイルに触れず、単体再実行の green も証拠にしないので原因未確定（issue #1248）
+  assert.ok(body.includes(`| ${finalRedNote(0)} | ${RED_UNKNOWN} |`), body);
 
   // telemetry: flake 候補の run だけ final_test_flaky を載せる
   const handoff = calls.find((c) => c.label === 'journal-log');
@@ -461,16 +469,17 @@ test("[final-reconcile] (o) 単体再実行でも red / 応答なし / throw →
     assert.equal(result?.final_test_flaky, null, `(o-${name}) final_test_flaky は null のはず`);
     assert.equal(result?.merge_tier, 'HOLD', `(o-${name}) merge_tier は HOLD のはず`);
     assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'final_test_red'), `(o-${name}) ${JSON.stringify(result?.merge_tier_hold_reasons)}`);
-    assert.ok(summaryBodyOf(calls).includes('| fix 後の最終 tree でテスト失敗（落ちたファイル: `plugins/dev-flow/_shared/scripts/diff-risk-classify.bats`） | 修正が必要 |'), `(o-${name}) ${summaryBodyOf(calls)}`);
+    assert.ok(summaryBodyOf(calls).includes(`| ${finalRedNote(0)} | ${RED_UNKNOWN} |`), `(o-${name}) ${summaryBodyOf(calls)}`);
   }
 });
 
 test("[final-reconcile] (p) failed_files が空（ビルド失敗・結び付かない失敗）/ 安全に渡せないパスの red は再実行せず final_test_red で HOLD", async () => {
-  // HOLD 理由の行: 空・欠落は従来の文言のまま、安全に渡せないパスも再実行の可否に依らず ./ を外して出す（issue #1181）
+  // HOLD 理由の行: 空・欠落は落ちたファイルを特定できなかったと書き、安全に渡せないパスも再実行の可否に依らず ./ を外して出す
+  // （issue #1181）。どれも diff が触れたファイルが無いので原因未確定（issue #1248）
   const currents = {
-    empty: '| fix 後の最終 tree でテスト失敗 | 修正が必要 |',
-    missing: '| fix 後の最終 tree でテスト失敗 | 修正が必要 |',
-    unsafe: '| fix 後の最終 tree でテスト失敗（落ちたファイル: `a.bats`, `b c.bats`） | 修正が必要 |',
+    empty: `| ${FINAL_RED_CUR} — 落ちたテストファイルを特定できなかった（failed_files が空） | ${RED_UNKNOWN} |`,
+    missing: `| ${FINAL_RED_CUR} — 落ちたテストファイルを特定できなかった（failed_files が空） | ${RED_UNKNOWN} |`,
+    unsafe: `| ${FINAL_RED_CUR} — 落ちたテストファイル 2 件: diff が触れた 0 件・base との比較はしていない（落ちたファイル: \`a.bats\`, \`b c.bats\`） | ${RED_UNKNOWN} |`,
   };
   for (const [name, failed_files] of Object.entries({ empty: [], missing: undefined, unsafe: ['./a.bats', 'b c.bats', 'a.bats'] })) {
     const first = { tests: 'failed', green: false, summary: 'workspace build failed', ...(failed_files ? { failed_files } : {}) };
@@ -483,5 +492,40 @@ test("[final-reconcile] (p) failed_files が空（ビルド失敗・結び付か
     assert.equal(result?.merge_tier, 'HOLD');
     assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'final_test_red'), `(p-${name}) ${JSON.stringify(result?.merge_tier_hold_reasons)}`);
     assert.ok(summaryBodyOf(calls).includes(currents[name]), `(p-${name}) ${summaryBodyOf(calls)}`);
+  }
+});
+
+// ============================================================
+// (q) test#final の落ちたファイルと changed-files-final（最終 diff）の突き合わせが final_test_red の行に届き、
+//     diff が触れたファイルがあるときだけ「修正が必要」になる（issue #1248）
+// ============================================================
+
+test('[final-reconcile] (q) 証拠あり / なし: 最終 diff が落ちたテストのテスト対象のソースに触れたら「修正が必要」、触れない・取れないなら原因未確定', async () => {
+  const variants = {
+    // diff-risk-classify.sh は diff-risk-classify.bats のテスト対象（isTestSubjectOf）
+    touched: { changed: { files: ['plugins/dev-flow/_shared/scripts/diff-risk-classify.sh'] }, row: `| ${finalRedNote(1)} | 修正が必要 |`, conclusion: '修正作業が必要です' },
+    untouched: { changed: { files: ['src/x.ts'] }, row: `| ${finalRedNote(0)} | ${RED_UNKNOWN} |`, conclusion: '原因未確定の失敗があり、人の確認が必要です' },
+    noDiff: {
+      changed: null,
+      row: `| ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff との照合なし（一覧の取得失敗）・base との比較はしていない（落ちたファイル: \`${FLAKY_FIRST.failed_files[0]}\`） | ${RED_UNKNOWN} |`,
+      conclusion: '原因未確定の失敗があり、人の確認が必要です',
+    },
+  };
+  for (const [name, { changed, row, conclusion }] of Object.entries(variants)) {
+    const { ctx, calls } = makeSandbox({
+      fixesApplied: 1,
+      overrides: {
+        'test#final': FLAKY_FIRST,
+        'test#final-rerun': { tests: 'failed', green: false, summary: 'still red', failed_files: FLAKY_FIRST.failed_files },
+        'changed-files-final': changed,
+      },
+    });
+    const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
+    assertNoCrash(error, `q-${name}`);
+    const body = summaryBodyOf(calls);
+    assert.ok(body.includes(row), `(q-${name}) ${body}`);
+    assert.ok(body.split('\n').find((l) => l.startsWith('**結論: ')).includes(`。${conclusion}`), `(q-${name}) ${body}`);
+    assert.equal(result?.merge_tier, 'HOLD', `(q-${name})`);
+    assert.equal((result?.merge_tier_hold_reasons ?? []).map((r) => `${r.code}:${r.kind}`).join(','), 'final_test_red:human_judgment', `(q-${name})`);
   }
 });

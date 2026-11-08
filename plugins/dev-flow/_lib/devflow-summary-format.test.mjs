@@ -2355,82 +2355,146 @@ test('issue #661: pr_closes_missing 単独 HOLD で現状/対応表示と gh pr 
   assert.ok(!body.includes('修正作業は不要'), '結論行は「修正作業は不要」ではない');
 });
 
-test('issue #834: ci_checks_failed 単独 HOLD で現状/対応に CI 失敗と gh pr checks の確認手順が出る（結論行は修正作業が必要）', () => {
-  const body = buildDevflowSummaryBody({
-    ...BASE_INPUT,
-    mergeTier: 'HOLD',
-    mergeTierReasons: ['CI checks 失敗（Bats Tests）'],
-    holdReasons: [{ code: 'ci_checks_failed', reason: 'CI checks 失敗（Bats Tests）', kind: 'human_judgment' }],
-    holdKind: 'human_judgment',
-  });
-  assert.ok(body.includes('| CI checks 失敗（Bats Tests） | PR head の CI checks が失敗（fail / cancel） | `gh pr checks 42` で失敗した check を確認し、修正して push する |'), body);
-  assert.ok(body.includes('修正作業が必要です'), '結論行は修正作業が必要');
+// ─── テスト / CI の red による HOLD は run が確かめた事実だけを書く（issue #1181 / #1248） ───────────
+
+const CI_FAILED_REASON = 'CI checks 失敗（Bats Tests）';
+const FINAL_RED_REASON = 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）';
+const VALIDATE_RED_REASON = 'Validate test red（green-fix の上限後もテスト失敗が残ったまま PR へ進行）';
+const FINAL_RED_CUR = 'fix 後の最終 tree でテスト失敗';
+const VALIDATE_RED_CUR = 'Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）';
+const VALIDATE_RED_FIX = '修正が必要（落ちたテストを直して push する）';
+const RED_UNKNOWN = '原因未確定 — 人が確認して判断する';
+const CAUSE_UNKNOWN_CONCLUSION = '**結論: 自動マージ対象外（HOLD）。原因未確定の失敗があり、人の確認が必要です。**';
+const NOT_IDENTIFIED = ' — 落ちたテストファイルを特定できなかった（failed_files が空）';
+const HOLD_1248 = {
+  validate_test_red: VALIDATE_RED_REASON,
+  final_test_red: FINAL_RED_REASON,
+  ci_checks_failed: CI_FAILED_REASON,
+  mergeable_conflicting: 'base branch と conflict',
+  iterate_non_lgtm: 'pr-iterate が LGTM 以外で終端',
+};
+const holdBody1248 = (codes, extra = {}) => buildDevflowSummaryBody({
+  ...BASE_INPUT,
+  mergeTier: 'HOLD',
+  mergeTierReasons: codes.map((c) => HOLD_1248[c]),
+  holdReasons: codes.map((code) => ({ code, reason: HOLD_1248[code], kind: 'human_judgment' })),
+  holdKind: 'human_judgment',
+  ...extra,
+});
+const holdRow1248 = (body, code) => body.split('\n').find((l) => l.startsWith(`| ${HOLD_1248[code]} |`));
+const fileList1248 = (files) => files.map((f) => `\`${f}\``).join(', ');
+
+test('issue #1248 AC-1 / AC-4: validate_test_red の現状に落ちたファイル数・diff が触れた数・base では同じように落ちなかった数・base で確かめていない数が出て、どちらかの証拠があるときだけ「修正が必要」', () => {
+  const files = ['p/_lib/a.test.mjs', 'p/b.bats', 'p/c.bats', 'p/d.bats', 'p/e.bats'];
+  const row = (validateTestEvidence) => holdRow1248(holdBody1248(['validate_test_red'], { validateTestEvidence }), 'validate_test_red');
+  assert.equal(
+    row({ failedFiles: files, diffTouched: ['p/_lib/a.test.mjs'], baseDiffers: ['p/b.bats'], baseSame: ['p/c.bats'] }),
+    `| ${VALIDATE_RED_REASON} | ${VALIDATE_RED_CUR} — 落ちたテストファイル 5 件: diff が触れた 1 件・base 再実行で base では同じように落ちなかった 1 件・`
+      + `base でも同じように落ちた 1 件・base で確かめていない 2 件（落ちたファイル: ${fileList1248(files)}） | ${VALIDATE_RED_FIX} |`,
+  );
+  // 証拠はどちらか 1 つで足りる
+  assert.ok(row({ failedFiles: files, diffTouched: ['p/_lib/a.test.mjs'], baseDiffers: [], baseSame: [] }).endsWith(`| ${VALIDATE_RED_FIX} |`));
+  const differsOnly = row({ failedFiles: files, diffTouched: [], baseDiffers: ['p/b.bats'], baseSame: [] });
+  assert.ok(differsOnly.includes('diff が触れた 0 件・base 再実行で base では同じように落ちなかった 1 件・base でも同じように落ちた 0 件・base で確かめていない 4 件'), differsOnly);
+  assert.ok(differsOnly.endsWith(`| ${VALIDATE_RED_FIX} |`), differsOnly);
+  // diff が触れず base では同じように落ちなかったものも無い red は原因未確定
+  const none = row({ failedFiles: files, diffTouched: [], baseDiffers: [], baseSame: ['p/c.bats'] });
+  assert.ok(none.includes('diff が触れた 0 件・base 再実行で base では同じように落ちなかった 0 件・base でも同じように落ちた 1 件・base で確かめていない 4 件'), none);
+  assert.ok(none.endsWith(`| ${RED_UNKNOWN} |`), none);
+  // diff 一覧を取れなかった run は照合なしと書き、証拠に数えない
+  const noDiff = row({ failedFiles: files, diffTouched: null, baseDiffers: [], baseSame: [] });
+  assert.ok(noDiff.includes(' — 落ちたテストファイル 5 件: diff との照合なし（一覧の取得失敗）・base 再実行で base では同じように落ちなかった 0 件・base でも同じように落ちた 0 件・base で確かめていない 5 件'), noDiff);
+  assert.ok(noDiff.endsWith(`| ${RED_UNKNOWN} |`), noDiff);
 });
 
-test('issue #1086: validate_test_red 単独 HOLD は final_test_red と同じく修正が必要な HOLD で、現状/対応に Validate red の説明と対処が出る', () => {
-  const REASON = 'Validate test red（green-fix の上限後も diff 起因のテスト失敗が残ったまま PR へ進行）';
-  const body = buildDevflowSummaryBody({
-    ...BASE_INPUT,
-    mergeTier: 'HOLD',
-    mergeTierReasons: [REASON],
-    holdReasons: [{ code: 'validate_test_red', reason: REASON, kind: 'human_judgment' }],
-    holdKind: 'human_judgment',
-  });
-  assert.ok(body.includes(`| ${REASON} | Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし） | 修正が必要（落ちたテストを直して push する） |`), body);
-  assert.ok(body.includes('修正作業が必要です'), '結論行は修正作業が必要');
-  assert.ok(!body.includes('修正作業は不要'), '結論行は「修正作業は不要」ではない');
-});
-
-test('issue #1181: final_test_red / validate_test_red の現状に全件実行の落ちたファイルを mdCell で escape して先頭 20 件まで出し、残りは件数だけ・空なら従来の文言', () => {
-  const FINAL = 'final test red（pr-iterate fix 適用後の最終 tree でテスト失敗）';
-  const VALIDATE = 'Validate test red（diff 起因のテスト失敗が残ったまま PR へ進行）';
-  const rowOf = (code, reason, files) => buildDevflowSummaryBody({
-    ...BASE_INPUT,
-    mergeTier: 'HOLD',
-    mergeTierReasons: [reason],
-    holdReasons: [{ code, reason, kind: 'human_judgment' }],
-    holdKind: 'human_judgment',
-    finalTestFailedFiles: code === 'final_test_red' ? files : undefined,
-    validateTestFailedFiles: code === 'validate_test_red' ? files : undefined,
-  }).split('\n').find((l) => l.startsWith(`| ${reason} |`));
-  const FINAL_CUR = 'fix 後の最終 tree でテスト失敗';
-  const VALIDATE_CUR = 'Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）';
-  const VALIDATE_ACT = '修正が必要（落ちたテストを直して push する）';
-
+test('issue #1248 AC-2 / AC-4: final_test_red の現状に落ちたファイル数と diff が触れた数が出て base とは比べていないと書き、diff が触れたファイルがあるときだけ「修正が必要」', () => {
+  const row = (finalTestEvidence, extra = {}) => holdRow1248(holdBody1248(['final_test_red'], { finalTestEvidence, ...extra }), 'final_test_red');
   // ファイル名は mdCell で escape（| が表の列を壊さない）
   assert.equal(
-    rowOf('final_test_red', FINAL, ['tests/a.bats', 'x|y.test.mjs']),
-    `| ${FINAL} | ${FINAL_CUR}（落ちたファイル: \`tests/a.bats\`, \`x\\|y.test.mjs\`） | 修正が必要 |`,
+    row({ failedFiles: ['tests/a.bats', 'x|y.test.mjs'], diffTouched: ['tests/a.bats'] }),
+    `| ${FINAL_RED_REASON} | ${FINAL_RED_CUR} — 落ちたテストファイル 2 件: diff が触れた 1 件・base との比較はしていない（落ちたファイル: \`tests/a.bats\`, \`x\\|y.test.mjs\`） | 修正が必要 |`,
   );
   assert.equal(
-    rowOf('validate_test_red', VALIDATE, ['plugins/p/_lib/a.test.mjs']),
-    `| ${VALIDATE} | ${VALIDATE_CUR}（落ちたファイル: \`plugins/p/_lib/a.test.mjs\`） | ${VALIDATE_ACT} |`,
+    row({ failedFiles: ['tests/a.bats'], diffTouched: [] }),
+    `| ${FINAL_RED_REASON} | ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff が触れた 0 件・base との比較はしていない（落ちたファイル: \`tests/a.bats\`） | ${RED_UNKNOWN} |`,
   );
+  assert.equal(
+    row({ failedFiles: ['tests/a.bats'], diffTouched: null }),
+    `| ${FINAL_RED_REASON} | ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff との照合なし（一覧の取得失敗）・base との比較はしていない（落ちたファイル: \`tests/a.bats\`） | ${RED_UNKNOWN} |`,
+  );
+  // test#final は base と比べないので、baseDiffers が来ても証拠にしない。Validate の入力も使わない
+  assert.ok(row({ failedFiles: ['tests/a.bats'], diffTouched: [], baseDiffers: ['tests/a.bats'] }).endsWith(`| ${RED_UNKNOWN} |`));
+  assert.ok(row(null, { validateTestEvidence: { failedFiles: ['v.bats'], diffTouched: ['v.bats'], baseDiffers: [], baseSame: [] } }).endsWith(`| ${FINAL_RED_CUR}${NOT_IDENTIFIED} | ${RED_UNKNOWN} |`));
+});
 
-  // 空・取れない（undefined / null）は従来の文言のまま、ファイル名の欄を出さない
-  for (const files of [[], undefined, null]) {
-    assert.equal(rowOf('final_test_red', FINAL, files), `| ${FINAL} | ${FINAL_CUR} | 修正が必要 |`, JSON.stringify(files));
-    assert.equal(rowOf('validate_test_red', VALIDATE, files), `| ${VALIDATE} | ${VALIDATE_CUR} | ${VALIDATE_ACT} |`, JSON.stringify(files));
+test('issue #1248 AC-3: failed_files が空の red は「現状」に落ちたファイルを特定できなかったと書き、原因未確定にする', () => {
+  for (const ev of [{ failedFiles: [], diffTouched: [], baseDiffers: [], baseSame: [] }, { failedFiles: [], diffTouched: null }, null, undefined]) {
+    const v = holdRow1248(holdBody1248(['validate_test_red'], { validateTestEvidence: ev }), 'validate_test_red');
+    assert.equal(v, `| ${VALIDATE_RED_REASON} | ${VALIDATE_RED_CUR}${NOT_IDENTIFIED} | ${RED_UNKNOWN} |`, JSON.stringify(ev));
+    const f = holdRow1248(holdBody1248(['final_test_red'], { finalTestEvidence: ev }), 'final_test_red');
+    assert.equal(f, `| ${FINAL_RED_REASON} | ${FINAL_RED_CUR}${NOT_IDENTIFIED} | ${RED_UNKNOWN} |`, JSON.stringify(ev));
   }
+});
 
-  // 20 件までは全件、21 件以上は先頭 20 件 + 「ほか N 件」
+test('issue #1181: 落ちたファイル名は先頭 20 件まで、21 件以上は「ほか N 件」', () => {
   const many = (n) => Array.from({ length: n }, (_, i) => `t/f${i + 1}.bats`);
-  const listOf = (n) => many(n).map((f) => `\`${f}\``).join(', ');
-  assert.equal(rowOf('final_test_red', FINAL, many(20)), `| ${FINAL} | ${FINAL_CUR}（落ちたファイル: ${listOf(20)}） | 修正が必要 |`);
-  const row23 = rowOf('validate_test_red', VALIDATE, many(23));
-  assert.equal(row23, `| ${VALIDATE} | ${VALIDATE_CUR}（落ちたファイル: ${listOf(20)} ほか 3 件） | ${VALIDATE_ACT} |`);
+  const row20 = holdRow1248(holdBody1248(['final_test_red'], { finalTestEvidence: { failedFiles: many(20), diffTouched: [] } }), 'final_test_red');
+  assert.ok(row20.includes(`（落ちたファイル: ${fileList1248(many(20))}） |`), row20);
+  const row23 = holdRow1248(holdBody1248(['validate_test_red'], { validateTestEvidence: { failedFiles: many(23), diffTouched: [], baseDiffers: [], baseSame: [] } }), 'validate_test_red');
+  assert.ok(row23.includes(`落ちたテストファイル 23 件: `) && row23.includes(`（落ちたファイル: ${fileList1248(many(20))} ほか 3 件） |`), row23);
   assert.ok(!row23.includes('t/f21.bats'), '21 件目以降のファイル名は出さない');
+});
 
-  // 他方の code の入力は使わない（final_test_red の行に Validate の failed_files を出さない）
-  const crossed = buildDevflowSummaryBody({
-    ...BASE_INPUT,
-    mergeTier: 'HOLD',
-    mergeTierReasons: [FINAL],
-    holdReasons: [{ code: 'final_test_red', reason: FINAL, kind: 'human_judgment' }],
-    holdKind: 'human_judgment',
-    validateTestFailedFiles: ['v.bats'],
-  });
-  assert.ok(crossed.includes(`| ${FINAL} | ${FINAL_CUR} | 修正が必要 |`), crossed);
+test('issue #1248 AC-5: ci_checks_failed は失敗した check を確認して原因を判断する対応にし、修正 push を断定しない', () => {
+  const body = holdBody1248(['ci_checks_failed']);
+  assert.equal(
+    holdRow1248(body, 'ci_checks_failed'),
+    `| ${CI_FAILED_REASON} | PR head の CI checks が失敗（fail / cancel）— 原因は run で未確認 | \`gh pr checks 42\` で失敗した check を確認し、diff が原因か判断する |`,
+  );
+});
+
+test('issue #1248 AC-6: 修正の根拠が証拠の無い red と ci_checks_failed だけの run は、結論行を原因未確定・人の確認が必要にし、「あなたがやること」に修正 push を出さない', () => {
+  const noEvidenceValidate = { failedFiles: ['p/a.bats'], diffTouched: [], baseDiffers: [], baseSame: [] };
+  const noEvidenceFinal = { failedFiles: ['p/a.bats'], diffTouched: [] };
+  const cases = {
+    ci: [['ci_checks_failed'], {}],
+    validate: [['validate_test_red'], { validateTestEvidence: noEvidenceValidate }],
+    validateEmpty: [['validate_test_red'], { validateTestEvidence: { failedFiles: [], diffTouched: null, baseDiffers: [], baseSame: [] } }],
+    final: [['final_test_red'], { finalTestEvidence: noEvidenceFinal, finalReconcile: 'reverified', finalTestGreen: false }],
+    finalAndCi: [['final_test_red', 'ci_checks_failed'], { finalTestEvidence: noEvidenceFinal, finalReconcile: 'reverified', finalTestGreen: false }],
+  };
+  for (const [name, [codes, extra]] of Object.entries(cases)) {
+    const body = holdBody1248(codes, extra);
+    assert.equal(conclusionLine(body), CAUSE_UNKNOWN_CONCLUSION, `${name}: ${conclusionLine(body)}`);
+    const youDo = sectionOf(body, '### あなたがやること');
+    assert.ok(!youDo.includes('push'), `${name}: あなたがやることに push の指示を出さない: ${youDo}`);
+    assert.ok(youDo.includes('1. 下記「HOLD になった理由と現状」を確認し、対応列が「不要」以外の行を判断する'), `${name}: ${youDo}`);
+    assert.ok(body.includes('### ⚠️ 要対応'), `${name}: 人の確認が要る HOLD は要対応の見出しのまま`);
+  }
+  // 助言は従来どおり任意と添える
+  const withAdvisory = holdBody1248(['ci_checks_failed'], { advisoryItems: [{ id: 'A1', text: '命名', severity: 'minor', checked: false, dimension: 'quality' }] });
+  assert.equal(conclusionLine(withAdvisory), '**結論: 自動マージ対象外（HOLD）。原因未確定の失敗があり、人の確認が必要です（助言 1 件は任意）。**');
+});
+
+test('issue #1248 AC-6: 証拠のある red か、他の項目で修正が要る run の結論行は「修正作業が必要です」のまま', () => {
+  const evidenceValidate = { failedFiles: ['p/a.bats'], diffTouched: ['p/a.bats'], baseDiffers: [], baseSame: [] };
+  const noEvidenceValidate = { failedFiles: ['p/a.bats'], diffTouched: [], baseDiffers: [], baseSame: [] };
+  const cases = {
+    validateDiffTouched: [['validate_test_red'], { validateTestEvidence: evidenceValidate }],
+    validateBaseDiffers: [['validate_test_red'], { validateTestEvidence: { ...noEvidenceValidate, baseDiffers: ['p/a.bats'] } }],
+    finalDiffTouched: [['final_test_red'], { finalTestEvidence: { failedFiles: ['p/a.bats'], diffTouched: ['p/a.bats'] }, finalReconcile: 'reverified', finalTestGreen: false }],
+    ciWithConflict: [['ci_checks_failed', 'mergeable_conflicting'], {}],
+    redWithIterate: [['validate_test_red', 'iterate_non_lgtm'], { validateTestEvidence: noEvidenceValidate, iterateStatus: 'stuck' }],
+    redWithBlocking: [['validate_test_red'], { validateTestEvidence: noEvidenceValidate, blockingItems: [{ id: 'B1', text: 'null deref', severity: 'critical', checked: false, dimension: 'correctness' }] }],
+  };
+  for (const [name, [codes, extra]] of Object.entries(cases)) {
+    const body = holdBody1248(codes, extra);
+    assert.equal(conclusionLine(body), '**結論: 自動マージ対象外（HOLD）。修正作業が必要です。**', `${name}: ${conclusionLine(body)}`);
+    assert.ok(body.includes('1. 下記「要対応」の ❌ 項目を修正して push する'), `${name}: あなたがやることは今のまま`);
+  }
+  // 他の項目で修正が要る run でも、証拠の無い red の行は原因未確定のまま
+  const mixed = holdBody1248(['validate_test_red', 'iterate_non_lgtm'], { validateTestEvidence: noEvidenceValidate, iterateStatus: 'stuck' });
+  assert.ok(holdRow1248(mixed, 'validate_test_red').endsWith(`| ${RED_UNKNOWN} |`), mixed);
 });
 
 test('issue #1117 / #1168: validate_tests_not_run / final_reconcile_unavailable 単独 HOLD の現状・対応は人が確かめる 1 通り（CI 完了待ちで解消しうる扱いにしない）', () => {

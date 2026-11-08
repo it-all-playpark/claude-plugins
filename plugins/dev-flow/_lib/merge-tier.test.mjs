@@ -1381,7 +1381,8 @@ test('classifyMergeTier: finalReconcile skipped + Validate red（tests:failed / 
   assert.equal(r.tier, 'HOLD', JSON.stringify(r));
   assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['validate_test_red', 'human_judgment']]);
   assert.equal(r.holdKind, 'human_judgment');
-  assert.ok(r.reasons[0].startsWith('Validate test red'), r.reasons[0]);
+  // 理由列は red の原因を断定しない（base との切り分けが済まないまま残る red がある。issue #1248）
+  assert.equal(r.reasons[0], 'Validate test red（green-fix の上限後もテスト失敗が残ったまま PR へ進行。pr-iterate の fix が 0 件で Final reconcile は skip — PR tree のテスト状態は Validate の結果のまま）— 人間確認必須（gate_policy に依らず不変）');
   // 他の HOLD 理由と並んでも積まれる
   const both = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_RED, iterateStatus: 'stuck' }));
   assert.deepEqual(codesOf(both), ['validate_test_red', 'iterate_non_lgtm']);
