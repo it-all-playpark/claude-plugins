@@ -9,6 +9,8 @@ bats_require_minimum_version 1.5.0
 # untracked の intent-to-add（issue #833）は WT を git init した fixture で、git grep invariant の red と index の状態を見る。
 # 変更ファイルの受け渡し（issue #835）は、受け取った DEVFLOW_CHANGED_FILES / DEVFLOW_BASE を WT 外へ書き出す
 # probe ランナー（make_env_probe）で、値と一覧の中身・未設定の各経路を見る。
+# 落ちたテストファイルの受け取り（issue #1249）は、WT 外の list.in を DEVFLOW_FAILED_FILES へ写すランナー
+# （make_list_runner）を base に commit し、ランナーを書き換えずに一覧の中身だけを変えて各経路を見る。
 # テストは start → wait の公開の起動形だけで回す（切り離した supervisor が残るので start は fd 3 を閉じて呼ぶ）。
 # 切り離した実行の stderr は state dir の logs/command.log に残るので、run_tests はそれを $stderr に入れる。
 
@@ -586,17 +588,17 @@ git_commit() {
     [ "$(grep -c 'not set' <<< "$stderr")" -eq 1 ]
 }
 
-@test "--base: フォールバック経路（npm test）には変数を渡さない" {
+@test "--base: フォールバック経路（npm test）には変数を渡さない（DEVFLOW_FAILED_FILES も）" {
     echo '{"name":"x","scripts":{"test":"node t.js"}}' > "$WT/package.json"
     rmdir "$WT/tests"
     init_repo
     echo new > "$WT/added.txt"
-    printf '#!/usr/bin/env bash\nprintf "%%s\\n%%s\\n" "${DEVFLOW_CHANGED_FILES-unset}" "${DEVFLOW_BASE-unset}" > "%s/env.out"\nexit 0\n' "$TMP_DIR" > "$STUB_DIR/npm"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n%%s\\n%%s\\n" "${DEVFLOW_CHANGED_FILES-unset}" "${DEVFLOW_BASE-unset}" "${DEVFLOW_FAILED_FILES-unset}" > "%s/env.out"\nexit 0\n' "$TMP_DIR" > "$STUB_DIR/npm"
     chmod +x "$STUB_DIR/npm"
-    export PATH="$STUB_DIR:$PATH"
+    export PATH="$STUB_DIR:$PATH" DEVFLOW_FAILED_FILES="$TMP_DIR/outer-failed.txt"
     run_tests_base HEAD
     echo "$JSON" | jq -e '.status == "passed" and [.scripts[] | del(.log)] == [{path: "npm test", exit: 0, launch_failed: false}]'
-    [ "$(cat "$TMP_DIR/env.out")" = "$(printf 'unset\nunset')" ]
+    [ "$(cat "$TMP_DIR/env.out")" = "$(printf 'unset\nunset\nunset')" ]
 }
 
 @test "--base: 変数を読まないランナーでは status と出力 JSON が --base 無しと同一（epoch・log パスを除く）" {
@@ -677,4 +679,121 @@ EOF
     [ "$status" -eq 0 ]
     echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false'
     [ ! -f "$TMP_DIR/npm.ran" ]
+}
+
+# --- 落ちたテストファイルの受け取り（issue #1249）---
+
+@test "DEVFLOW_FAILED_FILES: ランナーごとにログディレクトリ内のまだ存在しないファイルのパスを渡す（呼び出し元の値は継がない）" {
+    make_script run-a.sh "$(cat <<EOF
+p="\${DEVFLOW_FAILED_FILES-unset}"
+if [ -e "\$p" ]; then state=exists; else state=absent; fi
+printf '%s\n%s\n' "\$p" "\$state" > "$TMP_DIR/env-a.out"
+EOF
+)"
+    make_script run-b.sh "printf '%s\n' \"\${DEVFLOW_FAILED_FILES-unset}\" > \"$TMP_DIR/env-b.out\""
+    : > "$WT/a.bats"
+    export DEVFLOW_FAILED_FILES="$TMP_DIR/outer-failed.txt"
+    for args in "" "--base no-such-ref" "--files a.bats"; do
+        rm -f "$TMP_DIR/env-a.out" "$TMP_DIR/env-b.out"
+        # shellcheck disable=SC2086
+        run_tests $args
+        echo "$JSON" | jq -e '.status == "passed"'
+        path_a=$(sed -n 1p "$TMP_DIR/env-a.out")
+        path_b=$(cat "$TMP_DIR/env-b.out")
+        [[ "$path_a" == /* && "$path_a" != "$DEVFLOW_FAILED_FILES" && "$path_a" != "$path_b" ]]
+        [ "$(sed -n 2p "$TMP_DIR/env-a.out")" = absent ]
+        [ "$(dirname "$path_a")" = "$(dirname "$(jq -r '.scripts[0].log' <<< "$JSON")")" ]
+        [[ "$path_a" != "$WT"/* && "$path_a" != "$(cd "$WT" && pwd -P)"/* ]]
+    done
+}
+
+# list.in（WT 外）があれば DEVFLOW_FAILED_FILES へ写して exit 1 するランナー。$1 = 追加で出力する行の echo 群。
+# ランナー自体は書き換えずに一覧の中身だけを変えられる（base と同じランナーのまま各経路を見る）
+make_list_runner() {
+    make_script run-py.sh "$(cat <<EOF
+echo "FAILED tests/test_a.py::test_x - assert 1 == 2"
+echo "ERROR tests/test_b.py::test_y - RuntimeError"
+echo "SUBFAILED(i=1) tests/test_a.py::test_z - AssertionError"
+${1:-}
+if [ -f "$TMP_DIR/list.in" ]; then cp "$TMP_DIR/list.in" "\$DEVFLOW_FAILED_FILES"; fi
+exit 1
+EOF
+)"
+}
+
+# ログに bats の not ok 行（b.bats）も出すランナー。ログからの抽出に戻ったかを failed_files == ["b.bats"] で見分ける
+make_list_runner_with_bats() {
+    make_list_runner "echo 'not ok 1 bats-side'; echo '# (in test file $WT/b.bats, line 2)'"
+}
+
+# 落ちたテストファイルの fixture を置いて base に commit する
+init_list_repo() {
+    : > "$WT/tests/test_a.py"
+    : > "$WT/tests/test_b.py"
+    : > "$WT/b.bats"
+    init_repo
+}
+
+@test "DEVFLOW_FAILED_FILES: base と同じランナーが書いた一覧（WT 相対・WT 配下の絶対パス）が failed_files になる（pytest 形式の出力）" {
+    make_list_runner
+    init_list_repo
+    printf '%s\n' tests/test_a.py "$WT/tests/test_b.py" ./tests/test_a.py > "$TMP_DIR/list.in"
+    run_tests_base HEAD
+    echo "$JSON" | jq -e '.status == "failed" and .tests == "failed" and .green == false'
+    echo "$JSON" | jq -e '.failed_files == ["tests/test_a.py", "tests/test_b.py"]'
+}
+
+@test "DEVFLOW_FAILED_FILES: 一覧を使うときはログからの抽出を使わない" {
+    make_list_runner_with_bats
+    init_list_repo
+    printf '%s\n' tests/test_a.py > "$TMP_DIR/list.in"
+    run_tests_base HEAD
+    echo "$JSON" | jq -e '.failed_files == ["tests/test_a.py"]'
+}
+
+@test "DEVFLOW_FAILED_FILES: ランナーが diff に入っているときは一覧を使わずログからの抽出に戻る" {
+    make_list_runner_with_bats
+    init_list_repo
+    printf '%s\n' tests/test_a.py > "$TMP_DIR/list.in"
+    echo "# changed" >> "$WT/tests/run-py.sh"
+    run_tests_base HEAD
+    echo "$JSON" | jq -e '.status == "failed" and .failed_files == ["b.bats"]'
+
+    # untracked の新規ランナーも diff に入る
+    git -C "$WT" checkout -q -- tests/run-py.sh
+    mv "$WT/tests/run-py.sh" "$WT/tests/run-qy.sh"
+    run_tests_base HEAD
+    echo "$JSON" | jq -e '.status == "failed" and .failed_files == ["b.bats"]'
+}
+
+@test "DEVFLOW_FAILED_FILES: merge-base を解決できない（--base 無し・解決失敗・--files）ときは一覧を使わずログからの抽出に戻る" {
+    make_list_runner_with_bats
+    init_list_repo
+    printf '%s\n' tests/test_a.py > "$TMP_DIR/list.in"
+    for args in "" "--base no-such-ref" "--files tests/test_a.py"; do
+        # shellcheck disable=SC2086
+        run_tests $args
+        echo "$JSON" | jq -e '.status == "failed" and .failed_files == ["b.bats"]'
+    done
+}
+
+@test "DEVFLOW_FAILED_FILES: 一覧に WT 内の通常ファイルでない行（..・WT の外・不在）が 1 件でもあれば failed_files は空" {
+    make_list_runner_with_bats
+    init_list_repo
+    : > "$TMP_DIR/outside.py"
+    for bad in ../wt/tests/test_b.py "$TMP_DIR/outside.py" tests/missing.py tests; do
+        printf '%s\n' tests/test_a.py "$bad" > "$TMP_DIR/list.in"
+        run_tests_base HEAD
+        echo "$JSON" | jq -e '.status == "failed" and .failed_files == []'
+    done
+}
+
+@test "DEVFLOW_FAILED_FILES: ランナーが一覧を書かない・空のときはログからの抽出のまま" {
+    make_list_runner_with_bats
+    init_list_repo
+    run_tests_base HEAD
+    echo "$JSON" | jq -e '.status == "failed" and .failed_files == ["b.bats"]'
+    : > "$TMP_DIR/list.in"
+    run_tests_base HEAD
+    echo "$JSON" | jq -e '.status == "failed" and .failed_files == ["b.bats"]'
 }

@@ -34,6 +34,15 @@
 # 一覧のパスが WT 内の通常ファイルでなければ引数不正（exit 2）。tests/run-*.sh が無い repo はフォールバックの
 # コマンドにファイルを渡す規約が無いため status "error" を返す（呼び出し側は flake と判定しない）。
 #
+# 落ちたテストファイルの受け取り（issue #1249）: tests/run-*.sh には毎回 DEVFLOW_FAILED_FILES=<$LOG_DIR 内のまだ存在しない
+# ファイルの絶対パス>を渡す（フォールバックのコマンドには渡さない。呼び出し元の環境の同名変数は継がない）。
+# 契約: exit 非 0 で終わるランナーは、落ちたテストファイルを 1 行 1 件（<WT> 相対か <WT> 配下の絶対パス）でそこに書いてよい。
+# 書くなら落ちたテストファイルを漏れなく書くこと — 漏れがあると base との切り分け（base-failure-triage）が漏れた失敗を
+# 見落として green に倒しうる。全部を書けないランナーは書かない（書かない・空ならログからの抽出に戻る）。
+# 一覧を使うのは --base で merge-base が解決でき、changed-files にそのランナーのパスが無い（base の tree と同じランナー）
+# ときだけ。PR が書き換えたランナーは一部だけを書いて他の失敗を残したまま green にできるので、その一覧は使わない。
+# 一覧に <WT> 内の通常ファイルでない行（.. を含む・<WT> の外・存在しない）が 1 件でもあれば結び付かない失敗とみなす。
+#
 # 手順:
 #   0. <WT> の untracked で ignore 対象外のファイル（.devflow-tmp/ を除く）を git add --intent-to-add で index に
 #      載せる（中身は stage しない）。git grep / git ls-files 系のテストから新規ファイルが見える状態で走らせる。
@@ -60,8 +69,9 @@
 #   passed → tests "passed" green true / failed → "failed" false / error → "error" false /
 #   実行対象 0 本 → status "passed"・tests "no_tests"・green false（何も走っていないので green を主張しない）
 #
-# failed_files（status "failed" のときだけ非空になりうる）: exit 非 0 の script の出力から、bats の `not ok` 行
-# （直後の診断行 `# (in test file <path>, line N)` のパス）と vitest / jest の `FAIL <path>` 行を抽出し、
+# failed_files（status "failed" のときだけ非空になりうる）: exit 非 0 の script ごとに、上の DEVFLOW_FAILED_FILES の
+# 一覧を使えるときはそれを、使えないときは出力から bats の `not ok` 行
+# （直後の診断行 `# (in test file <path>, line N)` のパス）と vitest / jest の `FAIL <path>` 行を抽出したものを取り、
 # <WT> 相対にして重複なく並べる。exit 非 0 の script から 1 件も抽出できない・ファイルに結び付かない
 # `not ok` がある・ビルド失敗のときは空配列にする — 一部だけ列挙すると、base でも落ちる既存の失敗の
 # 切り分け（base-failure-triage）が結び付かない失敗を見落として green に倒しうるため。
@@ -209,7 +219,7 @@ case "$SUBCOMMAND" in
         ;;
 esac
 
-unset DEVFLOW_CHANGED_FILES DEVFLOW_BASE DEVFLOW_TEST_FILES
+unset DEVFLOW_CHANGED_FILES DEVFLOW_BASE DEVFLOW_TEST_FILES DEVFLOW_FAILED_FILES
 
 LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/run-tests-XXXXXX") \
     || { emit error error false "cannot create log dir under ${TMPDIR:-/tmp}" '[]' '[]'; exit 0; }
@@ -367,6 +377,25 @@ to_rel() {
     printf '%s\n' "${p#./}"
 }
 
+# ランナーが DEVFLOW_FAILED_FILES に書いた一覧を読む（$1 = ランナーの絶対パス、$2 = 一覧のパス）。使える（merge-base が
+# 解決でき、ランナーが changed-files に無く、一覧に空でない行がある）ときは 1 行 1 パス（<WT> 相対）を出して 0 を返し、
+# <WT> 内の通常ファイルでない行には "\t" 行を出す。使えないときは何も出さず 1（呼び出し側はログからの抽出に戻る）
+runner_failed_files() {
+    local list="$2" p
+    [[ -n "$list" && -n "$CHANGED_FILES" && -f "$list" ]] || return 1
+    grep -Fxq -- "$(to_rel "$1")" "$CHANGED_FILES" && return 1
+    grep -q . "$list" || return 1
+    while IFS= read -r p || [[ -n "$p" ]]; do
+        [[ -n "$p" ]] || continue
+        p=$(to_rel "$p")
+        if [[ "$p" == /* || "/$p/" == */../* || ! -f "$WT/$p" ]]; then
+            printf '\t\n'
+        else
+            printf '%s\n' "$p"
+        fi
+    done < "$list"
+}
+
 # 3. 直列実行
 SCRIPTS_JSON='[]'
 FAILED_LIST=""
@@ -378,14 +407,16 @@ SUMMARY_BODY=""
 for i in "${!TARGETS[@]}"; do
     target="${TARGETS[$i]}"
     log="$LOG_DIR/$i.log"
+    failed_out=""
+    [[ -n "${COMMANDS[$i]}" ]] || failed_out="$LOG_DIR/$i.failed-files"
     if [[ -z "${COMMANDS[$i]}" && -n "$TEST_FILES_LIST" ]]; then
-        DEVFLOW_TEST_FILES="$TEST_FILES_LIST" "$target" > "$log" 2>&1 < /dev/null
+        DEVFLOW_FAILED_FILES="$failed_out" DEVFLOW_TEST_FILES="$TEST_FILES_LIST" "$target" > "$log" 2>&1 < /dev/null
         rc=$?
     elif [[ -z "${COMMANDS[$i]}" && -n "$CHANGED_FILES" ]]; then
-        DEVFLOW_CHANGED_FILES="$CHANGED_FILES" DEVFLOW_BASE="$MERGE_BASE" "$target" > "$log" 2>&1 < /dev/null
+        DEVFLOW_FAILED_FILES="$failed_out" DEVFLOW_CHANGED_FILES="$CHANGED_FILES" DEVFLOW_BASE="$MERGE_BASE" "$target" > "$log" 2>&1 < /dev/null
         rc=$?
     elif [[ -z "${COMMANDS[$i]}" ]]; then
-        "$target" > "$log" 2>&1 < /dev/null
+        DEVFLOW_FAILED_FILES="$failed_out" "$target" > "$log" 2>&1 < /dev/null
         rc=$?
     else
         read -r -a cmd <<< "${COMMANDS[$i]}"
@@ -414,7 +445,7 @@ for i in "${!TARGETS[@]}"; do
         continue
     fi
     SUMMARY_HEAD+="failed: $target (exit $rc, log: $log)"$'\n'
-    found=$(extract_failed_files "$log")
+    found=$(runner_failed_files "$target" "$failed_out") || found=$(extract_failed_files "$log")
     if [[ -z "$found" ]] || grep -q $'^\t$' <<< "$found"; then
         UNATTRIBUTED=true
     fi

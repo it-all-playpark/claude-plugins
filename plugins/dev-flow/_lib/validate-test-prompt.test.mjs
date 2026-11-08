@@ -149,11 +149,21 @@ test('[validate-test-prompt] Final reconcile の test#final は Validate の tes
 });
 
 // 変数の契約（名前・形式・未設定 = 全件）は repo 側のランナーが読む唯一の仕様なので、reference の記述を pin する
-test('[validate-test-prompt] pipeline.md の run-tests 説明に DEVFLOW_CHANGED_FILES / DEVFLOW_BASE の契約がある', () => {
+test('[validate-test-prompt] pipeline.md の run-tests 説明に DEVFLOW_CHANGED_FILES / DEVFLOW_BASE / DEVFLOW_FAILED_FILES の契約がある', () => {
   const pipelineMd = readFileSync(join(repoRoot, 'dev-flow/references/pipeline.md'), 'utf8');
   const pipelinePara = pipelineMd.split('\n\n').find((p) => p.includes('run-tests start <WT>'));
   assert.ok(pipelinePara, 'pipeline.md に run-tests の段落が無い');
-  for (const token of ['--base', 'DEVFLOW_CHANGED_FILES', 'DEVFLOW_BASE', '絶対パス', '1 行 1 件', '全件', 'untracked']) {
+  for (const token of ['--base', 'DEVFLOW_CHANGED_FILES', 'DEVFLOW_BASE', '絶対パス', '1 行 1 件', '全件', 'untracked',
+    'DEVFLOW_FAILED_FILES', '漏れなく', '全部を書けないなら書かない']) {
     assert.ok(pipelinePara.includes(token), `pipeline.md の run-tests 説明に '${token}' が無い`);
+  }
+});
+
+// DEVFLOW_FAILED_FILES の一覧は漏れがあると base との切り分けで green に倒しうるので、run-tests の冒頭コメントにも契約を pin する
+test('[validate-test-prompt] run-tests.sh の冒頭コメントに DEVFLOW_FAILED_FILES の契約がある', () => {
+  const src = readFileSync(join(repoRoot, '_shared/scripts/run-tests.sh'), 'utf8');
+  const header = src.slice(0, src.indexOf('\nset -uo pipefail'));
+  for (const token of ['DEVFLOW_FAILED_FILES', '1 行 1 件', '漏れなく', '全部を書けないランナーは書かない']) {
+    assert.ok(header.includes(token), `run-tests.sh の冒頭コメントに '${token}' が無い`);
   }
 });
