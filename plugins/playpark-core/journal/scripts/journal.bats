@@ -423,7 +423,8 @@ JSON
 # telemetry を渡した行は、省略した merge_tier キーが telemetry に無いことも見る。
 #   needs_clarification / empty_diff (#225) / runtime（既存カテゴリの回帰） /
 #   partial + cross_repo (#432) / success・failure + guard_blocked (#530) /
-#   pr_phase_failed + PR phase (#823) / abort + --error-phase (#607)
+#   pr_phase_failed + PR phase (#823) / abort + --error-phase (#607) /
+#   evaluate_failed + Diff triage phase（dev-flow-evaluate の throw・不正な返り値）
 # ---------------------------------------------------------------------------
 
 # assert_category_accepted <outcome> <category> <error-msg|""> <error-phase|""> [telemetry-json]
@@ -465,6 +466,7 @@ assert_category_accepted() {
     assert_category_accepted failure guard_blocked 'guard blocked the run' ''
     assert_category_accepted failure pr_phase_failed 'dev-flow: PR phase 失敗（step: push、reason: remote: 403）' PR
     assert_category_accepted failure abort 'abort@Evaluate/eval#1: evaluator boom' Evaluate
+    assert_category_accepted failure evaluate_failed 'dev-flow-evaluate が throw（boom） — Diff triage・Evaluate の評価を確定できていない' 'Diff triage'
 }
 
 # ---------------------------------------------------------------------------

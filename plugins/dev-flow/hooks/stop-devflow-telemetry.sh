@@ -15,7 +15,7 @@
 #   注: outcome=failure かつ error_category/error_msg を欠く payload は journal.sh 契約
 #   （outcome != success で両キー必須）で journal-failed → pending/ に残り続ける。
 #   再投入前に payload へ error_category（enum: lint|test|build|runtime|config|env|merge|
-#   type-check|needs_clarification|empty_diff|cross_repo|guard_blocked|abort|pr_phase_failed）と error_msg を
+#   type-check|needs_clarification|empty_diff|cross_repo|guard_blocked|abort|pr_phase_failed|evaluate_failed）と error_msg を
 #   手で追記すること。
 #
 # 無効化:
