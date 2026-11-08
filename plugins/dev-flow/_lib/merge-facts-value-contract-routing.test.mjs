@@ -201,7 +201,7 @@ test('[merge-facts-value][AC-3] Diff triage の hit は PR body に class: `file
     { file: 'src/y.ts', class: 'auth', severity: 'critical' },
   ];
   const { calls } = await run({
-    'danger-grep': { risk: { ok: true, hits }, files: [...STANDARD_FILES], struct: null, diffhash: { hash: 'AAA', empty: false } },
+    'danger-grep': { risk: { ok: true, hits }, files: [...STANDARD_FILES], diffhash: { hash: 'AAA', empty: false } },
   });
   const prCall = calls.find((c) => c.label === 'pr#1');
   assert.ok(prCall, "label 'pr#1' の呼び出しが見つからない");

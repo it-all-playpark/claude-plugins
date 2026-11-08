@@ -125,7 +125,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 - **判定**: 実装後・PR 前の realized diff を 1 本の exec-proxy（`diff-triage`）で読み、次を決める:
   - danger-grep（security の危険パターン）と test-surface の hit — hit は SEC seed / TESTSURF として ledger に積む
   - 実効 shape — `classifyShape` が realized diff の file 数・行数と issue 由来の決定論特徴量（AC 数・`issue_type`・構造化 `breaking_change`）で
-    1 回で決める。数える file は ephemeral・宣言外・format-only を除いたもの。安全 floor（count 欠損・AC 欠落・out-of-enum の
+    1 回で決める。数える file は ephemeral・宣言外を除いたもの。安全 floor（count 欠損・AC 欠落・out-of-enum の
     `issue_type`・`breaking_change === true` → complex）を通った run だけ、行数で下げ方向にだけ補正する。LLM の事前見積もりは使わない
   - Evaluate を走らせるか（`runEval`）— micro 以外、または danger-grep / testsurf の hit・green-fix・drop・宣言外変更がある run
   - 宣言外変更 — implementer が申告しなかった変更を concern に積み、evaluator の重点監査に回す
@@ -137,7 +137,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
     per-field のフォールバックに倒す（abort は終端サマリーと journal を失う）
   - realized の files 欠落は NaN → complex（fail-safe）。行数が 1 file でも欠けた run は補正しない
   - security-scope の取得失敗・形の崩れは対象（fail-closed）
-  - structural 分類の欠落は分類なし（fail-open）。diff hash が取れなければ Merge tier で再判定する（fail-open）
+  - diff hash が取れなければ Merge tier で再判定する（fail-open）
 - **コード**: `execDiffTriagePhase`・`parseDiffTriageFields`（`.claude/workflows/dev-flow.js`）、`classifyShape`（`_lib/triviality.mjs`）、
   `_lib/diff-triage.mjs`、`_lib/testsurf.mjs`、`_lib/declared-paths.mjs`、`_lib/security-scope.mjs`
 

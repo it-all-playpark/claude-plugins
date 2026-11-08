@@ -141,7 +141,6 @@ test('[evaluator-contract] eval#1 prompt contains EVALUATOR_OPERATIONAL_CONTRACT
       'danger-grep': {
         risk: { ok: true, hits: [{ file: 'src/x.ts', class: 'network-egress', severity: 'critical', pattern: 'fetch' }] },
         files: ['src/x.ts'],
-        struct: null,
         diffhash: { hash: 'H', empty: false },
       },
       'impl:serial:issue-1': { status: 'DONE_WITH_CONCERNS', task_id: 'issue-1', files: ['src/x.ts'], summary: 's', concerns: ['未検証の入力値がある'] },
@@ -229,7 +228,6 @@ test('[evaluator-contract] eval#1 prompt contains EVALUATOR_OPERATIONAL_CONTRACT
       'danger-grep': {
         risk: { ok: true, hits: [{ file: '_lib/foo.test.mjs', class: 'test-weakening', severity: 'critical', pattern: 'skip' }] },
         files: ['_lib/foo.test.mjs'],
-        struct: null,
         diffhash: { hash: 'H', empty: false },
       },
     },

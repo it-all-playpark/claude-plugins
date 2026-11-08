@@ -14,7 +14,7 @@
 //     その prompt にスクラブ済み finding が 1 件入り、guard_blocked で b=2 は発火しない
 // (e) 旧 string blocking_reason を返す stub は partition throw で明示 error になる
 // (f) guard_blocked が files を返したまま後段（reimpl#1）が DONE で終わる run: guard_blocked の files が
-//     宣言に取り込まれ、realized_file_count が実 diff の file 数（ephemeral・format-only 除外後）になり、
+//     宣言に取り込まれ、realized_file_count が実 diff の file 数（ephemeral 除外後）になり、
 //     shape が micro に落ちない（issue #752）。replan（reimpl-blocked）は起きない
 
 import { test } from 'vitest';
@@ -141,18 +141,15 @@ test('[guard-blocked-routing] 旧 string blocking_reason: partition throw が明
 // ============================================================
 // (f): guard_blocked の files が宣言に取り込まれる（issue #747 run wf_ec00a5e9-769 相当）
 // ============================================================
-test('[guard-blocked-routing] guard_blocked が files を返し後段 reimpl#1 が DONE: realized_file_count が実 diff（ephemeral・format-only 除外後）になり shape が micro に落ちない', async () => {
-  const six = COMPLEX_FILES.slice(0, 6);
-  const FORMAT_ONLY = 'src/fmt.ts';
+test('[guard-blocked-routing] guard_blocked が files を返し後段 reimpl#1 が DONE: realized_file_count が実 diff（ephemeral 除外後）になり shape が micro に落ちない', async () => {
+  const written = COMPLEX_FILES.slice(0, 6);
   const EPHEMERAL = '.devflow-tmp/note.md';
-  const written = [...six, FORMAT_ONLY];
   const ACR = [0, 1].map((i) => ({ ac_index: i, satisfied: true, verified_by: 'inspection', evidence: 'ok' }));
   const { calls, result, error, logs } = await run({
     'impl:serial:issue-1': { ...guardBlocked, files: [...written] },
     'reimpl#1:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: [...written], summary: 's', concerns: [] },
     'danger-grep': {
       risk: { ok: true, hits: [] }, files: [...written, EPHEMERAL],
-      struct: { ok: true, available: true, format_only: [FORMAT_ONLY], structural: [...six] },
       diffhash: { hash: 'AAA', empty: false },
     },
     'merge-tier-facts': mergeTierFacts({ files: [...written] }),
@@ -174,7 +171,7 @@ test('[guard-blocked-routing] guard_blocked が files を返し後段 reimpl#1 �
 
   // guard_blocked の files が宣言に入り、宣言外として realized count から落ちない
   assert.ok(logs.some((l) => l.includes('宣言外変更なし')), `guard_blocked の files が宣言に取り込まれていない: ${logs.filter((l) => l.includes('宣言外')).join(' | ')}`);
-  assert.equal(result.realized_file_count, 6, `realized_file_count は実 diff 8 件から ephemeral 1・format-only 1 を除いた 6 のはずだが ${result.realized_file_count}`);
+  assert.equal(result.realized_file_count, 6, `realized_file_count は実 diff 7 件から ephemeral 1 を除いた 6 のはずだが ${result.realized_file_count}`);
 
   // shape は実 diff の規模（6 files, 2 AC, fix → complex）で決まり micro に落ちない
   assert.equal(result.shape, 'complex', `shape は complex のはずだが ${result.shape}（${result.shape_reason}）`);

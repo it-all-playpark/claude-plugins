@@ -6,6 +6,7 @@
 //   (A) realized 6 件（全件宣言）→ shape=complex + evaluator >= 1 回 + shape_reason が realized ベース
 //   (B) realized 6 件 + eval#1 fail → reimpl → eval#2 pass（EVAL_PASSES=EVAL_MAX の full ループ）
 //   (C) realized 1 件（宣言済み）→ shape=micro + evaluator 0 回 + lite route
+//   (C2) 変更 3 件（ephemeral・宣言外なし）→ realized_file_count 3（件数を減らす補正は ephemeral・宣言外の除外だけ）
 //   (D) danger-grep の files が null（count 欠損）→ shape=complex + evaluator >= 1 回
 //   (E) breaking_change=true + realized 1 件 → shape=complex + evaluator >= 1 回
 //   (F) realized 4 docs/test-only → shape=standard（evaluator を回すので AC 未検証を開示しない）
@@ -39,7 +40,7 @@ function filesOverrides(files, { declared = files, changed = files, lines = unde
     'impl:serial:issue-1': impl,
     'reimpl#1:serial:issue-1': impl,
     'danger-grep': {
-      risk: { ok: true, hits: [] }, files: files === null ? null : [...files], struct: null, diffhash: { hash: 'AAA', empty: false },
+      risk: { ok: true, hits: [] }, files: files === null ? null : [...files], diffhash: { hash: 'AAA', empty: false },
       ...(lines !== undefined ? { lines } : {}),
     },
     'merge-tier-facts': mergeTierFacts({ files: changed === null ? ['src/x.ts'] : [...changed] }),
@@ -101,6 +102,19 @@ test('[realized-shape] (C) realized 1 file（宣言済み）→ shape=micro、ev
   assert.equal(returned.shape, 'micro');
   assert.equal(returned.route, 'lite');
   assert.match(returned.shape_reason, /realized 1 file\(s\), 2 AC, type=fix → shape=micro/);
+});
+
+test('[realized-shape] (C2) 変更 3 files（全件宣言・ephemeral 0・宣言外 0）→ realized_file_count は 3（diff-triage 応答に余分なキーがあっても件数を減らさない）', async () => {
+  const three = ['src/a.ts', 'src/b.ts', 'src/c.ts'];
+  const overrides = filesOverrides(three);
+  overrides['danger-grep'] = {
+    ...overrides['danger-grep'],
+    struct: { ok: true, available: true, format_only: ['src/b.ts', 'src/c.ts'], structural: ['src/a.ts'] },
+  };
+  const { returned } = await run(overrides);
+  assert.equal(returned.realized_file_count, 3);
+  assert.equal(returned.shape, 'standard');
+  assert.match(returned.shape_reason, /realized 3 file\(s\), 2 AC, type=fix → shape=standard/);
 });
 
 test('[realized-shape] (D) danger-grep の files が null（count 欠損）→ shape=complex、evaluator >= 1 回', async () => {

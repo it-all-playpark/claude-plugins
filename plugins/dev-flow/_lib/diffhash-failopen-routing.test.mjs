@@ -37,7 +37,7 @@ function createResponder(overrides = {}) {
       return v;
     }
     if (label === 'danger-grep') {
-      return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'SAMEHASH', empty: false } };
+      return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], diffhash: { hash: 'SAMEHASH', empty: false } };
     }
     if (label === 'merge-tier-facts') return mergeTierFacts({ hash: 'SAMEHASH', files: ['src/x.ts'] });
     if (label === 'post-summary') return { posted: true, method: 'gh pr comment', url: 'http://x' };

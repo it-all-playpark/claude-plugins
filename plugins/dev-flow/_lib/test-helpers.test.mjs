@@ -341,7 +341,6 @@ test('[test-helpers] (d) devFlowResponder: 既定の "danger-grep" 応答が仕�
   assert.deepEqual(result, {
     risk: { ok: true, hits: [] },
     files: ['src/x.ts', 'src/y.ts', 'src/z.ts'],
-    struct: null,
     diffhash: { hash: 'AAA', empty: false },
   });
   assert.deepEqual(STANDARD_FILES, ['src/x.ts', 'src/y.ts', 'src/z.ts']);

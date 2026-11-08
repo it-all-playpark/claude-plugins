@@ -44,7 +44,7 @@ function makeCountingSandbox(diffHashConfig) {
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // label 'danger-grep'（issue #544 統合呼び出し）: risk/files を 1 応答で返す。
-    if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: [...realizedFiles], struct: null, diffhash: null };
+    if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: [...realizedFiles], diffhash: null };
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
     if (agentType === 'dev-flow:evaluator') return { verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation', ac_results: [], security_clearance: [] };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 'issue-1', files: [...realizedFiles], summary: '', concerns: [] };

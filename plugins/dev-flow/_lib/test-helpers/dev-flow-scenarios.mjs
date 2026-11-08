@@ -131,7 +131,7 @@ export const DEV_FLOW_SCENARIOS = {
       },
       'test#post-eval-1': { tests: 'failed', green: false, summary: 'foo.test が red' },
       'green-fix#post-eval-1': { status: 'DONE', task_id: 'issue-1', files: ['tests/foo.test.ts'], summary: 'テストの import 漏れを直した', concerns: [] },
-      'green-fix-classify': { risk: { ok: true, hits: [] }, files: ['tests/foo.test.ts'], struct: null, diffhash: { hash: 'BBB', empty: false } },
+      'green-fix-classify': { risk: { ok: true, hits: [] }, files: ['tests/foo.test.ts'], diffhash: { hash: 'BBB', empty: false } },
       'green-fix-numstat': { ok: true, lines: ['1\t0\ttests/foo.test.ts'] },
       'eval-green-fix': { findings: [], recheck_resolutions: [] },
       'diff-hash-pr': { hash: 'BBB', empty: false },
@@ -171,7 +171,7 @@ export const DEV_FLOW_SCENARIOS = {
   // clean micro lite route（realized 0 files → micro。pr-review-lite + ci-check-lite で lgtm 終端、nested pr-iterate 起動なし）
   lite: {
     overrides: {
-      'danger-grep': { risk: { ok: true, hits: [] }, files: [], struct: null, diffhash: null },
+      'danger-grep': { risk: { ok: true, hits: [] }, files: [], diffhash: null },
       'ci-check-lite': { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], waited_seconds: 0, poll_attempts: 0 },
     },
   },

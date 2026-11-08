@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 # diff-triage.sh - dev-flow Diff triage 統合 composition wrapper (issue #544, P1).
 #
-# Purpose: dev-flow の Diff triage phase が今まで個別に取得していた 4 exec-proxy
-# (danger-grep / realized-diff / structural-classify / diff-hash-triage) 相当の情報を
-# 1 回のスクリプト実行にまとめて返す薄い composition wrapper。既存 3 スクリプト
-# (diff-risk-classify.sh --working-tree / structural-classify.sh / worktree-diff-hash.sh)
-# + `git status --porcelain` を worktree cwd から順に呼び出して集約するのみで、各スクリプト
-# の検出ロジックそのものは複製しない。
+# Purpose: dev-flow の Diff triage phase が使う danger-grep / realized-diff / diff-hash-triage /
+# 行数の情報を 1 回のスクリプト実行にまとめて返す薄い composition wrapper。既存 2 スクリプト
+# (diff-risk-classify.sh --working-tree / worktree-diff-hash.sh)
+# + `git status --porcelain` / `git diff --numstat` を worktree cwd から順に呼び出して集約するのみで、
+# 各スクリプトの検出ロジックそのものは複製しない。
 #
 # Usage: diff-triage.sh <worktree-path> <base-ref>
 #
 # Output (stdout, JSON 1 行):
 #   {"risk":<diff-risk-classify.sh の出力 object>,
 #    "files":["path1",...]|null,
-#    "struct":<structural-classify.sh の出力 object>|null,
 #    "diffhash":<worktree-diff-hash.sh の出力 object>|null,
 #    "lines":[{"path":"path1","added":N,"deleted":M},...]|null}
 #
@@ -26,9 +24,6 @@
 #   files    - fail-safe 用。`git status --porcelain` 取得成功時のみ配列 (0 件は [])、
 #              取得失敗は null (取得失敗と空 diff の区別を維持する -- complex floor
 #              安全弁の前提)。
-#   struct   - fail-open 用。structural-classify.sh の失敗 (非0 exit) / 不正 JSON は
-#              null (advisory な diff 前処理のため、失敗しても deterministic gate を
-#              緩めない。difft 未インストール時の available:false は正常応答として扱う)。
 #   diffhash - fail-open 用。worktree-diff-hash.sh の失敗 (このスクリプトはエラー時に
 #              JSON を出さず exit 1 するだけの契約) は null (stale 検出の補助信号のため)。
 #   lines    - fail-safe 用 (classifyShape の行数補正の入力、issue #740)。tracked 変更は
@@ -39,7 +34,7 @@
 #              失敗は null。
 #
 # Exit: 0 が既定。usage error (引数不足・worktree パス不在) のみ非0 exit 可
-# (この場合も stdout には risk:{"ok":false,...}, files/struct/diffhash:null の
+# (この場合も stdout には risk:{"ok":false,...}, files/diffhash/lines:null の
 # JSON を出す -- fail-closed 安全側)。jq 不在時も exit 0
 # (risk.ok:false, error:"jq_not_installed" の全 degrade JSON、fail-closed 安全側)。
 
@@ -52,9 +47,9 @@ _CORE_BIN="$(command -v journal)" || { echo "playpark-core plugin (bin/journal) 
 source "$(dirname "$_CORE_BIN")/../_lib/common.sh"
 
 emit_degrade() {
-    # $1: risk JSON object (raw, already-complete JSON text). files/struct/diffhash/lines
+    # $1: risk JSON object (raw, already-complete JSON text). files/diffhash/lines
     # は常に null (usage error / jq 不在は risk 以外の全フィールドが取得不能なため)。
-    printf '{"risk":%s,"files":null,"struct":null,"diffhash":null,"lines":null}\n' "$1"
+    printf '{"risk":%s,"files":null,"diffhash":null,"lines":null}\n' "$1"
 }
 
 usage_error() {
@@ -171,24 +166,7 @@ if [[ $files_rc -eq 0 ]]; then
 fi
 
 # ============================================================================
-# 3. struct = structural-classify.sh <worktree-path> <base-ref>
-# ============================================================================
-
-STRUCT_SCRIPT="$SCRIPT_DIR/structural-classify.sh"
-
-set +e
-struct_out="$(bash "$STRUCT_SCRIPT" "$wt" "$base" 2>/dev/null)"
-struct_rc=$?
-set -e
-
-if [[ $struct_rc -eq 0 && -n "$struct_out" ]] && printf '%s' "$struct_out" | jq -e . >/dev/null 2>&1; then
-    struct_json="$struct_out"
-else
-    struct_json="null"
-fi
-
-# ============================================================================
-# 4. diffhash = worktree-diff-hash.sh <worktree-path> <base-ref>
+# 3. diffhash = worktree-diff-hash.sh <worktree-path> <base-ref>
 # ============================================================================
 
 DIFFHASH_SCRIPT="$SCRIPT_DIR/worktree-diff-hash.sh"
@@ -211,9 +189,8 @@ fi
 jq -nc \
     --argjson risk "$risk_json" \
     --argjson files "$files_json" \
-    --argjson struct "$struct_json" \
     --argjson diffhash "$diffhash_json" \
     --argjson lines "$lines_json" \
-    '{risk: $risk, files: $files, struct: $struct, diffhash: $diffhash, lines: $lines}'
+    '{risk: $risk, files: $files, diffhash: $diffhash, lines: $lines}'
 
 exit 0

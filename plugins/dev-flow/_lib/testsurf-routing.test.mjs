@@ -45,7 +45,7 @@ function makeSandbox(riskResponse, evaluatorResponse) {
     // フィールドに包んで返す。label 'merge-tier-facts'（Merge tier 統合呼び出し）は
     // riskResponse を risk サブ結果に包んで返す。
     if (label === 'danger-grep') {
-      return { risk: riskResponse, files: ['_lib/foo.test.mjs'], struct: null, diffhash: null };
+      return { risk: riskResponse, files: ['_lib/foo.test.mjs'], diffhash: null };
     }
     if (label === 'merge-tier-facts') {
       return mergeTierFacts({ risk: riskResponse, files: ['_lib/foo.test.mjs'] });

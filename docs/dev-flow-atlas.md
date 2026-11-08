@@ -167,7 +167,7 @@ format / lint はこの phase の責務外で、test の結果だけを見る。
 ```mermaid
 flowchart TD
     IN["test green"] --> C1["diff-triage.sh<br/>統合 exec-proxy・1 呼び出し"]
-    C1 --> C2["ephemeral・宣言外・format_only を count から除外"]
+    C1 --> C2["ephemeral・宣言外を count から除外"]
     C2 --> C3["classifyShape(req, realizedCount, lineStats)<br/>EFFECTIVE_SHAPE 確定"]
     C3 --> C5{"runEval ?"}
     C5 -->|true| OUT["Evaluate へ"]
@@ -176,7 +176,7 @@ flowchart TD
     C1 -.->|"risk 欠落・実行不能"| FC["fail-closed<br/>SEC 全 unchecked → HOLD"]
 ```
 
-`diff-triage.sh` は risk（danger-grep）/ files（realized diff）/ struct（structural 分類）/
+`diff-triage.sh` は risk（danger-grep）/ files（realized diff）/
 diffhash / lines（ファイルごとの追加・削除行数。untracked は `wc -l`）を 1 回で返す。フィールドごとに失敗セマンティクスが分かれており、**risk の欠落だけは
 fail-closed** で SEC seed を全 unchecked にして merge tier を HOLD へ倒す（軸A invariant）。
 
@@ -272,7 +272,7 @@ flowchart TD
 ## 2. shape 判定
 
 shape は Setup 末尾の analyze ゲートでは決めない。Implement 後の Diff triage で `classifyShape(req, realizedCount, lineStats)` が
-realized diff のファイル数（ephemeral・宣言外・format_only を除外した数）・ファイルごとの追加/削除行数と issue 由来の決定論特徴量
+realized diff のファイル数（ephemeral・宣言外を除外した数）・ファイルごとの追加/削除行数と issue 由来の決定論特徴量
 （AC 数 / `issue_type` / 構造化 `breaking_change`）で **1 回で** 決め、その返り値が `EFFECTIVE_SHAPE`
 になる。LLM の事前見積もりは入力にならない。入力が欠けていたり（realized count 取得不能）enum 外だったり
 した場合は例外なく complex へ落ちる安全弁が効く。floor を通過した run だけ、行数が全ファイル分取れていれば

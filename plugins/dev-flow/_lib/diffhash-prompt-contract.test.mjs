@@ -29,7 +29,7 @@ const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 // ============================================================
 function createResponder() {
   return function ({ label, agentType }) {
-    if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'H', empty: false } };
+    if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], diffhash: { hash: 'H', empty: false } };
     if (agentType === 'dev-flow:evaluator') {
       return {
         verdict: 'pass', total: 100, threshold: 80, feedback: [],

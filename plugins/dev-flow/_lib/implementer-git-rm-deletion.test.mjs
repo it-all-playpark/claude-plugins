@@ -47,7 +47,7 @@ async function runGuardBlocked(detail) {
         blocking_reason: { block_class: 'guard_blocked', guard_id: 'sandbox-deny', detail },
       },
       'reimpl#1:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files, summary: 's', concerns: [] },
-      'danger-grep': { risk: { ok: true, hits: [] }, files, struct: null, diffhash: { hash: 'AAA', empty: false } },
+      'danger-grep': { risk: { ok: true, hits: [] }, files, diffhash: { hash: 'AAA', empty: false } },
       'merge-tier-facts': mergeTierFacts({ files }),
       'eval#1': {
         verdict: 'fail', total: 50, threshold: 80,

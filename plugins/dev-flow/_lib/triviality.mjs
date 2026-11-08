@@ -61,7 +61,7 @@ function isValidLineStats(lineStats, count) {
 
 /**
  * @param {object} req - analyze REQ（acceptance_criteria / issue_type / breaking_change / breaking_keyword_scan を読む）
- * @param {number} realizedCount - realized diff の file 数（宣言外・format-only・ephemeral 除外後の整数。
+ * @param {number} realizedCount - realized diff の file 数（宣言外・ephemeral 除外後の整数。
  *   取得不能は NaN）
  * @param {Array<{path: string, added: number, deleted: number}>|null} [lineStats] - realizedCount に数えた
  *   file ごとの追加・削除行数（同じ file 集合）。取得不能は null（補正なし = file 数判定）

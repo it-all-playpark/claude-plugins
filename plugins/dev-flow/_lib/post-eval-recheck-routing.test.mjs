@@ -1,7 +1,7 @@
 // post-eval-recheck-routing.test.mjs — Evaluate 後に入った変更を run 内で確かめ直す経路を dev-flow.js の VM 実行で pin する。
 //
 // (1) post-eval green-fix の再評価: Evaluate 差し戻し後の PR 前テストで green-fix が入った run は、green-fix の差分に
-//     diff-triage（testsurf / structural）を当て、hit 0 かつテストファイルだけなら assert_only、それ以外は full で
+//     diff-triage（testsurf）を当て、hit 0 かつテストファイルだけなら assert_only、それ以外は full で
 //     evaluator に差分を評価させ、評価済み tree（evalDiffHash）を green-fix 後の tree へ進める。
 //     assert を弱めない修正なら hash_mismatch で HOLD にならず、弱めた修正は critical（全 gate_policy で blocking）で HOLD。
 // (2) 解消済み item の再検証: green-fix / pr-iterate fix が触ったファイルに言及する解消済み item は、
@@ -70,7 +70,7 @@ test('[post-eval-recheck] テストファイル以外を触る green-fix は ful
   const { call, result } = await run({
     overrides: {
       'green-fix#post-eval-1': { status: 'DONE', task_id: 'issue-1', files: ['src/new-helper.ts'], summary: 'helper を足した', concerns: [] },
-      'green-fix-classify': { risk: { ok: true, hits: [] }, files: [...COMPLEX_FILES, 'src/new-helper.ts'], struct: null, diffhash: { hash: 'BBB', empty: false } },
+      'green-fix-classify': { risk: { ok: true, hits: [] }, files: [...COMPLEX_FILES, 'src/new-helper.ts'], diffhash: { hash: 'BBB', empty: false } },
       'green-fix-numstat': { ok: true, lines: ['5\t0\tsrc/new-helper.ts'] },
     },
   });
@@ -85,7 +85,7 @@ test('[post-eval-recheck] green-fix 差分に test-weakening hit があれば fu
   const hit = { class: 'test-weakening', pattern: 'skip', file: 'tests/foo.test.ts', severity: 'critical' };
   const { call, result } = await run({
     overrides: {
-      'green-fix-classify': { risk: { ok: true, hits: [hit] }, files: ['tests/foo.test.ts'], struct: null, diffhash: { hash: 'BBB', empty: false } },
+      'green-fix-classify': { risk: { ok: true, hits: [hit] }, files: ['tests/foo.test.ts'], diffhash: { hash: 'BBB', empty: false } },
       'eval-green-fix': { findings: [], testsurf_clearance: [{ pattern: 'skip', cleared: true, evidence: 'tests/foo.test.ts の skip は flaky な外部 API テストで、同等の検査が tests/foo.unit.test.ts:12 にある' }] },
       'merge-tier-facts': mergeTierFacts({ hash: 'BBB', tree: 'BBB', risk: { ok: true, hits: [hit] } }),
     },
@@ -116,6 +116,22 @@ test('[post-eval-recheck] assert を弱めた green-fix は再評価で critical
   }
 });
 
+test('[post-eval-recheck] Evaluate（eval#1・eval#2）と green-fix 後の再評価の prompt に diff_classification を載せない', async () => {
+  // diff-triage 応答に余分な struct キー（format_only あり）が混ざっても、evaluator への読み方ガイドにしない
+  const struct = { ok: true, available: true, format_only: ['tests/foo.test.ts', 'src/a.ts'], structural: [] };
+  const { call } = await run({
+    overrides: {
+      'danger-grep': { ...POST_EVAL.overrides['danger-grep'], struct },
+      'green-fix-classify': { ...POST_EVAL.overrides['green-fix-classify'], struct },
+    },
+  });
+  for (const label of ['eval#1', 'eval#2', 'eval-green-fix']) {
+    const ev = call(label);
+    assert.ok(ev, `${label} が呼ばれていない`);
+    assert.ok(!ev.prompt.includes('diff_classification'), `${label} の prompt に diff_classification が載っている`);
+  }
+});
+
 test('[post-eval-recheck] evaluator の応答が取れなければ評価済み tree を進めず hash_mismatch（HOLD）で人間へ', async () => {
   const { result } = await run({
     overrides: {
@@ -131,7 +147,7 @@ test('[post-eval-recheck] evaluator の応答が取れなければ評価済み t
 test('[post-eval-recheck] green-fix 後の tree が評価済み tree と同じなら numstat / evaluator を起動しない', async () => {
   const { labels } = await run({
     overrides: {
-      'green-fix-classify': { risk: { ok: true, hits: [] }, files: [...COMPLEX_FILES], struct: null, diffhash: { hash: 'AAA', empty: false } },
+      'green-fix-classify': { risk: { ok: true, hits: [] }, files: [...COMPLEX_FILES], diffhash: { hash: 'AAA', empty: false } },
       'diff-hash-pr': { hash: 'AAA', empty: false },
       'merge-tier-facts': mergeTierFacts({ hash: 'AAA', tree: 'AAA' }),
     },
@@ -151,7 +167,7 @@ const CONCERN_OVERRIDES = {
     concern_resolutions: [{ id: 'CONCERN-1', resolution: 'resolved', evidence: STALE_EVIDENCE }],
   },
   'green-fix#post-eval-1': { status: 'DONE', task_id: 'issue-1', files: ['tests/generate_thumbnail.bats'], summary: 'thumbnail テストの期待値を直した', concerns: [] },
-  'green-fix-classify': { risk: { ok: true, hits: [] }, files: [...COMPLEX_FILES, 'tests/generate_thumbnail.bats'], struct: null, diffhash: { hash: 'BBB', empty: false } },
+  'green-fix-classify': { risk: { ok: true, hits: [] }, files: [...COMPLEX_FILES, 'tests/generate_thumbnail.bats'], diffhash: { hash: 'BBB', empty: false } },
   'green-fix-numstat': { ok: true, lines: ['3\t3\ttests/generate_thumbnail.bats'] },
 };
 
