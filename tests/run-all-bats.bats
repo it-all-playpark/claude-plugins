@@ -257,6 +257,33 @@ assert_full_run() {
     [[ "$output" == *"Selection: all (plugins/x/hooks/guide-ref.md: basename referenced by shell-side file plugins/x/hooks/guard.sh)"* ]]
 }
 
+@test "selection: shell 側が # 始まりの行（行頭空白は無視）でだけ言及する basename は全件にせず bats で選ぶ" {
+    setup_selection_repo leak
+    printf '#!/usr/bin/env bash\n# see direct.mjs\n    # also direct.mjs\n\t# direct.mjs again\necho ok\n' \
+        > "$FIXTURE/plugins/x/hooks/note.sh"
+    write_changed "plugins/x/scripts/direct.mjs"
+
+    DEVFLOW_CHANGED_FILES="$CHANGED" run bash "$FIXTURE/tests/run-all-bats.sh"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Selection: 1 of 2 .bats file(s)"* ]]
+    [[ "$output" == *"=== Running: plugins/x/scripts/direct.bats ==="* ]]
+    [[ "$output" != *"other.bats"* ]]
+    [[ "$output" == *"Summary: 1 passed, 0 failed"* ]]
+}
+
+@test "selection: shell 側がコメント行に加えてコメントでない行でも言及する basename は全件" {
+    setup_selection_repo
+    printf '#!/usr/bin/env bash\n# runs direct.mjs\nnode "$(dirname "$0")/direct.mjs"\n' \
+        > "$FIXTURE/plugins/x/hooks/run-direct.sh"
+    write_changed "plugins/x/scripts/direct.mjs"
+
+    DEVFLOW_CHANGED_FILES="$CHANGED" run bash "$FIXTURE/tests/run-all-bats.sh"
+
+    assert_full_run
+    [[ "$output" == *"Selection: all (plugins/x/scripts/direct.mjs: basename referenced by shell-side file plugins/x/hooks/run-direct.sh)"* ]]
+}
+
 @test "selection: どこからも参照されない .mjs と .md だけなら bats を起動せず exit 0" {
     setup_selection_repo leak
     write_changed "plugins/x/scripts/unref.mjs" "docs/guide.md"
