@@ -95,18 +95,19 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 
 ## Validate
 
-- **判定**: test が green か。test の実行は exec-proxy `run-tests start <WT> --base origin/<base>` のあと `run-tests wait <WT>` を
-  繰り返す（`runTestsJob`）stdout の転写だけで、`tests/run-*.sh` を
-  全本実行し、全本 exit 0 のときだけ green。run-tests は merge-base が解決できたときだけ `tests/run-*.sh` に
-  `DEVFLOW_CHANGED_FILES`（merge-base からの差分と untracked の WT 相対パスを 1 行 1 件で書いたファイルの絶対パス）と `DEVFLOW_BASE`
-  （merge-base の sha）を渡す。未設定（`--base` 無し等）は全件実行。テストの選択は repo 側のランナーが行う。
-  テストの直前に `workspace-prebuild <WT>` が pnpm ワークスペースの成果物を作り直す（依存先の変更で古くなる）
-  - 各回の test の前に `pre-commit-hook <WT>` が対象 repo の pre-commit hook を PR phase の commit と同じ stage で回し、exit 非 0 は
-    その回を green にせず出力のログのパスだけ green-fix に渡す（hook 無し・結果不明は何も足さない）
+- **判定**: test が green か。exec-proxy `run-tests start <WT> --base origin/<base>` → `run-tests wait <WT>` の繰り返し（`runTestsJob`）の stdout の
+  転写だけで、`tests/run-*.sh` を全本実行し、全本 exit 0 のときだけ green。直前に `workspace-prebuild <WT>` が pnpm ワークスペースの
+  成果物を作り直す
+  - ランナーの契約: merge-base を解決できたときだけ `DEVFLOW_CHANGED_FILES`（差分と untracked の WT 相対パスを 1 行 1 件で書いた
+    ファイルの絶対パス）と `DEVFLOW_BASE`（merge-base の sha）を渡す（未設定は全件実行。選択はランナー側）。`DEVFLOW_FAILED_FILES`
+    には exit 非 0 のランナーが落ちたテストファイルを同じ書式で漏れなく書く。漏れは base との切り分けで見落とされ green に倒しうる。
+    全部を書けないなら書かない
+  - 各回の test 前に `pre-commit-hook <WT>` が対象 repo の pre-commit hook を PR phase の commit と同じ stage で回し、exit 非 0 は
+    その回を green にせずログのパスだけ green-fix に渡す（hook 無し・結果不明は何も足さない）
   - red なら green-fix（同じ `dev-implementer` を sonnet で）を `GREEN_MAX` まで回す。その前に失敗を分類し、diff と無関係で base でも
-    同じように落ちるテストは ENV 項目（advisory）として green 要件から外す（`_lib/base-failure-triage.mjs`）
-  - empty-diff gate — working tree が base と同じ tree なら 1 回だけ差し戻し、Validate をやり直す
-  - repo が `"dev-flow".local_verify` を宣言していれば、ci AC を Validate の green 後・Evaluate の前に pg-broker の使い捨て DB で
+    落ちるテストは ENV 項目（advisory）として green 要件から外す（`_lib/base-failure-triage.mjs`）
+  - empty-diff gate — working tree が base と同じ tree なら 1 回差し戻し、Validate をやり直す
+  - repo が `"dev-flow".local_verify` を宣言していれば、ci AC を green 後・Evaluate の前に pg-broker の使い捨て DB で
     ローカル実行する（`execLocalVerify`）。失敗は dev-implementer に差し戻す（`AGENT_AC_REIMPL_MAX` を Evaluate と共有）
 - **失敗の扱い**:
   - `tests:'error'`（起動失敗。待機の上限・start / wait の null・schema 不一致も stop して同じ）は green-fix せずに抜け、
@@ -114,7 +115,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - base 失敗の分類材料（`failed_files`・diff の一覧・base での再実行）が欠けた失敗はすべて green-fix の対象（fail-safe。green 要件を緩めない）
   - workspace-prebuild の失敗はテストを実行せず red（fail-safe）
   - 差し戻し後も空 diff なら throw（fail-closed）。例外は人間の cross-repo ラベル opt-in と、worktree 外の dirty な成果物の決定論の証拠が
-    揃ったときだけの graceful 終端（`_lib/cross-repo-gate.mjs`）
+    揃ったときの graceful 終端（`_lib/cross-repo-gate.mjs`）
   - local-verify が pg-broker に届かない・結果を取れない・Validate が red なら、pr-iterate の CI 待ちに戻す（fail-open。理由は終端サマリーの参考に出す）
 - **コード**: `execValidatePhase`・`runValidateLoop`・`triageBaseFailures`・`execLocalVerify`・`execAcVerify`（`.claude/workflows/dev-flow.js`）、
   `_lib/run-tests-prompt.mjs`、`_lib/base-failure-triage.mjs`、`_lib/cross-repo-gate.mjs`、`_lib/local-verify.mjs`
@@ -176,7 +177,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - **micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target`
     の run は、フル pr-iterate の代わりに `pr-review-lite`（pr-reviewer の 1-pass review）→ `ci-check-lite`（CI の 1 回判定）の 2 spawn で
     終える。review が null か blocking（critical/major）を返したら CI を読まずにフル pr-iterate へ昇格し、CI が passed / no_checks で
-    なければ（failed・pending・error・null）同じく昇格する
+    なければ同じく昇格する
   - それ以外の run は nested の `workflow('dev-flow:pr-iterate-run')`（`prIterateArgs()`。`nested.caller: 'dev-flow'`）
 - **失敗の扱い**:
   - commit・push・PR 作成の中断（`committed:false`・PR 番号なし）は throw せず `pr_phase_failed` の failure で終える（fail-closed。
