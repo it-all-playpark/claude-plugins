@@ -76,6 +76,7 @@ export const EVALUATOR_OPERATIONAL_CONTRACT = {
     '- prompt に「final 再評価対象 item 一覧」が渡された場合、各 item を fix 後の最終 PR tree で再検証し、item_resolutions:[{id, resolution, evidence}] で全件返す。resolution は resolved（指摘内容が最終 tree で解消されている — revert / 修正済み等）/ unresolved の 2 値のみ。最終 tree で確かめられない item（ローカルで実行できない build / compose / e2e 等）は unresolved にする。',
     '- id は渡された id をそのまま返す。resolved は具体的 evidence 必須（commit / file:line）。evidence のない resolved は無視され未解消のまま表示される。',
     '- item_resolutions は表示専用で checked / merge tier / HOLD 判定は変えない（ESCALATE は解消済みでも HOLD のまま人がマージ可否を判断する）。',
+    '- prompt に「未解消 critical 一覧」が渡された場合、critical_resolutions 契約に従って各 item を最終 PR tree で再検証し critical_resolutions で全件返す（テストの green だけでは解消の根拠にならない）。',
     '- ac_results の契約（全 AC ちょうど 1 回・追加禁止）は item_resolutions の有無に関わらず不変。',
   ].join('\n'),
   // resolved_recheck / green_fix_recheck も prompt 注入のみで配送する（evaluator.md へ mirror しない。
@@ -167,4 +168,27 @@ export function normalizeConcernResolution(cr) {
     throw new Error(`normalizeConcernResolution: resolution '${cr.resolution}' is out-of-enum (expected one of ${JSON.stringify(CONCERN_RESOLUTIONS)}): ${JSON.stringify(cr)}`)
   }
   return { id: cr.id, resolution: cr.resolution, evidence: typeof cr.evidence === 'string' ? cr.evidence : null }
+}
+
+// evaluator が返した critical_resolutions[] のうち ledger の EVAL-* を checked にしてよい要素を {id, evidence} で返す純関数。
+// Evaluate（eval#N）と Final AC reconcile が同じ規則で使う。入力を mutate しない。同じ id は最初に採用した 1 件だけ。
+// 採用する条件（すべて満たす要素だけ）:
+//   - id が targetIds（呼び出し側が解消の対象にした id。Final AC reconcile は prompt の「未解消 critical 一覧」で渡した id）に含まれる
+//   - items に同じ id の item があり、id が 'EVAL-' で始まり source:'evaluator'・severity:'critical'・未 checked
+//     （SEC / TESTSURF（source:'seed'）・AC-FINAL-*（接頭辞が異なる）・checked 済みはこの経路で解消しない）
+//   - resolved === true かつ evidence が空白以外を含む string
+// resolved:false・evidence の無い resolved:true・返されなかった item は未解消のまま据え置く（沈黙を解消扱いにしない）。
+export function acceptedCriticalResolutions(resolutions, targetIds, items) {
+  const ids = Array.isArray(targetIds) ? targetIds : []
+  const ledgerItems = Array.isArray(items) ? items : []
+  const accepted = []
+  for (const cr of (Array.isArray(resolutions) ? resolutions : [])) {
+    if (!cr || typeof cr !== 'object' || typeof cr.id !== 'string' || !ids.includes(cr.id)) continue
+    if (accepted.some((a) => a.id === cr.id)) continue
+    const item = ledgerItems.find((it) => it && it.id === cr.id)
+    if (!item || !cr.id.startsWith('EVAL-') || item.source !== 'evaluator' || item.severity !== 'critical' || item.checked) continue
+    if (cr.resolved !== true || typeof cr.evidence !== 'string' || cr.evidence.trim().length === 0) continue
+    accepted.push({ id: cr.id, evidence: cr.evidence })
+  }
+  return accepted
 }

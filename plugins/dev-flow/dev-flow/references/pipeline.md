@@ -233,8 +233,8 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
     （PR が CI を書き換えうる）
   - 最終の changed-files で宣言外変更を監査し直す
   - final test が green（no_tests を含む）の run（`reverified`）だけ、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
-    解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking は test#final green を head sha に pin した
-    evidence で checked にする（evaluator は fix 後に再実行されないため。`finalEvalBlockingResolutions`）。SEC seed・TESTSURF・AC-FINAL は LLM の判断で解消しない
+    解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking（escalate 除く）は一覧と
+    `critical_resolutions` 契約を渡し、Evaluate と同じ `acceptedCriticalResolutions` で解消したものだけ checked（unavailable の応答・test の green では外さない）。SEC seed・TESTSURF・AC-FINAL は対象外
   - Evaluate で red→green を実証していない観測型 AC に Final AC reconcile が `verified_by:'test'` と `test_files` / `impl_files` を返したら、
     最終 tree で redgreen-verify（`redgreen-final`。impl は `origin/<base>` との merge-base まで戻す）を `start` / `wait` で実行し、red→green が成立して
     vdelta が deny しなければ deterministic に昇格する（`finalRedgreenTargets`）。fix がテストを直した run を人手 AC 待ちにしないため
@@ -249,7 +249,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - `redgreen-final` の失敗（Evaluate と同じ + throw）・red→green 不成立・vdelta の deny は昇格せず、観測型 AC は人手 AC 待ちのまま（fail-safe）
   - changed-files の取得失敗は宣言外の再監査を skip（fail-open。test gate は維持）。PR 本文の AC checkbox の更新失敗も fail-open
 - **コード**: `phase('Final reconcile')`（`.claude/workflows/dev-flow.js`）、`_lib/final-test-rerun.mjs`、
-  `_lib/final-ac-reconcile.mjs`（`finalEvalBlockingResolutions`・`finalRedgreenTargets`）、`_lib/redgreen-targets.mjs`、`_lib/post-eval-recheck.mjs`
+  `_lib/final-ac-reconcile.mjs`（`finalRedgreenTargets`）、`_lib/redgreen-targets.mjs`、`_lib/post-eval-recheck.mjs`
 
 ## Merge tier
 
