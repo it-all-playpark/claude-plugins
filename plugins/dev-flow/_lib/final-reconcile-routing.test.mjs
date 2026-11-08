@@ -382,7 +382,7 @@ function summaryBodyOf(calls) {
 }
 
 // eval#1 が critical を 1 件返す → EVAL-1-* が blocking lane に未 checked で残ったまま PR へ進む
-// （test#final green なら finalEvalBlockingResolutions が checked にする状態）
+// （Final AC reconcile が critical_resolutions で解消と判定しない限り未 checked のまま）
 const EVAL_CRITICAL = {
   verdict: 'fail', total: 40, threshold: 80,
   feedback: [{ severity: 'critical', topic: 'summary format regression', description: 'summary の整形が壊れている', dimension: 'correctness' }],
@@ -423,8 +423,8 @@ test("[final-reconcile] (n) test#final red + failed_files の単体再実行 gre
   assert.equal(result?.merge_tier, 'HOLD', `(n) merge_tier は HOLD のはずだが ${JSON.stringify(result?.merge_tier_reasons)}`);
   assert.deepEqual((result?.merge_tier_hold_reasons ?? []).filter((r) => r.code === 'final_test_red').map((r) => r.kind).join(','), 'human_judgment', JSON.stringify(result?.merge_tier_hold_reasons));
 
-  // EVAL-* blocking は単体再実行の green を根拠に解消しない（finalEvalBlockingResolutions は finalTestGreen===true だけ）
-  assert.ok(!logs.some((l) => /^EVAL-1-/.test(l) && l.includes('checked（issue #720）')), `(n) EVAL-* が checked になってはならない: ${JSON.stringify(logs.filter((l) => l.includes('EVAL-')))}`);
+  // EVAL-* blocking は単体再実行の green を根拠に解消しない（red の run では Final AC reconcile も走らない）
+  assert.ok(!logs.some((l) => /^EVAL-1-/.test(l) && l.includes('→ checked')), `(n) EVAL-* が checked になってはならない: ${JSON.stringify(logs.filter((l) => l.includes('EVAL-')))}`);
   assert.equal(result?.ledger_converged, false, '(n) ledger は未収束のまま');
   assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'ledger_unconverged'), JSON.stringify(result?.merge_tier_hold_reasons));
 

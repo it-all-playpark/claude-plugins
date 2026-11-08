@@ -8,7 +8,7 @@ import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, shapeOverrides }
 import {
   EVALUATOR_OPERATIONAL_CONTRACT, CONCERN_RESOLUTIONS, normalizeConcernResolution,
   EVAL_DESCRIPTION_MAX, EVAL_SUGGESTION_MAX, EVAL_EVIDENCE_MAX, EVAL_FULL_SUITE,
-  TEST_LOG_REUSE, TEST_LOG_EVIDENCE_LIMIT, validateResultPromptBlock,
+  TEST_LOG_REUSE, TEST_LOG_EVIDENCE_LIMIT, validateResultPromptBlock, acceptedCriticalResolutions,
 } from './evaluator-contract.mjs';
 import { RESOLVED_CELL_MAX } from './devflow-summary-format.mjs';
 
@@ -295,6 +295,66 @@ test('[normalizeConcernResolution] null input throws', () => {
 
 test('[normalizeConcernResolution] array input throws', () => {
   assert.throws(() => normalizeConcernResolution(['CONCERN-1', 'resolved', 'e']));
+});
+
+// ---- issue #1267: critical_resolutions の採用規則（Evaluate と Final AC reconcile が共有）----
+
+const EVAL_A = { id: 'EVAL-1-authz-missing', source: 'evaluator', severity: 'critical', checked: false };
+const EVAL_B = { id: 'EVAL-1-summary-format', source: 'evaluator', severity: 'critical', checked: false };
+const CRIT_ITEMS = [
+  EVAL_A, EVAL_B,
+  { id: 'EVAL-1-already-done', source: 'evaluator', severity: 'critical', checked: true },
+  { id: 'SEC-SECRETS', source: 'seed', dimension: 'security', severity: 'critical', checked: false },
+  { id: 'TESTSURF-SKIP', source: 'seed', dimension: 'test-integrity', severity: 'critical', checked: false },
+  { id: 'AC-FINAL-1', source: 'evaluator', dimension: 'ac', severity: 'critical', checked: false },
+];
+const ALL_IDS = CRIT_ITEMS.map((it) => it.id);
+
+test('[acceptedCriticalResolutions] 渡した未 checked の EVAL-* に resolved:true + evidence → evidence 付きで採用', () => {
+  const r = acceptedCriticalResolutions([{ id: EVAL_A.id, resolved: true, evidence: 'src/api.ts:12 で認可チェックを追加' }], [EVAL_A.id], CRIT_ITEMS);
+  assert.deepEqual(r, [{ id: EVAL_A.id, evidence: 'src/api.ts:12 で認可チェックを追加' }]);
+});
+
+test('[acceptedCriticalResolutions] 渡していない id は resolved:true + evidence でも採用しない', () => {
+  const r = acceptedCriticalResolutions([{ id: EVAL_B.id, resolved: true, evidence: 'src/s.ts:3' }], [EVAL_A.id], CRIT_ITEMS);
+  assert.deepEqual(r, []);
+});
+
+test('[acceptedCriticalResolutions] evidence の無い resolved:true（欠落・空文字・空白のみ・非 string）は採用しない', () => {
+  for (const evidence of [undefined, '', '   ', 42]) {
+    const r = acceptedCriticalResolutions([{ id: EVAL_A.id, resolved: true, evidence }], [EVAL_A.id], CRIT_ITEMS);
+    assert.deepEqual(r, [], `evidence=${JSON.stringify(evidence)}`);
+  }
+});
+
+test('[acceptedCriticalResolutions] resolved:false は evidence があっても採用しない', () => {
+  const r = acceptedCriticalResolutions([{ id: EVAL_A.id, resolved: false, evidence: '認可チェックがまだ無い' }], [EVAL_A.id], CRIT_ITEMS);
+  assert.deepEqual(r, []);
+});
+
+test('[acceptedCriticalResolutions] SEC / TESTSURF / AC-FINAL-* / checked 済み / ledger に無い id は渡されていても採用しない', () => {
+  const ids = ['SEC-SECRETS', 'TESTSURF-SKIP', 'AC-FINAL-1', 'EVAL-1-already-done', 'EVAL-9-unknown'];
+  const r = acceptedCriticalResolutions(ids.map((id) => ({ id, resolved: true, evidence: 'ok' })), [...ALL_IDS, 'EVAL-9-unknown'], CRIT_ITEMS);
+  assert.deepEqual(r, []);
+});
+
+test('[acceptedCriticalResolutions] 同じ id は最初に採用した 1 件だけ・入力順・null や配列でない入力は空', () => {
+  const r = acceptedCriticalResolutions([
+    null,
+    { id: EVAL_B.id, resolved: true, evidence: 'b1' },
+    { id: EVAL_A.id, resolved: true, evidence: 'a1' },
+    { id: EVAL_B.id, resolved: true, evidence: 'b2' },
+  ], ALL_IDS, CRIT_ITEMS);
+  assert.deepEqual(r, [{ id: EVAL_B.id, evidence: 'b1' }, { id: EVAL_A.id, evidence: 'a1' }]);
+  for (const input of [null, undefined, {}]) assert.deepEqual(acceptedCriticalResolutions(input, ALL_IDS, CRIT_ITEMS), []);
+});
+
+test('[acceptedCriticalResolutions] 入力を mutate しない', () => {
+  const items = CRIT_ITEMS.map((it) => ({ ...it }));
+  const resolutions = [{ id: EVAL_A.id, resolved: true, evidence: 'e' }];
+  const before = JSON.stringify({ items, resolutions });
+  acceptedCriticalResolutions(resolutions, [EVAL_A.id], items);
+  assert.equal(JSON.stringify({ items, resolutions }), before);
 });
 
 test('[schema] pr-iterate REVIEW.issues enforces stable stuck-detection fields', () => {
