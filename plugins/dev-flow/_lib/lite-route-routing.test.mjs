@@ -4,7 +4,7 @@
 // AC-1 再ピン定義（plan-reviewer critical finding ac-target-infeasible::AC-1 への対応）:
 //   AC-1 の計数対象は「判断系 agent」— agentType ∈ {dev-implementer, dev-runner,
 //   pr-reviewer} — の呼び出しのみとする。dev-runner-haiku / dev-runner-haiku-ro
-//   （exec-proxy: Setup base/worktree/deps・danger-grep・realized-diff・structural-classify・
+//   （exec-proxy: Setup base/worktree/deps・danger-grep・realized-diff・
 //   diff-hash・ci-check・post-comment・journal。専用 clock probe は issue #550 F1+F3 で撤去済み）
 //   は W7 軸A invariant のゲート/構造呼び出し
 //   であり削減禁止のため計数対象外とする。issue の「22→10」はこの判断系スコープへ再定義する。
@@ -113,7 +113,7 @@ function makeLiteRouteSandbox(analyzeReq, opts = {}) {
     // state.runEval が強制 true になり LITE ゲートを常に無効化してしまうため、clean シナリオでは
     // realized 変更なしを明示的に返す）は [] 固定。
     if (label === 'danger-grep') {
-      return { risk: { ok: true, hits: dangerHits }, files: [], struct: null, diffhash: null };
+      return { risk: { ok: true, hits: dangerHits }, files: [], diffhash: null };
     }
     if (label === 'security-scope') {
       return typeof securityScope === 'function' ? securityScope() : securityScope;

@@ -77,7 +77,7 @@ test('[shape-calibration] (b) jev 経路: analyze ゲートの spawn 0、log に
 test('[shape-calibration] (d) realized count 欠損（files=null）: shape=complex、shape_reason は safe floor 文', async () => {
   const { telemetry, result } = await runScenario({
     overrides: {
-      'danger-grep': { risk: { ok: true, hits: [] }, files: null, struct: null, diffhash: { hash: 'AAA', empty: false } },
+      'danger-grep': { risk: { ok: true, hits: [] }, files: null, diffhash: { hash: 'AAA', empty: false } },
     },
   });
   assert.equal(telemetry.shape, 'complex');
@@ -89,7 +89,7 @@ test('[shape-calibration] (e) 宣言外パス除外: realized_file_count は cla
   const files = ['src/x.ts', 'src/y.ts', 'src/z.ts', 'src/u1.ts', 'src/u2.ts', 'src/u3.ts'];
   const { telemetry, result } = await runScenario({
     overrides: {
-      'danger-grep': { risk: { ok: true, hits: [] }, files, struct: null, diffhash: { hash: 'AAA', empty: false } },
+      'danger-grep': { risk: { ok: true, hits: [] }, files, diffhash: { hash: 'AAA', empty: false } },
     },
   });
   // plan は STANDARD_FILES 3 件のみ宣言 → 3 件が宣言外で realized count から除外され、shape は standard（raw 6 なら complex）

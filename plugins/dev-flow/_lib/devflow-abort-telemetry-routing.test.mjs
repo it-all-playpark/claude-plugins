@@ -40,7 +40,7 @@ function makeSandbox({
 
     // Diff triage 統合 exec-proxy: realized 3 件（dev-implementer の申告と一致 → 宣言外 0 件）。
     // 実効 shape は realized 3 件 + AC 数で決まる（issue #676）: AC 2 → standard、AC 7 → complex。
-    if (label.startsWith('danger-grep')) return { risk: { ok: true, hits: [] }, files: [...REALIZED_FILES], struct: null, diffhash: null };
+    if (label.startsWith('danger-grep')) return { risk: { ok: true, hits: [] }, files: [...REALIZED_FILES], diffhash: null };
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
     if (agentType === 'dev-flow:evaluator') {
       return {

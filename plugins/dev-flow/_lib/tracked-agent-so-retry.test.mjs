@@ -32,7 +32,7 @@ const prIterateSrc = readFileSync(prIteratePath, 'utf8');
 const CONTRACT_VIOLATION_MSG =
   "agent({schema}): subagent completed without calling StructuredOutput (after in-conversation nudge)";
 
-const DANGER_GREP_OK = { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'AAA', empty: false } };
+const DANGER_GREP_OK = { risk: { ok: true, hits: [] }, files: ['src/x.ts'], diffhash: { hash: 'AAA', empty: false } };
 
 // ── (a) リトライ成功 ─────────────────────────────────────────────────────
 

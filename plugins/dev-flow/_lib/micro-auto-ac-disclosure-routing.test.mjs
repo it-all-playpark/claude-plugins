@@ -40,7 +40,7 @@ function makeSandbox({ realizedFiles, declaredFiles = realizedFiles }) {
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // label 'danger-grep'（issue #544 統合呼び出し）: risk/files を 1 応答で返す
     // （files は旧 realized-diff 相当）。
-    if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: realizedFiles, struct: null, diffhash: null };
+    if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: realizedFiles, diffhash: null };
     if (label === 'merge-tier-facts') return mergeTierFacts({ files: realizedFiles });
     if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 'issue-1', files: declaredFiles, summary: '', concerns: [] };

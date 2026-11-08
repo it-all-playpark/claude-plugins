@@ -2,9 +2,9 @@
 # Tests for _shared/scripts/diff-triage.sh (issue #544, P1)
 #
 # Strategy: mktemp -d の隔離 git fixture repo を worktree-path として扱い、
-# diff-triage.sh を実行して JSON 出力の各フィールド (risk/files/struct/diffhash)
+# diff-triage.sh を実行して JSON 出力の各フィールド (risk/files/diffhash/lines)
 # を検証する。フィールド独立性(1 フィールドの失敗が他へ波及しない)は PATH 細工
-# (jq 不在シミュレート・fake git read-tree 失敗・DIFFT_BIN シーム)で個別に誘発する。
+# (jq 不在シミュレート・fake git read-tree / numstat 失敗)で個別に誘発する。
 #
 # NOTE: 実装されるまでこれらのテストは fail (red) になる想定 (TDD)。
 
@@ -46,14 +46,14 @@ teardown() {
 # ---------------------------------------------------------------------------
 # (a) クリーンな fixture -> 全フィールド正常
 # ---------------------------------------------------------------------------
-@test "クリーンな worktree -> risk.ok==true, files==[], struct/diffhash 非null" {
+@test "クリーンな worktree -> 出力キーは risk/files/diffhash/lines、risk.ok==true, files==[], diffhash 非null" {
     run bash "$SCRIPT" "$REPO" "$BASE_REF"
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" | jq -e '
+        keys == ["diffhash", "files", "lines", "risk"] and
         .risk.ok == true and
         (.risk.hits | length) == 0 and
         .files == [] and
-        .struct != null and
         .diffhash != null
     '
 }
@@ -183,7 +183,7 @@ STUB
     cat > "$GIT_STUB_BIN/git" <<STUB
 #!/usr/bin/env bash
 # worktree-diff-hash.sh だけが呼ぶ "git ... read-tree ..." を狙い撃ちで失敗させる。
-# diff-risk-classify.sh / structural-classify.sh / diff-triage.sh 本体の
+# diff-risk-classify.sh / diff-triage.sh 本体の
 # git 呼び出しには read-tree が現れないため、他フィールドには波及しない。
 for arg in "\$@"; do
     if [[ "\$arg" == "read-tree" ]]; then
@@ -205,38 +205,24 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
-# (f) difft 不在 PATH -> struct.available==false でも risk/files 正常
-# ---------------------------------------------------------------------------
-@test "difft 不在 -> struct.available==false でも risk/files は正常" {
-    run bash -c "DIFFT_BIN='difft-definitely-not-installed' PATH='$ORIG_PATH' bash '$SCRIPT' '$REPO' '$BASE_REF'"
-    [ "$status" -eq 0 ]
-    printf '%s\n' "$output" | jq -e '
-        .struct.ok == true and
-        .struct.available == false and
-        .risk.ok == true and
-        .files == []
-    '
-}
-
-# ---------------------------------------------------------------------------
-# (g) 引数不足・worktree 不在 -> usage error, exit 非0, 全フィールド安全側 degrade
+# (f) 引数不足・worktree 不在 -> usage error, exit 非0, 全フィールド安全側 degrade
 # ---------------------------------------------------------------------------
 @test "引数不足(0引数) -> usage error で exit 非0" {
     run bash "$SCRIPT"
     [ "$status" -ne 0 ]
-    printf '%s\n' "$output" | jq -e '.risk.ok == false and .files == null and .struct == null and .diffhash == null and .lines == null'
+    printf '%s\n' "$output" | jq -e 'keys == ["diffhash", "files", "lines", "risk"] and .risk.ok == false and .files == null and .diffhash == null and .lines == null'
 }
 
 @test "引数不足(worktree-pathのみ) -> usage error で exit 非0" {
     run bash "$SCRIPT" "$REPO"
     [ "$status" -ne 0 ]
-    printf '%s\n' "$output" | jq -e '.risk.ok == false and .files == null and .struct == null and .diffhash == null'
+    printf '%s\n' "$output" | jq -e '.risk.ok == false and .files == null and .diffhash == null'
 }
 
 @test "worktree パス不在 -> usage error で exit 非0" {
     run bash "$SCRIPT" "/nonexistent-worktree-path-xyz" "$BASE_REF"
     [ "$status" -ne 0 ]
-    printf '%s\n' "$output" | jq -e '.risk.ok == false and .files == null and .struct == null and .diffhash == null'
+    printf '%s\n' "$output" | jq -e '.risk.ok == false and .files == null and .diffhash == null'
 }
 
 # ---------------------------------------------------------------------------
@@ -247,7 +233,6 @@ STUB
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" | grep -q '"jq_not_installed"'
     printf '%s\n' "$output" | grep -q '"files":null'
-    printf '%s\n' "$output" | grep -q '"struct":null'
     printf '%s\n' "$output" | grep -q '"diffhash":null'
 }
 

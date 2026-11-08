@@ -47,10 +47,10 @@ function makeSandbox(dangerGrepResponse, evaluatorResponse) {
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // Diff triage: label 'danger-grep' は issue #544 で統合呼び出しへ変わった
-    // （diff-triage.sh 経由の {risk, files, struct, diffhash} 応答）。dangerGrepResponse
+    // （diff-triage.sh 経由の {risk, files, diffhash} 応答）。dangerGrepResponse
     // を risk フィールドに包んで返す（fail-closed / clean を切り替え可能）。
     if (label === 'danger-grep') {
-      return { risk: dangerGrepResponse, files: ['src/foo.ts'], struct: null, diffhash: null };
+      return { risk: dangerGrepResponse, files: ['src/foo.ts'], diffhash: null };
     }
     // Merge tier: label 'merge-tier-facts'（統合呼び出し）は dangerGrepResponse を risk サブ結果に包んで返す。
     if (label === 'merge-tier-facts') {

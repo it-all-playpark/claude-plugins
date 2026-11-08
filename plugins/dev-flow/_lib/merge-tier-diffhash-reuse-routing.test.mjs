@@ -58,10 +58,10 @@ function createResponder(overrides = {}) {
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // label 'danger-grep'（Diff triage。issue #544 統合呼び出し）は
-    // {risk, files, struct, diffhash} を 1 応答で返す。diffhash は既定で diff-triage/merge 同一
+    // {risk, files, diffhash} を 1 応答で返す。diffhash は既定で diff-triage/merge 同一
     // ハッシュ（再利用が発火する）。不一致にしたいテストは override で個別に上書きする。
     if (label === 'danger-grep') {
-      return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'SAMEHASH', empty: false } };
+      return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], diffhash: { hash: 'SAMEHASH', empty: false } };
     }
     // merge-tier-facts（Merge tier 統合呼び出し）は既定で diff-triage 側と同一ハッシュ（再利用が発火する）
     // かつ risk に hit を仕込む — 再利用が発火すれば hit は使われず REVIEW、facts の risk が使われれば HOLD
@@ -105,7 +105,7 @@ test('[diffhash-reuse] (1) 完全一致 → facts.risk の hit は使われず�
 test("[diffhash-reuse] (2) hash 不一致 → facts.risk（hit）で再判定され HOLD", async () => {
   const { ctx, logs } = makeSandbox({
     overrides: {
-      'danger-grep': { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'A', empty: false } },
+      'danger-grep': { risk: { ok: true, hits: [] }, files: ['src/x.ts'], diffhash: { hash: 'A', empty: false } },
       'merge-tier-facts': mergeTierFacts({ hash: 'B', risk: FACTS_RISK_HIT, files: ['src/x.ts'] }),
     },
   });
@@ -142,7 +142,7 @@ test("[diffhash-reuse] (3) facts の diffhash が ok:false（取得失敗） →
 test("[diffhash-reuse] (4) Diff triage fail-closed → 再利用 log 無し・facts.risk fail-closed で merge_tier HOLD（fail-closed 維持）", async () => {
   const { ctx, calls, logs } = makeSandbox({
     overrides: {
-      'danger-grep': { risk: { ok: false, hits: [], error: 'sec floor stub fail' }, files: null, struct: null, diffhash: null },
+      'danger-grep': { risk: { ok: false, hits: [], error: 'sec floor stub fail' }, files: null, diffhash: null },
       'merge-tier-facts': mergeTierFacts({ risk: { ok: false, hits: [], error: 'merge tier stub fail' }, files: ['src/x.ts'] }),
     },
   });
@@ -166,7 +166,6 @@ test("[diffhash-reuse] (5) hash 一致 + Diff triage で danger hit → 再利�
       'danger-grep': {
         risk: { ok: true, hits: [{ class: 'config', file: 'src/x.ts', pattern: 'p' }] },
         files: ['src/x.ts'],
-        struct: null,
         diffhash: { hash: 'SAMEHASH', empty: false },
       },
       'merge-tier-facts': mergeTierFacts({ hash: 'SAMEHASH', risk: { ok: true, hits: [] }, files: ['src/x.ts'] }),

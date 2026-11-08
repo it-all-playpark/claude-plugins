@@ -47,7 +47,7 @@ const src = readFileSync(devFlowPath, 'utf8');
  * 相違点: calls 配列に { label, agentType, prompt } を記録する（prompt も記録するよう拡張）。
  *
  * porcelain 統合（F3, issue #219）後、さらに issue #544 (S1) で danger-grep(risk) /
- * realized-diff(files) / structural-classify(struct) / diff-hash-triage(hash) の 4 呼び出しが
+ * realized-diff(files) / diff-hash-triage(hash) の呼び出しが
  * diff-triage.sh 経由の単一呼び出し（label 'danger-grep' 据え置き）へ統合された。
  * files（旧 realized-diff・declared-path-check スナップショット）はその応答の files フィールドで得る。
  *
@@ -72,7 +72,7 @@ function makeCountingSandbox(analyzeReq, realizedFiles, declaredFiles = []) {
     // label 'danger-grep'（issue #544 統合呼び出し）は risk/files を 1 応答で返す
     // （files は旧 realized-diff 相当のスナップショット）。
     if (label === 'danger-grep') {
-      return { risk: { ok: true, hits: [] }, files: realizedFiles, struct: null, diffhash: null };
+      return { risk: { ok: true, hits: [] }, files: realizedFiles, diffhash: null };
     }
     if (label.startsWith('test')) {
       return { tests: 'no_tests', green: true, summary: '' };

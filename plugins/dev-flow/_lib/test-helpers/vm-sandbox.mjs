@@ -354,7 +354,7 @@ export function shapeOverrides(shape, { issue = 1 } = {}) {
     [`impl:serial:issue-${issue}`]: impl,
     [`reimpl#1:serial:issue-${issue}`]: impl,
     [`reimpl#2:serial:issue-${issue}`]: impl,
-    'danger-grep': { risk: { ok: true, hits: [] }, files: [...files], struct: null, diffhash: { hash: 'AAA', empty: false } },
+    'danger-grep': { risk: { ok: true, hits: [] }, files: [...files], diffhash: { hash: 'AAA', empty: false } },
     ...(shape === 'micro' ? { 'ci-check-lite': { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], waited_seconds: 0, poll_attempts: 0 } } : {}),
   };
 }
@@ -395,7 +395,7 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
     // 実効 shape は realized diff の file 数だけで決まる（issue #676）。既定の 3 件 + AC 2 件 + type=fix →
     // 'standard'（Evaluate 1 pass・full route）。micro / complex に倒したい test は files を override する。
     if (label === 'danger-grep') {
-      return { risk: { ok: true, hits: [] }, files: [...STANDARD_FILES], struct: null, diffhash: { hash: 'AAA', empty: false } };
+      return { risk: { ok: true, hits: [] }, files: [...STANDARD_FILES], diffhash: { hash: 'AAA', empty: false } };
     }
     // Diff triage の敵対的 security review の対象判定（issue #1063）。既定は対象外（nested pr-iterate の stub が
     // security_review を返さないので、対象にすると Merge tier が security_review_unresolved で HOLD になる）。

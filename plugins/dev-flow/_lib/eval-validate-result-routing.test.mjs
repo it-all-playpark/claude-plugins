@@ -90,7 +90,7 @@ test('[eval-validate-result] tree が Validate と同じ eval#1 には各 script
   const changed = ['src/x.ts', 'src/x.test.ts'];
   const { ctx, calls } = makeDevFlowSandbox({ overrides: {
     'test#1': VAL_LOGS, 'diff-gate': { hash: 'AAA', empty: false }, 'diff-hash-eval': evalHashes('AAA'),
-    'danger-grep': { risk: { ok: true, hits: [] }, files: changed, struct: null, diffhash: null },
+    'danger-grep': { risk: { ok: true, hits: [] }, files: changed, diffhash: null },
   } });
   const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error, 'eval-validate-result-logs');
@@ -115,7 +115,7 @@ test('[eval-validate-result] ログパスが無い・tree が Validate と異な
     ['hash 不一致', VAL_LOGS, { 'diff-gate': { hash: 'AAA', empty: false }, 'diff-hash-eval': evalHashes('CCC') }, {}],
     ['realized diff のファイル取得失敗', VAL_LOGS, {
       'diff-gate': { hash: 'AAA', empty: false }, 'diff-hash-eval': evalHashes('AAA'),
-      'danger-grep': { risk: { ok: true, hits: [] }, files: null, struct: null, diffhash: null },
+      'danger-grep': { risk: { ok: true, hits: [] }, files: null, diffhash: null },
     }, {}],
     ['reimpl 後の eval#2', VAL_LOGS, {
       ...shapeOverrides('complex'),

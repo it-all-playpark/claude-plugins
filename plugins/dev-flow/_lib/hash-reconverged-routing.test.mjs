@@ -55,7 +55,7 @@ function createResponder(overrides = {}) {
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     if (label === 'danger-grep') {
-      return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], struct: null, diffhash: { hash: 'AAA', empty: false } };
+      return { risk: { ok: true, hits: [] }, files: ['src/x.ts'], diffhash: { hash: 'AAA', empty: false } };
     }
     if (label === 'diff-hash-eval') return { hash: 'AAA', empty: false };
     if (label === 'diff-hash-pr') return { hash: 'BBB', empty: false };

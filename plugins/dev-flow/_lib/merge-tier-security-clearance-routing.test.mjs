@@ -46,7 +46,7 @@ function makeSandbox(dangerGrepPre, dangerGrepFinal, evaluatorResponse, clearanc
     // risk フィールドへ包む。diffhash は Merge tier 側（'H_MERGE'）と意図的に異なる値にして
     // reuse を発火させない — シナリオが pre/final の乖離を前提にしているため）。
     if (label === 'danger-grep') {
-      return { risk: dangerGrepPre, files: ['src/foo.ts'], struct: null, diffhash: { hash: 'H', empty: false } };
+      return { risk: dangerGrepPre, files: ['src/foo.ts'], diffhash: { hash: 'H', empty: false } };
     }
     // Merge tier の最終 danger-grep は merge-tier-facts の risk サブ結果。diffhash は Diff triage 側（'H'）と
     // 意図的に異なる値（'H_MERGE'）にして reuse を発火させない — 本 test はシナリオごとに Diff triage と

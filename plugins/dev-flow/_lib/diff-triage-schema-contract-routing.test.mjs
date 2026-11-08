@@ -2,7 +2,7 @@
 //
 // (1) DIFF_TRIAGE schema を required:['risk']（risk は ok:boolean / hits:array 必須）に締める
 //     — 部分応答ネスト等の契約外形状を StructuredOutput の schema 契約違反として検知できるように
-//     する（struct / files / diffhash は引き続き required に含めず fail-open / fail-safe を維持）。
+//     する（files / diffhash / lines は引き続き required に含めず fail-open / fail-safe を維持）。
 // (2) execDiffTriagePhase の統合呼び出しに retryOnContractViolation:true を付け、契約違反時に
 //     trackedAgent の 1 回リトライ機会を与える。
 // (3) retry 後も不正形（もしくは throw）なら risk fail-closed に維持され、fail-closed 時は
@@ -96,7 +96,7 @@ function reconcileAndClassify(risk) {
 // AC1: DIFF_TRIAGE schema shape（VM 内で観測した opts.schema の構造）
 // ============================================================
 
-test('[diff-triage-schema-contract][AC1] DIFF_TRIAGE requires risk (ok:boolean, hits:array); struct/files/diffhash stay optional', async () => {
+test('[diff-triage-schema-contract][AC1] DIFF_TRIAGE requires risk (ok:boolean, hits:array); files/diffhash/lines stay optional', async () => {
   const call = await dangerGrepCallFromDefaultRun();
   const schema = cloneSchema(call);
   assert.deepEqual(schema.required, ['risk']);
@@ -105,12 +105,10 @@ test('[diff-triage-schema-contract][AC1] DIFF_TRIAGE requires risk (ok:boolean, 
   assert.equal(schema.properties.risk.properties.ok.type, 'boolean');
   assert.equal(schema.properties.risk.properties.hits.type, 'array');
 
-  assert.ok(!schema.required.includes('files'), 'files が required に含まれてはならない');
-  assert.ok(!schema.required.includes('struct'), 'struct が required に含まれてはならない');
-  assert.ok(!schema.required.includes('diffhash'), 'diffhash が required に含まれてはならない');
+  assert.deepEqual(Object.keys(schema.properties), ['risk', 'files', 'diffhash', 'lines']);
   assert.deepEqual(schema.properties.files.type, ['array', 'null']);
-  assert.deepEqual(schema.properties.struct.type, ['object', 'null']);
   assert.deepEqual(schema.properties.diffhash.type, ['object', 'null']);
+  assert.deepEqual(schema.properties.lines.type, ['array', 'null']);
 });
 
 // ============================================================
@@ -143,7 +141,7 @@ test('[diff-triage-schema-contract][AC3] nested {struct:{risk:...}} response fai
   assert.equal(flat.ok, true);
 
   const flatWithNulls = checkSchema(schema, {
-    risk: { ok: true, hits: [] }, files: null, struct: null, diffhash: null,
+    risk: { ok: true, hits: [] }, files: null, diffhash: null,
   });
   assert.equal(flatWithNulls.ok, true);
 

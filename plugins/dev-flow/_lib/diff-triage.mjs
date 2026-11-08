@@ -1,7 +1,7 @@
 // parseDiffTriageFields: dev-flow Diff triage が使う統合 exec-proxy
 // (`_shared/scripts/diff-triage.sh`) の応答を per-field 独立に検証する純関数 (issue #544, S1)。
 //
-// 統合スクリプトは {"risk":..., "files":..., "struct":..., "diffhash":..., "lines":...} の 1 JSON object を返すが、
+// 統合スクリプトは {"risk":..., "files":..., "diffhash":..., "lines":...} の 1 JSON object を返すが、
 // 各フィールドはそれぞれ別のフィールド別失敗ポリシーを持つ (下記)。本関数は「1 フィールドの不正が
 // 他フィールドの判定に影響しない」ことを保証するため、各フィールドを完全に独立して検証する。
 //
@@ -15,9 +15,6 @@
 //   files  - fail-safe。Array.isArray(unified?.files) かつ全要素が string のときのみ採用。
 //            それ以外は null (呼び出し側の realizedCount が NaN になり complex floor 安全弁へ
 //            流れる。空配列 [] は正常な 0 件の realized diff として null と区別して維持する)。
-//   struct - fail-open。unified?.struct が object かつ struct.ok===true かつ
-//            typeof struct.available==='boolean' かつ format_only/structural (structural は
-//            省略可、省略時は [] 扱い) が配列のときのみ採用。それ以外は null。
 //   hash   - fail-open。typeof unified?.diffhash?.hash==='string' のときのみその文字列を採用。
 //            それ以外は null。
 //   lines  - fail-safe。Array.isArray(unified?.lines) かつ全要素が {path:string, added/deleted: 0 以上の
@@ -51,21 +48,6 @@ function parseFilesField(unified) {
   return null;
 }
 
-function parseStructField(unified) {
-  const struct = unified?.struct;
-  if (
-    struct != null
-    && typeof struct === 'object'
-    && struct.ok === true
-    && typeof struct.available === 'boolean'
-    && Array.isArray(struct.format_only)
-    && Array.isArray(struct.structural ?? [])
-  ) {
-    return struct;
-  }
-  return null;
-}
-
 function parseHashField(unified) {
   const hash = unified?.diffhash?.hash;
   return typeof hash === 'string' ? hash : null;
@@ -87,7 +69,6 @@ export function parseDiffTriageFields(unified) {
   return {
     risk: parseRiskField(unified),
     files: parseFilesField(unified),
-    struct: parseStructField(unified),
     hash: parseHashField(unified),
     lines: parseLinesField(unified),
   };

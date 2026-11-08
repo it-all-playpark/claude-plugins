@@ -1,12 +1,12 @@
 // Issue #550 (S2): Diff triage 統合 exec-proxy (danger-grep / realized-diff /
-// structural-classify / diff-hash-triage の 4→1 統合) の routing / 挙動 pin。
+// diff-hash-triage の統合) の routing / 挙動 pin。
 //
 // (A) 挙動 pin（issue #636: dev-flow.js の raw ソース regex 走査から、共有 vm-sandbox.mjs
 //     （agent() mock）による VM 挙動検証へ移行）:
 //   A1. label 'danger-grep'（Diff triage）は VM 内で agentType:'dev-flow:dev-runner-haiku-ro'
 //       として観測され、opts.schema（clone）は required:['risk']
-//   A2. 既定 run の calls に label 'realized-diff' / 'structural-classify' / 'diff-hash-triage'
-//       が 0 件（4→1 の統合を run 全体の呼び出し集合で実測）
+//   A2. 既定 run の calls に label 'realized-diff' / 'diff-hash-triage'
+//       が 0 件（統合を run 全体の呼び出し集合で実測）
 //   A3. 既定 run の全 calls の prompt に '--out' 文字列が含まれない（証跡書き込み撤去。AC1）
 //   A4. label 'merge-tier-facts'（Merge tier）は agentType:'dev-flow:dev-runner-haiku-ro'
 //   A5. 統合呼び出しは try/catch で包まれ need() では包まれない —
@@ -69,9 +69,9 @@ test("[diff-triage-routing][A1] label 'danger-grep'（Diff triage）は agentTyp
   assert.deepEqual(schema.required, ['risk']);
 });
 
-test("[diff-triage-routing][A2] 既定 run に label 'realized-diff' / 'structural-classify' / 'diff-hash-triage' が存在しない（4→1 統合。AC2）", async () => {
+test("[diff-triage-routing][A2] 既定 run に label 'realized-diff' / 'diff-hash-triage' が存在しない（統合。AC2）", async () => {
   const { calls } = await defaultRun();
-  for (const label of ['realized-diff', 'structural-classify', 'diff-hash-triage']) {
+  for (const label of ['realized-diff', 'diff-hash-triage']) {
     const count = calls.filter((c) => c.label === label).length;
     assert.equal(count, 0, `label '${label}' は統合により消滅しているはずだが ${count} 件見つかった`);
   }
@@ -147,7 +147,6 @@ test('[diff-triage-routing][B-c] risk 正常 + files 欠落 → dangerHits は�
   const unified = {
     risk: { ok: true, hits: [{ file: 'src/auth.ts', class: 'auth', severity: 'critical' }] },
     files: 'not-an-array',
-    struct: null,
     diffhash: null,
   };
   const { risk, files } = parseDiffTriageFields(unified);
@@ -167,7 +166,7 @@ test('[diff-triage-routing][B-c] risk 正常 + files 欠落 → dangerHits は�
 });
 
 test('[diff-triage-routing][B-d] risk 欠落 + files 正常 → SEC fail-closed だが files は正常配列のまま（独立性）', () => {
-  const unified = { files: ['src/foo.ts', 'src/bar.ts'], struct: null, diffhash: null };
+  const unified = { files: ['src/foo.ts', 'src/bar.ts'], diffhash: null };
   const { risk, files } = parseDiffTriageFields(unified);
   assert.equal(risk.ok, false, 'risk 欠落時は fail-closed であるべき');
   assert.deepEqual(files, ['src/foo.ts', 'src/bar.ts'], 'risk の欠落が files フィールドへ波及してはならない');
@@ -177,7 +176,6 @@ test("[diff-triage-routing][B-e] 全フィールド正常 + hits 空 → SEC see
   const unified = {
     risk: { ok: true, hits: [] },
     files: [],
-    struct: { ok: true, available: true, structural: [], format_only: [] },
     diffhash: { hash: 'H', empty: false },
   };
   const { risk } = parseDiffTriageFields(unified);
