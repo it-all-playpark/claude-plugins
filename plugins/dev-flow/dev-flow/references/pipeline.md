@@ -25,17 +25,18 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 ```
 /dev-flow <issue>   → [wrapper preflight] → Setup(末尾で決定論 analyze ゲート)
                       → Implement(dev-implementer 1 spawn) → Validate(test green)
-                      → Diff triage(realized diff から shape 判定) → Evaluate → PR → workflow('dev-flow:pr-iterate-run')
+                      → workflow('dev-flow:dev-flow-evaluate-run'): Diff triage → Evaluate → PR → workflow('dev-flow:pr-iterate-run')
                       → workflow('dev-flow:dev-flow-finalize-run'): Final reconcile(fixes_applied>0 のみ) → Merge tier
 /pr-iterate <pr>    → [wrapper preflight: pr-iterate-prerun → EnterWorktree]
                       → workflow('dev-flow:pr-iterate-run') で review ⇄ fix loop (LGTM まで) → 終端サマリー
 ```
 
-- `dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐だけを持ち、工程の処理（agent の起動・prompt の組み立て・判定）は
-  工程の workflow に書く（script 上限はファイルごと）。子 workflow は自分の phase を持つ
-- 受け渡しは `workflow()` の引数・返り値だけ。形は `_lib/stage-contract.mjs` が検証し、子の throw・不正な返り値は HOLD と
-  終端サマリー未投稿の注記（fail-closed。abort は人に届かない）。journal handoff は親が run ごとに 1 回
-- 起動名は namespaced（`dev-flow:dev-flow-run` / `dev-flow:pr-iterate-run` / `dev-flow:dev-flow-finalize-run`）。telemetry handoff の `skill` は `'dev-flow'` / `'pr-iterate'` のまま
+- `dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐だけを持ち、工程の処理は工程の workflow（`dev-flow-evaluate.js`・
+  `dev-flow-finalize.js`）に書く（script 上限はファイルごと）。子は phase と評価ループの状態を持つ。Validate と共有する処理は
+  `_lib/implement-loop.mjs` を両方へ inline
+- 受け渡しは `workflow()` の引数・返り値だけ。形は `_lib/stage-contract.mjs` が検証し、子の throw・不正な返り値は HOLD（fail-closed。
+  abort は人に届かない。evaluate は PR を作らず、finalize は終端サマリー未投稿を注記）。journal handoff は親が run ごとに 1 回
+- 起動名は namespaced（`dev-flow:` + 各 workflow の `meta.name`）。telemetry handoff の `skill` は `'dev-flow'` / `'pr-iterate'` のまま
 - `agent()` の agentType は `nsAgentOpts()`（`_lib/agent-namespace.mjs`）でだけ namespace を付ける。判断系 leaf は `agents/` の subagent
 - model・effort は subagent の frontmatter で決め、call site は opts で渡さない。例外は Validate の green-fix の sonnet だけ
   （`_lib/impl-model-opus.test.mjs`・`_lib/agent-frontmatter.test.mjs` が pin）。割り当ての判断は `capability-bound.md`
@@ -90,8 +91,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - implementer の null は再試行せず drop に数え（`implDroppedCount`）、Evaluate を強制する（fail-safe。計画した範囲が欠けても diff が
     非空なら後段を素通りするため）
   - 要約・日本語の差し戻し後も残ったものは切らずに載せ、log に警告を出す（fail-open。HOLD 理由にしない）
-- **コード**: `execImplementPhase`・`runImplement`・`implPrompt`・`extractGuardBlocked`・`trimPrSectionsIfOver`・`rewriteNonJapanesePrBodyItems`
-  （`.claude/workflows/dev-flow.js`）、`normalizeBlockingReason`（`_lib/block-routing.mjs`）、`prSectionsTrimFeedback`・`prBodyLanguageFeedback`
+- **コード**: `execImplementPhase`・`extractGuardBlocked`（`.claude/workflows/dev-flow.js`）、`_lib/implement-loop.mjs`、`normalizeBlockingReason`（`_lib/block-routing.mjs`）、`prSectionsTrimFeedback`・`prBodyLanguageFeedback`
   （`_lib/pr-artifacts.mjs`）
 
 ## Validate
@@ -118,7 +118,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - 差し戻し後も空 diff なら throw（fail-closed）。例外は人間の cross-repo ラベル opt-in と、worktree 外の dirty な成果物の決定論の証拠が
     揃ったときの graceful 終端（`_lib/cross-repo-gate.mjs`）
   - local-verify が pg-broker に届かない・結果を取れない・Validate が red なら、pr-iterate の CI 待ちに戻す（fail-open。理由は終端サマリーの参考に出す）
-- **コード**: `execValidatePhase`・`runValidateLoop`・`triageBaseFailures`・`execLocalVerify`・`execAcVerify`（`.claude/workflows/dev-flow.js`）、
+- **コード**: `execValidatePhase`・`execLocalVerify`・`execAcVerify`（`.claude/workflows/dev-flow.js`）、`_lib/implement-loop.mjs`、
   `_lib/run-tests-prompt.mjs`、`_lib/base-failure-triage.mjs`、`_lib/cross-repo-gate.mjs`、`_lib/local-verify.mjs`
 
 ## Diff triage
@@ -139,7 +139,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - realized の files 欠落は NaN → complex（fail-safe）。行数が 1 file でも欠けた run は補正しない
   - security-scope の取得失敗・形の崩れは対象（fail-closed）
   - diff hash が取れなければ Merge tier で再判定する（fail-open）
-- **コード**: `execDiffTriagePhase`・`parseDiffTriageFields`（`.claude/workflows/dev-flow.js`）、`classifyShape`（`_lib/triviality.mjs`）、
+- **コード**: `execDiffTriagePhase`・`parseDiffTriageFields`（`.claude/workflows/dev-flow-evaluate.js`）、`classifyShape`（`_lib/triviality.mjs`）、
   `_lib/diff-triage.mjs`、`_lib/testsurf.mjs`、`_lib/declared-paths.mjs`、`_lib/security-scope.mjs`
 
 ## Evaluate
@@ -166,7 +166,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - stuck・上限到達は throw せず現状で PR へ進む（未解消の critical は Merge tier の HOLD と人のレビューが持つ）
   - redgreen-verify の `start` / `wait` の失敗・待機上限（`REDGREEN_WAIT_CAP_SEC`）・結果の欠落は `stop` して inspection 据え置き（fail-safe。deterministic 昇格しない）
   - post-eval の再評価で hash・evaluator の応答が取れなければ評価済み tree を進めず、PR 直前の `hash_mismatch`（HOLD）で人に返す（fail-safe）
-- **コード**: `execEvaluatePhase`・`execPostEvalValidate`・`recheckPostEvalGreenFix`（`.claude/workflows/dev-flow.js`）、`_lib/gate-policy.mjs`、
+- **コード**: `execEvaluatePhase`・`execPostEvalValidate`・`recheckPostEvalGreenFix`（`.claude/workflows/dev-flow-evaluate.js`）、`_lib/gate-policy.mjs`、
   `_lib/goal-ledger.mjs`、`_lib/evaluator-contract.mjs`、`_lib/redgreen-targets.mjs`、`_lib/stuck-detector.mjs`、`_lib/vdelta-transitions.mjs`
 
 ## PR

@@ -9,9 +9,9 @@
 //   (b) 同じ観測範囲で evaluator call（eval#i / eval-green-fix / final-ac-reconcile / security-clearance-final）も `model` キーを持たない
 //   (c) pr-iterate.js の pr-reviewer call（review#i / schema-retry）も `model` キーを持たない
 //   (d) telemetry の review_model_config / eval_model_config / impl_model_config リテラルは各 agent の frontmatter の
-//       model と一致し、journal 経路（dev-flow: 失敗 / 成功 / abort、pr-iterate: 終端 / abort）全てに載る。
+//       model と一致し、journal 経路（dev-flow: 失敗 / 成功 / abort / PR phase 失敗 / 評価できなかった、pr-iterate: 終端 / abort）全てに載る。
 //       3 agent とも frontmatter は `model: opus`。effort は evaluator のみ `medium`、pr-reviewer / dev-implementer は `high`
-//   (e) 各 workflow（dev-flow.js / dev-flow-finalize.js / pr-iterate.js）の evaluator / pr-reviewer の call site に `model:` が無い（静的）
+//   (e) 各 workflow（dev-flow.js / dev-flow-evaluate.js / dev-flow-finalize.js / pr-iterate.js）の evaluator / pr-reviewer の call site に `model:` が無い（静的）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -24,6 +24,7 @@ import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 const devFlowSrc = readFileSync(join(repoRoot, '.claude', 'workflows', 'dev-flow.js'), 'utf8');
+const evaluateSrc = readFileSync(join(repoRoot, '.claude', 'workflows', 'dev-flow-evaluate.js'), 'utf8');
 const finalizeSrc = readFileSync(join(repoRoot, '.claude', 'workflows', 'dev-flow-finalize.js'), 'utf8');
 const prIterateSrc = readFileSync(join(repoRoot, '.claude', 'workflows', 'pr-iterate.js'), 'utf8');
 const prReviewerMd = readFileSync(join(repoRoot, 'agents', 'pr-reviewer.md'), 'utf8');
@@ -107,10 +108,11 @@ test('[review-model] (d) review_model_config / eval_model_config / impl_model_co
     assert.equal(frontmatterField(md, name, 'effort'), effort, `${name} frontmatter の effort は ${effort} のはず`);
   }
   const lines = (src, key) => src.split('\n').filter((l) => l.includes(`${key}:`));
-  // dev-flow.js: 失敗 handoff（journalLogFailure）/ 成功 payload / abort handoff / PR phase 失敗 handoff の 4 経路
+  // dev-flow.js: 失敗 handoff（journalLogFailure）/ 成功 payload / abort handoff / PR phase 失敗 handoff /
+  // 評価できなかった handoff（dev-flow-evaluate の throw・不正な返り値）の 5 経路
   for (const [key, fm] of [['review_model_config', reviewerFm], ['eval_model_config', evaluatorFm], ['impl_model_config', implFm]]) {
     const hits = lines(devFlowSrc, key);
-    assert.equal(hits.length, 4, `dev-flow.js の ${key} は 4 経路（失敗 / 成功 / abort / PR phase 失敗）に載るはず: ${JSON.stringify(hits)}`);
+    assert.equal(hits.length, 5, `dev-flow.js の ${key} は 5 経路（失敗 / 成功 / abort / PR phase 失敗 / 評価できなかった）に載るはず: ${JSON.stringify(hits)}`);
     for (const l of hits) assert.ok(l.includes(`${key}: '${fm}'`), `${key} の値が frontmatter(${fm}) と一致しない: ${l.trim()}`);
   }
   // pr-iterate.js: 終端 payload / abort handoff の 2 経路。evaluator は dev-flow 側の agent なので eval_model_config は載せない
@@ -123,15 +125,15 @@ test('[review-model] (d) review_model_config / eval_model_config / impl_model_co
 
 test('[review-model] (e) 各 workflow の evaluator / pr-reviewer の call site に model を渡す行が無い（静的）', () => {
   const gate = /\bagentType:\s*'(evaluator|pr-reviewer)'/;
-  for (const [name, src] of [['dev-flow.js', devFlowSrc], ['dev-flow-finalize.js', finalizeSrc], ['pr-iterate.js', prIterateSrc]]) {
+  for (const [name, src] of [['dev-flow.js', devFlowSrc], ['dev-flow-evaluate.js', evaluateSrc], ['dev-flow-finalize.js', finalizeSrc], ['pr-iterate.js', prIterateSrc]]) {
     const hits = src.split('\n').filter((l) => gate.test(l) && /\bmodel:/.test(l));
     assert.deepEqual(hits, [], `${name}: 品質ゲート agent の call に model が残っている`);
   }
-  // dev-flow の run は dev-flow.js と工程の workflow（dev-flow-finalize.js）にまたがる
-  const runSrc = `${devFlowSrc}\n${finalizeSrc}`;
+  // dev-flow の run は dev-flow.js と工程の workflow（dev-flow-evaluate.js / dev-flow-finalize.js）にまたがる
+  const runSrc = `${devFlowSrc}\n${evaluateSrc}\n${finalizeSrc}`;
   const evaluatorHits = runSrc.split('\n').filter((l) => l.includes("agentType: 'evaluator'"));
   assert.equal(evaluatorHits.length, 4, 'evaluator call site は 4 箇所のはず');
   // model override を持つ call は dev-implementer（IMPL_AGENT）の call 行だけ
   const modelHits = runSrc.split('\n').filter((l) => /\bagentType:\s*'/.test(l) && /\bmodel:/.test(l));
-  assert.deepEqual(modelHits, [], 'dev-flow.js / dev-flow-finalize.js: 文字列 agentType の call 行に model が残っている（model override は IMPL_AGENT の call 行に限る）');
+  assert.deepEqual(modelHits, [], 'dev-flow.js / dev-flow-evaluate.js / dev-flow-finalize.js: 文字列 agentType の call 行に model が残っている（model override は IMPL_AGENT の call 行に限る）');
 });

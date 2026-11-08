@@ -23,6 +23,9 @@ const OLD_LIB = ['parallel', 'disjoint'].join('-');
 const OLD_ROUTING_TEST = ['devflow', 'implement', 'fable', 'routing.test.mjs'].join('-');
 
 const devFlowSrc = readFileSync(join(pluginRoot, '.claude', 'workflows', 'dev-flow.js'), 'utf8');
+// Diff triage・Evaluate は工程の workflow（dev-flow-evaluate.js）が持つ。実装経路の識別子は run のソース全体で見る。
+const evaluateSrc = readFileSync(join(pluginRoot, '.claude', 'workflows', 'dev-flow-evaluate.js'), 'utf8');
+const runSrc = `${devFlowSrc}\n${evaluateSrc}`;
 
 function frontmatter(md, label) {
   const m = md.match(/^---\n([\s\S]*?)\n---\n/);
@@ -55,7 +58,7 @@ test('[implementer-naming] (b) repo の tracked file に旧 agent 名の参照�
   assert.deepEqual(hits, [], `旧 agent 名の参照が残っている: ${hits.join(', ')}`);
 });
 
-// ---- (c) dev-flow.js の実装経路の識別子・コメントがモデル非依存 ----
+// ---- (c) dev-flow の run（dev-flow.js と dev-flow-evaluate.js）の実装経路の識別子・コメントがモデル非依存 ----
 // 合成 plan オブジェクトの consumer（adoptReportedFiles 以下）のシグネチャもここ 1 か所で pin する。
 
 test('[implementer-naming] (c) dev-flow.js の実装経路の識別子がモデル非依存の名前で、Fable 前提の語が無い', () => {
@@ -71,10 +74,10 @@ test('[implementer-naming] (c) dev-flow.js の実装経路の識別子がモデ�
     'function buildCommitMessage({ issue, req, plan, titleFormat = null })',
     'function buildPrBody({ issue, req, plan,',
   ]) {
-    assert.ok(devFlowSrc.includes(decl), `dev-flow.js に ${decl} が無い`);
+    assert.ok(runSrc.includes(decl), `dev-flow.js / dev-flow-evaluate.js に ${decl} が無い`);
   }
-  const fableWords = devFlowSrc.match(/fable/gi) ?? [];
-  assert.deepEqual(fableWords, [], 'dev-flow.js に fable の語が残っている');
+  const fableWords = runSrc.match(/fable/gi) ?? [];
+  assert.deepEqual(fableWords, [], 'dev-flow.js / dev-flow-evaluate.js に fable の語が残っている');
 });
 
 // ---- (d) 宣言パス突合 module は declared-paths（inline marker・import も追従）----
@@ -87,9 +90,10 @@ test('[implementer-naming] (d) _lib/declared-paths.mjs / .test.mjs にリネー�
   assert.ok(lib.startsWith('// declared-paths: '), 'declared-paths.mjs の先頭コメントが追従していない');
   const libTest = readFileSync(join(here, 'declared-paths.test.mjs'), 'utf8');
   assert.ok(libTest.includes("from './declared-paths.mjs'"), 'declared-paths.test.mjs の import が追従していない');
-  assert.ok(devFlowSrc.includes('// ==== BEGIN inline: _lib/declared-paths.mjs '), 'dev-flow.js に declared-paths の BEGIN marker が無い');
-  assert.ok(devFlowSrc.includes('// ==== END inline: _lib/declared-paths.mjs ===='), 'dev-flow.js に declared-paths の END marker が無い');
-  assert.ok(!devFlowSrc.includes(OLD_LIB), `dev-flow.js に ${OLD_LIB} が残っている`);
+  // 宣言パス突合は Diff triage（dev-flow-evaluate.js）が使う
+  assert.ok(evaluateSrc.includes('// ==== BEGIN inline: _lib/declared-paths.mjs '), 'dev-flow-evaluate.js に declared-paths の BEGIN marker が無い');
+  assert.ok(evaluateSrc.includes('// ==== END inline: _lib/declared-paths.mjs ===='), 'dev-flow-evaluate.js に declared-paths の END marker が無い');
+  assert.ok(!runSrc.includes(OLD_LIB), `dev-flow.js / dev-flow-evaluate.js に ${OLD_LIB} が残っている`);
 });
 
 // ---- (e) Implement 経路の routing test のファイル名 ----

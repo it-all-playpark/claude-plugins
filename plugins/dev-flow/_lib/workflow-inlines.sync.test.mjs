@@ -41,7 +41,7 @@ const wfFiles = readdirSync(wfDir)
 // (Listing these filenames is not a function-name enumeration -- the invariant
 // is about the presence of markers in each file, not about which canonicals exist.)
 // -----------------------------------------------------------------------------
-for (const requiredWf of ['dev-flow.js', 'dev-flow-finalize.js', 'pr-iterate.js']) {
+for (const requiredWf of ['dev-flow.js', 'dev-flow-evaluate.js', 'dev-flow-finalize.js', 'pr-iterate.js']) {
   test(`${requiredWf} has at least 1 BEGIN inline marker`, () => {
     const wfSrc = readFileSync(join(wfDir, requiredWf), 'utf8');
     const markers = scanMarkers(wfSrc, requiredWf);

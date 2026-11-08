@@ -29,6 +29,7 @@ import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, mergeTierFacts, 
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude/workflows/dev-flow.js'), 'utf8');
+const evaluateSrc = readFileSync(join(here, '..', '.claude/workflows/dev-flow-evaluate.js'), 'utf8');
 
 // REQ は args.setup.analyze（prerun の analyze 段）から組まれる。既定（prerunAnalyze）は AC 2 件 / type fix / breaking なし。
 // REQ を変える test は run(overrides, analyzeOverrides) の第 2 引数で setup.analyze を差し替える。
@@ -190,8 +191,9 @@ test('[realized-shape] (J) micro / standard / complex の spawn 構造: implemen
 });
 
 test('[realized-shape] (K) 静的 pin: 実効 shape は classifyShape(req, realizedCount, lineStats) の 1 呼び出しで決まる', () => {
-  assert.match(src, /const triage = classifyShape\(req, realizedCount, lineStats\)\n\s*const EFFECTIVE_SHAPE = triage\.shape/);
-  assert.equal((src.match(/classifyShape\(/g) ?? []).length - 1, 1, 'classifyShape の呼び出しは Diff triage の 1 箇所のみ（-1 は関数定義）');
+  // Diff triage は工程の workflow（dev-flow-evaluate.js）が持ち、dev-flow.js は shape を子の返り値でだけ受け取る
+  assert.match(evaluateSrc, /const triage = classifyShape\(req, realizedCount, lineStats\)\n\s*const EFFECTIVE_SHAPE = triage\.shape/);
+  assert.equal((evaluateSrc.match(/classifyShape\(/g) ?? []).length - 1, 1, 'classifyShape の呼び出しは Diff triage の 1 箇所のみ（-1 は関数定義）');
 });
 
 // ---- 差分の中身による補正（issue #740）: diff-triage の lines が classifyShape に届く ----

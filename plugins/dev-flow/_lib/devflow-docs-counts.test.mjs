@@ -14,16 +14,22 @@ const repoRoot = join(pluginRoot, '..', '..');
 
 const readme = readFileSync(join(repoRoot, 'README.md'), 'utf8');
 const devFlowSrc = readFileSync(join(pluginRoot, '.claude/workflows/dev-flow.js'), 'utf8');
+const evaluateSrc = readFileSync(join(pluginRoot, '.claude/workflows/dev-flow-evaluate.js'), 'utf8');
 const finalizeSrc = readFileSync(join(pluginRoot, '.claude/workflows/dev-flow-finalize.js'), 'utf8');
 
 const metaPhaseTitles = (src) => {
   const start = src.indexOf('phases: [');
   return [...src.slice(start, src.indexOf('],', start)).matchAll(/\{ title: '([^']+)' \}/g)].map((m) => m[1]);
 };
-// dev-flow の run の phase: dev-flow.js の meta.phases の後に、pr-iterate の後の工程の workflow（dev-flow-finalize.js）の phase が続く
-const runPhaseTitles = () => [...metaPhaseTitles(devFlowSrc), ...metaPhaseTitles(finalizeSrc)];
+// dev-flow の run の phase: dev-flow.js の meta.phases の PR の前に Diff triage・Evaluate の工程の workflow（dev-flow-evaluate.js）の
+// phase が入り、PR の後に pr-iterate の後の工程の workflow（dev-flow-finalize.js）の phase が続く
+const runPhaseTitles = () => {
+  const parent = metaPhaseTitles(devFlowSrc);
+  const pr = parent.indexOf('PR');
+  return [...parent.slice(0, pr), ...metaPhaseTitles(evaluateSrc), ...parent.slice(pr), ...metaPhaseTitles(finalizeSrc)];
+};
 
-test('README: Atlas 紹介の phase 数が dev-flow の run の phase（dev-flow.js と dev-flow-finalize.js の meta.phases）と一致する', () => {
+test('README: Atlas 紹介の phase 数が dev-flow の run の phase（dev-flow.js と工程の workflow の meta.phases）と一致する', () => {
   const count = runPhaseTitles().length;
   assert.ok(count > 0, 'meta.phases が読めない');
   const m = readme.match(/dev-flow Pipeline Atlas\]\(docs\/dev-flow-atlas\.md\)\*\* — (\d+) phase/);
@@ -273,7 +279,7 @@ test('pipeline.md: phase ごとの ## 節（run の phase と PR の後の pr-it
     assert.ok(paths.length + idents.length > 0, `pipeline.md「${phase}」のコードの場所がファイルも関数も指していない`);
     for (const p of paths) assert.ok(existsSync(join(pluginRoot, p)), `pipeline.md「${phase}」のコードの場所 ${p} が実在しない`);
     for (const id of idents) {
-      assert.ok([devFlowSrc, finalizeSrc, prIterateWorkflowSrc, libSrc].some((s) => new RegExp(`(function|const) ${id}\\b`).test(s)), `pipeline.md「${phase}」のコードの場所 ${id} が workflow / _lib の関数に無い`);
+      assert.ok([devFlowSrc, evaluateSrc, finalizeSrc, prIterateWorkflowSrc, libSrc].some((s) => new RegExp(`(function|const) ${id}\\b`).test(s)), `pipeline.md「${phase}」のコードの場所 ${id} が workflow / _lib の関数に無い`);
     }
   }
 });

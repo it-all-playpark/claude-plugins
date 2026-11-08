@@ -231,6 +231,7 @@ export const DEV_FLOW_SCENARIOS = {
     overrides: { 'diff-gate': { hash: 'H', empty: true }, 'diff-gate-retry': { hash: 'H', empty: true }, 'issue-labels': null },
     expectError: true,
   },
-  // Evaluate で throw（need() 経由の非 fail-open call site）→ top-level abort handoff（journal-log-abort）
-  abort: { overrides: { 'eval#1': () => { throw new Error('injected'); } }, expectError: true },
+  // PR phase で throw（need() 経由の非 fail-open call site）→ top-level abort handoff（journal-log-abort）。
+  // Evaluate の throw は dev-flow-evaluate の throw として親が HOLD で受けるので abort にならない
+  abort: { overrides: { 'pr#1': () => { throw new Error('injected'); } }, expectError: true },
 };

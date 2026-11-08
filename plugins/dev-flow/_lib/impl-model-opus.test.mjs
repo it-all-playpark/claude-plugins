@@ -174,7 +174,7 @@ function lastTelemetry(journalPrompts) {
 const TELEMETRY_ROUTES = {
   success: { overrides: {}, throws: false },
   failure: { overrides: { 'diff-gate': { hash: 'H', empty: true }, 'diff-gate-retry': { hash: 'H', empty: true }, 'issue-labels': null }, throws: true },
-  abort: { overrides: { 'eval#1': null }, throws: true },
+  abort: { overrides: { 'pr#1': null }, throws: true },
 };
 
 for (const [route, cfg] of Object.entries(TELEMETRY_ROUTES)) {

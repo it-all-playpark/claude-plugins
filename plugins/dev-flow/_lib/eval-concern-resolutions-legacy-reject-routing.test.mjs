@@ -1,15 +1,16 @@
 // issue #614: concern_resolutions[] の旧 resolved boolean キー / out-of-enum resolution が
-// dev-flow.js の実行経路で silent 無視されず run abort（明示 error）になることを VM sandbox で固定する。
+// dev-flow の実行経路で silent 無視されず明示 error になることを VM sandbox で固定する。
 //
 // normalizeConcernResolution（_lib/evaluator-contract.mjs）が throw する 2 パターンを、
-// dev-flow.js の CONCERN ledger 反映ループが素通ししないことを回帰させる。
+// Evaluate（dev-flow-evaluate.js）の CONCERN ledger 反映ループが素通ししないことを回帰させる。
+// 子の throw は親（dev-flow.js）が受け、評価を通ったものとして扱わずに PR を作らない HOLD で終える。
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, runDevFlowInSandbox } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -78,22 +79,22 @@ function baseResponder(concernResolutions) {
 
 async function runWith(concernResolutions) {
   const src = readFileSync(devFlowPath, 'utf8');
-  const { ctx } = makeRecordingSandbox(baseResponder(concernResolutions));
-  return runDevFlowInSandbox(src, ctx);
+  const { ctx, calls } = makeRecordingSandbox(baseResponder(concernResolutions));
+  const { result, error } = await runWorkflowCapture(src, ctx);
+  assert.equal(error, null, `dev-flow-evaluate の throw は親が HOLD で受けるはずが abort した: ${error?.message}`);
+  assert.equal(result?.status, 'evaluate_failed', '明示 error で評価を確定できず HOLD で終わるはずが、評価を通った（silent 無視されている）');
+  assert.equal(result?.merge_tier, 'HOLD');
+  assert.ok(!calls.some((c) => /^pr#/.test(c.label)), '評価できなかった run で PR を作ろうとした');
+  assert.doesNotMatch(result.evaluate_error, /is not defined|SyntaxError/, `想定外のクラッシュ: ${result.evaluate_error}`);
+  return result.evaluate_error;
 }
 
-test('[eval-concern-resolutions][#614] 旧 boolean キー resolved は run abort（明示 error）になる', async () => {
+test('[eval-concern-resolutions][#614] 旧 boolean キー resolved は明示 error で評価を確定できず HOLD になる', async () => {
   const err = await runWith([{ id: 'CONCERN-1', resolved: true, evidence: 'x' }]);
-  assert.ok(err != null, '旧 resolved boolean キーは明示 error で run abort するはずが err が null（silent 無視されている）');
-  assert.notEqual(err.name, 'ReferenceError', `err が ReferenceError（想定外のクラッシュ）: ${err.message}`);
-  assert.notEqual(err.name, 'SyntaxError', `err が SyntaxError（想定外のクラッシュ）: ${err.message}`);
-  assert.match(err.message, /resolved/, `err.message に旧キー resolved への言及が無い: ${err.message}`);
+  assert.match(err, /resolved/, `evaluate_error に旧キー resolved への言及が無い: ${err}`);
 });
 
-test('[eval-concern-resolutions][#614] out-of-enum resolution は run abort（明示 error）になる', async () => {
+test('[eval-concern-resolutions][#614] out-of-enum resolution は明示 error で評価を確定できず HOLD になる', async () => {
   const err = await runWith([{ id: 'CONCERN-1', resolution: 'maybe', evidence: 'x' }]);
-  assert.ok(err != null, 'out-of-enum resolution は明示 error で run abort するはずが err が null（silent 無視されている）');
-  assert.notEqual(err.name, 'ReferenceError', `err が ReferenceError（想定外のクラッシュ）: ${err.message}`);
-  assert.notEqual(err.name, 'SyntaxError', `err が SyntaxError（想定外のクラッシュ）: ${err.message}`);
-  assert.match(err.message, /out-of-enum|resolution/, `err.message が enum 外を示していない: ${err.message}`);
+  assert.match(err, /out-of-enum|resolution/, `evaluate_error が enum 外を示していない: ${err}`);
 });

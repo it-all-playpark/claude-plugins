@@ -596,15 +596,19 @@ test('buildAbortHandoffPayload omits telemetry when none is given (phase/label a
 
 // ---- conformance: call sites use the canonical single-spawn handoff ----
 //
-// dev-flow.js（writeFailureTelemetry / PR phase 失敗 / Merge tier / top-level abort）と pr-iterate.js
-// （終端 / top-level abort）の 6 call site は canonical `runJournalHandoff` を通り、payload を pending/ へ
-// 直接書く 1 spawn に集約されている（issue #807）。
+// dev-flow.js（writeFailureTelemetry / 評価できなかった終端 / PR phase 失敗 / Merge tier / top-level abort）と pr-iterate.js
+// （終端 / top-level abort）の 7 call site は canonical `runJournalHandoff` を通り、payload を pending/ へ
+// 直接書く 1 spawn に集約されている（issue #807）。工程の workflow（dev-flow-evaluate.js / dev-flow-finalize.js）は handoff しない。
 
 test('workflows route every journal handoff through the canonical single-spawn runJournalHandoff', () => {
   const devFlow = readFileSync(join(repoRoot, '.claude/workflows/dev-flow.js'), 'utf8');
   const prIterate = readFileSync(join(repoRoot, '.claude/workflows/pr-iterate.js'), 'utf8');
+  for (const stage of ['dev-flow-evaluate.js', 'dev-flow-finalize.js']) {
+    const stageSrc = readFileSync(join(repoRoot, '.claude/workflows', stage), 'utf8');
+    assert.equal((stageSrc.match(/runJournalHandoff\(/g) ?? []).length, 0, `${stage} は journal handoff しない（親が run ごとに 1 回）`);
+  }
 
-  assert.equal((devFlow.match(/(?<!function )runJournalHandoff\(\{/g) ?? []).length, 4);
+  assert.equal((devFlow.match(/(?<!function )runJournalHandoff\(\{/g) ?? []).length, 5);
   assert.equal((prIterate.match(/(?<!function )runJournalHandoff\(\{/g) ?? []).length, 2);
   // logLabel は現行値のまま維持されている（issue #556 AC6）。
   assert.ok(devFlow.includes("logLabel: 'journal-log',"));

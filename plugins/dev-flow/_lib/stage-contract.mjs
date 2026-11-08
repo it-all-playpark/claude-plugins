@@ -11,6 +11,39 @@
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ inline 生成される。
 // 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
 
+// dev-flow-evaluate.js（Diff triage・Evaluate・Evaluate 後の Validate と green-fix の再評価）の引数。
+// state は Validate までの state をそのまま渡す（ledger・shape・security review の対象判定は子が Diff triage で決める）。
+// notes は実装 spawn・evaluator の prompt に足す注記（Setup と Implement で決まる値）。
+export const EVALUATE_ARGS_SPEC = {
+  issue: 'string',
+  repo: 'string|null',
+  base: 'string',
+  worktree: 'string',
+  gate_policy: 'string',
+  state: {
+    req: 'object', plan: 'object', setup: { branch: 'string' }, concerns: 'array',
+    val: 'object|null', validateDiffHash: 'string|null', dhPrompt: 'string',
+    greenFixCount: 'number', greenFixIterations: 'array', implDroppedCount: 'number',
+    baseFailing: { env: 'array', ran: 'array' }, acVerify: 'array',
+    localVerifyReimplCount: 'number', acVerifyReimplCount: 'number',
+  },
+  ci_ac_indexes: 'array',
+  notes: { deletion: 'string', deps: 'string', turbopack: 'string', test_discovery: 'string' },
+}
+
+// dev-flow-evaluate.js の返り値。state は PR 工程以降が読む state（評価ループの途中経過は返さない）。
+// redgreen_state_dir は Evaluate の redgreen が作った state dir（Final reconcile の redgreen-final が使い回す）。
+export const EVALUATE_RESULT_SPEC = {
+  state: {
+    plan: 'object', ledger: 'object', risk: 'object', dangerHits: 'array', testsurfHits: 'array', testsurfPatterns: 'array',
+    securityReview: { target: 'boolean', reasons: 'array', reviewer_context_changed: 'boolean' },
+    triage: 'object', EFFECTIVE_SHAPE: 'string', runEval: 'boolean',
+    evalResult: 'object|null', evalDiffHash: 'string|null', secDiffHash: 'string|null',
+    unsatisfiedAcByActor: 'object', val: 'object|null', greenFixCount: 'number', concerns: 'array',
+  },
+  redgreen_state_dir: 'string|null',
+}
+
 // dev-flow-finalize.js（pr-iterate の後の Final reconcile・Merge tier・終端サマリー）の引数。
 // state は Implement〜PR の state をそのまま渡す（子は Final reconcile と merge-tier-facts を自分で取り直す）。
 export const FINALIZE_ARGS_SPEC = {

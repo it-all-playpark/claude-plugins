@@ -52,13 +52,14 @@ test('dev-flow.js 成功 run の journal-log prompt が eval_model_config / revi
 // empty-diff 失敗 run の model config / plugin_version / plugin_commit は
 // devflow-failure-telemetry-routing.test.mjs (3) の共有 run が必須キー表で検査する。
 
-test('dev-flow.js abort run（eval#1 null）の journal-log prompt が eval_model_config / review_model_config / plugin_version を含む', async () => {
+test('dev-flow.js 評価できなかった run（eval#1 null）の journal-log-failure prompt が eval_model_config / review_model_config / plugin_version を含む', async () => {
   const { ctx, calls } = makeDevFlowSandbox({ overrides: { 'eval#1': null } });
-  const { error } = await runWorkflowCapture(devFlowSrc, ctx, '.claude/workflows/dev-flow.js');
-  assert.ok(error, 'eval#1 null は need() で abort するべき（model fallback による再試行は無い）');
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx, '.claude/workflows/dev-flow.js');
+  assert.equal(error, null, `eval#1 null は dev-flow-evaluate の throw として HOLD で終わるべき: ${error?.message}`);
+  assert.equal(result?.status, 'evaluate_failed', 'eval#1 null は need() で子が throw し、親が PR を作らず HOLD で終える（model fallback による再試行は無い）');
   const evalCalls = calls.filter((c) => c.label === 'eval#1');
   assert.equal(evalCalls.length, 1, 'eval#1 は 1 回だけ呼ばれる（null でも再試行しない）');
-  assertJournalSaveHasKeys(calls, 'dev-flow abort', { evalModel: true });
+  assertJournalSaveHasKeys(calls, 'dev-flow evaluate_failed', { evalModel: true });
 });
 
 test('pr-iterate.js 単体起動 run の journal-log prompt が review_model_config / plugin_version を含み eval_model_config を含まない', async () => {
@@ -117,11 +118,16 @@ test('dev-flow.js 成功 run: args.setup.plugin_commit が journal entry と nes
 });
 
 // 失敗 run（empty-diff）の plugin_commit は devflow-failure-telemetry-routing.test.mjs (3) が検査する
-test('dev-flow.js abort run（eval#1 null）の journal entry にも plugin_commit が載る', async () => {
-  const abort = devFlowSandboxWithCommit({ plugin_commit: COMMIT }, { overrides: { 'eval#1': null } });
+test('dev-flow.js abort run（pr#1 null）・評価できなかった run（eval#1 null）の journal entry にも plugin_commit が載る', async () => {
+  const abort = devFlowSandboxWithCommit({ plugin_commit: COMMIT }, { overrides: { 'pr#1': null } });
   const r2 = await runWorkflowCapture(devFlowSrc, abort.ctx, '.claude/workflows/dev-flow.js');
-  assert.ok(r2.error, 'eval#1 null は abort するべき');
+  assert.ok(r2.error, 'pr#1 null は need() で abort するべき');
   assertPluginCommit(abort.calls, COMMIT, 'dev-flow abort');
+
+  const evalFail = devFlowSandboxWithCommit({ plugin_commit: COMMIT }, { overrides: { 'eval#1': null } });
+  const r3 = await runWorkflowCapture(devFlowSrc, evalFail.ctx, '.claude/workflows/dev-flow.js');
+  assert.equal(r3.result?.status, 'evaluate_failed');
+  assertPluginCommit(evalFail.calls, COMMIT, 'dev-flow evaluate_failed');
 });
 
 test('dev-flow.js: plugin_commit が取得できない（null / 欠落 / 不正形）でも run は止まらず plugin_commit:null を記録する', async () => {

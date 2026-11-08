@@ -2,6 +2,7 @@
 
 GitHub issue から LGTM までを 8 phase で駆動する `dev-flow` の実処理を図で示す。
 すべて実装ソース（`plugins/dev-flow/.claude/workflows/dev-flow.js` /
+`plugins/dev-flow/.claude/workflows/dev-flow-evaluate.js` /
 `plugins/dev-flow/.claude/workflows/dev-flow-finalize.js` /
 `plugins/dev-flow/.claude/workflows/pr-iterate.js` /
 `.claude/rules/dev-flow.md`）から起こしたもので、要約や理想形ではない。
@@ -27,8 +28,11 @@ GitHub issue から LGTM までを 8 phase で駆動する `dev-flow` の実処�
 wrapper skill が worktree を用意して `EnterWorktree` した上で、dynamic workflow `dev-flow-run` を
 起動する。phase 遷移とループは workflow script が JS で保持し、中間 state は外部 JSON ではなく
 script 変数と `workflow()` の引数・返り値に持つ。`dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐だけを持ち、
-工程の処理は工程の workflow に書く — pr-iterate の後の 7〜8 と終端サマリーの投稿は `workflow('dev-flow:dev-flow-finalize-run')`
-（`dev-flow-finalize.js`）が持ち、その返り値が dev-flow の返り値になる。
+工程の処理は工程の workflow に書く — 4〜5（Evaluate 後の Validate と green-fix の再評価を含む）は
+`workflow('dev-flow:dev-flow-evaluate-run')`（`dev-flow-evaluate.js`）が持ち、親はその返り値の state で 6 に進む。
+pr-iterate の後の 7〜8 と終端サマリーの投稿は `workflow('dev-flow:dev-flow-finalize-run')`（`dev-flow-finalize.js`）が持ち、
+その返り値が dev-flow の返り値になる。評価ループの状態は `dev-flow-evaluate` の中だけで持ち、親は途中経過で判定しない。
+Validate と共有する実装 spawn・test ⇄ green-fix ループは `_lib/implement-loop.mjs` を両方の workflow に inline する。
 
 まず概観を示し、続いて 8 phase を 1 phase 1 節で展開する。
 
@@ -53,6 +57,7 @@ flowchart TD
     S -.->|"analyze ゲート（Setup 末尾）:<br/>prerun analyze 失敗 / AC 空 /<br/>comment 矛盾 / Jev 未確定"| NC["needs_clarification<br/>worktree は保持"]
     I -.->|"NEEDS_CONTEXT"| NC
     SF -.->|"risk 欠落・実行不能"| FC["fail-closed<br/>merge tier HOLD 強制"]
+    E -.->|"dev-flow-evaluate-run の throw /<br/>返り値の形が不正"| EH["HOLD・PR は作らない<br/>(評価できなかった。handoff は親が 1 回)"]
 ```
 
 破線は正常系から外れる経路。`needs_clarification` は worktree を保持したまま返るので、
@@ -162,6 +167,11 @@ flowchart TD
 
 format / lint はこの phase の責務外で、test の結果だけを見る。
 `GREEN_MAX` 到達時は red のまま次へ進むが、未解消の状態は merge tier が HOLD で受け止める。
+
+4〜5 は `dev-flow-evaluate-run` の中で走る。親は Validate までの state と実装 spawn に足す注記を引数で渡し
+（`_lib/stage-contract.mjs` の `EVALUATE_ARGS_SPEC`。子は形が違えば throw）、子の返り値（`EVALUATE_RESULT_SPEC`）を確かめてから
+PR へ進む。子の throw・形の不正な返り値は評価を通ったものとして扱わず、PR を作らずに HOLD で終える
+（返り値の `status: evaluate_failed` と log に評価できなかったことを出し、journal handoff は親が 1 回だけ行う）。
 
 ### 1.5 Diff triage
 
