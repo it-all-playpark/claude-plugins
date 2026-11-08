@@ -12,9 +12,14 @@
  *   - devFlowArgs(issue?, setupOverrides?): dev-flow.js 用 args の既定形（{issue, setup}）を返す
  *     （setup は dev-flow-prerun の stdout JSON と同形。setup.analyze は prerunAnalyze() の既定）
  *   - prerunAnalyze(overrides?): dev-flow-prerun の analyze 段（prerun-analyze.sh）の ok:true 出力を組み立てる
- *     （AC 2 件 / type fix / breaking なし / comment なし → Analyze phase は spawn 0 で通過）。
+ *     （AC 2 件 / type fix / breaking なし / comment なし → analyze ゲートは analyze-clarify を spawn せず通過）。
  *     REQ を変えたい test は devFlowArgs(issue, { analyze: prerunAnalyze({...}) }) を extra.args に渡す
  *   - analyzeArgs(issue?, analyzeOverrides?): 上記の薄い wrapper（args 全体を返す）
+ *   - acObservationalResponse(observational, extra?): 分類 agent（label 'ac-observational#N'）の応答を AC ごとの
+ *     観測型判定の配列から組み立てる（extra[i] は AC ごとの verify_command / expect_paths の上書き）
+ *   - acObservationalPromptIndexes(prompt): 分類 agent の prompt に載った AC の ac_index 一覧
+ *   - acObservationalNone(prompt): 分類 agent の既定応答（prompt に載った全 AC を観測型でない・検証コマンドなし）。
+ *     独自の responder を持つ test は label 'ac-observational#N' にこれを返す
  *   - makeWorkflowContext(sandbox): 独自の agent stub を持つ test 用の VM context を作る
  *   - runDevFlowInSandbox(src, ctx): dev-flow.js ソースを strip して sandbox 実行する
  *   - runWorkflowCapture(src, ctx, filename?): strip + wrap + vm 実行し {result, error} を返す
@@ -67,23 +72,46 @@ export const JS_GLOBALS = {
 /**
  * dev-flow-prerun の analyze 段の出力（args.setup.analyze）を返す。
  * 既定は contract 経路（AC ['a','b'] / issue_type 'fix' / breaking なし / comment なし / uncertain 空）で、
- * dev-flow.js の Analyze phase は agent を spawn せずゲートを通過する。
- * ac_observational / ac_observational_evidence は overrides に無ければ AC 数に合わせて全 AC false
- * （prerun で非観測型と確定 → 観測型の分類 agent も spawn しない）にする。
+ * dev-flow.js の analyze ゲートは analyze-clarify を spawn せずに通過する（観測型の判定は通過後の分類 agent
+ * ac-observational#N が行う。既定 responder は全 AC false を返す — devFlowResponder 参照）。
  *
  * @param {Record<string, unknown>} [overrides={}]
  */
 export function prerunAnalyze(overrides = {}) {
-  const acs = Array.isArray(overrides.acceptance_criteria) ? overrides.acceptance_criteria : ['a', 'b'];
   return {
     ok: true, analyze_path: 'contract', jev_reasons: [],
     issue_title: 'stub-issue-title', issue_type: 'fix', acceptance_criteria: ['a', 'b'],
     breaking_keyword_scan: false, breaking_change: false, breaking_evidence: '',
     comment_count: 0, comment_overrides: [], comment_conflicts: [], uncertain: [], blockers: [],
-    ac_observational: acs.map(() => false), ac_observational_evidence: acs.map(() => 'stub: 正規表現の絞り込みに当たらない'),
     contract: 't1', ac_heading_near_miss: [], duration_seconds: 5,
     ...overrides,
   };
+}
+
+// ============================================================
+// acObservationalResponse: 分類 agent（ac-observational#N）の応答
+// ============================================================
+
+/**
+ * 分類 agent の応答 {results} を AC ごとの観測型判定（true / false / null）の配列から組み立てる。
+ * verify_command は null、expect_paths は []。extra[i] があればその AC の項目に重ねる。
+ *
+ * @param {Array<boolean|null>} observational
+ * @param {Record<number, Record<string, unknown>>} [extra={}]
+ */
+export function acObservationalResponse(observational, extra = {}) {
+  return { results: observational.map((o, i) => ({ ac_index: i, observational: o, verify_command: null, expect_paths: [], ...(extra[i] ?? {}) })) };
+}
+
+/** 分類 agent の prompt（acObservationalPrompt）に載る AC の ac_index 一覧。 */
+export function acObservationalPromptIndexes(prompt) {
+  const m = String(prompt).match(/^AC（ac_index は 0 始まり）: (.*)$/m);
+  return m ? JSON.parse(m[1]).map((it) => it.ac_index) : [];
+}
+
+/** 分類 agent の既定応答: prompt に載った全 AC を観測型でない（false）・検証コマンドなしと返す。 */
+export function acObservationalNone(prompt) {
+  return { results: acObservationalPromptIndexes(prompt).map((i) => ({ ac_index: i, observational: false, verify_command: null, expect_paths: [] })) };
 }
 
 // ============================================================
@@ -383,6 +411,9 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
     // ゲート（AC 空 / comment_conflicts / uncertain）が引いたときだけ analyze-clarify#N（dev-runner）が
     // 人間向け missing_context を返す（issue #690）。
     if (label.startsWith('analyze-clarify')) return { missing_context: ['stub-clarify-question'] };
+    // ゲート通過後の観測型の分類 agent（ac-observational#N。全 AC を 1 回で渡す。issue #1259）。既定は prompt に載った
+    // 全 AC を観測型でない（false）・検証コマンドなしと返す。観測型の経路を見る test は acObservationalResponse で上書きする。
+    if (label.startsWith('ac-observational#')) return acObservationalNone(callCtx.prompt);
     // Implement / green-fix / reimpl は全 shape で dev-implementer 一本（issue #673）。
     // 合成 task `issue-<N>` を echo する（adoptReportedFiles の task_id 突合に必要）。
     // 既定は STANDARD_FILES（3 件）を申告し、danger-grep の realized files と一致させる（宣言外 0 件）。

@@ -45,8 +45,6 @@ const THROW = () => { throw new Error('injected'); };
 const DF_B1 = { overrides: {} };
 // ANALYZE_GATE: Analyze の 3 条件ゲートを引く（AC 空）— analyze-clarify#1（ゲート後の sonnet 1 spawn）へ到達させる
 const DF_ANALYZE_GATE = { overrides: {}, extra: { args: analyzeArgs(1, { acceptance_criteria: [] }) } };
-// AC_OBS: prerun で観測型判定が確定しない（null の）AC を持つ — ac-observational#1（ゲート通過後の 1 spawn）へ到達させる
-const DF_AC_OBS = { overrides: {}, extra: { args: analyzeArgs(1, { ac_observational: [false, null], ac_observational_evidence: ['正規表現の絞り込みに当たらない', 'Jev 応答なし'] }) } };
 // B2: pr-iterate fix 適用後の Final reconcile 系（reconcile-sync 成功・test#final 既定 pass）。
 const DF_B2 = {
   workflow: async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }),
@@ -115,9 +113,9 @@ const EXPECTED_DEV_FLOW = {
     reason: 'failOpenAgent経由。ゲート後のmissing_context生成が失敗しても決定論のゲート理由でneeds_clarificationに終端する',
   },
   'ac-observational#1': {
-    config: DF_AC_OBS,
+    config: DF_B1,
     policy: 'continue',
-    reason: 'failOpenAgent経由。観測型の分類agentが失敗しても未確定のACを観測型(true)に倒して継続する',
+    reason: 'failOpenAgent経由。観測型の分類agentが失敗しても全ACを観測型(true)に倒して継続する',
   },
   'impl:serial:issue-1': { config: DF_B1, policy: 'continue', reason: 'failOpenAgent経由。dev-implementer失敗はnullとしてdropし継続する' },
   'test#1': {

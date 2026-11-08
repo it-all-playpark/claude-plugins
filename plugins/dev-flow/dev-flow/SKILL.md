@@ -142,7 +142,7 @@ Jev のクライアントは plugin に同梱せず、公開された参照実�
   `--questions '<questions JSON>' --redact --reason-file <path>`（`--redact` は送信前に token / password 等を
   伏せる。応答の上限秒数を環境変数 `JEV_MAX_TIME` で渡す。値は `DEVFLOW_JEV_MAX_TIME`、既定 10）
 - questions JSON: 質問 id → 質問のオブジェクト。型は 2 つ:
-  - `{"type":"noul","instructions":"…"}` — yes / no の質問。id は `breaking`・`migration`・`ac_<n>`
+  - `{"type":"noul","instructions":"…"}` — yes / no の質問。id は `breaking`・`migration`
   - `{"type":"choice","instructions":"…","criteria":{"<選択肢>":"<基準>",…}}` — 選択肢から 1 つ選ぶ質問。
     id は `kind`、選択肢は `override` / `conflict` / `resolved` / `unrelated`
 - 出力: 成功時は `{"answers":{…}}` を stdout に 1 行で出す（他のキーは読まない）。`answers` は質問 id ごとに
@@ -150,8 +150,8 @@ Jev のクライアントは plugin に同梱せず、公開された参照実�
   - choice: `{"choice":"<選んだ選択肢>","probabilities":{"<選択肢>":<確率>,…}}`（選んだ選択肢の確率は必須）
 
   plugin は確率 0.9 以上を yes / その選択肢、0.1 以下を no とし、その間は低確信として安全側（uncertain・
-  conflict・分類 agent）に倒す。確率は 0〜1 の数値。それ以外（`true` / `false` / `null` / 文字列 / 範囲外）は
-  判定値なしと同じく uncertain（観測型 AC は分類 agent）になる。答えられない質問は id ごと省いてよい（その判定だけ
+  conflict）に倒す。確率は 0〜1 の数値。それ以外（`true` / `false` / `null` / 文字列 / 範囲外）は
+  判定値なしと同じく uncertain になる。答えられない質問は id ごと省いてよい（その判定だけ
   uncertain になる）。
   最小の実装例は `dev-flow/scripts/prerun-analyze.bats` の偽 `jev-classify`、質問の全文は
   `dev-flow/scripts/prerun-analyze.sh`
@@ -159,14 +159,12 @@ Jev のクライアントは plugin に同梱せず、公開された参照実�
   `keychain unreachable` / `keychain read failed` / `broker unreachable` / `broker request failed` / `timeout` /
   `request failed` / `bad response`）で uncertain の見出しを変える
 
-- **要否**: 必須ではない。Jev を呼ぶのは、title / body に breaking 系キーワードがある issue、comment が付いた
-  issue、観測型に見える AC を持つ issue だけで、どれにも当たらない issue は Jev が無くても同じ結果になる
+- **要否**: 必須ではない。Jev を呼ぶのは、title / body に breaking 系キーワードがある issue と comment が付いた
+  issue だけで、どちらにも当たらない issue は Jev が無くても同じ結果になる。AC の観測型判定は Jev を使わず、
+  analyze ゲートの分類 agent（`ac-observational#N`）が全 AC について行う
 - **効かないときの挙動**: `jev-classify` が PATH に無い・鍵が無い・届かない・タイムアウト・低確信のとき、breaking と comment の判定は
   uncertain に積まれ、run は Setup 末尾の analyze ゲートで**必ず needs_clarification で止まる**（実装に進まない）。
-  観測型 AC の判定だけは止まらず、分類 agent の 1 spawn に回る。`DEVFLOW_JEV_DISABLE=1` で切ったときも同じ
-- **node が無いとき**: 観測型 AC の正規表現の絞り込みは `node` で動くので、prerun を実行する環境の PATH に `node` が
-  無いと「node を実行できない」が uncertain に積まれ、AC を持つ issue の run は analyze ゲートで needs_clarification で止まる
-  （分類 agent には回さない。PATH に node を通すのは実行環境の側）
+  `DEVFLOW_JEV_DISABLE=1` で切ったときも同じ
 - **注記: 作者の `jev-classify` 実装を使う場合の鍵の設定**（その実装は上から順に試す。plugin には含まれず、
   自前の実装ならこの手順ではなくその実装に従う。`AI_GATEWAY_API_KEY` を置くだけでは `jev-classify` は手に入らない）:
   1. 環境変数 `AI_GATEWAY_API_KEY`（Vercel AI Gateway の API key `vck_…`）— 第一の方法。`dev-flow-prerun` を
@@ -229,10 +227,11 @@ push / PR 作成は run 内でも wrapper でも再試行せず（pre-push hook 
 ## Implement 経路（全 shape で dev-implementer 一本）
 
 Setup 末尾の analyze ゲート（固有の phase は持たない）は `args.setup.analyze`（prerun の決定論 analyze）を
-whitelist 検証してゲート（AC 空 / comment_conflicts 非空 / uncertain 非空 / repo 内外が混ざった AC）を判定するだけで、
-通常経路では agent を起動しない（ゲートが引いたときだけ sonnet を 1 spawn（`analyze-clarify#N`）し、人間向けの
-missing_context を作って needs_clarification で終端する。ゲートを通過しても、観測型判定が prerun で確定しない
-AC か、AC が指定した検証コマンドを聞く観測型 AC があるときは AC の文面だけを読む分類 agent（`ac-observational#N`）を 1 spawn する）。ゲート直後に issue から単一 task の plan を合成するだけ（Plan phase は
+whitelist 検証してゲート（AC 空 / comment_conflicts 非空 / uncertain 非空 / repo 内外が混ざった AC）を判定する
+（ゲートが引いたときだけ sonnet を 1 spawn（`analyze-clarify#N`）し、人間向けの missing_context を作って
+needs_clarification で終端する）。ゲートを通過したら、全 AC を AC の文面と issue タイトルだけを読む分類 agent
+（`ac-observational#N`）に 1 回で渡し、観測型の判定と AC が指定した検証コマンドを受け取る（判定できない AC・agent の
+失敗は観測型として扱う）。ゲート直後に issue から単一 task の plan を合成するだけ（Plan phase は
 持たず、planner 系 agent は起動しない）で、Implement で `dev-implementer`（plan+impl 統合、opus / high）を
 1 spawn する。BLOCKED 再実装（`reimpl-blocked#b`）・Validate の green-fix・Evaluate の差し戻し（`reimpl#i`）も
 同じ agent への再 spawn。shape（micro / standard / complex）は analyze ゲートでは決めず、Diff triage で

@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, runWorkflowCapture, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, runWorkflowCapture, mergeTierFacts, acObservationalNone } from './test-helpers/vm-sandbox.mjs';
 import { gateLane, isConvergedUnderPolicy, DEFAULT_GATE_POLICY } from './gate-policy.mjs';
 import { makeLedger, appendItem } from './goal-ledger.mjs';
 
@@ -33,9 +33,10 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 // ============================================================
 
 function createResponder() {
-  return function({ label, agentType }) {
+  return function({ label, agentType, prompt }) {
     // Diff triage の敵対的 security review の対象判定（issue #1063）: この test の関心外なので対象外を返す
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
+    if (label.startsWith('ac-observational#')) return acObservationalNone(prompt);
     // Diff triage / danger-grep 系
     if (label.startsWith('danger-grep')) {
       return { ok: true, hits: [] };
@@ -264,8 +265,9 @@ test('[eval-concern-resolutions][#614] triaged は ledger 収束を変えない�
 // ============================================================
 
 function createSingleConcernResponder(concernResolutions) {
-  return function ({ label, agentType }) {
+  return function ({ label, agentType, prompt }) {
     if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-296-q' };
+    if (label.startsWith('ac-observational#')) return acObservationalNone(prompt);
     if (label.startsWith('analyze')) {
       return {
         summary: 's', acceptance_criteria: ['a'], issue_type: 'fix', scope: 'src',

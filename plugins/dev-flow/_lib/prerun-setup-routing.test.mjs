@@ -30,22 +30,22 @@ const src = readFileSync(devFlowPath, 'utf8');
 
 const DEAD_LABELS = ['setup-base', 'worktree', 'isolation-cleanup', 'worktree-deps'];
 
-// ── (a) Setup の spawn は isolation-probe 1 回のみ ──
+// ── (a) Setup の spawn は観測型の分類 agent と isolation-probe の 1 回ずつ ──
 
-test('[prerun-setup-routing] (a) 既定 args → Setup の spawn は isolation-probe 1 回のみ、旧 4 label は 0 件', async () => {
+test('[prerun-setup-routing] (a) 既定 args → Setup の spawn は観測型の分類 agent と isolation-probe の 1 回ずつ、旧 4 label は 0 件', async () => {
   const { ctx, calls } = makeDevFlowSandbox();
   const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error, 'a');
   assert.equal(error, null, `run は完走するはずだが throw した: ${error?.message}`);
 
-  // Setup / Analyze は args.setup 駆動で spawn せず、最初の spawn は isolation-probe（Analyze ゲート後・Implement 前）
+  // Setup / Analyze ゲートは args.setup 駆動で spawn せず、ゲート通過後に観測型の分類 agent、続けて isolation-probe（Implement 前）
   const implIdx = calls.findIndex((c) => c.agentType === 'dev-flow:dev-implementer');
   assert.notStrictEqual(implIdx, -1, 'dev-implementer の call が見つからない');
   const beforeImpl = calls.slice(0, implIdx);
   assert.deepEqual(
     beforeImpl.map((c) => ({ label: c.label, agentType: c.agentType })),
-    [{ label: 'isolation-probe', agentType: 'dev-flow:dev-runner-haiku-wo' }],
-    `Implement より前の call は isolation-probe 1 件のみのはずだが: ${JSON.stringify(beforeImpl.map((c) => c.label))}`,
+    [{ label: 'ac-observational#1', agentType: 'dev-flow:dev-runner' }, { label: 'isolation-probe', agentType: 'dev-flow:dev-runner-haiku-wo' }],
+    `Implement より前の call は ac-observational#1 と isolation-probe の 2 件のはずだが: ${JSON.stringify(beforeImpl.map((c) => c.label))}`,
   );
 
   for (const label of DEAD_LABELS) {

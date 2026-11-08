@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # prerun-analyze.sh - dev-flow prerun の analyze 段 (issue #690)
 #
-# `analyze-issue <N> [--repo R] --contract` の決定論 parse を実行し、決定論で解けない 3 理由
-# （breaking keyword hit / comments present / 観測型 AC の絞り込み hit）だけを Jev（有界判定モデル、
+# `analyze-issue <N> [--repo R] --contract` の決定論 parse を実行し、決定論で解けない 2 理由
+# （breaking keyword hit / comments present）だけを Jev（有界判定モデル、
 # PATH 上の Jev クライアント `jev-classify`。インターフェースは dev-flow/SKILL.md の Jev 節）に回して、dev-flow.js の Setup 末尾の analyze ゲートが whitelist 検証するだけで
 # REQ を組める analyze JSON を stdout 1 行で返す。LLM が issue を転写する工程は持たない（転写者がいなければ
 # provenance 突合も comment_count 突合も要らない — その代わり breaking / comment の Jev の低確信・応答なし・無効は
@@ -17,7 +17,6 @@
 #   { ok: true, analyze_path: "contract"|"jev", jev_reasons: [..],
 #     issue_title, issue_type, acceptance_criteria: [..], breaking_keyword_scan, breaking_change, breaking_evidence,
 #     comment_count, comment_overrides: [..], comment_conflicts: [..], uncertain: [..],
-#     ac_observational: [true|false|null ..], ac_observational_evidence: [..],
 #     blockers: [{repo, number, state: "OPEN"|"CLOSED", source: "api"|"body", url}],
 #     contract, ac_heading_near_miss: [..] }
 #   { ok: false, reason: "...", analyze_path: "contract" }
@@ -41,29 +40,17 @@
 #                                 OWNER/MEMBER/COLLABORATOR）→ comment_overrides、override だが権限なし /
 #                                 conflict / 低確信 → comment_conflicts（fail-closed）、resolved / unrelated
 #                                 （高確信）→ 無視（要件は body どおり）
-#   観測型 AC（issue #859）      → acceptance_criteria を正規表現（_lib/ac-actor.mjs の isObservationalAc を
-#                                 _lib/scripts/ac-observational-prefilter.mjs 経由で呼ぶ。拾いすぎてよい）で絞り込み、
-#                                 当たった AC だけを 1 request で AC ごとに noul で聞く（質問 id は ac_<n>）:
-#                                 「state の AC-<n> は、コードとテストを読むだけでは確かめられず、実行した結果・ログ・
-#                                 計測を観測しないと確かめられないか。AC がテストコードやソースコード自体の書き方・構成
-#                                 について述べているなら no」。state は issue の title と当たった AC の文面だけ（本文は
-#                                 送らない）。p>=0.9 で true、p<=0.1 で false、低確信・Jev 応答なし・無効は null。
-#                                 当たらない AC は Jev に聞かず false。絞り込み自体が失敗したら全 AC を null。
-#                                 ただし PATH に node が無いときは全 AC を null にした上で uncertain に積む
-#                                 （環境の問題を分類 agent で黙って埋めず、analyze ゲートで人間に返す）。
-#                                 結果は ac_observational（AC ごとの true / false / null）、根拠は
-#                                 ac_observational_evidence（AC ごとの 1 文）に載せ、uncertain には積まない（node 不在を除く）— null は
-#                                 Workflow の analyze ゲートが AC の文面と title だけを読む分類 agent に 1 回で渡し、
-#                                 そこでも決まらなければ観測型（true）として扱う（観測型への誤判定は人手 AC 待ちの
-#                                 HOLD で止まるだけだが、逆は evaluator のコード読みだけで達成扱いになるため）
-#   Jev が空 stdout（失敗）      → 該当判定は uncertain（観測型 AC は null）。jev-classify の --reason-file が返す失敗理由
+#   Jev が空 stdout（失敗）      → 該当判定は uncertain。jev-classify の --reason-file が返す失敗理由
 #                                 （jev-broker に接続できない / jev-broker 経由の失敗 / 鍵なし / Keychain に
 #                                 届かない / Keychain 読み取り失敗 / タイムアウト / 通信失敗 / 応答不正）を
 #                                 文言に載せる（「応答なし」だけでは人間が切り分けられない）。「Keychain に
 #                                 届かない」は sandbox 内・bg job でも出るので、ロック中とは限らない
-#   確率が 0〜1 の数値でない      → 判定値なしと同じく uncertain（観測型 AC は null）。true / 文字列 / 範囲外を含む
-#   jev-classify が PATH に無い  → Jev 未導入として同じく uncertain（観測型 AC は null）
-#   DEVFLOW_JEV_DISABLE=1       → Jev を呼ばず該当判定は uncertain（観測型 AC は null。private repo 向け opt-out）
+#   確率が 0〜1 の数値でない      → 判定値なしと同じく uncertain。true / 文字列 / 範囲外を含む
+#   jev-classify が PATH に無い  → Jev 未導入として同じく uncertain
+#   DEVFLOW_JEV_DISABLE=1       → Jev を呼ばず該当判定は uncertain（private repo 向け opt-out）
+#
+# AC の観測型判定はここでは行わない。analyze ゲート（dev-flow.js）が全 AC を AC の文面と title だけを読む分類 agent に
+# 1 回で渡して決める（issue #1259。絞り込みで候補を減らすと、取りこぼした観測型 AC がコード読みで達成扱いになるため）。
 #
 # uncertain の「明記せよ」文言は analyze-issue.sh の breaking キーワード（breaking / incompatible /
 # migration / 破壊的 / 非互換）を含めない。人間が指示どおり body に書いた語で再び Jev 判定の対象に
@@ -84,7 +71,6 @@ ANALYZE_ISSUE="$PLUGIN_ROOT/dev-flow/scripts/analyze-issue.sh"
 JEV_CLASSIFY_CMD="${DEVFLOW_JEV_CLASSIFY:-jev-classify}"
 JEV_CLASSIFY="$(command -v "$JEV_CLASSIFY_CMD" || true)"
 ISSUE_BLOCKERS="$PLUGIN_ROOT/_lib/scripts/issue-blockers.sh"
-AC_OBS_PREFILTER="$PLUGIN_ROOT/_lib/scripts/ac-observational-prefilter.mjs"
 JEV_CONF_MIN="0.9"
 export JEV_MAX_TIME="${DEVFLOW_JEV_MAX_TIME:-10}"
 
@@ -362,68 +348,6 @@ if [[ "$COMMENT_COUNT" -gt 0 ]]; then
     done <"$COMMENTS_FILE"
 fi
 
-# ---- observational AC ----
-# OBS_VALUES は AC ごとの JSON リテラル（true / false / null）、OBS_EVIDENCE は AC ごとの根拠
-AC_JSON="$(printf '%s' "$CONTRACT" | jq -c '.acceptance_criteria')"
-AC_COUNT="$(printf '%s' "$AC_JSON" | jq 'length')"
-OBS_VALUES=()
-OBS_EVIDENCE=()
-if [[ "$AC_COUNT" -gt 0 ]]; then
-    PREFILTER=""
-    if ! command -v node >/dev/null 2>&1; then
-        # node 不在は環境の問題。分類 agent に黙って回すと、コマンドが通ることを主張する AC まで観測型に
-        # 誤判定されて人手 AC 待ちの HOLD になるので、uncertain に積んで analyze ゲートで人間に返す
-        NODE_MISSING="node を実行できない（PATH に node が無い）"
-        UNCERTAIN+=("observational_ac: ${NODE_MISSING}ため観測型 AC の正規表現の絞り込みを実行できない — prerun を実行する環境の PATH に node を通して再実行せよ")
-        HITS_JSON="null"
-        OBS_NULL_EVIDENCE="正規表現の絞り込みを実行できない（${NODE_MISSING}）— 判定を確定せず analyze ゲートで止める"
-    elif PREFILTER="$(printf '%s' "$AC_JSON" | node "$AC_OBS_PREFILTER" 2>"$ERR_FILE")" \
-        && printf '%s' "$PREFILTER" | jq -e --argjson n "$AC_COUNT" 'type == "array" and length == $n and all(.[]; type == "boolean")' >/dev/null 2>&1; then
-        HITS_JSON="$(printf '%s' "$PREFILTER" | jq -c '[to_entries[] | select(.value) | .key]')"
-    else
-        PREFILTER_ERR="$(tr '\n' ' ' <"$ERR_FILE")"
-        PREFILTER_ERR="${PREFILTER_ERR:0:200}"
-        HITS_JSON="null"
-        OBS_NULL_EVIDENCE="正規表現の絞り込みを実行できない（${PREFILTER_ERR:-出力が不正}）— 分類 agent に回す"
-    fi
-    if [[ "$HITS_JSON" == "null" ]]; then
-        for ((i = 0; i < AC_COUNT; i++)); do
-            OBS_VALUES+=("null")
-            OBS_EVIDENCE+=("$OBS_NULL_EVIDENCE")
-        done
-    else
-        for ((i = 0; i < AC_COUNT; i++)); do
-            OBS_VALUES+=("false")
-            OBS_EVIDENCE+=("正規表現の絞り込みに当たらない")
-        done
-        if [[ "$HITS_JSON" != "[]" ]]; then
-            JEV_REASONS+=("observational_ac prefilter hit ($(printf '%s' "$HITS_JSON" | jq -r 'map("AC-\(. + 1)") | join(", ")'))")
-            OBS_INSTR="コードとテストを読むだけでは確かめられず、実行した結果・ログ・計測を観測しないと確かめられないか。AC がテストコードやソースコード自体の書き方・構成について述べているなら no。"
-            OBS_Q="$(jq -cn --argjson idx "$HITS_JSON" --arg ins "$OBS_INSTR" \
-                '[$idx[] | {key: "ac_\(. + 1)", value: {type: "noul", instructions: ("state の AC-\(. + 1) は、" + $ins)}}] | from_entries')"
-            OBS_STATE="# Issue: ${TITLE}"$'\n\n'"# 受け入れ基準"$'\n'"$(printf '%s' "$AC_JSON" | jq -r --argjson idx "$HITS_JSON" '. as $a | $idx[] | "AC-\(. + 1): \($a[.] | gsub("\n"; " "))"')"
-            RESP="$(jev_call "$OBS_STATE" "$OBS_Q")"
-            CONF_MAX_NO="$(jq -n --argjson m "$JEV_CONF_MIN" '1 - $m')"
-            for i in $(printf '%s' "$HITS_JSON" | jq -r '.[]'); do
-                P="$(jev_prob "$RESP" '.answers[$q].noul' --arg q "ac_$((i + 1))")"
-                if [[ -z "$P" ]]; then
-                    OBS_VALUES[i]="null"
-                    OBS_EVIDENCE[i]="正規表現の絞り込みに当たったが $(jev_unavailable_reason) — 分類 agent に回す"
-                elif conf_at_least "$P" "$JEV_CONF_MIN"; then
-                    OBS_VALUES[i]="true"
-                    OBS_EVIDENCE[i]="Jev noul 観測型 p=${P}"
-                elif conf_at_most "$P" "$CONF_MAX_NO"; then
-                    OBS_VALUES[i]="false"
-                    OBS_EVIDENCE[i]="Jev noul 観測型 p=${P}（コードとテストで確かめられる）"
-                else
-                    OBS_VALUES[i]="null"
-                    OBS_EVIDENCE[i]="Jev が低確信（観測型 p=${P}）— 分類 agent に回す"
-                fi
-            done
-        fi
-    fi
-fi
-
 ANALYZE_PATH="contract"
 [[ ${#JEV_REASONS[@]} -gt 0 ]] && ANALYZE_PATH="jev"
 
@@ -440,12 +364,6 @@ JEV_REASONS_JSON="$(to_json_array "${JEV_REASONS[@]+"${JEV_REASONS[@]}"}")"
 UNCERTAIN_JSON="$(to_json_array "${UNCERTAIN[@]+"${UNCERTAIN[@]}"}")"
 OVERRIDES_JSON="$(to_json_array "${OVERRIDES[@]+"${OVERRIDES[@]}"}")"
 CONFLICTS_JSON="$(to_json_array "${CONFLICTS[@]+"${CONFLICTS[@]}"}")"
-OBS_EVIDENCE_JSON="$(to_json_array "${OBS_EVIDENCE[@]+"${OBS_EVIDENCE[@]}"}")"
-if [[ ${#OBS_VALUES[@]} -eq 0 ]]; then
-    OBS_VALUES_JSON="[]"
-else
-    OBS_VALUES_JSON="$(printf '%s\n' "${OBS_VALUES[@]}" | jq -sc .)"
-fi
 
 printf '%s' "$CONTRACT" | jq -c \
     --arg analyze_path "$ANALYZE_PATH" \
@@ -456,8 +374,6 @@ printf '%s' "$CONTRACT" | jq -c \
     --argjson comment_conflicts "$CONFLICTS_JSON" \
     --argjson uncertain "$UNCERTAIN_JSON" \
     --argjson blockers "$BLOCKERS_JSON" \
-    --argjson ac_observational "$OBS_VALUES_JSON" \
-    --argjson ac_observational_evidence "$OBS_EVIDENCE_JSON" \
     '{
       ok: true,
       analyze_path: $analyze_path,
@@ -472,8 +388,6 @@ printf '%s' "$CONTRACT" | jq -c \
       comment_overrides: $comment_overrides,
       comment_conflicts: $comment_conflicts,
       uncertain: $uncertain,
-      ac_observational: $ac_observational,
-      ac_observational_evidence: $ac_observational_evidence,
       blockers: $blockers,
       contract: (.contract // "none"),
       ac_heading_near_miss: (.ac_heading_near_miss // [])

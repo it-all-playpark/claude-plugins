@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze, acObservationalResponse } from './test-helpers/vm-sandbox.mjs';
 import { AGENT_AC_REIMPL_MAX } from './ac-actor.mjs';
 import { localVerifyConfigArg, AC_VERIFY_TIMEOUT_SEC, acVerifyValidateAction, acVerifyFinalAction, acVerifyDisclosures, applyAcVerifyResults, mergeAcVerifyGaps } from './local-verify.mjs';
 
@@ -248,11 +248,11 @@ test('[local-verify-routing] (AV-2) applyAcVerifyResults / mergeAcVerifyGaps: �
   assert.deepEqual(mergeAcVerifyGaps(gaps, [entry('failed')]), { agent: [0, 1], human: [], ci: [3] });
 });
 
-async function runAc({ overrides = {}, iterate = {}, acObs = { results: [{ ac_index: 0, observational: true, verify_command: BUILD_CMD, expect_paths: [...BUILD_PATHS] }] } } = {}) {
+async function runAc({ overrides = {}, iterate = {}, acObs = acObservationalResponse([true, false], { 0: { verify_command: BUILD_CMD, expect_paths: [...BUILD_PATHS] } }) } = {}) {
   const { ctx, calls, logs } = makeDevFlowSandbox({
     overrides: { 'ac-observational#1': acObs, ...overrides },
     workflow: async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0, ...iterate }),
-    extra: { args: devFlowArgs(1, { analyze: prerunAnalyze({ acceptance_criteria: [BUILD_AC, CODE_AC], ac_observational: [true, false] }) }) },
+    extra: { args: devFlowArgs(1, { analyze: prerunAnalyze({ acceptance_criteria: [BUILD_AC, CODE_AC] }) }) },
   });
   const { result, error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error, 'local-verify-routing(ac-verify)');
@@ -343,7 +343,7 @@ test('[local-verify-routing] (AE) AC コマンドを確かめられない（erro
   assert.ok(!errored.summary.includes('人手確認の材料'), errored.summary);
 
   // 分類 agent が AC に無いコマンドを返した → 凍結されず、AC コマンドを実行しない（従来どおり人手 AC 待ち）
-  const rewritten = await runAc({ acObs: { results: [{ ac_index: 0, observational: true, verify_command: 'pnpm build', expect_paths: [] }] } });
+  const rewritten = await runAc({ acObs: acObservationalResponse([true, false], { 0: { verify_command: 'pnpm build' } }) });
   assert.equal(acVerifyCalls(rewritten.calls).length, 0);
   assert.deepEqual(plain(rewritten.result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });
 });

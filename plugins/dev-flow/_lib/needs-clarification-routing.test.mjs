@@ -109,7 +109,9 @@ test('[needs-clarification] T4: BLOCKED path 不変 → analyze 系 0 回・dev-
 test('[needs-clarification] T5: NEEDS_CONTEXT → 再試行（reimpl-context）は存在せず dev-implementer 1 回で終端する', async () => {
   const { calls } = await run({ impl: NEEDS_CONTEXT });
   assert.equal(calls.filter((c) => c.label.startsWith('reimpl-context')).length, 0, 'reimpl-context が spawn されている');
-  assert.equal(calls.filter((c) => c.agentType === 'dev-flow:dev-runner').length, 0, 'NEEDS_CONTEXT で dev-runner（sonnet 再分析）が spawn されている');
+  // dev-runner はゲート通過後の観測型の分類 agent（実装前）だけで、NEEDS_CONTEXT 後の再分析は無い
+  const implIdx = calls.findIndex((c) => c.agentType === 'dev-flow:dev-implementer');
+  assert.equal(calls.slice(implIdx).filter((c) => c.agentType === 'dev-flow:dev-runner').length, 0, 'NEEDS_CONTEXT で dev-runner（sonnet 再分析）が spawn されている');
   assert.equal(implementerCalls(calls).length, 1);
 });
 

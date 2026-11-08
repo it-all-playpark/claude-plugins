@@ -2,7 +2,7 @@
 // AC の actor 分類（agent / human / ci）と、ac_results の actor 別集計・差し戻し用 fix_feedback の pin（issue #747 / #861）。
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, isObservationalAc, acObservationalOf, deterministicAcIndexes, demoteUnprovenObservationalAc, pendingAcObservationalIndexes, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap, freezeAcVerify, acVerifyCandidateIndexes } from './ac-actor.mjs';
+import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, deterministicAcIndexes, demoteUnprovenObservationalAc, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap, freezeAcVerify, acVerifyCandidateIndexes } from './ac-actor.mjs';
 import { KNOWN_OBSERVATIONAL_ACS } from './test-helpers/observational-ac-controls.mjs';
 
 // repo 内外が混ざった AC（テスト・README・rules の削除と dotfiles の excludedCommands の変更を 1 つに書いたもの）
@@ -268,61 +268,38 @@ test('[ac-scope] mixedScopeAcReasons: 混ざった AC だけを AC 番号・本�
   assert.deepEqual(mixedScopeAcReasons(undefined), []);
 });
 
-// 観測型 AC の絞り込み規則 v2（issue #844）。positive / negative control（過去 issue の AC 本文）が prerun の
-// 絞り込み + Jev で観測型になる / ならないことは prerun-analyze.bats が Jev スタブで確かめる（issue #859）。
-
-test('[ac-observational] 強い語は否定・言及の節でも発火し、OBS_STRONG_NEG（実測しない・計測不要）だけ外す', () => {
-  assert.equal(isObservationalAc('変更前後で計測し、差分が記述されている'), true, '強い語は言及の節でも発火');
-  assert.equal(isObservationalAc('計測を行い PR 本文に書く'), true);
-  assert.equal(isObservationalAc('この変更は実測しない'), false);
-  assert.equal(isObservationalAc('A/B は不要'), false);
-  assert.equal(isObservationalAc('計測値を定数に持つ'), false, '「計測」が名詞（計測値）なら強い語にしない');
-});
-
-test('[ac-observational] 弱い語は否定・言及の節では発火せず、inline code と鉤括弧の引用の中は見ない', () => {
-  assert.equal(isObservationalAc('run ごとに duration が journal に記録される'), true);
-  assert.equal(isObservationalAc('journal に記録されないことを確かめる'), false, '否定の節');
-  assert.equal(isObservationalAc('telemetry のキー名を変える'), false, '言及の節（キー名）');
-  assert.equal(isObservationalAc('`journal` を引数に取る'), false, 'inline code の中');
-  assert.equal(isObservationalAc('見出しを「計測する」から「確認」に変える'), false, '鉤括弧の引用の中');
-  assert.equal(isObservationalAc(''), false);
-  assert.equal(isObservationalAc(null), false);
-  assert.deepEqual(acObservationalOf(['worker 数の上限を設定で変えられる', KNOWN_OBSERVATIONAL_ACS['526-3']]), [false, true]);
-  assert.deepEqual(acObservationalOf(undefined), []);
-});
+// 観測型 AC の判定は analyze ゲートの分類 agent に一本化している（issue #1259）。全 AC を渡すことと agent が判定できない
+// AC を観測型に倒す経路は observational-ac-routing.test.mjs が VM 実行で確かめる。
 
 test('[ac-observational] classifyAcActor: 観測型の human 判定は確定した観測型判定（opts.observational）だけを使い、正規表現では決めない', () => {
   const OBS = '修正後の実 run で receipt が生成される';
   assert.equal(classifyAcActor(OBS, { observational: true }), 'human');
-  assert.equal(classifyAcActor(OBS, { observational: false }), 'agent', '正規表現の絞り込みに当たっても、確定判定が false なら agent');
+  assert.equal(classifyAcActor(OBS, { observational: false }), 'agent', '観測の語を含んでも、確定判定が false なら agent');
   assert.equal(classifyAcActor(OBS), 'agent');
   assert.equal(classifyAcActor('staging で計測する（人手）', { observational: false }), 'human', '既存の human 判定（（人手）・staging）は観測型判定に依らない');
-  assert.equal(classifyAcActor('worker 数の上限を設定で変えられる', { observational: true }), 'human', '絞り込みに当たらない AC でも確定判定が true なら human');
+  assert.equal(classifyAcActor('worker 数の上限を設定で変えられる', { observational: true }), 'human', '観測の語を含まない AC でも確定判定が true なら human');
   // repo 内外が混ざった AC は観測型でなければ analyze ゲートに任せて agent のまま
   assert.equal(classifyAcActor(MIXED_AC, { observational: false }), 'agent');
   assert.deepEqual(acActorsOf([OBS, OBS, EXTERNAL_AC], { repo: 'it-all-playpark/skills', observational: [true, false, false] }), ['human', 'agent', 'human']);
   assert.deepEqual(acActorsOf([OBS], { observational: 'x' }), ['agent']);
 });
 
-test('[ac-observational] pendingAcObservationalIndexes / resolveAcObservational: null の AC だけを agent に回し、agent が判定できない AC は true', () => {
-  assert.deepEqual(pendingAcObservationalIndexes([false, null, true, null]), [1, 3]);
-  assert.deepEqual(pendingAcObservationalIndexes([false, true]), []);
-  assert.deepEqual(pendingAcObservationalIndexes(undefined), []);
-  const prerun = [false, null, true, null, null];
-  const agentResult = { results: [{ ac_index: 1, observational: false }, { ac_index: 3, observational: null }, { ac_index: 0, observational: true }] };
-  assert.deepEqual(resolveAcObservational(prerun, agentResult), [false, false, true, true, true],
-    'prerun の確定値は agent の応答で上書きしない / agent の null・応答欠落は true');
-  assert.deepEqual(resolveAcObservational(prerun, null), [false, true, true, true, true], 'agent が null（失敗）なら未確定は全て true');
-  assert.deepEqual(resolveAcObservational(prerun, { results: 'x' }), [false, true, true, true, true]);
-  assert.deepEqual(resolveAcObservational([false, true], null), [false, true]);
+test('[ac-observational] resolveAcObservational: 全 AC について agent の boolean を採り、null・応答に無い AC・agent の失敗は true', () => {
+  const acs = ['a', 'b', 'c', 'd', 'e'];
+  const agentResult = { results: [{ ac_index: 1, observational: false }, { ac_index: 3, observational: null }, { ac_index: 0, observational: true }, { ac_index: 2, observational: false }] };
+  assert.deepEqual(resolveAcObservational(acs, agentResult), [true, false, false, true, true], 'agent の null（AC-4）・応答欠落（AC-5）は true');
+  assert.deepEqual(resolveAcObservational(acs, null), [true, true, true, true, true], 'agent が null（失敗）なら全 AC を true');
+  assert.deepEqual(resolveAcObservational(acs, { results: 'x' }), [true, true, true, true, true]);
+  assert.deepEqual(resolveAcObservational(['a'], { results: [{ ac_index: 0, observational: 'false' }] }), [true], 'boolean でない応答は true');
+  assert.deepEqual(resolveAcObservational(undefined, agentResult), []);
 });
 
-test('[ac-observational] acObservationalPrompt: issue のタイトルと未確定 AC の文面だけを渡し、判定できない AC は null で返させる', () => {
+test('[ac-observational] acObservationalPrompt: issue のタイトルと渡す AC の文面だけを渡し、判定できない AC は null で返させる', () => {
   const acs = ['ログの件数表示を修正する', 'エラー件数を返す関数にテストを足す', '実行ログに 1 件以上記録される'];
   const prompt = acObservationalPrompt('fix: ログの件数', acs, [1]);
   assert.ok(prompt.includes('"fix: ログの件数"'), prompt);
   assert.ok(prompt.includes('{"ac_index":1,"ac":"エラー件数を返す関数にテストを足す"}'), prompt);
-  assert.ok(!prompt.includes(acs[0]) && !prompt.includes(acs[2]), `確定済みの AC を渡している: ${prompt}`);
+  assert.ok(!prompt.includes(acs[0]) && !prompt.includes(acs[2]), `渡していない AC を含めている: ${prompt}`);
   assert.match(prompt, /コードとテストを読むだけでは確かめられず、実行した結果・ログ・計測を観測しないと確かめられない/);
   assert.match(prompt, /テストコードやソースコード自体の書き方・構成について述べているなら false/);
   assert.match(prompt, /observational:null/);
@@ -366,16 +343,14 @@ test('[ac-observational] demoteUnprovenObservationalAc: 実証の無い観測型
 
 // issue #1147: テストファイルを inline code で名指しした観測型 AC（#1142 の AC-2）。観測型の判定は true のまま actor だけ agent。
 const AC_1142_2 = 'AC-2 `journal.sh hook-capture` は、64KB を超える error（一致行を多数含むもの・一致行を含まないものの両方）でも exit 0 で終わり、journal に 1 件記録する。記録の `error.message` は現行と同じ規則（一致行の先頭 3 行、一致が無ければ先頭 3 行、各 300 文字まで）で作られる。`journal.bats` に両ケースを足し、そのテストは現行の hook-capture では落ちる';
-// prerun の絞り込みに当たった AC は Jev が決められず null、分類 agent の応答も null の経路を通す
-const resolveActorsViaAnalyze = (acs) => {
-  const prerun = acObservationalOf(acs).map((hit) => (hit ? null : false));
-  const observational = resolveAcObservational(prerun, { results: acs.map((_, i) => ({ ac_index: i, observational: null })) });
-  return { prerun, observational, actors: acActorsOf(acs, { repo: 'it-all-playpark/claude-plugins', observational }) };
+// 分類 agent が観測型の AC に null（判定できない）、それ以外に false を返した経路を通す（obsIndexes は観測型の AC の index）
+const resolveActorsViaAnalyze = (acs, obsIndexes = acs.map((_, i) => i)) => {
+  const observational = resolveAcObservational(acs, { results: acs.map((_, i) => ({ ac_index: i, observational: obsIndexes.includes(i) ? null : false })) });
+  return { observational, actors: acActorsOf(acs, { repo: 'it-all-playpark/claude-plugins', observational }) };
 };
 
 test('[ac-observational] テストファイルを inline code で名指しした観測型 AC（#1142 AC-2）は ac_observational:true のまま actor agent', () => {
-  const { prerun, observational, actors } = resolveActorsViaAnalyze([AC_1142_2]);
-  assert.deepEqual(prerun, [null], '正規表現の絞り込みに当たる');
+  const { observational, actors } = resolveActorsViaAnalyze([AC_1142_2]);
   assert.deepEqual(observational, [true], '分類 agent が null なら観測型');
   assert.deepEqual(actors, ['agent']);
   for (const ac of [
@@ -387,7 +362,7 @@ test('[ac-observational] テストファイルを inline code で名指しした
 
 test('[ac-observational] テストファイルを名指しした観測型 AC: red→green の昇格が無い inspection の satisfied:true は未達に倒れ agent（差し戻し）に数え、昇格済みなら達成のまま', () => {
   const CODE = 'worker 数の上限を設定で変えられる';
-  const { observational, actors } = resolveActorsViaAnalyze([AC_1142_2, CODE]);
+  const { observational, actors } = resolveActorsViaAnalyze([AC_1142_2, CODE], [0]);
   assert.deepEqual(observational, [true, false]);
   const results = [
     { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: '追加テストを読んだ' },
@@ -485,7 +460,7 @@ test('[ac-verify] acVerifyCandidateIndexes: 観測型が true で文面上の ac
   const ciVerify = { label: 'full-ci', commands: ['pnpm test:e2e:local'] };
   assert.deepEqual(acVerifyCandidateIndexes(acs, [true, true, true, false, null], { ciVerify }), [0]);
   assert.deepEqual(acVerifyCandidateIndexes(acs, [true, true, true, true, true], { ciVerify }), [0, 3, 4]);
-  assert.deepEqual(acVerifyCandidateIndexes(acs, [false, false, false, false, null], { ciVerify }), [], '観測型 true が無ければ候補なし（null は pendingAcObservationalIndexes が拾う）');
+  assert.deepEqual(acVerifyCandidateIndexes(acs, [false, false, false, false, null], { ciVerify }), [], '観測型 true が無ければ候補なし');
   assert.deepEqual(acVerifyCandidateIndexes(undefined, undefined), []);
 });
 

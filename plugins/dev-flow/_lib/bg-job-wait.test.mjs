@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { waitBgJob } from './bg-job-wait.mjs';
 import { localVerifyVerdict, localVerifyWaitPolls, AC_VERIFY_TIMEOUT_SEC } from './local-verify.mjs';
-import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, prerunAnalyze, acObservationalResponse } from './test-helpers/vm-sandbox.mjs';
 
 const SCHEMA = {
   type: 'object',
@@ -130,8 +130,8 @@ const runCi = (overrides) => runFlow(
   overrides,
 );
 const runAc = (overrides) => runFlow(
-  { analyze: prerunAnalyze({ acceptance_criteria: [BUILD_AC, CODE_AC], ac_observational: [true, false] }) },
-  { 'ac-observational#1': { results: [{ ac_index: 0, observational: true, verify_command: BUILD_CMD, expect_paths: [] }] }, ...overrides },
+  { analyze: prerunAnalyze({ acceptance_criteria: [BUILD_AC, CODE_AC] }) },
+  { 'ac-observational#1': acObservationalResponse([true, false], { 0: { verify_command: BUILD_CMD } }), ...overrides },
 );
 
 test('[bg-job-wait] Validate 後の ci の AC: 上限回数（localVerifyWaitPolls）まで wait し、終わらなければ打ち切って fail-open', async () => {

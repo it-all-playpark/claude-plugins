@@ -18,9 +18,9 @@
 //   - analyze.comment_overrides / comment_conflicts / uncertain / jev_reasons が string 配列
 //   - analyze.blockers が配列で、全要素が {repo: string, number: 正整数, state: 非空 string,
 //     source: 'api'|'body', url: string}（issue #744。依存なしは空配列）
-//   - analyze.ac_observational が acceptance_criteria と同じ長さの配列で、全要素が true / false / null
-//     （issue #859。null は prerun で確定できなかった AC で、analyze ゲートが分類 agent に回す）
-//   - analyze.ac_observational_evidence が acceptance_criteria と同じ長さの string 配列（AC ごとの判定根拠）
+//
+// AC の観測型判定（ac_observational）は prerun の出力に持たない。analyze ゲート通過後に全 AC を分類 agent に渡して
+// 確定し、REQ に足す（_lib/ac-actor.mjs の resolveAcObservational。issue #1259）。
 //
 // 合格時、REQ をキー個別 copy で構成する（spread しない — 未知キーの混入防止）。
 // issue 本文は REQ に載せない — dev-implementer は worktree の .devflow-tmp/issue-body.md で全文を読み、
@@ -59,10 +59,6 @@ export function buildReqFromContract(analyze, issueNumber) {
   if (!isStringArray(analyze.uncertain)) return null
   if (!isStringArray(analyze.jev_reasons)) return null
   if (!Array.isArray(analyze.blockers) || !analyze.blockers.every(isBlocker)) return null
-  const acCount = analyze.acceptance_criteria.length
-  if (!Array.isArray(analyze.ac_observational) || analyze.ac_observational.length !== acCount) return null
-  if (!analyze.ac_observational.every((v) => v === true || v === false || v === null)) return null
-  if (!isStringArray(analyze.ac_observational_evidence) || analyze.ac_observational_evidence.length !== acCount) return null
 
   const req = {
     summary: `Issue #${issueNumber}: ${analyze.issue_title}`,
@@ -70,7 +66,6 @@ export function buildReqFromContract(analyze, issueNumber) {
     issue_title: analyze.issue_title,
     issue_type: analyze.issue_type,
     acceptance_criteria: analyze.acceptance_criteria.slice(0, 20),
-    ac_observational: analyze.ac_observational.slice(0, 20),
     breaking_change: analyze.breaking_change,
     breaking_keyword_scan: analyze.breaking_keyword_scan,
     breaking_evidence: typeof analyze.breaking_evidence === 'string' ? analyze.breaking_evidence : '',

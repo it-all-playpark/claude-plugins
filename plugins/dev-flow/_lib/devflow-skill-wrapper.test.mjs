@@ -157,8 +157,8 @@ test('[devflow-skill-wrapper] Jev 節に要否・効かないときの needs_cla
     assert.ok(section.includes(`\`${p}\``), `dev-flow/SKILL.md「Jev」節のインターフェースに理由の先頭語 '${p}' が無い（prerun-analyze.sh とずれている）`);
   }
   // 第三者が jev-classify を自作できるよう、questions / answers の形も prerun-analyze.sh が実際に送る・読むものと揃える
-  const readKeys = [...analyzeSrc.matchAll(/\.answers(?:\.(\w+)|\[\$q\])\.(\w+)/g)].map((m) => [m[1] ?? 'ac_<n>', m[2]]);
-  assert.ok(readKeys.length >= 4, `prerun-analyze.sh から読む answers のキーを取れない: ${JSON.stringify(readKeys)}`);
+  const readKeys = [...analyzeSrc.matchAll(/\.answers\.(\w+)\.(\w+)/g)].map((m) => [m[1], m[2]]);
+  assert.ok(readKeys.length >= 3, `prerun-analyze.sh から読む answers のキーを取れない: ${JSON.stringify(readKeys)}`);
   for (const [id, field] of readKeys) {
     assert.ok(section.includes(`\`${id}\``), `dev-flow/SKILL.md「Jev」節に質問 id '${id}' が無い（prerun-analyze.sh とずれている）`);
     assert.ok(section.includes(`"${field}"`), `dev-flow/SKILL.md「Jev」節に応答のキー '${field}' が無い（prerun-analyze.sh とずれている）`);

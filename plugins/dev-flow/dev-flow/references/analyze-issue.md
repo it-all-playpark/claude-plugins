@@ -27,13 +27,14 @@ Jev に聞く質問・comment の分類・確信の閾値は `prerun-analyze.sh`
   前後関係に使う）
 
 prerun はこれを決定論で処理し、下記の判定だけを Jev に回して、ゲートに渡す
-`comment_overrides` / `comment_conflicts` / `uncertain` / `breaking_change` / `ac_observational` を組む。
+`comment_overrides` / `comment_conflicts` / `uncertain` / `breaking_change` を組む。AC の観測型判定は prerun では行わない
+（下記「観測型 AC の判定」）。
 
 ## prerun が Jev に回す理由
 
-決定論の parse では次の 3 つを判定できない: 互換性に関わる語が title / body にあるときに非互換な変更・
-既存データの変換が本当に要るか、comment が body の要件を訂正しているか、AC が実行結果の観測を要するか。
-LLM に issue を転写させて読ませる工程は持たず、この 3 つだけを Jev に回す。Jev は有界な確率だけを返す
+決定論の parse では次の 2 つを判定できない: 互換性に関わる語が title / body にあるときに非互換な変更・
+既存データの変換が本当に要るか、comment が body の要件を訂正しているか。
+LLM に issue を転写させて読ませる工程は持たず、この 2 つだけを Jev に回す。Jev は有界な確率だけを返す
 判定モデルなので、確率を閾値で決定論の値に落とし、確信の無い判定は人間へ返す（下記の fail-closed）。
 転写する工程が無いので、転写事故を突き合わせる工程（取得元の突合・comment 件数の突合・切断時の再実行）も
 持たない。
@@ -59,12 +60,19 @@ merge tier が補償する（意図的な設計判断）。
   `uncertain` に、権限の無い override・conflict・低確信の comment は `comment_conflicts` に積む。決定論は
   意味的な矛盾をどちらに解くべきか判定できず、LLM に黙って片方を採らせると、訂正が実装に反映されないまま
   進む
-- 観測型 AC は（実行環境に node が無くて絞り込みを実行できないときを除き）`uncertain` に積まず、判定できない AC を null にしてゲート通過後に AC 文面だけを読む
-  `ac-observational#<issue>` に回し、そこでも決まらなければ観測型として扱う。観測型への誤判定は人手 AC 待ちの
-  HOLD で止まるだけだが、逆は evaluator のコード読みだけで達成扱いになる
-- 同じ `ac-observational#<issue>` に、観測型で文面上の actor が human / ci でない AC について、AC が inline code で指定した
-  検証コマンド（`verify_command`）と生成されるファイル（`expect_paths`）も聞く。AC の inline code と完全一致するものだけを
-  ゲートで凍結し、workflow はそれを local-verify で実行して、失敗は dev-implementer へ差し戻し、最終 tree の exit 0 は
+
+## 観測型 AC の判定
+
+AC が観測型（コードとテストを読むだけでは確かめられず、実行した結果・ログ・計測を観測しないと確かめられない）かは、
+ゲート通過後に全 AC を AC の文面と issue タイトルだけを読む分類 agent（`ac-observational#<issue>`）に 1 回で渡して決める。
+正規表現や Jev で候補を絞らない — 絞り込みが取りこぼした観測型 AC は agent に回らず「観測型でない」で確定し、evaluator の
+コード読みで達成扱いになるため。
+
+- agent が null を返した AC・応答に無い AC・agent 自体が失敗した run は、その AC を観測型として扱う（`uncertain` には積まない）。
+  観測型への誤判定は人手 AC 待ちの HOLD で止まるだけだが、逆は evaluator のコード読みだけで達成扱いになる
+- 同じ agent は、AC が inline code で指定した検証コマンド（`verify_command`）と生成されるファイル（`expect_paths`）も返す。
+  AC の inline code と完全一致するものだけをゲートで凍結し、観測型で文面上の actor が human / ci でない AC についてだけ
+  workflow が local-verify で実行して、失敗は dev-implementer へ差し戻し、最終 tree の exit 0 は
   人手 AC の確認材料として終端サマリーに開示するだけにする（actor は human のまま。exit 0 で HOLD を外さない — 実行される
   中身は PR が書き換えられる）。LLM が組み立てた・言い換えたコマンドは実行しない（実行するものを AC の文面に縛り、
   実装後に書き換えられないようにする）
