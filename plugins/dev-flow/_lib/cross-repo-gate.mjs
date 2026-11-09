@@ -16,8 +16,8 @@
 // summarizeCrossRepoArtifacts: cross-repo-artifacts.sh exec-proxy の結果を fail-safe に正規化する純関数。
 // crossRepoReturnNote: 成果物の所在を人間に報告する定型文を組み立てる純関数。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 // 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。
 
 export function hasCrossRepoLabel(labels) {

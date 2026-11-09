@@ -1,8 +1,8 @@
 // Evaluator operational contract injected into each evaluator prompt by the dev-flow workflows.
 // 各起動が使う契約を prompt に注入するので agent 定義（evaluator.md）には置かない。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // テストログ（run-tests が各 script の出力を残したファイル）が渡されたときの指示。eval#N（Validate と同じ tree）と
 // final-ac-reconcile（test#final と同じ tree）の prompt に、ログがあるときだけ testLogsPromptBlock が入れる。

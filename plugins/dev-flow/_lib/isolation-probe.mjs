@@ -42,8 +42,8 @@
 //   issue #528）は絶対パスのまま pass-through する。後者は偶発的 fallback ではなく正規経路 —
 //   EnterWorktree は絶対パスでも成立する（issue #449 実測）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 // 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。
 //
 // 不変条件: 本ファイルが生成する prompt / メッセージは、実行制御の名称（sandbox・permission・

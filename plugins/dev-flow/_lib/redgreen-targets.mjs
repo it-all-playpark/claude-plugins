@@ -1,8 +1,8 @@
 // redgreen-verify（Evaluate の label 'redgreen'、1 iteration 1 spawn / Final reconcile の 'redgreen-final'）に渡す
 // ペアの構築・結果の配布・exec-proxy prompt の canonical。issue #822。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // dedupe: evaluator は AC ごとに (test_files, impl_files) を申告するため、複数 AC が同じ組を指すことが多い
 // （1 本のテストファイルで全 AC を守る形）。redgreen-verify はペアごとに impl を退避して red → 復元して green を

@@ -1,7 +1,7 @@
 // pr-iterate.js の review 経路（blocking findings の件数）を正規化する canonical。issue #321。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // review 経路の 2 値 enum。
 export const REVIEW_ROUTE_CI_GATE = 'ci_gate';

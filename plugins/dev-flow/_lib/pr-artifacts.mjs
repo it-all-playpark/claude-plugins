@@ -17,8 +17,8 @@
 // （prBodyEditPrompt）もここに置き、判定は本ファイルの純関数のみが行う（agent は verbatim 転写・bare 単文実行のみ）。
 // 作成後の PR に Closes 行が残っているかの検証と再投入は Merge tier（_lib/merge-tier-facts.mjs）が持つ。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // Conventional Commits の type/scope prefix（`type(scope)!: rest`）。issue title が既に prefix 付きの
 // 場合に type/scope を再利用し、`refactor(x): refactor(x): ...` の二重 prefix を避ける。

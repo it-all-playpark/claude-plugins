@@ -3,8 +3,8 @@
 // 完全性検証）。判断（targeted evaluator の起動・prompt 構築・agent 呼び出し）は workflow
 // 側が担い、本ファイルは pure 関数のみを提供する。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // telemetry final_ac_reconcile の 3 値。
 export const FINAL_AC_RECONCILE_VALUES = ['skipped', 'reverified', 'unavailable'];

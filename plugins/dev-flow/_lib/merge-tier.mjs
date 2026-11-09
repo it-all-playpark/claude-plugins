@@ -1,7 +1,7 @@
 // dev-flow W5: merge tiering + 決定論 danger floor の純粋関数群。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // diff-risk-classify.sh が出力する 7 danger クラス（固定順）。
 export const DANGER_CLASSES = [
@@ -194,7 +194,7 @@ export function classifyCiChecks(ciChecks) {
 // 'missing': 欠落を検出し再投入も失敗（または再投入後も欠落）— fail-closed で HOLD 理由に載せる。
 // 'unverified': gh pr view 自体が失敗（fail-open、警告のみ）。canonical は `_lib/pr-artifacts.mjs`
 // の PR_CLOSES_STATUS_VALUES（同値性は merge-tier.test.mjs が pin する）。本ファイルでは top-level
-// named export を持たない — pr-artifacts.mjs と本ファイルは両方とも dev-flow.js へ inline されるため、
+// named export を持たない — pr-artifacts.mjs と本ファイルは両方とも dev-flow-evaluate.js と dev-flow-finalize.js へ inline されるため、
 // 同名 export const を重複宣言すると tools/sync-inlines.mjs の top-level declaration collision 検知に
 // 抵触する（validateInlineDeclCollisions は export 有無に関わらず column-0 の const/let/var/function/class
 // 宣言名を対象にする）。値は下記バリデーションに直接 literal で埋め込む（関数スコープ内 local const

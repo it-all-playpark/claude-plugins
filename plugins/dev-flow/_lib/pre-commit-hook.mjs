@@ -1,8 +1,8 @@
 // Validate の各回（runValidateLoop の commit-hook#<iter>）で対象 repo の pre-commit hook を実行する exec-proxy の
 // prompt・schema と、応答から green-fix に渡す失敗を取り出す純関数の canonical。issue #1188。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // hook の実行・stage 内容（PR phase と同じ add -A → .devflow-tmp を外す。一時 index）・hook の有無の判定は
 // `pre-commit-hook`（_shared/scripts/pre-commit-hook.sh）が行う。agent の仕事は stdout の verbatim 転写だけ。

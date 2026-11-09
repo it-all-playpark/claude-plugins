@@ -1,5 +1,5 @@
 // _lib/ac-actor.mjs
-// AC を actor（'agent' | 'human'）に決定論分類し、Evaluate の差し戻しと Merge tier の HOLD 理由を actor で
+// AC を actor（'agent' | 'human' | 'ci'）に決定論分類し、Evaluate の差し戻しと Merge tier の HOLD 理由を actor で
 // 分ける純関数群（issue #747）。
 //
 // actor の意味:
@@ -70,8 +70,8 @@
 // agent の出力の文字列は実行しない — 実行するものを AC の文面から決定論で抜き出した inline code に縛り、実装後に読み直さない
 // （implementer が差し戻しの判定に使うコマンドを書き換えられないように）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 export const AC_ACTORS = ['agent', 'human', 'ci']
 

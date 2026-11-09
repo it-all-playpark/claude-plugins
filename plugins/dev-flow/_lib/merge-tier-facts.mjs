@@ -34,8 +34,8 @@
 //                   pr_closes_status='unverified' の警告のみ。'missing' だけが Merge tier の再投入へ進み、
 //                   再投入失敗 / 再投入後も欠落なら pr_closes_missing で HOLD — issue #824）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // closesCheckCommand({ pr, repo, issue }): PR body に `Closes #<issue>` があるかを gh 側の jq で true / false に
 // 畳むコマンド。本文そのものは stdout に出さない — 本文を haiku に転写させると転写のゆれで Closes 行を見落とし

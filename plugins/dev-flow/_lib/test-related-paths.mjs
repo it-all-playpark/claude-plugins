@@ -1,8 +1,8 @@
 // test-related-paths: dev-flow が final_test_red で HOLD にした PR を /pr-iterate 単体で回収したとき、HOLD を付けた head から
 // 終端 head までの変更ファイルのうち「テスト関連」（テストの実行・結果を変えうるパス）を決める純関数。I/O なし、非決定性なし。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // isTestFilePath は _lib/post-eval-recheck.mjs のもの（同じ workflow に先に inline される）。
 // 「テスト関連の変更なし」は人が PR 全体を読み直さずに判断する根拠になるので、判定は安全側に倒す:

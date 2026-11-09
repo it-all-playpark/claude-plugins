@@ -2,8 +2,8 @@
 // dev-flow.js（Implement / Validate / local-verify / AC コマンド）と dev-flow-evaluate.js（Evaluate の差し戻しと post-eval
 // 再テスト）が同じ prompt・break 条件・計上で動くよう、ここだけに置いて両方へ inline する（工程ごとに書き分けない）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ inline 生成される。
-// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // workflow ごとに違うもの（worktree・issue・spawn・log・実装 prompt に足す注記）は makeImplementLoop の env で受ける。
 // 他の canonical（run-tests-prompt / bg-job-wait / pre-commit-hook / base-failure-triage / pr-artifacts）の関数・定数は

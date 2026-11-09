@@ -2,8 +2,8 @@
 // 用途: red&&green の決定論昇格を維持したまま、test 変更込みの「勝利宣言」を deny する
 // advisory シグナル（INV-10: record_integrity=advisory 恒久、blocking gate 化はしない）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 export function vdeltaDenies(verdict) {
   if (verdict === null || verdict === undefined) {

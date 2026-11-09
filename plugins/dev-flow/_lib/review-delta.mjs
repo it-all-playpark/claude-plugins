@@ -1,8 +1,8 @@
 // review-delta: pr-iterate の review#i（i ≥ 2）を fix delta（前 round の head sha .. 現在 HEAD）に絞る
 // ための純粋関数群。I/O なし、gh なし、Date.now() 非決定性なし。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証する。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // なぜ必要か: review#i（i ≥ 2）が毎 round 全 PR diff を cold で読み直すと、安定したコードに
 // 新しい主観的 major を捻り出す churn（moving target）が生まれる。「既出は対応済み前提で読め」

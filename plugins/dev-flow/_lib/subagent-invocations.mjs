@@ -1,8 +1,8 @@
 // subagent-invocations: run あたりの subagent (agent-invoke) 起動数カウント用の純関数群。
 // I/O なし・Date.now/Math.random 不使用。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 /**
  * counts（plain object）の counts[key] を +1 する。

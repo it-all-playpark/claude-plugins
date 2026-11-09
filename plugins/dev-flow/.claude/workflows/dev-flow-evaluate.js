@@ -2412,7 +2412,9 @@ async function execEvaluatePhase(state) {
   // Diff triage で build 済みの ledger(SEC seed + danger 反映済)に AC + concerns を足す。
   // makeLedger で作り直さない(SEC seed を失わないため)。
   for (const [i, crit] of (req.acceptance_criteria ?? []).entries()) {
-    // AC は現状 inspection-blocking(LLM 判定)。W4 で red→green 実証済みのものを deterministic 化する。
+    // AC は inspection の LLM major（LLM 判定）で、既定 policy では advisory・llm-major-blocking のときだけ blocking。
+    // agent AC の未達は ledger の収束とは別に差し戻しで止める（下の agentAcReimpl）。W4 で red→green を実証したものは
+    // deterministic に昇格し、policy に依らず blocking になる。
     ledger = appendItem(ledger, {
       id: `AC-${i + 1}`, text: String(crit), dimension: 'ac',
       severity: 'major', source: 'ac', check: { kind: 'inspection' },

@@ -8,8 +8,8 @@
 // spec: { key: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' を '|' で並べた型 | 入れ子の spec（object） }
 // spec に無いキーは見ない（工程が足したキーで親を止めない）。値が undefined のキーは欠落と同じに扱う。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ inline 生成される。
-// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // dev-flow-test-commands.js（テストコマンドの解決。issue #1278）の引数と返り値。返り値はコマンドファイルの中身
 // （_lib/test-commands.mjs）に commands_file（run-tests の --commands。解決できなければ null もある）と error を足したもの。

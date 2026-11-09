@@ -2,8 +2,8 @@
 // dev-flow.js（Setup）と単体起動の pr-iterate.js が workflow() でその工程を起動し、結果（コマンドファイルのパスと解決元）を
 // run-tests の --commands と終端サマリーに使う。nested の pr-iterate と dev-flow-finalize は親の結果を引数で受け、解決し直さない。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ inline 生成される。
-// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // 流れ: test-commands-prepare（決定論。_shared/scripts/test-commands-prepare.sh）が origin/<base> の tree から解決元を決める。
 //   user 設定・tests/run-*.sh ならそこで終わり（resolver を起動しない）。どちらも無いときだけ、prepare が base の tree から

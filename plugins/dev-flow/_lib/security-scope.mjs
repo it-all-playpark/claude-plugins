@@ -1,10 +1,10 @@
 // security-scope.mjs — 敵対的 security review の対象判定を exec-proxy で取る prompt と、その応答の読み方（issue #1063）。
-// dev-flow.js（Diff triage の起動時の判定）と pr-iterate.js（LGTM を確定する前の判定）が使う。
+// dev-flow-evaluate.js（Diff triage の起動時の判定）と pr-iterate.js（LGTM を確定する前の判定）が使う。
 // 判定の規則そのものは _lib/security-review-scope.mjs（bin/ の bare 名 `security-review-scope` が実行する）にあり、
 // workflow 側は応答の ok / target を読むだけ。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 export const SECURITY_SCOPE_SCHEMA = {
   type: 'object', required: ['ok', 'target'],

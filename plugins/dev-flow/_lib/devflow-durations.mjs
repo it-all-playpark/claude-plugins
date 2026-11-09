@@ -14,8 +14,8 @@
 // whitelist 検証と 3 条件ゲート判定）は agent を spawn しない純関数なので固有の mark を持たない —
 // implement 区間は setup_end 起点で、isolation-probe / plan 合成の時間を含む（issue #695）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // dev-flow.js の probe 発火順と一致する序列。
 export const CLOCK_MARK_ORDER = [

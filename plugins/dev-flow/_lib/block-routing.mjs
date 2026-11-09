@@ -8,8 +8,8 @@
 // コマンド列の組み立てを incentive 化する（run wf_17d7a7be の実害）。この遮断は capability 非依存
 // （賢いモデルほど巧妙な迂回手順を組み立て得るため、モデル世代が進んでも撤去しない）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 export const BLOCK_CLASSES = ['approach_mismatch', 'guard_blocked']
 

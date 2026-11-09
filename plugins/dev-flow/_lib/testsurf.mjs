@@ -3,8 +3,8 @@
 // 同型だが別 dimension（test-integrity）— dangerHits / security_focus / danger_hits telemetry /
 // reconcileDanger の意味論を一切変えない別系統の seed family。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // diff-risk-classify.sh が test-weakening クラスの hit に付与する content pattern（固定順）。
 // file-deletion 系と assert/expect 純減は spike #361 の FP 実測により不採用（follow-up）。

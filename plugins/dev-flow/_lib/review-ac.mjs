@@ -1,8 +1,8 @@
 // review-ac: pr-reviewer の prompt へ issue の acceptance criteria を注入するブロックを組み立てる。
 // I/O なし、gh なし、Date.now() 非決定性なし。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証する。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // なぜ必要か: pr-reviewer は「PR の title/body（buildPrBody が AC / plan から確定した宣言意図）と実 diff の照合」しか
 // しておらず、issue の AC を渡されていなかった。evaluator（requirements/AC 忠実性）と

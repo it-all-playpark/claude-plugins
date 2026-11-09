@@ -2,8 +2,8 @@
 // 判定する純関数群。CI green を根拠に auto-close してよい ENV item を allowlist で限定する
 // （AC-3。npm-cache-eperm 等 CI で検証できない ENV key は含めない）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // env_key ごとの CI check 名判定 regex。CI green で auto-close してよい ENV key の allowlist を兼ねる
 // （npm-cache-eperm 等 CI で検証できない ENV key は含めない）。
