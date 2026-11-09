@@ -313,3 +313,46 @@ test('[observational-ac] (G) 分類 agent が失敗（null）なら全 AC を観
   assert.equal(result?.merge_tier, 'HOLD');
   assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [0, 1, 2, 3, 4], ci: [] });
 });
+
+// pipeline が実行したテストの入口だけを inline code に書いた観測型 AC（issue #1297）: 最終 tree を検証した run の結果と入口の変更有無を
+// 終端サマリーのその AC の行に開示するだけで、ac_human_pending の HOLD と AC の未達は変えない。
+//   (O) fix なしの run は Validate（state.val）の結果を開示する
+//   (P) fix 適用 run は test#final の結果だけを開示し、Validate の green は出さない
+const ENTRY_AC = '`bash tests/run-all-bats.sh` と `bash tests/run-node-tests.sh` が green';
+const ENTRY_SCRIPTS = (exit) => ['tests/run-all-bats.sh', 'tests/run-node-tests.sh'].map((p, i) => ({ path: `/tmp/wt/${p}`, exit, launch_failed: false, log: `/tmp/run-tests-x/${i}.log` }));
+const ENTRY_VALIDATE_GREEN = { 'test#1': { tests: 'passed', green: true, summary: 'passed', scripts: ENTRY_SCRIPTS(0) } };
+const ENTRY_LIST = '入口 `tests/run-all-bats.sh`・`tests/run-node-tests.sh` を実行して';
+const ENTRY_TAIL = '— 選択実行の可能性があり全件実行とは限らない。人手確認の材料（AC の達成判定には使っていない）';
+const runEntryAc = (overrides, opts = {}) => run({ 'eval#1': evalWith([inspection(0), inspection(1)]), ...ENTRY_VALIDATE_GREEN, ...overrides }, { analyze: prerunAnalyze({ acceptance_criteria: [ENTRY_AC, CODE_AC] }), ...opts });
+const entryAcRow = (calls) => {
+  const summary = calls.find((c) => c.label === 'post-summary');
+  assert.ok(summary, 'post-summary が走る');
+  return summary.prompt.split('\n').find((l) => l.startsWith('| ❌ 未達 | AC#1（観測型） |')) ?? '';
+};
+const assertEntryAcStillPending = (result, calls) => {
+  assert.equal(result?.merge_tier, 'HOLD');
+  assert.ok(plain(result.merge_tier_hold_reasons.map((r) => r.code)).includes('ac_human_pending'), JSON.stringify(result.merge_tier_hold_reasons));
+  assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });
+  assert.ok(calls.find((c) => c.label === 'pr#1').prompt.includes(`- [ ] ${ENTRY_AC}`), '入口の green で AC を達成扱いにした');
+};
+
+test('[observational-ac] (O) テストの入口だけの観測型 AC は ac_human_pending の HOLD のまま、行に Validate の green と入口の変更有無を開示する', async () => {
+  const { result, calls } = await runEntryAc({});
+  assertEntryAcStillPending(result, calls);
+  assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
+  const row = entryAcRow(calls);
+  assert.ok(row.includes(`pipeline の Validate（run: validate）が${ENTRY_LIST} green（PR はこの入口を変更していない）${ENTRY_TAIL}`), row);
+});
+
+test('[observational-ac] (P) fix 適用 run で test#final が red なら、Validate が green でも行には test#final の red だけを開示し、HOLD は外さない', async () => {
+  const { result, calls } = await runEntryAc({
+    'reconcile-sync': { ok: true, head: 'a'.repeat(40) },
+    'test#final': { tests: 'failed', green: false, summary: 'not ok 1 x', failed_files: [], scripts: ENTRY_SCRIPTS(1) },
+  }, { workflow: FIXED_ITERATE });
+  assertEntryAcStillPending(result, calls);
+  assert.ok(plain(result.merge_tier_hold_reasons.map((r) => r.code)).includes('final_test_red'), JSON.stringify(result.merge_tier_hold_reasons));
+  const row = entryAcRow(calls);
+  assert.ok(row.includes(`pipeline の Final reconcile の test#final（run: test_final）が${ENTRY_LIST} red（PR はこの入口を変更していない）${ENTRY_TAIL}`), row);
+  assert.ok(!row.includes('Validate'), `最終 tree と異なる tree の Validate の結果を開示した: ${row}`);
+  assert.ok(!row.includes(' green（'), row);
+});

@@ -3129,6 +3129,43 @@ test('issue #1208: 同じ AC にまとめた行でも、AC 判定の現状にコ
   assert.ok(row.includes(`AC 判定 satisfied:false（inspection）: dotfiles 側が未変更${AC_VERIFY_NOTE_1208}`), row);
 });
 
+// ─── issue #1297: pipeline が実行したテストの入口だけを書いた観測型 AC は、人手 AC のまま行に run の結果と入口の変更有無を添える ───
+
+const TEST_RUN_1297 = { ac_index: 0, run: 'validate', entries: ['tests/run-all-bats.sh', 'tests/run-node-tests.sh'], green: true, entry_changed: false };
+const TEST_RUN_TAIL_1297 = '— 選択実行の可能性があり全件実行とは限らない。人手確認の材料（AC の達成判定には使っていない）';
+const TEST_RUN_NOTE_1297 = ' / pipeline の Validate（run: validate）が入口 `tests/run-all-bats.sh`・`tests/run-node-tests.sh` を実行して green（PR はこの入口を変更していない）' + TEST_RUN_TAIL_1297;
+
+test('issue #1297: 入口の run の開示がある観測型 AC の未達行に run の種別・入口・green・入口の変更有無・選択実行の注記を 1 行で添え、HOLD 理由は変えない', () => {
+  const input = input844();
+  const body = buildDevflowSummaryBody({ ...input, testRunAc: [TEST_RUN_1297] });
+  assert.ok(body.includes(`| ❌ 未達 | AC#1（観測型） | inspection | 観測型 AC — test の red→green 実証が無い${TEST_RUN_NOTE_1297} |`), body);
+  assert.deepEqual(rows794(body, '### HOLD になった理由と現状'), rows794(buildDevflowSummaryBody(input), '### HOLD になった理由と現状'));
+  // test#final の red・入口の変更あり・変更の有無が不明
+  const finalRed = buildDevflowSummaryBody({ ...input, testRunAc: [{ ...TEST_RUN_1297, run: 'test_final', green: false, entry_changed: true }] });
+  assert.ok(finalRed.includes(' / pipeline の Final reconcile の test#final（run: test_final）が入口 `tests/run-all-bats.sh`・`tests/run-node-tests.sh` を実行して red（PR がこの入口を変更している）' + TEST_RUN_TAIL_1297), finalRed);
+  const unknown = buildDevflowSummaryBody({ ...input, testRunAc: [{ ...TEST_RUN_1297, entry_changed: null }] });
+  assert.ok(unknown.includes('を実行して green（PR による入口の変更の有無は不明（変更ファイル一覧を取得できなかった））' + TEST_RUN_TAIL_1297), unknown);
+});
+
+test('issue #1297: 開示の無い AC の行は変わらない（開示が空・別の AC・未達でない AC）', () => {
+  const input = input844({ human: [0, 2], observational: [0, 2] });
+  const base = buildDevflowSummaryBody(input);
+  assert.equal(buildDevflowSummaryBody({ ...input, testRunAc: [] }), base);
+  assert.equal(buildDevflowSummaryBody({ ...input, testRunAc: [{ ...TEST_RUN_1297, ac_index: 1 }] }), base);
+  const body = buildDevflowSummaryBody({ ...input, testRunAc: [TEST_RUN_1297] });
+  const row3 = (b) => b.split('\n').find((l) => l.startsWith('| ❌ 未達 | AC#3（観測型） |'));
+  assert.equal(row3(body), row3(base));
+  assert.ok(!row3(body).includes('pipeline の'), row3(body));
+});
+
+test('issue #1297: 同じ AC にまとめた行でも、AC 判定の現状に AC コマンドの開示に続けて入口の run の開示を添える', () => {
+  const input = input794({ agent: [], human: [3] });
+  input.acResults = input.acResults.map((a) => (a.ac_index === 3 ? { ...a, observational: true } : a));
+  const body = buildDevflowSummaryBody({ ...input, acVerify: [{ ...AC_VERIFY_1208, ac_index: 3 }], testRunAc: [{ ...TEST_RUN_1297, ac_index: 3 }] });
+  const row = body.split('\n').find((l) => l.startsWith('| ❌ 未解消 | 必須（AC#4 未達（観測型） に紐づく')) ?? '';
+  assert.ok(row.includes(`AC 判定 satisfied:false（inspection）: dotfiles 側が未変更${AC_VERIFY_NOTE_1208}${TEST_RUN_NOTE_1297}`), row);
+});
+
 // ─── issue #829: 終端サマリの定型行・二重掲載・矛盾する注記を formatter で消す ───────────
 // 直近の dev-flow 製 PR の終端サマリに出ていた形（REVIEW の fix 適用後 reverified・REVIEW の fix なし・
 // REVIEW の micro docs・HOLD の security hit + 未解消混在）を formatter の入力として再構成した fixture。

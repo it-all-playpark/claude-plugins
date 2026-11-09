@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, deterministicAcIndexes, demoteUnprovenObservationalAc, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap, freezeAcVerify, acVerifyCandidateIndexes } from './ac-actor.mjs';
+import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, deterministicAcIndexes, demoteUnprovenObservationalAc, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap, freezeAcVerify, acVerifyCandidateIndexes, testRunAcDisclosures } from './ac-actor.mjs';
 import { KNOWN_OBSERVATIONAL_ACS } from './test-helpers/observational-ac-controls.mjs';
 
 // repo 内外が混ざった AC（テスト・README・rules の削除と dotfiles の excludedCommands の変更を 1 つに書いたもの）
@@ -516,4 +516,66 @@ test('[ac-verify] dev-flow.js の AC_OBSERVATIONAL schema は results の項目�
   assert.ok(block.includes("verify_command_index: { type: ['integer', 'null'] }"), block);
   assert.ok(block.includes("expect_path_indexes: { type: 'array', items: { type: 'integer' } }"), block);
   assert.ok(!/\bverify_command:/.test(block) && !/\bexpect_paths:/.test(block), block);
+});
+
+// ---- issue #1297: pipeline が実行したテストの入口だけを inline code に書いた AC の開示 ----
+
+const TR_WT = '/tmp/wt';
+// run-tests の結果（scripts[].path は worktree 配下の絶対パス）
+const trResult = (o = {}) => ({
+  tests: 'passed', green: true, summary: '',
+  scripts: [
+    { path: `${TR_WT}/tests/run-a.sh`, exit: 0, launch_failed: false, log: '/tmp/run-tests-x/0.log' },
+    { path: `${TR_WT}/tests/run-b.sh`, exit: 0, launch_failed: false, log: '/tmp/run-tests-x/1.log' },
+  ],
+  ...o,
+});
+const trDisclose = (acs, o = {}) => testRunAcDisclosures({ acceptanceCriteria: acs, result: trResult(), run: 'validate', changedFiles: ['src/x.ts'], worktree: TR_WT, ...o });
+
+test('[test-run-ac] testRunAcDisclosures: 入口を tests/x・./tests/x・bash tests/x の形で書いた AC は、全部が実行済みの入口なら返る（scripts[].path は worktree 相対に直して照合）', () => {
+  const acs = ['`tests/run-a.sh` が green', '`./tests/run-a.sh` が green', '`bash tests/run-a.sh` が green'];
+  assert.deepEqual(trDisclose(acs), [0, 1, 2].map((i) => ({ ac_index: i, run: 'validate', entries: ['tests/run-a.sh'], green: true, entry_changed: false })));
+  // worktree の末尾の / は区切りとして扱う
+  assert.deepEqual(trDisclose([acs[0]], { worktree: `${TR_WT}/` }).map((d) => d.ac_index), [0]);
+  // run は渡した種別をそのまま返す
+  assert.equal(trDisclose([acs[2]], { run: 'test_final' })[0].run, 'test_final');
+});
+
+test('[test-run-ac] testRunAcDisclosures: inline code が 2 つあり両方とも実行済みの入口なら、その 2 つを entries にして返る', () => {
+  const ac = '`bash tests/run-a.sh` と `bash tests/run-b.sh` が green';
+  assert.deepEqual(trDisclose(['無関係な AC', ac]), [{ ac_index: 1, run: 'validate', entries: ['tests/run-a.sh', 'tests/run-b.sh'], green: true, entry_changed: false }]);
+});
+
+test('[test-run-ac] testRunAcDisclosures: 実行していない入口・引数付きの入口・入口以外の inline code が混ざる AC・inline code の無い AC は返らない', () => {
+  for (const ac of [
+    '`bash tests/run-c.sh` が green',
+    '`bash tests/run-a.sh --strict` が green',
+    '`bash tests/run-a.sh` と `pnpm build` が green',
+    '`bash tests/run-a.sh` と `bash tests/run-c.sh` が green',
+    '`sh tests/run-a.sh` が green',
+    'テストが全部 green',
+  ]) assert.deepEqual(trDisclose([ac]), [], ac);
+  // worktree の外のパス・フォールバックのコマンド（run-tests の scripts[].path に入る pnpm test 等）は入口に数えない
+  const other = trResult({ scripts: [{ path: '/elsewhere/tests/run-a.sh', exit: 0 }, { path: 'pnpm test', exit: 0 }] });
+  assert.deepEqual(trDisclose(['`tests/run-a.sh` が green', '`pnpm test` が green'], { result: other }), []);
+});
+
+test('[test-run-ac] testRunAcDisclosures: green は tests:passed かつ green:true のときだけ true。結果が null なら何も返さない', () => {
+  const ac = ['`bash tests/run-a.sh` が green'];
+  assert.equal(trDisclose(ac)[0].green, true);
+  for (const o of [{ tests: 'failed', green: false }, { tests: 'error', green: false }, { tests: 'no_tests', green: false }, { tests: null, green: null }, { tests: 'passed', green: false }]) {
+    const d = trDisclose(ac, { result: trResult(o) });
+    assert.equal(d.length, 1, JSON.stringify(o));
+    assert.equal(d[0].green, false, JSON.stringify(o));
+  }
+  assert.deepEqual(trDisclose(ac, { result: null }), []);
+  assert.throws(() => trDisclose(ac, { run: 'validate-rerun' }), /invalid run/);
+});
+
+test('[test-run-ac] testRunAcDisclosures: 入口が変更ファイル一覧にあれば entry_changed:true、無ければ false、一覧が null（取得失敗）なら null', () => {
+  const ac = ['`bash tests/run-a.sh` と `bash tests/run-b.sh` が green'];
+  assert.equal(trDisclose(ac, { changedFiles: ['src/x.ts', 'tests/run-b.sh'] })[0].entry_changed, true);
+  assert.equal(trDisclose(ac, { changedFiles: ['src/x.ts'] })[0].entry_changed, false);
+  assert.equal(trDisclose(ac, { changedFiles: [] })[0].entry_changed, false);
+  assert.equal(trDisclose(ac, { changedFiles: null })[0].entry_changed, null);
 });

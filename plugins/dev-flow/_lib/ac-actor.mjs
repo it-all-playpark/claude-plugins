@@ -274,6 +274,40 @@ export function resolveAcObservational(acceptanceCriteria, agentResult) {
   })
 }
 
+// run-tests の結果の run の種別（issue #1297）。'validate' は Validate の最後の実行（state.val）、'test_final' は Final reconcile の test#final。
+export const TEST_RUN_KINDS = ['validate', 'test_final']
+
+// AC の inline code を run-tests の入口のパスとして読むときに外す前置（「bash 」と「./」だけ。この順）。
+const TEST_ENTRY_PREFIX_RE = /^(?:bash )?(?:\.\/)?/
+
+// pipeline が実行したテストの入口だけを inline code に書いた AC について、その run の結果を開示する（issue #1297）。
+// result は run-tests の結果（GREEN schema。tests / green / scripts[].path）、run は TEST_RUN_KINDS、changedFiles は PR の変更ファイル
+// （base との差分から pipeline が求めた repo 相対パス。null は取得失敗）、worktree は scripts[].path を worktree 相対に直す起点。
+// AC の inline code が 1 つ以上あり、前置を外した全部が実行した入口（worktree 配下の scripts[].path）と完全一致する AC だけを返す —
+// 引数付き・入口以外の inline code が混ざる AC は、入口の結果で AC の主張を確かめたことにならないため。
+// green は tests:'passed' かつ green:true のときだけ true。entry_changed は入口のどれかが変更ファイルにあれば true（null は不明）。
+// 返り値は AC ごとの { ac_index, run, entries, green, entry_changed }。終端サマリーの開示だけに使い、AC の達成判定・merge tier・
+// demoteUnprovenObservationalAc の proven には入れない — 入口とテストは PR が書き換えられ、選択実行の green は全件 green より弱い。
+export function testRunAcDisclosures({ acceptanceCriteria, result, run, changedFiles, worktree }) {
+  if (!TEST_RUN_KINDS.includes(run)) throw new Error(`testRunAcDisclosures: invalid run: ${run}`)
+  if (!result || typeof result !== 'object' || typeof worktree !== 'string' || worktree === '') return []
+  const root = worktree.replace(/\/+$/, '') + '/'
+  const ran = (Array.isArray(result.scripts) ? result.scripts : [])
+    .map((s) => (s && typeof s.path === 'string' && s.path.startsWith(root) ? s.path.slice(root.length) : ''))
+    .filter((p) => p !== '')
+  const green = result.tests === 'passed' && result.green === true
+  const changed = Array.isArray(changedFiles) ? changedFiles : null
+  const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
+  const out = []
+  for (let i = 0; i < acs.length; i++) {
+    const entries = inlineCodesOf(acs[i]).map((c) => c.replace(TEST_ENTRY_PREFIX_RE, ''))
+    if (!entries.length || !entries.every((e) => ran.includes(e))) continue
+    const uniq = [...new Set(entries)]
+    out.push({ ac_index: i, run, entries: uniq, green, entry_changed: changed === null ? null : uniq.some((e) => changed.includes(e)) })
+  }
+  return out
+}
+
 // label が AC 本文（inline code を含む）に語として現れるか。前後が英数字・_・- でない位置だけを数える
 // （`full-ci` が `full-ci-nightly` の一部として現れたものを言及にしない）。
 function mentionsLabel(text, label) {

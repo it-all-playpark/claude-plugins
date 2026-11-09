@@ -195,6 +195,9 @@ function resolvedCell(v) {
  * @param {Array<{ac_index:number, command:string, exit_code?:number|null, log_path?:string|null}>|null|undefined} [opts.acVerify] -
  *   AC が inline code で指定したコマンドのうち最終 tree で exit 0 だったもの（_lib/local-verify.mjs の acVerifyDisclosures。issue #1208）。
  *   その AC の未達行（未達 AC 表・同じ AC にまとめた行）にコマンド・exit code・log_path を人手確認の材料として添える（表示専用）
+ * @param {Array<{ac_index:number, run:'validate'|'test_final', entries:string[], green:boolean, entry_changed:boolean|null}>|null|undefined} [opts.testRunAc] -
+ *   pipeline が最終 tree で実行したテストの入口だけを inline code に書いた AC の、その run の結果（_lib/ac-actor.mjs の testRunAcDisclosures。
+ *   issue #1297）。その AC の未達行に run の種別・入口・green か否か・PR による入口の変更の有無・選択実行の可能性を添える（表示専用）
  * @param {Array<{iteration:number, status:string, reason?:string, files?:Array<{path:string,type:string}>, merge_sha?:string|null}>|null|undefined} [opts.conflictAutoresolve] -
  *   pr-iterate の返り値 conflict_autoresolve（base との conflict の自動解消の試行。issue #916）。自動解消した試行は「参考」に型とファイルを、
  *   解消しなかった試行は mergeable_conflicting の HOLD 理由の「現状」に止めたファイルと型を出す（表示専用）
@@ -251,6 +254,7 @@ export function buildDevflowSummaryBody({
   ciVerify,
   localVerify,
   acVerify,
+  testRunAc,
   conflictAutoresolve,
   securityReview,
   headSha,
@@ -389,6 +393,24 @@ export function buildDevflowSummaryBody({
     if (!d) return '';
     return ` / AC のコマンド \`${mdCell(d.command)}\` は最終 tree で exit ${d.exit_code ?? 0}（${d.log_path ? 'log: ' + mdCell(d.log_path) : 'log なし'}）— 人手確認の材料（AC の達成判定には使っていない）`;
   };
+  // pipeline が最終 tree で実行したテストの入口だけを inline code に書いた AC（issue #1297）は、その run の結果と PR による入口の
+  // 変更の有無を添える。入口とテストは PR が書き換えられ、run-tests は変更ファイルに応じた選択実行もしうるので、AC の達成判定・HOLD
+  // には使わない（表示専用）。
+  const TEST_RUN_LABELS = { validate: 'Validate', test_final: 'Final reconcile の test#final' };
+  const testRunAcByIndex = new Map((Array.isArray(testRunAc) ? testRunAc : [])
+    .filter((d) => d != null && Number.isInteger(d.ac_index) && Object.prototype.hasOwnProperty.call(TEST_RUN_LABELS, d.run) && Array.isArray(d.entries) && d.entries.length > 0)
+    .map((d) => [d.ac_index, d]));
+  const testRunNote = (k) => {
+    const d = testRunAcByIndex.get(k);
+    if (!d) return '';
+    const changedNote = d.entry_changed === true ? 'PR がこの入口を変更している'
+      : d.entry_changed === false ? 'PR はこの入口を変更していない'
+        : 'PR による入口の変更の有無は不明（変更ファイル一覧を取得できなかった）';
+    const entries = d.entries.map((e) => `\`${mdCell(e)}\``).join('・');
+    return ` / pipeline の ${TEST_RUN_LABELS[d.run]}（run: ${d.run}）が入口 ${entries} を実行して ${d.green === true ? 'green' : 'red'}（${changedNote}）`
+      + '— 選択実行の可能性があり全件実行とは限らない。人手確認の材料（AC の達成判定には使っていない）';
+  };
+  const acRunNotes = (k) => acVerifyNote(k) + testRunNote(k);
   const acUnsatisfiedCode = (k) => {
     if (acAgentGaps.includes(k)) return 'ac_agent_unsatisfied';
     if (acHumanGaps.includes(k)) return 'ac_human_pending';
@@ -801,7 +823,7 @@ export function buildDevflowSummaryBody({
     ].join(' / ');
     const current = [
       ...g.blocking.map((it) => (it.evidence ? mdCell(it.evidence) : '未解消')),
-      ...(g.ac != null ? [`AC 判定 satisfied:false（${g.ac.verified_by != null ? g.ac.verified_by : 'inspection'}）${g.ac.evidence ? ': ' + mdCell(g.ac.evidence) : ''}${acVerifyNote(g.acIndex)}`] : []),
+      ...(g.ac != null ? [`AC 判定 satisfied:false（${g.ac.verified_by != null ? g.ac.verified_by : 'inspection'}）${g.ac.evidence ? ': ' + mdCell(g.ac.evidence) : ''}${acRunNotes(g.acIndex)}`] : []),
       ...g.escalate.map((it) => 'ESCALATE: ' + escalateCurrent(it)),
     ].join(' / ');
     return { _kind: 'ac_group', _line: `| ❌ 未解消 | 必須（${g.label} に紐づく ${count} 件${breakdown}） | ac | ${content} | ${current} | ${g.actions.join('・')} |` };
@@ -878,7 +900,7 @@ export function buildDevflowSummaryBody({
       lines.push('|---|---|---|---|');
       for (const ac of unsatisfiedACRows) {
         const verifiedBy = ac.verified_by != null ? ac.verified_by : 'inspection';
-        const evidenceCell = (ac.evidence ? mdCell(ac.evidence) : '—') + acVerifyNote(ac.ac_index);
+        const evidenceCell = (ac.evidence ? mdCell(ac.evidence) : '—') + acRunNotes(ac.ac_index);
         lines.push(`| ❌ 未達 | AC#${ac.ac_index + 1}${ac.observational === true ? '（観測型）' : ''}${ac.ci === true ? '（CI）' : ''} | ${verifiedBy} | ${evidenceCell} |`);
       }
     }
