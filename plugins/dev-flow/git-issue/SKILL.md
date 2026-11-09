@@ -348,13 +348,22 @@ Phase 4 の devil's-advocate ループを行わない。複数の finding を 1 
 
 1. finding ごとに対象コード（と既存テスト）を読み、症状・原因・直し方を確かめたうえで、AC・
    `## 制約・取らないこと`・`## 変更対象パス` を埋める。本文の構成は重い経路と同じ実装 issue テンプレート
-   （`references/issue-template.md`）。続けて `## 変更対象パス` の各パスについて
-   `gh issue list --state closed --search "\"<path>\" in:body"` で close 済みの issue を引き（close 日と本文は
-   `--json number,title,closedAt,body` を足して読む。`<path>` をコマンド文字列に書き込まない。パスは finding 由来で
-   `$(…)` や引用符を含みうるので、文字列に置換するとシェルが評価する。パスは Write ツールで `/tmp/git-issue-path.txt` に書き、
-   `--search "\"$(cat /tmp/git-issue-path.txt)\" in:body"` の形で 1 つの引数として渡す。置換の結果はシェルに再評価されない）、そのうち finding と同じ仕組み（同じ判定・同じ prompt の組み立て・
+   （`references/issue-template.md`）。続けて `## 変更対象パス` の各パスを Write ツールで `$TMPDIR` の下のファイル
+   （例: `$TMPDIR/git-issue-paths-1.txt`。1 行に 1 パス）に書き、次を実行して直近 30 日に close した issue のうち本文に
+   いずれかのパスを含むものを引く。パスは finding 由来で `$(…)` や引用符を含みうるので、コマンド文字列に書き込まない
+   （スクリプトはファイルから読んだパスを `gh` に argv で渡し、シェルに評価させない）:
+
+   ```bash
+   python3 ${CLAUDE_PLUGIN_ROOT}/git-issue/scripts/issue_path_history.py --path-file "$TMPDIR/git-issue-paths-1.txt" [--repo owner/repo]
+   ```
+
+   stdout は 1 行 JSON `{"ok":true,"window_days":30,"issues":[...]}`（各 issue は `number`・`title`・`closedAt`・`body` と
+   一致したパスの `matched_paths` を持つ）。返った `issues` の本文を読み、finding と同じ仕組み（同じ判定・同じ prompt の組み立て・
    同じガード）を直した issue が直近 30 日に 2 件以上あれば、その finding は重い経路に切り替える。パスが重なるだけでは
-   切り替えない（よく触るファイルではほぼ全件の close 済み issue の本文に出るので、パスだけで数えると全 finding が重い経路になる）
+   切り替えない（よく触るファイルではほぼ全件の close 済み issue の本文に出るので、パスだけで数えると全 finding が重い経路になる）。
+   `{"ok":false,"error":...}` が返ったら検索結果を 0 件として扱わない。`error` を見て直せる原因（パスのファイル・`--repo`）を
+   直して再実行し、それでも `ok:true` が返らなければ同じ仕組みの close 済み issue を確かめられないので、その finding は
+   重い経路に切り替え、理由に `error` を書く
 2. Phase 5 と同じく finding ごとに本文ファイルを作り（`/tmp/git-issue-body-1.md`, `-body-2.md` …）、
    本文ファイルごとに AC Lint Self-Check（`ac-lint`）を通す
 3. 本文ファイルを `references/devils-advocate-checklist.md` の Blocking Categories に照らす判定は書き手が行わず、

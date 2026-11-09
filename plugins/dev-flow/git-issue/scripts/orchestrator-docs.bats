@@ -175,6 +175,11 @@ frontmatter_value() {
     [[ "$(extract_section "$SKILL_MD" "### Phase 4")" == *"max rounds に達して blocking が残った本文は起票しない"* ]]
 }
 
+@test "(33) 軽い経路の close 済み issue 検索はパスをファイルで issue_path_history.py に渡し、\$(cat で置換させない" {
+    grep -qF 'issue_path_history.py --path-file' "$SKILL_MD"
+    ! grep -qF '"$(cat' "$SKILL_MD"
+}
+
 @test "(B) devils-advocate-checklist の Blocking Categories に、起票を止める項目が揃っている" {
     section="$(awk '/^## Blocking Categories/ { f = 1; next } f && /^## / { exit } f { print }' "$CHECKLIST")"
     for item in 'agent issue に `executor: human` タスクが残存' \
