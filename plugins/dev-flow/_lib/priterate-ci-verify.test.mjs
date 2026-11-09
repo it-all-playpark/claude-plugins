@@ -9,11 +9,11 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
-import { CI_VERIFY_CHECK, ciVerifyPrompt, ciRollupCommand, CI_VERIFY_POLL_SECONDS } from './ci-check.mjs';
+import { runCheckCiWithRollup } from './test-helpers/check-ci-gh-stub.mjs';
+import { CI_VERIFY_CHECK, ciVerifyPrompt, checkCiCommand, CI_VERIFY_POLL_SECONDS } from './ci-check.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude', 'workflows', 'pr-iterate.js'), 'utf8');
@@ -52,7 +52,7 @@ test('[ci-verify] success: round の CI 判定から e2e を外し、LGTM 後の
   assert.deepEqual(v.map((c) => c.label), ['ci-verify#1.1', 'ci-verify#1.2']);
   assert.equal(v[0].prompt, ciVerifyPrompt({ pr: 5, repo: 'acme/skills', checks: ['e2e'], seconds: 0 }));
   assert.equal(v[1].prompt, ciVerifyPrompt({ pr: 5, repo: 'acme/skills', checks: ['e2e'], seconds: CI_VERIFY_POLL_SECONDS }));
-  assert.ok(v[1].prompt.includes(`\`ci-wait ${CI_VERIFY_POLL_SECONDS}\``) && v[1].prompt.includes(`--only 'e2e'`) && v[1].prompt.includes(ciRollupCommand({ pr: 5, repo: 'acme/skills', withLink: true })), v[1].prompt);
+  assert.ok(v[1].prompt.includes(`\`ci-wait ${CI_VERIFY_POLL_SECONDS}\``) && v[1].prompt.includes(`\`${checkCiCommand({ pr: 5, repo: 'acme/skills', only: ['e2e'] })}\``), v[1].prompt);
   assert.ok(!v[0].prompt.includes('`ci-wait '), '1 回目の poll は待たない');
   assert.equal(JSON.stringify(v[0].schema), JSON.stringify(CI_VERIFY_CHECK));
   assert.equal(calls.filter((c) => c.label.startsWith('fix#')).length, 0);
@@ -97,12 +97,9 @@ test('[ci-verify] 上限超過: wait_ceiling_seconds まで pending → lgtm の
 // label が無い event の run で skipped になった e2e（`if: contains(labels,'full-ci')`）は success の根拠にならない。
 // 実物の check-ci --only の出力をそのまま ci-verify の応答に使い、passed / URL 採取に倒れないことを pin する。
 function checkCiOnly(snapshot, name) {
-  const coreBin = join(here, '..', '..', 'playpark-core', 'bin');
-  const out = execFileSync('bash', [join(here, '..', 'pr-iterate', 'scripts', 'check-ci.sh'), '--checks-data', JSON.stringify(snapshot), '--only', name], {
-    encoding: 'utf8',
-    env: { ...process.env, PATH: `${coreBin}:${process.env.PATH}` },
-  });
-  return JSON.parse(out);
+  const r = runCheckCiWithRollup(JSON.stringify(snapshot), ['--only', name]);
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
 }
 
 test('[ci-verify] skipped の e2e は passed にならない: check-ci --only の実出力で pending のまま上限 → ci_verify.status=pending・URL なし', async () => {

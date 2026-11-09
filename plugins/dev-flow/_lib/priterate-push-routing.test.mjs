@@ -291,5 +291,5 @@ test('[AC-5] pr-iterate の push の記述がある文書は pr-push の start /
   assert.ok(skill.includes('fix・commit-ensure・conflict-resolve の push は `pr-push start <log>` → `pr-push wait <log> --wait-sec <n>`'), 'pr-iterate/SKILL.md');
   assert.ok(skill.includes('待機の累計 3600 秒で `pr-push stop`'), 'pr-iterate/SKILL.md');
   const rules = readFileSync(join(here, '..', '..', '..', '.claude', 'rules', 'dev-flow.md'), 'utf8');
-  assert.ok(rules.includes('push は `pr-push`（') && rules.includes('`pr-push` — `start` / `wait` / `stop` で切り離す'), '.claude/rules/dev-flow.md');
+  assert.ok(rules.includes('push は `pr-push`（') && rules.includes('`pr-push` の push（`start` / `wait` / `stop` で切り離す'), '.claude/rules/dev-flow.md');
 });

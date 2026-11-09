@@ -4,7 +4,7 @@
 // (a) ci-check#i の agent stub が throw する harness ケースで run が throw せず完走し
 //     terminal が ci_error（status に反映）になること
 // (b) ci-check#i stub が null（schema 未返却）でも同様に ci_error 終端になること
-// (c) VM で実際に dispatch された ci-check prompt に '--checks-data' が含まれ '--checks-json' /
+// (c) VM で実際に dispatch された ci-check prompt に 'check-ci --pr' が含まれ '--checks-data' / '--checks-json' /
 //     '$TMPDIR/ci-checks' / 'リダイレクト' が含まれないこと（canonical ciCheckPrompt との一致で
 //     呼び出し側が独自 prompt を書いていないことも観測する）。ci-check prompt の正負 grep は
 //     pr-iterate 側ではここ 1 か所に置く（canonical 側は ci-check.test.mjs）
@@ -55,12 +55,13 @@ test('[failopen-b] ci-check#1 が null(schema 未返却) -> status=ci_error', as
 // prompt 本文は canonical `_lib/ci-check.mjs` にあり両 workflow へ inline 生成される（issue #543）。
 // 呼び出し側が canonical を使わず独自 prompt を書き始める退行は、dispatch された prompt と canonical の
 // 生成文字列の完全一致で捕まえる。
-test('[failopen-c] dispatch された ci-check prompt が canonical ciCheckPrompt と一致し、--checks-data を使い --checks-json/$TMPDIR/ci-checks/リダイレクトを含まない', async () => {
+test('[failopen-c] dispatch された ci-check prompt が canonical ciCheckPrompt と一致し、check-ci --pr を使い --checks-data・--checks-json/$TMPDIR/ci-checks/リダイレクトを含まない', async () => {
   const { calls } = await runWithCi(CI_PASSED);
   const ci = calls.find((c) => c.label === 'ci-check#1');
   assert.ok(ci, 'ci-check#1 が dispatch されていない');
   assert.equal(ci.prompt, ciCheckPrompt({ pr: 5, repo: 'acme/skills' }), 'ci-check の呼び出し側は canonical の ciCheckPrompt() をそのまま使うべき（独自 prompt を書かない）');
-  assert.ok(ci.prompt.includes('--checks-data'), 'ci-check prompt に --checks-data が含まれるべき');
+  assert.ok(ci.prompt.includes('`check-ci --pr 5 --repo acme/skills`'), 'ci-check prompt に check-ci --pr が含まれるべき');
+  assert.ok(!ci.prompt.includes('--checks-data'), 'ci-check prompt に旧 --checks-data が残っているべきでない');
   assert.ok(!ci.prompt.includes('--checks-json'), 'ci-check prompt に旧 --checks-json が残っているべきでない');
   assert.ok(!ci.prompt.includes('$TMPDIR/ci-checks'), 'ci-check prompt に $TMPDIR/ci-checks への言及が残っているべきでない');
   assert.ok(!/[>]\s*\$TMPDIR/.test(ci.prompt), 'ci-check prompt に $TMPDIR へのリダイレクト構文が残っているべきでない');

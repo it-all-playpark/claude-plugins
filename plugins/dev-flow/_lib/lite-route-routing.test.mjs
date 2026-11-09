@@ -298,20 +298,21 @@ test('[lite-route][D] danger-grep hit（micro でも runEval 強制）: lite を
 });
 
 // ============================================================
-// (E) ci-check-lite: --checks-data argv 渡し + try/catch 包含（issue #499 F3）
+// (E) ci-check-lite: check-ci --pr の bare 単文 + try/catch 包含（issue #499 F3）
 // ============================================================
 
 // prompt 本文は canonical `_lib/ci-check.mjs` にあり両 workflow へ inline 生成される（issue #543）。
 // source scan ではなく lite 経路の VM run で実際に組み立てられた ci-check-lite prompt そのものを
 // 検査し、呼び出し側が canonical を使っていることを pin する（独自 prompt を書き始める退行の検出）。
-test('[lite-route][E] ci-check-lite prompt が --checks-data を使い --checks-json/$TMPDIR/ci-checks/リダイレクトを含まない', async () => {
+test('[lite-route][E] ci-check-lite prompt が check-ci --pr を使い --checks-data・--checks-json/$TMPDIR/ci-checks/リダイレクトを含まない', async () => {
   const { ctx, calls } = makeLiteRouteSandbox(makeCleanMicroReq());
   const err = await runDevFlowInSandbox(src, ctx);
   failOnStructuralCrash(err);
 
   const ciLiteCall = calls.find((c) => c.label === 'ci-check-lite');
   assert.ok(ciLiteCall, "label 'ci-check-lite' の call が見つからない");
-  assert.ok(ciLiteCall.prompt.includes('--checks-data'), 'ci-check-lite prompt に --checks-data が含まれるべき');
+  assert.ok(ciLiteCall.prompt.includes('`check-ci --pr '), 'ci-check-lite prompt に check-ci --pr が含まれるべき');
+  assert.ok(!ciLiteCall.prompt.includes('--checks-data'), 'ci-check-lite prompt に旧 --checks-data が残っているべきでない');
   assert.ok(!ciLiteCall.prompt.includes('--checks-json'), 'ci-check-lite prompt に旧 --checks-json が残っているべきでない');
   assert.ok(!ciLiteCall.prompt.includes('$TMPDIR/ci-checks'), 'ci-check-lite prompt に $TMPDIR/ci-checks への言及が残っているべきでない');
   assert.ok(!/[>]\s*\$TMPDIR/.test(ciLiteCall.prompt), 'ci-check-lite prompt に $TMPDIR へのリダイレクト構文が残っているべきでない');

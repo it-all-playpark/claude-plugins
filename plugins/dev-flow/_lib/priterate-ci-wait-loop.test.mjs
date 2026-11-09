@@ -6,7 +6,7 @@
 //   nested（dev-flow）・単体起動（wrapper の caller:'standalone'）で同じ扱い。
 // - ci_wait_seconds / ci_poll_attempts が script 側積算で現行と同じキー・意味（(N-1)×M / N）で return 値に載る。
 // - ceiling 到達時は ci_pending 終端（ci_error にならない）。CI failed は現行どおり fix loop へ。
-// - 1 回目の poll は ci-check 単体（待機なし）、2 回目以降は `ci-wait <秒>` → gh pr view（rollup）→ check-ci を
+// - 1 回目の poll は ci-check 単体（待機なし）、2 回目以降は `ci-wait <秒>` → check-ci を
 //   1 spawn（dev-runner-haiku-ro）で行い、独立した ci-wait spawn は無い。
 // - ci-wait-check の slept !== true（slept:false / null / throw）は積算せず、同じ応答の status も採らずに
 //   ci_pending で終端する。
@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash, securityReviewHeadOf } from './test-helpers/vm-sandbox.mjs';
-import { CI_WAIT_CHECK, ciRollupCommand, ciWaitCheckPrompt } from './ci-check.mjs';
+import { CI_WAIT_CHECK, checkCiCommand, ciWaitCheckPrompt } from './ci-check.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const prIteratePath = join(here, '..', '.claude', 'workflows', 'pr-iterate.js');
@@ -55,9 +55,8 @@ test('[ci-wait-loop] pending → passed: ci-check#1 が pending、ci-wait-check#
   assert.equal(wc.prompt, ciWaitCheckPrompt({ pr: 5, repo: 'acme/skills', seconds: 45 }), 'ci-wait-check の呼び出し側は canonical の ciWaitCheckPrompt() をそのまま使うべき');
   assert.equal(JSON.stringify(wc.schema), JSON.stringify(CI_WAIT_CHECK), 'ci-wait-check の schema は canonical の CI_WAIT_CHECK であるべき');
   const iWait = wc.prompt.indexOf('`ci-wait 45`');
-  const iGh = wc.prompt.indexOf(`\`${ciRollupCommand({ pr: 5, repo: 'acme/skills' })}\``);
-  const iCheck = wc.prompt.indexOf('`check-ci --checks-data');
-  assert.ok(iWait >= 0 && iGh > iWait && iCheck > iGh, `1 spawn 内で ci-wait → gh pr view → check-ci の順に実行させるべき。prompt: ${wc.prompt.slice(0, 900)}`);
+  const iCheck = wc.prompt.indexOf(`\`${checkCiCommand({ pr: 5, repo: 'acme/skills' })}\``);
+  assert.ok(iWait >= 0 && iCheck > iWait, `1 spawn 内で ci-wait → check-ci の順に実行させるべき。prompt: ${wc.prompt.slice(0, 900)}`);
 
   assert.equal(calls.filter((c) => c.label.startsWith('ci-wait#')).length, 0, '独立した ci-wait spawn を出さないべき');
 });

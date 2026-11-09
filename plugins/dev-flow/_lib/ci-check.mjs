@@ -13,9 +13,9 @@
 // 給電元として optional `epoch` を持つ）。統合すると pr-iterate の受理 schema が変わる。
 
 // 1 spawn = 1 判定。1 回目の poll は ci-check（待機なし）、2 回目以降は ci-wait-check（待機してから
-// 1 回判定）。必要 turn は ci-check = 1（head sha fetch）+ 2（gh fetch + check-ci）+ 1（StructuredOutput）
-// + CI_TURN_MARGIN = 7、
-// ci-wait-check = 1（ci-wait）+ 2（gh fetch + check-ci）+ 1（StructuredOutput）+ CI_TURN_MARGIN = 7。
+// 1 回判定）。check-ci は内部で `gh pr view` を 1 回実行して head sha と rollup を同じ応答から取るので、
+// 必要 turn は ci-check = 1（check-ci）+ 1（StructuredOutput）+ CI_TURN_MARGIN = 5、
+// ci-wait-check = 1（ci-wait）+ 1（check-ci）+ 1（StructuredOutput）+ CI_TURN_MARGIN = 6。
 // どちらも dev-runner-haiku-ro の maxTurns を超えないこと（_lib/ci-check.test.mjs が agent md を
 // 実読して pin）。CI 待ちのループは workflow script 側（pr-iterate.js）が持ち、CI 所要時間は
 // turn 会計に影響しない（issue #663。旧: agent 内 attempt ループで ceiling 90 秒、attempt 増で
@@ -56,10 +56,9 @@ export function ciMaxPolls(ceilingSeconds) {
 export const CI_TURN_MARGIN = 3;
 
 // CI gate schema。
-// dev-runner-haiku-ro が bare `gh pr view --json statusCheckRollup`（ciRollupCommand）で CI snapshot を取得し、
-// pr-iterate/scripts/check-ci.sh（snapshot に対する純変換）で分類して stdout JSON を verbatim で返す。
-// fetch を script でなく agent 側に置くのは、exec-proxy script が認証付き network I/O を
-// 持ってはならないため（issue #488）。
+// dev-runner-haiku-ro が bare `check-ci --pr <N> --repo <R>` を実行し、その stdout JSON を verbatim で返す。
+// check-ci（pr-iterate/scripts/check-ci.sh）は内部で読み取り専用の `gh pr view --json headRefOid,statusCheckRollup` を
+// 1 回実行して分類する。agent は rollup を argv に転写しないので、入力側の転写の破損で判定が変わらない。
 // failed_checks の要素は script 出力と一致する {name, bucket, state}
 // （conclusion は bucket-field migration で削除。issue #133 / ci::bats-fabricated-schema）。
 // status:'error' は check-ci が gh fetch 失敗を分類した値。workflow 側は proxy の空応答（turn 上限到達等）と、件数から導いた status との食い違い（ciEffectiveStatus）も同じ 'error' に合成するため、受け手は原因を 1 つに断定できない（issue #621）。即座に人間へエスカレーションする。
@@ -91,7 +90,7 @@ export const CI_STATUS = {
     // workflow は読まず script 側で積算する（issue #663）。
     waited_seconds: { type: 'number' },
     poll_attempts: { type: 'number' },
-    // ci-check が CI snapshot の直前に取った PR head の commit sha。pr-iterate は review#i と並列に
+    // check-ci が rollup と同じ gh 応答から取った PR head の commit sha。pr-iterate は review#i と並列に
     // 起動した ci-check#i の結果を、この値が review 開始時の head と一致するときだけ採る（ciHeadRejectReason）。
     head_sha: { type: 'string' },
     // dev-flow の clock telemetry（issue #443）が iterate_end の給電元として読む optional epoch。
@@ -110,33 +109,30 @@ function checkNameArgs(flag, names) {
   return (Array.isArray(names) ? names : []).map((name) => ` ${flag} '${String(name).split("'").join("'\\''")}'`).join('');
 }
 
-// CI 判定の入力を取るコマンド（ciFetchSteps / Merge tier の mergeTierFactsPrompt が共有する）。gh pr checks --json は
+// Merge tier（mergeTierFactsPrompt）が merge-tier-facts の CI 入力を取るコマンド。gh pr checks --json は
 // conclusion を返さず、status が COMPLETED でない check の結果を bucket に落とすので使わない。rollup は null になりうるので
-// [] に直す。--jq で判定に要らないキーを落とし、haiku が argv に転写する量を抑える。URL が要るのは ci-verify だけ（withLink）。
+// [] に直す。--jq で判定に要らないキーを落とし、haiku が argv に転写する量を抑える。
 // stdout は単一引用符で囲んだ argv に転写されるので、--jq の最後で JSON 文字列中の単一引用符をバックスラッシュ + u0027 の
 // エスケープに置き換え、stdout に単一引用符を出さない（check 名は PR の workflow が決められ、引用を閉じてコマンド置換を走らせうる。
-// このエスケープは JSON として同じ文字に読まれるので check-ci / merge-tier-facts の判定は変わらない）。
+// このエスケープは JSON として同じ文字に読まれるので merge-tier-facts の判定は変わらない）。
 // 単一引用符とバックスラッシュは filter に書かずコードポイント（[39] / [92]）から作る: proxy が filter を転写するとき
-// エスケープ表記を戻して書き、単一引用符の引用を閉じて worktree 隔離ガードに拒否された（CI が全 pass でも ci_error）。
+// エスケープ表記を戻して書き、単一引用符の引用を閉じて worktree 隔離ガードに拒否された。
 export function ciRollupCommand({ pr, repo, withLink = false }) {
   const drop = withLink ? '.__typename,.completedAt' : '.__typename,.completedAt,.detailsUrl,.targetUrl';
   return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop})) | ([39]|implode) as $q | tojson | split($q) | join(([92]|implode) + "u0027")'`;
 }
 
-// gh fetch → check-ci の 2 単文（ci-check / ci-wait-check で共通の手順本文）。
-// n は最初の手順番号。両 prompt で転写契約の文言を食い違わせないために 1 箇所に置く。
+// CI gate の proxy（ci-check / ci-wait-check / ci-verify）が実行する check-ci の bare 単文。
 // exclude: check-ci に --exclude で渡す check 名（ci_verify.checks。review ⇄ fix の round の CI 判定から外す）。
-// only: check-ci に --only で渡す check 名（LGTM 後の ci-verify 待ち）。only を渡すときは rollup の URL を残し、
-// check run の URL を AC の根拠に残す。
-export function ciFetchSteps({ pr, repo, n, exclude = [], only = [] }) {
-  const withLink = Array.isArray(only) && only.length > 0;
-  return `${n}. \`${ciRollupCommand({ pr, repo, withLink })}\` を gh を先頭トークンとする bare 単文で実行せよ`
-    + `（リダイレクト・パイプ・複合コマンドは使わない）。`
-    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。\n`
-    + `${n + 1}. \`check-ci --checks-data '<手順${n}の stdout を一字一句そのまま。要約・整形・省略禁止>' `
-    + `--fetch-error-data '<手順${n}の stderr を一字一句そのまま。stderr が空なら本オプション自体を省略>'`
-    + `${checkNameArgs('--only', only)}${checkNameArgs('--exclude', exclude)}\` `
-    + `を単文で実行し、stdout の JSON を読め。\n`;
+// only: check-ci に --only で渡す check 名（LGTM 後の ci-verify 待ち。check-ci は check run の URL を link で返す）。
+export function checkCiCommand({ pr, repo, exclude = [], only = [] }) {
+  return `check-ci --pr ${pr}${repo ? ' --repo ' + repo : ''}${checkNameArgs('--only', only)}${checkNameArgs('--exclude', exclude)}`;
+}
+
+// check-ci を実行させる手順（3 prompt で共通の本文）。n は手順番号。
+function checkCiStep({ n, ...opts }) {
+  return `${n}. \`${checkCiCommand(opts)}\` を check-ci を先頭トークンとする bare 単文で実行し`
+    + `（リダイレクト・パイプ・複合コマンドは使わない）、stdout の JSON を読め。\n`;
 }
 
 const CI_PROXY_TOOLS_AND_BOUNDARY = `## Tools\n`
@@ -152,7 +148,7 @@ const CI_PROXY_JSON_ONLY_TAIL = `prose 禁止。JSON のみ返せ。\n\n`
 
 function ciWaitStep(seconds) {
   return `1. \`ci-wait ${seconds}\` を ci-wait を先頭トークンとする bare 単文で実行せよ（リダイレクト・パイプ・複合コマンドは使わない）。`
-    + `stdout の JSON が \`"slept": true\` でなければ（stdout が空・exit 非0 を含む）手順 2〜4 を実行せず、`
+    + `stdout の JSON が \`"slept": true\` でなければ（stdout が空・exit 非0 を含む）手順 2〜3 を実行せず、`
     + `\`{ "slept": false, "status": "pending", "passed": 0, "failed": 0, "pending": 0, "skipped": 0 }\` を返して終了せよ。\n`;
 }
 
@@ -169,11 +165,9 @@ export function ciCheckPrompt({ pr, repo, exclude = [] }) {
   return `## Objective\nPR #${pr} の head commit sha と CI ステータスを取得し、JSON を返せ。\n\n`
     + CI_PROXY_TOOLS_AND_BOUNDARY
     + `## Steps\n`
-    + `1. \`gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json headRefOid -q .headRefOid\` を gh を先頭トークンとする bare 単文で実行せよ`
-    + `（リダイレクト・パイプ・複合コマンドは使わない）。stdout の 40 桁 hex を一字一句そのまま head_sha とする（失敗・空なら head_sha は省略）。\n`
-    + ciFetchSteps({ pr, repo, n: 2, exclude })
-    + `4. 手順 3 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, waited_seconds, poll_attempts, ...}）に手順 1 の \`"head_sha"\` を加えて返せ。`
-    + `それ以外のキーは要約・加工するな。${CI_COUNTS_NOTE}1 回の取得で判定を確定させ、待機や再取得は行うな。\n\n`
+    + checkCiStep({ n: 1, pr, repo, exclude })
+    + `2. 手順 1 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, head_sha, waited_seconds, poll_attempts, ...}）をそのまま返せ。`
+    + `キーを要約・加工するな。\`head_sha\` は一字一句そのまま写せ（stdout に無ければ省略）。${CI_COUNTS_NOTE}1 回の取得で判定を確定させ、待機や再取得は行うな。\n\n`
     + `## Output format\n`
     + `{ "status": "passed"|"failed"|"pending"|"no_checks"|"error", "passed": number, "failed": number, "pending": number, "skipped": number, `
     + `"failed_checks": [{name, bucket, state}, ...], "waited_seconds": number, "poll_attempts": number, "head_sha": string }\n`
@@ -206,8 +200,8 @@ export function ciWaitCheckPrompt({ pr, repo, seconds, exclude = [] }) {
     + CI_PROXY_TOOLS_AND_BOUNDARY
     + `## Steps\n`
     + ciWaitStep(seconds)
-    + ciFetchSteps({ pr, repo, n: 2, exclude })
-    + `4. 手順 3 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, waited_seconds, poll_attempts, ...}）に \`"slept": true\` を加えて返せ。`
+    + checkCiStep({ n: 2, pr, repo, exclude })
+    + `3. 手順 2 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, waited_seconds, poll_attempts, ...}）に \`"slept": true\` を加えて返せ。`
     + `それ以外のキーは要約・加工するな。${CI_COUNTS_NOTE}ci-wait と取得は各 1 回だけ実行し、再待機や再取得は行うな。\n\n`
     + `## Output format\n`
     + `{ "slept": boolean, "status": "passed"|"failed"|"pending"|"no_checks"|"error", "passed": number, "failed": number, "pending": number, "skipped": number, `
@@ -252,8 +246,8 @@ export function ciVerifyPrompt({ pr, repo, checks, seconds }) {
     + CI_PROXY_TOOLS_AND_BOUNDARY
     + `## Steps\n`
     + (wait ? ciWaitStep(seconds) : `1. 待機はしない（ci-wait を実行しない）。\n`)
-    + ciFetchSteps({ pr, repo, n: 2, only: checks })
-    + `4. 手順 3 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, pending_checks, passed_checks, waited_seconds, poll_attempts, ...}）${wait ? 'に `"slept": true` を加えて' : 'を'}返せ。`
+    + checkCiStep({ n: 2, pr, repo, only: checks })
+    + `3. 手順 2 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, pending_checks, passed_checks, waited_seconds, poll_attempts, ...}）${wait ? 'に `"slept": true` を加えて' : 'を'}返せ。`
     + `それ以外のキーは要約・加工するな。failed_checks / passed_checks の link は一字一句そのまま写せ。${CI_COUNTS_NOTE}`
     + `${wait ? 'ci-wait と' : ''}取得は 1 回だけ実行し、再待機や再取得は行うな。\n\n`
     + `## Output format\n`
@@ -304,8 +298,8 @@ export function ciEffectiveStatus(ci) {
 // 並列 ci-check の採否判定。pr-iterate は review#i と ci-check#i を parallel() で同時に起動し、
 // ci-check の応答 head_sha が review 開始時の head（expectedSha）と一致するときだけ結果を採る。
 // 一致を要求するのは、fix の push 直後に起動した ci-check が GitHub 側の head 更新前の snapshot
-// （旧 commit の check）を読んで、旧 head の green で LGTM を確定させないため。ci-check は head sha →
-// checks の順に取るので、sha が一致すれば checks も同じ head のもの（round 中に他の push は無い）。
+// （旧 commit の check）を読んで、旧 head の green で LGTM を確定させないため。check-ci は head sha と
+// checks を同じ gh 応答から取るので、sha が一致すれば checks も同じ head のもの。
 // 返り値 null は採用可。それ以外は不採用理由で、呼び出し側は review の後に直列で ci-check を起動し直す。
 // 短縮 sha は一致と見なさない（照合しきれない値で採用側に倒さない）。
 const CI_HEAD_SHA_RE = /^[0-9a-f]{40}$/i;
