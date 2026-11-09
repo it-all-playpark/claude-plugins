@@ -1008,6 +1008,7 @@ function secHitsOf(risk) {
 // ==== BEGIN inline: _lib/analyze-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 const ANALYZE_PATH_INPUT = ['contract', 'jev']
 const BLOCKER_SOURCES = ['api', 'body']
+const ACCEPTANCE_CRITERIA_MAX = 20
 
 function isStringArray(v) {
   return Array.isArray(v) && v.every((s) => typeof s === 'string')
@@ -1045,7 +1046,7 @@ function buildReqFromContract(analyze, issueNumber) {
     issue_number: Number(issueNumber),
     issue_title: analyze.issue_title,
     issue_type: analyze.issue_type,
-    acceptance_criteria: analyze.acceptance_criteria.slice(0, 20),
+    acceptance_criteria: analyze.acceptance_criteria.slice(),
     breaking_change: analyze.breaking_change,
     breaking_keyword_scan: analyze.breaking_keyword_scan,
     breaking_evidence: typeof analyze.breaking_evidence === 'string' ? analyze.breaking_evidence : '',
@@ -1066,6 +1067,8 @@ function analyzeGateReasons(req) {
   const reasons = []
   if (!Array.isArray(req?.acceptance_criteria) || req.acceptance_criteria.length === 0) {
     reasons.push('acceptance_criteria が空 — issue に受け入れ基準（`## 受け入れ基準` / `## Acceptance Criteria` 見出し + checkbox / 箇条書き）を書いてから再起動せよ')
+  } else if (req.acceptance_criteria.length > ACCEPTANCE_CRITERIA_MAX) {
+    reasons.push(`acceptance_criteria が ${req.acceptance_criteria.length} 件で上限 ${ACCEPTANCE_CRITERIA_MAX} 件を超える — AC を減らすか issue を分けてから再起動せよ`)
   }
   for (const c of (req?.comment_conflicts ?? [])) reasons.push(`issue body と comment の矛盾（どちらが有効か確定できない）: ${c}`)
   for (const u of (req?.uncertain ?? [])) reasons.push(`決定論 / Jev で確定できない判定: ${u}`)
@@ -2729,19 +2732,19 @@ if (blockedReasons.length) {
   }
 }
 
-// 4 条件ゲート（AC 空 / comment_conflicts / uncertain / repo 内外が混ざった AC）。引いたら clarify を 1 spawn して終端する。
+// 5 条件ゲート（AC 空 / AC が上限超え / comment_conflicts / uncertain / repo 内外が混ざった AC）。引いたら clarify を 1 spawn して終端する。
 // 混ざった AC は単一 worktree では満たせず、Evaluate 後に agent AC の取りこぼしと誤分類されるので実装前に分割を求める。
 const gateReasons = analyzeGateReasons(req)
 const mixedAcReasons = mixedScopeAcReasons(req.acceptance_criteria, { repo: REPO })
 gateReasons.push(...mixedAcReasons)
 if (gateReasons.length) {
-  log(`⚠️ analyze: ゲート（AC 空=${req.acceptance_criteria.length === 0} / comment_conflicts=${req.comment_conflicts.length} / uncertain=${req.uncertain.length} / repo 内外混在 AC=${mixedAcReasons.length}）— sonnet で missing_context を生成して needs_clarification で中断`)
+  log(`⚠️ analyze: ゲート（AC 空=${req.acceptance_criteria.length === 0} / AC 上限超え=${req.acceptance_criteria.length > ACCEPTANCE_CRITERIA_MAX} / comment_conflicts=${req.comment_conflicts.length} / uncertain=${req.uncertain.length} / repo 内外混在 AC=${mixedAcReasons.length}）— sonnet で missing_context を生成して needs_clarification で中断`)
   const clarify = await failOpenAgent(clarifyPrompt(gateReasons), { agentType: 'dev-runner', schema: CLARIFY, label: `analyze-clarify#${ISSUE}`, phase: 'Setup' })
   const strList = (v) => Array.isArray(v) ? v.filter((s) => typeof s === 'string' && s.trim().length > 0) : []
   const clarified = strList(clarify?.missing_context)
   if (!clarified.length) log('⚠️ analyze: missing_context 生成が null / 空 — ゲート理由をそのまま人間へ返す（fail-open）')
   const missingContext = clarified.length ? clarified.concat(gateReasons) : gateReasons
-  const journalLogStatus = await writeFailureTelemetry({ error_category: 'needs_clarification', error_msg: `analyze: ゲート（AC 空=${req.acceptance_criteria.length === 0} / comment_conflicts=${req.comment_conflicts.length} / uncertain=${req.uncertain.length} / repo 内外混在 AC=${mixedAcReasons.length}）で中断（source=analyze）`, phase: 'Setup' })
+  const journalLogStatus = await writeFailureTelemetry({ error_category: 'needs_clarification', error_msg: `analyze: ゲート（AC 空=${req.acceptance_criteria.length === 0} / AC 上限超え=${req.acceptance_criteria.length > ACCEPTANCE_CRITERIA_MAX} / comment_conflicts=${req.comment_conflicts.length} / uncertain=${req.uncertain.length} / repo 内外混在 AC=${mixedAcReasons.length}）で中断（source=analyze）`, phase: 'Setup' })
   return {
     status: 'needs_clarification',
     source: 'analyze',

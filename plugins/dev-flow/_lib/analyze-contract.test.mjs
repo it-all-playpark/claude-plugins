@@ -1,9 +1,9 @@
 // _lib/analyze-contract.test.mjs
-// buildReqFromContract（args.setup.analyze → REQ の whitelist 検証）と analyzeGateReasons（3 条件ゲート）
+// buildReqFromContract（args.setup.analyze → REQ の whitelist 検証）と analyzeGateReasons（4 条件ゲート）
 // の pin テスト（issue #690: Analyze を prerun の script 段へ移し、Workflow 側は検証とゲートだけ）。
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { buildReqFromContract, analyzeGateReasons, blockedByReasons, ANALYZE_PATH_INPUT, BLOCKER_SOURCES } from './analyze-contract.mjs';
+import { buildReqFromContract, analyzeGateReasons, blockedByReasons, ANALYZE_PATH_INPUT, BLOCKER_SOURCES, ACCEPTANCE_CRITERIA_MAX } from './analyze-contract.mjs';
 import { classifyShape } from './triviality.mjs';
 
 // prerun-analyze.sh の ok:true 出力と同形
@@ -137,10 +137,11 @@ test('[analyze-contract] (3f) acceptance_criteria が非配列 / 空文字要素
   assert.deepEqual(req.acceptance_criteria, []);
 });
 
-test('[analyze-contract] (3g) acceptance_criteria は 20 件で切る', () => {
+test('[analyze-contract] (3g) acceptance_criteria は切らずに全件を入力と同じ順序で REQ に写す（上限超えはゲートで止める）', () => {
   const ac = Array.from({ length: 25 }, (_, i) => `AC${i}`);
   const req = buildReqFromContract(baseAnalyze({ acceptance_criteria: ac }), 690);
-  assert.equal(req.acceptance_criteria.length, 20);
+  assert.equal(req.acceptance_criteria.length, 25);
+  assert.deepEqual(req.acceptance_criteria, ac);
 });
 
 test('[analyze-contract] (3h) breaking_change / breaking_keyword_scan が非 boolean → null', () => {
@@ -178,7 +179,7 @@ test('[analyze-contract] (5) REQ は classifyShape の入力として動く（re
   assert.equal(classifyShape(breaking, 1).shape, 'complex');
 });
 
-// (6) analyzeGateReasons: 3 条件ゲート
+// (6) analyzeGateReasons: 4 条件ゲート
 test('[analyze-gate] (6a) 正常系（AC 非空 / conflicts 空 / uncertain 空）→ 空配列（ゲートは引かない）', () => {
   const req = buildReqFromContract(baseAnalyze({ comment_overrides: ['override: x'] }), 690);
   assert.deepEqual(analyzeGateReasons(req), []);
@@ -212,6 +213,28 @@ test('[analyze-gate] (6e) 3 条件が同時 → 全部積まれる（AC 空が�
   const reasons = analyzeGateReasons(req);
   assert.equal(reasons.length, 3);
   assert.match(reasons[0], /acceptance_criteria が空/);
+});
+
+test('[analyze-gate] (6e2) AC 上限超え・comment_conflicts・uncertain が同時 → 全部積まれる（上限超えが先頭）', () => {
+  const ac = Array.from({ length: ACCEPTANCE_CRITERIA_MAX + 1 }, (_, i) => `AC${i}`);
+  const req = buildReqFromContract(baseAnalyze({ acceptance_criteria: ac, comment_conflicts: ['c'], uncertain: ['u'] }), 690);
+  const reasons = analyzeGateReasons(req);
+  assert.equal(reasons.length, 3);
+  assert.match(reasons[0], /上限/);
+  assert.match(reasons[1], /矛盾.*c$/);
+  assert.match(reasons[2], /確定できない判定: u$/);
+});
+
+test('[analyze-gate] (6g) AC 件数の上限は 20 件で、上限ちょうどは通し、上限 + 1 件は件数と上限を含む 1 行で止める', () => {
+  assert.equal(ACCEPTANCE_CRITERIA_MAX, 20);
+  const atMax = buildReqFromContract(baseAnalyze({ acceptance_criteria: Array.from({ length: 20 }, (_, i) => `AC${i}`) }), 690);
+  assert.deepEqual(analyzeGateReasons(atMax), []);
+  const over = buildReqFromContract(baseAnalyze({ acceptance_criteria: Array.from({ length: 21 }, (_, i) => `AC${i}`) }), 690);
+  const reasons = analyzeGateReasons(over);
+  assert.equal(reasons.length, 1);
+  assert.match(reasons[0], /21 件/);
+  assert.match(reasons[0], /上限 20 件/);
+  assert.match(reasons[0], /AC を減らすか issue を分けてから再起動せよ/);
 });
 
 test('[analyze-gate] (6f) null / undefined 入力でも throw せず AC 空として扱う', () => {
