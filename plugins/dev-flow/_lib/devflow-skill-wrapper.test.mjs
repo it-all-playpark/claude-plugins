@@ -140,38 +140,63 @@ test('[devflow-skill-wrapper] deps install は手順2b の別 Bash 呼び出し�
 //     設定は作者の jev-classify の経路選択順（AI_GATEWAY_API_KEY → JEV_BROKER_SOCKET → Keychain service）に揃え、
 //     AI_GATEWAY_API_KEY を第一の方法に、jev-broker は任意と明記する。クライアントは plugin に同梱しないので、
 //     インターフェースの理由の先頭語は prerun-analyze.sh が見出しを付け分ける先頭語と一致させる。
-test('[devflow-skill-wrapper] Jev 節に要否・効かないときの needs_clarification・AI_GATEWAY_API_KEY 第一の設定方法を書く', () => {
-  const start = src.indexOf('## Jev');
-  assert.ok(start >= 0, 'dev-flow/SKILL.md に `## Jev` 節が無い');
-  const section = src.slice(start, src.indexOf('\n## ', start + 1));
+//     issue #1300: 第三者が jev-classify を自作するための仕様で wrapper の preflight の判断には関わらないので、
+//     起動ごとに全文が読まれる SKILL.md ではなく references/jev.md に置く。
+const analyzeSrc = readFileSync(join(repoRoot, 'dev-flow/scripts/prerun-analyze.sh'), 'utf8');
+const reasonPrefixes = [...analyzeSrc.matchAll(/^\s+"([a-zA-Z ]+)"\*\) label=/gm)].map((m) => m[1]).filter((p) => p !== 'not installed');
+
+test('[devflow-skill-wrapper] references/jev.md に要否・効かないときの needs_clarification・AI_GATEWAY_API_KEY 第一の設定方法を書く', () => {
+  const section = readFileSync(join(repoRoot, 'dev-flow/references/jev.md'), 'utf8');
   for (const s of ['必須ではない', 'needs_clarification', 'DEVFLOW_JEV_DISABLE=1', 'jev-broker（**任意**）']) {
-    assert.ok(section.includes(s), `dev-flow/SKILL.md「Jev」節に '${s}' が無い`);
+    assert.ok(section.includes(s), `references/jev.md に '${s}' が無い`);
   }
   const order = ['AI_GATEWAY_API_KEY', 'JEV_BROKER_SOCKET', 'vercel-ai-gateway'].map((s) => section.indexOf(s));
-  assert.ok(order.every((i) => i >= 0), `dev-flow/SKILL.md「Jev」節に設定経路の名前が欠けている: ${JSON.stringify(order)}`);
-  assert.ok(order[0] < order[1] && order[1] < order[2], 'dev-flow/SKILL.md「Jev」節の設定方法が AI_GATEWAY_API_KEY → broker → Keychain の順になっていない');
-  const analyzeSrc = readFileSync(join(repoRoot, 'dev-flow/scripts/prerun-analyze.sh'), 'utf8');
-  const prefixes = [...analyzeSrc.matchAll(/^\s+"([a-zA-Z ]+)"\*\) label=/gm)].map((m) => m[1]).filter((p) => p !== 'not installed');
-  assert.ok(prefixes.length >= 8, `prerun-analyze.sh から理由の先頭語を読めない: ${JSON.stringify(prefixes)}`);
-  for (const p of prefixes) {
-    assert.ok(section.includes(`\`${p}\``), `dev-flow/SKILL.md「Jev」節のインターフェースに理由の先頭語 '${p}' が無い（prerun-analyze.sh とずれている）`);
+  assert.ok(order.every((i) => i >= 0), `references/jev.md に設定経路の名前が欠けている: ${JSON.stringify(order)}`);
+  assert.ok(order[0] < order[1] && order[1] < order[2], 'references/jev.md の設定方法が AI_GATEWAY_API_KEY → broker → Keychain の順になっていない');
+  assert.ok(reasonPrefixes.length >= 8, `prerun-analyze.sh から理由の先頭語を読めない: ${JSON.stringify(reasonPrefixes)}`);
+  for (const p of reasonPrefixes) {
+    assert.ok(section.includes(`\`${p}\``), `references/jev.md のインターフェースに理由の先頭語 '${p}' が無い（prerun-analyze.sh とずれている）`);
   }
   // 第三者が jev-classify を自作できるよう、questions / answers の形も prerun-analyze.sh が実際に送る・読むものと揃える
   const readKeys = [...analyzeSrc.matchAll(/\.answers\.(\w+)\.(\w+)/g)].map((m) => [m[1], m[2]]);
   assert.ok(readKeys.length >= 3, `prerun-analyze.sh から読む answers のキーを取れない: ${JSON.stringify(readKeys)}`);
   for (const [id, field] of readKeys) {
-    assert.ok(section.includes(`\`${id}\``), `dev-flow/SKILL.md「Jev」節に質問 id '${id}' が無い（prerun-analyze.sh とずれている）`);
-    assert.ok(section.includes(`"${field}"`), `dev-flow/SKILL.md「Jev」節に応答のキー '${field}' が無い（prerun-analyze.sh とずれている）`);
+    assert.ok(section.includes(`\`${id}\``), `references/jev.md に質問 id '${id}' が無い（prerun-analyze.sh とずれている）`);
+    assert.ok(section.includes(`"${field}"`), `references/jev.md に応答のキー '${field}' が無い（prerun-analyze.sh とずれている）`);
   }
   const qTypes = new Set([...analyzeSrc.matchAll(/"type":"(\w+)"|type: "(\w+)"/g)].map((m) => m[1] ?? m[2]));
   assert.ok(qTypes.size >= 2, `prerun-analyze.sh から質問の型を取れない: ${JSON.stringify([...qTypes])}`);
   for (const t of qTypes) {
-    assert.ok(section.includes(`"type":"${t}"`), `dev-flow/SKILL.md「Jev」節に質問の型 '${t}' が無い（prerun-analyze.sh とずれている）`);
+    assert.ok(section.includes(`"type":"${t}"`), `references/jev.md に質問の型 '${t}' が無い（prerun-analyze.sh とずれている）`);
   }
   const choices = Object.keys(JSON.parse(analyzeSrc.match(/COMMENT_Q='(.*)'$/m)[1]).kind.criteria);
   for (const c of choices) {
-    assert.ok(section.includes(`\`${c}\``), `dev-flow/SKILL.md「Jev」節に選択肢 '${c}' が無い（prerun-analyze.sh とずれている）`);
+    assert.ok(section.includes(`\`${c}\``), `references/jev.md に選択肢 '${c}' が無い（prerun-analyze.sh とずれている）`);
   }
+});
+
+// (o) issue #1300: Jev の仕様は references/jev.md の 1 か所に置き、SKILL.md には写さない（写しは prerun-analyze.sh とずれる）。
+test('[devflow-skill-wrapper] SKILL.md は Jev 節を持たず、jev-classify のインターフェースを写さない', () => {
+  assert.ok(!src.includes('## Jev'), 'dev-flow/SKILL.md に `## Jev` 見出しが残っている（references/jev.md に置く）');
+  assert.ok(reasonPrefixes.length >= 8, `prerun-analyze.sh から理由の先頭語を読めない: ${JSON.stringify(reasonPrefixes)}`);
+  for (const s of ['JEV_BROKER_SOCKET', 'vercel-ai-gateway', ...reasonPrefixes.map((p) => `\`${p}\``)]) {
+    assert.ok(!src.includes(s), `dev-flow/SKILL.md に Jev のインターフェース・鍵設定の '${s}' が残っている（references/jev.md に置く）`);
+  }
+});
+
+// (p) issue #1300: Jev 判定が行われなかったときの wrapper の行動規則は手順 2 に残し、仕様は references/jev.md を指す。
+test('[devflow-skill-wrapper] 手順 2 は Jev 不使用時に鍵の取得経路を探さない規則を持ち、references/jev.md を指す', () => {
+  const step2 = src.slice(src.indexOf('2. **prerun 実行**'), src.indexOf('2b.'));
+  for (const s of ['鍵の取得経路を探さず', 'Keychain のロック解除を試しても直らない', 'references/jev.md']) {
+    assert.ok(step2.includes(s), `dev-flow/SKILL.md 手順 2 に '${s}' が無い`);
+  }
+  assert.ok(!step2.includes('「Jev（issue analyze の意味判定）」節'), 'dev-flow/SKILL.md 手順 2 が消えた「Jev（issue analyze の意味判定）」節を指している');
+});
+
+// (q) issue #1300: prerun-analyze.sh の冒頭コメントは jev-classify のインターフェースの所在として references/jev.md を指す。
+test('[devflow-skill-wrapper] prerun-analyze.sh は jev-classify のインターフェースの所在として references/jev.md を指す', () => {
+  assert.ok(analyzeSrc.includes('references/jev.md'), 'prerun-analyze.sh が references/jev.md を指していない');
+  assert.ok(!analyzeSrc.includes('SKILL.md の Jev 節'), 'prerun-analyze.sh が消えた「SKILL.md の Jev 節」を指している');
 });
 
 // (j) args.base を渡す旧形式が残存していない（base は dev-flow-prerun が解決する）

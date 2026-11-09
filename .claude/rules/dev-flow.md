@@ -21,6 +21,7 @@ paths:
 - `exec-proxy.md` — exec-proxy の失敗ポリシー表
 - `analyze-issue.md` — analyze の出力キー
 - `capability-bound.md` — 能力しだいの判断と sunset トリガ
+- `jev.md` — analyze の意味判定（Jev）の前提条件とインターフェース
 - `justification-classes.md` — 正当化クラスごとの機構の一覧
 
 ## 構造
