@@ -232,8 +232,8 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
     PR が書いたテストの出力。`_lib/final-test-rerun.mjs`）
   - テストを実行できなければ `unavailable`（PR の CI の success では代えない。PR が CI を書き換えうる）
   - 最終の changed-files で宣言外変更を再監査
-  - final test が green（no_tests を含む）の run（`reverified`）だけ、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
-    解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking（escalate 除く）は一覧と
+  - final test が green（no_tests を含む）の run（`reverified`）だけ、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・
+    解消済み item の全件（ファイル名で絞らない）を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking（escalate 除く）は一覧と
     `critical_resolutions` 契約を渡し、Evaluate と同じ `acceptedCriticalResolutions` で解消したものだけ checked（unavailable の応答・test の green では外さない）。SEC seed・TESTSURF・AC-FINAL は対象外
   - Evaluate で red→green を実証していない観測型 AC に Final AC reconcile が `verified_by:'test'` と `test_files` / `impl_files` を返したら、
     最終 tree で redgreen-verify（`redgreen-final`。impl は `origin/<base>` との merge-base まで戻す）を `start` / `wait` で実行し、red→green が成立して

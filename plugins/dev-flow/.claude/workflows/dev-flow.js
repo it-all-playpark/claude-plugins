@@ -1198,16 +1198,6 @@ function classifyBaseRerun(rerunFiles, results) {
   return { env, code, ran };
 }
 // ==== END inline: _lib/base-failure-triage.mjs ====
-// ==== BEGIN inline: _lib/post-eval-recheck.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function mentions(text, needle) {
-  if (typeof text !== 'string' || text.length === 0) return false;
-  return new RegExp(`(^|[^\\w.-])${escapeRegExp(needle)}(?![\\w-])`).test(text);
-}
-// ==== END inline: _lib/post-eval-recheck.mjs ====
 
 
 // ==== BEGIN inline: _lib/stuck-detector.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====

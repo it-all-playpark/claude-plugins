@@ -89,7 +89,8 @@ export const EVALUATOR_OPERATIONAL_CONTRACT = {
   resolved_recheck: [
     'resolved_recheck 契約:',
     '- prompt に「再検証対象 resolved item 一覧」が渡された場合、各 item の解消根拠（evidence）が現在の tree でも成り立つかを実コードで再検証し、recheck_resolutions:[{id, resolution, evidence}] で全件返す。',
-    '- 一覧の item は、解消と判定された後に本文か evidence に言及するファイルが変更されたもの。過去の evidence を信用せず、現在の内容で確かめる。',
+    '- 一覧は LLM 判断で解消された item の全件（ファイル名で絞っていない）。併せて渡す「後から変更されたファイル一覧」を見て、各 item の解消根拠が後の変更で崩れていないかを、過去の evidence を信用せず現在の tree で確かめる。',
+    '- 変更ファイルに言及していない item も省略せず、一覧の全件について返事をする。',
     '- id は渡された id をそのまま返す。resolution は resolved（解消根拠が現在の tree でも成立）/ unresolved（後の変更で根拠が崩れた・確認できない）の 2 値のみ。',
     '- resolved は現在の tree に基づく具体的 evidence 必須（file:line / テスト名 / diff 内容）。unresolved も崩れた根拠を evidence に書く。',
     '- evidence のない resolved と返さなかった item は unresolved と同じに扱われ、解消済みから外れる（critical は blocking に戻る）。',

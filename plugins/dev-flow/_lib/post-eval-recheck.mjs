@@ -2,7 +2,7 @@
 // 純関数群。I/O なし、非決定性なし。
 //
 // - classifyGreenFixDiff: green-fix 差分の再評価モード（assert_only / full）を決定論で決める
-// - recheckTargets: 台帳の解消済み項目のうち、後から変更されたファイルに言及するものを再検証対象にする
+// - recheckTargets: 後から変更が入った run で、LLM 判断で解消済みの台帳 item を全件再検証対象にする
 // - planRecheck: evaluator の recheck_resolutions を「再確認（evidence 差し替え）/ 取り下げ（reopen）」に振り分ける
 // - greenFixRecheckItems: green-fix 再評価の critical finding を台帳 item に変換する
 //
@@ -46,22 +46,6 @@ export function classifyGreenFixDiff({ files, truncated, risk }) {
   return { mode: 'assert_only', reason: 'test_only_clean', hits };
 }
 
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function basenameOf(p) {
-  const i = p.lastIndexOf('/');
-  return i >= 0 ? p.slice(i + 1) : p;
-}
-
-// text がファイル名 needle に言及しているか。前後が識別子・パス文字で連続している一致（index.ts に対する x.ts、
-// x.tsx に対する x.ts）は言及とみなさない。
-function mentions(text, needle) {
-  if (typeof text !== 'string' || text.length === 0) return false;
-  return new RegExp(`(^|[^\\w.-])${escapeRegExp(needle)}(?![\\w-])`).test(text);
-}
-
 // 再検証の候補になる台帳 item: LLM 判断（evaluator の critical_resolutions / concern_resolutions）で
 // checked になったもの。決定論で checked になった item（seed の SEC / TESTSURF、red→green 実証の AC）は
 // Merge tier の danger-grep 再判定・テスト再実行が最終 tree で確かめ直すので対象外。AC item は Final AC reconcile が、
@@ -74,14 +58,14 @@ export function isRecheckCandidate(it) {
     && !(it.check && it.check.kind === 'deterministic');
 }
 
-// 後から変更されたファイル（touchedFiles）を本文か evidence に含む解消済み item を返す。
-// パス全体か basename のどちらかで言及していれば対象（evaluator の evidence は basename だけを書くことが多い）。
+// 後から変更されたファイル（touchedFiles）がある run では、解消済み item の候補を全件返す。
+// 後の変更が解消根拠に関わるかは意味の判定なので、本文・evidence とファイル名の一致では絞らない
+// （evidence にファイル名を書かずに解消された item が再検証から漏れる）。touchedFiles は evaluator への判断材料として
+// 呼び出し側が prompt に渡す。件数で切らない（切った分が黙って再検証から漏れる）。
 export function recheckTargets(ledger, touchedFiles) {
   const paths = (Array.isArray(touchedFiles) ? touchedFiles : []).filter((p) => typeof p === 'string' && p.length > 0);
   if (paths.length === 0 || !ledger || !Array.isArray(ledger.items)) return [];
-  const needles = [...new Set([...paths, ...paths.map(basenameOf)])].filter((n) => n.length > 0);
-  return ledger.items.filter((it) => isRecheckCandidate(it)
-    && needles.some((n) => mentions(it.text, n) || mentions(it.evidence, n)));
+  return ledger.items.filter(isRecheckCandidate);
 }
 
 // evaluator の recheck_resolutions を対象ごとに振り分ける。
