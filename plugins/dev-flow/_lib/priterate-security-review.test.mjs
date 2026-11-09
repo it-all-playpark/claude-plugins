@@ -836,17 +836,18 @@ test('[security-review][I] fix が applied:false でも security の指摘を人
   assert.ok(summaryOf(calls).includes(DEFERRED_LINE));
 });
 
-// fix の prompt に同じ topic で出る 2 件（スクラブで空白が詰まる）。stuck の検出はスクラブ前の topic で数えるので、
-// 同じ round で生の topic まで一致する 2 件はこの fix に届く前に stuck になる（その扱いは変えない）
+// fix の prompt に同じ topic で出る 2 件（スクラブで URL が [REDACTED-CMD] になる）。stuck の検出はスクラブ前の topic を
+// stuckTopicKey で正規化して数えるので、空白・大小文字・`_` / `-` だけが違う 2 件は同じキーになり、
+// 同じ round で正規化後のキーまで一致する 2 件はこの fix に届く前に stuck になる（その扱いは変えない）
 test('[security-review][I] 同じ topic を持つ security の指摘 2 件を両方人に返したら、deferred は 2 件と数える（番号で照合するので topic で潰れない）', async () => {
   const { result, calls } = await run({
     overrides: {
-      'security-review#1': reviewWith([finding('hardlink write'), finding('hardlink  write', 'major', 'scripts/other.sh')]),
+      'security-review#1': reviewWith([finding('hardlink-write::https://a.example/x'), finding('hardlink-write::https://b.example/x', 'major', 'scripts/other.sh')]),
       'fix#1': deferFix(false, ['S1', 'S2']),
     },
   });
   const fix1 = calls.find((c) => c.label === 'fix#1').prompt;
-  assert.ok(fix1.includes('- [S1] [critical] [topic: hardlink write] scripts/set-names.sh:3 ') && fix1.includes('- [S2] [major] [topic: hardlink write] scripts/other.sh:3 '), fix1);
+  assert.ok(fix1.includes('- [S1] [critical] [topic: hardlink-write::[REDACTED-CMD]] scripts/set-names.sh:3 ') && fix1.includes('- [S2] [major] [topic: hardlink-write::[REDACTED-CMD]] scripts/other.sh:3 '), fix1);
   assert.equal(result.status, 'security_unresolved');
   assert.equal(result.security_review.deferred, 2);
   assert.ok(summaryOf(calls).includes('security の指摘 2 件を fix が直さずに人の判断に返した'));

@@ -1,9 +1,10 @@
 # Stuck-Topic Dictionary
 
-dev-flow の stuck 検出（planSeen / evalSeen / reviewSeen）は **raw topic 文字列の case-sensitive
-完全一致突合**である（正規化なし）。dev-flow.js の planSeen・evalSeen、pr-iterate.js の reviewSeen
-はいずれも `f.topic` をそのままキーとして使う。同義語 rewrite・ハイフン / 空白ゆれ・大小文字の
-揺れで検出が漏れるため、本辞書で問題クラスを半構造化 enum に集約する。
+dev-flow の stuck 検出（dev-flow.js の blockSeen、dev-flow-evaluate.js の evalSeen、pr-iterate.js の
+reviewSeen / securitySeen）は、`_lib/stuck-detector.mjs` の `stuckTopicKey` が `f.topic` から作るキーの
+完全一致突合である。`stuckTopicKey` は problem-class 部分（最初の `::` より前）の表記ゆれ（大小文字・
+空白・`_`・ハイフン）を吸収する。`<詳細>` 部分は trim と空白の圧縮だけで、大小文字を区別する。
+同義語 rewrite は吸収しないため、本辞書で問題クラスを半構造化 enum に集約する。
 
 なお `_lib/goal-ledger.mjs` の `topicKey`（`dimension::lowercase + 空白圧縮` 正規化）は
 ledger の item dedup 用であり、stuck カウンタとは別機構である。
@@ -15,8 +16,8 @@ topic は `<problem-class>` 単独、または `<problem-class>::<詳細>` 形�
 - **problem-class**: 本辞書の enum から選ぶ。**辞書に該当クラスがあれば必ず enum 値を使う（自由作文禁止）**。
   該当なしのみ新語を kebab-case 英小文字で作る。
 - **`<詳細>` suffix**: ファイルパス・関数名・AC index 等の**安定識別子**のみ（形容文を書かない）。
-  stuck 突合は case-sensitive 完全一致のため、**kebab-case / 小文字 path 表記で統一**する
-  （大小文字の揺れは stuck 検出を破る）。
+  `<詳細>` の stuck 突合は大小文字を区別するため、**kebab-case / 小文字 path 表記で統一**する
+  （`<詳細>` の大小文字の揺れは stuck 検出を破る）。
 - **再利用**: 同一問題は iteration を跨いで**同じ文字列を完全一致で再利用**する。
 
 例: `input-validation-missing::create-user`、`test-missing::_lib/goal-ledger.mjs`
