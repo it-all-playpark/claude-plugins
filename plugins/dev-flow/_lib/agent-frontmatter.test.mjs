@@ -3,10 +3,11 @@
 //
 // - exec-proxy は capability 別に 3 agent へ分離する（issue #323）:
 //     dev-runner-haiku-ro: read-only 決定論 proxy 専任。tools は [Bash, Read] のみ（least privilege）
-//     dev-runner-haiku:    write/Skill 系 proxy 専任。tools は [Bash, Read, Write, Skill] のみ。Write は
+//     dev-runner-haiku:    write 系 proxy 専任。tools は [Bash, Read, Write] のみ。Write は
 //                          post-comment 系 proxy（post-review#i / post-summary）の一時ファイル保存に必要（issue #372）
-//     dev-runner:          判断寄り（analyze-clarify / ac-observational）の sonnet agent。tools から TodoWrite のみ除去
-// - pr-iterate の fix（fix#i / fix#i-retry）は専用の pr-fixer（opus / medium / maxTurns 100。tools は dev-runner と同じ）。
+//     dev-runner:          判断寄り（analyze-clarify / ac-observational）の sonnet agent。tools は [Bash, Read, Write, Edit, Glob, Grep]
+// - Skill はどの spawn prompt も呼ばせないので、dev-runner / dev-runner-haiku / pr-fixer の tools に持たせない
+// - pr-iterate の fix（fix#i / fix#i-retry）は専用の pr-fixer（opus / medium / maxTurns 100。tools は [Bash, Read, Write, Edit, Glob, Grep]）。
 //   maxTurns は agent() の opts で変えられないので frontmatter で持つ。dev-runner（maxTurns 50）は fix と分けて据え置く
 //   mechanical exec-proxy の effort は A/B 実測（issue #323）の
 //   adopted_effort（low）。maxTurns は全 exec-proxy に有限値（runtime が honor するかは frontmatter からは
@@ -62,8 +63,10 @@ function extractToolsList(frontmatter) {
  * model / maxTurns: 指定した行だけ検査する（maxTurns: 'finite' は有限の正の整数、数値はその値と一致）
  * tools.exact: 集合として完全一致 / tools.include: 必ず含む / tools.exclude: 含まない
  */
-// dev-runner と pr-fixer の tools（pr-fixer は dev-runner から fix を切り出した agent なので同じ集合）
-const RUNNER_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill'];
+// dev-runner の tools
+const RUNNER_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep'];
+// pr-fixer の tools（PR worktree で指摘を直して commit・push する。用途から決め、dev-runner とは共有しない）
+const PR_FIXER_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep'];
 const AGENTS = [
   {
     name: 'dev-runner-haiku-ro', model: 'haiku', effort: ADOPTED_EFFORT, maxTurns: 'finite',
@@ -71,15 +74,15 @@ const AGENTS = [
   },
   {
     name: 'dev-runner-haiku', model: 'haiku', effort: ADOPTED_EFFORT, maxTurns: 'finite',
-    tools: { exact: ['Bash', 'Read', 'Skill', 'Write'], exclude: ['Edit', 'TodoWrite', 'Glob', 'Grep'] },
+    tools: { exact: ['Bash', 'Read', 'Write'], exclude: ['Skill', 'Edit', 'TodoWrite', 'Glob', 'Grep'] },
   },
   {
     name: 'dev-runner', model: 'sonnet', effort: 'high', maxTurns: 50,
-    tools: { exact: RUNNER_TOOLS, exclude: ['TodoWrite'] },
+    tools: { exact: RUNNER_TOOLS, exclude: ['Skill', 'TodoWrite'] },
   },
   {
     name: 'pr-fixer', model: 'opus', effort: 'medium', maxTurns: 100,
-    tools: { exact: RUNNER_TOOLS, exclude: ['TodoWrite'] },
+    tools: { exact: PR_FIXER_TOOLS, exclude: ['Skill', 'TodoWrite'] },
   },
   {
     name: 'dev-runner-haiku-wo', effort: ADOPTED_EFFORT,

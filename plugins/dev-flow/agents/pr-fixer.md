@@ -15,7 +15,6 @@ tools:
   - Edit
   - Glob
   - Grep
-  - Skill
 maxTurns: 100
 ---
 
