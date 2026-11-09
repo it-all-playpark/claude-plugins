@@ -95,6 +95,16 @@ test('(g) sunset トリガは実在する dev-flow-canary の probe か major �
   }
 });
 
+// agents/*.md の model: は別名で世代交代がファイルの差分に出ないので、dry-run の合図は dev-flow-health の
+// model_changes（解決後の model ID の変化）で起票された issue にする。冒頭の 4 欄の定義がそれを指す
+test('(g2) 冒頭の「sunset トリガ」欄の定義は dry-run の合図を dev-flow-health の model_changes で書く', () => {
+  const head = capSrc.split('\n## 項目\n')[0];
+  const def = head.split(/^- /m).find((item) => item.startsWith('**sunset トリガ**'));
+  assert.ok(def, 'capability-bound.md 冒頭に "- **sunset トリガ**" の定義が無い');
+  assert.ok(def.includes('`model_changes`'), `「sunset トリガ」の定義が model_changes を合図にしていない: ${def}`);
+  assert.ok(def.includes('dev-flow-health'), `「sunset トリガ」の定義が dev-flow-health を指していない: ${def}`);
+});
+
 // rules と capability-bound.md が backtick で挙げる定数・識別子・パスはコードに実在し、値は書き写さない。
 function collectFiles(dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {

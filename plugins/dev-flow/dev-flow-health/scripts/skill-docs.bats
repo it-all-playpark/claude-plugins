@@ -29,6 +29,18 @@ setup() {
     [ "$status" -ne 0 ]
 }
 
+@test "model の変化は model_changes の各件を分類せず起票し、重複確認のマーカーは dev-flow-health:model:<agent_type>:<model_id>" {
+    step="$(awk '/\*\*model の変化\*\*/ { f = 1 } f && /^[0-9]+\. / && !/\*\*model の変化\*\*/ { exit } f { print }' "$SKILL_MD")"
+    [ -n "$step" ]
+    [[ "$step" == *'`model_changes`'* ]]
+    [[ "$step" == *'分類せずに'* ]]
+    [[ "$step" == *'--search "dev-flow-health:model:<agent_type>:<model_id>"'* ]]
+    [[ "$step" == *'<!-- dev-flow-health:model:<agent_type>:<model_id> -->'* ]]
+    [[ "$step" == *'capability-bound.md'*'major モデルリリースごとの dry-run'* ]]
+    # needs_llm が false で終える条件は model_changes を含む
+    [[ "$(grep -F '`needs_llm` が false' "$SKILL_MD")" == *'`model_changes`'* ]]
+}
+
 @test "レポートの読み方は HOLD 由来の signature が拾う HOLD 理由（health-report.sh の定数と同じ）と、再現率優先・精度は分類で担うことを書く" {
     reading="$(awk '/^## レポートの読み方/ { f = 1; next } f && /^## / { exit } f { print }' "$SKILL_MD")"
     row="$(printf '%s\n' "$reading" | grep -F '| HOLD 由来の signature |')"

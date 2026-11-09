@@ -13,7 +13,9 @@
 
 - **何をするか** — 今の仕組み
 - **なぜ** — どの能力の不足を補っているか
-- **sunset トリガ** — 見直しを始める合図。コードにある信号（`dev-flow-canary` の probe）か、major モデルリリースごとの dry-run
+- **sunset トリガ** — 見直しを始める合図。コードにある信号（`dev-flow-canary` の probe）か、major モデルリリースごとの dry-run。
+  dry-run は、dev-flow-health が dev-flow の agent の解決後の model ID の変化（レポートの `model_changes`）を見つけて起票した
+  self-improve issue を合図に回す（`agents/*.md` の `model:` は別名なので、世代が変わってもファイルに差分が出ない）
 - **次のモデル世代での測り直し方** — 何を回し、何を見て撤去・緩和を決めるか
 
 `dev-flow-canary` は `Workflow({ name: 'dev-flow:dev-flow-canary' })` で起動する read-only の capability canary
@@ -79,9 +81,9 @@ report と比べて読む。
   ばらつきを吸収する
 - **sunset トリガ**: `dev-flow-canary` の `direct_shell` が pass（workflow が自分で待って CI を読める）。`CI_TURN_MARGIN` は
   major モデルリリースごとの dry-run
-- **次のモデル世代での測り直し方**: `direct_shell` が pass なら polling を workflow 内へ移す issue を立てる。`dev-runner-haiku-ro`
-  の model 世代が変わったら実 PR で `ci-check` / `ci-wait-check` を回し、transcript の API リクエスト数と文書化した手順数の差が
-  `CI_TURN_MARGIN` に収まるかを見る
+- **次のモデル世代での測り直し方**: `direct_shell` が pass なら polling を workflow 内へ移す issue を立てる。dev-flow-health の
+  `model_changes` で `dev-runner-haiku-ro` の model ID の変化が起票されたら実 PR で `ci-check` / `ci-wait-check` を回し、
+  transcript の API リクエスト数と文書化した手順数の差が `CI_TURN_MARGIN` に収まるかを見る
 
 ### inline generator の橋
 
@@ -166,6 +168,6 @@ report と比べて読む。
   「進め方の目安」。対象は節のうち capability-bound と宣言した段落・項目だけで、同じ節にある他のクラスの宣言は外さない
 - **なぜ**: frontier モデルなら指示なしでも同じ品質が出る指示は、残すほど prompt が膨らむ
 - **sunset トリガ**: major モデルリリースごとの dry-run
-- **次のモデル世代での測り直し方**: 品質ゲート agent の frontmatter model が世代交代したら、当該指示を外した agent で過去 run
-  を replay し、verdict と major 指摘の再現が劣化しないことを確かめてから削る。contract / incentive-structural / blast-radius の
-  指示は外さない
+- **次のモデル世代での測り直し方**: dev-flow-health の `model_changes` で品質ゲート agent の model ID の変化が起票されたら、
+  当該指示を外した agent で過去 run を replay し、verdict と major 指摘の再現が劣化しないことを確かめてから削る。
+  contract / incentive-structural / blast-radius の指示は外さない
