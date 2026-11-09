@@ -394,7 +394,7 @@ run_contract_mode() {
     fi
 
     local ac_items_json
-    ac_items_json=$(printf '%s\n' "$ac_items" | grep -v '^[[:space:]]*$' | head -20 | json_array || true)
+    ac_items_json=$(printf '%s\n' "$ac_items" | grep -v '^[[:space:]]*$' | json_array || true)
     [[ -z "$ac_items_json" ]] && ac_items_json="[]"
 
     # issue_body is the raw body in full (AC section included, never capped): prerun-analyze.sh

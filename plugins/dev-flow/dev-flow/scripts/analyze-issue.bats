@@ -400,6 +400,24 @@ Update src/foo.ts and src/bar.ts."
 }
 
 # ---------------------------------------------------------------------------
+# contract mode emits every AC item (no cap): the AC-count gate downstream
+# (prerun-analyze) must see the real count, not a silently clipped list (#1288).
+# ---------------------------------------------------------------------------
+@test "contract mode: 25 AC items -> all 25 emitted in acceptance_criteria" {
+    FIXTURE="$FIXTURE_DIR/contract-many-ac.json"
+    local body="## 受け入れ基準
+" i
+    for i in $(seq 1 25); do
+        body+="- [ ] AC-$i
+"
+    done
+    make_fixture "$FIXTURE" "feat: many ac" "$body"
+    run analyze "$FIXTURE" 57 --contract
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '(.acceptance_criteria | length) == 25 and .acceptance_criteria[24] == "AC-25"'
+}
+
+# ---------------------------------------------------------------------------
 # (w) A scope mentioning only .sh/.bats files is still eligible and, like any
 #     other scope, carries no file-count estimate (issue #676).
 # ---------------------------------------------------------------------------
