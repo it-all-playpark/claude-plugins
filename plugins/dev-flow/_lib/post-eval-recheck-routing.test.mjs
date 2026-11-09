@@ -158,6 +158,13 @@ test('[post-eval-recheck] green-fix 後の tree が評価済み tree と同じ�
 
 // ---- (2) 解消済み item の再検証 ----
 
+// 一覧の見出し行の直後の行を返す。見出しの語は契約文の「」内にも出るので、見出し行そのものから切り出す
+const listLineAfter = (prompt, heading) => {
+  const at = prompt.indexOf(heading);
+  assert.ok(at >= 0, `見出し「${heading}」が prompt に無い:\n${prompt}`);
+  return prompt.slice(at).split('\n')[1];
+};
+
 // eval#2 が「generate_thumbnail.bats の変更は取り消し済み」と concern を解消したあと、post-eval green-fix が同じファイルを触る
 const STALE_EVIDENCE = 'tests/generate_thumbnail.bats の変更を取り消し済み';
 const CONCERN_OVERRIDES = {
@@ -188,7 +195,7 @@ test('[post-eval-recheck] green-fix 後は解消済み item を全件再検証�
   const listed = ev.prompt.slice(ev.prompt.indexOf('再検証対象 resolved item 一覧'));
   assert.ok(ev.prompt.includes('再検証対象 resolved item 一覧') && listed.includes('"id":"CONCERN-1"'), '解消済み CONCERN-1 が再検証対象として渡っていない');
   assert.ok(listed.includes('"id":"EVAL-1-X"'), 'green-fix が触っていないファイル（src/a.ts）に言及する解消済み item が再検証対象に無い');
-  assert.ok(ev.prompt.includes('後から変更されたファイル一覧') && ev.prompt.includes(JSON.stringify(['tests/generate_thumbnail.bats'])), `green-fix の変更ファイル一覧が prompt に無い:\n${ev.prompt}`);
+  assert.equal(listLineAfter(ev.prompt, '後から変更されたファイル一覧（green-fix の差分'), JSON.stringify(['tests/generate_thumbnail.bats']), `green-fix の変更ファイル一覧が prompt に無い:\n${ev.prompt}`);
   assert.ok(ev.prompt.includes(EVALUATOR_OPERATIONAL_CONTRACT.resolved_recheck), 'resolved_recheck 契約が verbatim 注入されていない');
   assert.ok(!summary.includes(STALE_EVIDENCE), `崩れた解消根拠が終端サマリに残っている:\n${summary}`);
   assert.ok(summary.includes('post-eval green-fix 後の tree で再検証し解消根拠が不成立'), `取り下げた理由が終端サマリに無い:\n${summary}`);
@@ -248,7 +255,7 @@ test('[post-eval-recheck] fix が触っていないファイルに言及する�
   const fa = call('final-ac-reconcile');
   const listed = fa.prompt.slice(fa.prompt.indexOf('再検証対象 resolved item 一覧'));
   assert.ok(fa.prompt.includes('再検証対象 resolved item 一覧') && listed.includes('"id":"CONCERN-1"'), 'fix が触っていない src/x.ts に言及する CONCERN-1 が再検証対象に無い');
-  assert.ok(fa.prompt.includes('後から変更されたファイル一覧') && fa.prompt.includes(JSON.stringify(['src/y.ts'])), `fix の変更ファイル一覧が prompt に無い:\n${fa.prompt}`);
+  assert.equal(listLineAfter(fa.prompt, '後から変更されたファイル一覧（pr-iterate fix の差分'), JSON.stringify(['src/y.ts']), `fix の変更ファイル一覧が prompt に無い:\n${fa.prompt}`);
   assert.ok(!summary.includes(FINAL_STALE), `返事の無い解消根拠が終端サマリに残っている:\n${summary}`);
   assert.ok(summary.includes('fix 後の最終 tree で再検証できず — 解消根拠を取り下げ'), `取り下げの表示が無い:\n${summary}`);
 });
