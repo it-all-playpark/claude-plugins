@@ -1195,20 +1195,13 @@ function checkNameArgs(flag, names) {
   return (Array.isArray(names) ? names : []).map((name) => ` ${flag} '${String(name).split("'").join("'\\''")}'`).join('');
 }
 
-function ciRollupCommand({ pr, repo, withLink = false }) {
-  const drop = withLink ? '.__typename,.completedAt' : '.__typename,.completedAt,.detailsUrl,.targetUrl';
-  return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop})) | ([39]|implode) as $q | tojson | split($q) | join(([92]|implode) + "u0027")'`;
+function checkCiCommand({ pr, repo, exclude = [], only = [] }) {
+  return `check-ci --pr ${pr}${repo ? ' --repo ' + repo : ''}${checkNameArgs('--only', only)}${checkNameArgs('--exclude', exclude)}`;
 }
 
-function ciFetchSteps({ pr, repo, n, exclude = [], only = [] }) {
-  const withLink = Array.isArray(only) && only.length > 0;
-  return `${n}. \`${ciRollupCommand({ pr, repo, withLink })}\` を gh を先頭トークンとする bare 単文で実行せよ`
-    + `（リダイレクト・パイプ・複合コマンドは使わない）。`
-    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。\n`
-    + `${n + 1}. \`check-ci --checks-data '<手順${n}の stdout を一字一句そのまま。要約・整形・省略禁止>' `
-    + `--fetch-error-data '<手順${n}の stderr を一字一句そのまま。stderr が空なら本オプション自体を省略>'`
-    + `${checkNameArgs('--only', only)}${checkNameArgs('--exclude', exclude)}\` `
-    + `を単文で実行し、stdout の JSON を読め。\n`;
+function checkCiStep({ n, ...opts }) {
+  return `${n}. \`${checkCiCommand(opts)}\` を check-ci を先頭トークンとする bare 単文で実行し`
+    + `（リダイレクト・パイプ・複合コマンドは使わない）、stdout の JSON を読め。\n`;
 }
 
 const CI_PROXY_TOOLS_AND_BOUNDARY = `## Tools\n`
@@ -1224,7 +1217,7 @@ const CI_PROXY_JSON_ONLY_TAIL = `prose 禁止。JSON のみ返せ。\n\n`
 
 function ciWaitStep(seconds) {
   return `1. \`ci-wait ${seconds}\` を ci-wait を先頭トークンとする bare 単文で実行せよ（リダイレクト・パイプ・複合コマンドは使わない）。`
-    + `stdout の JSON が \`"slept": true\` でなければ（stdout が空・exit 非0 を含む）手順 2〜4 を実行せず、`
+    + `stdout の JSON が \`"slept": true\` でなければ（stdout が空・exit 非0 を含む）手順 2〜3 を実行せず、`
     + `\`{ "slept": false, "status": "pending", "passed": 0, "failed": 0, "pending": 0, "skipped": 0 }\` を返して終了せよ。\n`;
 }
 
@@ -1232,11 +1225,9 @@ function ciCheckPrompt({ pr, repo, exclude = [] }) {
   return `## Objective\nPR #${pr} の head commit sha と CI ステータスを取得し、JSON を返せ。\n\n`
     + CI_PROXY_TOOLS_AND_BOUNDARY
     + `## Steps\n`
-    + `1. \`gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json headRefOid -q .headRefOid\` を gh を先頭トークンとする bare 単文で実行せよ`
-    + `（リダイレクト・パイプ・複合コマンドは使わない）。stdout の 40 桁 hex を一字一句そのまま head_sha とする（失敗・空なら head_sha は省略）。\n`
-    + ciFetchSteps({ pr, repo, n: 2, exclude })
-    + `4. 手順 3 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, waited_seconds, poll_attempts, ...}）に手順 1 の \`"head_sha"\` を加えて返せ。`
-    + `それ以外のキーは要約・加工するな。${CI_COUNTS_NOTE}1 回の取得で判定を確定させ、待機や再取得は行うな。\n\n`
+    + checkCiStep({ n: 1, pr, repo, exclude })
+    + `2. 手順 1 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, head_sha, waited_seconds, poll_attempts, ...}）をそのまま返せ。`
+    + `キーを要約・加工するな。\`head_sha\` は一字一句そのまま写せ（stdout に無ければ省略）。${CI_COUNTS_NOTE}1 回の取得で判定を確定させ、待機や再取得は行うな。\n\n`
     + `## Output format\n`
     + `{ "status": "passed"|"failed"|"pending"|"no_checks"|"error", "passed": number, "failed": number, "pending": number, "skipped": number, `
     + `"failed_checks": [{name, bucket, state}, ...], "waited_seconds": number, "poll_attempts": number, "head_sha": string }\n`
@@ -1257,8 +1248,8 @@ function ciWaitCheckPrompt({ pr, repo, seconds, exclude = [] }) {
     + CI_PROXY_TOOLS_AND_BOUNDARY
     + `## Steps\n`
     + ciWaitStep(seconds)
-    + ciFetchSteps({ pr, repo, n: 2, exclude })
-    + `4. 手順 3 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, waited_seconds, poll_attempts, ...}）に \`"slept": true\` を加えて返せ。`
+    + checkCiStep({ n: 2, pr, repo, exclude })
+    + `3. 手順 2 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, waited_seconds, poll_attempts, ...}）に \`"slept": true\` を加えて返せ。`
     + `それ以外のキーは要約・加工するな。${CI_COUNTS_NOTE}ci-wait と取得は各 1 回だけ実行し、再待機や再取得は行うな。\n\n`
     + `## Output format\n`
     + `{ "slept": boolean, "status": "passed"|"failed"|"pending"|"no_checks"|"error", "passed": number, "failed": number, "pending": number, "skipped": number, `
@@ -1285,8 +1276,8 @@ function ciVerifyPrompt({ pr, repo, checks, seconds }) {
     + CI_PROXY_TOOLS_AND_BOUNDARY
     + `## Steps\n`
     + (wait ? ciWaitStep(seconds) : `1. 待機はしない（ci-wait を実行しない）。\n`)
-    + ciFetchSteps({ pr, repo, n: 2, only: checks })
-    + `4. 手順 3 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, pending_checks, passed_checks, waited_seconds, poll_attempts, ...}）${wait ? 'に `"slept": true` を加えて' : 'を'}返せ。`
+    + checkCiStep({ n: 2, pr, repo, only: checks })
+    + `3. 手順 2 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, pending_checks, passed_checks, waited_seconds, poll_attempts, ...}）${wait ? 'に `"slept": true` を加えて' : 'を'}返せ。`
     + `それ以外のキーは要約・加工するな。failed_checks / passed_checks の link は一字一句そのまま写せ。${CI_COUNTS_NOTE}`
     + `${wait ? 'ci-wait と' : ''}取得は 1 回だけ実行し、再待機や再取得は行うな。\n\n`
     + `## Output format\n`
@@ -3041,7 +3032,7 @@ for (i = 1; i <= MAX; i++) {
     //
     // 1 spawn = 1 判定・ループは script 側。1 回目の poll は ci-check（待機なし。review#i と並列に取った
     // ci-check#i を採用できていればそれを使い、不採用なら直列で起動し直す — firstCiCheck）、pending なら
-    // 2 回目以降は ci-wait-check（`ci-wait` で待機 → gh fetch → check-ci を 1 spawn）で再判定する。
+    // 2 回目以降は ci-wait-check（`ci-wait` で待機 → check-ci を 1 spawn）で再判定する。
     // 待機は nominal 積算（ci-wait-check 成功回数 × CI_POLL_SECONDS）で、次の wait を足すと
     // CI_WAIT_CEILING を超える時点で打ち切り、最後の判定（pending）で ci_pending 終端へ流す
     // （spawn 回数の上限 CI_GATE_MAX_POLLS は ceiling から導出した同値の guard。ループ条件を変えても

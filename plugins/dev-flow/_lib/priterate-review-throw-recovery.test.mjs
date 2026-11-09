@@ -30,7 +30,7 @@ function buildAgentStub({ reviewerStub, ciStub, fixStub, agentCalls }) {
     if (agentType === 'dev-flow:pr-reviewer') {
       return reviewerStub(label);
     }
-    if (agentType === 'dev-flow:dev-runner-haiku-ro' && prompt.includes('check-ci --checks-data')) {
+    if (agentType === 'dev-flow:dev-runner-haiku-ro' && prompt.includes('check-ci --pr ')) {
       return ciStub ? ciStub(label) : { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [] };
     }
     if (label.startsWith('fix#')) {
@@ -88,7 +88,7 @@ test('[T2] review#1 throw -> review#1-schema-retry も throw -> error null、pr-
   const fixCalls = agentCalls.filter((c) => c.label.startsWith('fix#'));
   assert.equal(fixCalls.length, 0, `fix# は 0 回であるべきだが ${fixCalls.length} 回だった`);
 
-  const ciCalls = agentCalls.filter((c) => c.prompt.includes('check-ci --checks-data'));
+  const ciCalls = agentCalls.filter((c) => c.prompt.includes('check-ci --pr '));
   assert.equal(ciCalls.length, 0, `ci-check は 0 回であるべきだが ${ciCalls.length} 回だった`);
 
   assert.equal(result?.status, 'review_contract_error', `result.status は review_contract_error であるべきだが '${result?.status}' だった`);

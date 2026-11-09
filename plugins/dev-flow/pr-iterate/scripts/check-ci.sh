@@ -1,8 +1,23 @@
 #!/usr/bin/env bash
-# check-ci.sh - Classify PR CI status from a `gh pr view --json statusCheckRollup` snapshot.
-# Usage: check-ci.sh --checks-data <string> [--fetch-error-data <string>]
+# check-ci.sh - Read a PR's head sha and CI rollup with one `gh pr view` and classify the CI status.
+# Usage: check-ci.sh --pr <N> [--repo <owner/name>]
 #                    [--attempt N] [--max-attempts K] [--poll-seconds M]
 #                    [--only <check name>]... [--exclude <check name>]...
+#
+# The script runs gh exactly once, as an argv array (no shell string, no eval):
+#
+#   gh pr view <N> [--repo <owner/name>] --json headRefOid,statusCheckRollup
+#
+# gh is read-only here and authenticates from its own credential store. The
+# head sha and the rollup come from the same response, so the verdict always
+# belongs to the reported head_sha. The caller (an exec-proxy subagent) runs
+# this script as one bare statement and relays its stdout; it neither fetches
+# the rollup nor transcribes it into argv, so a transcription slip on the way in
+# cannot turn into a wrong verdict. The script does not wait, re-fetch, or write
+# anything to GitHub: the caller owns sleeping (ci-wait) and polling.
+#
+# --pr must be a positive integer and --repo (optional; without it gh uses the
+# cwd's repo) must be owner/name. Invalid arguments exit 1 before gh is run.
 #
 # --only / --exclude (repeatable, issue #861) narrow the snapshot by exact check
 # name before the verdict is derived. pr-iterate uses --exclude for the
@@ -10,55 +25,19 @@
 # declared in "dev-flow".ci_verify (sandbox-unreachable verification such as
 # E2E, which runs far longer than the round gate's wait ceiling). When --only
 # is given the output also carries passed_checks, and every reported check
-# keeps its `link` when the snapshot has one (fetch keeping detailsUrl / targetUrl)
-# so the caller can record the check run URL as AC evidence.
+# keeps its `link` when the rollup has one (detailsUrl / targetUrl) so the
+# caller can record the check run URL as AC evidence.
 #
 # Exits 0 when CI status is determined (passed/failed/pending/no_checks).
-# Exits 1 when the snapshot is unusable (the caller's fetch failed) or when
-# argument validation fails.
-# CI state is reported via stdout JSON so the caller can treat pending != failure.
+# Exits 1 with status "error" when the snapshot is unusable, and when argument
+# validation fails. CI state is reported via stdout JSON so the caller can
+# treat pending != failure.
 #
-# PURE TRANSFORM — this script performs no network I/O and no wall-clock waiting.
-# It reduces a snapshot string the caller already fetched to the output
-# contract below. The caller owns fetching, sleeping, and relaying the
-# snapshot as argv data (two bare, single-statement commands — no file relay,
-# no redirection, no pipes):
-#
-#   gh pr view <pr> --repo <owner/repo> --json statusCheckRollup \
-#     --jq '.statusCheckRollup // [] | map(del(.__typename,.completedAt,.detailsUrl,.targetUrl)) | ([39]|implode) as $q | tojson | split($q) | join(([92]|implode) + "u0027")'
-#   (the trailing split/join rewrites each single quote to the JSON escape backslash + "u0027", so none reach the stdout that is
-#   relayed inside single quotes; the filter builds the quote and backslash from code points so
-#   it holds neither character itself and survives being transcribed inside single quotes)
-#   check-ci.sh --checks-data '<that stdout, verbatim>' \
-#     --fetch-error-data '<that stderr, verbatim, if the gh call failed>' \
-#     --attempt <n> --max-attempts <k> --poll-seconds <m>
-#
-# This script trusts that the caller transcribes `gh`'s stdout/stderr
-# verbatim into --checks-data/--fetch-error-data — it has no way to verify
-# the transcription against the original `gh` output. --jq folds the rollup to
-# the keys the verdict reads specifically to keep the transcribed payload
-# small, which keeps the transcription-corruption surface small.
-# Quote breakage or partial transcription during the caller's argv relay is
-# not silently swallowed: a corrupted --checks-data value fails to parse as a
-# JSON array and falls into the same "error" path as a genuine fetch failure
-# (fail-safe), so it can never read as a false "passed".
-#
-# issue #488: the fetch used to live inside this script — first as curl+REST
-# (authenticated only via a GH_TOKEN/GITHUB_TOKEN env var, so private repos
-# returned HTTP 404 and every run misreported status=error), then briefly as an
-# in-script `gh` call. Both are wrong here: an exec-proxy script must not carry
-# authenticated network I/O, because `gh` reading its own credential store from
-# inside a script makes correctness depend on how the script was launched. The
-# fetch therefore belongs to the caller, which runs `gh` directly; `gh`
-# authenticates from its own credential store, so private repo CI state is read
-# correctly with no token plumbed across the workflow/agent boundary.
-#
-# issue #499: the snapshot used to be relayed through $TMPDIR files
-# (--checks-json <file> / --fetch-error <file>, written via shell redirection
-# from the caller's `gh` invocation). It is now relayed as argv data instead,
-# so the caller's whole interaction is two single statements (the `gh` call,
-# then this script) with no redirection, pipe, or compound command in
-# between.
+# Fail-closed: the snapshot is unusable — status "error", never a verdict — when
+# gh exits non-zero, its stdout is not a JSON object, headRefOid is not a
+# 40-hex commit sha, or statusCheckRollup is neither an array of objects nor
+# null. The message carries up to the first 3 lines of gh's stderr. The verdict
+# is never derived from gh's exit code.
 #
 # _shared/scripts/ci-rollup.jq reduces the rollup to one {name, state, bucket}
 # per check (merge-tier-facts.sh uses the same file, so the CI gate and the
@@ -68,11 +47,8 @@
 # "failed" (fail-closed) and `skipping` is folded into "passed" (+ a separate
 # skipped count; with --only it is folded into "pending" instead — see
 # compute_verdict). A conclusion / state the table does not know is bucket
-# "fail", so an unrecognized value can never read as green.
-#
-# The verdict is never derived from gh's exit code. A rollup of null or [] reads
-# as no_checks. A snapshot is only treated as failed when --checks-data is
-# neither of those nor a JSON array of objects.
+# "fail", so an unrecognized value can never read as green. A rollup of null
+# or [] reads as no_checks.
 #
 # Bounded-wait accounting (the caller polls; this script only reports it):
 # --attempt N (default 1): 1-based index of the caller's current poll attempt.
@@ -87,11 +63,13 @@
 # advance --attempt, so fetch-error retries never consume waited_seconds.
 #
 # Output JSON:
-#   { "status": "passed" | "failed" | "pending" | "no_checks" | "error",
+#   { "status": "passed" | "failed" | "pending" | "no_checks",
 #     "passed": N, "failed": N, "pending": N, "skipped": N,
-#     "failed_checks": [...], "pending_checks": [...],
+#     "failed_checks": [...], "pending_checks": [...], "head_sha": "<40 hex>",
 #     "waited_seconds": N, "poll_attempts": N,
 #     "epoch": N | null, "next_action": "poll" | "done" }
+#   { "status": "error", "message": "...", "waited_seconds": N, "poll_attempts": N,
+#     "epoch": N | null, "next_action": "done" }
 #
 # "next_action" tells the caller whether to sleep --poll-seconds and re-fetch
 # ("poll", emitted only when status is "pending" and attempt < max-attempts) or
@@ -113,9 +91,9 @@ source "$(dirname "$_CORE_BIN")/../_lib/common.sh"
 
 require_cmd jq
 
-CHECKS_DATA=""
-HAVE_CHECKS_DATA=0
-FETCH_ERR_DATA=""
+PR=""
+REPO=""
+HAVE_REPO=0
 ATTEMPT=1
 MAX_ATTEMPTS=1
 POLL_SECONDS=15
@@ -123,10 +101,10 @@ ONLY_JSON='[]'
 EXCLUDE_JSON='[]'
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --checks-data) CHECKS_DATA="$2"; HAVE_CHECKS_DATA=1; shift 2 ;;
+        --pr) PR="$2"; shift 2 ;;
+        --repo) REPO="$2"; HAVE_REPO=1; shift 2 ;;
         --only) ONLY_JSON="$(jq -c --arg n "$2" '. + [$n]' <<<"$ONLY_JSON")"; shift 2 ;;
         --exclude) EXCLUDE_JSON="$(jq -c --arg n "$2" '. + [$n]' <<<"$EXCLUDE_JSON")"; shift 2 ;;
-        --fetch-error-data) FETCH_ERR_DATA="$2"; shift 2 ;;
         --attempt) ATTEMPT="$2"; shift 2 ;;
         --max-attempts) MAX_ATTEMPTS="$2"; shift 2 ;;
         --poll-seconds) POLL_SECONDS="$2"; shift 2 ;;
@@ -134,11 +112,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validation (deterministic, before anything else).
+# Validation (deterministic, before gh is run).
 POLL_MIN=5
 WAIT_MAX=1800
 ATTEMPTS_MAX=120
-(( HAVE_CHECKS_DATA == 1 )) || die_json "--checks-data <string> required" 1
+[[ -n "$PR" ]] || die_json "--pr <N> required" 1
+[[ "$PR" =~ ^[1-9][0-9]*$ ]] || die_json "Invalid --pr: $PR. Must be a positive integer" 1
+if (( HAVE_REPO == 1 )); then
+    [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ ]] || die_json "Invalid --repo: $REPO. Must be owner/name" 1
+fi
 [[ "$ATTEMPT" =~ ^[0-9]+$ ]] || die_json "Invalid --attempt: $ATTEMPT. Must be an integer >= 1" 1
 (( ATTEMPT >= 1 )) || die_json "Invalid --attempt: $ATTEMPT. Must be an integer >= 1" 1
 [[ "$MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || die_json "Invalid --max-attempts: $MAX_ATTEMPTS. Must be an integer 1-${ATTEMPTS_MAX}" 1
@@ -149,6 +131,15 @@ ATTEMPTS_MAX=120
 (( (MAX_ATTEMPTS - 1) * POLL_SECONDS <= WAIT_MAX )) || die_json "Invalid wait budget: (--max-attempts - 1) * --poll-seconds must be <= ${WAIT_MAX}" 1
 
 WAITED=$(( (ATTEMPT - 1) * POLL_SECONDS ))
+
+GH_ARGS=(pr view "$PR")
+if (( HAVE_REPO == 1 )); then
+    GH_ARGS+=(--repo "$REPO")
+fi
+GH_ARGS+=(--json headRefOid,statusCheckRollup)
+
+GH_STDERR="$(mktemp "${TMPDIR:-/tmp}/check-ci-stderr.XXXXXX")"
+trap 'rm -f "$GH_STDERR"' EXIT
 
 # epoch_field - prints the current `date +%s` as a bare JSON number, or the
 # JSON literal `null` if `date +%s` fails. Called once per JSON emission site
@@ -165,21 +156,46 @@ epoch_field() {
     fi
 }
 
-# read_snapshot - reduces the rollup in $CHECKS_DATA to CHECKS_JSON through
-# ci-rollup.jq. A value it does not accept is a failed fetch.
+# fetch_error <reason> - sets FETCH_ERR to "gh pr view: <reason>", followed by
+# up to the first 3 lines of gh's stderr when there are any.
+fetch_error() {
+    local stderr_head
+    stderr_head="$(head -3 "$GH_STDERR" 2>/dev/null | tr '\n' ' ' || true)"
+    FETCH_ERR="gh pr view: $1"
+    if [[ -n "${stderr_head// /}" ]]; then
+        FETCH_ERR+=": ${stderr_head% }"
+    fi
+}
+
+# read_snapshot - runs gh once and reduces its response to HEAD_SHA and
+# CHECKS_JSON (through ci-rollup.jq). A response it does not accept is a
+# failed fetch (FETCH_ERR set, return 1).
 read_snapshot() {
+    local out rc=0
     CHECKS_JSON="[]"
+    HEAD_SHA=""
     FETCH_ERR=""
-    if CHECKS_JSON="$(printf '%s' "$CHECKS_DATA" | jq -ce -f "$SCRIPT_DIR/../../_shared/scripts/ci-rollup.jq" 2>/dev/null)"; then
-        return 0
+    out="$(gh "${GH_ARGS[@]}" 2>"$GH_STDERR")" || rc=$?
+    if (( rc != 0 )); then
+        fetch_error "exit $rc"
+        return 1
     fi
-    # 早く終わる reader（head）へ pipe しない: 残りの write が SIGPIPE になり pipefail で偽・非 0 になる
-    if [[ -n "$FETCH_ERR_DATA" ]]; then
-        FETCH_ERR="gh pr view: $(printf '%s' "$FETCH_ERR_DATA" | { head -3; cat >/dev/null; } | tr '\n' ' ')"
-    else
-        FETCH_ERR="gh pr view: snapshot data is not a JSON array"
+    if ! printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        fetch_error "stdout is not a JSON object"
+        return 1
     fi
-    return 1
+    if ! HEAD_SHA="$(printf '%s' "$out" | jq -er '.headRefOid | select(type == "string" and test("^[0-9a-fA-F]{40}$"))' 2>/dev/null)"; then
+        HEAD_SHA=""
+        fetch_error "headRefOid is not a 40-hex commit sha"
+        return 1
+    fi
+    if ! CHECKS_JSON="$(printf '%s' "$out" | jq -c 'if has("statusCheckRollup") then .statusCheckRollup else error("no statusCheckRollup") end' 2>/dev/null \
+        | jq -ce -f "$SCRIPT_DIR/../../_shared/scripts/ci-rollup.jq" 2>/dev/null)"; then
+        CHECKS_JSON="[]"
+        fetch_error "statusCheckRollup is not an array of checks or null"
+        return 1
+    fi
+    return 0
 }
 
 # compute_verdict - reduces $CHECKS_JSON to $result_json / $status.
@@ -247,8 +263,9 @@ if [[ "$status" == "pending" ]] && (( ATTEMPT < MAX_ATTEMPTS )); then
 fi
 
 printf '%s' "$result_json" | jq -c \
+    --arg h "$HEAD_SHA" \
     --argjson w "$WAITED" \
     --argjson p "$ATTEMPT" \
     --argjson e "$(epoch_field)" \
     --arg n "$NEXT_ACTION" \
-    '. + {waited_seconds:$w, poll_attempts:$p, epoch:$e, next_action:$n}'
+    '. + {head_sha:$h, waited_seconds:$w, poll_attempts:$p, epoch:$e, next_action:$n}'

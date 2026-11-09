@@ -51,10 +51,10 @@ TodoWrite/Glob/Grep は持たない）。
 | `diff-hash-eval` / `diff-hash-pr` | diff-hash 取得（Evaluate / PR 各局面） | `DIFFHASH` |
 | `ci-checks` | CI checks の read（`gh pr view --json statusCheckRollup`） | `CHECKS` |
 | `pr-meta` | PR metadata の read（`gh pr view --json mergeable,mergeStateStatus` による base branch conflict 検出） | `PR_META` |
-| `ci-check#<n>` / `ci-check#<n>-serial` | PR head sha + CI checks の read（pr-iterate Iterate 局面。`-serial` は review と並列に取った結果を採れなかったときの直列再取得） | `CI_STATUS` |
+| `ci-check#<n>` / `ci-check#<n>-serial` | PR head sha + CI checks の read（bare 単文 `check-ci --pr <N> --repo <R>`。check-ci が `gh pr view --json headRefOid,statusCheckRollup` を 1 回実行する。pr-iterate Iterate 局面。`-serial` は review と並列に取った結果を採れなかったときの直列再取得） | `CI_STATUS` |
 | `fix-baseline#<i>` / `commit-ensure-status#<i>` / `worktree-dirty-check` | pr-iterate の作業ツリーの判定（bare 単文 `porcelain-verdict baseline` / `porcelain-verdict check [<digest>]`。基準線ファイルはスクリプトが `.devflow-tmp/` に書き、agent はファイルを変更しない。stdout の JSON を verbatim で返す） | `FIX_BASELINE` / `PORCELAIN_VERDICT` |
 | `mergeable-check#<i>` | PR の base conflict 状態の read（`gh pr view --json mergeable,mergeStateStatus,headRefOid`。pr-iterate が LGTM を確定する直前） | `MERGEABLE_STATE` |
-| `ci-wait-check#<i>.<k>` | CI 完了待ち + 1 回判定（`ci-wait <秒>` → `gh pr view --json statusCheckRollup` → `check-ci` の 3 単文。pr-iterate Iterate 局面の script 側 poll ループの 2 回目以降） | `CI_WAIT_CHECK` |
+| `ci-wait-check#<i>.<k>` | CI 完了待ち + 1 回判定（`ci-wait <秒>` → `check-ci --pr <N> --repo <R>` の 2 単文。check-ci が `gh pr view --json headRefOid,statusCheckRollup` を 1 回実行する。pr-iterate Iterate 局面の script 側 poll ループの 2 回目以降） | `CI_WAIT_CHECK` |
 
 ## Boundary
 

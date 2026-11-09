@@ -37,7 +37,7 @@ function buildAgentStub({ reviewerStub, ciStub, fixStub, agentCalls }) {
     if (agentType === 'dev-flow:pr-reviewer') {
       return reviewerStub(label);
     }
-    if (agentType === 'dev-flow:dev-runner-haiku-ro' && prompt.includes('check-ci --checks-data')) {
+    if (agentType === 'dev-flow:dev-runner-haiku-ro' && prompt.includes('check-ci --pr ')) {
       return ciStub ? ciStub(label) : { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [] };
     }
     if (label.startsWith('fix#')) {
@@ -65,7 +65,7 @@ test('[AC-1] comment decision + minor 1 件のみ(blocking 0件) -> fix# 起動�
   assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
-  const ciCalls = agentCalls.filter((c) => c.prompt.includes('check-ci --checks-data'));
+  const ciCalls = agentCalls.filter((c) => c.prompt.includes('check-ci --pr '));
   assert.ok(ciCalls.length > 0, 'ci-check（check-ci.sh）が呼ばれるべき');
 
   const fixCalls = agentCalls.filter((c) => c.label.startsWith('fix#'));
@@ -84,7 +84,7 @@ test('[AC-2] request-changes decision + issues:[](blocking 0件) -> fix# 起動�
   assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
-  const ciCalls = agentCalls.filter((c) => c.prompt.includes('check-ci --checks-data'));
+  const ciCalls = agentCalls.filter((c) => c.prompt.includes('check-ci --pr '));
   assert.ok(ciCalls.length > 0, 'ci-check（check-ci.sh）が呼ばれるべき');
 
   const fixCalls = agentCalls.filter((c) => c.label.startsWith('fix#'));

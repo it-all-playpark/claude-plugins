@@ -706,7 +706,7 @@ export function prIterateRounds({ reviewer, fix, ci, commitEnsure } = {}) {
   return ({ label, agentType, prompt }) => {
     if (reviewer && agentType === 'dev-flow:pr-reviewer') return reviewer(++reviews);
     if (fix && label.startsWith('fix#')) return pick(fix, fixes++);
-    if (ci && agentType === 'dev-flow:dev-runner-haiku-ro' && String(prompt).includes('check-ci --checks-data')) return pick(ci, cis++);
+    if (ci && agentType === 'dev-flow:dev-runner-haiku-ro' && String(prompt).includes('check-ci --pr ')) return pick(ci, cis++);
     if (commitEnsure !== undefined && label.startsWith('commit-ensure#')) return commitEnsure;
     return undefined;
   };

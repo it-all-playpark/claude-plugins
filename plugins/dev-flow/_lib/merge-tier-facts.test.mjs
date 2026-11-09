@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ciRollupCommand } from './ci-check.mjs';
 import { classifyCiChecks } from './merge-tier.mjs';
+import { runCheckCiWithRollup } from './test-helpers/check-ci-gh-stub.mjs';
 import {
   parseMergeTierFacts, isWellFormedRiskFact, isRiskValueDropped, MERGE_FACTS_RISK_DROPPED_ERROR, mergeTierFactsTopLevelKeys,
   mergeTierFactsPrompt, mergeDiffHashError, closesCheckCommand, parseClosesFact, prClosesStatusOf,
@@ -215,15 +216,14 @@ test('mergeTierFactsPrompt: repo 省略時は --repo を付けない', () => {
 });
 
 // (12') 同じ rollup で check-ci の判定と merge-tier-facts → classifyCiChecks の判定が一致する（issue #1232）。
-// 片方だけ分類を変えると CI gate と Merge tier の判定が食い違う。
+// 片方だけ分類を変えると CI gate と Merge tier の判定が食い違う。check-ci には gh スタブの応答として同じ rollup を渡す。
 const here = dirname(fileURLToPath(import.meta.url));
 const scriptEnv = { ...process.env, PATH: `${join(here, '..', '..', 'playpark-core', 'bin')}:${process.env.PATH}` };
 const factsWorktree = mkdtempSync(join(tmpdir(), 'merge-tier-facts-test-'));
 afterAll(() => rmSync(factsWorktree, { recursive: true, force: true }));
 
 function viaCheckCi(data) {
-  const r = spawnSync('bash', [join(here, '..', 'pr-iterate', 'scripts', 'check-ci.sh'), '--checks-data', data], { encoding: 'utf8', env: scriptEnv });
-  return JSON.parse(r.stdout);
+  return JSON.parse(runCheckCiWithRollup(data).stdout);
 }
 
 function viaMergeTierFacts(data) {

@@ -243,6 +243,25 @@ test('(n) 起動形と GitHub I/O の規範は rules にだけ置き、exec-prox
   assert.ok(execProxySrc.includes('`.claude/rules/dev-flow.md`'), 'exec-proxy.md が rules を指していない');
 });
 
+// GitHub I/O の段落は適用範囲と、スクリプトが持てる認証付き network I/O を列挙し尽くす。列挙の外に例外を書き足すと
+// 「例外はない」と同じ段落で矛盾し、正当化の置き場所に実在しないファイルを挙げると規範の根拠を辿れない
+test('(w) rules の exec-proxy 節の GitHub I/O の段落は適用範囲・許す network I/O の 2 つ・書き込み系 gh の置き場所・正当化の置き場所を書く', () => {
+  const exec = (rulesSrc.split('\n## exec-proxy')[1] ?? '').split('\n## ')[0].replace(/\n>?\s*/g, '');
+  const phrases = {
+    '(a) 適用範囲': '適用範囲は workflow の subagent が起動する `bin/` のスクリプト',
+    '(a) preflight は範囲の外': 'skill wrapper の preflight の `dev-flow-prerun`・`pr-iterate-prerun` は範囲の外',
+    '(b) 読み取り専用の gh 1 回': '読み取り専用の gh を 1 回（snapshot 1 枚。失敗は error / ok:false に倒し成功を合成しない）',
+    '(b) pr-push の push': '`pr-push` の push（`start` / `wait` / `stop` で切り離す',
+    '(b) 2 つに限り例外はない': 'の 2 つに限り、その外に**例外はない**',
+    '(c) 書き込み系の gh': '書き込み系の gh は subagent の bare 単文に置く',
+    '(d) 正当化の置き場所': '設定の正当化は本ファイルにだけ置き',
+  };
+  for (const [name, s] of Object.entries(phrases)) {
+    assert.ok(exec.includes(s), `rules の exec-proxy 節に ${name}「${s}」が無い`);
+  }
+  assert.ok(!exec.includes('AGENTS.md'), 'rules の exec-proxy 節が正当化の置き場所に AGENTS.md を挙げている');
+});
+
 // dev-flow.js の構造の規範は rules の 1 行にだけ置き、その行が名指す phase・起動 workflow を dev-flow.js と集合一致で照合する
 // （片方向の包含では、工程の切り出しで dev-flow.js から消えた名前が rules に残っても通る）
 const STRUCTURE_ANCHOR = 'に足してよいのは工程の起動・state の受け渡し・ゲートの分岐だけ';
