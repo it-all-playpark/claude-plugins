@@ -2402,7 +2402,8 @@ async function execEvaluatePhase(state) {
   const evalSeen = makeSeenTracker(EVAL_STUCK)  // feedback 累積 & stuck 検出（_lib/stuck-detector.mjs）
   for (let i = 1; i <= evalLimit; i++) {
     const priorFeedback = evalSeen.prior()   // 前 iteration までの累積 feedback
-    // critical_resolutions / security_clearance の契約は _lib/evaluator-contract.mjs が source of truth（evaluator.md との drift は test が検出）。
+    // critical_resolutions / security_clearance / concern_resolutions の契約は _lib/evaluator-contract.mjs が source of truth。
+    // 各起動が使う契約を prompt に注入するので agent 定義（evaluator.md）には置かない。
     const openEvalCriticals = ledger.items.filter((it) => it.source === 'evaluator' && it.severity === 'critical' && !it.checked).map((it) => ({ id: it.id, text: it.text }))
     const openConcerns = ledger.items.filter((it) => it.source === 'concern' && it.dimension === 'concern' && !it.checked).map((it) => ({ id: it.id, text: it.text }))
     // 各 evaluator 呼び出し前に diff hash を取る（呼び出し後の tree 変化 — redgreen-verify の restore 失敗等 — を検出するため）。
@@ -2445,7 +2446,6 @@ async function execEvaluatePhase(state) {
       + (priorFeedback.length
           ? `既出 feedback（前 iteration までに指摘済み。implementer は対応済みのはず）:\n${JSON.stringify(priorFeedback)}\n`
             + `**新規の critical/major のみ報告**せよ。対応済み論点の蒸し返し・別観点の上乗せ（moving target）は禁止。\n`
-            + `${EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions}\n`
             + `同一問題には既出と同じ topic 文字列を再利用せよ（orchestrator が topic で stuck を突合する）。\n`
           : '')
       + (openEvalCriticals.length

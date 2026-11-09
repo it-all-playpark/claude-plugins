@@ -1,4 +1,5 @@
-// Evaluator operational contract shared by dev-flow.js and evaluator.md.
+// Evaluator operational contract injected into each evaluator prompt by the dev-flow workflows.
+// 各起動が使う契約を prompt に注入するので agent 定義（evaluator.md）には置かない。
 //
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
@@ -54,10 +55,7 @@ export const EVALUATOR_OPERATIONAL_CONTRACT = {
     '- 対象は CONCERN-* のみ。ENV-* / SEC-* / AC-* は concern_resolutions の対象外（他経路で扱われる）。',
     '- concern は advisory であり収束を block しない。resolved は終端サマリーの要対応から除外され、triaged も要対応から除外されて要対応直後の折りたたみ「🔹 トリアージ済み N 件」に判断根拠を全文で残す（人間が誤トリアージを検算する。ゲート・merge tier・収束判定には影響しない）。',
   ].join('\n'),
-  // testsurf_clearance は final_ac_reconcile と同様 prompt 注入のみで配送する（evaluator.md へ
-  // mirror しない）。.claude/agents/ は sandbox の書き込み禁止領域（agent 定義の self-modification
-  // 防止）であり、dev-flow の testsurf_focus 注入が本契約全文を毎回 prompt へ verbatim 注入するため
-  // 機能上も mirror は不要。既存 3 キーの evaluator.md verbatim mirror 規約の対象外（issue #362）。
+  // testsurf_clearance は dev-flow-evaluate.js の testsurf_focus が本契約全文を prompt に注入する。
   testsurf_clearance: [
     'testsurf_clearance 契約:',
     '- testsurf_focus が渡された場合、各 pattern の test 変更が正当（refactor で網羅性維持 / 一時 skip でない 等）かを判定し、testsurf_clearance:[{pattern, cleared, evidence}] で返す。',
@@ -66,10 +64,7 @@ export const EVALUATOR_OPERATIONAL_CONTRACT = {
     '- cleared:true は具体的 evidence 必須（どのテストがどこで同等以上に担保されるか）。evidence のない cleared:true は無視され、TESTSURF item は blocking のまま残る。',
     '- cleared:false の TESTSURF item は blocking のまま merge tier HOLD に反映される。',
   ].join('\n'),
-  // final_ac_reconcile は prompt 注入のみで配送する（evaluator.md へ mirror しない）。
-  // .claude/agents/ は sandbox の書き込み禁止領域（agent 定義の self-modification 防止）であり、
-  // dev-flow の final-ac-reconcile 呼び出しが本契約全文を毎回 prompt へ verbatim 注入するため
-  // 機能上も mirror は不要。既存 3 キーの evaluator.md verbatim mirror 規約の対象外。
+  // final_ac_reconcile は dev-flow-finalize.js の final-ac-reconcile が本契約全文を prompt に注入する。
   final_ac_reconcile: [
     'final_ac_reconcile 契約:',
     '- prompt で「final AC 再検証」が指示された場合、渡された既存 acceptance_criteria のみを最終 PR tree に対して one-shot で再検証し、ac_results:[{ac_index, satisfied, evidence, verified_by}] を全 AC 分ちょうど 1 回ずつ返す。',
@@ -84,8 +79,7 @@ export const EVALUATOR_OPERATIONAL_CONTRACT = {
     '- prompt に「未解消 critical 一覧」が渡された場合、critical_resolutions 契約に従って各 item を最終 PR tree で再検証し critical_resolutions で全件返す（テストの green だけでは解消の根拠にならない）。',
     '- ac_results の契約（全 AC ちょうど 1 回・追加禁止）は item_resolutions の有無に関わらず不変。',
   ].join('\n'),
-  // resolved_recheck / green_fix_recheck も prompt 注入のみで配送する（evaluator.md へ mirror しない。
-  // 理由は final_ac_reconcile と同じ）。
+  // resolved_recheck / green_fix_recheck も、それぞれを使う起動の prompt に注入する。
   resolved_recheck: [
     'resolved_recheck 契約:',
     '- prompt に「再検証対象 resolved item 一覧」が渡された場合、各 item の解消根拠（evidence）が現在の tree でも成り立つかを実コードで再検証し、recheck_resolutions:[{id, resolution, evidence}] で全件返す。',

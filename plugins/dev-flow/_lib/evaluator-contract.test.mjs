@@ -45,34 +45,33 @@ function makeSandbox({ overrides = {}, fixesApplied = 0, extra = {} } = {}) {
   });
 }
 
-const evaluatorContractBlock = [
-  EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions,
-  '',
-  EVALUATOR_OPERATIONAL_CONTRACT.security_clearance,
-].join('\n');
+// 契約の全文は各起動の prompt に注入する（下の prompt 注入テストが pin）。evaluator.md の「入力」節は
+// 各キーの役割だけを持ち、沈黙（返さない item）と evidence の無い解消を解消扱いにしないことを書く。
+const inputSection = (() => {
+  const start = evaluatorMd.indexOf('\n## 入力\n');
+  assert.ok(start >= 0, 'evaluator.md に「## 入力」節が無い');
+  return evaluatorMd.slice(start, evaluatorMd.indexOf('\n## ', start + 1)).replace(/\n +/g, '');
+})();
+const inputItem = (key) => inputSection.split('\n').find((l) => l.startsWith(`- \`${key}\``)) ?? '';
 
-test('[evaluator-contract] evaluator.md contains the canonical _lib contract block verbatim', () => {
-  assert.ok(
-    evaluatorMd.includes(evaluatorContractBlock),
-    'evaluator.md の critical_resolutions/security_clearance 契約が _lib/evaluator-contract.mjs と乖離しています',
-  );
+test('[evaluator-contract] evaluator.md の「入力」節は critical_resolutions / security_clearance / concern_resolutions の役割を書き、契約の細部は prompt に従わせる', () => {
+  const critical = inputItem('未解消 critical 一覧');
+  assert.ok(critical.includes('`critical_resolutions[]`') && critical.includes('返さない item は未解消のまま据え置かれ')
+    && critical.includes('evidence の無い `resolved:true` は解消扱いにならない'), critical);
+  const security = inputItem('security_focus');
+  assert.ok(security.includes('`security_clearance[]`') && security.includes('evidence の無い `cleared:true` は解消扱いにならない'), security);
+  const concern = inputItem('未解消 concern 一覧');
+  assert.ok(concern.includes('`concern_resolutions[]`') && concern.includes('返さない item は未解消のまま据え置かれ')
+    && concern.includes('evidence の無い resolved / triaged は解消扱いにならない'), concern);
+  assert.ok(inputSection.includes('各キーの返し方の契約は、その入力と一緒に prompt に入る。契約の細部は prompt の指示に従う。'), inputSection);
 });
 
-test('[evaluator-contract] evaluator.md contains the canonical concern_resolutions contract block verbatim', () => {
-  assert.ok(
-    evaluatorMd.includes(EVALUATOR_OPERATIONAL_CONTRACT.concern_resolutions),
-    'evaluator.md の concern_resolutions 契約が _lib/evaluator-contract.mjs と乖離しています',
-  );
-});
-
-// final_ac_reconcile 契約は evaluator.md へ mirror しない（issue #331 design decision）。
-// .claude/agents/ は sandbox レベルの書き込み禁止領域であり、契約は dev-flow.js の
-// final-ac-reconcile agent 呼び出し prompt への verbatim 注入のみで配送する（唯一の配送経路）。
-// mirror 化する場合はこの pin ごと人間が明示的に変更すること。
-test('[evaluator-contract] evaluator.md does NOT mirror the final_ac_reconcile contract (prompt-injection-only delivery, issue #331)', () => {
+// final_ac_reconcile 契約は dev-flow-finalize.js の final-ac-reconcile が prompt に注入する。
+// 各起動が使う契約を prompt に注入するので agent 定義（evaluator.md）には置かない。
+test('[evaluator-contract] evaluator.md does NOT carry the final_ac_reconcile contract (prompt-injection-only delivery, issue #331)', () => {
   assert.ok(
     !evaluatorMd.includes('final_ac_reconcile'),
-    'final_ac_reconcile 契約は evaluator.md へ mirror せず、dev-flow.js の final-ac-reconcile prompt 注入のみで配送する設計。mirror 化する場合はこの pin ごと人間が変更すること',
+    'final_ac_reconcile 契約は dev-flow-finalize.js の final-ac-reconcile prompt に注入する。各起動が使う契約を prompt に注入するので agent 定義（evaluator.md）には置かない',
   );
 });
 
@@ -107,13 +106,12 @@ test('[evaluator-contract][#1144] TEST_LOG_REUSE と final_ac_reconcile 契約�
   assert.ok(EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile.includes('テストログが渡されない・読めない場合は AC に関係するテストファイルを実行'));
 });
 
-test('[evaluator-contract][#1144] evaluator.md の「進め方」2 はテストログの行を使うか実行するかをテストの本体を読んで決める', () => {
-  const steps = evaluatorMd.slice(evaluatorMd.indexOf('## 進め方'), evaluatorMd.indexOf('## 判定'));
-  const step2 = steps.slice(steps.indexOf('\n2. '), steps.indexOf('\n3. ')).replace(/\n\s+/g, '');
-  assert.ok(step2.includes(TEST_BODY_CHECK) && step2.includes(LOG_EVIDENCE) && step2.includes('`verified_by: "test"`'), step2);
-  assert.ok(step2.includes('ログに載っていない AC に関係するテストファイルは実行する'), step2);
-  assert.ok(step2.includes(TEST_LOG_EVIDENCE_LIMIT), step2);
-  assert.ok(step2.includes('ログが渡されない・読めないときは AC に関係するテストファイルを実行する'), step2);
+// ログの行を根拠にしてよい条件の全文は TEST_LOG_REUSE / final_ac_reconcile として prompt に入る（上のテストが pin）。
+// evaluator.md の「入力」節はテストログの役割と、その規則は prompt の指示に従うことだけを書く。
+test('[evaluator-contract][#1144] evaluator.md の「入力」節はテストログの行を使うときの規則を prompt の指示に従わせる', () => {
+  const testLog = inputItem('テストログ');
+  assert.ok(testLog.includes('`ログを根拠にできるテストファイル` と対で渡る'), testLog);
+  assert.ok(testLog.includes('ログの行を evidence に使うか実行するかの規則は prompt の指示に従う'), testLog);
 });
 
 // issue #1303: implementer は commit しないので、Evaluate 時点の実 diff は merge-base から working tree への二点 diff で取る
@@ -220,11 +218,13 @@ test('[evaluator-contract] eval#1 prompt contains EVALUATOR_OPERATIONAL_CONTRACT
   );
 });
 
-// critical_resolutions 契約は「未解消 critical 一覧」（前 iteration の critical feedback）または
-// 「既出 feedback」が prompt に渡る場合にのみ注入される（eval#1 には prior state が無く注入されない）。
+const countOccurrences = (text, needle) => text.split(needle).length - 1;
+
+// critical_resolutions 契約は dev-flow-evaluate.js の eval#i が「未解消 critical 一覧」（前 iteration の
+// critical feedback）を渡すときだけ、一覧と一緒にちょうど 1 回注入する（eval#1 には prior state が無く注入されない）。
 // complex shape の 2 iteration フィクスチャ（1 回目 critical → 2 回目解消）で eval#2 の prompt を検証する
 // （_lib/eval-convergence.test.mjs の contract test と同じ理由）。
-test('[evaluator-contract] eval#2 prompt contains EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions verbatim (issue #174)', async () => {
+test('[evaluator-contract] eval#2 prompt contains EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions exactly once (issue #174)', async () => {
   const ac4 = [
     { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
     { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
@@ -250,9 +250,10 @@ test('[evaluator-contract] eval#2 prompt contains EVALUATOR_OPERATIONAL_CONTRACT
   assertNoCrash(error, 'contract-eval2');
   const evalCalls = calls.filter((c) => c.agentType === 'dev-flow:evaluator');
   assert.equal(evalCalls.length, 2, `evaluator は 2 回呼ばれるはずだが ${evalCalls.length} 回だった (labels: ${calls.map((c) => c.label).join(', ')})`);
-  assert.ok(
-    evalCalls[1].prompt.includes(EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions),
-    'eval#2 の prompt に EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions が verbatim 含まれていない',
+  assert.ok(evalCalls[1].prompt.includes('未解消 critical 一覧'), 'eval#2 の prompt に未解消 critical 一覧が無い');
+  assert.equal(
+    countOccurrences(evalCalls[1].prompt, EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions), 1,
+    'eval#2 の prompt に EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions がちょうど 1 回 verbatim 含まれていない',
   );
 });
 
@@ -271,14 +272,12 @@ test('[evaluator-contract] final-ac-reconcile prompt contains EVALUATOR_OPERATIO
   );
 });
 
-// testsurf_clearance 契約は evaluator.md へ mirror しない（issue #362 design decision、final_ac_reconcile
-// と同一 precedent）。.claude/agents/ は sandbox レベルの書き込み禁止領域であり、契約は dev-flow.js の
-// testsurf_focus 注入 prompt への verbatim 注入のみで配送する（唯一の配送経路）。
-// mirror 化する場合はこの pin ごと人間が明示的に変更すること。
-test('[evaluator-contract] evaluator.md does NOT mirror the testsurf_clearance contract (prompt-injection-only delivery, issue #362)', () => {
+// testsurf_clearance 契約は dev-flow-evaluate.js の testsurf_focus が prompt に注入する。
+// 各起動が使う契約を prompt に注入するので agent 定義（evaluator.md）には置かない。
+test('[evaluator-contract] evaluator.md does NOT carry the testsurf_clearance contract (prompt-injection-only delivery, issue #362)', () => {
   assert.ok(
     !evaluatorMd.includes('testsurf_clearance'),
-    'testsurf_clearance 契約は evaluator.md へ mirror せず、dev-flow.js の testsurf_focus prompt 注入のみで配送する設計。mirror 化する場合はこの pin ごと人間が変更すること',
+    'testsurf_clearance 契約は dev-flow-evaluate.js の testsurf_focus prompt に注入する。各起動が使う契約を prompt に注入するので agent 定義（evaluator.md）には置かない',
   );
 });
 
@@ -386,6 +385,21 @@ test('[evaluator-contract][#1312] (iii) llm-major-blocking: escalate:true の ma
   assert.ok(first, `llm-major-blocking の escalate major で差し戻さない: ${calls.map((c) => c.label).join(', ')}`);
   const fb = first.prompt.slice(first.prompt.indexOf('fix_feedback'));
   assert.ok(first.prompt.includes('fix_feedback') && fb.includes(MAJOR_TOPIC), `reimpl#1 の fix_feedback に ${MAJOR_TOPIC} が無い: ${fb.slice(0, 400)}`);
+});
+
+// 既出 feedback はあるが未解消 critical が無い回（1 回目が major だけ）は、critical_resolutions 契約を注入しない
+// （契約は「未解消 critical 一覧」と一緒にだけ入る）。既出 feedback と「新規の critical/major のみ報告」は残す。
+test('[evaluator-contract] 1 回目が major だけの eval#2 prompt は既出 feedback と新規のみ報告を含み、critical_resolutions 契約を含まない', async () => {
+  const { calls } = await runJudge(majorEval({ verdict: 'fail', escalate: true }), 'llm-major-blocking');
+  const eval2 = calls.find((c) => c.label === 'eval#2');
+  assert.ok(eval2, `eval#2 が走らない: ${calls.map((c) => c.label).join(', ')}`);
+  assert.ok(eval2.prompt.includes('既出 feedback') && eval2.prompt.includes(MAJOR_TOPIC), `eval#2 の prompt に既出 feedback（${MAJOR_TOPIC}）が無い`);
+  assert.ok(eval2.prompt.includes('**新規の critical/major のみ報告**'), 'eval#2 の prompt に「新規の critical/major のみ報告」が無い');
+  assert.ok(!eval2.prompt.includes('未解消 critical 一覧'), 'major だけのフィクスチャで未解消 critical 一覧が渡っている');
+  assert.ok(
+    !eval2.prompt.includes(EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions),
+    '未解消 critical が無い eval#2 の prompt に EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions が入っている',
+  );
 });
 
 test('[evaluator-contract] evaluator.md output example does not include schema-less score field', () => {
