@@ -111,6 +111,9 @@ const INVALID_RETURNS = {
   'hatch の scripts 経由（hatch run test）': { ...RESOLVED, full_command: 'hatch run test' },
   'pdm の scripts 経由（pdm run test）': { ...RESOLVED, full_command: 'pdm run test' },
   'shell の記号': { ...RESOLVED, full_command: 'uv sync && uv run pytest' },
+  'テストを実行しないコマンド（true）': { ...RESOLVED, full_command: 'true', files_command: 'true {files}' },
+  'ランナーに option を足す（--collect-only）': { ...RESOLVED, full_command: 'uv run pytest --collect-only' },
+  'full_command と files_command で前置が違う': { ...RESOLVED, files_command: 'poetry run pytest {files}' },
   'sources が束の外': { ...RESOLVED, sources: ['/tmp/wt/pyproject.toml'] },
   'resolved なのに sources が空': { ...RESOLVED, sources: [] },
 };
