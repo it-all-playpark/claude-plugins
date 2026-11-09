@@ -29,6 +29,22 @@ setup() {
     [ "$status" -ne 0 ]
 }
 
+@test "報告は signature ごとの分類と根拠の表を出し、表は振り分けブロックの marker の外に置く" {
+    report="$(awk '/^4\. / { f = 1 } f && /^## / { exit } f { print }' "$SKILL_MD")"
+    [ -n "$report" ]
+    printf '%s\n' "$report" | grep -qE '^ *\| signature \| 分類 \| 根拠（run・候補 commit） \| issue \|$'
+    # marker の名前は daily.sh の CLASS_BEGIN / CLASS_END と同じ
+    begin="$(sed -n "s/^CLASS_BEGIN='<!-- \(.*\) -->'$/\1/p" "$SKILL_DIR/scripts/daily.sh")"
+    end="$(sed -n "s/^CLASS_END='<!-- \(.*\) -->'$/\1/p" "$SKILL_DIR/scripts/daily.sh")"
+    [ "$begin" = 'dev-flow-health-classifications:begin' ] && [ "$end" = 'dev-flow-health-classifications:end' ]
+    [[ "$report" == *"marker（\`$begin\` / \`${end##*:}\`）の外に置き、marker の間に表を置かない"* ]]
+    # 記録ブロックの例の marker の間にも表の行を置かない
+    block="$(awk -v b="<!-- $begin -->" -v e="<!-- $end -->" '{ l = $0; gsub(/^[ \t]+/, "", l) } l == b { f = 1; next } l == e { f = 0 } f { print }' "$SKILL_MD")"
+    [ -n "$block" ]
+    run grep -E '^ *\|' <<< "$block"
+    [ "$status" -ne 0 ]
+}
+
 @test "model の変化は model_changes の各件を分類せず起票し、重複確認のマーカーは dev-flow-health:model:<agent_type>:<model_id>" {
     step="$(awk '/\*\*model の変化\*\*/ { f = 1 } f && /^[0-9]+\. / && !/\*\*model の変化\*\*/ { exit } f { print }' "$SKILL_MD")"
     [ -n "$step" ]
