@@ -1,8 +1,8 @@
 // 全件実行が red のとき（Final reconcile の test#final、または Final reconcile skipped の run の Validate の最終結果）、
 // 落ちたテストファイルだけを 1 回流し直して flake 候補を記録する純関数。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // 記録は開示にだけ使い、final_test_red / validate_test_red の HOLD は外さない — 単体再実行の green は PR が書いた
 // テストの出力で、全件実行のときだけ落ちるテストを書けば決定的な失敗でも単体では green になる。

@@ -25,8 +25,8 @@
 // 『prompt』『迂回』等の語に言及し得る（例: 本 issue 自身の修正指示）。誤検知は redaction 側に
 // 倒す。severity/file/line は常に保持されるため、redaction されても fix agent は対象を特定できる。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で pr-iterate.js へ全文 inline
-// 生成される。直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 const SUBSHELL_SPAN_RE = /\$\([^)]*\)/g
 const URL_RE = /https?:\/\/\S+/g

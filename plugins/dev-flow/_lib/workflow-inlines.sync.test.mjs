@@ -79,6 +79,45 @@ for (const wfFile of wfFiles) {
 }
 
 // -----------------------------------------------------------------------------
+// Header invariant: every canonical an inline zone points at, and every other _lib file
+// carrying an INLINE COPY POLICY, states the generation contract in one shared wording.
+// The generator inlines only the referenced top-level declarations, so a header that
+// still says the whole file is inlined ("全文 inline" / "全文一致") misleads the next
+// editor into treating the canonical as a verbatim copy.
+// -----------------------------------------------------------------------------
+const INLINE_COPY_POLICY =
+  '// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。\n' +
+  '// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。\n';
+const STALE_POLICY_WORDING = /全文\s*inline|全文一致/;
+
+const policyHolders = new Set();
+for (const wfFile of wfFiles) {
+  const wfSrc = readFileSync(join(wfDir, wfFile), 'utf8');
+  for (const { source } of scanMarkers(wfSrc, wfFile)) policyHolders.add(source);
+}
+for (const f of readdirSync(join(repoRoot, '_lib'))) {
+  if (!f.endsWith('.mjs') || f.endsWith('.test.mjs')) continue;
+  if (readFileSync(join(repoRoot, '_lib', f), 'utf8').includes('INLINE COPY POLICY')) {
+    policyHolders.add(`_lib/${f}`);
+  }
+}
+
+for (const source of [...policyHolders].sort()) {
+  test(`${source}: INLINE COPY POLICY header uses the shared wording`, () => {
+    const src = readFileSync(join(repoRoot, source), 'utf8');
+    assert.ok(
+      src.includes(INLINE_COPY_POLICY),
+      `${source}: INLINE COPY POLICY のヘッダーが共通文言と一致しません\n期待:\n${INLINE_COPY_POLICY}`,
+    );
+    assert.doesNotMatch(
+      src,
+      STALE_POLICY_WORDING,
+      `${source}: 「全文 inline」「全文一致」の旧文言が残っています（生成されるのは参照される最上位宣言だけ）`,
+    );
+  });
+}
+
+// -----------------------------------------------------------------------------
 // Launchability invariant: every workflow stays under the Workflow tool's script size
 // limit. Over the limit, the workflow silently disappears from the registry
 // (`Workflow "dev-flow:dev-flow-run" not found`) and scriptPath launches are refused.

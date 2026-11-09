@@ -7,8 +7,8 @@
 // 写像と「欠損 → complex」の既定則だけだったため。micro の LITE 経路に対する意味的リスクの安全網は
 // runEval 強制条件（danger-grep / testsurf / greenFix / dropped task / undeclared file / UI 接触）が担う。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 // issue #272: AC 粒度と floor の較正 — micro floor の AC 境界を 3→4 に緩和。
 // issue #278: breaking 判定を LLM 自由文 (scope/summary への regex) から、analyze REQ の
 // 構造化 breaking_change フィールド + issue 本文への決定論 keyword scan の OR に変更。

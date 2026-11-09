@@ -5,8 +5,8 @@
 //       cross-name fallback（例: name='pr' のときに args.issue を採用する）は
 //       型安全性を損なう footgun のため意図的に除外している。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 export function resolvePositiveIntArg(args, name) {
   const raw = (typeof args === 'string' || typeof args === 'number')
     ? args

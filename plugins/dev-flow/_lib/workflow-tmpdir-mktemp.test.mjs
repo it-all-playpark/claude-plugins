@@ -48,7 +48,7 @@ async function runPrIterate() {
   return calls;
 }
 
-// (a-static) bodySaveInstr の canonical（2 workflow へ全文 inline される）に mktemp が無い。
+// (a-static) bodySaveInstr の canonical（2 workflow の inline 区間がここから生成される）に mktemp が無い。
 // 未到達分岐の prompt も canonical 経由なので、ここで全呼び出し元をまとめて pin できる。
 test('[comment-post] (a-static) _lib/workflow-post-helpers.mjs（2 workflow の inline 元）に mktemp が無い', () => {
   assert.ok(!postHelpersSrc.includes('mktemp'), 'workflow-post-helpers.mjs に mktemp が残存している（固定パスへの Write tool 新規作成に置き換えること）');

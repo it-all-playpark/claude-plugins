@@ -6,8 +6,8 @@
 // - planRecheck: evaluator の recheck_resolutions を「再確認（evidence 差し替え）/ 取り下げ（reopen）」に振り分ける
 // - greenFixRecheckItems: green-fix 再評価の critical finding を台帳 item に変換する
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // green-fix 再評価のモード。assert_only = テストファイルだけの変更で testsurf / danger hit 0 件
 // （テストの assert を弱めていないかだけを確認）。full = それ以外（差分全体を評価）。

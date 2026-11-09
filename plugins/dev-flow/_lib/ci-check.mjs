@@ -2,8 +2,8 @@
 // `ci-check-lite` が共有する CI ステータス取得の契約 — 定数 / StructuredOutput schema / prompt 本文。
 // I/O なし、gh なし、Date.now() 非決定性なし。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証する。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // なぜ canonical 化するか: 以前は同じ prompt 本文・schema・定数が dev-flow.js と pr-iterate.js に
 // 手で複製されており（inline 生成区間の外）、CI polling の仕様を変えると 2 箇所を手で同期する
@@ -55,7 +55,7 @@ export function ciMaxPolls(ceilingSeconds) {
 // 実測マージン。文書化 worst case 8 tool call に対し実測 10 で StructuredOutput 未達だった差分に基づく。
 export const CI_TURN_MARGIN = 3;
 
-// CI gate schema — the gate lost in eb8aa7e (issue #133) を復元したもの。
+// CI gate schema。
 // dev-runner-haiku-ro が bare `gh pr view --json statusCheckRollup`（ciRollupCommand）で CI snapshot を取得し、
 // pr-iterate/scripts/check-ci.sh（snapshot に対する純変換）で分類して stdout JSON を verbatim で返す。
 // fetch を script でなく agent 側に置くのは、exec-proxy script が認証付き network I/O を
@@ -100,8 +100,6 @@ export const CI_STATUS = {
   },
 };
 
-// gh fetch → check-ci の 2 単文（ci-check / ci-wait-check で共通の手順本文）。
-// n は最初の手順番号。両 prompt で転写契約の文言を食い違わせないために 1 箇所に置く。
 // 件数キーの転記指示（ci-check / ci-wait-check 共通）。check-ci は status:'error' のとき件数を出さないので
 // そのときだけ 0 を入れさせる（workflow 側は error を件数と照合せずそのまま error として扱う）。
 const CI_COUNTS_NOTE = '`passed` / `failed` / `pending` / `skipped` の件数は stdout の値を一字一句そのまま写せ'
@@ -125,6 +123,8 @@ export function ciRollupCommand({ pr, repo, withLink = false }) {
   return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop})) | ([39]|implode) as $q | tojson | split($q) | join(([92]|implode) + "u0027")'`;
 }
 
+// gh fetch → check-ci の 2 単文（ci-check / ci-wait-check で共通の手順本文）。
+// n は最初の手順番号。両 prompt で転写契約の文言を食い違わせないために 1 箇所に置く。
 // exclude: check-ci に --exclude で渡す check 名（ci_verify.checks。review ⇄ fix の round の CI 判定から外す）。
 // only: check-ci に --only で渡す check 名（LGTM 後の ci-verify 待ち）。only を渡すときは rollup の URL を残し、
 // check run の URL を AC の根拠に残す。

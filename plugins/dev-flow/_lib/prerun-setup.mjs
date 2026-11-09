@@ -23,8 +23,8 @@
 //   buildReqFromContract（_lib/analyze-contract.mjs）が担い、ここでは object / ok boolean /
 //   ok:false のときの reason string だけを fail-closed に検証して verbatim で返す。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 // 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。
 
 export const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer', 'hooks_not_running'];

@@ -4,8 +4,8 @@
 // dev-flow の Setup 末尾の analyze ゲートはこの whitelist 検証と 4 条件ゲート（AC 空 / AC が上限超え /
 // comment_conflicts 非空 / uncertain 非空）だけを行い、通常経路では agent を 1 つも spawn しない（issue #690 / #695）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // whitelist 検証項目（1 つでも不合格なら null。呼び出し元は prerun 出力の契約違反として throw する —
 // LLM 転写経路は存在しないので fallback 先は無い）:

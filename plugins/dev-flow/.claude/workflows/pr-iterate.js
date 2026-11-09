@@ -406,7 +406,7 @@ const REVIEW_STUCK = 2   // 同一 topic がこの回数出たら stuck と判�
 // 限定（既定はリトライしない）。commit・push・journal 追記・PR コメント投稿等の副作用を伴う
 // call site を無差別リトライすると、副作用完了後に StructuredOutput 未達で終わった agent を
 // 同一 prompt で再実行して二重 push・journal 二重追記・重複コメントを起こし得るため、副作用の
-// ない読み取り専用 probe 系 call site（dev-flow.js の resolve-base / worktree-base-check 等）
+// ない読み取り専用 probe 系 call site（dev-flow 系 workflow の diff-hash・tree-diff-numstat・danger-grep 等）
 // のみで有効化する。pr-iterate.js の call site（fix / review / commit-ensure / journal-log 等）は
 // いずれも副作用を伴うため opt-in しない（dev-flow.js と同型実装のみ共有）。
 const SUBAGENT_COUNTS = {};
@@ -444,7 +444,7 @@ async function failOpenAgent(prompt, opts) {
   }
 }
 
-// ---- Review de-churn モデル（Plan ループ収束モデルの Review 版を inline 複製）----
+// ---- Review de-churn モデル ----
 // cold start の pr-reviewer は moving target を生む（毎回 fresh context で全 PR diff を再レビューし、
 // Adversarial Opener の「能動的に探せ」指示と相まって、安定コードに新しい主観的 major を捻り出しうる）。
 // orchestrator 側で churn だけを殺す（ゲートは堅いまま）:
@@ -454,8 +454,8 @@ async function failOpenAgent(prompt, opts) {
 //   3. fix の applied:false を検出したら status:'fix_failed' で即座に人間へエスカレーション
 //      （無言で MAX 回燃やさない。現状この返り値は捨てられていた）
 //   4. critical/major は常にブロック（**relax は入れない** = ゲート後退なし）。
-//      Plan ループ収束モデルの PLAN_RELAX_FROM 相当は移植しない — Review は main にマージされる実コードの最後のゲートで
-//      merge は手動。「N 回回ったから major 残ったまま approve」は既知の major 出荷になり実害が大きい。
+//      Review は main にマージされる実コードの merge 前の最後のゲートで merge は手動。
+//      「N 回回ったから major 残ったまま approve」は既知の major 出荷になり実害が大きい。
 //   5. lgtm / stuck / fix_failed / max_reached は throw せず status で返し、終端理由を log() で可視化。
 // loader 制約（ESM import 不可）への対応として、stuck 検出は _lib/stuck-detector.mjs を canonical とし tools/sync-inlines.mjs で inline 生成する（本ファイルに手書き複製は持たない）。
 
@@ -3034,10 +3034,10 @@ for (i = 1; i <= MAX; i++) {
 
   // security review が critical/major を返した round は review が approve でも CI gate（待機）に入らず fix へ進む
   if (outcome.route === 'ci_gate' && secBlocking == null) {
-    // CI gate — restores the gate lost in eb8aa7e。blocking 0 件の comment/request-changes も
+    // CI gate。blocking 0 件の comment/request-changes も
     // ここへ合流する。decision は終端サマリーと history の表示・記録だけに使い、LGTM の確定には効かない。
     // pr-reviewer may LGTM the code but CI must also be green before we declare lgtm.
-    // no_checks is treated as passing (consistent with e4e2b92: repos without CI are fine).
+    // no_checks is treated as passing (repos without CI are fine).
     //
     // 1 spawn = 1 判定・ループは script 側。1 回目の poll は ci-check（待機なし。review#i と並列に取った
     // ci-check#i を採用できていればそれを使い、不採用なら直列で起動し直す — firstCiCheck）、pending なら

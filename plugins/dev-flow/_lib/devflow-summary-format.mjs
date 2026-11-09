@@ -1,8 +1,8 @@
 // buildDevflowSummaryBody: dev-flow の終端サマリー markdown を生成する純粋関数。
 // I/O なし、gh なし、Date.now() 等の非決定性なし。同入力 -> byte 一致。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // マージ後確認の定型文（danger class → 文言）の閉じたテーブル（issue #658）。danger-grep の
 // 8 クラス全件を網羅する。未知 class は buildDevflowSummaryBody 側で汎用文にフォールバックする

@@ -23,8 +23,8 @@
 //     tree_hash の突合と同じ規則）。最終 tree で passed の AC だけ、コマンド・exit code・log_path を終端サマリーのその AC の
 //     行に人手確認の材料として載せる（acVerifyDisclosures。demoteUnprovenObservationalAc の proven には入れない）
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 // 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。
 
 // start が DB の確保（pg-broker create。broker 側の上限は 240 秒）を待つ秒数と、wait 1 回あたりの待機秒数。

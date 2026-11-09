@@ -11,8 +11,8 @@
 // 二重付与（`dev-flow:dev-flow:x`）を実行時まで持ち越すと agent not found と同じ症状を
 // 別の原因で再発させるため、呼び出し側の誤用をここで止める。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 export const AGENT_NAMESPACE = 'dev-flow:'
 
 /**

@@ -2,8 +2,8 @@
 // 自動解消して push する（conflict-resolve#i）ための契約 — schema / prompt 本文 / 応答の正規化（issue #916）。
 // I/O なし、gh なし、Date.now() 非決定性なし。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証する。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // 型の判定と解消は決定論スクリプト `conflict-autoresolve`（_shared/scripts/conflict-autoresolve.sh）だけが行い、
 // agent は fetch / script / pr-push の bare 単文を転写するだけにする。base 側が非空の hunk をどちらで解くかは仕様判断で、

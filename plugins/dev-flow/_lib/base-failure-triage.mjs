@@ -10,8 +10,8 @@
 //      再実行できなかった・base では通った・落ち方が違う、はすべて green-fix の対象に残す（ENV 判定の材料が
 //      欠けたら green 要件を緩めない — 誤って ENV に倒すと diff 起因の red が green 扱いで PR まで流れる）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // 終端サマリー・ledger の ENV 項目で使う表記（「base でも失敗する既存の失敗」）。
 export const BASE_FAILING_LABEL = 'base でも失敗する既存の失敗';

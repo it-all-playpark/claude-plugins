@@ -2,8 +2,8 @@
 // 1 回の Bash は 600 秒までしか待てないので、それより長い job は wait の spawn を繰り返して待つ。
 // 起動形・label・判定は呼び出し側が持ち、ここは繰り返しと打ち切りだけを持つ。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 // 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。
 
 function bgJobJsonType(value) {

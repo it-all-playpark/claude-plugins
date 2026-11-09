@@ -3,8 +3,8 @@
 // 分類結果は gating に影響しない — dev-flow 側で ENV-* item（minor/inspection）として
 // 折りたたみ「環境ノート」へ運ぶための表示振り分けにのみ使う。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 export const CONCERN_ENV_PATTERNS = [
   { key: 'turbopack-sandbox', re: /TurbopackInternalError|next build.*(os error 1|Operation not permitted)/is },

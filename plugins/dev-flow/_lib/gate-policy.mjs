@@ -1,7 +1,7 @@
 // dev-flow W5: gate_policy による lane 分類の純粋関数群。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // gate_policy の 2 値（LLM major を advisory / blocking のどちらに置くか）。
 export const GATE_POLICIES = [

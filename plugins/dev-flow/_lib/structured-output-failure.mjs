@@ -8,8 +8,8 @@
 //   - `agent({schema}): StructuredOutput retry cap (N) exceeded`（schema 不一致の呼び出しが上限に達した）
 // guard の拒否など他の失敗は false — 同じ prompt で再実行しても同じ理由で落ちるので再試行しない。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ inline 生成される。
-// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 /**
  * @param {unknown} e - agent() が throw した値

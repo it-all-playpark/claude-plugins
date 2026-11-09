@@ -1,8 +1,8 @@
 // tree-diff-stat: `git diff --numstat A B` の stdout 行配列を解析する純粋関数。
 // I/O なし、非決定性なし。同入力 -> byte 一致。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 export const TREE_DIFF_STAT_MAX_FILES = 50;
 

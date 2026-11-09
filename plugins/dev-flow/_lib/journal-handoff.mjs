@@ -2,8 +2,8 @@
 // Workflow loader cannot import ESM, so tools/sync-inlines.mjs injects this file
 // into .claude/workflows/*.js. Keep this file import-free and deterministic.
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // handoff spawn が Write tool へ渡す最終書き込み先。shell 展開ではなく Write tool 側の `~` 展開に
 // 依存する（spawn は shell を一切使わない — buildJournalPendingWriteInstr のコメント参照）。

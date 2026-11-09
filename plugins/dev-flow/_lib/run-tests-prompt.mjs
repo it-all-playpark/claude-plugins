@@ -1,8 +1,8 @@
 // Validate（test#i / test#retry-i）・post-eval（test#post-eval-i）・Final reconcile（test#final）が共有する
 // テスト実行 exec-proxy prompt の canonical。issue #821。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // テストスクリプトの選択・起動失敗の分類・failed_files の抽出・green 判定はすべて `run-tests`
 // （_shared/scripts/run-tests.sh。出力は GREEN schema の必須キー tests / green を含む JSON 1 行）が exit code から

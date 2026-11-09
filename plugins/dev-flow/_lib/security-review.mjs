@@ -16,8 +16,8 @@
 // PR のコードが同じ uid のプロセスとして残り、review の作業ディレクトリを書き換える攻撃は境界の外で、この gate では塞がない
 // （同じ権限のプロセスに対する path の検査は必ず競合が残り、検査を積むほど運用だけが重くなる。そこは sandbox と人間の merge が持つ）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 export const SECURITY_REVIEW_SCHEMA = {
   type: 'object',

@@ -1,8 +1,8 @@
 // dev-flow.js の blockSeen、dev-flow-evaluate.js の evalSeen、pr-iterate.js の reviewSeen / securitySeen が共有する
 // stuck 検出 canonical。incentive-structural クラス — W7、撤去禁止。issue #123/#125/#126/#208。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 //
 // 命名注記: goal-ledger.mjs の topicKey と同一ファイル dev-flow.js に inline されるため
 // 識別子衝突を避けて stuckTopicKey と命名。

@@ -21,8 +21,8 @@
 //            整数} のときのみ採用。それ以外は null（classifyShape が行数補正をせず file 数判定に戻る。
 //            取れない行数を 0 と読んで shape を下げない）。
 //
-// INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
-// 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
+// INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
+// 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
 // risk フィールドが契約通りの形か (issue #617)。fail-closed に倒れた 2 原因
 // ---- (a) proxy が契約外形状を返した (top-level risk 欠落) / (b) proxy が契約通りの形で
