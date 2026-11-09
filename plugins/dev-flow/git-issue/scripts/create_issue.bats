@@ -8,7 +8,7 @@ bats_require_minimum_version 1.5.0
 # 4000-char prose cap excluding the AC section and closed code fence contents, tests 27-31 and 42+, and the
 # AC actor gate delegated to _lib/scripts/ac-actor-classify.mjs, tests 32-41) and
 # --blocked-by dependency wiring (tests 5+; the non-dry-run ones put a recording
-# gh stub first on PATH).
+# gh stub first on PATH), and the title taken only via --title-file (tests 50+).
 #
 # verdict handling contract:
 #   t1            -> silent pass
@@ -21,6 +21,8 @@ setup() {
 
     SKILLS_REPO="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
     SCRIPT="$SKILLS_REPO/git-issue/scripts/create_issue.py"
+    TITLE_FILE="$BATS_TEST_TMPDIR/title.txt"
+    printf 'Test\n' >"$TITLE_FILE"
 
     write_body() {
         local out="$1"
@@ -40,7 +42,7 @@ setup() {
         "## 受け入れ基準" \
         "- [ ] AC-1 foo"
 
-    run python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Dry run: issue will not be created."* ]]
@@ -55,7 +57,7 @@ setup() {
         "- foo" \
         "- bar"
 
-    run python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Warning"* ]]
@@ -70,7 +72,7 @@ setup() {
         "## Tasks" \
         "- [ ] not an AC section"
 
-    run python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"Error"* ]]
@@ -81,7 +83,7 @@ setup() {
     BODY="$BATS_TEST_TMPDIR/empty.md"
     : > "$BODY"
 
-    run python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"Error"* ]]
@@ -91,7 +93,7 @@ setup() {
 # ---- gh stub（非 dry-run 経路用）----
 # 呼び出しを $GH_LOG に 1 行ずつ記録し、引数で応答を切り替える:
 #   auth status / label create（GH_STUB_LABEL_EXIT）
-#   issue create → --body-file の中身を $SENT_BODY に写し、URL .../issues/$GH_STUB_NEW_ISSUE を返す
+#   issue create → --body-file の中身を $SENT_BODY に、--title の値を $SENT_TITLE に写し、URL .../issues/$GH_STUB_NEW_ISSUE を返す
 #   api repos/.../issues/N → {"id": N+9000}（GH_STUB_MISSING に含む番号は 404）
 #   api --method POST .../dependencies/blocked_by → 成功（GH_STUB_DEP_FAIL で失敗）
 #   issue view → $GH_STUB_ISSUE_JSON の中身（analyze-issue.sh に読ませる issue JSON）
@@ -108,6 +110,7 @@ case "$1 $2" in
         prev=""
         for a in "$@"; do
             [[ "$prev" == "--body-file" ]] && cp "$a" "$SENT_BODY"
+            [[ "$prev" == "--title" ]] && printf '%s' "$a" >"$SENT_TITLE"
             prev="$a"
         done
         echo "https://github.com/acme/app/issues/${GH_STUB_NEW_ISSUE:-50}"
@@ -138,6 +141,7 @@ STUB
     export PATH="$bin:$PATH"
     export GH_LOG="$BATS_TEST_TMPDIR/gh.log"
     export SENT_BODY="$BATS_TEST_TMPDIR/sent-body.md"
+    export SENT_TITLE="$BATS_TEST_TMPDIR/sent-title.txt"
     : >"$GH_LOG"
 }
 
@@ -185,7 +189,7 @@ write_human_body() {
         "## 受け入れ基準" \
         "- [ ] AC-1 foo"
 
-    run python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"executor: human"* ]]
@@ -202,7 +206,7 @@ write_human_body() {
         "## 受け入れ基準" \
         "- [ ] AC-1 foo"
 
-    run python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY"
+    run python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY"
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"executor: human"* ]]
@@ -219,7 +223,7 @@ write_human_body() {
         "## 受け入れ基準" \
         "- [ ] AC-1 foo"
 
-    run python3 "$SCRIPT" --title "Test" --body-file "$BODY"
+    run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY"
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"https://github.com/acme/app/issues/50"* ]]
@@ -237,7 +241,7 @@ write_human_body() {
         "## 完了条件" \
         "- [ ] done"
 
-    run python3 "$SCRIPT" --kind human --title "Test" --body-file "$BODY" --dry-run
+    run python3 "$SCRIPT" --kind human --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"## 手順"* ]]
@@ -251,7 +255,7 @@ write_human_body() {
         "## 受け入れ基準" \
         "- [ ] done"
 
-    run python3 "$SCRIPT" --kind human --title "Test" --body-file "$BODY" --dry-run
+    run python3 "$SCRIPT" --kind human --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"## 完了条件"* ]]
@@ -265,7 +269,7 @@ write_human_body() {
         "## 完了条件" \
         "- done"
 
-    run python3 "$SCRIPT" --kind human --title "Test" --body-file "$BODY" --dry-run
+    run python3 "$SCRIPT" --kind human --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"checkbox"* ]]
@@ -275,7 +279,7 @@ write_human_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_human_body "$BODY"
 
-    run python3 "$SCRIPT" --kind human --title "API キー発行" --body-file "$BODY" --labels ops --dry-run
+    run python3 "$SCRIPT" --kind human --title-file "$TITLE_FILE" --body-file "$BODY" --labels ops --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Command: gh issue create"*"--label ops --label human-task"* ]]
@@ -287,7 +291,7 @@ write_human_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_human_body "$BODY"
 
-    run python3 "$SCRIPT" --kind human --title "API キー発行" --body-file "$BODY" --repo acme/app
+    run python3 "$SCRIPT" --kind human --title-file "$TITLE_FILE" --body-file "$BODY" --repo acme/app
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"https://github.com/acme/app/issues/50"* ]]
@@ -305,7 +309,7 @@ write_human_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_human_body "$BODY"
 
-    GH_STUB_LABEL_EXIT=1 run python3 "$SCRIPT" --kind human --title "Test" --body-file "$BODY"
+    GH_STUB_LABEL_EXIT=1 run python3 "$SCRIPT" --kind human --title-file "$TITLE_FILE" --body-file "$BODY"
 
     [ "$status" -eq 1 ]
     ! grep -q '^issue create' "$GH_LOG"
@@ -317,7 +321,7 @@ write_human_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_agent_body "$BODY"
 
-    run python3 "$SCRIPT" --title "Test" --body-file "$BODY" --blocked-by 12,13 --dry-run
+    run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --blocked-by 12,13 --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Blocked by #12: gh api --method POST 'repos/{owner}/{repo}/issues/<new>/dependencies/blocked_by'"* ]]
@@ -336,7 +340,7 @@ write_human_body() {
         "## 受け入れ基準" \
         "- [ ] AC-1 foo"
 
-    run python3 "$SCRIPT" --title "Test" --body-file "$BODY" --blocked-by 12 --dry-run
+    run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --blocked-by 12 --dry-run
 
     [ "$status" -eq 0 ]
     [ "$(printf '%s\n' "$output" | grep -c 'Blocked by #12$')" -eq 1 ]
@@ -348,7 +352,7 @@ write_human_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_agent_body "$BODY"
 
-    GH_STUB_NEW_ISSUE=77 run python3 "$SCRIPT" --title "Test" --body-file "$BODY" --blocked-by 12
+    GH_STUB_NEW_ISSUE=77 run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --blocked-by 12
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"https://github.com/acme/app/issues/77"* ]]
@@ -366,7 +370,7 @@ write_human_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_agent_body "$BODY"
 
-    GH_STUB_MISSING=12 run python3 "$SCRIPT" --title "Test" --body-file "$BODY" --blocked-by 12
+    GH_STUB_MISSING=12 run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --blocked-by 12
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"#12"* ]]
@@ -379,7 +383,7 @@ write_human_body() {
     write_agent_body "$BODY"
 
     GH_STUB_NEW_ISSUE=77 GH_STUB_DEP_FAIL="HTTP 404: dependencies not available" \
-        run python3 "$SCRIPT" --title "Test" --body-file "$BODY" --blocked-by 12 --repo acme/app
+        run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --blocked-by 12 --repo acme/app
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"https://github.com/acme/app/issues/77"* ]]
@@ -391,7 +395,7 @@ write_human_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_agent_body "$BODY"
 
-    run python3 "$SCRIPT" --title "Test" --body-file "$BODY" --blocked-by 12,abc --dry-run
+    run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --blocked-by 12,abc --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"--blocked-by"* ]]
@@ -422,7 +426,7 @@ write_paths_body() {
         "## 受け入れ基準" \
         "- [ ] AC-1 foo"
 
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"## 変更対象パス"*"見出しが無い"* ]]
@@ -435,7 +439,7 @@ write_paths_body() {
         "## 変更対象パス" \
         "（未定）"
 
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"エントリが無い"* ]]
@@ -449,7 +453,7 @@ write_paths_body() {
         "- src/ok.py" \
         "- /etc/passwd"
 
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *'`/` 始まり'*"/etc/passwd"* ]]
@@ -462,7 +466,7 @@ write_paths_body() {
         "## 変更対象パス" \
         "- src/../../other-repo/x.py"
 
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *'`..` セグメント'*"src/../../other-repo/x.py"* ]]
@@ -478,7 +482,7 @@ write_paths_body() {
         "## 受け入れ基準" \
         "- [ ] AC-1 foo"
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY"
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY"
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"## 変更対象パス"* ]]
@@ -496,7 +500,7 @@ write_paths_body() {
         "## テスト戦略" \
         "- /absolute/path/in/another/section"
 
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Dry run: issue will not be created."* ]]
@@ -507,7 +511,7 @@ write_paths_body() {
     write_human_body "$BODY"
     ! grep -q '変更対象パス' "$BODY"
 
-    run python3 "$SCRIPT" --kind human --title "API キー発行" --body-file "$BODY" --dry-run
+    run python3 "$SCRIPT" --kind human --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Dry run: issue will not be created."* ]]
@@ -540,7 +544,7 @@ write_scope_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_scope_body "$BODY" 3969
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Dry run: issue will not be created."* ]]
@@ -550,7 +554,7 @@ write_scope_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_scope_body "$BODY" 3970
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"（AC 節と閉じたコードフェンスの中身を除く）が 4001 字"*"上限 4000 字を 1 字超えている"* ]]
@@ -563,7 +567,7 @@ write_scope_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_scope_body "$BODY" 3969
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --blocked-by 12 --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --blocked-by 12 --dry-run
 
     [ "$status" -eq 1 ]
     # "Blocked by #12\n\n" の 16 字が加わる
@@ -575,7 +579,7 @@ write_scope_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_scope_body "$BODY" 3970
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY"
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY"
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"4001 字"* ]]
@@ -618,7 +622,7 @@ write_scope_body() {
     expected="$((scope_total - $(jq -rn --arg s "$FENCED" '$s | length') - 1))"
     [ "$expected" -gt 4000 ]
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"を除く）が ${expected} 字"* ]]
@@ -653,7 +657,7 @@ HUMAN_SPLIT_HINT='人の作業は `--kind human` で別 issue に切り出して
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_ac_body "$BODY" "AC-1 foo" "Cloud Run の設定値を確認する(人手)"
 
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --repo acme/app --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"AC-2「Cloud Run の設定値を確認する(人手)」"* ]]
@@ -667,7 +671,7 @@ HUMAN_SPLIT_HINT='人の作業は `--kind human` で別 issue に切り出して
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_ac_body "$BODY" "本番環境の worker 数を 4 に変更する"
 
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --repo acme/app --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"AC-1「本番環境の worker 数を 4 に変更する」"* ]]
@@ -684,7 +688,7 @@ HUMAN_SPLIT_HINT='人の作業は `--kind human` で別 issue に切り出して
     expected="$(jq -cn --arg ac "$MIXED_AC" '[$ac]' | node "$SKILLS_REPO/_lib/scripts/ac-actor-classify.mjs" --repo acme/app | jq -r '.mixed_reasons[0]')"
     [[ "$expected" == "AC-1「${MIXED_AC}」は repo 内の作業と repo 外の作業（dotfiles / excludedCommands）が混ざっている"* ]]
 
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --repo acme/app --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"$expected"* ]]
@@ -696,7 +700,7 @@ HUMAN_SPLIT_HINT='人の作業は `--kind human` で別 issue に切り出して
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_ac_body "$BODY" "plugins/dev-flow/git-issue/scripts/create_issue.py の検査を直し、create_issue.bats にテストを足す"
 
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --repo acme/app --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Dry run: issue will not be created."* ]]
@@ -707,7 +711,7 @@ HUMAN_SPLIT_HINT='人の作業は `--kind human` で別 issue に切り出して
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_ac_body "$BODY" '`（人手）` と書かれた AC だけが未達の場合は、差し戻さずに HOLD（人手待ち）になる'
 
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --repo acme/app --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Dry run: issue will not be created."* ]]
@@ -723,7 +727,7 @@ HUMAN_SPLIT_HINT='人の作業は `--kind human` で別 issue に切り出して
         "- [ ] 本番環境の worker 数を 4 に変更する" \
         "- [ ] Cloud Run の設定値を確認する(人手)"
 
-    run --separate-stderr python3 "$SCRIPT" --kind human --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind human --title-file "$TITLE_FILE" --body-file "$BODY" --repo acme/app --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Dry run: issue will not be created."* ]]
@@ -739,11 +743,11 @@ HUMAN_SPLIT_HINT='人の作業は `--kind human` で別 issue に切り出して
     git -C "$REPO_DIR" remote add origin git@github.com:acme/dotfiles.git
 
     cd "$REPO_DIR"
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
     [ "$status" -eq 0 ]
 
     # 他 repo を対象にすると、同じ AC は repo 内外の混在で拒否される
-    run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+    run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --repo acme/app --dry-run
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"repo 内の作業と repo 外の作業"* ]]
 }
@@ -772,7 +776,7 @@ STUB
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_ac_body "$BODY" "AC-1 foo"
 
-    NODE_STUB_MODE=human run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+    NODE_STUB_MODE=human run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --repo acme/app --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"AC-1「AC-1 foo」"* ]]
@@ -784,7 +788,7 @@ STUB
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_ac_body "$BODY" "AC-1 foo"
 
-    NODE_STUB_MODE=fail run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app
+    NODE_STUB_MODE=fail run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --repo acme/app
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"ac-actor-classify.mjs"*"exit 1"*"起票しない"*"boom"* ]]
@@ -796,7 +800,7 @@ STUB
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_ac_body "$BODY" "AC-1 foo"
 
-    NODE_STUB_MODE=garbage run --separate-stderr python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --repo acme/app --dry-run
+    NODE_STUB_MODE=garbage run --separate-stderr python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --repo acme/app --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"JSON として読めない"* ]]
@@ -840,7 +844,7 @@ write_fenced_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_fenced_body "$BODY" 3905
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Dry run: issue will not be created."* ]]
@@ -850,7 +854,7 @@ write_fenced_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_fenced_body "$BODY" 3906
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"を除く）が 4001 字"*"上限 4000 字を 1 字超えている"* ]]
@@ -876,12 +880,12 @@ write_trailing_fence_body() {
     BODY="$BATS_TEST_TMPDIR/body.md"
     write_trailing_fence_body "$BODY" '```html' "$(repeat_char ん 3961)"
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
     [ "$status" -eq 0 ]
 
     write_trailing_fence_body "$BODY" '```html' "$(repeat_char ん 3962)"
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"を除く）が 4001 字"* ]]
 }
@@ -892,7 +896,7 @@ write_trailing_fence_body() {
         '```' "$(repeat_char ん 5000)" '```' \
         '```' "$(repeat_char ん 5000)"
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     # 31 + "```\n" 4 + "```\n" 4 + "```\n" 4 + 5000
@@ -909,7 +913,7 @@ write_trailing_fence_body() {
         '````html' \
         "$(repeat_char ん 5000)"
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"を除く）が 5053 字"* ]]
@@ -925,7 +929,7 @@ write_trailing_fence_body() {
         '~~~' \
         '`````'
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 0 ]
 }
@@ -940,7 +944,7 @@ write_trailing_fence_body() {
         "$(repeat_char ん 2000)" \
         '``` code ``` です'
 
-    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY" --dry-run
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 1 ]
     # 31 + (8 + 2001) + 8 + 16 + 2001 + 15
@@ -952,4 +956,74 @@ write_trailing_fence_body() {
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"caps the body prose at 4000 chars, not counting the AC section or the contents of closed code fences; the contents of an unclosed fence count"* ]]
+}
+
+# ---- タイトルは --title-file だけで受ける（finding 由来の文字列をコマンド文字列に書かせない）----
+
+@test "(50) \$(…)・二重引用符・バッククォートを含むタイトルを --title-file で渡す -> シェルに評価されず、gh の --title にそのまま渡る" {
+    use_gh_stub
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_agent_body "$BODY"
+    MARKER="$BATS_TEST_TMPDIR/marker"
+    title='fix: $(touch '"$MARKER"') と "quoted" と `touch '"$MARKER"'`'
+    printf '  %s  \n' "$title" >"$TITLE_FILE"
+
+    run python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY"
+
+    [ "$status" -eq 0 ]
+    [ ! -e "$MARKER" ]
+    [ "$(cat "$SENT_TITLE")" = "$title" ]
+}
+
+@test "(51) 空（空白と改行だけ）のタイトルファイル -> exit 1、gh を呼ばない" {
+    use_gh_stub
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_agent_body "$BODY"
+    printf ' \n\n' >"$TITLE_FILE"
+
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY"
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"title file が空"* ]]
+    [ ! -s "$GH_LOG" ]
+}
+
+@test "(52) 2 行のタイトルファイル -> exit 1、gh を呼ばない" {
+    use_gh_stub
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_agent_body "$BODY"
+    printf 'line 1\nline 2\n' >"$TITLE_FILE"
+
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY"
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"2 行以上"* ]]
+    [ ! -s "$GH_LOG" ]
+}
+
+@test "(53) 読めないタイトルファイル（存在しない）-> exit 1、gh を呼ばない" {
+    use_gh_stub
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_agent_body "$BODY"
+
+    run --separate-stderr python3 "$SCRIPT" --title-file "$BATS_TEST_TMPDIR/missing.txt" --body-file "$BODY"
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"title file を読めない"* ]]
+    [ ! -s "$GH_LOG" ]
+}
+
+@test "(54) --title は受け付けない（--title-file の省略形としても通らない）-> argparse のエラーで exit 2" {
+    use_gh_stub
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_agent_body "$BODY"
+
+    run --separate-stderr python3 "$SCRIPT" --title "Test" --body-file "$BODY"
+    [ "$status" -eq 2 ]
+    [[ "$stderr" == *"--title"* ]]
+
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --title "Test" --body-file "$BODY"
+    [ "$status" -eq 2 ]
+    [[ "$stderr" == *"unrecognized arguments: --title Test"* ]]
+    [ ! -s "$GH_LOG" ]
 }
