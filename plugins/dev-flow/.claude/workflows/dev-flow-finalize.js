@@ -3548,7 +3548,7 @@ if (_facDecision.run) {
   const finalEvalTargets = policyBlockingItems(state.ledger, GATE_POLICY).filter((it) => typeof it.id === 'string' && it.id.startsWith('EVAL-')
     && it.source === 'evaluator' && !it.checked && it.escalate !== true)
   const fa = await trackedAgent(
-    `cd ${WT} で作業。pr-iterate の fix 適用後の最終 PR tree に対し、以下の既存 acceptance_criteria のみを one-shot で再検証せよ（final AC 再検証）。\n`
+    `pr-iterate の fix 適用後の最終 PR tree に対し、以下の既存 acceptance_criteria のみを one-shot で再検証せよ（final AC 再検証）。\n`
     + `\`git diff origin/${BASE}...HEAD\` で最終 diff を確認し該当ファイルを Read で精査すること（fix は commit 済みのため三点 diff でよい）。\n`
     + `acceptance_criteria（index 順。これが全対象 — 追加・分割・言い換え禁止）:\n${JSON.stringify(req.acceptance_criteria)}\n`
     + `test#final 結果: ${JSON.stringify({ finalReconcile, finalTestGreen, ...(finalTestForEval ? { tests: finalTestForEval.tests, green: finalTestForEval.green } : {}) })}\n`
@@ -3771,7 +3771,7 @@ const newlyUnchecked = dangerFailClosedFinal ? [] : newlyUncheckedSecClasses(led
 if (newlyUnchecked.length > 0) {
   log(`Merge tier: 新規 danger hit ${JSON.stringify(newlyUnchecked)} — one-shot security clearance を実行`)
   const clearance = await trackedAgent(
-    `cd ${WT} で作業。PR #${pr.pr_number} の最終 tree に対し danger-grep が新規に検出した危険クラスの変更が安全かを判定せよ。`
+    `PR #${pr.pr_number} の最終 tree に対し danger-grep が新規に検出した危険クラスの変更が安全かを判定せよ。`
     + `\`git diff origin/${BASE}...HEAD\` で実 diff を確認し、該当ファイルを Read で精査すること。\n`
     + `requirements: ${JSON.stringify(req)}\n`
     + `security_focus（Merge tier 最終 danger-grep で新規 hit した危険クラス）:\n${JSON.stringify(newlyUnchecked)}\n`

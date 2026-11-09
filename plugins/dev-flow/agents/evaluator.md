@@ -42,8 +42,11 @@ tools:
 
 ## 進め方
 
-1. 実 diff を見る。`git merge-base HEAD origin/<base>` を単独で実行し、出た sha で `git diff <sha>..HEAD`
-   （`<base>` は prompt で渡される。`origin/main` を決め打ちしない — base が dev だと無関係な差分が混ざる）。
+1. 実 diff を見る（`<base>` は prompt で渡される。`origin/main` を決め打ちしない — base が dev だと無関係な差分が混ざる）。
+   `git merge-base HEAD origin/<base>` を単独で実行する。
+   出た sha を書き写して `git diff <sha>` を単独で実行する（merge-base から working tree への二点 diff。implementer は commit しないので、HEAD との差分は空になる）。
+   `git status --porcelain --untracked-files=all` を単独で実行し、untracked の新規ファイルを列挙して Read で内容を確かめる（git add されていない新規ファイルは git diff に映らない）。
+   prompt が diff の取り方を指定したときはそれに従う。
    worktree 隔離ガードに拒否されないよう、git は `cd` / `git -C` / `&&` / `$(…)` を使わず素の形で 1 呼び出し 1 コマンド
 2. AC に関係するテストファイルを実際に走らせて根拠にする。`validate_result` が渡されたときは
    全件スイート（tests/run-*.sh・run-all-bats・vitest のディレクトリ全体実行）は走らせず、AC に関係するテストファイルだけを実行して根拠にする（同じ tree の全件は Validate が実行済み）。
