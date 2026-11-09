@@ -83,6 +83,13 @@ function nsAgentOpts(opts) {
   return { ...opts, agentType: AGENT_NAMESPACE + bare }
 }
 // ==== END inline: _lib/agent-namespace.mjs ====
+// ==== BEGIN inline: _lib/structured-output-failure.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+function isStructuredOutputFailure(e) {
+  if (e == null) return false
+  const msg = String(e.message ?? e)
+  return msg.includes('without calling StructuredOutput') || msg.includes('StructuredOutput retry cap')
+}
+// ==== END inline: _lib/structured-output-failure.mjs ====
 // ==== BEGIN inline: _lib/evaluator-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 const TEST_LOG_EVIDENCE_LIMIT = 'ログの行はテストが自由に出力できるので、ログの行だけを AC 達成の根拠にしない。'
   + 'ログの行を evidence に使えるのは「ログを根拠にできるテストファイル」（この diff が変更したファイル）に載るファイルだけで、'
@@ -2815,7 +2822,7 @@ async function trackedAgent(prompt, opts) {
     return await agent(prompt, nsAgentOpts(opts));
   } catch (e) {
     if (!opts?.retryOnContractViolation) throw e;
-    if (!String(e?.message ?? e).includes('without calling StructuredOutput')) throw e;
+    if (!isStructuredOutputFailure(e)) throw e;
     log(`⚠️ ${opts?.label ?? 'agent'} が StructuredOutput 契約違反で失敗 — 同一 prompt で 1 回だけリトライ（issue #527）`);
     return agent(prompt, nsAgentOpts(opts));
   }
@@ -3719,7 +3726,7 @@ phase('Merge tier')
 // throw / null / 契約外形状は per-field フォールバック（risk fail-closed → HOLD、他は fail-open）で続け、abort しない
 // （abort は終端サマリと journal entry を失う）。
 let mergeFacts = null
-// 契約違反（value 欠落）が再試行後も続いたか。true なら原因は転記欠落なので HOLD reason を merge_facts_dropped にする。
+// 契約違反（value 欠落・schema 不一致の retry cap 超過等）が再試行後も続いたか。true なら原因は転記欠落なので HOLD reason を merge_facts_dropped にする。
 let mergeFactsContractViolation = false
 try {
   mergeFacts = await trackedAgent(
@@ -3728,7 +3735,7 @@ try {
   )
 } catch (e) {
   const msg = e && e.message ? e.message : String(e)
-  if (msg.includes('without calling StructuredOutput')) {
+  if (isStructuredOutputFailure(e)) {
     mergeFactsContractViolation = true
     log(`⚠️ merge-tier-facts が再試行後も StructuredOutput 契約違反（value 欠落等の転記欠落）— facts=null として per-field フォールバック（risk fail-closed、HOLD reason は merge_facts_dropped）で続行: ${msg}`)
   } else {

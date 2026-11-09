@@ -36,6 +36,13 @@ function nsAgentOpts(opts) {
   return { ...opts, agentType: AGENT_NAMESPACE + bare }
 }
 // ==== END inline: _lib/agent-namespace.mjs ====
+// ==== BEGIN inline: _lib/structured-output-failure.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+function isStructuredOutputFailure(e) {
+  if (e == null) return false
+  const msg = String(e.message ?? e)
+  return msg.includes('without calling StructuredOutput') || msg.includes('StructuredOutput retry cap')
+}
+// ==== END inline: _lib/structured-output-failure.mjs ====
 // ==== BEGIN inline: _lib/stage-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 const TEST_COMMANDS_RESULT_SPEC = {
   source: 'string|null', status: 'string', full_command: 'string|null', files_command: 'string|null',
@@ -2608,7 +2615,7 @@ async function trackedAgent(prompt, opts) {
     return await agent(prompt, nsAgentOpts(opts));
   } catch (e) {
     if (!opts?.retryOnContractViolation) throw e;
-    if (!String(e?.message ?? e).includes('without calling StructuredOutput')) throw e;
+    if (!isStructuredOutputFailure(e)) throw e;
     log(`⚠️ ${opts?.label ?? 'agent'} が StructuredOutput 契約違反で失敗 — 同一 prompt で 1 回だけリトライ（issue #527）`);
     return agent(prompt, nsAgentOpts(opts));
   }

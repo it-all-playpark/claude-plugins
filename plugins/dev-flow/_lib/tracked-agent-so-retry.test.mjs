@@ -9,6 +9,7 @@
 //
 // テストケース:
 //   (a) リトライ成功 — danger-grep 1 回目 StructuredOutput 契約違反 throw、2 回目正常応答 → 後続へ進む
+//   (a3) リトライ成功 — danger-grep 1 回目 StructuredOutput retry cap 超過 throw、2 回目正常応答 → 後続へ進む
 //   (a2) 未 opt-in call site（diff-gate）は StructuredOutput 契約違反 throw でも呼び出し1回で即伝播する
 //   (b) 契約違反以外は即 throw（リトライしない）が、danger-grep 自体は try/catch で吸収し run は継続する
 //   (c) リトライ 1 回で打ち切り（2 回目も契約違反なら rethrow、danger-grep の try/catch で吸収され run は継続）
@@ -56,6 +57,34 @@ test('[tracked-agent-so-retry] (a) danger-grep が 1 回目 StructuredOutput 契
     logs.some((l) => l.includes('契約違反で失敗 — 同一 prompt で 1 回だけリトライ')),
     'リトライ log が出ていない',
   );
+});
+
+// ── (a3) retry cap 超過も契約違反としてリトライする ──────────────────────────
+// schema 不一致の StructuredOutput 呼び出しが harness の上限に達した失敗も、有効な StructuredOutput を
+// 得られずに終わった点で (a) と同じ契約違反（issue #1344）。
+
+test('[tracked-agent-so-retry] (a3) danger-grep が 1 回目 StructuredOutput retry cap 超過 → 2 回目成功で後続へ進む', async () => {
+  let callCount = 0;
+  const { ctx, calls, logs } = makeDevFlowSandbox({
+    overrides: {
+      'danger-grep': () => {
+        callCount += 1;
+        if (callCount === 1) throw new Error('agent({schema}): StructuredOutput retry cap (5) exceeded');
+        return DANGER_GREP_OK;
+      },
+    },
+  });
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
+
+  assert.equal(error, null, `run は完走するはずだが throw した: ${error?.message}`);
+  const dangerCalls = calls.filter((c) => c.label === 'danger-grep');
+  assert.equal(dangerCalls.length, 2, 'danger-grep の呼び出し回数がちょうど 2 件ではない');
+  assert.equal(dangerCalls[0].prompt, dangerCalls[1].prompt, 'リトライは同一 prompt で行う');
+  assert.ok(
+    logs.some((l) => l.includes('契約違反で失敗 — 同一 prompt で 1 回だけリトライ')),
+    'リトライ log が出ていない',
+  );
+  assert.ok(!logs.some((l) => l.includes('diff-triage 呼び出しが例外')), '2 回目の正常応答なのに例外 log が出ている');
 });
 
 // ── (a2) 未 opt-in call site は StructuredOutput 契約違反でもリトライしない ──
