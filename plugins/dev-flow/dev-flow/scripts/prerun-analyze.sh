@@ -3,7 +3,7 @@
 #
 # `analyze-issue <N> [--repo R] --contract` の決定論 parse を実行し、決定論で解けない 2 理由
 # （breaking keyword hit / comments present）だけを Jev（有界判定モデル、
-# PATH 上の Jev クライアント `jev-classify`。インターフェースは dev-flow/SKILL.md の Jev 節）に回して、dev-flow.js の Setup 末尾の analyze ゲートが whitelist 検証するだけで
+# PATH 上の Jev クライアント `jev-classify`。インターフェースは dev-flow/references/jev.md）に回して、dev-flow.js の Setup 末尾の analyze ゲートが whitelist 検証するだけで
 # REQ を組める analyze JSON を stdout 1 行で返す。LLM が issue を転写する工程は持たない（転写者がいなければ
 # provenance 突合も comment_count 突合も要らない — その代わり breaking / comment の Jev の低確信・応答なし・無効は
 # 全て fail-closed で `uncertain[]` に積み、Workflow 側のゲートが needs_clarification に倒す）。
