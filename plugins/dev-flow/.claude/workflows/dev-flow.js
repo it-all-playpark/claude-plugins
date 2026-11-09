@@ -1480,7 +1480,6 @@ const REVIEW = {
     },
     summary: { type: 'string', maxLength: 200 },
     verification_evidence: { type: 'array', maxItems: 6, items: { type: 'string', maxLength: 120 } },
-    confidence: { type: 'number', minimum: 0, maximum: 1 },
     epoch: { type: 'number' },
   },
 }

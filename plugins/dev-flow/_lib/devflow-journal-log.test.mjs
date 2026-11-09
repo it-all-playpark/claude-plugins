@@ -29,7 +29,7 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
  * @param {object} journalResult - journal-log stub が返すレスポンス（ログ成功/失敗を切り替え）
  * @returns {{ ctx: import('node:vm').Context, getJournalCallCount: () => number, getJournalPrompts: () => string[] }}
  */
-function makeSandbox(journalResult, evaluatorOverrides) {
+function makeSandbox(journalResult) {
   // journal-log 呼び出しカウンタ（issue #807: payload を pending/ へ直接書く 1 spawn）
   let journalCallCount = 0;
   const journalPrompts = [];
@@ -63,7 +63,6 @@ function makeSandbox(journalResult, evaluatorOverrides) {
           { ac_index: 3, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
         ],
         security_clearance: [],
-        ...(evaluatorOverrides ?? {}),
       };
     }
     // PR: label が 'pr' で始まる
@@ -249,38 +248,4 @@ test.each(['dev-flow.js', 'pr-iterate.js'])('[journal-log] inline 整合: %s の
   const anchor = workflowSrc.indexOf('==== END inline: _lib/journal-handoff.mjs ====');
   assert.ok(anchor >= 0, `${file}: journal-handoff inline END marker が見つからない`);
   assert.equal(workflowSrc.indexOf("let journalLogStatus = 'save_failed'", anchor + 1), -1, `${file}: inline 区間外に手写し choreography（journalLogStatus 初期化）が残っている`);
-});
-
-// issue #561 AC-3: evaluator が confidence を返すケース/省略するケースの両方で run が abort しない。
-// confidence は telemetry に書かない（残すキーに含まれない）。
-test('[journal-log] issue #561: evaluator が confidence:0.8 を返す run は abort せず、journal-log prompt に eval_confidence を書かない', async () => {
-  const journalResult = { saved: true, logged: true };
-  const { ctx, getJournalPrompts } = makeSandbox(journalResult, { confidence: 0.8 });
-
-  const { result, error } = await runWorkflowCapture(src, ctx);
-
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-  assert.ok(result != null, 'evaluator confidence あり run は abort してはならない');
-
-  const savePrompt = getJournalPrompts()[0] ?? '';
-  assert.ok(savePrompt.includes('"merge_tier"'), `journal-log prompt に handoff payload が無い。prompt:\n${savePrompt}`);
-  assert.ok(
-    !savePrompt.includes('"eval_confidence"'),
-    `journal-log prompt に削除済み telemetry キー '"eval_confidence"' が含まれていた。prompt:\n${savePrompt}`,
-  );
-});
-
-test('[journal-log] issue #561: evaluator が confidence を省略する run は abort しない', async () => {
-  const journalResult = { saved: true, logged: true };
-  const { ctx, getJournalPrompts } = makeSandbox(journalResult);
-
-  const { result, error } = await runWorkflowCapture(src, ctx);
-
-  if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) {
-    assert.fail(`dev-flow.js が sandbox でクラッシュ: ${error.name}: ${error.message}`);
-  }
-  assert.ok(result != null, 'evaluator confidence 省略 run は abort してはならない（optional 契約）');
-  assert.equal(getJournalPrompts().length, 1, 'confidence 省略 run でも journal-log は 1 回呼ばれる');
 });
