@@ -2513,6 +2513,18 @@ test('issue #1117 / #1168: validate_tests_not_run / final_reconcile_unavailable 
   }
 });
 
+test('issue #1276: no_tests_run（実行対象のテストが 0 本）の HOLD の現状・対応は既定の「—」/「人が確認する」に落ちない', () => {
+  const REASON = 'テストを 1 本も実行していない（Validate が tests:no_tests = 実行対象のテストが 0 本）';
+  const row = buildDevflowSummaryBody({
+    ...BASE_INPUT,
+    mergeTier: 'HOLD',
+    mergeTierReasons: [REASON],
+    holdReasons: [{ code: 'no_tests_run', reason: REASON, kind: 'human_judgment' }],
+    holdKind: 'human_judgment',
+  }).split('\n').find((l) => l.startsWith(`| ${REASON} |`));
+  assert.equal(row, `| ${REASON} | テストを 1 本も実行していない（実行対象のテストが 0 本） | テストの要否と実行方法を確認する |`);
+});
+
 test('issue #1082: security_review_unresolved は stop_reason=reviewer_context_changed なら「自動 review をしていない」と変わった指示ファイルを一覧する固定コマンド、それ以外は従来の文面', () => {
   const REASON = '敵対的 security review が今の PR head で clear になっていない';
   const rowOf = (securityReview) => buildDevflowSummaryBody({

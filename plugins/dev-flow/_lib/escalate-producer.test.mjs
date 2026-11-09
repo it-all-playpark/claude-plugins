@@ -47,7 +47,7 @@ function makeSandbox(evaluatorResponse) {
     }
     // Validate: test runner（label が 'test' で始まる）
     if (label.startsWith('test')) {
-      return { tests: 'no_tests', green: true, summary: '' };
+      return { tests: 'passed', green: true, summary: '' };
     }
     // Evaluate: evaluator stub が引数 evaluatorResponse を返す
     if (agentType === 'dev-flow:evaluator') {
@@ -260,7 +260,7 @@ test('[escalate-producer] テスト4: complex shape iteration 2 に初出 escala
         return { ok: true, hits: [] };
       }
       if (label.startsWith('test')) {
-        return { tests: 'no_tests', green: true, summary: '' };
+        return { tests: 'passed', green: true, summary: '' };
       }
       if (agentType === 'dev-flow:evaluator') {
         evaluatorCallCount++;

@@ -45,7 +45,7 @@ function makeCountingSandbox(diffHashConfig) {
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // label 'danger-grep'（issue #544 統合呼び出し）: risk/files を 1 応答で返す。
     if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: [...realizedFiles], diffhash: null };
-    if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
+    if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
     if (agentType === 'dev-flow:evaluator') return { verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation', ac_results: [], security_clearance: [] };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 'issue-1', files: [...realizedFiles], summary: '', concerns: [] };
     return devFlowResponder({ 'commit-hook#1': null, 'commit-hook#retry-1': null, 'isolation-probe': null, 'journal-log-failure': null, 'post-summary': null })({ label, agentType, prompt });

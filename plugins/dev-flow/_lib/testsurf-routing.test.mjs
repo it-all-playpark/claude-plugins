@@ -51,7 +51,7 @@ function makeSandbox(riskResponse, evaluatorResponse) {
       return mergeTierFacts({ risk: riskResponse, files: ['_lib/foo.test.mjs'] });
     }
     if (label.startsWith('test')) {
-      return { tests: 'no_tests', green: true, summary: '' };
+      return { tests: 'passed', green: true, summary: '' };
     }
     if (agentType === 'dev-flow:evaluator') {
       evalCalls.push({ label, agentType });

@@ -56,7 +56,7 @@ function makeSandbox(dangerGrepPre, dangerGrepFinal, evaluatorResponse, clearanc
       return mergeTierFacts({ hash: 'H_MERGE', risk: dangerGrepFinal, files: ['src/foo.ts'] });
     }
     if (label.startsWith('test')) {
-      return { tests: 'no_tests', green: true, summary: '' };
+      return { tests: 'passed', green: true, summary: '' };
     }
     // one-shot security clearance（Merge tier）。agentType==='evaluator' だが label で区別する。
     if (agentType === 'dev-flow:evaluator' && label === 'security-clearance-final') {

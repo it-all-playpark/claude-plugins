@@ -42,7 +42,7 @@ function makeSandbox({ realizedFiles, declaredFiles = realizedFiles }) {
     // （files は旧 realized-diff 相当）。
     if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: realizedFiles, diffhash: null };
     if (label === 'merge-tier-facts') return mergeTierFacts({ files: realizedFiles });
-    if (label.startsWith('test')) return { tests: 'no_tests', green: true, summary: '' };
+    if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 'issue-1', files: declaredFiles, summary: '', concerns: [] };
     return devFlowResponder({ 'commit-hook#1': null, 'isolation-probe': null, 'journal-log': null, 'post-summary': null })({ label, agentType, prompt });
   };

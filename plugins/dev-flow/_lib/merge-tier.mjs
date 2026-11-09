@@ -128,7 +128,7 @@ export const HOLD_REASON_CODES = [
   'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
   'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
   'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
-  'security_review_unresolved', 'validate_test_red', 'validate_tests_not_run',
+  'security_review_unresolved', 'validate_test_red', 'validate_tests_not_run', 'no_tests_run',
 ];
 
 // merge-tier-facts の checks サブ結果（parseChecks の返り値 {ok:true, checks} | {ok:false, error}）を
@@ -223,6 +223,9 @@ export function classifyMergeableState(meta) {
 //   （後方互換 scaffolding 禁止規約）。未指定(undefined/null) = reason 追加なし。
 // s.finalTestGreen (optional true|false|null): Final reconcile での最終 tree test 再実行結果。
 //   false のとき専用 HOLD reason を追記する。true/null(未実行 or no_tests)は reason 追加なし。
+// s.finalTestNoTests (optional boolean): Final reconcile の test#final が tests:'no_tests'（実行対象のテストが 0 本）だった
+//   （finalTestGreen は no_tests を null にするので別に受ける）。true なら 'no_tests_run'（human_judgment）で HOLD。
+//   boolean 以外は明示 error。
 // s.validateResult (optional { tests: 'passed'|'failed'|'no_tests'|'error', green: boolean }): Validate の最新の
 //   test 結果（workflow の state.val。issue #1086）。finalReconcile === 'skipped'（fixes_applied=0 で最終 tree を
 //   再検証していない）かつ tests:'failed' + green:false のとき 'validate_test_red'（human_judgment）で HOLD —
@@ -231,6 +234,9 @@ export function classifyMergeableState(meta) {
 //   tests:'error'（起動失敗 = テストが 1 件も実行されていない）は常に 'validate_tests_not_run'（human_judgment）で
 //   HOLD — テストを 1 件も確かめないまま REVIEW にしない（PR の CI の success では代替しない）。finalReconcile が
 //   skipped 以外のときは最終 tree の判定（final_test_red / final_reconcile_unavailable）が持つので見ない。
+//   tests:'no_tests'（実行対象のテストが 0 本）は finalReconcile が 'reverified'（最終 tree でテストを走らせ直した）以外の run で
+//   'no_tests_run'（human_judgment）で HOLD — テストを 1 本も実行していない PR を「Validate 通過」として人間に渡さない。
+//   green の値・gate_policy に依らない（no_tests を green に読み替える経路も HOLD を外す opt-out も持たない）。
 //   未指定 = reason 追加なし。object でない / tests が enum 外 / green が boolean でないものは明示 error。
 // s.setupDeps (optional { ok: boolean, note: string }): Setup(deps) の結果（prerun の deps）。ok:false の run では
 //   'validate_tests_not_run' の文言に note を載せる（テスト未実行の原因の手がかり）。tier 判定には使わない。
@@ -357,6 +363,9 @@ export function classifyMergeTier(s) {
   if (s.securityReviewUnresolved != null && typeof s.securityReviewUnresolved !== 'boolean') {
     throw new Error('classifyMergeTier: invalid securityReviewUnresolved: ' + s.securityReviewUnresolved);
   }
+  if (s.finalTestNoTests != null && typeof s.finalTestNoTests !== 'boolean') {
+    throw new Error('classifyMergeTier: invalid finalTestNoTests: ' + s.finalTestNoTests);
+  }
   if (s.evalStaleness != null && !EVAL_STALENESS_VALUES.includes(s.evalStaleness)) {
     throw new Error('classifyMergeTier: invalid evalStaleness: ' + s.evalStaleness);
   }
@@ -421,6 +430,9 @@ export function classifyMergeTier(s) {
       : '';
     pushBlocking('validate_tests_not_run', 'テストが 1 件も実行されていない（Validate tests:error = テスト起動失敗。pr-iterate の fix が 0 件で Final reconcile は skip）'
       + depsPart + ' — 人間確認必須', 'human_judgment');
+  }
+  if (s.finalTestNoTests === true || (s.finalReconcile !== 'reverified' && s.validateResult?.tests === 'no_tests')) {
+    pushBlocking('no_tests_run', `テストを 1 本も実行していない（${s.finalTestNoTests === true ? 'Final reconcile の test#final' : 'Validate'} が tests:no_tests = 実行対象のテストが 0 本）— テストが通ることを確かめないまま PR へ進行。人間確認必須（gate_policy に依らず不変）`, 'human_judgment');
   }
   if (s.finalAcReconcile === 'unavailable') pushBlocking('final_ac_unavailable', 'Final AC reconcile 判定不能（最終 PR tree に対する AC 再検証結果を取得できず — agent null / schema 不一致 / index 欠落・重複・範囲外 / evidence 不足）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   if (s.securityReviewUnresolved === true) pushBlocking('security_review_unresolved', '敵対的 security review が今の PR head で clear になっていない（信頼境界をまたぎうる変更を含む PR で、pr-iterate が critical/major 0 件の review を通さずに終端）— 指摘の本文は公開しない。merge 前に人が diff を確認する（gate_policy に依らず不変）', 'human_judgment');

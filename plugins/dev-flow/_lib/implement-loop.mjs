@@ -254,7 +254,7 @@ export function makeImplementLoop({ wt, issue, repo, base, spawn, spawnFailOpen,
   }
 
   // test ⇄ green-fix ループ（上限 GREEN_MAX）。Validate・empty-diff retry・local-verify / AC コマンドの差し戻し後・post-eval が
-  // prompt・break 条件・計上を共有する。tests:'error' は green-fix せず break、GREEN_MAX 到達は red のまま返す。tests:'failed' の
+  // prompt・break 条件・計上を共有する。tests:'error' / 'no_tests' は green-fix せず break、GREEN_MAX 到達は red のまま返す。tests:'failed' の
   // うち base でも同じく落ちる既存の失敗（triageBaseFailures）は green 要件から外し、そのファイルは触らないよう prompt で伝える。
   // 各回は test の前に pre-commit hook を回す（formatter の書き換えをその回の test が見るため）。exit 非 0 はその回を green に
   // せず green-fix に渡す。hook を起動できない（none / error / null）は fail-open（PR phase の commit が同じ hook を通る）。
@@ -348,15 +348,21 @@ export function makeImplementLoop({ wt, issue, repo, base, spawn, spawnFailOpen,
       } else {
         log(`validate iteration ${i}: tests=${v.tests} green=${v.green}`)
       }
-      const testsOk = v.green === true || v.tests === 'no_tests'
+      const testsOk = v.green === true
       if (testsOk && !hookFail) break
       if (v.tests === 'error' && !hookFail) {
         // 起動失敗はコード修正で解消しないので green-fix せず break し、merge tier の HOLD に委ねる。hook の失敗は green-fix に回す。
         log(`⚠️ ${phaseName}: tests=error（起動失敗: ${String(v.summary ?? '').slice(0, 200)}）— green-fix をスキップ（環境失敗はコード修正で解消しない。merge tier で HOLD）`)
         break
       }
-      // green-fix に直させるテストの失敗があるか（起動失敗と既存の失敗だけなら hook の失敗だけを渡す）
-      let testsToFix = !testsOk && v.tests !== 'error'
+      if (v.tests === 'no_tests' && !hookFail) {
+        // 実行対象のテストが 0 本。通過扱いにせず（green:false のまま）、テストを足すかはコード修正の問題ではないので green-fix にも
+        // 回さず break し、merge tier の HOLD（no_tests_run）で人間に開示する。hook の失敗は green-fix に回す。
+        log(`⚠️ ${phaseName}: tests=no_tests（実行対象のテストが 0 本）— 通過扱いにせず green-fix もスキップ（テストを 1 本も実行していない。merge tier で HOLD）`)
+        break
+      }
+      // green-fix に直させるテストの失敗があるか（起動失敗・テスト 0 本・既存の失敗だけなら hook の失敗だけを渡す）
+      let testsToFix = !testsOk && v.tests !== 'error' && v.tests !== 'no_tests'
       let envNote = ''
       if (v.tests === 'failed') {
         const tri = await triageBaseFailures(v, baseFailing, iterLabel, phaseName)

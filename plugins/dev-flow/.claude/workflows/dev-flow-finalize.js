@@ -397,6 +397,9 @@ function classifyMergeTier(s) {
   if (s.securityReviewUnresolved != null && typeof s.securityReviewUnresolved !== 'boolean') {
     throw new Error('classifyMergeTier: invalid securityReviewUnresolved: ' + s.securityReviewUnresolved);
   }
+  if (s.finalTestNoTests != null && typeof s.finalTestNoTests !== 'boolean') {
+    throw new Error('classifyMergeTier: invalid finalTestNoTests: ' + s.finalTestNoTests);
+  }
   if (s.evalStaleness != null && !EVAL_STALENESS_VALUES.includes(s.evalStaleness)) {
     throw new Error('classifyMergeTier: invalid evalStaleness: ' + s.evalStaleness);
   }
@@ -460,6 +463,9 @@ function classifyMergeTier(s) {
       : '';
     pushBlocking('validate_tests_not_run', 'テストが 1 件も実行されていない（Validate tests:error = テスト起動失敗。pr-iterate の fix が 0 件で Final reconcile は skip）'
       + depsPart + ' — 人間確認必須', 'human_judgment');
+  }
+  if (s.finalTestNoTests === true || (s.finalReconcile !== 'reverified' && s.validateResult?.tests === 'no_tests')) {
+    pushBlocking('no_tests_run', `テストを 1 本も実行していない（${s.finalTestNoTests === true ? 'Final reconcile の test#final' : 'Validate'} が tests:no_tests = 実行対象のテストが 0 本）— テストが通ることを確かめないまま PR へ進行。人間確認必須（gate_policy に依らず不変）`, 'human_judgment');
   }
   if (s.finalAcReconcile === 'unavailable') pushBlocking('final_ac_unavailable', 'Final AC reconcile 判定不能（最終 PR tree に対する AC 再検証結果を取得できず — agent null / schema 不一致 / index 欠落・重複・範囲外 / evidence 不足）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   if (s.securityReviewUnresolved === true) pushBlocking('security_review_unresolved', '敵対的 security review が今の PR head で clear になっていない（信頼境界をまたぎうる変更を含む PR で、pr-iterate が critical/major 0 件の review を通さずに終端）— 指摘の本文は公開しない。merge 前に人が diff を確認する（gate_policy に依らず不変）', 'human_judgment');
@@ -2212,6 +2218,8 @@ function holdReasonDisplay(code, ctx) {
       return testRedRow('Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', ctx.redFacts[code], '修正が必要（落ちたテストを直して push する）');
     case 'validate_tests_not_run':
       return { current: 'テストが 1 件も実行されていない（ローカルは起動失敗）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
+    case 'no_tests_run':
+      return { current: 'テストを 1 本も実行していない（実行対象のテストが 0 本）', action: 'テストの要否と実行方法を確認する' };
     case 'final_ac_unavailable':
       return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
     case 'iterate_non_lgtm':
@@ -3305,6 +3313,7 @@ async function rerunFailedTestFiles(first, label, holdCode) {
 }
 let finalReconcile = 'skipped'   // 'skipped'|'reverified'|'unavailable'
 let finalTestGreen = null        // true|false|null（null = 未実行/no_tests/取得不能/tests:error の起動失敗）
+let finalTestNoTests = false     // test#final が tests:'no_tests'（実行対象のテストが 0 本）— merge tier の no_tests_run HOLD
 // 単体再実行が green だった記録 {files, logs}。開示専用で HOLD は変えない（単体再実行の green は PR が書いたテストの出力 —
 // 全件実行のときだけ落ちるテストを書けば決定的な失敗でも green になる）。null = 未再実行 / 再実行も red
 let finalTestFlaky = null
@@ -3354,6 +3363,7 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
     else {
       finalReconcile = 'reverified'
       finalTestGreen = ft.tests === 'no_tests' ? null : ft.green === true
+      finalTestNoTests = ft.tests === 'no_tests'
       if (ft.tests === 'no_tests' || (ft.tests === 'passed' && ft.green === true)) finalTestForEval = ft
       if (finalTestGreen === false) finalTestEvidence = { failedFiles: normalizeTestPaths(ft.failed_files), diffTouched: null }
       log(`Final reconcile: test#final tests=${ft.tests} green=${ft.green}`)
@@ -3762,9 +3772,11 @@ const mergeTier = classifyMergeTier({
   riskValueDropped: riskValueDroppedFinal,
   finalReconcile,
   finalTestGreen,
+  finalTestNoTests,
   finalTestFlaky,
   // Validate の最新の test 結果。Final reconcile が skipped の run では PR tree のテスト状態そのもので、
-  // red（tests:'failed'）のまま PR へ進んだら validate_test_red、tests:'error'（テスト未実行）なら validate_tests_not_run で HOLD
+  // red（tests:'failed'）のまま PR へ進んだら validate_test_red、tests:'error'（テスト未実行）なら validate_tests_not_run で HOLD。
+  // tests:'no_tests'（テスト 0 本）は最終 tree を走らせ直した run 以外で no_tests_run の HOLD
   validateResult: state.val,
   // validate_tests_not_run の文言に載せる deps の note
   setupDeps: PRERUN.deps,

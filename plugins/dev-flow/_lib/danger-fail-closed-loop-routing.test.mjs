@@ -58,7 +58,7 @@ function makeSandbox(dangerGrepResponse, evaluatorResponse) {
     }
     // Validate: test runner（label が 'test' で始まる）
     if (label.startsWith('test')) {
-      return { tests: 'no_tests', green: true, summary: '' };
+      return { tests: 'passed', green: true, summary: '' };
     }
     // Evaluate: evaluator stub が呼び出し回数を記録し、evaluatorResponse を返す
     if (agentType === 'dev-flow:evaluator') {
