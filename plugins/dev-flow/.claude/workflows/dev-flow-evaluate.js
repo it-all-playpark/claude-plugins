@@ -415,8 +415,22 @@ function demoteUnprovenObservationalAc(acResults, observational, provenIndexes) 
     if (!r || !Number.isInteger(r.ac_index) || obs[r.ac_index] !== true || proven.includes(r.ac_index)) return r
     if (r.satisfied !== true) return { ...r, observational: true }
     const evidence = typeof r.evidence === 'string' && r.evidence.trim() ? `（evaluator: ${r.evidence.trim()}）` : ''
-    return { ...r, satisfied: false, observational: true, evidence: `観測型 AC — test の red→green 実証が無く、実行しないと確かめられない${evidence}` }
+    return { ...r, satisfied: false, observational: true, proof_missing: true, evidence: `観測型 AC — test の red→green 実証が無く、実行しないと確かめられない${evidence}` }
   })
+}
+
+function isReimplUnfixableGap(r) {
+  return r != null && (r.unreachable_env === true || r.proof_missing === true)
+}
+
+function proofMissingAgentAcIndexes(acResults, actors) {
+  const list = Array.isArray(actors) ? actors : []
+  const out = []
+  for (const r of (Array.isArray(acResults) ? acResults : [])) {
+    if (!r || r.satisfied !== false || r.proof_missing !== true || !Number.isInteger(r.ac_index)) continue
+    if (list[r.ac_index] === 'agent' && !out.includes(r.ac_index)) out.push(r.ac_index)
+  }
+  return out
 }
 
 function unsatisfiedAcByActor(acResults, actors) {
@@ -426,7 +440,7 @@ function unsatisfiedAcByActor(acResults, actors) {
     if (!r || r.satisfied !== false || !Number.isInteger(r.ac_index)) continue
     let actor = list[r.ac_index]
     if (!AC_ACTORS.includes(actor)) continue
-    if (actor === 'agent' && r.unreachable_env === true) actor = 'human'
+    if (actor === 'agent' && isReimplUnfixableGap(r)) actor = 'human'
     if (!out[actor].includes(r.ac_index)) out[actor].push(r.ac_index)
   }
   return out
@@ -438,6 +452,14 @@ function agentAcFeedback(indexes, acceptanceCriteria, acResults) {
   return (Array.isArray(indexes) ? indexes : []).map((i) => {
     const r = results.find((x) => x && x.ac_index === i)
     const evidence = r && typeof r.evidence === 'string' && r.evidence.trim() ? r.evidence.trim() : '根拠なし'
+    if (r && r.proof_missing === true) {
+      return {
+        severity: 'major',
+        topic: `AC-${i + 1} 実証不足`,
+        description: `AC-${i + 1}「${String(acs[i] ?? '')}」は evaluator が満たしたと判定したが、test の red→green 実証が無い（${evidence}）`,
+        suggestion: 'AC が新しい挙動を求めるなら、実装を外すと落ちて実装で通るテスト（red→green）を足せ。変更前から green のテストで確かめる AC（非退行など）はテストを作り替えずそのまま返せ（人手 AC 待ちに回る）。この差し戻しは 1 回だけ',
+      }
+    }
     return {
       severity: 'major',
       topic: `AC-${i + 1} 未達`,
@@ -460,7 +482,7 @@ function applyAcVerifyResults(acResults, entries) {
   const kept = acResults.filter((r) => !(r && decided.has(r.ac_index)))
   const replaced = list.map((e) => ({
     ...(acResults.find((r) => r && r.ac_index === e.ac_index) ?? {}),
-    ac_index: e.ac_index, observational: true, satisfied: false, verified_by: 'local', unreachable_env: false,
+    ac_index: e.ac_index, observational: true, satisfied: false, verified_by: 'local', unreachable_env: false, proof_missing: false,
     evidence: `AC のコマンド（\`${e.command}\`）が ${acVerifyHow(e)}${e.reason ? `（${e.reason}）` : ''}（差し戻し上限まで直らなかった）: ${e.log_path ?? 'log なし'}`,
   }))
   return [...kept, ...replaced].sort((a, b) => (Number.isInteger(a?.ac_index) ? a.ac_index : Infinity) - (Number.isInteger(b?.ac_index) ? b.ac_index : Infinity))
@@ -2381,6 +2403,8 @@ async function execEvaluatePhase(state) {
   let unsatisfiedByActor = { agent: [], human: [], ci: [] }
   // agent AC の未達を理由に含む reimpl#i の回数（AGENT_AC_REIMPL_MAX で cap）。local-verify・AC コマンドの失敗で差し戻した回数も含める
   let agentAcReimplCount = state.localVerifyReimplCount + state.acVerifyReimplCount
+  // 実証不足（proof_missing）で差し戻した agent AC の index。run 全体で 1 AC 1 回だけ差し戻し、AGENT_AC_REIMPL_MAX には数えない
+  const proofReimplSent = new Set()
   // evaluate の上限。agent AC の未達が残る間は AGENT_AC_REIMPL_MAX まで延長する — standard（EVAL_PASSES=1）でも
   // 「worktree 内で満たせる AC が未達のまま PR → lgtm → HOLD」を差し戻しで拾うため。
   let evalLimit = EVAL_PASSES
@@ -2587,7 +2611,7 @@ async function execEvaluatePhase(state) {
       }
     }
     // 実証の無い観測型 AC の satisfied:true を未達に倒す。観測型の actor は human なので未達は ac_human_pending へ回る
-    // （テストファイルを名指しした観測型 AC は actor agent で差し戻しに入る）。ci の AC は「CI で未判定」に置き換え、
+    // （テストファイルを名指しした観測型 AC は actor agent で、倒した実証不足は 1 回だけ・もともとの未達は上限まで差し戻す）。ci の AC は「CI で未判定」に置き換え、
     // 差し戻しにも人手 AC 待ちにも数えない。AC コマンドは上限後も失敗した記録だけを未達の根拠に重ね、exit 0 は開示だけ。
     const acResultsEff = applyCiAcResults(applyAcVerifyResults(demoteUnprovenObservationalAc(ev.ac_results, req.ac_observational, deterministicAcIndexes(ledger.items)), state.acVerify), req.ac_actors, null)
     evalResult = Array.isArray(acResultsEff) ? { ...ev, ac_results: acResultsEff } : ev
@@ -2622,11 +2646,15 @@ async function execEvaluatePhase(state) {
     // agent AC の未達は gate_policy に依らず差し戻す（AC ledger item は LLM major で既定 policy では advisory の
     // ため、ledger 収束だけで抜けると未達のまま PR へ進む）。上限 AGENT_AC_REIMPL_MAX 到達後は差し戻さず、
     // Merge tier の ac_agent_unsatisfied（取りこぼし）で HOLD にする。human AC の未達は差し戻さない（worktree 外）。
+    // 実証不足（proof_missing）の agent AC は人手 AC 待ちに数えたうえで、run 全体で 1 回だけ差し戻して red→green のテストを
+    // 足させる。2 回目以降の round では差し戻しにも evaluate の延長にも数えない（作り直しで実証を作れない AC に spawn を使わない）。
     const agentAcGaps = unsatisfiedByActor.agent
     const agentAcReimpl = agentAcGaps.length > 0 && agentAcReimplCount < AGENT_AC_REIMPL_MAX
-    if (unsatisfiedByActor.human.length) log(`人手 AC 未達 ${unsatisfiedByActor.human.length} 件（AC-${unsatisfiedByActor.human.map((n) => n + 1).join(', AC-')}）— 差し戻さず Merge tier の人手 AC 待ちへ`)
+    const proofGaps = proofMissingAgentAcIndexes(acResultsEff, req.ac_actors).filter((k) => !proofReimplSent.has(k))
+    const acReimpl = agentAcReimpl || proofGaps.length > 0
+    if (unsatisfiedByActor.human.length) log(`人手 AC 未達 ${unsatisfiedByActor.human.length} 件（AC-${unsatisfiedByActor.human.map((n) => n + 1).join(', AC-')}）— 上限まで差し戻さず Merge tier の人手 AC 待ちへ${proofGaps.length ? `（実証不足の AC-${proofGaps.map((n) => n + 1).join(', AC-')} は 1 回だけ差し戻す）` : ''}`)
     if (agentAcGaps.length && !agentAcReimpl) log(`⚠️ agent AC 未達 ${agentAcGaps.length} 件（AC-${agentAcGaps.map((n) => n + 1).join(', AC-')}）— 差し戻し上限（AGENT_AC_REIMPL_MAX=${AGENT_AC_REIMPL_MAX}）到達。Merge tier で取りこぼしとして HOLD`)
-    if (isLoopConvergedUnderPolicy(ledger, GATE_POLICY) && !agentAcReimpl) {
+    if (isLoopConvergedUnderPolicy(ledger, GATE_POLICY) && !acReimpl) {
       log(`evaluate 収束（ledger 全 blocking checked, iter ${i}, verdict=${ev.verdict}）— PR へ進む`)
       break
     }
@@ -2638,12 +2666,12 @@ async function execEvaluatePhase(state) {
       break
     }
     if (i === evalLimit) {
-      if (!agentAcReimpl || i >= EVAL_MAX) {
+      if (!acReimpl || i >= EVAL_MAX) {
         log(`⚠️ evaluate は ${evalLimit} iteration で pass せず（verdict=${ev.verdict}）— throw せず現状で PR へ進む（human review に委ねる）`)
         break
       }
       evalLimit = i + 1
-      log(`evaluate 延長: agent AC 未達 ${agentAcGaps.length} 件を差し戻して再評価（上限 ${evalLimit} iteration）`)
+      log(`evaluate 延長: agent AC 未達 ${agentAcReimpl ? agentAcGaps.length : 0} 件・実証不足 ${proofGaps.length} 件を差し戻して再評価（上限 ${evalLimit} iteration）`)
     }
     // 次 iteration に渡す未解消の EVAL-* critical（解消済みは checked なので除かれる）。
     const nextOpenCriticals = ledger.items.filter((it) => it.source === 'evaluator' && it.severity === 'critical' && !it.checked).map((it) => ({ id: it.id, text: it.text }))
@@ -2658,11 +2686,13 @@ async function execEvaluatePhase(state) {
     log(`replan#${i}: 実装 agent 経路 — 合成 plan のまま dev-implementer へ差し戻し（feedback_level=${ev.feedback_level}）`)
     const extraFeedback = [
       ...(agentAcReimpl ? agentAcFeedback(agentAcGaps, req.acceptance_criteria, ev.ac_results) : []),
+      ...agentAcFeedback(proofGaps, req.acceptance_criteria, acResultsEff),
       ...(nextOpenCriticals.length ? [{ unresolved_critical: nextOpenCriticals }] : []),
     ]
     const implFeedback = extraFeedback.length ? [...(ev.feedback ?? []), ...extraFeedback] : ev.feedback
     reimplCount++
     if (agentAcReimpl) agentAcReimplCount++
+    for (const k of proofGaps) proofReimplSent.add(k)
     const reimplResults = await runImplement(req, plan, implFeedback, `reimpl#${i}`)
     plan = await trimPrSectionsIfOver(req, adoptImplPrNotes(adoptReportedFiles(plan, reimplResults), reimplResults), `sections-trim#${i}`)
     plan = await rewriteNonJapanesePrBodyItems(req, plan, `lang-rewrite#${i}`)

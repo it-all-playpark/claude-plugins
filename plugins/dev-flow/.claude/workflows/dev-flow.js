@@ -770,6 +770,10 @@ function ciAcIndexes(actors) {
   return out
 }
 
+function isReimplUnfixableGap(r) {
+  return r != null && (r.unreachable_env === true || r.proof_missing === true)
+}
+
 function mixedScopeAcReasons(acceptanceCriteria, opts = {}) {
   const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
   const reasons = []
@@ -788,7 +792,7 @@ function unsatisfiedAcByActor(acResults, actors) {
     if (!r || r.satisfied !== false || !Number.isInteger(r.ac_index)) continue
     let actor = list[r.ac_index]
     if (!AC_ACTORS.includes(actor)) continue
-    if (actor === 'agent' && r.unreachable_env === true) actor = 'human'
+    if (actor === 'agent' && isReimplUnfixableGap(r)) actor = 'human'
     if (!out[actor].includes(r.ac_index)) out[actor].push(r.ac_index)
   }
   return out

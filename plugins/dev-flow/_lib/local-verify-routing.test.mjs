@@ -230,13 +230,14 @@ test('[local-verify-routing] (AV-1) 判定の純関数: 最終 tree で passed �
 
 test('[local-verify-routing] (AV-2) applyAcVerifyResults / mergeAcVerifyGaps: 判定を変えるのは上限後も失敗した記録（agent の未達）だけで、passed・error は人手 AC のまま', () => {
   const demoted = [
-    { ac_index: 0, satisfied: false, verified_by: 'inspection', evidence: '観測型 AC — test の red→green 実証が無い', observational: true },
+    { ac_index: 0, satisfied: false, verified_by: 'inspection', evidence: '観測型 AC — test の red→green 実証が無い', observational: true, proof_missing: true },
     { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
   ];
   // passed・確かめられなかった記録は ac_results を変えない（exit 0 で達成にしない）
   for (const status of ['passed', 'error', 'unavailable', 'skipped', 'stale']) assert.equal(applyAcVerifyResults(demoted, [entry(status)]), demoted, status);
   const failed = applyAcVerifyResults(demoted, [entry('failed', { reason: acFailed.reason })]);
-  assert.deepEqual({ satisfied: failed[0].satisfied, verified_by: failed[0].verified_by, unreachable_env: failed[0].unreachable_env, observational: failed[0].observational }, { satisfied: false, verified_by: 'local', unreachable_env: false, observational: true });
+  // 失敗の記録は実証不足ではなく未達（proof_missing を引き継ぐと isReimplUnfixableGap で agent の AC が人手 AC 待ちに倒れる）
+  assert.deepEqual({ satisfied: failed[0].satisfied, verified_by: failed[0].verified_by, unreachable_env: failed[0].unreachable_env, proof_missing: failed[0].proof_missing, observational: failed[0].observational }, { satisfied: false, verified_by: 'local', unreachable_env: false, proof_missing: false, observational: true });
   assert.ok(failed[0].evidence.includes(BUILD_PATHS[1]) && failed[0].evidence.includes(AC_LOG), failed[0].evidence);
   assert.equal(failed[1], demoted[1], 'AC コマンドの無い AC は変えない');
   // 結果の無い AC は足す・非配列はそのまま

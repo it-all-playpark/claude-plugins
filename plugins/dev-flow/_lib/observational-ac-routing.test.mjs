@@ -12,7 +12,9 @@
 //   (H2) start が running → wait の結果で昇格 / (I2) 待機の上限・wait の読めない応答 → stop して昇格せず HOLD（issue #1226）
 //   (J) inspection の観測型 AC / (K) Evaluate で昇格済みの AC → redgreen-final を spawn しない
 // テストファイルを inline code で名指しした観測型 AC（issue #1147。actor agent）:
-//   (L) inspection の satisfied:true → 未達に倒れて dev-implementer へ差し戻し、上限後も未達なら ac_agent_unsatisfied の HOLD
+//   (L) inspection の satisfied:true（実証不足）→ dev-implementer へ run 全体で 1 回だけ差し戻し、実証が無ければ ac_human_pending の HOLD
+//       （ac_agent_unsatisfied を出さない）
+//   (L2) 実証不足の AC と satisfied:false（未達）の AC が並ぶ run → 実証不足は 1 回で止まり、未達は AGENT_AC_REIMPL_MAX まで差し戻す
 // 観測型判定の確定（issue #1259。analyze ゲート通過後に全 AC を分類 agent に 1 回で渡す）:
 //   (M) AC 3 件の issue で分類 agent は 1 回だけ呼ばれ、渡る index は 0・1・2
 //   (N) agent が null を返した AC・応答に無い AC・agent 自体が失敗した run では、その AC を観測型（true）として扱う
@@ -234,18 +236,38 @@ test('[observational-ac] (E) Evaluate で red→green 実証済みの観測型 A
   assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [], ci: [] });
 });
 
-test('[observational-ac] (L) テストファイルを名指しした観測型 AC の inspection 判定 → 差し戻し、上限後も未達なら ac_agent_unsatisfied の HOLD（人手 AC 待ちにしない）', async () => {
-  const TEST_OBS_AC = '`journal.bats` に足すテストで、実 run の journal に `duration_seconds` が記録されることを確かめる';
-  const evals = Object.fromEntries(Array.from({ length: AGENT_AC_REIMPL_MAX + 1 }, (_, k) => [`eval#${k + 1}`, evalWith([inspection(0), inspection(1)])]));
-  const { result, calls } = await run(evals, { analyze: prerunAnalyze({ acceptance_criteria: [TEST_OBS_AC, CODE_AC] }) });
+const TEST_OBS_AC = '`journal.bats` に足すテストで、実 run の journal に `duration_seconds` が記録されることを確かめる';
+const evalsFor = (acResults) => Object.fromEntries(Array.from({ length: AGENT_AC_REIMPL_MAX + 2 }, (_, k) => [`eval#${k + 1}`, evalWith(acResults)]));
+
+test('[observational-ac] (L) テストファイルを名指しした観測型 AC の inspection の satisfied:true（実証不足）→ 1 回だけ差し戻し、実証が無ければ ac_human_pending の HOLD（ac_agent_unsatisfied を出さない）', async () => {
+  const { result, calls } = await run(evalsFor([inspection(0), inspection(1)]), { analyze: prerunAnalyze({ acceptance_criteria: [TEST_OBS_AC, CODE_AC] }) });
   const reimpl = reimplCalls(calls);
-  assert.equal(reimpl.length, AGENT_AC_REIMPL_MAX, `差し戻しは上限 ${AGENT_AC_REIMPL_MAX} 回: ${calls.map((c) => c.label).join(', ')}`);
-  assert.match(reimpl[0].prompt, /AC-1 未達/);
+  assert.equal(reimpl.length, 1, `実証不足の差し戻しは 1 回: ${calls.map((c) => c.label).join(', ')}`);
+  assert.match(reimpl[0].prompt, /AC-1 実証不足/);
+  assert.match(reimpl[0].prompt, /red→green/);
+  assert.doesNotMatch(reimpl[0].prompt, /AC-1 未達/);
+  assert.equal(evalCalls(calls).length, 2, '差し戻し後の再評価で実証が無くても evaluate を延長しない');
   assert.equal(result?.merge_tier, 'HOLD');
-  assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_agent_unsatisfied']);
-  assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [0], human: [], ci: [] });
+  assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
+  assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });
   const prCall = calls.find((c) => c.label === 'pr#1');
   assert.ok(prCall.prompt.includes(`- [ ] ${TEST_OBS_AC}`), `PR 本文で red→green 実証の無い観測型 AC が checked になった: ${prCall.prompt}`);
+  const summary = calls.find((c) => c.label === 'post-summary');
+  assert.ok(summary.prompt.includes(OBS_ACTION), `対応欄が実行による確認になっていない: ${summary.prompt}`);
+  assert.ok(!summary.prompt.includes('修正が必要（下表 ❌ 未達 行）'), `実証不足の AC を「修正が必要」にした: ${summary.prompt}`);
+});
+
+test('[observational-ac] (L2) 実証不足の AC と未達の AC が並ぶ run → 実証不足は 1 回で止まり、未達は AGENT_AC_REIMPL_MAX まで差し戻す', async () => {
+  const { result, calls } = await run(evalsFor([inspection(0), inspection(1, false)]), { analyze: prerunAnalyze({ acceptance_criteria: [TEST_OBS_AC, CODE_AC] }) });
+  const reimpl = reimplCalls(calls);
+  assert.equal(reimpl.length, AGENT_AC_REIMPL_MAX, `未達の差し戻しは上限 ${AGENT_AC_REIMPL_MAX} 回（実証不足の差し戻しは上限に数えない）: ${calls.map((c) => c.label).join(', ')}`);
+  assert.equal(reimpl.filter((c) => /AC-1 実証不足/.test(c.prompt)).length, 1, '実証不足の AC は 1 回だけ差し戻す');
+  assert.match(reimpl[0].prompt, /AC-1 実証不足/);
+  for (const c of reimpl) assert.match(c.prompt, /AC-2 未達/);
+  assert.equal(evalCalls(calls).length, AGENT_AC_REIMPL_MAX + 1);
+  assert.equal(result?.merge_tier, 'HOLD');
+  assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_agent_unsatisfied', 'ac_human_pending']);
+  assert.deepEqual(plain(result.final_unsatisfied_ac_by_actor), { agent: [1], human: [0], ci: [] });
 });
 
 // AC 3 件の issue（issue #1259）。AC-1 は旧来の正規表現の絞り込みが取りこぼした観測型 AC（plugin の install）

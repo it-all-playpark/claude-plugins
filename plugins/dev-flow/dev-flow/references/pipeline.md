@@ -145,19 +145,19 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
 
 ## Evaluate
 
-- **判定**: `evaluator` が diff・AC・PR 本文（PR 作成前に `buildPrBody` で組んだプレビュー）を読み、指摘を ledger に積む。収束は
+- **判定**: `evaluator` が diff・AC・PR 本文（`buildPrBody` で組んだプレビュー）を読み、指摘を ledger に積む。収束は
   `isConvergedUnderPolicy` だけで判定し（verdict は見ない）、未収束なら `fix_feedback` 付きで同じ `dev-implementer` に差し戻す。
   - lane は `gate_policy` で決まる（`_lib/gate-policy.mjs`。既定は `DEFAULT_GATE_POLICY`）。critical・決定論 check・seed は全 policy で blocking
   - 差し戻しの上限は `EVAL_PASSES`（shape から決まる。上限 `EVAL_MAX`）、design 差し戻しは `DESIGN_REPLAN_MAX`、同じ topic の反復は
     `EVAL_STUCK` で stuck。既出の指摘を渡して蒸し返しを抑える
   - Validate と同じ tree の eval#N には Validate の結果と `run-tests` の各 script のログパス（`scripts[].log`。worktree の外）を渡す。
     evaluator は realized diff が変更したテストファイルのログ行を evidence に使ってよい（`validateResultPromptBlock`）。
-    ログもテストの出力なので、テストの本体と対象実装を読んで assert を確かめたときだけ根拠にし、再実行するかもそこで決める。
-    tree が違う・ログか変更ファイルが無いときは
-    AC 関連テストファイルを実行させる
+    ログもテストの出力なので、本体と対象実装を読んで assert を確かめたときだけ根拠にする。
+    tree が違う・ログか変更ファイルが無いときは AC 関連テストを実行させる
   - agent AC の `satisfied:false` は gate_policy に依らず差し戻す（`AGENT_AC_REIMPL_MAX` まで延長）。human AC は差し戻さない。
     観測型 AC は redgreen-verify で red→green を実証して deterministic 昇格したときだけ checked（`demoteUnprovenObservationalAc`）。
-    ci AC は evaluator に判定させない。実行環境に届かない理由の未達（`unreachable_env`）は人手 AC 待ちに数える
+    ci AC は evaluator に判定させない。作り直しで埋まらない gap（`isReimplUnfixableGap`: `unreachable_env`・観測型の
+    `proof_missing`）は agent AC でも人手 AC 待ち（Merge tier は `ac_human_pending`）。`proof_missing` の差し戻しは run で 1 回
   - redgreen-verify — AC のテストを実装を外した tree と戻した tree で走らせ、red→green なら AC を deterministic に昇格する。
     `start` で切り離して `wait` を繰り返す（`_lib/bg-job-wait.mjs`）
   - 差し戻し後の PR 前再テストで green-fix が入った run は、その差分を evaluator に評価させ直す（`_lib/post-eval-recheck.mjs`）。
@@ -165,7 +165,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
 - **失敗の扱い**:
   - evaluator の null は throw（fail-closed。評価していない diff で PR に進まない）
   - stuck・上限到達は throw せず現状で PR へ進む（未解消の critical は Merge tier の HOLD と人のレビューが持つ）
-  - redgreen-verify の `start` / `wait` の失敗・待機上限（`REDGREEN_WAIT_CAP_SEC`）・結果の欠落は `stop` して inspection 据え置き（fail-safe。deterministic 昇格しない）
+  - redgreen-verify の `start` / `wait` の失敗・待機上限（`REDGREEN_WAIT_CAP_SEC`）・結果の欠落は `stop` して inspection 据え置き（fail-safe）
   - post-eval の再評価で hash・evaluator の応答が取れなければ評価済み tree を進めず、PR 直前の `hash_mismatch`（HOLD）で人に返す（fail-safe）
 - **コード**: `execEvaluatePhase`・`execPostEvalValidate`・`recheckPostEvalGreenFix`（`.claude/workflows/dev-flow-evaluate.js`）、`_lib/gate-policy.mjs`、
   `_lib/goal-ledger.mjs`、`_lib/evaluator-contract.mjs`、`_lib/redgreen-targets.mjs`、`_lib/stuck-detector.mjs`、`_lib/vdelta-transitions.mjs`
@@ -197,7 +197,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
   - delta review — review#i（i ≥ 2）は前 round の review 時点の head から今の head までの fix delta だけを読む（`resolveReviewScope`）。
     sha が確定できない round は full review。full review が critical を 1 件以上返したら、次の round は full review に戻す（`nextCriticalPending`）。
     critical を返さない full review を経るまで delta review に戻さず LGTM にもしない — critical の fix を
-    delta review が approve しただけでは LGTM にならない（delta review は delta 外を指摘しないので、critical が出た PR は他にもある前提で扱う）
+    delta review が approve しただけでは LGTM にならない（delta 外は指摘されないので、他にも critical がある前提）
   - fix — `pr-fixer` に blocking と CI 失敗をまとめて 1 回で渡す。finding の文は決定論でスクラブして渡す
     （`_lib/review-finding-scrub.mjs`）。worktree の外を指す finding は fix から外し、返り値 `human_followups` と終端サマリーの
     「人間側 follow-up」に載せる（`excludeOutsideWorktree`）
