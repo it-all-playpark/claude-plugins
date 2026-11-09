@@ -193,7 +193,7 @@ frontmatter_value() {
 @test "(B) devils-advocate-checklist の Blocking Categories に、起票を止める項目が揃っている" {
     section="$(awk '/^## Blocking Categories/ { f = 1; next } f && /^## / { exit } f { print }' "$CHECKLIST")"
     for item in 'agent issue に `executor: human` タスクが残存' \
-        "1 本の agent issue が単独で merge できる成果物を 2 つ以上含む" \
+        "1 本の agent issue が 2 つ以上の目的（別の原因・別の直し方）を含む" \
         'agent issue に `## 変更対象パス` が無い' \
         "agent issue 間の依存が循環している" \
         "PR が書き換えられる入力" \
@@ -203,4 +203,21 @@ frontmatter_value() {
         '移行の要件が AC か `## 制約・取らないこと` に無い'; do
         [[ "$section" == *"$item"* ]]
     done
+}
+
+@test "(C) agent issue の単位は 1 つの目的: 分けるのは依存と大きさの 2 つだけで、finding の数で issue を数えない" {
+    splitting="$(awk '/^#### Issue Splitting$/ { f = 1; next } f && /^#{2,4} / { exit } f { print }' "$SKILL_MD")"
+    [ -n "$splitting" ]
+    [ "$(grep -cE '^[0-9]+\. ' <<<"$splitting")" -eq 2 ]
+    [[ "$(<"$SKILL_MD")" != *"1 finding = 1 agent issue"* ]]
+    section="$(awk '/^## Blocking Categories/ { f = 1; next } f && /^## / { exit } f { print }' "$CHECKLIST")"
+    [ -n "$section" ]
+    [[ "$section" != *"単独で merge できる成果物を 2 つ以上"* ]]
+}
+
+@test "(D) Output Contract の ## Plan Quality Gate は 1 本にまとめた finding の組と、無い場合の - なし を並べる" {
+    gate="$(awk '/^## Plan Quality Gate/ { f = 1; next } f && /^## / { exit } f { print }' <<<"$(extract_contract)")"
+    merged="$(awk '/^- 1 本にまとめた finding: / { f = 1; print; next } f && /^  / { print; next } f { exit }' <<<"$gate")"
+    [[ "$merged" == *"元の finding の見出し"*" → #M1"* ]]
+    [[ "$merged" == *'`- なし`'* ]]
 }

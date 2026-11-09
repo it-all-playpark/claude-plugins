@@ -23,7 +23,7 @@ effort: xhigh
 
 issue を作る依頼は規模を問わずこの skill で受ける。症状・原因・直し方の分かった小さな起票は軽い経路で、
 議論から起こす計画は重い経路（Phase 1〜7）で起票する（経路の選択）。どちらも Phase 5〜7 を通る。
-agent の作業は dev-flow 1 run（= 1 PR）に収まる単位の issue に分け、変更対象パスと issue 間の
+agent の作業は 1 つの目的を 1 本の issue にし（Issue Splitting）、変更対象パスと issue 間の
 `Blocked by` 依存を持たせる。
 
 ## Arguments
@@ -48,12 +48,13 @@ agent の作業は dev-flow 1 run（= 1 PR）に収まる単位の issue に分�
 
 ## 経路の選択
 
-起票の依頼を受けたら、入力を見て軽い経路か重い経路かを先に決める。
+起票の依頼を受けたら、入力を見て軽い経路か重い経路かを先に決める。issue の本数は finding の数ではなく、
+Phase 3 の Issue Splitting の単位（1 つの目的）で数える。
 
 **軽い経路**（下の「軽い経路（Light Path）」）は、次をすべて満たすときに選ぶ:
 
 1. 入力が症状・原因・直し方の分かった具体的な finding（bug・監査結果・レビュー指摘など）である
-2. 1 finding = 1 agent issue で収まる（分割が要らない）
+2. finding を Issue Splitting の単位で切った各 issue が、分割（Blocked by）を要さない
 3. human タスクを含まない（Executor Classification で `executor: human` になる作業が無い）
 4. issue 間の依存が無い（`Blocked by` が要らない）
 
@@ -133,16 +134,15 @@ references the human issue via `Blocked by`.
 
 #### Issue Splitting
 
-agent issue 1 本 = dev-flow 1 run = 1 PR。dev-flow は 1 issue を implementer 1 spawn で 1 PR に仕上げるので、
-大きい計画を 1 本に詰めると走りきれないかレビュー不能な PR になる。agent タスクは次のいずれかに当たるとき
-別の agent issue に分ける（分割基準）:
+agent issue 1 本 = dev-flow 1 run = 1 PR。agent issue の単位は 1 つの目的 — 同じ原因を同じ直し方で直す変更のまとまり。
+1 つの目的は複数の finding・箇所・文書にまたがってよく、それらは 1 本の issue にまとめる（merge は常に人間なので、
+本数がそのまま人手の負担になる）。原因か直し方が違えば別の目的なので、別の issue にする。
 
-1. 単独で merge しても main のテストが green のまま価値を持つ成果物が 2 つ以上ある
-2. AC の中に、別の成果物のコードが無いと検証できない組がある（先行成果物を別 issue にし Blocked by で繋ぐ）
-3. 変更対象パスが互いに独立した 2 群に分かれ、どちらか片方だけで価値がある
+1 つの目的を複数の agent issue に分けるのは、次のどちらかに当たるときだけ:
 
-分けない: 片方だけではテストが書けない・main を壊す（例: 呼び出し側の無い内部 API だけ）分割。
-分けすぎは人手 merge 回数を増やす。
+1. AC の中に、別の成果物のコードが無いと検証できない組がある（先行の成果物を別 issue にし、Blocked by で繋ぐ）
+2. 1 本では dev-flow 1 run で走りきれないか、1 PR でレビューできない大きさである（dev-flow は 1 issue を
+   implementer 1 spawn で 1 PR に仕上げる）
 
 分けた agent issue はそれぞれ AC・制約・`## 変更対象パス` を持つ完結した issue にし、どの issue の成果物を
 使うか（依存）を記録する。依存は循環させない（Phase 6 でトポロジカル順に起票する）。
@@ -350,10 +350,11 @@ stdout の 1 行 JSON を `## Launch Order` へ写す規則は `references/outpu
 ### 軽い経路（Light Path）
 
 「経路の選択」で軽い経路を選んだ finding は、Phase 2 の 3 観点調査（frontend / backend / infra）と
-Phase 4 の devil's-advocate ループを行わない。複数の finding を 1 回の呼び出しでまとめて起票できる。
+Phase 4 の devil's-advocate ループを行わない。複数の finding を 1 回の呼び出しで起票できる。
 
-1. finding ごとに対象コード（と既存テスト）を読み、症状・原因・直し方を確かめたうえで、AC・
-   `## 制約・取らないこと`・`## 変更対象パス` を埋める。本文の構成は重い経路と同じ実装 issue テンプレート
+1. finding ごとに対象コード（と既存テスト）を読み、症状・原因・直し方を確かめる。確かめた finding を Phase 3 の
+   Issue Splitting の単位（1 つの目的）にまとめ（1 本にまとめた finding の組は Output Contract の `## Plan Quality Gate` に書く）、
+   issue ごとに AC・`## 制約・取らないこと`・`## 変更対象パス` を埋める。本文の構成は重い経路と同じ実装 issue テンプレート
    （`references/issue-template.md`）。続けて `## 変更対象パス` の各パスを Write ツールで `$TMPDIR` の下のファイル
    （例: `$TMPDIR/git-issue-paths-1.txt`。1 行に 1 パス）に書き、次を実行して直近 30 日に close した issue のうち本文に
    いずれかのパスを含むものを引く。パスは finding 由来で `$(…)` や引用符を含みうるので、コマンド文字列に書き込まない
@@ -364,28 +365,28 @@ Phase 4 の devil's-advocate ループを行わない。複数の finding を 1 
    ```
 
    stdout は 1 行 JSON `{"ok":true,"window_days":30,"issues":[...]}`（各 issue は `number`・`title`・`closedAt`・`body` と
-   一致したパスの `matched_paths` を持つ）。返った `issues` の本文を読み、finding と同じ仕組み（同じ判定・同じ prompt の組み立て・
-   同じガード）を直した issue が直近 30 日に 2 件以上あれば、その finding は重い経路に切り替える。パスが重なるだけでは
-   切り替えない（よく触るファイルではほぼ全件の close 済み issue の本文に出るので、パスだけで数えると全 finding が重い経路になる）。
+   一致したパスの `matched_paths` を持つ）。返った `issues` の本文を読み、起票する issue と同じ仕組み（同じ判定・同じ prompt の組み立て・
+   同じガード）を直した issue が直近 30 日に 2 件以上あれば、その issue（にまとめた finding）は重い経路に切り替える。パスが重なるだけでは
+   切り替えない（よく触るファイルではほぼ全件の close 済み issue の本文に出るので、パスだけで数えると全 issue が重い経路になる）。
    `{"ok":false,"error":...}` が返ったら検索結果を 0 件として扱わない。`error` を見て直せる原因（パスのファイル・`--repo`）を
-   直して再実行し、それでも `ok:true` が返らなければ同じ仕組みの close 済み issue を確かめられないので、その finding は
+   直して再実行し、それでも `ok:true` が返らなければ同じ仕組みの close 済み issue を確かめられないので、その issue は
    重い経路に切り替え、理由に `error` を書く
-2. Phase 5 と同じく finding ごとに本文ファイルを作り（`/tmp/git-issue-body-1.md`, `-body-2.md` …）、
+2. Phase 5 と同じく issue ごとに本文ファイルを作り（`/tmp/git-issue-body-1.md`, `-body-2.md` …）、
    本文ファイルごとに AC Lint Self-Check（`ac-lint`）を通す
 3. 本文ファイルを `references/devils-advocate-checklist.md` の Blocking Categories に照らす判定は書き手が行わず、
    本文ファイルごとに `issue-plan-reviewer` を spawn して行う（「Blocking Categories の判定（issue-plan-reviewer）」。
    prompt に渡すのは本文ファイルとチェックリストのパスだけで、調査結果・会話・書き手の判断理由を渡さない）。
    reviewer が blocking と判定した項目は書き手が直し（直した本文は AC Lint Self-Check も通し直す）、新しく spawn した
    reviewer に直した本文をもう 1 回判定させ、blocking が残れば重い経路に切り替える（ループはしない）。ただし
-   「直し方が症状の条件の分岐・ガード・入力の追加だけ」の項目に当たった finding は、その場で直さずに重い経路に
+   「直し方が症状の条件の分岐・ガード・入力の追加だけ」の項目に当たった issue は、その場で直さずに重い経路に
    切り替える（他の Blocking 項目はこれまでどおりその場で直す）
 4. 本文ファイルごとに Phase 6 の `create_issue.py`（`--kind agent`、`--blocked-by` なし）で起票する。
    ゲート（ac-lint・4000 字・変更対象パス・`executor: human` の検出・AC の人手判定（dev-flow と同じ `ac-actor.mjs` の判定））は重い経路と同じ
-5. Phase 7 は起票した全 issue の番号をまとめて `dev-flow-ready-set` に 1 回だけ渡す（finding ごとに実行しない）
+5. Phase 7 は起票した全 issue の番号をまとめて `dev-flow-ready-set` に 1 回だけ渡す（issue ごとに実行しない）
 
 途中で分割・issue 間の依存・human タスクが必要と分かったら、手順 1 で同じ仕組みを直した close 済みの issue が
 直近 30 日に 2 件以上見つかったら、手順 3 で reviewer が「直し方が症状の条件の分岐・ガード・入力の追加だけ」の項目に
-当たったと判定したら、または直した本文の再判定で blocking が残ったら、その finding は軽い経路をやめて重い経路（Phase 1 から）に切り替える。切り替えた finding は、入力の
+当たったと判定したら、または直した本文の再判定で blocking が残ったら、その issue（にまとめた finding）は軽い経路をやめて重い経路（Phase 1 から）に切り替える。切り替えた finding は、入力の
 症状・原因・直し方を Phase 1 の入力にして、人に質問せずに進む（Preconditions の follow-up 質問はせず、足りない制約は
 入力と対象コードから決める。dev-flow-health は無人の `claude -p` から呼ぶので、質問を待つと止まる）。重い経路では、
 同じ型の別の症状まで消える直し方（削除・統合・一般化を含む）を設計してから起票する。切り替えた finding と理由は
