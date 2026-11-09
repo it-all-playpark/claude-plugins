@@ -1,16 +1,13 @@
 import { test, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { ciRollupCommand } from './ci-check.mjs';
+import { join } from 'node:path';
 import { classifyCiChecks } from './merge-tier.mjs';
-import { runCheckCiWithRollup } from './test-helpers/check-ci-gh-stub.mjs';
+import { runCheckCiWithRollup, runMergeTierFactsWithRollup } from './test-helpers/check-ci-gh-stub.mjs';
 import {
   parseMergeTierFacts, isWellFormedRiskFact, isRiskValueDropped, MERGE_FACTS_RISK_DROPPED_ERROR, mergeTierFactsTopLevelKeys,
-  mergeTierFactsPrompt, mergeDiffHashError, closesCheckCommand, parseClosesFact, prClosesStatusOf,
+  mergeTierFactsPrompt, mergeDiffHashError, parseClosesFact, prClosesStatusOf,
   closesReinjectPrompt, closesReinjectStatus, CLOSES_REINJECT,
 } from './merge-tier-facts.mjs';
 import { PR_CLOSES_STATUS_VALUES } from './pr-artifacts.mjs';
@@ -189,36 +186,31 @@ test('mergeTierFactsTopLevelKeys は診断用にキー一覧 / 型名を返す',
   assert.equal(mergeTierFactsTopLevelKeys('x'), 'string');
 });
 
-// (12) prompt: gh 2 コマンドは bare 単文、script は bare 名先頭トークン、stdout は argv 転写。
+// (12) prompt: merge-tier-facts の bare 単文 1 本だけ。PR の読み取りはスクリプトが gh pr view を 1 回実行して取るので、
+// gh の stdout を argv に写す段・--jq を写す段を持たない（issue #1311）。
 // prompt に sandbox / excludedCommands / 特定パス起動の理由を書かない（.claude/rules/dev-flow.md）。
-const promptOf = (o) => mergeTierFactsPrompt({ ...o, rollupCommand: ciRollupCommand({ pr: o.pr, repo: o.repo }) });
-
-test('mergeTierFactsPrompt: gh 3 コマンド + merge-tier-facts bare 名の手順で、gh 出力は argv 転写', () => {
-  const p = promptOf({ wt: '/tmp/wt', base: 'main', pr: 42, repo: 'acme/skills', issue: 824 });
-  assert.ok(p.includes('`gh pr view 42 --repo acme/skills --json mergeable,mergeStateStatus,headRefOid`'));
-  assert.ok(p.includes(`2. \`${ciRollupCommand({ pr: 42, repo: 'acme/skills' })}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ`), p);
-  assert.ok(p.includes('`merge-tier-facts --worktree /tmp/wt --base origin/main --pr-view-data \''));
-  assert.ok(p.includes('--checks-data \''));
-  assert.ok(p.includes('当該オプション自体を省略せよ'));
+test('mergeTierFactsPrompt: merge-tier-facts --pr / --issue の bare 単文 1 本で、gh・--jq・旧 argv 転写を含まない', () => {
+  const p = mergeTierFactsPrompt({ wt: '/tmp/wt', base: 'main', pr: 42, repo: 'acme/skills', issue: 824 });
+  assert.ok(p.includes('1. `merge-tier-facts --worktree /tmp/wt --base origin/main --pr 42 --repo acme/skills --issue 824` を先頭トークンが merge-tier-facts の bare 単文で 1 回だけ実行せよ'), p);
+  for (const banned of ['gh pr view', '--jq', '--pr-view-data', '--checks-data', '--closes-data']) {
+    assert.ok(!p.includes(banned), `prompt に ${banned} が残っている:\n${p}`);
+  }
   assert.ok(p.includes('`value`') && p.includes('省略・空 object 化してはならない'), 'value の転記欠落を禁じる指示が無い（issue #746）');
+  assert.ok(p.includes('手順 1 自体が実行できなかった、または stdout が JSON でない場合のみ'), p);
+  assert.ok(p.includes('closes'), 'Output format に closes サブ結果が無い');
   assert.ok(!/sandbox|excludedCommands/i.test(p), 'prompt に起動形の理由を書かない');
   assert.ok(!p.includes('bash merge-tier-facts'), 'bash 前置しない');
   assert.ok(!p.includes('.sh '), '拡張子付き呼び出しをしない');
 });
 
 test('mergeTierFactsPrompt: repo 省略時は --repo を付けない', () => {
-  const p = promptOf({ wt: '/tmp/wt', base: 'dev', pr: 7, issue: 3 });
-  assert.ok(p.includes('`gh pr view 7 --json mergeable,mergeStateStatus,headRefOid`'));
-  assert.ok(p.includes(`\`${ciRollupCommand({ pr: 7 })}\``));
-  assert.ok(p.includes(`\`gh pr view 7 --json body --jq '.body | test("Closes #3(\\\\D|$)")'\``));
-  assert.ok(p.includes('--base origin/dev '));
+  const p = mergeTierFactsPrompt({ wt: '/tmp/wt', base: 'dev', pr: 7, issue: 3 });
+  assert.ok(p.includes('`merge-tier-facts --worktree /tmp/wt --base origin/dev --pr 7 --issue 3`'), p);
   assert.ok(!p.includes('--repo'));
 });
 
 // (12') 同じ rollup で check-ci の判定と merge-tier-facts → classifyCiChecks の判定が一致する（issue #1232）。
-// 片方だけ分類を変えると CI gate と Merge tier の判定が食い違う。check-ci には gh スタブの応答として同じ rollup を渡す。
-const here = dirname(fileURLToPath(import.meta.url));
-const scriptEnv = { ...process.env, PATH: `${join(here, '..', '..', 'playpark-core', 'bin')}:${process.env.PATH}` };
+// 片方だけ分類を変えると CI gate と Merge tier の判定が食い違う。どちらも gh スタブの応答として同じ rollup を受ける。
 const factsWorktree = mkdtempSync(join(tmpdir(), 'merge-tier-facts-test-'));
 afterAll(() => rmSync(factsWorktree, { recursive: true, force: true }));
 
@@ -227,7 +219,7 @@ function viaCheckCi(data) {
 }
 
 function viaMergeTierFacts(data) {
-  const r = spawnSync('bash', [join(here, '..', '_shared', 'scripts', 'merge-tier-facts.sh'), '--worktree', factsWorktree, '--base', 'origin/main', '--checks-data', data], { encoding: 'utf8', env: scriptEnv });
+  const r = runMergeTierFactsWithRollup(data, factsWorktree);
   return classifyCiChecks(parseMergeTierFacts(JSON.parse(r.stdout)).checks);
 }
 
@@ -278,29 +270,8 @@ test('rollup として読めない入力: check-ci は error、Merge tier は un
   }
 });
 
-// (13) closes: PR body は gh の --jq で true / false に畳み、その結果だけを merge-tier-facts へ渡す（issue #824）。
-// 本文そのものは argv にも prompt にも載せない。
-test('closesCheckCommand: repo 指定つき bare 単文の gh pr view --json body --jq で Closes #<issue> を真偽値にする', () => {
-  assert.equal(
-    closesCheckCommand({ pr: 42, repo: 'acme/skills', issue: 824 }),
-    `gh pr view 42 --repo acme/skills --json body --jq '.body | test("Closes #824(\\\\D|$)")'`,
-  );
-  assert.equal(closesCheckCommand({ pr: 42, repo: '', issue: '824' }), `gh pr view 42 --json body --jq '.body | test("Closes #824(\\\\D|$)")'`);
-});
-
-test('mergeTierFactsPrompt: closes の gh コマンドを 1 本足し、stdout の true / false だけを --closes-data で渡す', () => {
-  const p = promptOf({ wt: '/tmp/wt', base: 'main', pr: 42, repo: 'acme/skills', issue: 824 });
-  const cmd = closesCheckCommand({ pr: 42, repo: 'acme/skills', issue: 824 });
-  assert.ok(p.includes(`3. \`${cmd}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ`), p);
-  assert.ok(p.includes("--closes-data '<手順3の stdout（true または false）をそのまま>'"), p);
-  assert.ok(p.includes('手順 1 / 2 / 3 の stdout が空、またはコマンドが実行できなかった場合は当該オプション自体を省略せよ'), p);
-  // gh pr view --json body は --jq 付きの 1 本だけ（本文をそのまま stdout に出す形を指示しない）
-  assert.equal(p.split('--json body').length - 1, 1, '--json body は closes の jq 判定 1 本だけ');
-  assert.ok(!p.includes('--json body`'), '--jq なしの gh pr view --json body を指示しない');
-  assert.ok(!/--closes-data '<[^>]*本文/.test(p), '本文を argv に載せさせない');
-  assert.ok(p.includes('closes'), 'Output format に closes サブ結果が無い');
-});
-
+// (13) closes: PR body の Closes #<issue> 有無はスクリプト（merge-tier-facts / pr-closes-check）が true / false に畳む
+// （issue #824 / #1311）。本文そのものは argv にも prompt にも載せない。
 test('parseClosesFact: present:true → present、present:false → missing、取得失敗・契約外形状 → unknown', () => {
   assert.equal(parseClosesFact({ closes: { ok: true, value: { present: true } } }), 'present');
   assert.equal(parseClosesFact({ closes: { ok: true, value: { present: false } } }), 'missing');
@@ -328,12 +299,16 @@ test('closesReinjectStatus: 再投入失敗・再取得 false は missing（fail
   for (const r of [null, { edited: true, closes: 'true' }, { edited: true }]) assert.ok(PR_CLOSES_STATUS_VALUES.includes(closesReinjectStatus(r)));
 });
 
-test('closesReinjectPrompt: 決定論本文を Write → gh pr edit --body-file → 同じ spawn で closes の jq 判定を再取得', () => {
+test('closesReinjectPrompt: 決定論本文を Write → gh pr edit --body-file → 同じ spawn で pr-closes-check により再確認', () => {
   const p = closesReinjectPrompt({ wt: '/w', pr: 5, repo: 'o/r', issue: 9, prBody: 'body\nCloses #9\n' });
   assert.ok(p.includes('<<<PR_BODY_BEGIN>>>\nbody\nCloses #9\n<<<PR_BODY_END>>>'), p);
   assert.ok(p.includes('`/w/.devflow-tmp/pr-body-reinject.md`'), p);
   assert.ok(p.includes('1. `gh pr edit 5 --repo o/r --body-file /w/.devflow-tmp/pr-body-reinject.md`'), p);
-  assert.ok(p.includes(`2. \`${closesCheckCommand({ pr: 5, repo: 'o/r', issue: 9 })}\``), p);
+  assert.ok(p.includes('2. `pr-closes-check --pr 5 --repo o/r --issue 9` を先頭トークンが pr-closes-check の bare 単文で 1 回だけ実行せよ'), p);
+  assert.ok(!p.includes('--jq'), `prompt に --jq が残っている:\n${p}`);
+  assert.ok(!p.includes('gh pr view'), 'Closes の再確認を gh の単文で指示しない');
+  const noRepo = closesReinjectPrompt({ wt: '/w', pr: 5, repo: null, issue: 9, prBody: 'b' });
+  assert.ok(noRepo.includes('2. `pr-closes-check --pr 5 --issue 9`'), noRepo);
   assert.ok(p.includes('{"edited": true, "closes": "<手順2の stdout（true または false）をそのまま>"}'), p);
   assert.ok(!/sandbox|excludedCommands/i.test(p), 'prompt に起動形の理由を書かない');
   assert.deepEqual(CLOSES_REINJECT.required, ['edited']);

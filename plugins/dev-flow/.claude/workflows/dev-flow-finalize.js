@@ -2380,26 +2380,6 @@ const ENV_CHECK_RES = {
 
 const CI_VERIFIABLE_ENV_KEYS = Object.keys(ENV_CHECK_RES);
 
-const CHECKS = {
-  type: 'object',
-  required: ['ok'],
-  properties: {
-    ok: { type: 'boolean' },
-    checks: {
-      type: 'array',
-      items: {
-        type: 'object',
-        required: ['name', 'bucket'],
-        properties: {
-          name: { type: 'string' },
-          bucket: { type: 'string' },
-        },
-      },
-    },
-    error: { type: 'string' },
-  },
-};
-
 function envChecksGreen(checks, envKey) {
   const re = ENV_CHECK_RES[envKey];
   if (!re) {
@@ -2422,12 +2402,6 @@ function envChecksGreen(checks, envKey) {
   return { green: false, reason: 'not-pass', checkNames };
 }
 // ==== END inline: _lib/ci-checks.mjs ====
-// ==== BEGIN inline: _lib/ci-check.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
-function ciRollupCommand({ pr, repo, withLink = false }) {
-  const drop = withLink ? '.__typename,.completedAt' : '.__typename,.completedAt,.detailsUrl,.targetUrl';
-  return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop})) | ([39]|implode) as $q | tojson | split($q) | join(([92]|implode) + "u0027")'`;
-}
-// ==== END inline: _lib/ci-check.mjs ====
 // ==== BEGIN inline: _lib/pr-artifacts.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 function str(v) {
   return v == null ? '' : String(v);
@@ -3008,14 +2982,8 @@ const MERGE_FACTS = {
 }
 // merge-tier-facts-schema-end: MERGE_FACTS 直後に parseMergeTierFacts の inline 区間を続ける（anchor 用の一意行）。
 // ==== BEGIN inline: _lib/merge-tier-facts.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
-function closesCheckCommand({ pr, repo, issue }) {
+function mergeTierFactsPrompt({ wt, base, pr, repo, issue }) {
   const repoArg = repo ? ' --repo ' + repo : '';
-  return `gh pr view ${pr}${repoArg} --json body --jq '.body | test("Closes #${Number(issue)}(\\\\D|$)")'`;
-}
-
-function mergeTierFactsPrompt({ wt, base, pr, repo, issue, rollupCommand }) {
-  const repoArg = repo ? ' --repo ' + repo : '';
-  const bare = '（cd 前置・`bash` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止）';
   return `## Objective\nPR #${pr} の Merge tier 判定に使う事実を取得し、merge-tier-facts の stdout JSON をそのまま返せ。\n\n`
     + `## Tools\n`
     + `- 使用可: Bash のみ\n`
@@ -3023,22 +2991,12 @@ function mergeTierFactsPrompt({ wt, base, pr, repo, issue, rollupCommand }) {
     + `## Boundary\n`
     + `- 読み取り専用。git mutation（commit/push/reset/fetch/pull 等）禁止。ファイルを変更しない\n\n`
     + `## Steps\n`
-    + `1. \`gh pr view ${pr}${repoArg} --json mergeable,mergeStateStatus,headRefOid\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。stdout を <PR_VIEW> とする。\n`
-    + `2. \`${rollupCommand}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
-    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。`
-    + `stdout を <CHECKS> とする。\n`
-    + `3. \`${closesCheckCommand({ pr, repo, issue })}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
-    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。`
-    + `stdout（\`true\` または \`false\`）を <CLOSES> とする。\n`
-    + `4. \`merge-tier-facts --worktree ${wt} --base origin/${base} --pr-view-data '<手順1の stdout を一字一句そのまま。要約・整形・省略禁止>' `
-    + `--checks-data '<手順2の stdout を一字一句そのまま。要約・整形・省略禁止>' `
-    + `--closes-data '<手順3の stdout（true または false）をそのまま>'\` を先頭トークンが merge-tier-facts の bare 単文で 1 回だけ実行せよ。`
-    + `手順 1 / 2 / 3 の stdout が空、またはコマンドが実行できなかった場合は当該オプション自体を省略せよ（値を捏造してはならない）。`
-    + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止`
+    + `1. \`merge-tier-facts --worktree ${wt} --base origin/${base} --pr ${pr}${repoArg} --issue ${Number(issue)}\` を先頭トークンが merge-tier-facts の bare 単文で 1 回だけ実行せよ。`
+    + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止`
     + `（--worktree で worktree 絶対パスを渡しているため cd は不要）。\n`
-    + `5. 手順 4 の stdout の JSON 1 行を **そのまま** 返せ（判定・要約・整形・省略禁止）。`
+    + `2. 手順 1 の stdout の JSON 1 行を **そのまま** 返せ（判定・要約・整形・省略禁止）。`
     + `各サブ結果の \`value\`（中身の object を含む。ok:false のときは null）を省略・空 object 化してはならない。`
-    + `手順 4 自体が実行できなかった、または stdout が JSON でない場合のみ \`{"risk":{"ok":false,"value":null,"error":"<stderr の要約>"}}\` を返せ。`
+    + `手順 1 自体が実行できなかった、または stdout が JSON でない場合のみ \`{"risk":{"ok":false,"value":null,"error":"<stderr の要約>"}}\` を返せ。`
     + `失敗時に ok:true を生成してはならない。原因調査はするな。再試行禁止。\n\n`
     + `## Output format\n`
     + `merge-tier-facts の stdout JSON（{diffhash, risk, changed, pr, head_tree, checks, closes, epoch}。各サブ結果は {ok, value, error?}）\n`
@@ -3156,8 +3114,7 @@ function closesReinjectPrompt({ wt, pr, repo, issue, prBody }) {
     + `## Steps\n`
     + `1. \`gh pr edit ${pr}${repoArg} --body-file ${bodyFile}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
     + `失敗したら手順 2 へ進まず \`{"edited": false, "error": "<stderr の要約>"}\` を返せ。\n`
-    + `2. \`${closesCheckCommand({ pr, repo, issue })}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
-    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。\n`
+    + `2. \`pr-closes-check --pr ${pr}${repoArg} --issue ${Number(issue)}\` を先頭トークンが pr-closes-check の bare 単文で 1 回だけ実行せよ${bare}。\n`
     + `3. \`{"edited": true, "closes": "<手順2の stdout（true または false）をそのまま>"}\` を返せ。`
     + `手順 2 の stdout が空、またはコマンドが実行できなかった場合は closes を省略せよ（値を捏造してはならない）。原因調査はするな。再試行禁止。\n\n`
     + `## Output format\n{"edited": boolean, "closes"?: "true" | "false", "error"?: string}\nprose 禁止。JSON のみ 1 行で返せ。\n\n`
@@ -3725,8 +3682,8 @@ if (iterate?.status === 'lgtm' && (iterate?.fixes_applied ?? 0) > 0 && finalAcRe
 
 // Phase Merge tier: 最終 diff に danger-grep を再実行し merge tier を算出する。merge は全 tier 人間。
 phase('Merge tier')
-// merge-tier-facts: Merge tier の read-only 事実 7 種を 1 spawn で採る。subagent は gh pr view の stdout を argv で verbatim
-// 転写し、スクリプトはローカル git との純変換だけ（認証付き network I/O を持たない）。判定は全て JS 側（parseMergeTierFacts）。
+// merge-tier-facts: Merge tier の read-only 事実 7 種を 1 spawn で採る。subagent はスクリプトを bare 単文で 1 回実行するだけで、
+// スクリプトが読み取りの gh pr view を 1 回実行してローカル git の事実と束ねる。判定は全て JS 側（parseMergeTierFacts）。
 // throw / null / 契約外形状は per-field フォールバック（risk fail-closed → HOLD、他は fail-open）で続け、abort しない
 // （abort は終端サマリと journal entry を失う）。
 let mergeFacts = null
@@ -3734,7 +3691,7 @@ let mergeFacts = null
 let mergeFactsContractViolation = false
 try {
   mergeFacts = await trackedAgent(
-    mergeTierFactsPrompt({ wt: WT, base: BASE, pr: pr.pr_number, repo: REPO, issue: ISSUE, rollupCommand: ciRollupCommand({ pr: pr.pr_number, repo: REPO }) }),
+    mergeTierFactsPrompt({ wt: WT, base: BASE, pr: pr.pr_number, repo: REPO, issue: ISSUE }),
     { agentType: 'dev-runner-haiku-ro', schema: MERGE_FACTS, label: 'merge-tier-facts', phase: 'Merge tier', retryOnContractViolation: true },
   )
 } catch (e) {

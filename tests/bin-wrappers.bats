@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # Invariant (#571): bin/ exec ラッパーは playpark-core (journal 1本) と
-# dev-flow (29本) に分割される。plugin install 環境では skills が
+# dev-flow (30本) に分割される。plugin install 環境では skills が
 # plugin root 配下に入るため、絶対パス runtime 依存を断つ。
 #
 # 分割後もラッパーは plugin 境界を跨がない: exec 行（dev-flow は 4 行目、他は 3 行目）の target は
@@ -48,6 +48,7 @@ ensure-worktree-deps
 local-verify
 merge-tier-facts
 porcelain-verdict
+pr-closes-check
 pr-iterate-prerun
 pr-push
 pre-commit-hook
@@ -90,6 +91,7 @@ target_for() {
         local-verify) echo "_shared/scripts/local-verify.sh" ;;
         redgreen-verify) echo "_shared/scripts/redgreen-verify.sh" ;;
         merge-tier-facts) echo "_shared/scripts/merge-tier-facts.sh" ;;
+        pr-closes-check) echo "_shared/scripts/pr-closes-check.sh" ;;
         diff-triage) echo "_shared/scripts/diff-triage.sh" ;;
         security-review-codex-prep) echo "_shared/scripts/security-review-codex-prep.sh" ;;
         security-review-codex-result) echo "_shared/scripts/security-review-codex-result.sh" ;;
@@ -138,7 +140,7 @@ skills_target_for() {
     [ "$actual" = "$expected" ]
 }
 
-@test "plugins/dev-flow/bin の entry は対象29本と完全一致する" {
+@test "plugins/dev-flow/bin の entry は対象30本と完全一致する" {
     expected="$(devflow_expected_names)"
     actual="$(/bin/ls -1 "$REPO_ROOT/plugins/dev-flow/bin" | sort)"
     [ "$actual" = "$expected" ]

@@ -244,14 +244,12 @@ test('[hash-reconverged] (f) dispatch pin: tree-diff-numstat / merge-tier-facts 
   const factCall = calls.find((c) => c.label === 'merge-tier-facts');
   assert.ok(factCall != null, '(f) merge-tier-facts が呼ばれていない');
   assert.equal(factCall.agentType, 'dev-flow:dev-runner-haiku-ro', `(f) merge-tier-facts の agentType が期待と不一致: ${factCall.agentType}`);
+  // headRefOid（hash_reconverged の証人）はスクリプトが --pr の PR を gh pr view 1 回で読んで取る（issue #1311）
   assert.ok(
-    factCall.prompt.includes('--json mergeable,mergeStateStatus,headRefOid'),
-    `(f) merge-tier-facts の prompt に headRefOid 込みの gh pr view --json が含まれていない:\n${factCall.prompt}`,
+    factCall.prompt.includes('`merge-tier-facts --worktree /tmp/wt --base origin/main --pr 1 --issue 631`'),
+    `(f) merge-tier-facts の prompt に --pr / --issue の bare 名 call site が含まれていない:\n${factCall.prompt}`,
   );
-  assert.ok(
-    factCall.prompt.includes('`merge-tier-facts --worktree /tmp/wt --base origin/main --pr-view-data'),
-    `(f) merge-tier-facts の prompt に bare 名 call site が含まれていない:\n${factCall.prompt}`,
-  );
+  assert.ok(!factCall.prompt.includes('--pr-view-data'), '(f) gh の stdout を argv に写す旧 --pr-view-data が残っている');
   assert.ok(!factCall.prompt.includes('rev-parse'), '(f) PR head tree の rev-parse は script 側で行うため prompt には現れない');
 });
 
