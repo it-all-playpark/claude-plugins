@@ -213,6 +213,45 @@ write_security_hold() {
     [ "$(sig_field validate_test_red '.recent_runs[0] | "\(.issue) \(.pr_number) \(.repo) \(.message)"')" = "39 439 acme/target-app validate_test_red" ]
 }
 
+# HOLD 理由の code 1 つだけを持つ HOLD の dev-flow entry を書く
+write_single_hold() {
+    # $1 = timestamp, $2 = issue, $3 = HOLD 理由の code
+    jq -n --arg ts "$1" --argjson issue "$2" --arg c "$3" \
+        '{skill:"dev-flow", outcome:"success", source:"skill", timestamp:$ts,
+          telemetry:{plugin_commit:"ddddddddddd4", merge_tier:"HOLD", iterate_status:"lgtm",
+                     hold_reason_codes:[$c], hold_ac_human_judged:false},
+          context:{issue:$issue, pr_number:($issue + 400)}}' \
+        > "$JOURNAL/$(printf '%s' "$1" | tr 'T:' '--' | tr -d 'Z')-dev-flow-9${2}.json"
+}
+
+@test "HOLD: Validate でテストが起動しなかった validate_tests_not_run と実行対象が 0 本の no_tests_run は signature になる" {
+    write_single_hold 2026-10-04T12:00:00Z 61 validate_tests_not_run
+    write_single_hold 2026-10-04T13:00:00Z 62 no_tests_run
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(hold_sig_count validate_tests_not_run)" = "1" ]
+    [ "$(printf '%s' "$output" | jq -r '.signatures[] | select(.template == "validate_tests_not_run") | .signature')" = "dev-flow | hold | Merge tier | validate_tests_not_run" ]
+    [ "$(printf '%s' "$output" | jq -r '.signatures[] | select(.template == "validate_tests_not_run") | [.recent_runs[].issue] | join(",")')" = "61" ]
+    [ "$(hold_sig_count no_tests_run)" = "1" ]
+    [ "$(printf '%s' "$output" | jq -r '.signatures[] | select(.template == "no_tests_run") | .signature')" = "dev-flow | hold | Merge tier | no_tests_run" ]
+    [ "$(printf '%s' "$output" | jq -r '.signatures[] | select(.template == "no_tests_run") | [.recent_runs[].issue] | join(",")')" = "62" ]
+}
+
+@test "HOLD: HOLD_IGNORED_CODES の code だけを持つ HOLD は signature にならない" {
+    local codes code n=0
+    codes="$(hold_constant HOLD_IGNORED_CODES)"
+    [ "$(printf '%s' "$codes" | jq 'index("mergeable_conflicting")')" != "null" ]
+    for code in $(printf '%s' "$codes" | jq -r '.[]'); do
+        n=$((n + 1))
+        write_single_hold "2026-10-04T12:00:$(printf '%02d' "$n")Z" "$((n + 10))" "$code"
+    done
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.runs["dev-flow"]')" = "$n" ]
+    [ "$(printf '%s' "$output" | jq '.signatures | length')" = "0" ]
+    [ "$(printf '%s' "$output" | jq '.needs_llm')" = "false" ]
+}
+
 @test "HOLD: hold_reason_codes を持たない既存形式の entry は signature にならず、エラーにもならない" {
     jq -n '{skill:"dev-flow", outcome:"success", source:"skill", timestamp:"2026-10-04T16:00:00Z",
             telemetry:{plugin_commit:"ddddddddddd4", merge_tier:"HOLD", iterate_status:"ci_error"}}' \
@@ -267,15 +306,44 @@ write_security_hold() {
     [ "$(sig_field 'security_review_unresolved' .count)" = "2" ]
 }
 
+# merge tier の HOLD_REASON_CODES の code を 1 行 1 つで出す
+hold_reason_codes() {
+    awk '/^export const HOLD_REASON_CODES = \[/ { f = 1; next } f && /^\];/ { exit } f { print }' \
+        "$SKILL_DIR/../_lib/merge-tier.mjs" | grep -oE "'[a-z_]+'" | tr -d "'"
+}
+
 @test "HOLD: 定数の code は merge tier の HOLD_REASON_CODES に実在する（rename で黙って拾わなくならない）" {
-    local merge_tier="$SKILL_DIR/../_lib/merge-tier.mjs" codes code
+    local codes ignored code known
     codes="$(hold_constant HOLD_SIGNATURE_CODES)"
+    ignored="$(hold_constant HOLD_IGNORED_CODES)"
     [ -n "$codes" ]
-    known="$(awk '/^export const HOLD_REASON_CODES = \[/ { f = 1; next } f && /^\];/ { exit } f { print }' "$merge_tier")"
+    [ -n "$ignored" ]
+    known="$(hold_reason_codes)"
     [ -n "$known" ]
-    for code in $(printf '%s' "$codes" | jq -r '.[]') iterate_non_lgtm ac_human_pending; do
-        [[ "$known" == *"'$code'"* ]]
+    for code in $(printf '%s' "$codes" | jq -r '.[]') $(printf '%s' "$ignored" | jq -r '.[]') iterate_non_lgtm ac_human_pending; do
+        printf '%s\n' "$known" | grep -qxF "$code" || { echo "HOLD_REASON_CODES に無い code: $code" >&2; false; }
     done
+}
+
+@test "HOLD: HOLD_REASON_CODES の各 code は HOLD_SIGNATURE_CODES・条件付きの 2 つ・HOLD_IGNORED_CODES のちょうど 1 つに入る" {
+    local codes ignored code n bad=""
+    codes="$(hold_constant HOLD_SIGNATURE_CODES)"
+    ignored="$(hold_constant HOLD_IGNORED_CODES)"
+    [ -n "$codes" ]
+    [ -n "$ignored" ]
+    [ "$(hold_reason_codes | wc -l)" -ge 20 ]
+    for code in $(hold_reason_codes); do
+        n=0
+        [ "$(printf '%s' "$codes" | jq --arg c "$code" 'index($c)')" = "null" ] || n=$((n + 1))
+        case "$code" in iterate_non_lgtm | ac_human_pending) n=$((n + 1)) ;; esac
+        [ "$(printf '%s' "$ignored" | jq --arg c "$code" 'index($c)')" = "null" ] || n=$((n + 1))
+        if [ "$n" -eq 0 ]; then
+            bad+="どこにも分類されていない: $code"$'\n'
+        elif [ "$n" -gt 1 ]; then
+            bad+="2 つ以上に分類されている: $code"$'\n'
+        fi
+    done
+    [ -z "$bad" ] || { printf '%s' "$bad" >&2; false; }
 }
 
 # --- 単体起動の pr-iterate の非 LGTM -------------------------------------------------

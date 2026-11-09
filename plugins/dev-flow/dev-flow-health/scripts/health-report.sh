@@ -67,9 +67,17 @@ CANDIDATE_PATH="plugins/dev-flow/"
 
 # 異常とする HOLD 理由（dev-flow 自身や実行環境の不具合で出るもの）。一覧はここだけに持ち、health-report.bats と
 # skill-docs.bats がこの 2 行を読んで参照する。iterate_non_lgtm と ac_human_pending は条件付き（上の 1.）。
-# HOLD_SIGNATURE_ITERATE_STATUSES は単体起動の pr-iterate run の終端 status にも使う
-HOLD_SIGNATURE_CODES='["final_reconcile_unavailable","final_ac_unavailable","pr_closes_missing","merge_facts_dropped","danger_fail_closed","ac_agent_unsatisfied","final_test_red","validate_test_red","security_review_unresolved"]'
+# HOLD_SIGNATURE_ITERATE_STATUSES は単体起動の pr-iterate run の終端 status にも使う。
+# validate_tests_not_run は Validate でテストが起動しなかった停止で、テスト起動失敗は環境要因なので拾う。
+# no_tests_run は対象 repo 由来が多いがテスト検出や run-tests の不具合でも起きるので、再現率優先で拾い分類で振り落とす。
+HOLD_SIGNATURE_CODES='["final_reconcile_unavailable","final_ac_unavailable","pr_closes_missing","merge_facts_dropped","danger_fail_closed","ac_agent_unsatisfied","final_test_red","validate_test_red","security_review_unresolved","validate_tests_not_run","no_tests_run"]'
 HOLD_SIGNATURE_ITERATE_STATUSES='["ci_pending","ci_error","review_contract_error","stuck","fix_failed","max_reached","security_unresolved"]'
+
+# signature にしない HOLD 理由。PR の内容か人間の判断を待つ停止で、dev-flow や環境の不具合では出ない
+# （test_runner_changed は PR が tests/run-*.sh を変えた・足したことによる停止）。分類の宣言で、集計の分岐には使わない —
+# merge tier の HOLD_REASON_CODES の各 code が HOLD_SIGNATURE_CODES・条件付きの 2 つ・この定数のちょうど 1 つに入ることを
+# health-report.bats が確かめ、code が足されたときに拾うか拾わないかを決めないまま黙って漏れるのを止める
+HOLD_IGNORED_CODES='["ledger_unconverged","danger_unresolved","breaking_structured","escalate","hash_mismatch","testsurf_uncleared","mergeable_conflicting","ci_checks_failed","ac_ci_pending","test_runner_changed"]'
 
 die_json() {
     jq -n --arg e "$1" '{error: $e}' >&2
