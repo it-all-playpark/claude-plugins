@@ -348,6 +348,26 @@ dev-flow-ready-set [--repo owner/repo] --with-in-flight <M1> <M2> ...
 
 stdout の 1 行 JSON を `## Launch Order` へ写す規則は `references/output-contract.md`。
 
+続けて、起票した issue 間の依存を `dep_graph.py` で Mermaid の図に組み、Output Contract の `## 依存グラフ` に載せる
+（図は手で書かない）。Phase 6 で起票した全 issue（human issue と agent issue）の番号・タイトルと、`--blocked-by` に
+渡した番号を Write ツールで `$TMPDIR` の下の JSON ファイル（例: `$TMPDIR/git-issue-deps.json`）に書く。タイトルは
+finding 由来なのでコマンド文字列に書かない:
+
+```json
+[{"number": 11, "title": "...", "blocked_by": []}, {"number": 12, "title": "...", "blocked_by": [11]}]
+```
+
+Run:
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/git-issue/scripts/dep_graph.py --input "$TMPDIR/git-issue-deps.json"
+```
+
+- `--dry-run` でも実行する。issue 番号の代わりに Phase 6 の仮番号（`"H1"`…・`"A1"`…）で `number` と `blocked_by` を組む
+  （依存は本文ファイルの `Blocked by <本文ファイル名>` 行のもの）
+- agent issue が 1 本で依存も無いときは実行せず、`## 依存グラフ` の節を省く
+- 非 0 で終わったら（JSON の不正・入力に無い番号への依存）stderr のエラーを見て JSON を直して再実行する
+
 ### 軽い経路（Light Path）
 
 「経路の選択」で軽い経路を選んだ finding は、Phase 2 の 3 観点調査（frontend / backend / infra）と
