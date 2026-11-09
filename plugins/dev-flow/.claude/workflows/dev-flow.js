@@ -236,6 +236,7 @@ function normalizeCiVerify(raw) {
   if (!isNonEmptyString(raw.label)) fail('label', raw.label);
   const isNameList = (v) => Array.isArray(v) && v.every(isNonEmptyString);
   if (!isNameList(raw.checks) || raw.checks.length === 0) fail('checks', raw.checks);
+  if (raw.checks.some((c) => /[\n\r|;&<>`$]/.test(c))) fail('checks（改行・| ; & < > ` $ を含む check 名は CI 判定の中継で実行できない）', raw.checks);
   if (!isNameList(raw.commands)) fail('commands', raw.commands);
   if (!(Number.isInteger(raw.wait_ceiling_seconds) && raw.wait_ceiling_seconds > 0)) fail('wait_ceiling_seconds', raw.wait_ceiling_seconds);
   return {

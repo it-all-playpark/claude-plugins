@@ -302,6 +302,13 @@ test('validatePrerunSetup: ci_verify の形が不正なら fail-closed で throw
   assert.throws(() => validatePrerunSetup(validRaw({ ci_verify: ['full-ci'] }), 641), /ci_verify/);
 });
 
+test('normalizeCiVerify: stdout-relay の hook が deny する文字を含む check 名は throw（引用符は通す）', () => {
+  for (const name of ['Build & Test', 'a | b', 'a; b', 'a < b', 'a > b', 'a `b`', 'a $b', 'a\nb']) {
+    assert.throws(() => normalizeCiVerify({ ...CI_VERIFY, checks: ['e2e', name] }), /ci_verify\.checks/, JSON.stringify(name));
+  }
+  assert.deepEqual(normalizeCiVerify({ ...CI_VERIFY, checks: ["it's e2e (ubuntu)"] }).checks, ["it's e2e (ubuntu)"]);
+});
+
 // ---- local_verify（issue #863）: ci の AC をローカル実行で判定する宣言を検証・正規化する ----
 
 const LOCAL_VERIFY = { command: 'pnpm test:e2e:local', db: { engine: 'postgres', version: '17' }, env: 'E2E_EXTERNAL_DATABASE_URL', timeout_seconds: 1500 };
