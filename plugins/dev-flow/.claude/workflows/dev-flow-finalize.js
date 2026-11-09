@@ -3461,17 +3461,19 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
     }
     finalEpochRes = maxEpochRes([sync, ft, ftRerun])
     // Step3〜4 は sync 成功だけに依存する（test#final の成否に依存しない）。Step3 最終 changed-files（fail-open）
-    const changedFinal = await trackedAgent(
+    const changedFinal = await failOpenAgent(
       `次を実行し **stdout の各行(ファイルパス)を** \`{"files": [...]}\` に包んで返せ:\n`
       + `git -C ${WT} diff --name-only origin/${BASE}...HEAD`,
-      { agentType: 'dev-runner-haiku-ro', schema: CHANGED, label: 'changed-files-final', phase: 'Final reconcile' })
+      { agentType: 'dev-runner-haiku-ro', schema: CHANGED, label: 'changed-files-final', phase: 'Final reconcile', retryOnContractViolation: true })
+    // 最終 diff（ephemeral 除去後）。null = 取得失敗（Step4 の宣言外再監査は skip、Step4b の再検証対象は全件のまま）
+    let filesFinal = null
     if (!changedFinal?.files) {
       log('⚠️ Final reconcile: changed-files-final 取得失敗 — 宣言外再監査を skip（fail-open。test gate は維持）')
     } else {
       // Merge tier は raw を使うので ephemeral 除去前を渡す。
       changedFilesFinal = changedFinal.files
       if (finalTestEvidence) finalTestEvidence.diffTouched = planBaseRerun({ failedFiles: finalTestEvidence.failedFiles, diffFiles: changedFinal.files }).touched
-      const filesFinal = filterEphemeralPaths(changedFinal.files)
+      filesFinal = filterEphemeralPaths(changedFinal.files)
       // Step4 宣言外パス再監査（advisory）: Diff triage 時点の undeclared に無い新規分のみ集約 1 item
       const planAllTasksF = state.plan.serial ?? []
       const undeclaredFinal = diffDeclaredPaths(planAllTasksF, filesFinal)
@@ -3480,24 +3482,25 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
         state.ledger = appendItem(state.ledger, { id: 'CONCERN-FINAL', text: `pr-iterate fix 後に plan 宣言外の変更 ${newUndeclared.length} 件: ${newUndeclared.join(', ')}`.slice(0, 500), dimension: 'concern', severity: 'major', source: 'concern', check: { kind: 'inspection' } }).ledger
         log(`Final reconcile: fix 由来の宣言外変更 ${newUndeclared.length} 件 → CONCERN-FINAL（advisory）へ注入`)
       }
-      // Step4b 解消済み item の再検証対象: LLM 判断の解消済み item の全件。pr-iterate fix が触ったファイル（PR 作成時の
-      // tree → 最終 HEAD の差分）は絞り込みに使わず判断材料として渡す。再検証は Step6 の Final AC reconcile が行い、
-      // 再検証されなかった item は解消根拠を取り下げる。fix の差分が取れなければ最終 diff 全体を渡す（多めに見せる側）。
-      if (state.ledger.items.some(isRecheckCandidate)) {
-        let fixFiles = filesFinal
-        if (state.prDiffHash != null) {
-          const fixNs = await failOpenAgent(
-            treeDiffNumstatPrompt(state.prDiffHash, 'HEAD'),
-            { agentType: 'dev-runner-haiku-ro', schema: TREE_DIFF_LINES, label: 'fix-diff-numstat', phase: 'Final reconcile', retryOnContractViolation: true },
-          )
-          const parsedFix = (fixNs && fixNs.ok === true && Array.isArray(fixNs.lines)) ? parseTreeDiffStat(fixNs.lines) : null
-          if (parsedFix && !parsedFix.truncated) fixFiles = filterEphemeralPaths(parsedFix.files.map((f) => f.path))
-          else log(`⚠️ fix-diff-numstat: fix の差分を取得できず（${fixNs?.error ?? (parsedFix ? 'truncated' : 'null / schema 不一致')}）— 最終 diff 全体を変更ファイルとして渡す`)
-        }
-        finalRecheckFiles = fixFiles
-        finalRecheckTargets = recheckTargets(state.ledger, fixFiles)
-        log(`Final reconcile: fix が触ったファイル ${fixFiles.length} 件 — 解消済み item ${finalRecheckTargets.length} 件を再検証対象にする`)
+    }
+    // Step4b 解消済み item の再検証対象: LLM 判断の解消済み item の全件。pr-iterate fix が触ったファイル（PR 作成時の
+    // tree → 最終 HEAD の差分）は絞り込みに使わず判断材料として渡す。再検証は Step6 の Final AC reconcile が行い、
+    // 再検証されなかった item は解消根拠を取り下げる。fix の差分が取れなければ最終 diff 全体を渡す（多めに見せる側）。
+    // 最終 diff も取れない run は変更ファイルを空で渡し、再検証対象は候補の全件にする（差分不明を再検証不要と同一視しない）。
+    if (state.ledger.items.some(isRecheckCandidate)) {
+      let fixFiles = filesFinal ?? []
+      if (state.prDiffHash != null) {
+        const fixNs = await failOpenAgent(
+          treeDiffNumstatPrompt(state.prDiffHash, 'HEAD'),
+          { agentType: 'dev-runner-haiku-ro', schema: TREE_DIFF_LINES, label: 'fix-diff-numstat', phase: 'Final reconcile', retryOnContractViolation: true },
+        )
+        const parsedFix = (fixNs && fixNs.ok === true && Array.isArray(fixNs.lines)) ? parseTreeDiffStat(fixNs.lines) : null
+        if (parsedFix && !parsedFix.truncated) fixFiles = filterEphemeralPaths(parsedFix.files.map((f) => f.path))
+        else log(`⚠️ fix-diff-numstat: fix の差分を取得できず（${fixNs?.error ?? (parsedFix ? 'truncated' : 'null / schema 不一致')}）— ${filesFinal ? '最終 diff 全体を' : '最終 diff も取れないので空を'}変更ファイルとして渡す`)
       }
+      finalRecheckFiles = fixFiles
+      finalRecheckTargets = filesFinal ? recheckTargets(state.ledger, fixFiles) : state.ledger.items.filter(isRecheckCandidate)
+      log(`Final reconcile: fix が触ったファイル ${fixFiles.length} 件 — 解消済み item ${finalRecheckTargets.length} 件を再検証対象にする`)
     }
   }
 } else {
@@ -3979,7 +3982,7 @@ const summaryBody = buildDevflowSummaryBody({
 // 投稿失敗は fail-open だが summary_posted として返り値・終端 note に出す（log 1 行では人間が気づけない）。
 const summaryBodyFile = `${WT}/.devflow-tmp/dev-flow-summary.md`
 const summaryRepo = repoFromGithubUrl(pr.pr_url) ?? REPO
-const summaryPost = await trackedAgent(
+const summaryPost = await failOpenAgent(
   `## Objective\nPR #${pr.pr_number} に dev-flow の終端サマリーコメントを投稿する（merge tier: ${mergeTier.tier}）。\n\n`
   + bodySaveInstr(summaryBody, { bodyFile: summaryBodyFile }, 'DEV_FLOW')
   + `## Instructions\n`

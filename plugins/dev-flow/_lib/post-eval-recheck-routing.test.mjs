@@ -271,6 +271,37 @@ test('[post-eval-recheck] Final AC reconcile が走らない（final test red）
   assert.ok(summary.includes('fix 後の最終 tree で再検証できず — 解消根拠を取り下げ'), `取り下げの表示が無い:\n${summary}`);
 });
 
+// changed-files-final が取れない run（throw / files 無し）。fix-diff-numstat も取れなければ変更ファイルは空で渡す
+const CHANGED_FINAL_UNAVAILABLE = {
+  'throw': { overrides: { 'changed-files-final': () => { throw new Error('injected') } }, fixFiles: ['src/x.ts'] },
+  'files 無し + fix-diff-numstat 失敗': { overrides: { 'changed-files-final': {}, 'fix-diff-numstat': null }, fixFiles: [] },
+};
+for (const [name, c] of Object.entries(CHANGED_FINAL_UNAVAILABLE)) {
+  test(`[post-eval-recheck] changed-files-final が取れない（${name}）run でも解消済み item を Final AC reconcile で再検証し、返事が無ければ解消根拠を取り下げる`, async () => {
+    const { call, summary, result } = await run({ scenario: FINAL_RECHECK, overrides: { ...c.overrides, 'final-ac-reconcile': finalAc() } });
+    assert.equal(result.finalize_error, undefined, `子が throw した: ${result.finalize_error}`);
+    const fa = call('final-ac-reconcile');
+    assert.ok(fa, '前提: Final AC reconcile が走っていない');
+    const listed = fa.prompt.slice(fa.prompt.indexOf('再検証対象 resolved item 一覧'));
+    assert.ok(fa.prompt.includes('再検証対象 resolved item 一覧') && listed.includes('"id":"CONCERN-1"'), '差分が取れない run で解消済み CONCERN-1 が再検証対象に無い');
+    assert.equal(listLineAfter(fa.prompt, '後から変更されたファイル一覧（pr-iterate fix の差分'), JSON.stringify(c.fixFiles), `fix の変更ファイル一覧が prompt に無い:\n${fa.prompt}`);
+    assert.ok(!summary.includes(FINAL_STALE), `返事の無い解消根拠が終端サマリに残っている:\n${summary}`);
+    assert.ok(summary.includes('fix 後の最終 tree で再検証できず — 解消根拠を取り下げ'), `取り下げの表示が無い:\n${summary}`);
+  });
+}
+
+test('[post-eval-recheck] changed-files-final が throw し Final AC reconcile が走らない（final test red）run でも、候補の全件で解消根拠を取り下げる', async () => {
+  const { labels, summary, result } = await run({
+    scenario: FINAL_RECHECK,
+    overrides: { 'test#final': { tests: 'failed', green: false, summary: 'red' }, 'changed-files-final': () => { throw new Error('injected') } },
+  });
+  assert.equal(labels.includes('final-ac-reconcile'), false, '前提: final test red なら Final AC reconcile は走らない');
+  assert.equal(result.finalize_error, undefined, `子が throw した: ${result.finalize_error}`);
+  assert.equal(result.merge_tier, 'HOLD');
+  assert.ok(!summary.includes(FINAL_STALE), '再検証されなかった解消根拠が残っている');
+  assert.ok(summary.includes('fix 後の最終 tree で再検証できず — 解消根拠を取り下げ'), `取り下げの表示が無い:\n${summary}`);
+});
+
 test('[post-eval-recheck] green-fix の再評価で evaluator が応答しなければ、変更ファイルに言及しない item も含め候補の全件で解消根拠を取り下げる', async () => {
   // green-fix は tests/foo.test.ts だけを触り、EVAL-1-X の解消根拠は src/a.ts にしか言及しない
   const { summary, result } = await run({
