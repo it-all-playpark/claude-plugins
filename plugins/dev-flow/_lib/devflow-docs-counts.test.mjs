@@ -289,6 +289,26 @@ test('pipeline.md は 30KB 以下', () => {
   assert.ok(size <= 30 * 1024, `pipeline.md が ${size} bytes（上限 30KB）`);
 });
 
+// proxy ごとの失敗ポリシーの正は exec-proxy.md の表。pipeline.md は重複を書かず「`exec-proxy.md` の `<proxy 名>` 行」で指す
+test('pipeline.md: 「`exec-proxy.md` の `<名前>` 行」の参照はすべて exec-proxy.md の失敗ポリシー表の proxy 名を指す', () => {
+  const exec = readFileSync(join(pluginRoot, 'dev-flow/references/exec-proxy.md'), 'utf8');
+  const table = sectionOf(exec, '## 失敗ポリシー表');
+  const proxies = table.split('\n').filter((l) => l.startsWith('| ') && l.includes('<br>')).map((l) => l.slice(2, l.indexOf('<br>')).trim());
+  assert.ok(proxies.includes('merge-tier-facts'), `exec-proxy.md の失敗ポリシー表の proxy 名が読めない: ${proxies.join(', ')}`);
+  const refs = [...pipelineMd.matchAll(/`exec-proxy\.md` の `([^`\n]+)` 行/g)].map((m) => m[1]);
+  assert.ok(refs.length > 0, 'pipeline.md に「`exec-proxy.md` の `<名前>` 行」の参照が無い');
+  for (const name of refs) assert.ok(proxies.includes(name), `pipeline.md の参照 ${name} が exec-proxy.md の失敗ポリシー表の proxy 名に無い`);
+});
+
+test('pipeline.md: Validate 節は pre-commit hook 無し・結果不明の扱いと、失敗の扱いの理由（green 要件を緩めない・cross-repo-gate）を持つ', () => {
+  const validate = sectionOf(pipelineMd, '## Validate\n');
+  assert.ok(validate.includes('hook 無し・結果不明'), 'pipeline.md「Validate」に pre-commit hook の「hook 無し・結果不明」の扱いが無い');
+  const failure = fieldOf(validate, '失敗の扱い');
+  for (const s of ['green 要件を緩めない', '`_lib/cross-repo-gate.mjs`']) {
+    assert.ok(failure.includes(s), `pipeline.md「Validate」の失敗の扱いに ${s} が無い`);
+  }
+});
+
 test('pipeline.md: 回数・enum の値・HOLD 理由の一覧を書き写さず、定数名かファイルで指す', () => {
   // 値の正はコード。導出した値が pipeline.md に現れない
   const sectionsMax = devFlowSrc.match(/^const PR_SECTIONS_MAX_CHARS = (\d+);?$/m)?.[1];
