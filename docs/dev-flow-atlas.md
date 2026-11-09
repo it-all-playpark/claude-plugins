@@ -27,8 +27,8 @@ GitHub issue から LGTM までを 8 phase で駆動する `dev-flow` の実処�
 
 wrapper skill が worktree を用意して `EnterWorktree` した上で、dynamic workflow `dev-flow-run` を
 起動する。phase 遷移とループは workflow script が JS で保持し、中間 state は外部 JSON ではなく
-script 変数と `workflow()` の引数・返り値に持つ。`dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐だけを持ち、
-工程の処理は工程の workflow に書く — 4〜5（Evaluate 後の Validate と green-fix の再評価を含む）は
+script 変数と `workflow()` の引数・返り値に持つ。`dev-flow.js` が持つ phase・起動する工程の workflow と新しい処理の
+置き場所は [`.claude/rules/dev-flow.md`](../.claude/rules/dev-flow.md) に従う。4〜5（Evaluate 後の Validate と green-fix の再評価を含む）は
 `workflow('dev-flow:dev-flow-evaluate-run')`（`dev-flow-evaluate.js`）が持ち、親はその返り値の state で 6 に進む。
 pr-iterate の後の 7〜8 と終端サマリーの投稿は `workflow('dev-flow:dev-flow-finalize-run')`（`dev-flow-finalize.js`）が持ち、
 その返り値が dev-flow の返り値になる。評価ループの状態は `dev-flow-evaluate` の中だけで持ち、親は途中経過で判定しない。

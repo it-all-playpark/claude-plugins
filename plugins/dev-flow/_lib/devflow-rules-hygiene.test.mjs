@@ -243,7 +243,58 @@ test('(n) 起動形と GitHub I/O の規範は rules にだけ置き、exec-prox
   assert.ok(execProxySrc.includes('`.claude/rules/dev-flow.md`'), 'exec-proxy.md が rules を指していない');
 });
 
+// dev-flow.js の構造の規範は rules の 1 行にだけ置き、その行が名指す phase・起動 workflow を dev-flow.js と集合一致で照合する
+// （片方向の包含では、工程の切り出しで dev-flow.js から消えた名前が rules に残っても通る）
+const STRUCTURE_ANCHOR = 'に足してよいのは工程の起動・state の受け渡し・ゲートの分岐だけ';
+const devFlowJsSrc = readFileSync(join(WORKFLOWS_ABS, 'dev-flow.js'), 'utf8');
+
+function structureNames(src) {
+  return [
+    ...[...src.matchAll(/phase\('([^']+)'\)/g)].map((m) => `phase('${m[1]}')`),
+    ...[...src.matchAll(/workflow\('dev-flow:([^']+)'/g)].map((m) => `workflow('dev-flow:${m[1]}')`),
+  ];
+}
+
+// dev-flow.js の本文と rules の行の名前集合の差を返す（どちらも空なら一致）
+function structureMismatch(devFlow, rulesLine) {
+  const code = new Set(structureNames(devFlow));
+  const doc = new Set(structureNames(rulesLine));
+  return {
+    onlyInRules: [...doc].filter((n) => !code.has(n)).sort(),
+    onlyInDevFlow: [...code].filter((n) => !doc.has(n)).sort(),
+  };
+}
+
+const structureLine = rulesSrc.split('\n').find((l) => l.includes(STRUCTURE_ANCHOR)) ?? '';
+
+test('(p) dev-flow.js の構造の規範は rules にだけ置き、AGENTS.md・pipeline.md・atlas は rules を指す', () => {
+  const docs = ['AGENTS.md', '.claude/rules/dev-flow.md', `${REFERENCES_DIR}pipeline.md`, 'docs/dev-flow-atlas.md', 'plugins/dev-flow/dev-flow/SKILL.md'];
+  const holders = docs.filter((p) => readFileSync(join(REPO_ROOT, p), 'utf8').replace(/\n>?\s*/g, '').includes(STRUCTURE_ANCHOR));
+  assert.deepEqual(holders, ['.claude/rules/dev-flow.md'], `dev-flow.js の構造の規範が rules 以外にもある: ${holders.join(', ')}`);
+  for (const p of ['AGENTS.md', `${REFERENCES_DIR}pipeline.md`, 'docs/dev-flow-atlas.md']) {
+    assert.ok(readFileSync(join(REPO_ROOT, p), 'utf8').includes('.claude/rules/dev-flow.md'), `${p} が .claude/rules/dev-flow.md を指していない`);
+  }
+});
+
+test('(q) rules の構造の行が名指す phase・起動 workflow は dev-flow.js と集合として等しい', () => {
+  assert.ok(structureLine, `rules に構造の anchor 句「${STRUCTURE_ANCHOR}」を含む行が無い`);
+  assert.ok(structureNames(devFlowJsSrc).length > 0, 'dev-flow.js から phase・workflow を読めない');
+  assert.deepEqual(structureMismatch(devFlowJsSrc, structureLine), { onlyInRules: [], onlyInDevFlow: [] },
+    'rules の構造の行と dev-flow.js の phase・起動 workflow が食い違う — rules の行を直す');
+});
+
+test('(r) 工程の切り出し・phase の追加は rules の行を直さない限り不一致になる', () => {
+  assert.ok(devFlowJsSrc.includes("phase('Implement')"), "dev-flow.js に phase('Implement') が無い");
+  const extracted = devFlowJsSrc.replaceAll("phase('Implement')", '') + "\nworkflow('dev-flow:dev-flow-implement-run')";
+  assert.deepEqual(structureMismatch(extracted, structureLine), {
+    onlyInRules: ["phase('Implement')"],
+    onlyInDevFlow: ["workflow('dev-flow:dev-flow-implement-run')"],
+  });
+  assert.deepEqual(structureMismatch(`${devFlowJsSrc}\nphase('Foo')`, structureLine), { onlyInRules: [], onlyInDevFlow: ["phase('Foo')"] });
+});
+
 const INVARIANT_ANCHORS = [
+  STRUCTURE_ANCHOR,
   'merge は常に人間',
   '軸A',
   '1 issue = 1 PR',

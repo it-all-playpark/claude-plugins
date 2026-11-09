@@ -107,9 +107,8 @@ Diff triage・Evaluate は工程の workflow `dev-flow-evaluate-run`（`dev-flow
   danger-grep の fail-closed（失敗は全 SEC seed unchecked → HOLD）と決定論ゲートを policy で緩めない。
 - **1 issue = 1 PR**。Implement は全 shape で `dev-implementer`（plan+impl 統合）を単一 worktree に 1 spawn する（planner ⇄ reviewer ループ・parallel fan-out は持たない）。
 - **後方互換 scaffolding を作らない** — out-of-enum 値は明示 error (legacy fallback / version 分岐なし)。
-- **`dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐だけを持つ**。工程の処理（agent の起動・prompt の
-  組み立て・判定）はその工程の workflow（`dev-flow-finalize.js` 等）に書く。Workflow の script 上限（524288 bytes）は
-  ファイルごとにかかるので、工程に足した処理はその工程のファイルだけを大きくする。受け渡しの形は `_lib/stage-contract.mjs`
+- **`dev-flow.js` が持つ phase・起動する工程の workflow と、新しい処理の置き場所は `.claude/rules/dev-flow.md` に従う**。
+  Workflow の script 上限（524288 bytes）はファイルごとにかかる。受け渡しの形は `_lib/stage-contract.mjs`
   で検証し（子は引数、親は返り値）、子の throw・不正な返り値は HOLD にする。journal handoff は親が run ごとに 1 回だけ行う。
 - `plugins/dev-flow/.claude/workflows/*.js` の `// ==== BEGIN inline: <path> ====` 〜
   `// ==== END inline: <path> ====` 区間は**生成物であり直接編集禁止**。編集は `_lib` の
