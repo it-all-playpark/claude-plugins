@@ -199,6 +199,15 @@ export const CODEX_SECURITY_REVIEW_SCHEMA = {
   },
 };
 
+// reviewer に渡す出力 schema（claude: security-reviewer の agent() と isolated の --json-schema / codex: prep の schema.json）。
+// reviewed_sha を今回 review する head の 1 値に縛り、40 桁 hex の転写を LLM の精度に任せない（写し間違いで指摘 0 件の review が
+// sha_mismatch になる）。enum は出力を寄せるためのもので、clear の判定（securityReviewVerdict の照合）の代わりにしない。
+// 結果の schema 適合（codexResultVerdict）は元の定数で見る — 前回の head の result.json を verify_items に読むため。
+export function headBoundSecurityReviewSchemas(headSha) {
+  const bind = (schema) => ({ ...schema, properties: { ...schema.properties, reviewed_sha: { type: 'string', enum: [headSha] } } });
+  return { claude: bind(SECURITY_REVIEW_SCHEMA), codex: bind(CODEX_SECURITY_REVIEW_SCHEMA) };
+}
+
 // prompt.md（-c model_instructions_file で渡す指示ファイル）。diff は末尾に置き、DATA 区間はファイルの末尾まで続く
 // （diff の中に区間の終わりを模した文字列を書かれても区間から出られない）。
 export function codexSecurityReviewPrompt({ pr, headSha, verifyItems = [], diff }) {

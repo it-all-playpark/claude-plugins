@@ -7,13 +7,13 @@
 //     review_dir: security-review-scope --save-diff が作った保存先（dev-flow-security-review-XXXXXX。pr.diff を持つ）
 //     --verify-from: 前回の Codex の review の保存先。その result.json の critical/major を verify_items にする
 //
-// 書くもの: <review_dir>/prompt.md（codexSecurityReviewPrompt + diff）・<review_dir>/schema.json（strict 形）・空の <review_dir>/cwd/
+// 書くもの: <review_dir>/prompt.md（codexSecurityReviewPrompt + diff）・<review_dir>/schema.json（strict 形。reviewed_sha は head_sha の 1 値）・空の <review_dir>/cwd/
 //   （codex の -C。cwd の AGENTS.md を読ませない）。どれかか result.json が既にあれば何も書かない（前の結果を今の review と取り違えない）。
 // stdout: JSON 1 行 {ok, error?}。error は固定の code だけ（stdout を写す agent へ PR 由来の文字列を渡さない）。
 //   usage error だけ exit 2、それ以外は exit 0。
 import { readFileSync, writeFileSync, mkdirSync, lstatSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexSecurityReviewPrompt, codexResultVerdict, isCodexArgPath, CODEX_SECURITY_REVIEW_SCHEMA } from '../security-review.mjs'
+import { codexSecurityReviewPrompt, codexResultVerdict, isCodexArgPath, headBoundSecurityReviewSchemas } from '../security-review.mjs'
 
 const emit = (obj, code = 0) => {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
@@ -59,7 +59,7 @@ try {
 }
 
 try {
-  writeFileSync(join(reviewDir, 'schema.json'), `${JSON.stringify(CODEX_SECURITY_REVIEW_SCHEMA)}\n`, { flag: 'wx' })
+  writeFileSync(join(reviewDir, 'schema.json'), `${JSON.stringify(headBoundSecurityReviewSchemas(headSha).codex)}\n`, { flag: 'wx' })
   writeFileSync(join(reviewDir, 'prompt.md'), codexSecurityReviewPrompt({ pr, headSha, verifyItems, diff }), { flag: 'wx' })
   mkdirSync(join(reviewDir, 'cwd'))
 } catch {

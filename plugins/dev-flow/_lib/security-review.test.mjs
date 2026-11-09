@@ -1,7 +1,8 @@
 // security-review.test.mjs — 敵対的 security review の prompt・schema・Codex 経路の起動形・result の判定（issue #1063 / #1087）。
 //
 // (1) schema: --output-schema に渡す CODEX_SECURITY_REVIEW_SCHEMA は OpenAI の strict 形（全 object が additionalProperties:false・
-//     全 property が required・maxLength を持たない）
+//     全 property が required・maxLength を持たない）。reviewer に渡す schema（headBoundSecurityReviewSchemas）は reviewed_sha だけを
+//     head の 1 値に縛り、Codex 用も strict 形を保つ
 // (2) prompt: Claude 経路・Codex 経路の prompt は同じ脅威モデル・境界・severity（SECURITY_REVIEW_BOUNDARY）を持つ。Codex 用の diff は
 //     ファイルの末尾の DATA 区間に置き、区間を閉じる行を持たない
 // (3) 起動形: codexSecurityReviewCommand は入出力をすべて保存先に置く固定形の codex exec で、prep が用意した保存先から組み立てた形を
@@ -20,8 +21,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   CODEX_SECURITY_REVIEW_SCHEMA, SECURITY_CODEX_RELAY_FAILED, SECURITY_CODEX_RUN_DONE, SECURITY_CODEX_VERDICT_RELAY_FAILED,
-  SECURITY_REVIEW_BOUNDARY, codexIssuesPrompt, codexPrepPrompt, codexResultVerdict, codexRunPrompt, codexSecurityReviewCommand,
-  codexSecurityReviewPrompt, codexVerdictPrompt, securityReviewPrompt, securityReviewVerdict,
+  SECURITY_REVIEW_BOUNDARY, SECURITY_REVIEW_SCHEMA, codexIssuesPrompt, codexPrepPrompt, codexResultVerdict, codexRunPrompt,
+  codexSecurityReviewCommand, codexSecurityReviewPrompt, codexVerdictPrompt, headBoundSecurityReviewSchemas, securityReviewPrompt,
+  securityReviewVerdict,
 } from './security-review.mjs';
 import {
   SECURITY_PR_HEAD_RELAY_FAILED, SECURITY_SCOPE_RELAY_FAILED, securityPrFetchPrompt, securityPrHeadPrompt, securityScopePrompt,
@@ -37,19 +39,37 @@ const resultOf = (issues = [], extra = {}) => ({ reviewed_sha: HEAD, issues, sum
 
 // ---- (1) strict 形の schema ----
 
-test('[security-review][1] CODEX_SECURITY_REVIEW_SCHEMA は strict 形（全 object が additionalProperties:false・全 property が required・maxLength 無し）', () => {
-  const objects = [];
-  const walk = (s) => {
-    assert.ok(!('maxLength' in s), `maxLength がある: ${JSON.stringify(s)}`);
-    if (s.type === 'object') objects.push(s);
-    for (const v of Object.values(s.properties ?? {})) walk(v);
-    if (s.items) walk(s.items);
-  };
-  walk(CODEX_SECURITY_REVIEW_SCHEMA);
-  assert.equal(objects.length, 2, 'result と issue の 2 つの object');
-  for (const o of objects) {
-    assert.equal(o.additionalProperties, false);
-    assert.deepEqual([...o.required].sort(), Object.keys(o.properties).sort());
+test('[security-review][1] CODEX_SECURITY_REVIEW_SCHEMA と head を入れた Codex 用 schema は strict 形（全 object が additionalProperties:false・全 property が required・maxLength 無し）', () => {
+  for (const [name, schema] of [['CODEX_SECURITY_REVIEW_SCHEMA', CODEX_SECURITY_REVIEW_SCHEMA], ['headBoundSecurityReviewSchemas().codex', headBoundSecurityReviewSchemas(HEAD).codex]]) {
+    const objects = [];
+    const walk = (s) => {
+      assert.ok(!('maxLength' in s), `${name}: maxLength がある: ${JSON.stringify(s)}`);
+      if (s.type === 'object') objects.push(s);
+      for (const v of Object.values(s.properties ?? {})) walk(v);
+      if (s.items) walk(s.items);
+    };
+    walk(schema);
+    assert.equal(objects.length, 2, `${name}: result と issue の 2 つの object`);
+    for (const o of objects) {
+      assert.equal(o.additionalProperties, false, name);
+      assert.deepEqual([...o.required].sort(), Object.keys(o.properties).sort(), name);
+    }
+  }
+});
+
+test('[security-review][1] headBoundSecurityReviewSchemas は Claude 用・Codex 用の両方で reviewed_sha だけを head の 1 値に縛り、元の定数を書き換えない', () => {
+  const head = 'a2bfab3bc96fa93cca5308cf1a5e2d9a262fa1dc';
+  const bound = headBoundSecurityReviewSchemas(head);
+  for (const [name, schema, orig] of [['claude', bound.claude, SECURITY_REVIEW_SCHEMA], ['codex', bound.codex, CODEX_SECURITY_REVIEW_SCHEMA]]) {
+    assert.deepEqual(schema.properties.reviewed_sha, { type: 'string', enum: [head] }, name);
+    const { reviewed_sha: _b, ...restBound } = schema.properties;
+    const { reviewed_sha: _o, ...restOrig } = orig.properties;
+    assert.deepEqual(restBound, restOrig, `${name}: reviewed_sha 以外の property が元の定数と違う`);
+    const { properties: _bp, ...topBound } = schema;
+    const { properties: _op, ...topOrig } = orig;
+    assert.deepEqual(topBound, topOrig, `${name}: properties 以外が元の定数と違う`);
+    assert.ok(!('enum' in orig.properties.reviewed_sha), `${name}: 元の定数の reviewed_sha に enum が入った`);
+    assert.deepEqual(orig.properties.reviewed_sha, { type: 'string' }, name);
   }
 });
 
@@ -174,6 +194,17 @@ test('[security-review][4] codexResultVerdict は critical/major 0 件かつ rev
     const ref = securityReviewVerdict(result, HEAD);
     assert.equal(v.cleared, ref.cleared, `${name}: securityReviewVerdict と食い違う`);
     assert.deepEqual(v.counts, ref.counts, name);
+  }
+});
+
+test('[security-review][4] reviewed_sha が head と違う結果は、schema で head を縛った後も codexResultVerdict・securityReviewVerdict の両方で sha_mismatch（PR #1337 の 52 文字の値を含む）', () => {
+  const head = 'a2bfab3bc96fa93cca5308cf1a5e2d9a262fa1dc';
+  for (const reviewed of ['a2bfab3bc96fa93cca5308cf1a5e2d9a262fa1a5e2d9a262fa1dc', 'b'.repeat(40), head.slice(0, 39)]) {
+    const result = { reviewed_sha: reviewed, issues: [], summary: 'ok' };
+    const v = codexResultVerdict(result, head);
+    assert.deepEqual([v.ok, v.cleared, v.reason, v.reviewed_sha], [true, false, 'sha_mismatch', reviewed], reviewed);
+    const ref = securityReviewVerdict(result, head);
+    assert.deepEqual([ref.cleared, ref.reason], [false, 'sha_mismatch'], reviewed);
   }
 });
 
