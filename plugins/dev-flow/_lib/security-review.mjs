@@ -74,7 +74,7 @@ export const SECURITY_REVIEW_BOUNDARY = '## Threat model\n'
 // 指摘の suggestion は塞ぎ方の一案で、PR の取り消し（変更を戻す・足した機能を外す）を提案することがある。それを採ると PR の
 // 目的が消え、採らずに人へ返すと意図を保って塞げる指摘まで人に回る。fix には指摘を「破れた不変条件と攻撃経路」として読ませ、
 // PR の意図（後ろに足す _lib/review-ac.mjs の securityFixIntentBlock）と両立する設計を先に探させ、両立する設計が無い指摘だけを返させる。
-// 人に返した指摘の topic（指摘行の `[topic: …]`。_lib/review-finding-scrub.mjs の fixIssueTopic）は返り値の deferred_security_topics で受け取り、workflow はその round で run を終える
+// 人に返した指摘は workflow が指摘行に振った番号（`[S1]`。_lib/review-finding-scrub.mjs の securityFindingIds）を返り値の deferred_security_ids で受け取り、workflow はその round で run を終える
 // （summary の自由文では区別できず、次の round で同じ指摘をもう一度 review して stuck まで 1 round 余計に使う）。
 // PR の意図（AC か PR の title・body）は fix の prompt にだけ入れ、security review の prompt には入れない（判定者に PR の文を渡さない）。
 export const SECURITY_FIX_GUIDANCE = 'security review の指摘の直し方:\n'
@@ -91,9 +91,9 @@ export const SECURITY_FIX_GUIDANCE = 'security review の指摘の直し方:\n'
   + '縛った中継で取り直し、hook でその中継の実 stdout に縛る）。指摘の経路がそれで塞がるなら直す\n'
   + '- 上の禁止に当たる形でしか塞げない指摘、PR の意図と破れた不変条件の両方を満たす設計が無い指摘、'
   + 'sandbox の中に残った PR のプロセスを前提にした指摘（守る範囲の外）は直さない。'
-  + '直さなかった指摘は、その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに deferred_security_topics に入れ、理由を summary に書く（人が判断する）。'
+  + '直さなかった指摘は、その指摘行の先頭の番号（`[S1]` の S1）を deferred_security_ids に入れ、理由を summary に書く（人が判断する）。'
   + '両方を満たす設計が無くて返した指摘は、summary にぶつかる意図（AC の番号、または PR の意図の該当箇所）と破れた不変条件を書く。'
-  + '直した指摘の topic は入れない\n';
+  + '直した指摘の番号は入れない\n';
 
 // args.security_review（起動時の判定。dev-flow の Diff triage / pr-iterate-prerun の出力）。
 // 無ければ null（呼び出し側が対象として扱う — 判定できない入力は対象）。不正形は明示 throw（legacy fallback なし）。

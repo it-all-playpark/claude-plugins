@@ -106,7 +106,7 @@ test('[hold-recovery] 応答に head が無い ci-wait-check はこの run が�
 
 test('[hold-recovery] fix が適用されずに終えた run（fix_failed）は head を確かめていないので、fix 前の観測を未確認にする', async () => {
   const { result, rows, post } = await run(['ci_checks_failed'], {
-    'review#1': BLOCKING, 'ci-check#1': ci('passed'), 'fix#1': { applied: false, files: [], summary: 'x', deferred_security_topics: [] },
+    'review#1': BLOCKING, 'ci-check#1': ci('passed'), 'fix#1': { applied: false, files: [], summary: 'x', deferred_security_ids: [] },
   });
   assert.equal(result.status, 'fix_failed');
   assert.deepEqual(rows, ['- `ci_checks_failed` — ❔ 未確認 — 最終 CI 状態: passed — 観測した head が終端 head と同じか確かめられない']);
@@ -134,7 +134,7 @@ test('[hold-recovery] ac_ci_pending は ci_verify の観測で決まり、渡さ
   const passed = { ...ciCounts('passed'), status: 'passed', failed_checks: [], passed_checks: [] };
   const failed = await run(['ac_ci_pending'], {
     'ci-check#1': ci('passed'), 'ci-verify#1.1': { ...ciCounts('failed'), status: 'failed', failed_checks: [{ name: 'e2e', bucket: 'fail', state: 'FAILURE' }], passed_checks: [] },
-    'fix#1': { applied: true, files: [], summary: 'x', deferred_security_topics: [] }, 'commit-ensure#1': ENSURED_HEAD2,
+    'fix#1': { applied: true, files: [], summary: 'x', deferred_security_ids: [] }, 'commit-ensure#1': ENSURED_HEAD2,
   }, { ci_verify: CI_VERIFY, max_iterations: 1 });
   assert.deepEqual(failed.rows, ['- `ac_ci_pending` — ❔ 未確認 — ci_verify: failed — head `1111111` の観測で、終端 head `2222222` では確かめていない']);
 

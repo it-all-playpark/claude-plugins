@@ -2,7 +2,7 @@
 // pr-iterate の fix agent prompt（review 指摘の fix_loop と CI 失敗の ci_gate の両経路）が subagent dispatch の
 // 必須 5 要素（Objective / Output format / Tools / Boundary / Token cap）を持ち、Boundary が worktree の外・他 repo への
 // 書き込み、ブランチ作成、gh api での変更を禁止していることを pin する（issue #793）。Output format は全経路で
-// deferred_security_topics を返させる（issue #1121）。
+// deferred_security_ids を返させる（issue #1121・#1289）。
 //   (a) fix_loop の fix#1 prompt（VM で実 prompt を観測）
 //   (b) ci_gate の fix#1 prompt（同上）
 //   (c) 静的: callFixAgent に渡す prompt は fixPrompt() で組んだものだけ（5 要素を持たない prompt を足させない）
@@ -46,8 +46,10 @@ function assertFiveElements(prompt, label) {
   assert.deepEqual([...order].sort((a, b) => a - b), order, `${label}: 5 要素の順序が崩れている`);
   const output = sectionOf(prompt, '## Output format');
   assert.match(output, /"applied": boolean/);
-  // security の指摘が無い fix（CI だけの fix を含む）にも deferred_security_topics を返させ、空の配列にさせる（issue #1121）
-  assert.ok(output.includes('"deferred_security_topics": string[]'), `${label}: Output format に deferred_security_topics が無い: ${output}`);
+  // security の指摘が無い fix（CI だけの fix を含む）にも deferred_security_ids を返させ、空の配列にさせる（issue #1121）。
+  // 人に返した指摘は topic の転写ではなく workflow が振った番号で返させる（issue #1289）
+  assert.ok(output.includes('"deferred_security_ids": string[]'), `${label}: Output format に deferred_security_ids が無い: ${output}`);
+  assert.ok(!output.includes('deferred_security_topics'), `${label}: Output format に deferred_security_topics が残っている: ${output}`);
   assert.ok(output.includes('security review の指摘が無い fix・全部直した fix では空の配列 [] にする（省略しない）'), `${label}: 空の配列にさせる指示が無い: ${output}`);
   assert.match(sectionOf(prompt, '## Tools'), /使用可:/);
   assert.match(sectionOf(prompt, '## Token cap'), /summary は \d+ 字以内/);
@@ -120,6 +122,9 @@ test('[fix-prompt-contract] (d) AC-4: agents/pr-fixer.md も running の間 pr-p
   const agentDoc = readFileSync(join(here, '..', 'agents', 'pr-fixer.md'), 'utf8');
   assert.ok(agentDoc.includes('`running` の間は `pr-push wait` を繰り返し、push を再発行しない'), agentDoc);
   assert.ok(agentDoc.includes('`failed` は `tail` と log を読み、'), agentDoc);
+  // agent 定義の出力 schema は fix prompt の Output format と同じフィールドを指す（issue #1289）
+  assert.ok(agentDoc.includes('（`{applied, files, summary, deferred_security_ids}`）に厳密に従う'), agentDoc);
+  assert.ok(!agentDoc.includes('deferred_security_topics'), agentDoc);
 });
 
 test('[fix-prompt-contract] (e) commit-ensure#1 prompt の push は最初の wait までで push_result を返させ、wait の反復・push の再発行をさせない', async () => {
@@ -146,7 +151,7 @@ test('[fix-prompt-contract] (e) commit-ensure#1 prompt の push は最初の wai
 const AC = ['AC-1 flake の HOLD を外す', 'AC-2 既存の判定を変えない'];
 const AC_LIST = '1. AC-1 flake の HOLD を外す\n2. AC-2 既存の判定を変えない';
 const AC_CONFLICT_RULE = 'AC が求める挙動を変える・AC が変えないとした判定やテストを変える形でしか塞げない指摘は直さず、'
-  + 'その指摘行の `[topic: <topic>]` の <topic> を一字も変えずに deferred_security_topics に入れ、summary にぶつかる AC の番号と、'
+  + 'その指摘行の先頭の番号（`[S1]` の S1）を deferred_security_ids に入れ、summary にぶつかる AC の番号と、'
   + '指摘が示す破れた不変条件を書く';
 // 修正方針（SECURITY_FIX_GUIDANCE）の人に返す条件。AC は PR の意図なので、AC のブロックの指示と同じ形（両立しない指摘を返し、
 // summary にぶつかる AC の番号と不変条件を書く）になる（issue #1196）
@@ -158,7 +163,7 @@ const SECURITY_FINDING = {
     issues: [{ severity: 'major', topic: 'rerun-unhold', file: 'scripts/rerun.sh', line: 3, description: 'PR が書き換えられるテストの再実行で HOLD を外せる', suggestion: '再実行をやめる' }],
     summary: 'review した',
   }),
-  'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_topics: [] },
+  'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_ids: [] },
 };
 
 test('[fix-prompt-contract] (f) AC がある run の security review の指摘を含む fix#1 にだけ AC の番号付き一覧と、AC とぶつかる指摘を人に返させる指示が入る', async () => {
