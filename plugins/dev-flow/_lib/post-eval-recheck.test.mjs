@@ -56,24 +56,23 @@ test('isRecheckCandidate: LLM 判断で checked の evaluator / concern item だ
   assert.equal(isRecheckCandidate(item({ dimension: 'environment' })), false);
 });
 
-test('recheckTargets: 変更ファイルにパスか basename で言及する解消済み item を返す', () => {
+test('recheckTargets: 変更ファイルがあれば、ファイル名に言及しない item も含め LLM 判断の解消済み item を全件返す', () => {
   const ledger = {
     round: 2,
     items: [
       item({ id: 'C1', evidence: 'generate_thumbnail.bats の変更を取り消し済み' }),
-      item({ id: 'C2', text: 'plugins/x/scripts/generate_thumbnail.bats を確認', evidence: 'ok' }),
-      item({ id: 'C3', evidence: 'src/index.ts:3 で修正' }),
+      item({ id: 'C2', text: '境界条件の扱い', evidence: '上限の判定を確認済み' }),
+      item({ id: 'E1', source: 'evaluator', severity: 'critical', text: 'X', evidence: 'src/index.ts:3 で修正' }),
       item({ id: 'C4', evidence: 'generate_thumbnail.bats の件', checked: false }),
       item({ id: 'S1', source: 'seed', check: { kind: 'deterministic' }, evidence: 'generate_thumbnail.bats clean' }),
+      item({ id: 'AC-1', source: 'ac', dimension: 'ac', evidence: 'generate_thumbnail.bats で確認' }),
+      item({ id: 'ENV', dimension: 'environment', evidence: 'generate_thumbnail.bats' }),
+      item({ id: 'ESC', escalate: true, evidence: 'generate_thumbnail.bats' }),
+      item({ id: 'DET', check: { kind: 'deterministic' }, evidence: 'generate_thumbnail.bats' }),
     ],
   };
   const ids = recheckTargets(ledger, ['plugins/x/scripts/generate_thumbnail.bats']).map((it) => it.id);
-  assert.deepEqual(ids, ['C1', 'C2']);
-});
-
-test('recheckTargets: 識別子に連続する一致（x.ts と index.ts / x.tsx）は言及とみなさない', () => {
-  const ledger = { items: [item({ id: 'A', evidence: 'src/index.ts を修正' }), item({ id: 'B', evidence: 'src/x.tsx を修正' }), item({ id: 'C', evidence: '`x.ts:12` で確認' })] };
-  assert.deepEqual(recheckTargets(ledger, ['src/x.ts']).map((it) => it.id), ['C']);
+  assert.deepEqual(ids, ['C1', 'C2', 'E1']);
 });
 
 test('recheckTargets: 変更ファイルが無ければ空', () => {

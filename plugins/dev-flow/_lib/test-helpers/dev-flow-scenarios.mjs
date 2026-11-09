@@ -136,12 +136,12 @@ export const DEV_FLOW_SCENARIOS = {
       'green-fix#post-eval-1': { status: 'DONE', task_id: 'issue-1', files: ['tests/foo.test.ts'], summary: 'テストの import 漏れを直した', concerns: [] },
       'green-fix-classify': { risk: { ok: true, hits: [] }, files: ['tests/foo.test.ts'], diffhash: { hash: 'BBB', empty: false } },
       'green-fix-numstat': { ok: true, lines: ['1\t0\ttests/foo.test.ts'] },
-      'eval-green-fix': { findings: [], recheck_resolutions: [] },
+      'eval-green-fix': { findings: [], recheck_resolutions: [{ id: 'EVAL-1-X', resolution: 'resolved', evidence: 'src/a.ts:3 の修正は green-fix 後の tree にも残っている' }] },
       'diff-hash-pr': { hash: 'BBB', empty: false },
       'merge-tier-facts': mergeTierFacts({ hash: 'BBB', tree: 'BBB' }),
     },
   },
-  // pr-iterate fix 適用 + fix が触ったファイルに言及する解消済み concern → fix-diff-numstat → Final AC reconcile で再検証
+  // pr-iterate fix 適用 + LLM 判断の解消済み concern → fix-diff-numstat → Final AC reconcile で再検証
   'final-recheck': {
     overrides: {
       'impl:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: [...STANDARD_FILES], summary: 's', concerns: ['src/x.ts の境界条件が未確認'] },

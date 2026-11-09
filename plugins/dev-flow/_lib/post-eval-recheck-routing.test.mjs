@@ -4,8 +4,8 @@
 //     diff-triage（testsurf）を当て、hit 0 かつテストファイルだけなら assert_only、それ以外は full で
 //     evaluator に差分を評価させ、評価済み tree（evalDiffHash）を green-fix 後の tree へ進める。
 //     assert を弱めない修正なら hash_mismatch で HOLD にならず、弱めた修正は critical（全 gate_policy で blocking）で HOLD。
-// (2) 解消済み item の再検証: green-fix / pr-iterate fix が触ったファイルに言及する解消済み item は、
-//     最終 tree で再検証され、崩れた・確かめられなかった解消根拠は終端サマリの「解消済み」に残らない。
+// (2) 解消済み item の再検証: green-fix / pr-iterate fix が入った run では、LLM 判断の解消済み item を全件
+//     （変更ファイル一覧を添えて）最終 tree で再検証し、崩れた・確かめられなかった解消根拠は終端サマリの「解消済み」に残らない。
 //
 // ハーネス: makeDevFlowSandbox + DEV_FLOW_SCENARIOS['post-eval-green-fix'] / ['final-recheck']。
 
@@ -158,6 +158,13 @@ test('[post-eval-recheck] green-fix 後の tree が評価済み tree と同じ�
 
 // ---- (2) 解消済み item の再検証 ----
 
+// 一覧の見出し行の直後の行を返す。見出しの語は契約文の「」内にも出るので、見出し行そのものから切り出す
+const listLineAfter = (prompt, heading) => {
+  const at = prompt.indexOf(heading);
+  assert.ok(at >= 0, `見出し「${heading}」が prompt に無い:\n${prompt}`);
+  return prompt.slice(at).split('\n')[1];
+};
+
 // eval#2 が「generate_thumbnail.bats の変更は取り消し済み」と concern を解消したあと、post-eval green-fix が同じファイルを触る
 const STALE_EVIDENCE = 'tests/generate_thumbnail.bats の変更を取り消し済み';
 const CONCERN_OVERRIDES = {
@@ -171,21 +178,29 @@ const CONCERN_OVERRIDES = {
   'green-fix-numstat': { ok: true, lines: ['3\t3\ttests/generate_thumbnail.bats'] },
 };
 
-test('[post-eval-recheck] green-fix が触ったファイルに言及する解消済み item は再検証され、崩れた解消根拠は終端サマリの「解消済み」に残らない', async () => {
+test('[post-eval-recheck] green-fix 後は解消済み item を全件再検証し、崩れた解消根拠は終端サマリの「解消済み」に残らない', async () => {
   const { call, summary, result } = await run({
     overrides: {
       ...CONCERN_OVERRIDES,
-      'eval-green-fix': { findings: [], recheck_resolutions: [{ id: 'CONCERN-1', resolution: 'unresolved', evidence: 'green-fix が generate_thumbnail.bats の期待値変更を再び入れた' }] },
+      'eval-green-fix': {
+        findings: [],
+        recheck_resolutions: [
+          { id: 'CONCERN-1', resolution: 'unresolved', evidence: 'green-fix が generate_thumbnail.bats の期待値変更を再び入れた' },
+          { id: 'EVAL-1-X', resolution: 'resolved', evidence: 'green-fix は src/a.ts を触っておらず修正は src/a.ts:3 に残る' },
+        ],
+      },
     },
   });
   const ev = call('eval-green-fix');
-  assert.ok(ev.prompt.includes('再検証対象 resolved item 一覧') && ev.prompt.includes('"id":"CONCERN-1"'), '解消済み CONCERN-1 が再検証対象として渡っていない');
+  const listed = ev.prompt.slice(ev.prompt.indexOf('再検証対象 resolved item 一覧'));
+  assert.ok(ev.prompt.includes('再検証対象 resolved item 一覧') && listed.includes('"id":"CONCERN-1"'), '解消済み CONCERN-1 が再検証対象として渡っていない');
+  assert.ok(listed.includes('"id":"EVAL-1-X"'), 'green-fix が触っていないファイル（src/a.ts）に言及する解消済み item が再検証対象に無い');
+  assert.equal(listLineAfter(ev.prompt, '後から変更されたファイル一覧（green-fix の差分'), JSON.stringify(['tests/generate_thumbnail.bats']), `green-fix の変更ファイル一覧が prompt に無い:\n${ev.prompt}`);
   assert.ok(ev.prompt.includes(EVALUATOR_OPERATIONAL_CONTRACT.resolved_recheck), 'resolved_recheck 契約が verbatim 注入されていない');
-  assert.ok(!ev.prompt.includes('"id":"EVAL-1-X"'), 'green-fix が触っていないファイル（src/a.ts）に言及する item まで再検証対象にしている');
   assert.ok(!summary.includes(STALE_EVIDENCE), `崩れた解消根拠が終端サマリに残っている:\n${summary}`);
   assert.ok(summary.includes('post-eval green-fix 後の tree で再検証し解消根拠が不成立'), `取り下げた理由が終端サマリに無い:\n${summary}`);
-  // EVAL-1-X の解消根拠（src/a.ts）は触られていないので残る
-  assert.ok(summary.includes('src/a.ts で修正済み'));
+  // EVAL-1-X は再検証結果の evidence で解消済みに残る
+  assert.ok(summary.includes('post-eval green-fix 後の tree で再検証済み: green-fix は src/a.ts を触っておらず'), `EVAL-1-X の再検証済み evidence が無い:\n${summary}`);
   assert.equal(result.eval_staleness, 'none');
 });
 
@@ -232,22 +247,39 @@ test('[post-eval-recheck] pr-iterate fix が触ったファイルに言及する
   assert.ok(summary.includes('fix 後の最終 tree で再検証し解消根拠が不成立'), `取り下げた理由が無い:\n${summary}`);
 });
 
-test('[post-eval-recheck] fix が触っていないファイルに言及する解消済み item は再検証対象にしない', async () => {
+test('[post-eval-recheck] fix が触っていないファイルに言及する解消済み item も Final AC reconcile で再検証し、返事が無ければ解消根拠を取り下げる', async () => {
   const { call, summary } = await run({
     scenario: FINAL_RECHECK,
     overrides: { 'fix-diff-numstat': { ok: true, lines: ['1\t1\tsrc/y.ts'] }, 'final-ac-reconcile': finalAc() },
   });
-  assert.ok(!call('final-ac-reconcile').prompt.includes('再検証対象 resolved item 一覧'));
-  assert.ok(summary.includes(FINAL_STALE), '再検証対象外の解消根拠まで消えている');
+  const fa = call('final-ac-reconcile');
+  const listed = fa.prompt.slice(fa.prompt.indexOf('再検証対象 resolved item 一覧'));
+  assert.ok(fa.prompt.includes('再検証対象 resolved item 一覧') && listed.includes('"id":"CONCERN-1"'), 'fix が触っていない src/x.ts に言及する CONCERN-1 が再検証対象に無い');
+  assert.equal(listLineAfter(fa.prompt, '後から変更されたファイル一覧（pr-iterate fix の差分'), JSON.stringify(['src/y.ts']), `fix の変更ファイル一覧が prompt に無い:\n${fa.prompt}`);
+  assert.ok(!summary.includes(FINAL_STALE), `返事の無い解消根拠が終端サマリに残っている:\n${summary}`);
+  assert.ok(summary.includes('fix 後の最終 tree で再検証できず — 解消根拠を取り下げ'), `取り下げの表示が無い:\n${summary}`);
 });
 
-test('[post-eval-recheck] Final AC reconcile が走らない（final test red）run では再検証対象の解消根拠を取り下げる', async () => {
+test('[post-eval-recheck] Final AC reconcile が走らない（final test red）run では、変更ファイルに言及しない item も含め候補の全件で解消根拠を取り下げる', async () => {
   const { labels, summary, result } = await run({
     scenario: FINAL_RECHECK,
-    overrides: { 'test#final': { tests: 'failed', green: false, summary: 'red' } },
+    overrides: { 'test#final': { tests: 'failed', green: false, summary: 'red' }, 'fix-diff-numstat': { ok: true, lines: ['1\t1\tsrc/y.ts'] } },
   });
   assert.equal(labels.includes('final-ac-reconcile'), false, '前提: final test red なら Final AC reconcile は走らない');
   assert.equal(result.merge_tier, 'HOLD');
   assert.ok(!summary.includes(FINAL_STALE), '再検証されなかった解消根拠が残っている');
-  assert.ok(summary.includes('fix 後の最終 tree で再検証できず'), `取り下げの表示が無い:\n${summary}`);
+  assert.ok(summary.includes('fix 後の最終 tree で再検証できず — 解消根拠を取り下げ'), `取り下げの表示が無い:\n${summary}`);
+});
+
+test('[post-eval-recheck] green-fix の再評価で evaluator が応答しなければ、変更ファイルに言及しない item も含め候補の全件で解消根拠を取り下げる', async () => {
+  // green-fix は tests/foo.test.ts だけを触り、EVAL-1-X の解消根拠は src/a.ts にしか言及しない
+  const { summary, result } = await run({
+    overrides: {
+      'eval-green-fix': null,
+      'tree-diff-numstat': { ok: true, lines: ['1\t0\ttests/foo.test.ts'] },
+    },
+  });
+  assert.equal(result.merge_tier, 'HOLD');
+  assert.ok(!summary.includes('src/a.ts で修正済み'), `再検証されなかった EVAL-1-X の解消根拠が残っている:\n${summary}`);
+  assert.ok(summary.includes('post-eval green-fix 後の tree で再検証できず — 解消根拠を取り下げ'), `取り下げの表示が無い:\n${summary}`);
 });
