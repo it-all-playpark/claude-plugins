@@ -27,7 +27,7 @@ paths:
 
 - Claude 専用（workflow 依存）。cross-vendor 放棄は dev-flow / pr-iterate のみ
 - skill wrapper が isolation preflight → `Workflow({ name: 'dev-flow:dev-flow-run' })`。orchestration と中間 state は workflow script の JS 変数のみ
-- `dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐のみ。工程の処理（agent の起動・prompt の組み立て・判定）は工程の workflow に書く（script 上限はファイルごと）
+- `dev-flow.js` が持つ phase は `phase('Setup')`・`phase('Implement')`・`phase('Validate')`・`phase('PR')`（lite review を含む）、起動する工程の workflow は `workflow('dev-flow:dev-flow-test-commands-run')`・`workflow('dev-flow:dev-flow-evaluate-run')`・`workflow('dev-flow:pr-iterate-run')`・`workflow('dev-flow:dev-flow-finalize-run')`。新しい処理（agent の起動・prompt の組み立て・判定）は既存の工程 workflow か新しく切り出す工程 workflow に書き、`dev-flow.js` に足してよいのは工程の起動・state の受け渡し・ゲートの分岐だけ（script 上限はファイルごと）。phase・workflow を増減したらこの行を直す
 - `meta.name` は `dev-flow-run` でも telemetry handoff の `skill` は `'dev-flow'` 固定（集計連続性）
 - `agent()` の agentType は `nsAgentOpts()` でのみ namespace 付与（bare 名は起動直後 abort）。dev-flow-canary.js のみ namespaced id 直書き
 - 1 issue = 1 PR。Implement は全 shape で `dev-implementer` を単一 worktree に 1 spawn。BLOCKED 再実装・green-fix・Evaluate 差し戻しも同じ agent

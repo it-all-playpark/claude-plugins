@@ -30,8 +30,8 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
                       → workflow('dev-flow:pr-iterate-run') で review ⇄ fix loop (LGTM まで) → 終端サマリー
 ```
 
-- `dev-flow.js` は工程の起動・state の受け渡し・ゲートの分岐だけを持ち、工程の処理は工程の workflow（`dev-flow-evaluate.js`・
-  `dev-flow-finalize.js`）に書く（script 上限はファイルごと）。子は phase と評価ループの状態を持つ。Validate と共有する処理は
+- `dev-flow.js` が持つ phase・起動する工程の workflow と新しい処理の置き場所は `.claude/rules/dev-flow.md`。工程の workflow
+  （`dev-flow-evaluate.js`・`dev-flow-finalize.js`）は phase と評価ループの状態を持つ。Validate と共有する処理は
   `_lib/implement-loop.mjs` を両方へ inline
 - 受け渡しは `workflow()` の引数・返り値だけ。形は `_lib/stage-contract.mjs` が検証し、子の throw・不正な返り値は HOLD（fail-closed。
   abort は人に届かない。evaluate は PR を作らず、finalize は終端サマリー未投稿を注記）。journal handoff は親が run ごとに 1 回
