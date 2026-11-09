@@ -285,12 +285,18 @@ exit 1 で abort する（`t2` は警告付きで通過）。加えて `--kind` 
 dev-flow は open な blocker を持つ issue を実装前に停止する（needs_clarification、source: `blocked_by`）ので、
 先行 issue（human issue は close、agent issue は PR を merge）が片付いてから後続 issue に `/dev-flow` を流す。
 
+finding 由来の文字列（パス・タイトル）はコマンド文字列に書かず、ファイルに書いて渡す（`$(…)` とバッククォートは
+二重引用符の中でもシェルが評価する）。タイトルは issue ごとに Write ツールで `$TMPDIR` の下のファイル（1 行。例:
+`$TMPDIR/git-issue-human-title-1.txt`・`$TMPDIR/git-issue-title-1.txt`）に書き、`--title-file` で渡す。
+`create_issue.py` はタイトルをファイルからだけ受け（前後の空白と末尾改行を除く）、`gh` に argv で渡す。
+空・2 行以上・読めないファイルは起票せず exit 1。
+
 Run（human issue。human タスクの数だけ繰り返す）:
 
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/git-issue/scripts/create_issue.py \
   --kind human \
-  --title "$HUMAN_TITLE" \
+  --title-file "$TMPDIR/git-issue-human-title-1.txt" \
   --body-file /tmp/git-issue-human-1.md \
   [--repo owner/repo] \
   [--assignees a,b] \
@@ -301,7 +307,7 @@ Run（agent issue。トポロジカル順に agent issue の数だけ繰り返�
 
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/git-issue/scripts/create_issue.py \
-  --title "$TITLE" \
+  --title-file "$TMPDIR/git-issue-title-1.txt" \
   --body-file /tmp/git-issue-body-1.md \
   [--blocked-by N[,M]] \
   [--repo owner/repo] \

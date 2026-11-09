@@ -11,6 +11,8 @@ setup() {
     CHECKLIST="$SKILL_DIR/references/devils-advocate-checklist.md"
     CONTRACT="$SKILL_DIR/references/output-contract.md"
     SCRIPT="$SKILL_DIR/scripts/create_issue.py"
+    TITLE_FILE="$BATS_TEST_TMPDIR/title.txt"
+    printf 'Test\n' >"$TITLE_FILE"
     REPO_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
     REVIEWER="$SKILL_DIR/../agents/issue-plan-reviewer.md"
 }
@@ -65,7 +67,7 @@ extract_section() {
     extract_fence "$TEMPLATE" "^# GitHub Issue Template" >"$BODY"
     grep -q '^## 受け入れ基準' "$BODY"
 
-    run python3 "$SCRIPT" --kind agent --title "Test" --body-file "$BODY" --dry-run
+    run python3 "$SCRIPT" --kind agent --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 0 ]
 }
@@ -75,7 +77,7 @@ extract_section() {
     extract_fence "$TEMPLATE" "^## human issue テンプレート" >"$BODY"
     grep -q '^## 手順' "$BODY"
 
-    run python3 "$SCRIPT" --kind human --title "Test" --body-file "$BODY" --dry-run
+    run python3 "$SCRIPT" --kind human --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"--label human-task"* ]]
@@ -178,6 +180,14 @@ frontmatter_value() {
 @test "(33) 軽い経路の close 済み issue 検索はパスをファイルで issue_path_history.py に渡し、\$(cat で置換させない" {
     grep -qF 'issue_path_history.py --path-file' "$SKILL_MD"
     ! grep -qF '"$(cat' "$SKILL_MD"
+}
+
+@test "(34) Phase 6 の起票コマンドはタイトルを --title-file で渡し、--title \"…\" でコマンド文字列に埋め込まない" {
+    # frontmatter の Accepts args にある skill 引数 [--title "TITLE"] はシェルを通らないので、検査は Phase 6 の節に絞る
+    phase6="$(extract_section "$SKILL_MD" "### Phase 6: Create Issue")"
+    [ -n "$phase6" ]
+    [[ "$phase6" == *"--title-file"* ]]
+    [[ "$phase6" != *'--title "'* ]]
 }
 
 @test "(B) devils-advocate-checklist の Blocking Categories に、起票を止める項目が揃っている" {

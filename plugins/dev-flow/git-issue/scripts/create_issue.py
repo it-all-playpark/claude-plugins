@@ -69,13 +69,13 @@ def api_repo(args: argparse.Namespace) -> str:
     return args.repo or "{owner}/{repo}"
 
 
-def build_command(args: argparse.Namespace, body_file: Path) -> list[str]:
+def build_command(args: argparse.Namespace, title: str, body_file: Path) -> list[str]:
     cmd = [
         "gh",
         "issue",
         "create",
         "--title",
-        args.title,
+        title,
         "--body-file",
         str(body_file),
     ]
@@ -125,6 +125,22 @@ def build_dependency_command(args: argparse.Namespace, issue: int | str, blocker
         "-F",
         f"issue_id={blocker_id}",
     ]
+
+
+def read_title(path: Path) -> str:
+    """タイトルファイルの中身から前後の空白と末尾改行を除いた 1 行。
+
+    タイトルは finding 由来で `$(…)` やバッククォートを含みうるので、コマンド文字列ではなくファイルで受ける。
+    """
+    try:
+        title = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as e:
+        raise ValueError(f"title file を読めない: {path}: {e}") from e
+    if not title:
+        raise ValueError(f"title file が空: {path}")
+    if len(title.splitlines()) > 1:
+        raise ValueError(f"title file が 2 行以上（タイトルは 1 行で書く）: {path}")
+    return title
 
 
 def ensure_body_file(path: Path) -> None:
@@ -446,6 +462,7 @@ def command_to_string(cmd: list[str]) -> str:
 
 
 def run(args: argparse.Namespace) -> int:
+    title = read_title(args.title_file)
     ensure_body_file(args.body_file)
     body = args.body_file.read_text(encoding="utf-8")
     check_kind(args.kind, body)
@@ -466,7 +483,7 @@ def run(args: argparse.Namespace) -> int:
         print("Dry run: issue will not be created.")
         if args.kind == "human":
             print(f"Label command: {command_to_string(build_label_command(args))}")
-        print(f"Command: {command_to_string(build_command(args, args.body_file))}")
+        print(f"Command: {command_to_string(build_command(args, title, args.body_file))}")
         for number in blocked_by:
             dep = build_dependency_command(args, "<new>", f"<id of #{number}>")
             print(f"Blocked by #{number}: {command_to_string(dep)}")
@@ -486,14 +503,14 @@ def run(args: argparse.Namespace) -> int:
         body_file = Path(tmp)
 
     try:
-        return create(args, body_file, blocked_by)
+        return create(args, title, body_file, blocked_by)
     finally:
         if body_file != args.body_file:
             body_file.unlink(missing_ok=True)
 
 
-def create(args: argparse.Namespace, body_file: Path, blocked_by: list[int]) -> int:
-    cmd = build_command(args, body_file)
+def create(args: argparse.Namespace, title: str, body_file: Path, blocked_by: list[int]) -> int:
+    cmd = build_command(args, title, body_file)
     ensure_gh_ready()
     blocker_ids = {number: resolve_blocker_id(args, number) for number in blocked_by}
 
@@ -519,10 +536,17 @@ def create(args: argparse.Namespace, body_file: Path, blocked_by: list[int]) -> 
 
 
 def parse_args() -> argparse.Namespace:
+    # allow_abbrev=False: 既定の前方一致だと --title が --title-file の省略形として通り、値を直接受ける口が残る
     parser = argparse.ArgumentParser(
         description="Create a GitHub issue from a markdown file.",
+        allow_abbrev=False,
     )
-    parser.add_argument("--title", required=True, help="Issue title")
+    parser.add_argument(
+        "--title-file",
+        type=Path,
+        required=True,
+        help="Path to a file holding the issue title (one line; surrounding whitespace is stripped)",
+    )
     parser.add_argument(
         "--body-file",
         type=Path,
