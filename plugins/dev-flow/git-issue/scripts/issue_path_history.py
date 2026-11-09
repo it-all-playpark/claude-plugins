@@ -113,9 +113,10 @@ def search(path: str, repo: str | None) -> list[dict]:
 def window_issues(cutoff: datetime, repo: str | None) -> list[dict]:
     """Closed issues in the window, fetched without any path in the query.
 
-    二重引用符を含むパスは `"<path>" in:body` の句を抜けて検索条件を足せる（未来の作成日を足して結果を空にする等）。
-    その検索の結果は信用できないので、パスを含めない検索で窓の issue を取り、本文の照合は Python で行う。
-    上限に達した結果は欠けている可能性があるので成功扱いにしない。
+    パスごとの検索は網羅を保証しない。二重引用符を含むパスは `"<path>" in:body` の句を抜けて検索条件を足せ
+    （未来の作成日を足して結果を空にする等）、引用符が無くても同じパスを本文に含む別の issue が上限を埋めると
+    直近の issue が落ちる。どのパスでもパスを含めない検索で窓の issue を取って本文を Python で照合し、
+    この取得が上限に達した結果は欠けている可能性があるので成功扱いにしない。
     """
     issues = run_gh(build_window_command(cutoff, repo), "the closed-issue window")
     if len(issues) >= SEARCH_LIMIT:
@@ -137,11 +138,9 @@ def parse_closed_at(value: object) -> datetime:
 def collect(paths: list[str], repo: str | None, days: int) -> list[dict]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     by_number: dict[int, dict] = {}
-    window = window_issues(cutoff, repo) if any('"' in p for p in paths) else []
+    window = window_issues(cutoff, repo)
     for path in paths:
-        found = search(path, repo)
-        if '"' in path:
-            found = found + [i for i in window if isinstance(i.get("body"), str) and path in i["body"]]
+        found = search(path, repo) + [i for i in window if isinstance(i.get("body"), str) and path in i["body"]]
         for issue in found:
             if parse_closed_at(issue.get("closedAt")) < cutoff:
                 continue

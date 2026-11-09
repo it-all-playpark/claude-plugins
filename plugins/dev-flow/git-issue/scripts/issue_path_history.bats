@@ -81,8 +81,9 @@ fixture() {
     [ "$(jq '.issues | length' <<<"$output")" -eq 2 ]
     [ "$(jq -c '.issues[] | select(.number == 10) | .matched_paths' <<<"$output")" = '["src/a.py","src/b.py"]' ]
     [ "$(jq -c '.issues[] | select(.number == 11) | .matched_paths' <<<"$output")" = '["src/b.py"]' ]
-    # 空行は無視し、パスごとに 1 回ずつ argv で検索する
-    [ "$(wc -l <"$GH_LOG" | tr -d ' ')" -eq 2 ]
+    # 空行は無視し、パスごとに 1 回ずつ argv で検索する（ほかはパスを含めない窓の取得 1 回）
+    [ "$(grep -c -- ' in:body ' "$GH_LOG")" -eq 2 ]
+    [ "$(wc -l <"$GH_LOG" | tr -d ' ')" -eq 3 ]
     grep -qF -- 'issue list --state closed --search "src/a.py" in:body --json number,title,closedAt,body' "$GH_LOG"
     grep -qF -- '--repo acme/app' "$GH_LOG"
 }
@@ -148,9 +149,26 @@ fixture() {
     grep -E -- '--search closed:>=[0-9]{4}-[0-9]{2}-[0-9]{2} ' "$GH_LOG"
 }
 
-@test "(4c) 窓の取得が上限に達したら欠けうるので ok:false を出して非 0 で終わる" {
+@test "(4c) 引用符の無いパスでも、パスの検索から落ちた窓の issue を本文照合で拾う" {
     use_gh_stub
-    printf '%s\n' 'src/a"b.py' >"$PATH_FILE"
+    printf '%s\n' "src/a.py" >"$PATH_FILE"
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    export GH_STUB_WINDOW_JSON="$BATS_TEST_TMPDIR/window.json"
+    jq -n --arg now "$now" '[
+        {number: 50, title: "t50", closedAt: $now, body: "fix src/a.py"},
+        {number: 51, title: "t51", closedAt: $now, body: "src/b.py only"}
+    ]' >"$GH_STUB_WINDOW_JSON"
+
+    run python3 "$SCRIPT" --path-file "$PATH_FILE"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -c '[.issues[].number]' <<<"$output")" = '[50]' ]
+    [ "$(jq -c '.issues[0].matched_paths' <<<"$output")" = '["src/a.py"]' ]
+}
+
+@test "(4d) 窓の取得が上限に達したら欠けうるので、引用符の無いパスでも ok:false を出して非 0 で終わる" {
+    use_gh_stub
+    printf '%s\n' 'src/a.py' >"$PATH_FILE"
     export GH_STUB_WINDOW_JSON="$BATS_TEST_TMPDIR/window.json"
     jq -n '[range(1000) | {number: ., title: "t", closedAt: "2099-01-01T00:00:00Z", body: "x"}]' >"$GH_STUB_WINDOW_JSON"
 
