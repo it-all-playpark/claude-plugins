@@ -5,10 +5,12 @@
 #    <out-dir>/<generated_at の YYYY-MM-DDTHHMMSSZ>.json（同じ秒の 2 本目以降は .2.json, .3.json ...）。
 #    窓の始点は直前の実行のレポート（同じ日の分も含む最新）の generated_at（無ければ health-report.sh の既定 =
 #    24 時間前）。窓は直前の実行の終点から始まるので、実行が空いても取りこぼさず、日次と即時トリガが
-#    交互に走っても同じ失敗を 2 回 new / regressed にしない。
-# 2. new / regressed が 1 件以上の実行だけ、`claude -p "/dev-flow:dev-flow-health <report>"` で
-#    原因の推定と issue 起票を LLM に任せる。0 件なら LLM を呼ばない。出力はレポートと同じ名前の .llm.log。
-# 3. LLM を呼んだ実行では、.llm.log の振り分けブロック（CLASS_BEGIN 〜 CLASS_END の行の間。複数あれば最後の 1 つ）を
+#    交互に走っても同じ失敗を 2 回 new / regressed にしない。同じ直前のレポートを --previous-report で渡し、
+#    解決後の model ID の既知集合（known_models）を引き継ぐ。
+# 2. needs_llm（new / regressed が 1 件以上か model_changes が 1 件以上）の実行だけ、
+#    `claude -p "/dev-flow:dev-flow-health <report>"` で原因の推定と issue 起票を LLM に任せる。
+#    それ以外は LLM を呼ばない。出力はレポートと同じ名前の .llm.log。
+# 3. LLM を呼び、new / regressed の signature がある実行では、.llm.log の振り分けブロック（CLASS_BEGIN 〜 CLASS_END の行の間。複数あれば最後の 1 つ）を
 #    record-classification.sh の --input に渡し、<out-dir>/classifications.jsonl に追記する。記録をここで行うのは、
 #    claude -p の Bash は sandbox 内で動き、~/.claude/logs は組み込みの書き込み保護で skill から書けないため。
 #    検証と行の形は record-classification.sh だけが持つ — ここで行を組み立てたり JSONL に直接書いたりしない。
@@ -18,15 +20,15 @@
 # 待ち、前の実行のレポートを窓の始点にして走る。
 #
 # Usage:
-#   daily.sh [--out-dir DIR] [--journal-dir DIR] [--repo DIR] [--now ISO8601]
+#   daily.sh [--out-dir DIR] [--journal-dir DIR] [--repo DIR] [--projects-dir DIR] [--now ISO8601]
 #
 #   --out-dir      既定 ~/.claude/logs/dev-flow-health
 #   --now          窓の終点。既定は現在の秒で、NOW_LAG_SECONDS 秒待ってから走査する（終点以前の entry の書き込み完了を待つ）
-#   --journal-dir / --repo は health-report.sh へそのまま渡す
+#   --journal-dir / --repo / --projects-dir は health-report.sh へそのまま渡す
 #
 # 出力: stdout に {report, needs_llm, llm_invoked, llm_exit, classifications_recorded, classification_error} の JSON 1 行。
 #   classifications_recorded は追記した行数（記録できなければ 0）、classification_error は記録できなかった理由。
-#   LLM を呼ばない実行ではどちらも null。
+#   LLM を呼ばない実行と、model_changes だけで LLM を呼んだ実行（振り分ける signature が無い）ではどちらも null。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,7 +47,7 @@ CLASS_END='<!-- dev-flow-health-classifications:end -->'
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --out-dir) OUT_DIR="${2:?}"; shift 2 ;;
-        --journal-dir|--repo) PASS+=("$1" "${2:?}"); shift 2 ;;
+        --journal-dir|--repo|--projects-dir) PASS+=("$1" "${2:?}"); shift 2 ;;
         --now) NOW="${2:?}"; shift 2 ;;
         -h|--help) sed -n '/^# Usage:/,/^# 出力:/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) jq -n --arg e "unknown option: $1" '{error: $e}' >&2; exit 2 ;;
@@ -68,7 +70,8 @@ done
 trap 'rm -rf "$LOCK"' EXIT
 echo "$$" > "$LOCK/pid"
 
-# 直前の実行のレポート（ファイル名は generated_at 順に並ぶ）の generated_at を窓の始点にする
+# 直前の実行のレポート（ファイル名は generated_at 順に並ぶ）の generated_at を窓の始点にし、
+# 同じファイルを --previous-report で渡す
 SINCE=""
 prev=""
 for f in "$OUT_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z*.json; do
@@ -86,6 +89,7 @@ fi
 
 ARGS=(--now "$NOW")
 [[ -z "$SINCE" ]] || ARGS+=(--since "$SINCE")
+[[ -z "$prev" ]] || ARGS+=(--previous-report "$prev")
 if [[ ${#PASS[@]} -gt 0 ]]; then
     ARGS+=("${PASS[@]}")
 fi
@@ -115,7 +119,10 @@ if [[ "$NEEDS_LLM" == "true" ]]; then
     else
         LLM_EXIT=$?
     fi
+fi
 
+# 振り分けるのは new / regressed の signature だけ（model_changes は振り分けない）。無ければ記録を試みない
+if [[ "$LLM_INVOKED" == "true" && "$(jq '.summary.new + .summary.regressed' "$REPORT")" -gt 0 ]]; then
     # 一時ファイルは <out-dir> の dotfile — 窓の始点を探す glob（YYYY-MM-DDTHHMMSSZ*.json）に掛からない名前にする
     BLOCK="$(mktemp "$OUT_DIR/.classifications.XXXXXX")"
     awk -v b="$CLASS_BEGIN" -v e="$CLASS_END" '

@@ -5,8 +5,9 @@ description: |
   signatures with new / ongoing / resolved / regressed status and candidate commits), classifies
   each new or regressed signature as dev_flow / target_repo / environment / transient, explains the
   cause of each dev_flow signature from its runs and the candidate commit diffs, files one
-  self-improve issue per dev_flow signature, and outputs every classification in a marked block
-  that daily.sh records.
+  self-improve issue per dev_flow signature, files one self-improve issue per resolved model ID
+  change (model_changes) asking to re-measure capability-bound.md, and outputs every classification
+  in a marked block that daily.sh records.
   Use when: (1) the daily job or the journal trigger hands over a report with new / regressed signatures,
   (2) user asks why dev-flow started failing or which commit broke it,
   (3) keywords: dev-flow health, ヘルスレポート, 失敗の型, 再発, regressed, 回帰, どの commit から, self-improve.
@@ -17,7 +18,9 @@ description: |
 
 dev-flow の失敗を決定論スクリプトで集計し、**新しく出た型（new）と、直ったはずが再び出た型
 （regressed）があった実行だけ** LLM が原因の所在を振り分け、dev-flow 本体の欠陥と判断したものだけ原因と
-修正案を書いて issue にする。集計・判定・候補 commit の列挙はすべて `scripts/health-report.sh` が行い、
+修正案を書いて issue にする。dev-flow の agent が使った解決後の model ID が変わった実行（`model_changes`）では、
+`capability-bound.md` の測り直しを求める issue を 1 変化 1 件で起票する。
+集計・判定・候補 commit の列挙・model ID の変化の検出はすべて `scripts/health-report.sh` が行い、
 振り分け結果の記録は `scripts/daily.sh` が本 skill の出力から `scripts/record-classification.sh` に渡して行う。
 本 skill はその JSON を読んで考える部分（分類と理由・原因の推定）だけを担う。
 
@@ -28,8 +31,10 @@ launchd 07:00（日次ジョブ）／ journal に entry が書かれた時（即
   → lock（~/.claude/logs/dev-flow-health/.lock）を取って 1 本ずつ実行。重なった実行は待つ
   → scripts/health-report.sh（LLM 不使用。窓は直前の実行の generated_at から今まで）
     → ~/.claude/logs/dev-flow-health/YYYY-MM-DDTHHMMSSZ.json（実行ごとに別ファイル）
-  → summary.new + summary.regressed > 0 の実行だけ claude -p "/dev-flow:dev-flow-health <report>"
-    → 出力の振り分けブロック（手順 7）を scripts/record-classification.sh に渡し classifications.jsonl に追記
+  → needs_llm（summary.new + summary.regressed > 0 か model_changes が 1 件以上）の実行だけ
+    claude -p "/dev-flow:dev-flow-health <report>"
+    → new / regressed がある実行は、出力の振り分けブロック（手順 7）を scripts/record-classification.sh に渡し
+      classifications.jsonl に追記
 ```
 
 即時トリガは journal ディレクトリ（`$CLAUDE_JOURNAL_DIR`、未設定なら `~/.claude/journal`）を launchd の
@@ -63,16 +68,37 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
 | `recent_runs` | 直近 5 件の発生（issue / pr_number / `repo`（journal entry の `context.repo` = dev-flow を流した対象 repo、無ければ `null`）/ 元の message 付き） |
 | `candidates` | new / regressed のみ。`last_good_commit..first_bad_commit` で `plugins/dev-flow/` を触った commit。列挙できなかったときは `error` に理由 |
 | `issue_repo` | 起票先の `OWNER/NAME`。`--repo` の checkout の origin（GitHub URL）から script が解決する。checkout が無い・origin が GitHub でないときは `null` |
+| `needs_llm` | new / regressed の signature が 1 件以上か、`model_changes` が 1 件以上なら `true` |
+| `resolved_models` | agentType（`dev-flow:` で始まるものだけ）ごとの、窓の中に mtime が入る transcript で使われた解決後の model ID（`claude-` で始まるものだけ） |
+| `known_models` | 直前の実行のレポートの `known_models` と `resolved_models` の和集合。これまでに見た ID |
+| `model_changes` | `{agent_type, model_id, previous_model_ids, first_seen}` の配列。前回の `known_models` に無い ID が出た agentType ごとに 1 件。前回の `known_models` が空の agentType（初回）は種まきだけで変化にしない |
+| `model_scan` | `{projects_dir, transcripts, error}`。transcript を読めないときは `error` に理由が入り、`model_changes` は空 |
 
 ## 手順（LLM 部分）
 
 1. 引数のレポート（無ければ `~/.claude/logs/dev-flow-health/` の最新 `YYYY-MM-DDTHHMMSSZ*.json`）を Read する。
-   `needs_llm` が false なら「new / regressed なし」と報告して終える。
+   `needs_llm` が false（new / regressed の signature も `model_changes` も無い）なら「new / regressed・model の変化なし」と
+   報告して終える。
    `issue_repo` が `null` なら、重複確認・起票をせずに「起票先を解決できない（`--repo` に GitHub の origin を持つ
    checkout を渡す）」と報告して終える。起票先を推測したり別の repo を代わりに使ったりしない。
-2. `status` が `new` / `regressed` の signature を原因の所在で振り分け、`dev_flow` に分類したものだけ finding に
+2. **model の変化**: `model_changes` の各件を、分類せずにそのまま 1 件 = 1 self-improve issue の finding にする。変化の判定は
+   `health-report.sh` だけが行う — 件を足す・除く・まとめる・付け直すことをせず、3 の振り分けと 3.7 の記録ブロックにも入れない。
+   `model_changes` が空なら 3 へ進む。各件について:
+   1. **重複確認**: `gh issue list --repo <issue_repo> --label self-improve --state all --search "dev-flow-health:model:<agent_type>:<model_id>" --json number,title`。
+      既にあればその件は finding に含めず、その issue 番号を報告に載せる（close 済みでも同じ ID の見直しは済んでいる）。
+   2. **finding をまとめる**: 3.5 と同じ `$TMPDIR` の file に、1 件 1 節で次を書く:
+      - 症状: 変わった agent（`agent_type`）・新しい ID（`model_id`）・前の ID（`previous_model_ids`）・`first_seen`
+      - 求めること: `capability-bound.md`（`plugins/dev-flow/dev-flow/references/`）のうち、sunset トリガが
+        「major モデルリリースごとの dry-run」の項目を、その項目の「次のモデル世代での測り直し方」に従って新しい ID で測り直し、
+        撤去・緩和できると示せたものだけを別の issue → PR にする（gate・`gate_policy`・agent の frontmatter・項目をこの issue で
+        直接変えない。merge は人間）
+      - 変更対象パス: `plugins/dev-flow/dev-flow/references/capability-bound.md`
+      - 本文末尾に残すマーカー: `<!-- dev-flow-health:model:<agent_type>:<model_id> -->`（次回の重複確認に使う。git-issue が
+        作る本文の末尾にこの 1 行をそのまま残すよう finding に書く）
+3. `status` が `new` / `regressed` の signature を原因の所在で振り分け、`dev_flow` に分類したものだけ finding に
    まとめて git-issue で起票し、全 signature の振り分けを記録用のブロックとして出力する（`<issue_repo>` はレポートの `issue_repo` の値）。
-   1〜5 は signature ごとに行い、6・7 は全 signature の分を 1 回で行う:
+   1〜5 は signature ごとに行い、6・7 は全 signature の分を 1 回で行う。new / regressed の signature が無い
+   （`model_changes` だけの）実行は 1〜5 と 7 を行わず、6 で 2 の finding だけを起票する:
    1. **該当 run を読む**: `recent_runs[].file` を `~/.claude/journal/` から Read し、error と telemetry を確認する。
       `recent_runs[].repo` が `issue_repo` と違えば、その run は PR 先の別 repo で走っている。
       HOLD 由来の signature（category が `hold`）は journal に HOLD 理由の code しか残らないので、該当 PR の dev-flow
@@ -100,14 +126,14 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
       - 変更対象パス: 原因の推定で直す対象としたファイルの repo 相対パス
       - 本文末尾に残すマーカー: `<!-- dev-flow-health:<id> -->`（次回の重複確認に使う。git-issue が作る本文の末尾に
         この 1 行をそのまま残すよう finding に書く）
-   6. **起票**: 重複を除いた `dev_flow` の finding が 1 件以上あれば、Skill ツールで `dev-flow:git-issue` を 1 回だけ起動し、
-      全 finding を渡す（signature ごとに起動しない）:
+   6. **起票**: 重複を除いた finding（2 の model の変化と、`dev_flow` の signature）が 1 件以上あれば、Skill ツールで
+      `dev-flow:git-issue` を 1 回だけ起動し、全 finding を渡す（signature・変化ごとに起動しない）:
 
       ```
       dev-flow:git-issue <finding の file> --repo <issue_repo> --labels self-improve
       ```
 
-      各 finding は 1 signature = 1 agent issue・issue 間の依存なし・human タスクなしなので、git-issue は軽い経路で
+      各 finding は 1 signature（1 変化）= 1 agent issue・issue 間の依存なし・human タスクなしなので、git-issue は軽い経路で
       起票する。本文の構成・ゲート（ac-lint・`## 変更対象パス`・4000 字）で落ちたときの直し方は git-issue に任せ、
       本 skill は本文の雛形を持たない（素の `gh issue create` は dev-flow の hook が拒否する）。1 回の起動で渡すので、
       git-issue 軽い経路の手順 5 により `dev-flow-ready-set` が起票した全 issue に 1 回だけ走る。
@@ -128,13 +154,15 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
       書けないため。本 skill から `record-classification.sh` を実行せず、JSONL を Write / Edit / echo で直接書かない。
       enum 外の `classification` が 1 件でもあると 1 行も記録されない。対話セッションから起動したときもブロックは
       出力する（その場合は記録されない）。
-3. 分類ごとの signature 数、起票した issue 番号、重複で見送った signature、
-   `candidates.error` で原因を絞れなかった signature と、git-issue が返した `## Launch Order` を報告し、
-   最後に 7 の振り分けブロックを置く。
+4. 分類ごとの signature 数、起票した issue 番号、重複で見送った signature と model の変化、
+   `candidates.error` で原因を絞れなかった signature、`model_scan.error`（あれば）と、git-issue が返した `## Launch Order` を報告し、
+   最後に 3.7 の振り分けブロックを置く（new / regressed の signature がある実行だけ）。
 
 ## 守ること
 
-- 判定（status・候補 commit）は script の出力をそのまま使う。LLM 側で状態を付け直さない。LLM が決めるのは分類と理由だけ
+- 判定（status・候補 commit・`model_changes`）は script の出力をそのまま使う。LLM 側で状態を付け直さない。LLM が決めるのは分類と理由だけ
 - 起票した issue の実装は人間が `/dev-flow` で起動する。本 skill は実装・merge をしない
 - `dev_flow` に分類した signature だけ 1 signature = 1 issue で起票する。`target_repo` / `environment` / `transient` は記録だけ
+- `model_changes` は分類せず 1 件 = 1 issue で起票する。起票は見直しの合図だけで、gate・agent の frontmatter・
+  `capability-bound.md` の項目を本 skill から変えない
 - 起票先はレポートの `issue_repo` だけを使う。`null` のときは起票しない（fail-closed）

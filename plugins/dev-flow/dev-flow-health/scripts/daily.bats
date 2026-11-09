@@ -14,6 +14,8 @@ setup() {
 
     export HOME="$BATS_TEST_TMPDIR/home"
     mkdir -p "$HOME"
+    # transcript の既定（${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects）を一時ディレクトリの側にする
+    unset CLAUDE_CONFIG_DIR
     JOURNAL="$BATS_TEST_TMPDIR/journal"
     export CLAUDE_JOURNAL_DIR="$JOURNAL"
     OUT="$BATS_TEST_TMPDIR/out"
@@ -135,6 +137,41 @@ run_watch_trigger() {
     # 10-04T18:00 の再発が窓に入る
     [ "$(jq '.summary.regressed' "$OUT/2026-10-04T230000Z.json")" = "1" ]
     [ "$(printf '%s' "$output" | jq '.llm_invoked')" = "true" ]
+}
+
+# $1 = known_models（JSON）。窓の始点 2026-10-05T00:00:00Z の直前の実行のレポートを置く
+write_previous_report() {
+    mkdir -p "$OUT"
+    jq -n --argjson k "$1" '{generated_at: "2026-10-05T00:00:00Z", known_models: $k}' > "$OUT/2026-10-05T000000Z.json"
+}
+
+@test "直前の実行のレポートを --previous-report で、--projects-dir をそのまま health-report.sh に渡す" {
+    write_previous_report '{"dev-flow:pr-reviewer": ["claude-model-8"]}'
+    run daily --now 2026-10-06T00:00:00Z --projects-dir "$BATS_TEST_TMPDIR/projects"
+    [ "$status" -eq 0 ]
+    report="$OUT/2026-10-06T000000Z.json"
+    # 窓の中に transcript が無くても、前回の known_models を引き継ぐ
+    [ "$(jq -c '.known_models' "$report")" = '{"dev-flow:pr-reviewer":["claude-model-8"]}' ]
+    [ "$(jq -r '.model_scan.projects_dir' "$report")" = "$BATS_TEST_TMPDIR/projects" ]
+}
+
+@test "new / regressed が 0 件でも model_changes がある実行は LLM を起動し、振り分けの記録は試みない" {
+    write_previous_report '{"dev-flow:evaluator": ["claude-model-8"]}'
+    dir="$BATS_TEST_TMPDIR/projects/acme-app/session-1/subagents/workflows/wf-1"
+    mkdir -p "$dir"
+    echo '{"agentType":"dev-flow:evaluator"}' > "$dir/agent-e1.meta.json"
+    echo '{"type":"assistant","timestamp":"2026-10-05T12:00:00.000Z","message":{"model":"claude-model-9"}}' > "$dir/agent-e1.jsonl"
+    TZ=UTC touch -t 202610051200.00 "$dir/agent-e1.jsonl"
+
+    run daily --now 2026-10-06T00:00:00Z --projects-dir "$BATS_TEST_TMPDIR/projects"
+    [ "$status" -eq 0 ]
+    report="$OUT/2026-10-06T000000Z.json"
+    [ "$(jq '.summary.new + .summary.regressed' "$report")" = "0" ]
+    [ "$(jq -c '[.model_changes[] | [.agent_type, .model_id]]' "$report")" = '[["dev-flow:evaluator","claude-model-9"]]' ]
+    [ "$(printf '%s' "$output" | jq -c '[.needs_llm, .llm_invoked]')" = "[true,true]" ]
+    [ "$(cat "$CALLS")" = "-p /dev-flow:dev-flow-health $report" ]
+    [ "$(printf '%s' "$output" | jq -c '[.classifications_recorded, .classification_error]')" = "[null,null]" ]
+    [ ! -e "$OUT/classifications.jsonl" ]
 }
 
 @test "同じ signature の失敗が続いても、2 回続けた実行で LLM を起動するのは 1 回だけ — レポートは実行ごとに別ファイル" {

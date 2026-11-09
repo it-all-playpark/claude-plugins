@@ -44,10 +44,23 @@
 #   4. issue_repo（self-improve issue の起票先 OWNER/NAME）を --repo の checkout の origin から解決する。
 #      origin が GitHub の URL でない・checkout が無いときは null。起票先は固定値にしない — plugin を
 #      install した第三者の失敗を別の repo に起票しないため。null のとき SKILL.md の手順は起票せずに止まる。
+#   5. dev-flow の agent が使った解決後の model ID（`opus` 等の別名ではなく `claude-…`）の変化を transcript から見つける。
+#      agents/*.md の model: は別名なので、世代が変わってもファイルに差分が出ない — capability-bound.md の
+#      「major モデルリリースごとの dry-run」を始める合図はここだけが出す。
+#        resolved_models : 窓 (--since, --now] に mtime が入る <projects-dir> 配下の agent-*.jsonl のうち、隣の
+#                          agent-*.meta.json の agentType が dev-flow: で始まるものの、assistant 行の message.model
+#                          （claude- で始まるものだけ。"<synthetic>" 等は数えない）を agentType ごとに集めたもの
+#        known_models    : --previous-report の known_models と resolved_models の和集合。transcript は保存期間で消えるので
+#                          既知の ID はレポートで引き継ぐ
+#        model_changes   : 前回の known_models が空でない agentType で、そこに無い ID が resolved_models に出たもの
+#                          （1 agentType × 1 ID = 1 件）。前回の known_models が空の agentType は種まきだけで変化にしない
+#      transcript の形は Claude Code の内部仕様なので、読めない・形が違うときは model_changes を空にし、理由を
+#      model_scan.error に入れる（advisory なので fail-open — 終了コードと signature 側の出力は変えない）。
 #
 # Usage:
 #   health-report.sh [--journal-dir DIR] [--repo DIR] [--now ISO8601] [--since ISO8601]
 #                    [--window-hours N] [--resolve-after N]
+#                    [--projects-dir DIR] [--previous-report FILE]
 #
 #   --journal-dir    既定 $CLAUDE_JOURNAL_DIR、なければ ~/.claude/journal
 #   --repo           候補 commit を引く skills repo。既定は本スクリプトを含む git checkout
@@ -58,8 +71,10 @@
 #   --since          new / regressed とみなす窓の始点（この時刻ちょうどは含まない）。既定は --now から --window-hours 前
 #   --window-hours   既定 24
 #   --resolve-after  resolved とみなす再発なし run 数 N。既定 5
+#   --projects-dir   transcript の置き場。既定 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects
+#   --previous-report 直前の実行のレポート。known_models をここから引き継ぐ（無ければ全 agentType が種まき）
 #
-# 出力: stdout に JSON 1 つ。needs_llm は summary.new + summary.regressed > 0。
+# 出力: stdout に JSON 1 つ。needs_llm は summary.new + summary.regressed > 0 または model_changes が 1 件以上。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -94,10 +109,14 @@ NOW=""
 SINCE=""
 WINDOW_HOURS="24"
 RESOLVE_AFTER="5"
+PROJECTS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+PREVIOUS_REPORT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --journal-dir) JOURNAL_DIR="${2:?}"; shift 2 ;;
+        --projects-dir) PROJECTS_DIR="${2:?}"; shift 2 ;;
+        --previous-report) PREVIOUS_REPORT="${2:?}"; shift 2 ;;
         --repo) REPO="${2:?}"; shift 2 ;;
         --now) NOW="${2:?}"; shift 2 ;;
         --since) SINCE="${2:?}"; shift 2 ;;
@@ -381,13 +400,106 @@ while [[ "$i" -lt "$COUNT" ]]; do
     i=$((i + 1))
 done
 
+# --- 解決後の model ID の変化 -------------------------------------------------------
+# 前回の known_models。読めない・形が違うときは種まきに倒し、変化は出さない（推測で起票しない）
+PREV_KNOWN='{}'
+PREV_ERROR=""
+if [[ -n "$PREVIOUS_REPORT" ]]; then
+    if ! PREV_KNOWN="$(jq -c '.known_models // {}
+            | if type == "object" and all(.[]; type == "array" and all(.[]; type == "string")) then .
+              else error("known_models") end' "$PREVIOUS_REPORT" 2>/dev/null)"; then
+        PREV_KNOWN='{}'
+        PREV_ERROR="previous_report_unreadable"
+    fi
+fi
+
+# 窓 (--since, --now] に mtime が入る dev-flow agent の transcript ごとに、使われた model ID を
+# {agent_type, model, timestamp（その ID の最初の assistant 行）, transcript（projects dir からの相対パス）} で
+# MODEL_USES に 1 行ずつ入れる。失敗したら SCAN_ERROR に理由を入れ、MODEL_USES は空のまま
+MODEL_USES=""
+MODEL_TRANSCRIPTS=0
+SCAN_ERROR=""
+scan_models() {
+    if [[ ! -d "$PROJECTS_DIR" ]]; then
+        SCAN_ERROR="projects_dir_not_found"
+        return 0
+    fi
+    if [[ ! -r "$PROJECTS_DIR" || ! -x "$PROJECTS_DIR" ]]; then
+        SCAN_ERROR="projects_dir_unreadable"
+        return 0
+    fi
+    # find の -newer で窓を切る（始点ちょうどは含まず終点ちょうどは含む）。基準時刻のファイルは UTC の touch -t で作る
+    local refs files f meta agent_type rel uses out=""
+    refs="$(mktemp -d "${TMPDIR:-/tmp}/health-report.XXXXXX")"
+    local s="${SINCE//[-:TZ]/}" n="${NOW//[-:TZ]/}"
+    TZ=UTC touch -t "${s:0:12}.${s:12:2}" "$refs/since"
+    TZ=UTC touch -t "${n:0:12}.${n:12:2}" "$refs/now"
+    if ! files="$(find "$PROJECTS_DIR" -type f -name 'agent-*.jsonl' -newer "$refs/since" ! -newer "$refs/now" 2>/dev/null)"; then
+        rm -rf "$refs"
+        SCAN_ERROR="projects_dir_unreadable"
+        return 0
+    fi
+    rm -rf "$refs"
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        meta="${f%.jsonl}.meta.json"
+        [[ -f "$meta" ]] || continue
+        if ! agent_type="$(jq -r '.agentType | strings' "$meta" 2>/dev/null)"; then
+            SCAN_ERROR="transcript_unreadable"
+            return 0
+        fi
+        [[ "$agent_type" == dev-flow:* ]] || continue
+        rel="${f#"$PROJECTS_DIR"/}"
+        if ! uses="$(jq -n -R -c --arg at "$agent_type" --arg t "$rel" '
+                [ inputs | fromjson? | objects | select(.type == "assistant")
+                  | {model: (.message | if type == "object" then .model else null end),
+                     timestamp: (.timestamp | if type == "string" then . else null end)}
+                  | select((.model | type) == "string" and (.model | startswith("claude-"))) ]
+                | group_by(.model)[]
+                | {agent_type: $at, model: .[0].model, timestamp: (map(.timestamp // empty) | min), transcript: $t}' "$f" 2>/dev/null)"; then
+            SCAN_ERROR="transcript_unreadable"
+            return 0
+        fi
+        MODEL_TRANSCRIPTS=$((MODEL_TRANSCRIPTS + 1))
+        [[ -z "$uses" ]] || out+="$uses"$'\n'
+    done <<< "$files"
+    MODEL_USES="$out"
+}
+
+scan_models
+MODEL_SCAN_ERROR="${SCAN_ERROR:-$PREV_ERROR}"
+
+# shellcheck disable=SC2016
+MODEL_JSON="$(printf '%s' "$MODEL_USES" | jq -s -c \
+    --argjson prev "$PREV_KNOWN" --arg error "$MODEL_SCAN_ERROR" \
+    --arg projects_dir "$PROJECTS_DIR" --argjson transcripts "$MODEL_TRANSCRIPTS" '
+    . as $uses
+    | (reduce $uses[] as $u ({}; .[$u.agent_type] += [$u.model]) | map_values(unique)) as $resolved
+    | (reduce (($prev | to_entries[]), ($resolved | to_entries[])) as $e ({}; .[$e.key] = ((.[$e.key] // []) + $e.value | unique))) as $known
+    | {
+        resolved_models: $resolved,
+        known_models: $known,
+        model_changes: (if $error != "" then [] else
+          [ $resolved | to_entries[] | .key as $at | ($prev[$at] // []) as $p
+            | select($p | length > 0)
+            | .value[] | select(IN($p[]) | not) | . as $m
+            | ([$uses[] | select(.agent_type == $at and .model == $m)] | sort_by(.timestamp == null, .timestamp) | first) as $f
+            | {agent_type: $at, model_id: $m, previous_model_ids: $p,
+               first_seen: {timestamp: $f.timestamp, transcript: $f.transcript}} ]
+          end),
+        model_scan: {projects_dir: $projects_dir, transcripts: $transcripts,
+                     error: (if $error == "" then null else $error end)}
+      }')"
+
 # 入力の 1 件目が REPORT、2 件目以降が signature ごとの更新
-printf '%s\n%s' "$REPORT" "$UPDATES" | jq -s --arg issue_repo "$ISSUE_REPO" \
+printf '%s\n%s' "$REPORT" "$UPDATES" | jq -s --arg issue_repo "$ISSUE_REPO" --argjson model "$MODEL_JSON" \
     'reduce .[1:][] as $u (.[0];
         .signatures[$u.i].id = $u.id
         | if $u | has("commits") then
             .signatures[$u.i].candidates.commits = $u.commits
             | .signatures[$u.i].candidates.error = $u.error
           else . end)
-     | {generated_at, window, resolve_after_runs, runs, summary, needs_llm,
-        issue_repo: (if $issue_repo == "" then null else $issue_repo end), signatures}'
+     | {generated_at, window, resolve_after_runs, runs, summary,
+        needs_llm: (.needs_llm or ($model.model_changes | length > 0)),
+        issue_repo: (if $issue_repo == "" then null else $issue_repo end), signatures}
+     + $model'

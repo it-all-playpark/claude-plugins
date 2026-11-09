@@ -16,6 +16,8 @@ setup() {
     JOURNAL="$BATS_TEST_TMPDIR/journal"
     mkdir -p "$JOURNAL"
     NOW="2026-10-05T00:00:00Z"
+    # --projects-dir の既定を一時ディレクトリに向け、実際の transcript を読まない
+    export CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/claude-config"
 }
 
 # lifecycle.jsonl の各行を _file の名前で journal に書く
@@ -737,6 +739,140 @@ write_run() {
     [ "$(printf '%s' "$output" | jq 'has("issue_repo")')" = "true" ]
     # null のときは起票せずに終える手順がある
     grep -q '`issue_repo` が `null` なら、重複確認・起票をせずに' "$skill_md"
+}
+
+# --- 解決後の model ID の変化 ------------------------------------------------------
+# projects dir は <project>/<session>/subagents/workflows/<wf_id>/agent-<id>.{meta.json,jsonl} の形で一時ディレクトリに作る。
+# model ID は架空の claude-model-<n>。既定の窓は (2026-10-04T00:00:00Z, 2026-10-05T00:00:00Z]
+
+PROJECTS_SUB="acme-app/session-1/subagents/workflows/wf-1"
+
+# $1 = agentType, $2 = message.model, $3 = jsonl の mtime（YYYY-MM-DDTHH:MM:SSZ）, $4 = agent id
+write_transcript() {
+    local dir="$BATS_TEST_TMPDIR/projects/$PROJECTS_SUB" s="${3//[-:TZ]/}"
+    mkdir -p "$dir"
+    jq -nc --arg t "$1" '{agentType: $t, description: "x"}' > "$dir/agent-$4.meta.json"
+    {
+        jq -nc '{type: "user", timestamp: "2026-10-04T11:58:00.000Z", message: {role: "user", content: "x"}}'
+        jq -nc --arg m "$2" '{type: "assistant", timestamp: "2026-10-04T11:59:00.000Z", message: {model: $m, content: []}}'
+        jq -nc --arg m "$2" '{type: "assistant", timestamp: "2026-10-04T12:00:00.000Z", message: {model: $m, content: []}}'
+    } > "$dir/agent-$4.jsonl"
+    TZ=UTC touch -t "${s:0:12}.${s:12:2}" "$dir/agent-$4.jsonl"
+}
+
+# $1 = 前回レポートの known_models（JSON）
+write_previous() {
+    jq -n --argjson k "$1" '{generated_at: "2026-10-04T00:00:00Z", known_models: $k}' > "$BATS_TEST_TMPDIR/prev.json"
+}
+
+model_report() {
+    report --projects-dir "$BATS_TEST_TMPDIR/projects" "$@"
+}
+
+@test "model: 前回の known_models に無い ID が窓の中の dev-flow agent に出たら model_changes が 1 件出て needs_llm が true" {
+    write_transcript dev-flow:evaluator claude-model-9 2026-10-04T12:00:00Z e1
+    write_previous '{"dev-flow:evaluator": ["claude-model-8"]}'
+    run model_report --previous-report "$BATS_TEST_TMPDIR/prev.json"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq -c '.model_changes')" = \
+      "[{\"agent_type\":\"dev-flow:evaluator\",\"model_id\":\"claude-model-9\",\"previous_model_ids\":[\"claude-model-8\"],\"first_seen\":{\"timestamp\":\"2026-10-04T11:59:00.000Z\",\"transcript\":\"$PROJECTS_SUB/agent-e1.jsonl\"}}]" ]
+    [ "$(printf '%s' "$output" | jq -c '.resolved_models')" = '{"dev-flow:evaluator":["claude-model-9"]}' ]
+    [ "$(printf '%s' "$output" | jq -c '.known_models')" = '{"dev-flow:evaluator":["claude-model-8","claude-model-9"]}' ]
+    [ "$(printf '%s' "$output" | jq '.model_scan.error')" = "null" ]
+    # signature の new / regressed は 0 件でも model_changes だけで LLM を要する
+    [ "$(printf '%s' "$output" | jq '.summary.new + .summary.regressed')" = "0" ]
+    [ "$(printf '%s' "$output" | jq '.needs_llm')" = "true" ]
+}
+
+@test "model: --projects-dir の既定は \$CLAUDE_CONFIG_DIR/projects" {
+    run report
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq -r '.model_scan.projects_dir')" = "$CLAUDE_CONFIG_DIR/projects" ]
+}
+
+@test "model: 既知の ID・初回（前回レポートなし / known_models が空）・窓の外の transcript は model_changes を出さず、needs_llm は signature だけで決まる" {
+    write_transcript dev-flow:evaluator claude-model-9 2026-10-04T12:00:00Z e1
+
+    # 窓の中の ID が前回の known_models に既にある
+    write_previous '{"dev-flow:evaluator": ["claude-model-8", "claude-model-9"]}'
+    run model_report --previous-report "$BATS_TEST_TMPDIR/prev.json"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq -c '[.model_changes, .needs_llm]')" = '[[],false]' ]
+    [ "$(printf '%s' "$output" | jq -c '.known_models')" = '{"dev-flow:evaluator":["claude-model-8","claude-model-9"]}' ]
+
+    # 前回レポートが無い（初回は種まきだけ）
+    run model_report
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq -c '[.model_changes, .needs_llm]')" = '[[],false]' ]
+    [ "$(printf '%s' "$output" | jq -c '.known_models')" = '{"dev-flow:evaluator":["claude-model-9"]}' ]
+
+    # 前回レポートはあるが、その agentType の known_models が空（別の agentType だけを知っている）
+    write_previous '{"dev-flow:pr-reviewer": ["claude-model-8"], "dev-flow:evaluator": []}'
+    run model_report --previous-report "$BATS_TEST_TMPDIR/prev.json"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq -c '[.model_changes, .needs_llm]')" = '[[],false]' ]
+    [ "$(printf '%s' "$output" | jq -cS '.known_models')" = '{"dev-flow:evaluator":["claude-model-9"],"dev-flow:pr-reviewer":["claude-model-8"]}' ]
+
+    # transcript の mtime が窓の外（始点ちょうどは含まない）
+    write_previous '{"dev-flow:evaluator": ["claude-model-8"]}'
+    write_transcript dev-flow:evaluator claude-model-9 2026-10-04T00:00:00Z e1
+    run model_report --previous-report "$BATS_TEST_TMPDIR/prev.json"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq -c '[.model_changes, .resolved_models, .needs_llm]')" = '[[],{},false]' ]
+    [ "$(printf '%s' "$output" | jq -c '.known_models')" = '{"dev-flow:evaluator":["claude-model-8"]}' ]
+    # 終点ちょうどは含む
+    write_transcript dev-flow:evaluator claude-model-9 2026-10-05T00:00:00Z e1
+    run model_report --previous-report "$BATS_TEST_TMPDIR/prev.json"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq '.model_changes | length')" = "1" ]
+
+    # model_changes が無いときの needs_llm は signature の new / regressed から決まる
+    load_fixture lifecycle.jsonl
+    write_previous '{"dev-flow:evaluator": ["claude-model-9"]}'
+    run model_report --previous-report "$BATS_TEST_TMPDIR/prev.json"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq -c '[.model_changes, .needs_llm]')" = '[[],true]' ]
+}
+
+@test "model: dev-flow: で始まらない agentType と claude- で始まらない message.model は数えない" {
+    write_transcript general-purpose claude-model-9 2026-10-04T12:00:00Z g1
+    write_transcript acme:dev-flow-like claude-model-9 2026-10-04T12:00:00Z a1
+    write_transcript dev-flow:evaluator '<synthetic>' 2026-10-04T12:00:00Z e1
+    write_previous '{"general-purpose": ["claude-model-8"], "acme:dev-flow-like": ["claude-model-8"], "dev-flow:evaluator": ["claude-model-8"]}'
+    run model_report --previous-report "$BATS_TEST_TMPDIR/prev.json"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq -c '[.model_changes, .resolved_models, .needs_llm]')" = '[[],{},false]' ]
+    [ "$(printf '%s' "$output" | jq '.model_scan.error')" = "null" ]
+}
+
+@test "model: --projects-dir が無い・読めないときは model_scan.error に理由を入れて model_changes を空にし、終了コードと signature 側の出力は変えない" {
+    load_fixture lifecycle.jsonl
+    write_transcript dev-flow:evaluator claude-model-8 2026-10-04T12:00:00Z e1
+    write_previous '{"dev-flow:evaluator": ["claude-model-8"]}'
+    run model_report --previous-report "$BATS_TEST_TMPDIR/prev.json"
+    [ "$status" -eq 0 ]
+    baseline="$(printf '%s' "$output" | jq -c '{summary, signatures, issue_repo}')"
+    [ "$(printf '%s' "$output" | jq '.needs_llm')" = "true" ]
+
+    write_transcript dev-flow:evaluator claude-model-9 2026-10-04T12:00:00Z e1
+    run report --projects-dir "$BATS_TEST_TMPDIR/no-projects" --previous-report "$BATS_TEST_TMPDIR/prev.json"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | jq -r '.model_scan.error')" = "projects_dir_not_found" ]
+    [ "$(printf '%s' "$output" | jq -c '.model_changes')" = "[]" ]
+    [ "$(printf '%s' "$output" | jq -c '{summary, signatures, issue_repo}')" = "$baseline" ]
+    [ "$(printf '%s' "$output" | jq '.needs_llm')" = "true" ]
+    # 既知の ID は前回のまま引き継ぐ
+    [ "$(printf '%s' "$output" | jq -c '.known_models')" = '{"dev-flow:evaluator":["claude-model-8"]}' ]
+
+    if [ "$(id -u)" -ne 0 ]; then
+        chmod 000 "$BATS_TEST_TMPDIR/projects"
+        run model_report --previous-report "$BATS_TEST_TMPDIR/prev.json"
+        chmod 755 "$BATS_TEST_TMPDIR/projects"
+        [ "$status" -eq 0 ]
+        [ "$(printf '%s' "$output" | jq -r '.model_scan.error')" = "projects_dir_unreadable" ]
+        [ "$(printf '%s' "$output" | jq -c '.model_changes')" = "[]" ]
+        [ "$(printf '%s' "$output" | jq -c '{summary, signatures, issue_repo}')" = "$baseline" ]
+    fi
 }
 
 @test "LLM を呼ばない（claude を PATH に置いても起動しない）" {
