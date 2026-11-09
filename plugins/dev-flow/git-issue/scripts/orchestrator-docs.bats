@@ -108,6 +108,24 @@ extract_paths_block() {
     done
 }
 
+@test "(F) Output Contract は ## Launch Order の前に ## 依存グラフ を置き、SKILL.md Phase 7 は dep_graph.py を JSON ファイルで実行する" {
+    headings="$(extract_contract | grep -E '^## ')"
+    graph_line="$(grep -nFx '## 依存グラフ' <<<"$headings" | cut -d: -f1)"
+    order_line="$(grep -nFx '## Launch Order' <<<"$headings" | cut -d: -f1)"
+    [ -n "$graph_line" ] && [ -n "$order_line" ]
+    [ "$((graph_line + 1))" -eq "$order_line" ]
+
+    rule="$(awk '/^## 依存グラフへの写し方$/ { f = 1; next } f && /^## / { exit } f { print }' "$CONTRACT")"
+    [[ "$rule" == *'dep_graph.py'* ]]
+    [[ "$rule" == *'```mermaid'* ]]
+    [[ "$rule" == *"agent issue が 1 本で依存も無いときは"*"節ごと省く"* ]]
+
+    phase7="$(extract_section "$SKILL_MD" "### Phase 7")"
+    [[ "$phase7" == *'dep_graph.py --input "$TMPDIR/'* ]]
+    [[ "$phase7" == *'Write ツールで `$TMPDIR`'* ]]
+    [[ "$phase7" == *'`--dry-run` でも実行する'*'仮番号'* ]]
+}
+
 # 実装 issue の本文の節（この順で、これ以外の節を持たない）
 AGENT_BODY_SECTIONS="## ゴール
 ## 見取り図

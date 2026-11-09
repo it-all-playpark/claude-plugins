@@ -22,6 +22,9 @@
   - #M2 は Blocked by #M1, #N（dependencies API 登録: ok / 失敗 → 手動登録コマンド）
   - (依存が無い場合は `- なし`)
 
+## 依存グラフ
+（Phase 7 の `dep_graph.py` の stdout を mermaid のコードフェンスにそのまま載せる。agent issue が 1 本で依存も無いときは節ごと省く）
+
 ## Launch Order
 - 判定: `dev-flow-ready-set [--repo owner/repo] --with-in-flight <M1> <M2> ...`（ok / 失敗 → error と手動実行コマンド / Dry-run: 起票後に判定）
 - 今すぐ別セッションで起動（issue ごとに 1 セッション。起動するのは人間が指示した issue・本数だけ）:
@@ -42,6 +45,15 @@
 - Remaining non-blocking concerns:
   - ...
 ```
+
+## 依存グラフへの写し方
+
+Phase 7 の `dep_graph.py` の stdout（`graph LR` から始まる Mermaid）を、手を加えずに ` ```mermaid ` フェンスに入れて
+`## 依存グラフ` に載せる。図を書き足す・書き換えると、起票時の `--blocked-by` と図の食い違いを人間が見分けられない。
+
+- agent issue が 1 本で依存も無いときは `## 依存グラフ` の節ごと省く
+- `dep_graph.py` が非 0 で終わったら図を載せず、stderr のエラーを `## 依存グラフ` に書く
+- `--dry-run` では仮番号（`H1`…・`A1`…）のノードになる
 
 ## Launch Order への写し方
 
