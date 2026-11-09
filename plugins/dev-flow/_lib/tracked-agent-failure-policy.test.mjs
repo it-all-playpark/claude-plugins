@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
   makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, mergeTierFacts, analyzeArgs, porcelainBaselineResponse, porcelainVerdictResponse,
+  testCommandsPrepareResponse,
 } from './test-helpers/vm-sandbox.mjs';
 import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 
@@ -69,6 +70,15 @@ const DF_B5 = {
 // throw だけでは Merge tier 側の再取得で「clean」に復元されてしまい HOLD を再現できない
 // （fail-closed が Diff triage と Merge tier の両方で持続する現実的なシナリオとして構成する）。
 const DF_DANGER = { overrides: { 'merge-tier-facts': mergeTierFacts({ risk: { ok: false, hits: [], error: 'still down' } }) } };
+// RESOLVER: base に user 設定も tests/run-*.sh も無い repo — テストコマンドの解決（dev-flow-test-commands）が resolver agent と
+// コマンドファイルの書き込みまで進む。
+const DF_RESOLVER = {
+  overrides: {
+    'resolve-test-commands': testCommandsPrepareResponse({ source: 'resolver', status: 'unresolved', sources: [], bundle_file: '/tmp/test-commands-Stub01/bundle.md', bundle_files: ['pyproject.toml'] }),
+    'resolve-test-commands-agent': { status: 'resolved', full_command: 'uv run pytest', files_command: 'uv run pytest {files}', sources: ['pyproject.toml'] },
+    'resolve-test-commands-write': { written: true },
+  },
+};
 // CLOSES: merge-tier-facts の closes サブ結果が Closes 欠落を報告し closes-reinject へ到達させる。
 const DF_CLOSES = { overrides: { 'merge-tier-facts': mergeTierFacts({ closes: false }) } };
 
@@ -121,6 +131,20 @@ const EXPECTED_DEV_FLOW = {
     policy: 'continue',
     reason: 'failOpenAgent経由。観測型の分類agentが失敗しても全ACを観測型(true)に倒して継続する',
   },
+  // テストコマンドの解決（工程の workflow dev-flow-test-commands.js）の 3 spawn は failOpenAgent 経由で、失敗は解決できなかった
+  // ものとして継続する（prepare の失敗は commands_file null → run-tests は base の tests/run-*.sh だけを見る。resolver・書き込みの
+  // 失敗は unresolved → コマンドファイルが無い → no_tests）
+  'resolve-test-commands': {
+    config: DF_B1,
+    policy: 'continue',
+    reason: 'failOpenAgent経由。test-commands-prepareの失敗は解決できなかったものとしてcommands_fileを渡さずに継続する',
+    extra: async ({ calls }) => {
+      const t1 = calls.find((c) => c.label === 'test#1');
+      assert.ok(t1 && !t1.prompt.includes('--commands'), 'prepare の throw 後も test#1 に --commands が付いている');
+    },
+  },
+  'resolve-test-commands-agent': { config: DF_RESOLVER, policy: 'continue', reason: 'failOpenAgent経由。resolverの失敗はunresolvedとして扱いコマンドファイルを書かずに継続する' },
+  'resolve-test-commands-write': { config: DF_RESOLVER, policy: 'continue', reason: 'failOpenAgent経由。コマンドファイルの書き込み失敗はunresolvedとして扱い継続する' },
   'impl:serial:issue-1': { config: DF_B1, policy: 'continue', reason: 'failOpenAgent経由。dev-implementer失敗はnullとしてdropし継続する' },
   'test#1': {
     config: DF_B1,
@@ -395,7 +419,7 @@ for (const [label, spec] of Object.entries(EXPECTED_DEV_FLOW)) {
 // 集合）の全 scenario を含める（issue #605 review, PR #645）。観測範囲はこの configs 集合が
 // 到達する label に限られる — dev-flow.js の bare trackedAgent( 出現を静的に全走査するわけではない。
 test('dev-flow.js: 本ファイルの baseline + DEV_FLOW_SCENARIOS 全 scenario で観測される label は EXPECTED_DEV_FLOW に登録されている', async () => {
-  const configs = [DF_B1, DF_B2, DF_B5, DF_DANGER, DF_CLOSES, ...Object.values(DEV_FLOW_SCENARIOS)];
+  const configs = [DF_B1, DF_B2, DF_B5, DF_DANGER, DF_CLOSES, DF_RESOLVER, ...Object.values(DEV_FLOW_SCENARIOS)];
   const observed = new Set();
   for (const config of configs) {
     const { calls } = await runDevFlowBaseline(config);

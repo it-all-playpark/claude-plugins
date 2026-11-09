@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowArgs, mergeTierFacts, TEST_COMMANDS_FILE } from './test-helpers/vm-sandbox.mjs';
 import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -149,7 +149,7 @@ test('[summary-test-cell] (f) Validate red + 単体再実行 green → final_tes
   const reruns = validateReruns(calls);
   assert.equal(reruns.length, 1, `test#validate-rerun は 1 回だけ: ${reruns.length}`);
   assert.equal(reruns[0].agentType, 'dev-flow:dev-runner-haiku');
-  assert.equal(reruns[0].prompt.split('\n').at(-1), 'run-tests start /tmp/wt --base origin/main --files plugins/dev-flow/_lib/ready-set.bats');
+  assert.equal(reruns[0].prompt.split('\n').at(-1), `run-tests start /tmp/wt --base origin/main --commands ${TEST_COMMANDS_FILE} --files plugins/dev-flow/_lib/ready-set.bats`);
   assert.ok(!calls.some((c) => c.label === 'test#final' || c.label === 'test#final-rerun'), 'skip の run は test#final を回さない');
   assert.deepEqual(JSON.parse(JSON.stringify(result?.final_test_flaky)), {
     files: ['plugins/dev-flow/_lib/ready-set.bats'],

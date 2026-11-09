@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeRecordingSandbox, runDevFlowInSandbox, devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { makeRecordingSandbox, runDevFlowInSandbox, devFlowArgs, testCommandsPrepareResponse, TEST_COMMANDS_FILE } from './test-helpers/vm-sandbox.mjs';
 import { runTestsPrompt } from './run-tests-prompt.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -20,6 +20,7 @@ const devFlowPath = join(repoRoot, '.claude/workflows/dev-flow.js');
 const devFlowSrc = readFileSync(devFlowPath, 'utf8');
 
 function responder({ label, agentType }) {
+  if (label === 'resolve-test-commands') return testCommandsPrepareResponse();
   if (label === 'worktree') return { worktree: '/tmp/wt', branch: 'feature/issue-553' };
   if (label.startsWith('analyze')) {
     return {
@@ -83,7 +84,7 @@ test('[validate-test-prompt] test#1 は dev-runner-haiku に GREEN schema（test
 
 test('[validate-test-prompt] test#1 prompt は runTestsPrompt(WT, origin/<base>) と byte 一致する（canonical から inline 生成された転写契約）', async () => {
   await ensureSharedRun();
-  assert.equal(test1Call().prompt, runTestsPrompt('/tmp/wt', 'origin/main'));
+  assert.equal(test1Call().prompt, runTestsPrompt('/tmp/wt', 'origin/main', TEST_COMMANDS_FILE));
 });
 
 test('[validate-test-prompt] --base は PRERUN.base（origin/<base>）に追従し、test#1 / test#final が同じ ref を渡す', async () => {
@@ -95,14 +96,14 @@ test('[validate-test-prompt] --base は PRERUN.base（origin/<base>）に追従�
   for (const label of ['test#1', 'test#final']) {
     const c = calls.find((x) => x.label === label);
     assert.ok(c != null, `${label} の call が見つからない (labels: ${calls.map((x) => x.label).join(', ')})`);
-    assert.equal(c.prompt.split('\n').at(-1), 'run-tests start /tmp/wt --base origin/dev', `${label} の実行コマンド行: ${c.prompt.split('\n').at(-1)}`);
+    assert.equal(c.prompt.split('\n').at(-1), `run-tests start /tmp/wt --base origin/dev --commands ${TEST_COMMANDS_FILE}`, `${label} の実行コマンド行: ${c.prompt.split('\n').at(-1)}`);
   }
 });
 
 test('[validate-test-prompt] 転写契約: 最終行が bare 単文 `run-tests start <WT> --base <ref>` で、stdout の JSON 1 行を verbatim で返させる', () => {
-  const prompt = runTestsPrompt('/tmp/wt', 'origin/main');
+  const prompt = runTestsPrompt('/tmp/wt', 'origin/main', TEST_COMMANDS_FILE);
   const lines = prompt.split('\n');
-  assert.equal(lines.at(-1), 'run-tests start /tmp/wt --base origin/main', `実行コマンド行が bare 単文の run-tests ではない: ${lines.at(-1)}`);
+  assert.equal(lines.at(-1), `run-tests start /tmp/wt --base origin/main --commands ${TEST_COMMANDS_FILE}`, `実行コマンド行が bare 単文の run-tests ではない: ${lines.at(-1)}`);
   assert.ok(prompt.includes('1 回だけ実行') && prompt.includes('再実行しない'), '1 回だけ実行の指示が無い');
   assert.ok(prompt.includes('stdout の JSON 1 行だけ'), 'stdout の JSON 1 行だけを返させる指示が無い');
   assert.ok(prompt.includes('verbatim'), 'verbatim 転写の指示が無い');

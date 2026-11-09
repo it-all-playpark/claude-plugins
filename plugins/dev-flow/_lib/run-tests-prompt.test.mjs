@@ -13,7 +13,7 @@ import {
   RUN_TESTS_MAX_WAIT_SEC, RUN_TESTS_STOP_SCHEMA, RUN_TESTS_WAIT_SEC,
   runTestsJob, runTestsPrompt, runTestFilesPrompt, runTestsStopPrompt, runTestsWaitPrompt,
 } from './run-tests-prompt.mjs';
-import { makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, TEST_COMMANDS_FILE } from './test-helpers/vm-sandbox.mjs';
 import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -50,8 +50,11 @@ async function job(responses) {
 // ---- 偽の spawn ----
 
 test('[run-tests-prompt] prompt は start / wait / stop の bare 単文で、wait は 1 回の Bash に収まる秒数だけ待つ', () => {
-  assert.equal(runTestsPrompt('/wt', 'origin/main').split('\n').at(-1), 'run-tests start /wt --base origin/main');
-  assert.equal(runTestFilesPrompt('/wt', 'origin/main', ['a.bats', 'b.bats']).split('\n').at(-1), 'run-tests start /wt --base origin/main --files a.bats b.bats');
+  assert.equal(runTestsPrompt('/wt', 'origin/main', '/tmp/tc/commands.json').split('\n').at(-1), 'run-tests start /wt --base origin/main --commands /tmp/tc/commands.json');
+  assert.equal(runTestFilesPrompt('/wt', 'origin/main', '/tmp/tc/commands.json', ['a.bats', 'b.bats']).split('\n').at(-1), 'run-tests start /wt --base origin/main --commands /tmp/tc/commands.json --files a.bats b.bats');
+  // テストコマンドの解決の工程が失敗した run（commands_file null）は --commands を付けない
+  assert.equal(runTestsPrompt('/wt', 'origin/main', null).split('\n').at(-1), 'run-tests start /wt --base origin/main');
+  assert.equal(runTestFilesPrompt('/wt', 'origin/main', null, ['a.bats']).split('\n').at(-1), 'run-tests start /wt --base origin/main --files a.bats');
   assert.equal(runTestsWaitPrompt('/wt').split('\n').at(-1), `run-tests wait /wt --wait-sec ${RUN_TESTS_WAIT_SEC}`);
   assert.equal(runTestsStopPrompt('/wt').split('\n').at(-1), 'run-tests stop /wt');
   assert.ok(RUN_TESTS_WAIT_SEC < 600, '1 回の wait は Bash の上限 600 秒より短い');
@@ -184,7 +187,7 @@ function assertValidateTestsNotRun(result) {
 test('[run-tests-prompt] test#i: start の spawn 1 回のあと wait を繰り返し、最後の結果で Validate を判定する', async () => {
   const { result, calls, labels } = await runFlow({ 'test#1': RUNNING, 'test#1.wait-1': RUNNING, 'test#1.wait-2': PASSED });
   assert.deepEqual(labels.filter((l) => l.startsWith('test#')), ['test#1', 'test#1.wait-1', 'test#1.wait-2']);
-  assert.equal(calls.find((c) => c.label === 'test#1').prompt.split('\n').at(-1), `run-tests start /tmp/wt --base origin/main`);
+  assert.equal(calls.find((c) => c.label === 'test#1').prompt.split('\n').at(-1), `run-tests start /tmp/wt --base origin/main --commands ${TEST_COMMANDS_FILE}`);
   const w = calls.find((c) => c.label === 'test#1.wait-1');
   assert.equal(w.prompt, runTestsWaitPrompt('/tmp/wt'));
   assert.equal(w.agentType, 'dev-flow:dev-runner-haiku');

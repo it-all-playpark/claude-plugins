@@ -7,7 +7,8 @@
  * Export:
  *   - JS_GLOBALS: VM sandbox に expose する 15 個の JS 組み込みをまとめた object
  *   - DEV_FLOW_STAGE_WORKFLOWS / chainStageWorkflows(stub, host): dev-flow.js が workflow() で起動する工程の workflow
- *     （dev-flow-evaluate.js / dev-flow-finalize.js）を stub にせず同じ agent / log / phase で実行する workflow()。
+ *     （dev-flow-test-commands.js / dev-flow-evaluate.js / dev-flow-finalize.js）を stub にせず同じ agent / log / phase で実行する
+ *     workflow()。単体起動の pr-iterate.js が起動する dev-flow-test-commands.js も同じく実行する。
  *     makeRecordingSandbox と makeWorkflowContext は既定でこれを使い、親と工程の workflow をつないで実行する（pr-iterate は stub のまま）
  *   - makeRecordingSandbox(responder, extraSandbox?): {ctx, calls, logs, phases} を返す
  *     （calls の各要素は {label, agentType, prompt, opts, schema}。opts は agent() に渡された
@@ -29,6 +30,8 @@
  *     （dev-flow.js / pr-iterate.js 共用。filename 既定は '.claude/workflows/dev-flow.js'）
  *   - assertNoCrash(error, name): error が ReferenceError/SyntaxError なら assert.fail する
  *   - mergeTierFacts(overrides?): Merge tier 統合 exec-proxy（label 'merge-tier-facts'）の応答を組み立てる
+ *   - TEST_COMMANDS_FILE / testCommandsPrepareResponse(overrides?): test-commands-prepare（label 'resolve-test-commands'）の
+ *     応答。既定は base の tree に tests/run-*.sh がある repo（source 'runners'。resolver を起動しない）
  *   - devFlowResponder(overrides?, {issue?}?): dev-flow.js 標準経路（shape 'standard'）の既定 responder
  *   - STANDARD_FILES / COMPLEX_FILES / MICRO_FILES: 実効 shape を realized file 数で倒すための files 一覧
  *     （danger-grep と dev-implementer の両 stub に同じ一覧を渡すと宣言外 0 件で shape だけが変わる）
@@ -82,6 +85,7 @@ const WORKFLOWS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 
 
 /** dev-flow.js が workflow() で起動する工程の workflow（起動名 → ファイル名）。pr-iterate は test の stub に任せる。 */
 export const DEV_FLOW_STAGE_WORKFLOWS = {
+  'dev-flow:dev-flow-test-commands-run': 'dev-flow-test-commands.js',
   'dev-flow:dev-flow-evaluate-run': 'dev-flow-evaluate.js',
   'dev-flow:dev-flow-finalize-run': 'dev-flow-finalize.js',
 };
@@ -406,6 +410,26 @@ export function mergeTierFacts(o = {}) {
 }
 
 // ============================================================
+// testCommandsPrepareResponse: test-commands-prepare（label 'resolve-test-commands'）の応答
+// ============================================================
+
+/** 既定の test-commands-prepare の応答の commands_file（worktree '/tmp/wt' の外）。 */
+export const TEST_COMMANDS_FILE = '/tmp/test-commands-Stub01/commands.json';
+
+/**
+ * test-commands-prepare の stdout と同形の応答を返す。既定は base の tree に tests/run-*.sh がある repo（source 'runners'）。
+ *
+ * @param {Record<string, unknown>} [overrides={}]
+ */
+export function testCommandsPrepareResponse(overrides = {}) {
+  return {
+    ok: true, source: 'runners', status: 'resolved', full_command: null, files_command: null, sources: ['tests/run-unit.sh'],
+    commands_file: TEST_COMMANDS_FILE, run_dir: '/tmp/test-commands-Stub01',
+    ...overrides,
+  };
+}
+
+// ============================================================
 // devFlowResponder: dev-flow.js 標準経路（shape 'standard'）の既定 responder
 // ============================================================
 
@@ -458,6 +482,8 @@ export function devFlowResponder(overrides = {}, { issue = 1 } = {}) {
     // Setup phase の subagent は isolation-probe のみ（base / worktree / deps / cleanup は
     // dev-flow-prerun が run 前に済ませ args.setup で渡る — devFlowArgs 参照）
     if (label === 'isolation-probe') return { written: true };
+    // Setup のテストコマンドの解決（dev-flow-test-commands.js）。既定は base に tests/run-*.sh がある repo で resolver を起動しない
+    if (label === 'resolve-test-commands') return testCommandsPrepareResponse();
     if (label === 'rg-state-dir') return { state_dir: '/tmp/rg-state' };
     // Analyze phase は args.setup.analyze（prerunAnalyze）から REQ を組み、通常経路では spawn しない。
     // ゲート（AC 空 / comment_conflicts / uncertain）が引いたときだけ analyze-clarify#N（dev-runner）が
@@ -601,6 +627,8 @@ export function prIterateResponder(overrides = {}, rounds = null) {
     }
     if (label === 'isolation-cleanup') return { cleaned: true };
     if (label === 'isolation-probe') return { written: true };
+    // 単体起動がテストを実行するときのテストコマンドの解決（dev-flow-test-commands.js）
+    if (label === 'resolve-test-commands') return testCommandsPrepareResponse();
     if (agentType === 'dev-flow:pr-reviewer') return { decision: 'approve', issues: [], summary: 'ok' };
     // 敵対的 security review（issue #1063）: args.security_review の無い単体起動は対象なので、LGTM の前に
     // security-scope#i（今の head の diff）→ security-review#i が走る。既定は対象・clear（head は prompt の値を写す）

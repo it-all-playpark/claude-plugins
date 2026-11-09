@@ -5,7 +5,7 @@
 // AC1: 絶対パス literal が 0 箇所。
 // AC2: workflow が使う call site が bare 名で配線されている。
 // [first-token]: bash 前置の bare 名呼び出しや拡張子付き呼び出しの残存が無い。
-// [bin]: workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 28 本（人が起動する CLI を含む）に分割一致する。
+// [bin]: workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 29 本（人が起動する CLI を含む）に分割一致する。
 //
 // AC1 の検査文字列自体が禁止パターンの literal を含むと自己矛盾するため、
 // join() で組み立てる（_lib/*.mjs は本テストファイル自身も走査対象に含むため）。
@@ -56,6 +56,7 @@ const BARE = [
   'security-review-codex-prep',
   'security-review-codex-result',
   'porcelain-verdict',
+  'test-commands-prepare',
 ];
 
 function listFiles(dir, ext) {
@@ -109,6 +110,7 @@ const DEV_FLOW_CALL_SITES = [
   ['danger-grep', 'diff-triage /tmp/wt origin/main', {}],
   ['security-scope', '\nsecurity-review-scope /tmp/wt origin/main --working-tree', {}],
   ['merge-tier-facts', '`merge-tier-facts --worktree /tmp/wt --base origin/main --pr-view-data ', {}],
+  ['resolve-test-commands', '\ntest-commands-prepare /tmp/wt --base main', {}],
   ['test#1', '\nrun-tests start /tmp/wt', {}],
   ['commit-hook#1', '\npre-commit-hook /tmp/wt', {}],
   ['pr#', '`pr-push start /tmp/wt/.devflow-tmp/push-output.log`', {}],
@@ -188,15 +190,15 @@ for (const [name, src] of [
   });
 }
 
-// ---- [bin] workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 28 本（人が起動する CLI を含む）に分割一致する ----
+// ---- [bin] workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 29 本（人が起動する CLI を含む）に分割一致する ----
 
 // 人が起動する CLI（workflow・exec-proxy・subagent からは呼ばない）。BARE には入れない
 const HUMAN_ONLY = ['security-review-isolated'];
 
-test('[bin-bare-name-routing][bin] plugins/dev-flow/bin は BARE から journal を除いた 27 名 + 人が起動する CLI 1 名に完全一致する', () => {
+test('[bin-bare-name-routing][bin] plugins/dev-flow/bin は BARE から journal を除いた 28 名 + 人が起動する CLI 1 名に完全一致する', () => {
   const actual = readdirSync(binDir).sort();
   const expected = [...BARE.filter((name) => name !== 'journal'), ...HUMAN_ONLY].sort();
-  assert.deepEqual(actual, expected, `plugins/dev-flow/bin の内容が期待 28 名と一致しない: actual=${JSON.stringify(actual)}`);
+  assert.deepEqual(actual, expected, `plugins/dev-flow/bin の内容が期待 29 名と一致しない: actual=${JSON.stringify(actual)}`);
 });
 
 test("[bin-bare-name-routing][bin] plugins/playpark-core/bin は ['journal'] に完全一致する", () => {

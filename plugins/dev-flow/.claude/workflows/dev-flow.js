@@ -37,6 +37,11 @@ function nsAgentOpts(opts) {
 }
 // ==== END inline: _lib/agent-namespace.mjs ====
 // ==== BEGIN inline: _lib/stage-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+const TEST_COMMANDS_RESULT_SPEC = {
+  source: 'string|null', status: 'string', full_command: 'string|null', files_command: 'string|null',
+  sources: 'array', commands_file: 'string|null', error: 'string|null',
+}
+
 const EVALUATE_RESULT_SPEC = {
   state: {
     plan: 'object', ledger: 'object', risk: 'object', dangerHits: 'array', testsurfHits: 'array', testsurfPatterns: 'array',
@@ -2133,8 +2138,12 @@ function crossRepoReturnNote(artifacts) {
 const RUN_TESTS_WAIT_SEC = 450
 const RUN_TESTS_MAX_WAIT_SEC = 3600
 
-function runTestsPrompt(wt, base) {
-  return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base}`);
+function runTestsStartCommand(wt, base, commandsFile) {
+  return `run-tests start ${wt} --base ${base}${commandsFile ? ` --commands ${commandsFile}` : ''}`;
+}
+
+function runTestsPrompt(wt, base, commandsFile) {
+  return runTestsCommandPrompt(wt, runTestsStartCommand(wt, base, commandsFile));
 }
 
 function runTestsWaitPrompt(wt) {
@@ -2184,6 +2193,18 @@ async function runTestsJob({ wt, startPrompt, label, schema, waitJob, spawn, spa
   return res;
 }
 // ==== END inline: _lib/run-tests-prompt.mjs ====
+// ==== BEGIN inline: _lib/test-commands.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+function testCommandsResult(record, commandsFile, error = null) {
+  return {
+    source: record.source, status: record.status, full_command: record.full_command, files_command: record.files_command,
+    sources: record.sources, commands_file: commandsFile, error,
+  }
+}
+
+function unresolvedTestCommands(source, commandsFile, error) {
+  return testCommandsResult({ source, status: 'unresolved', full_command: null, files_command: null, sources: [] }, commandsFile, error)
+}
+// ==== END inline: _lib/test-commands.mjs ====
 // ==== BEGIN inline: _lib/pre-commit-hook.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 const PRE_COMMIT_HOOK_SCHEMA = {
   type: 'object', required: ['hook'],
@@ -2358,8 +2379,8 @@ function implementDrops(plan, results) {
   return Math.max(0, (plan.serial ?? []).length - results.length)
 }
 
-function makeImplementLoop({ wt, issue, repo, base, spawn, spawnFailOpen, log, notes }) {
-  const testRunPrompt = runTestsPrompt(wt, `origin/${base}`)
+function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFailOpen, log, notes }) {
+  const testRunPrompt = runTestsPrompt(wt, `origin/${base}`, commandsFile)
   const hookPrompt = preCommitHookPrompt(wt)
 
   function runTestsAgent(label, phase) {
@@ -2667,14 +2688,6 @@ const branch = PRERUN.branch
 const setup = PRERUN
 // isolation probe は analyze ゲート判定の後に spawn する（人間へ返す run に spawn を使わない）。
 
-// 実装 spawn と test ⇄ green-fix ループ（Implement・Validate・empty-diff retry・local-verify / AC コマンドの差し戻し）は
-// Evaluate と共有する（_lib/implement-loop.mjs。dev-flow-evaluate.js も同じ canonical を inline する）。注記は spawn ごとに
-// 読む — 削除手段の注記は Implement の途中で決まる。
-const { runImplement, trimPrSectionsIfOver, rewriteNonJapanesePrBodyItems, runValidateLoop } = makeImplementLoop({
-  wt: WT, issue: ISSUE, repo: REPO, base: BASE, spawn: trackedAgent, spawnFailOpen: failOpenAgent, log,
-  notes: () => ({ deletion: DELETION_HINT_NOTE, deps: DEPS_NOTE, turbopack: TURBOPACK_NOTE }),
-})
-
 // clarifyPrompt: analyze ゲートが引いたときだけ sonnet を 1 spawn し、ゲート理由を人間が答えられる質問文に書き起こさせる。
 // issue の転写・要件抽出はさせない（LLM に要件を再構成させると転写事故への provenance 突合が再び要る）。
 // 失敗は fail-open でゲート理由をそのまま missing_context にする。
@@ -2793,6 +2806,29 @@ if (isoProbe && isoProbe.written === false) {
   throw new Error(isolationFailureMessage({ worktree: WT, branch, startRef: `origin/${BASE}`, workflowName: 'dev-flow-run', workflowArgs: `{ issue: ${ISSUE}, setup: <dev-flow-prerun --issue ${ISSUE} --worktree ${WT} の後、別の Bash 呼び出しで実行した ensure-worktree-deps --setup ${WT}/.devflow-tmp/prerun-setup.json の stdout JSON> }`, targetPath: WT, error: isoProbe.error }))
 }
 if (!isoProbe) log('⚠️ isolation probe 自体が失敗 — 書き込み可否を診断できず（fail-open で続行）')
+
+// テストコマンドの解決: 工程の workflow（dev-flow-test-commands.js）が origin/<base> の tree から解決元（user 設定 /
+// tests/run-*.sh / resolver agent）を決め、run ごとの場所のコマンドファイルに置く。実装より前に 1 回だけ起動し、結果は Validate・
+// Evaluate・pr-iterate・Final reconcile と終端サマリーに引数で渡す（解決し直さない）。子の throw・形の不正な返り値は解決できな
+// かったものとして扱う（commands_file null — run-tests は base の tree の tests/run-*.sh だけを見る）。
+ABORT_CTX.label = 'dev-flow-test-commands'
+let TEST_COMMANDS
+try {
+  TEST_COMMANDS = await workflow('dev-flow:dev-flow-test-commands-run', { worktree: WT, base: BASE })
+  const shapeErrors = stageShapeErrors(TEST_COMMANDS, TEST_COMMANDS_RESULT_SPEC)
+  if (shapeErrors.length) TEST_COMMANDS = unresolvedTestCommands(null, null, `dev-flow-test-commands の返り値の形が不正（${shapeErrors.join(' / ')}）`)
+} catch (e) {
+  TEST_COMMANDS = unresolvedTestCommands(null, null, `dev-flow-test-commands が throw（${e && e.message ? e.message : e}）`)
+}
+if (TEST_COMMANDS.source == null) log(`⚠️ テストコマンドを解決できなかった（${TEST_COMMANDS.error}）— run-tests は base の tests/run-*.sh だけを見る`)
+
+// 実装 spawn と test ⇄ green-fix ループ（Implement・Validate・empty-diff retry・local-verify / AC コマンドの差し戻し）は
+// Evaluate と共有する（_lib/implement-loop.mjs。dev-flow-evaluate.js も同じ canonical を inline する）。注記は spawn ごとに
+// 読む — 削除手段の注記は Implement の途中で決まる。
+const { runImplement, trimPrSectionsIfOver, rewriteNonJapanesePrBodyItems, runValidateLoop } = makeImplementLoop({
+  wt: WT, issue: ISSUE, repo: REPO, base: BASE, commandsFile: TEST_COMMANDS.commands_file, spawn: trackedAgent, spawnFailOpen: failOpenAgent, log,
+  notes: () => ({ deletion: DELETION_HINT_NOTE, deps: DEPS_NOTE, turbopack: TURBOPACK_NOTE }),
+})
 
 // 合成 plan: planner を起動せず issue から単一 task の plan を作る（手順書型 task を書かせると品質が落ちる）。
 // shape は Diff triage（dev-flow-evaluate）が realized diff から決めるので、それ以前の失敗 telemetry は shape を載せない。
@@ -3260,6 +3296,7 @@ try {
   evaluated = await workflow('dev-flow:dev-flow-evaluate-run', {
     issue: ISSUE, repo: REPO, base: BASE, worktree: WT, gate_policy: GATE_POLICY, state, ci_ac_indexes: CI_AC_INDEXES,
     notes: { deletion: DELETION_HINT_NOTE, deps: DEPS_NOTE, turbopack: TURBOPACK_NOTE, test_discovery: TEST_DISCOVERY_NOTE },
+    test_commands: TEST_COMMANDS,
   })
   const shapeErrors = stageShapeErrors(evaluated, EVALUATE_RESULT_SPEC)
   if (shapeErrors.length) evaluateError = `返り値の形が不正（${shapeErrors.join(' / ')}）`
@@ -3465,6 +3502,8 @@ const prIterateArgs = () => ({
   // 敵対的 security review の起動時の判定（Diff triage）。pr-iterate は LGTM の前に PR head の diff で判定し直す。
   // reviewer は review を回す CLI の opt-in（dev-flow-prerun が base branch か user 設定から読んだ値。単体起動の pr-iterate-prerun と同じ規則）
   security_review: { target: state.securityReview.target, reasons: state.securityReview.reasons, reviewer_context_changed: state.securityReview.reviewer_context_changed, reviewer: PRERUN.security_reviewer },
+  // Setup で解決したテストコマンド（pr-iterate は解決し直さない）
+  test_commands: TEST_COMMANDS,
   ...(CI_AC_INDEXES.length ? { ci_verify: { label: CI_VERIFY.label, checks: CI_VERIFY.checks, wait_ceiling_seconds: CI_VERIFY.wait_ceiling_seconds, ...(LOCAL_VERIFY_DECIDED ? { wait: false } : {}) } } : {}),
   nested: {
     caller: 'dev-flow', cwd: WT, head_ref: state.setup.branch,
@@ -3478,7 +3517,8 @@ const prIterateArgs = () => ({
 
 // PR phase 経路分岐: LITE（実効 shape micro・Evaluate 非強制・danger hit なし）は pr-reviewer 1-pass + CI gate で完結し、
 // pr-iterate を起動しない。runEval を強制する条件（軸A invariant 由来）が 1 つでもあればフル経路。
-// workflow('pr-iterate-run') はネスト 1 段で合法 — pr-iterate.js に workflow() を足すと 2 段になり throw する。
+// workflow('pr-iterate-run') はネスト 1 段で合法 — nested の pr-iterate.js から workflow() を起動すると 2 段になり throw する
+// （pr-iterate.js がテストコマンドの解決の工程を起動するのは test_commands を受け取らない単体起動だけ）。
 // ci の AC がある run・security review の対象の run も lite に入れない（どちらも pr-iterate だけが持つ）。
 const LITE = state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target
 let iterate
@@ -3559,7 +3599,7 @@ try {
     issue: ISSUE, repo: REPO, base: BASE, worktree: WT, gate_policy: GATE_POLICY,
     state, pr, pr_body: prBody, iterate: iterate ?? null, route, eval_staleness: evalStaleness,
     ac_verify: AC_VERIFY, ac_verify_indexes: AC_VERIFY_INDEXES, ci_ac_indexes: CI_AC_INDEXES,
-    test_discovery_note: TEST_DISCOVERY_NOTE, redgreen_state_dir: redgreenStateDir,
+    test_discovery_note: TEST_DISCOVERY_NOTE, redgreen_state_dir: redgreenStateDir, test_commands: TEST_COMMANDS,
   })
   const shapeErrors = stageShapeErrors(finalized, FINALIZE_RESULT_SPEC)
   if (shapeErrors.length) finalizeError = `返り値の形が不正（${shapeErrors.join(' / ')}）`

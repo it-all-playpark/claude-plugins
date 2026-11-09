@@ -62,6 +62,25 @@ function localVerifyLine(lv) {
   return `${mdCell(lv.reason ?? '実行できなかった')} — ci の AC は CI の check の結果で判定した`;
 }
 
+// テストコマンドと解決元の 1 行（「参考」節。issue #1278）。tc は dev-flow-test-commands の返り値（Setup で 1 回解決したもの）。
+// tests/run-*.sh のときは base の tree のランナーのパス、user 設定・resolver のときは full_command と files_command を出す
+function testCommandsLine(tc) {
+  const code = (s) => `\`${mdCell(s)}\``;
+  const sources = Array.isArray(tc.sources) ? tc.sources.filter((s) => typeof s === 'string' && s.length > 0) : [];
+  const from = tc.source === 'user_config' ? 'user 設定（"dev-flow".repos["<owner>/<repo>"].test_commands）'
+    : tc.source === 'runners' ? 'base の tree の tests/run-*.sh'
+      : tc.source === 'resolver' ? `resolver（根拠: ${sources.length ? sources.map(code).join(', ') : 'なし'}）`
+        : '解決の工程が失敗';
+  if (tc.status === 'resolved' && tc.source === 'runners') return `${sources.map(code).join(', ')}（解決元: ${from}）`;
+  if (tc.status === 'resolved' && typeof tc.full_command === 'string') {
+    return `${code(tc.full_command)}（落ちたファイルの再実行: ${typeof tc.files_command === 'string' ? code(tc.files_command) : 'なし'}。解決元: ${from}）`;
+  }
+  const why = typeof tc.error === 'string' && tc.error.length > 0 ? ` — ${mdCell(tc.error)}` : '';
+  return tc.source == null
+    ? `解決できなかった（${from}${why}）— base の tree に tests/run-*.sh があればそれだけを実行した`
+    : `解決できなかった（解決元: ${from}${why}）— テストを実行していない`;
+}
+
 // base との conflict の自動解消（issue #916）の表示。conflictAutoresolve は pr-iterate の返り値 conflict_autoresolve
 // （_lib/conflict-autoresolve.mjs の conflictAutoresolveRecord の配列）。自動解消した試行は「参考」に型とファイルを出し、
 // 解消しなかった試行は mergeable_conflicting の HOLD 理由の「現状」に止めたファイル（型 A / B 以外）と型を添える。
@@ -210,6 +229,9 @@ function resolvedCell(v) {
  *   40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる（issue #1065）
  * @param {string[]|null|undefined} [opts.hooksNotRunning] - repo が追跡している git hook のうち worktree で動かない event 名
  *   （prerun の hooks_not_running）。非空なら「参考」に event 名と直し方を出す（表示専用。merge tier の入力にしない）
+ * @param {{source:string|null, status:string, full_command:string|null, files_command:string|null, sources:string[], error?:string|null}|null|undefined} [opts.testCommands] -
+ *   Setup で解決したテストコマンドと解決元（dev-flow-test-commands の返り値。issue #1278）。「参考」に実行したコマンドと
+ *   解決元（user 設定 / tests/run-*.sh / resolver と根拠のファイル）を 1 行出す（表示専用）
  * @returns {string}
  */
 export function buildDevflowSummaryBody({
@@ -259,6 +281,7 @@ export function buildDevflowSummaryBody({
   securityReview,
   headSha,
   hooksNotRunning,
+  testCommands,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -1109,6 +1132,9 @@ export function buildDevflowSummaryBody({
   }
   if (localVerify != null) {
     referenceLines.push(`- ローカル検証 (local_verify): ${localVerifyLine(localVerify)}`);
+  }
+  if (testCommands != null) {
+    referenceLines.push(`- テストコマンド: ${testCommandsLine(testCommands)}`);
   }
   referenceLines.push(...conflictResolvedLines(conflictAutoresolve));
   if (finalReconcile != null && finalReconcile !== 'skipped') {

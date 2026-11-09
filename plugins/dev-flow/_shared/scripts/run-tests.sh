@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run-tests.sh - Validate（test#i）・post-eval・test#final のテスト実行 exec-proxy（issue #821）。
 # Usage:
-#   run-tests start <worktree> --base <ref> [--files <test file>...]
+#   run-tests start <worktree> --base <ref> [--commands <file>] [--files <test file>...]
 #   run-tests wait  <worktree> [--wait-sec <n=480>]
 #   run-tests stop  <worktree> [--timeout-sec <n=60>]
 #   （内部）run-tests supervise --state-dir <dir> / run-tests run <worktree> [...]
@@ -25,12 +25,23 @@
 # にする — PR が書き換えたランナーの green はランナー自身の出力）。merge-base を解決できない run は集合を決められないので
 # テストを 1 本も実行せず status "error"。
 #
+# 解決したテストコマンド（issue #1278）: --commands <file> は Setup の test-commands-prepare / resolver が worktree の外の
+# run ごとの場所に置いたコマンドファイル（中身の形は test-commands-prepare.sh）。コマンドを argv で受けない — 転写の
+# 経路で中身が変わらず、PR が既知のパスで書き換えられないようにする。読み方:
+#   - status "resolved" で full_command が空でない（user 設定・resolver）: base の tests/run-*.sh に代えて full_command を
+#     <WT> を cwd に 1 本だけ実行する（--files は files_command の {files} の語を一覧のパスに置き換えて実行する）。
+#     コマンドは shell を通さず空白で区切った argv で起動する
+#   - status "unresolved": テストを実行せず tests "no_tests"（base に tests/run-*.sh があっても実行しない）
+#   - それ以外（--commands 無し・ファイルが無い・source "runners"）: base の tree の tests/run-*.sh を実行し、無ければ no_tests
+#   - JSON として読めない: テストを実行せず status "error"
+# 言語別に決め打ちしたコマンドで実行する経路は持たない（解決は repo の CI 定義等を読む resolver か user 設定が行う）。
+#
 # 変更ファイルの受け渡し（issue #835）: --files でない run では、merge-base から working tree への差分（commit 済み・
 # staged・未 stage）と untracked（--exclude-standard、.devflow-tmp/ を除く）の <WT> 相対パスを重複なく 1 行 1 件で
 # $LOG_DIR/changed-files.txt に書き、tests/run-*.sh に DEVFLOW_CHANGED_FILES=<その絶対パス> と DEVFLOW_BASE=<merge-base の sha> を渡す。
 # 何を回すかは repo 側のランナーが決める — run-tests はテストの選択・skip をしない（repo 固有の知識を持たない）。
 # 一覧を取る git が失敗したときは両変数とも設定しない（未設定 = ランナーは全件実行）。
-# 失敗は stderr に 1 行出すだけで status / green には影響させない。フォールバック経路には渡さない。
+# 失敗は stderr に 1 行出すだけで status / green には影響させない。解決したテストコマンドには渡さない。
 # 呼び出し元の環境に同名変数があっても継がない（入れ子の run-tests で外側の一覧を誤って使わない）。
 #
 # 落ちたファイルだけの再実行（issue #865。Final reconcile が test#final の red を flake と本物の red に分ける入口）:
@@ -38,11 +49,12 @@
 # tests/run-*.sh（集合は同じく base で決める）に DEVFLOW_TEST_FILES=<その絶対パス> を渡す（DEVFLOW_CHANGED_FILES / DEVFLOW_BASE は渡さない）。
 # ランナーは一覧のうち自分が扱うファイルだけを実行し、扱うファイルが無ければ何も実行せず exit 0 する。
 # 変数を読まないランナーは全件を実行する（遅くなるだけで green を緩めない）。どのファイルを誰が扱うかは repo 側が決める。
-# 一覧のパスが WT 内の通常ファイルでなければ引数不正（exit 2）。tests/run-*.sh が無い repo はフォールバックの
-# コマンドにファイルを渡す規約が無いため status "error" を返す（呼び出し側は flake と判定しない）。
+# 一覧のパスが WT 内の通常ファイルでなければ引数不正（exit 2）。解決したテストコマンドで実行する run は files_command の
+# {files} の語を一覧のパスに置き換えて実行する。どちらも無い・files_command に {files} の語がちょうど 1 つ無いときは
+# status "error" を返す（呼び出し側は flake と判定しない）。
 #
 # 落ちたテストファイルの受け取り（issue #1249）: tests/run-*.sh には毎回 DEVFLOW_FAILED_FILES=<$LOG_DIR 内のまだ存在しない
-# ファイルの絶対パス>を渡す（フォールバックのコマンドには渡さない。呼び出し元の環境の同名変数は継がない）。
+# ファイルの絶対パス>を渡す（解決したテストコマンドには渡さない。呼び出し元の環境の同名変数は継がない）。
 # 契約: exit 非 0 で終わるランナーは、落ちたテストファイルを 1 行 1 件（<WT> 相対か <WT> 配下の絶対パス）でそこに書いてよい。
 # 書くなら落ちたテストファイルを漏れなく書くこと — 漏れがあると base との切り分け（base-failure-triage）が漏れた失敗を
 # 見落として green に倒しうる。全部を書けないランナーは書かない（書かない・空ならログからの抽出に戻る）。
@@ -58,14 +70,13 @@
 #      それ以外（built / skipped / JSON でない）はビルドを再試行せずテストへ進む。
 #   2. base の tree の tests/run-*.sh を全本、名前順に <WT> の絶対パスの bare 形で直列実行する
 #      （1 本だけ選ぶと残りのランナーの回帰が CI まで検出されない。並列化しない — repo によっては共有資源を使う）。
-#   3. base の tree に tests/run-*.sh が 1 本も無いときだけ、検出したフォールバック（pnpm / yarn / npm test・cargo test・
-#      go test・pytest・bundle exec rspec / bin/rails test・vendor/bin/pest / vendor/bin/phpunit）を <WT> で
-#      全部実行する。何も無ければ tests "no_tests"。
+#      コマンドファイルに解決したテストコマンドがあれば、tests/run-*.sh に代えてそれを 1 本実行する。
+#      どちらも無ければ tests "no_tests"。
 #   リトライ・環境の自動修復はしない（起動失敗は環境要因で、同じ操作の繰り返しや store / ロックの操作では直らない）。
 #
 # status は全 script の exit code だけで決まる: 起動失敗（exit 126 / 127）が 1 本でもあれば "error"、
 # それ以外で exit 非 0 が 1 本でもあれば "failed"、全本 0（0 本を含む）なら "passed"。
-# 例外: フォールバックの `pnpm test` が、テストスクリプトを起動する前に pnpm 自身の失敗で非 0 になったときは
+# 例外: 解決したテストコマンドが pnpm で始まり、テストを起動する前に pnpm 自身の失敗で非 0 になったときは
 # 起動失敗とする — テストは 1 件も走っておらず、red と報告すると本物の失敗と区別できない。次のどちらか:
 #   - テスト前の依存 install（pnpm の verifyDepsBeforeRun）の失敗（出力に `Command failed with exit code N: '<pnpm>' install`）
 #   - pnpm のエラー見出し行（` ERROR  <msg>` / `ERR_PNPM_<CODE>`）があり、スクリプトを起動した痕跡
@@ -99,7 +110,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREBUILD="$SCRIPT_DIR/workspace-prebuild.sh"
 SUMMARY_MAX=4000
 LINES_MAX=30
-USAGE="usage: run-tests start <worktree> --base <ref> [--files <test file>...] | wait <worktree> [--wait-sec <n>] | stop <worktree> [--timeout-sec <n>]"
+USAGE="usage: run-tests start <worktree> --base <ref> [--commands <file>] [--files <test file>...] | wait <worktree> [--wait-sec <n>] | stop <worktree> [--timeout-sec <n>]"
 # 切り離したテストの上限（秒）。workflow の待機上限（RUN_TESTS_MAX_WAIT_SEC）より長くして、普段は workflow の stop で止まる。
 # これは run が落ちて stop が呼ばれないときにテストを残さないための上限（bats が短くするための上書き口）
 RUN_TIMEOUT_SEC="${RUN_TESTS_TIMEOUT_SEC:-4200}"
@@ -132,16 +143,22 @@ resolve_worktree() {
 # start / run の引数を検証する。start で弾くので、切り離した後に引数不正で落ちない
 parse_run_args() {
     TEST_FILES=()
+    COMMANDS_FILE=""
     [[ $# -ge 3 && "$2" == "--base" && -n "$3" ]] || usage_error
     BASE_REF="$3"
-    if [[ $# -ge 5 && "$4" == "--files" ]]; then
-        TEST_FILES=("${@:5}")
-    elif [[ $# -ne 3 ]]; then
+    local next=4
+    if [[ $# -ge 5 && "$4" == "--commands" && -n "$5" ]]; then
+        COMMANDS_FILE="$5"
+        next=6
+    fi
+    if [[ $# -ge $((next + 1)) && "${!next}" == "--files" ]]; then
+        TEST_FILES=("${@:$((next + 1))}")
+    elif [[ $# -ne $((next - 1)) ]]; then
         usage_error
     fi
     resolve_worktree "$1"
     WT_PHYS=$(cd "$WT" && pwd -P)
-    # テスト script・フォールバックとも <WT> を cwd にして実行する
+    # テスト script・解決したテストコマンドとも <WT> を cwd にして実行する
     cd "$WT" || { emit error error false "cd failed: $WT" '[]' '[]'; exit 2; }
 
     local p
@@ -242,6 +259,37 @@ if [[ ${#TEST_FILES[@]} -gt 0 ]]; then
     printf '%s\n' "${TEST_FILES[@]}" > "$TEST_FILES_LIST"
 fi
 
+# 解決したテストコマンド（--commands）。COMMAND_MODE は "command"（full_command / files_command を実行）・"unresolved"
+# （実行しない）・""（base の tests/run-*.sh）。CMD_ARGV は実行する argv（shell を通さず空白で区切る）
+COMMAND_MODE=""
+CMD_ARGV=()
+if [[ -n "$COMMANDS_FILE" && -e "$COMMANDS_FILE" ]]; then
+    if ! COMMAND_MODE=$(jq -r 'if type != "object" then error("not an object")
+        elif .status == "resolved" and (.full_command | type == "string" and test("\\S")) then "command"
+        elif .status == "unresolved" then "unresolved" else "" end' "$COMMANDS_FILE" 2>"$LOG_DIR/commands.log"); then
+        emit error error false "test commands file is not readable as JSON — no test was run: $COMMANDS_FILE (log: $LOG_DIR/commands.log)" '[]' '[]'
+        exit 0
+    fi
+    if [[ "$COMMAND_MODE" == command && -n "$TEST_FILES_LIST" ]]; then
+        read -r -a words <<< "$(jq -r '.files_command // "" | tostring' "$COMMANDS_FILE")"
+        n=0
+        for w in "${words[@]+"${words[@]}"}"; do
+            if [[ "$w" == "{files}" ]]; then
+                CMD_ARGV+=("${TEST_FILES[@]}")
+                n=$((n + 1))
+            else
+                CMD_ARGV+=("$w")
+            fi
+        done
+        if [[ $n -ne 1 ]]; then
+            emit error error false "--files needs files_command with exactly one {files} word in the test commands file: $COMMANDS_FILE" '[]' '[]'
+            exit 0
+        fi
+    elif [[ "$COMMAND_MODE" == command ]]; then
+        read -r -a CMD_ARGV <<< "$(jq -r '.full_command' "$COMMANDS_FILE")"
+    fi
+fi
+
 # merge-base（ランナーの集合を決める tree。解決できなければテストを 1 本も実行せず error）
 if ! MERGE_BASE=$(git merge-base "$BASE_REF" HEAD 2>"$LOG_DIR/merge-base.log"); then
     emit error error false "merge-base of $BASE_REF and HEAD not resolved — the set of tests/run-*.sh is taken from the base tree, so no test was run (log: $LOG_DIR/merge-base.log)" '[]' '[]'
@@ -325,57 +373,30 @@ if [[ "$(jq -r '.status? // empty' <<< "$PREBUILD_OUT" 2>/dev/null)" == "failed"
     exit 0
 fi
 
-# 2. 実行対象: base の tree の tests/run-*.sh（<WT> に無い・実行ビットが無いものも実行して起動失敗にする）、無ければフォールバック
+# 2. 実行対象: 解決したテストコマンド、無ければ base の tree の tests/run-*.sh（<WT> に無い・実行ビットが無いものも実行して
+#    起動失敗にする）
 TARGETS=()   # 表示・JSON 用の path
-COMMANDS=()  # 実行内容（run-*.sh は空 = path を bare 実行、フォールバックはコマンド文字列）
-for path in "${BASE_RUNNERS[@]+"${BASE_RUNNERS[@]}"}"; do
-    TARGETS+=("$WT/$path")
-    COMMANDS+=("")
-done
+COMMANDS=()  # 実行内容（run-*.sh は空 = path を bare 実行、解決したテストコマンドは CMD_ARGV を空白で繋いだ文字列）
+if [[ "$COMMAND_MODE" == unresolved ]]; then
+    emit passed no_tests false "the test commands file says unresolved — no test was run: $COMMANDS_FILE" '[]' '[]'
+    exit 0
+elif [[ "$COMMAND_MODE" == command ]]; then
+    TARGETS+=("${CMD_ARGV[*]}")
+    COMMANDS+=("${CMD_ARGV[*]}")
+else
+    for path in "${BASE_RUNNERS[@]+"${BASE_RUNNERS[@]}"}"; do
+        TARGETS+=("$WT/$path")
+        COMMANDS+=("")
+    done
+fi
 
 if [[ ${#TARGETS[@]} -eq 0 && -n "$TEST_FILES_LIST" ]]; then
-    emit error error false "--files needs tests/run-*.sh (fallback test runners have no file-list contract)" '[]' '[]'
+    emit error error false "--files needs tests/run-*.sh in the base tree or a resolved test command (--commands)" '[]' '[]'
     exit 0
 fi
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
-    if [[ -f "$WT/package.json" ]] && jq -e '.scripts.test | type == "string" and length > 0' "$WT/package.json" >/dev/null 2>&1; then
-        if [[ -f "$WT/pnpm-lock.yaml" ]]; then pm=pnpm
-        elif [[ -f "$WT/yarn.lock" ]]; then pm=yarn
-        else pm=npm
-        fi
-        TARGETS+=("$pm test"); COMMANDS+=("$pm test")
-    fi
-    if [[ -f "$WT/Cargo.toml" ]]; then
-        TARGETS+=("cargo test"); COMMANDS+=("cargo test")
-    fi
-    if [[ -f "$WT/go.mod" ]]; then
-        TARGETS+=("go test ./..."); COMMANDS+=("go test ./...")
-    fi
-    if [[ -f "$WT/pytest.ini" || -f "$WT/conftest.py" ]] \
-        || grep -qs '^\[tool\.pytest' "$WT/pyproject.toml" \
-        || grep -qs '^\[tool:pytest\]' "$WT/setup.cfg" \
-        || grep -qs '^\[pytest\]' "$WT/tox.ini"; then
-        TARGETS+=("pytest"); COMMANDS+=("pytest")
-    fi
-    # Ruby / PHP は detect-test-runner.sh と同じ判定（rspec-core > bin/rails、pestphp/pest > phpunit/phpunit）
-    if grep -qsE '^[[:space:]]+rspec-core([[:space:]]|$)' "$WT/Gemfile.lock"; then
-        TARGETS+=("bundle exec rspec"); COMMANDS+=("bundle exec rspec")
-    elif [[ -f "$WT/bin/rails" ]]; then
-        TARGETS+=("bin/rails test"); COMMANDS+=("bin/rails test")
-    fi
-    if [[ -f "$WT/composer.json" ]]; then
-        php_deps=$(jq -r '((.require // {}) + (."require-dev" // {})) | keys[]' "$WT/composer.json" 2>/dev/null)
-        if grep -qx 'pestphp/pest' <<< "$php_deps"; then
-            TARGETS+=("vendor/bin/pest"); COMMANDS+=("vendor/bin/pest")
-        elif grep -qx 'phpunit/phpunit' <<< "$php_deps"; then
-            TARGETS+=("vendor/bin/phpunit"); COMMANDS+=("vendor/bin/phpunit")
-        fi
-    fi
-fi
-
-if [[ ${#TARGETS[@]} -eq 0 ]]; then
-    emit passed no_tests false "no tests/run-*.sh and no fallback test runner (package.json scripts.test / Cargo.toml / go.mod / pytest config / Gemfile.lock rspec-core / bin/rails / composer.json pest・phpunit)" '[]' '[]'
+    emit passed no_tests false "no tests/run-*.sh in the base tree and no resolved test command (--commands)" '[]' '[]'
     exit 0
 fi
 
@@ -460,18 +481,19 @@ for i in "${!TARGETS[@]}"; do
         DEVFLOW_FAILED_FILES="$failed_out" "$target" > "$log" 2>&1 < /dev/null
         rc=$?
     else
-        read -r -a cmd <<< "${COMMANDS[$i]}"
-        "${cmd[@]}" > "$log" 2>&1 < /dev/null
+        "${CMD_ARGV[@]}" > "$log" 2>&1 < /dev/null
         rc=$?
     fi
+    pnpm_cmd=false
+    [[ -n "${COMMANDS[$i]}" && "${CMD_ARGV[0]}" == pnpm ]] && pnpm_cmd=true
     launch=false
     if [[ $rc -eq 126 || $rc -eq 127 ]]; then
         launch=true
-    elif [[ $rc -ne 0 && "${COMMANDS[$i]}" == "pnpm test" ]] \
+    elif [[ $rc -ne 0 && "$pnpm_cmd" == true ]] \
         && LC_ALL=C sed $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$log" \
             | LC_ALL=C grep -qE "Command failed with exit code [0-9]+: '[^']*/pnpm[^'/]*' install[[:space:]]*$"; then
         launch=true
-    elif [[ $rc -ne 0 && "${COMMANDS[$i]}" == "pnpm test" ]] && pnpm_failed_before_script "$log"; then
+    elif [[ $rc -ne 0 && "$pnpm_cmd" == true ]] && pnpm_failed_before_script "$log"; then
         launch=true
     fi
     [[ "$launch" == true ]] && LAUNCH_FAILED_ANY=true

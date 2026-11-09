@@ -115,7 +115,8 @@ test('[impl-model-opus] (c) impl:serial:issue-1 の null は再試行されず 1
 // merge-tier-facts 吸収（issue #824）で dev-runner-haiku-ro が 1 減り、Diff triage の敵対的 security review の
 // 対象判定 security-scope（issue #1063）で dev-runner-haiku-ro が 1 増え、Validate の各回の pre-commit hook
 // 実行 commit-hook#<iter>（issue #1188）で dev-runner-haiku が 1 増え、analyze ゲート通過後に全 AC を渡す観測型の
-// 分類 agent ac-observational#<issue>（issue #1259）で dev-runner が 1 増えた値）
+// 分類 agent ac-observational#<issue>（issue #1259）で dev-runner が 1 増え、Setup のテストコマンドの解決 resolve-test-commands
+// （issue #1278。既定は base に tests/run-*.sh がある repo で resolver を起動しない）で dev-runner-haiku が 1 増えた値）
 // ============================================================
 
 const SHAPES = {
@@ -126,23 +127,23 @@ const SHAPES = {
       'danger-grep': { risk: { ok: true, hits: [] }, files: [...MICRO_FILES], diffhash: { hash: 'AAA', empty: false } },
       'ci-check-lite': { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], waited_seconds: 0, poll_attempts: 0 },
     },
-    total: 14,
+    total: 15,
     evals: 0,
-    byType: { 'dev-flow:dev-runner': 1, 'dev-flow:dev-runner-haiku-wo': 1, 'dev-flow:dev-implementer': 1, 'dev-flow:dev-runner-haiku': 5, 'dev-flow:dev-runner-haiku-ro': 5, 'dev-flow:pr-reviewer': 1 },
+    byType: { 'dev-flow:dev-runner': 1, 'dev-flow:dev-runner-haiku-wo': 1, 'dev-flow:dev-implementer': 1, 'dev-flow:dev-runner-haiku': 6, 'dev-flow:dev-runner-haiku-ro': 5, 'dev-flow:pr-reviewer': 1 },
   },
   standard: {
     args: analyzeArgs(1, { acceptance_criteria: ['a', 'b', 'c', 'd'], issue_type: 'feat' }),
     overrides: {},
-    total: 15,
+    total: 16,
     evals: 1,
-    byType: { 'dev-flow:dev-runner': 1, 'dev-flow:dev-runner-haiku-wo': 1, 'dev-flow:dev-implementer': 1, 'dev-flow:dev-runner-haiku': 5, 'dev-flow:dev-runner-haiku-ro': 6, 'dev-flow:evaluator': 1 },
+    byType: { 'dev-flow:dev-runner': 1, 'dev-flow:dev-runner-haiku-wo': 1, 'dev-flow:dev-implementer': 1, 'dev-flow:dev-runner-haiku': 6, 'dev-flow:dev-runner-haiku-ro': 6, 'dev-flow:evaluator': 1 },
   },
   complex: {
     args: COMPLEX_ARGS,
     overrides: {},
-    total: 15,
+    total: 16,
     evals: 1,
-    byType: { 'dev-flow:dev-runner': 1, 'dev-flow:dev-runner-haiku-wo': 1, 'dev-flow:dev-implementer': 1, 'dev-flow:dev-runner-haiku': 5, 'dev-flow:dev-runner-haiku-ro': 6, 'dev-flow:evaluator': 1 },
+    byType: { 'dev-flow:dev-runner': 1, 'dev-flow:dev-runner-haiku-wo': 1, 'dev-flow:dev-implementer': 1, 'dev-flow:dev-runner-haiku': 6, 'dev-flow:dev-runner-haiku-ro': 6, 'dev-flow:evaluator': 1 },
   },
 };
 

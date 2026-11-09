@@ -41,6 +41,10 @@ const EVALUATE_ARGS = {
   },
   ci_ac_indexes: [],
   notes: { deletion: '', deps: '', turbopack: '', test_discovery: '' },
+  test_commands: {
+    source: 'runners', status: 'resolved', full_command: null, files_command: null, sources: ['tests/run-unit.sh'],
+    commands_file: '/tmp/test-commands-x/commands.json', error: null,
+  },
 };
 const EVALUATE_RESULT = {
   state: {
@@ -64,6 +68,9 @@ test('[stage-contract] EVALUATE_ARGS_SPEC: Validate までの state と注記を
     /notes\.deletion: string が必要（受信: null）/);
   assert.throws(() => validateStageArgs('dev-flow-evaluate', { ...EVALUATE_ARGS, ci_ac_indexes: {} }, EVALUATE_ARGS_SPEC),
     /ci_ac_indexes: array が必要（受信: object）/);
+  const { commands_file: _c, ...tcWithoutFile } = EVALUATE_ARGS.test_commands;
+  assert.throws(() => validateStageArgs('dev-flow-evaluate', { ...EVALUATE_ARGS, test_commands: tcWithoutFile }, EVALUATE_ARGS_SPEC),
+    /test_commands\.commands_file: 欠落/);
 });
 
 test('[stage-contract] EVALUATE_RESULT_SPEC: PR 工程が読む state と redgreen の state dir を検証し、欠けたキー・型違いを全部返す', () => {

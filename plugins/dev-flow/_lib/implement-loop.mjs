@@ -167,18 +167,19 @@ export function implementDrops(plan, results) {
  * workflow の実行状態に結び付いた実装 spawn と test ⇄ green-fix ループを作る。worktree / base / repo は Setup で確定した
  * 後に 1 回だけ呼ぶ（test spawn の prompt はここで 1 回だけ組み、全 test spawn で同じ byte 列にする — drift 防止）。
  *
- * @param {{wt: string, issue: string, repo: string|null, base: string,
+ * @param {{wt: string, issue: string, repo: string|null, base: string, commandsFile: string|null,
  *   spawn: (prompt: string, opts: object) => Promise<unknown>,
  *   spawnFailOpen: (prompt: string, opts: object) => Promise<unknown>,
  *   log: (msg: string) => void,
  *   notes: () => {deletion: string, deps: string, turbopack: string}}} env
+ *   commandsFile: Setup で解決したテストコマンドのファイル（run-tests の --commands。dev-flow-test-commands の commands_file）/
  *   spawn: throw を伝播させる spawn（trackedAgent）/ spawnFailOpen: throw を null に落とす spawn（failOpenAgent）/
  *   notes: 実装 spawn prompt に足す注記（呼び出しごとに読む — 削除手段の注記は Implement の途中で決まる）
  */
-export function makeImplementLoop({ wt, issue, repo, base, spawn, spawnFailOpen, log, notes }) {
+export function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFailOpen, log, notes }) {
   // 中身は `run-tests start` の stdout 転写だけ（run-tests-prompt）。Turbopack fallback 規約は渡さない — 転写 agent は
   // テストを実行し直さないので判断の余地を持ち込むだけになる。--base は他の diff 系 proxy と同じ origin/<base>。
-  const testRunPrompt = runTestsPrompt(wt, `origin/${base}`)
+  const testRunPrompt = runTestsPrompt(wt, `origin/${base}`, commandsFile)
   // commit-hook#<iter>: PR phase の commit と同じ stage 内容に対象 repo の pre-commit hook を回す prompt。
   const hookPrompt = preCommitHookPrompt(wt)
 

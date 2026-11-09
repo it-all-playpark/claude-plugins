@@ -8,6 +8,11 @@ export const meta = {
 }
 
 // ==== BEGIN inline: _lib/stage-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+const TEST_COMMANDS_RESULT_SPEC = {
+  source: 'string|null', status: 'string', full_command: 'string|null', files_command: 'string|null',
+  sources: 'array', commands_file: 'string|null', error: 'string|null',
+}
+
 const FINALIZE_ARGS_SPEC = {
   issue: 'string',
   repo: 'string|null',
@@ -29,6 +34,7 @@ const FINALIZE_ARGS_SPEC = {
   ci_ac_indexes: 'array',
   test_discovery_note: 'string',
   redgreen_state_dir: 'string|null',
+  test_commands: TEST_COMMANDS_RESULT_SPEC,
 }
 
 function stageTypeOf(value) {
@@ -1371,6 +1377,23 @@ function localVerifyLine(lv) {
   return `${mdCell(lv.reason ?? '実行できなかった')} — ci の AC は CI の check の結果で判定した`;
 }
 
+function testCommandsLine(tc) {
+  const code = (s) => `\`${mdCell(s)}\``;
+  const sources = Array.isArray(tc.sources) ? tc.sources.filter((s) => typeof s === 'string' && s.length > 0) : [];
+  const from = tc.source === 'user_config' ? 'user 設定（"dev-flow".repos["<owner>/<repo>"].test_commands）'
+    : tc.source === 'runners' ? 'base の tree の tests/run-*.sh'
+      : tc.source === 'resolver' ? `resolver（根拠: ${sources.length ? sources.map(code).join(', ') : 'なし'}）`
+        : '解決の工程が失敗';
+  if (tc.status === 'resolved' && tc.source === 'runners') return `${sources.map(code).join(', ')}（解決元: ${from}）`;
+  if (tc.status === 'resolved' && typeof tc.full_command === 'string') {
+    return `${code(tc.full_command)}（落ちたファイルの再実行: ${typeof tc.files_command === 'string' ? code(tc.files_command) : 'なし'}。解決元: ${from}）`;
+  }
+  const why = typeof tc.error === 'string' && tc.error.length > 0 ? ` — ${mdCell(tc.error)}` : '';
+  return tc.source == null
+    ? `解決できなかった（${from}${why}）— base の tree に tests/run-*.sh があればそれだけを実行した`
+    : `解決できなかった（解決元: ${from}${why}）— テストを実行していない`;
+}
+
 function conflictFileCell(f) {
   return `\`${mdCell(f.path)}\`（${f.type === 'A' || f.type === 'B' ? `型 ${f.type}` : mdCell(f.type)}）`;
 }
@@ -1463,6 +1486,7 @@ function buildDevflowSummaryBody({
   securityReview,
   headSha,
   hooksNotRunning,
+  testCommands,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -2182,6 +2206,9 @@ function buildDevflowSummaryBody({
   if (localVerify != null) {
     referenceLines.push(`- ローカル検証 (local_verify): ${localVerifyLine(localVerify)}`);
   }
+  if (testCommands != null) {
+    referenceLines.push(`- テストコマンド: ${testCommandsLine(testCommands)}`);
+  }
   referenceLines.push(...conflictResolvedLines(conflictAutoresolve));
   if (finalReconcile != null && finalReconcile !== 'skipped') {
     const t = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? RED_CELL : '不明';
@@ -2592,12 +2619,16 @@ function prBodyEditPrompt({ wt, pr, repo, prBody, fileName }) {
 const RUN_TESTS_WAIT_SEC = 450
 const RUN_TESTS_MAX_WAIT_SEC = 3600
 
-function runTestsPrompt(wt, base) {
-  return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base}`);
+function runTestsStartCommand(wt, base, commandsFile) {
+  return `run-tests start ${wt} --base ${base}${commandsFile ? ` --commands ${commandsFile}` : ''}`;
 }
 
-function runTestFilesPrompt(wt, base, files) {
-  return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base} --files ${files.join(' ')}`);
+function runTestsPrompt(wt, base, commandsFile) {
+  return runTestsCommandPrompt(wt, runTestsStartCommand(wt, base, commandsFile));
+}
+
+function runTestFilesPrompt(wt, base, commandsFile, files) {
+  return runTestsCommandPrompt(wt, `${runTestsStartCommand(wt, base, commandsFile)} --files ${files.join(' ')}`);
 }
 
 function runTestsWaitPrompt(wt) {
@@ -2759,6 +2790,8 @@ const AC_VERIFY = ARGS.ac_verify
 const AC_VERIFY_INDEXES = ARGS.ac_verify_indexes
 const CI_AC_INDEXES = ARGS.ci_ac_indexes
 const TEST_DISCOVERY_NOTE = ARGS.test_discovery_note
+// Setup で解決したテストコマンド（dev-flow-test-commands の返り値）。test#final・落ちたファイルの再実行と終端サマリーに使い、解決し直さない
+const TEST_COMMANDS = ARGS.test_commands
 const pr = ARGS.pr
 // PR に載せた本文（Final AC reconcile の判定材料）。Closes 欠落時に再投入する本文は ac-checkbox-sync が組み直したらそちら。
 const prBody = ARGS.pr_body
@@ -3188,7 +3221,7 @@ function ghBareStepInstr(cmd) {
 // test#final の prompt。dev-flow.js の Validate と同じ引数で組み、同じ byte 列にする（drift 防止）。
 // 中身は `run-tests start` の stdout 転写だけ（_lib/run-tests-prompt.mjs）。Turbopack fallback 規約は渡さない — 転写 agent は
 // テストを実行し直さないので判断の余地を持ち込むだけになる。--base は他の diff 系 proxy と同じ origin/<base>。
-const TEST_RUN_PROMPT = runTestsPrompt(WT, `origin/${BASE}`)
+const TEST_RUN_PROMPT = runTestsPrompt(WT, `origin/${BASE}`, TEST_COMMANDS.commands_file)
 // start 1 回のあと wait を繰り返す（null・schema 不一致・待機上限は tests:'error'）。start / wait の throw は呼び出し側へ投げ直す。
 function runTestsAgent(startPrompt, label, phase) {
   const opts = { agentType: 'dev-runner-haiku', phase }
@@ -3365,7 +3398,7 @@ async function rerunFailedTestFiles(first, label, holdCode) {
   }
   let result = null
   try {
-    result = await runTestsAgent(runTestFilesPrompt(WT, `origin/${BASE}`, files), label, 'Final reconcile')
+    result = await runTestsAgent(runTestFilesPrompt(WT, `origin/${BASE}`, TEST_COMMANDS.commands_file, files), label, 'Final reconcile')
   } catch (e) {
     log(`⚠️ Final reconcile: ${label} が throw（${e && e.message ? e.message : e}）— flake 候補にしない（${holdCode}）`)
   }
@@ -3953,6 +3986,7 @@ const summaryBody = buildDevflowSummaryBody({
   // → 単体 pr-iterate の再実行時は食い違い扱い（安全側）
   headSha: prMeta?.ok === true ? prMeta.headRefOid : null,
   hooksNotRunning: PRERUN.hooks_not_running,
+  testCommands: TEST_COMMANDS,
 })
 // 投稿失敗は fail-open だが summary_posted として返り値・終端 note に出す（log 1 行では人間が気づけない）。
 const summaryBodyFile = `${WT}/.devflow-tmp/dev-flow-summary.md`
