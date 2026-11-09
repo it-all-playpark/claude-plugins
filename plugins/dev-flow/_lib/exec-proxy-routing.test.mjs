@@ -5,7 +5,7 @@
 //   routing される (architecture_decisions 参照):
 //     - dev-runner-haiku-ro: read-only 決定論 proxy (danger-grep / diff-hash /
 //       changed-files / CI read 系など)
-//     - dev-runner-haiku: write/Skill 系 proxy 専任 (worktree 作成 / test 実行 /
+//     - dev-runner-haiku: write 系 proxy 専任 (worktree 作成 / test 実行 /
 //       redgreen / journal / PR コメント投稿 (post-summary。issue #392 で
 //       per-round post-review#i 投稿は終端 post-summary へ統合済み) など)
 //     - dev-runner: 判断寄り (analyze)。pr-iterate の fix は pr-fixer
@@ -63,7 +63,7 @@ const EXPECTED_DEV_FLOW = {
   // Validate red の分類: diff のファイル一覧（read-only）と base tree での再実行（テスト実行のため write tier）
   'validate-diff#*': RO,
   'base-rerun#*': RW,
-  // write/Skill tier
+  // write tier
   'test#*': RW,
   'test#final': RW,
   // Validate の各回の pre-commit hook（hook が working tree を書き換えうる formatter のため write tier）
@@ -174,13 +174,13 @@ test('[exec-proxy-routing] dev-flow.js: 全 scenario で観測される exec-pro
 });
 
 // Guard against the 'dev-runner-haiku' → 'dev-runner-haiku-ro' prefix-match footgun:
-// write/Skill-tier の観測 agentType は '-ro' で終わらない（EXPECTED の値そのものを完全一致で突合している）。
-test("[exec-proxy-routing] dev-flow.js write/Skill-tier labels do NOT route to 'dev-runner-haiku-ro'", async () => {
+// write-tier の観測 agentType は '-ro' で終わらない（EXPECTED の値そのものを完全一致で突合している）。
+test("[exec-proxy-routing] dev-flow.js write-tier labels do NOT route to 'dev-runner-haiku-ro'", async () => {
   const calls = await runDevFlowScenario('final-reconcile');
   for (const c of calls) {
     const exp = expectedFor(EXPECTED_DEV_FLOW, c.label);
     if (exp?.agentType !== RW) continue;
-    assert.ok(!c.agentType.endsWith('-ro'), `label '${c.label}' は write/Skill tier のはずだが '${c.agentType}'`);
+    assert.ok(!c.agentType.endsWith('-ro'), `label '${c.label}' は write tier のはずだが '${c.agentType}'`);
   }
 });
 
