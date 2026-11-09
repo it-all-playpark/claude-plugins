@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, shapeOverrides } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, shapeOverrides, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 
 import {
   EVALUATOR_OPERATIONAL_CONTRACT, CONCERN_RESOLUTIONS, normalizeConcernResolution,
@@ -112,6 +113,60 @@ test('[evaluator-contract][#1144] evaluator.md の「進め方」2 はテスト�
   assert.ok(step2.includes('ログに載っていない AC に関係するテストファイルは実行する'), step2);
   assert.ok(step2.includes(TEST_LOG_EVIDENCE_LIMIT), step2);
   assert.ok(step2.includes('ログが渡されない・読めないときは AC に関係するテストファイルを実行する'), step2);
+});
+
+// issue #1303: implementer は commit しないので、Evaluate 時点の実 diff は merge-base から working tree への二点 diff で取る
+// （HEAD との差分は空になる）。git は隔離ガードに拒否されない単文で書き、prompt が取り方を指定したらそれに従う
+// （final-ac-reconcile は fix が commit 済みなので三点 diff を指定する）。
+test('[evaluator-contract][#1303] evaluator.md の「進め方」1 は merge-base・working tree 基準の二点 diff・untracked 列挙を単文で書き、prompt の指定に従う', () => {
+  const steps = evaluatorMd.slice(evaluatorMd.indexOf('## 進め方'));
+  const step1 = steps.slice(0, steps.indexOf('\n2. '));
+  for (const cmd of ['`git merge-base HEAD origin/<base>`', '`git diff <sha>`', '`git status --porcelain --untracked-files=all`']) {
+    assert.ok(step1.includes(cmd), `${cmd}: ${step1}`);
+  }
+  assert.ok(!step1.includes('..HEAD'), `HEAD 基準の diff は Evaluate 時点で空になる: ${step1}`);
+  assert.ok(step1.includes('prompt が diff の取り方を指定したときはそれに従う'), step1);
+});
+
+// issue #1303: evaluator を起動する prompt に `cd` 前置や `$(…)` を書くと、evaluator.md が隔離ガードのために禁じた形と食い違う。
+// eval#N の diff の取り方は evaluator.md の「進め方」1 に任せ、base 名だけを渡す。
+const assertNoShellPrefix = (label, prompt) => {
+  assert.ok(prompt != null, `label === '${label}' の call が見つからない`);
+  assert.ok(!prompt.includes('cd '), `${label} の prompt に cd 前置がある: ${prompt.slice(0, 200)}`);
+  assert.ok(!prompt.includes('$('), `${label} の prompt に $(…) がある`);
+};
+
+test('[evaluator-contract][#1303] eval#1 の prompt は cd・$(…)・diff 取得コマンドを含まず、base 名だけを渡す', async () => {
+  const { ctx, calls } = makeSandbox();
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
+  assertNoCrash(error, 'contract-eval1-diff');
+  const prompt = calls.find((c) => c.label === 'eval#1')?.prompt;
+  assertNoShellPrefix('eval#1', prompt);
+  for (const cmd of ['git diff', 'git merge-base']) assert.ok(!prompt.includes(cmd), `eval#1 の prompt に ${cmd} がある（取り方は evaluator.md に任せる）`);
+  assert.ok(prompt.includes('origin/main'), 'eval#1 の prompt に base 名（origin/${BASE}）が無い');
+});
+
+test('[evaluator-contract][#1303] eval-green-fix・final-ac-reconcile・security-clearance-final の prompt は cd・$(…) を含まない', async () => {
+  const POST_EVAL = DEV_FLOW_SCENARIOS['post-eval-green-fix'];
+  const greenFix = makeDevFlowSandbox({ overrides: POST_EVAL.overrides, workflow: POST_EVAL.workflow });
+  assertNoCrash((await runWorkflowCapture(devFlowSrc, greenFix.ctx)).error, 'contract-eval-green-fix');
+  assertNoShellPrefix('eval-green-fix', greenFix.calls.find((c) => c.label === 'eval-green-fix')?.prompt);
+
+  const finalAc = makeSandbox({ fixesApplied: 1, overrides: { 'test#final': { tests: 'passed', green: true, summary: '' } } });
+  assertNoCrash((await runWorkflowCapture(devFlowSrc, finalAc.ctx)).error, 'contract-final-ac-diff');
+  const finalPrompt = finalAc.calls.find((c) => c.label === 'final-ac-reconcile')?.prompt;
+  assertNoShellPrefix('final-ac-reconcile', finalPrompt);
+  assert.ok(finalPrompt.includes('`git diff origin/main...HEAD`'), 'final-ac-reconcile は commit 済みの fix を三点 diff で見る指示を保つ');
+
+  // merge-tier-security-clearance-routing.test.mjs のシナリオ 1: Evaluate 前は clean、Merge tier の最終 danger-grep で新規 hit
+  const clearance = makeSandbox({
+    overrides: {
+      'merge-tier-facts': mergeTierFacts({ hash: 'H_MERGE', risk: { ok: true, hits: [{ class: 'config', file: 'x', pattern: 'p' }] } }),
+      'security-clearance-final': { security_clearance: [{ danger_class: 'config', cleared: true, evidence: 'diff 精査: secret 平文なし' }] },
+    },
+  });
+  assertNoCrash((await runWorkflowCapture(devFlowSrc, clearance.ctx)).error, 'contract-security-clearance');
+  assertNoShellPrefix('security-clearance-final', clearance.calls.find((c) => c.label === 'security-clearance-final')?.prompt);
 });
 
 test('[evaluator-contract][#1144] validateResultPromptBlock はログと変更ファイルがあるときだけログパス・根拠にできるファイル・TEST_LOG_REUSE を入れる', () => {
