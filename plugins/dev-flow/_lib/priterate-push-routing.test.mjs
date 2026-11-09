@@ -204,7 +204,7 @@ for (const [name, response] of [['throw', THROW], ['null', null]]) {
     const { result, round, calls } = await run({
       ...FIX_ROUND,
       'fix#1': response,
-      'fix#1-retry': { applied: true, files: [], summary: 'fixed', deferred_security_topics: [] },
+      'fix#1-retry': { applied: true, files: [], summary: 'fixed', deferred_security_ids: [] },
       'commit-ensure#1': { dirty: false, committed: false, pushed: false, head_sha: HEAD2 },
       'mergeable-check#2': MERGEABLE,
     });
@@ -240,7 +240,7 @@ for (const [name, response] of [['throw', THROW], ['null', null]]) {
 }
 
 test('[AC-3b] fix#1 が applied:false（push 未完了の応答）: pr-push stop を呼んでから fix_failed で終わる', async () => {
-  const { result, round, calls } = await run({ ...FIX_ROUND, 'fix#1': { applied: false, files: [], summary: 'push が終わらない', deferred_security_topics: [] } });
+  const { result, round, calls } = await run({ ...FIX_ROUND, 'fix#1': { applied: false, files: [], summary: 'push が終わらない', deferred_security_ids: [] } });
   assert.deepEqual(from(round, 'fix#1'), ['fix#1', 'fix#1.stop']);
   assertStopPrompt(calls, 'fix#1.stop');
   assert.equal(result.status, 'fix_failed');

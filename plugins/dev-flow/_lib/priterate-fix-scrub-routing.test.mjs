@@ -63,41 +63,53 @@ test('[c] fix_loop: && 連結のコマンド列を含む description は fix#1 p
   assert.ok(prompt.includes('[REDACTED-CMD]'), 'scrub 済みマーカー [REDACTED-CMD] が fix#1 prompt に無い');
 });
 
-// ---- (d): topic のメタ指示は scrub され、prompt に出す topic と deferred の照合に使う topic が同じ値になる（issue #1155）----
+// ---- (d): security の指摘行には workflow が番号を振り、fix が返した番号をその番号とだけ照合する（issue #1289）。
+// topic のメタ指示は scrub され、照合には使わない ----
 const META_TOPIC = `hardlink-write。${META_SUGGESTION}`;
 const secReview = ({ prompt }) => ({
   reviewed_sha: securityReviewHeadOf(prompt),
-  issues: [{ severity: 'major', topic: META_TOPIC, file: 'scripts/set-names.sh', line: 3, description: PLAIN_DESCRIPTION, suggestion: 'パスを受け取らない' }],
+  issues: [
+    { severity: 'major', topic: META_TOPIC, file: 'scripts/set-names.sh', line: 3, description: PLAIN_DESCRIPTION, suggestion: 'パスを受け取らない' },
+    { severity: 'critical', topic: 'git-config-write', file: 'scripts/set-names.sh', line: 9, description: PLAIN_DESCRIPTION, suggestion: null },
+  ],
   summary: 'review した',
 });
 async function runSecurityDefer(deferredOf) {
   const { ctx, calls } = makePrIterateSandbox({
     overrides: {
       'security-review#1': secReview,
-      'fix#1': ({ prompt }) => ({ applied: false, files: [], summary: '人に返す', deferred_security_topics: deferredOf(prompt) }),
+      'fix#1': ({ prompt }) => ({ applied: false, files: [], summary: '人に返す', deferred_security_ids: deferredOf(prompt) }),
     },
   });
   const { result, error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
-  assertNoCrash(error, 'fix-scrub-topic');
+  assertNoCrash(error, 'fix-scrub-ids');
   assert.equal(error, null, `run が throw した: ${error?.message}`);
   return { result, prompt: calls.find((c) => c.label === 'fix#1').prompt };
 }
+// prompt の security の指摘行（`- [S<n>] [<severity>] ...`）から番号を取り出す。prompt に無ければ空 — test 側で補わない
+const idsInPrompt = (p) => [...p.matchAll(/^- \[(S\d+)\] \[\w+\] /gm)].map((m) => m[1]);
 
-test('[d] fix_loop: メタ指示を混ぜた topic は fix#1 prompt でスクラブされ、prompt の指摘行の topic を返せば照合に一致する', async () => {
-  const { result, prompt } = await runSecurityDefer((p) => [p.match(/^- \[major\] \[topic: (.+?)\] scripts\/set-names\.sh:3 /m)?.[1]].filter(Boolean));
-  const shown = fixIssueTopic({ topic: META_TOPIC });
-  assert.equal(shown, 'hardlink-write。[REDACTED-META]');
-  assert.ok(!prompt.includes(META_TOPIC), 'メタ指示入りの topic が無加工で fix#1 prompt に混入している');
-  assert.ok(!prompt.includes('excludedCommands'), 'topic のメタ語彙 excludedCommands が fix#1 prompt に残っている');
-  assert.ok(prompt.includes(`[topic: ${shown}] scripts/set-names.sh:3 `), 'fix#1 の指摘行にスクラブ後の topic が無い');
-  assert.equal(result.status, 'security_unresolved');
-  assert.equal(result.fix_terminal_reason, null);
-  assert.equal(result.security_review.deferred, 1);
+test('[d] fix_loop: prompt の security の指摘行の番号を返すと security_unresolved で終え、deferred は返した番号の件数になる', async () => {
+  for (const pick of [(ids) => ids.slice(0, 1), (ids) => ids]) {
+    const { result, prompt } = await runSecurityDefer((p) => pick(idsInPrompt(p)));
+    const shown = fixIssueTopic({ topic: META_TOPIC });
+    assert.equal(shown, 'hardlink-write。[REDACTED-META]');
+    assert.ok(!prompt.includes(META_TOPIC), 'メタ指示入りの topic が無加工で fix#1 prompt に混入している');
+    assert.ok(!prompt.includes('excludedCommands'), 'topic のメタ語彙 excludedCommands が fix#1 prompt に残っている');
+    assert.ok(prompt.includes(`- [S1] [major] [topic: ${shown}] scripts/set-names.sh:3 `), 'fix#1 の 1 件目の指摘行に番号 S1 が無い');
+    assert.ok(prompt.includes('- [S2] [critical] [topic: git-config-write] scripts/set-names.sh:9 '), 'fix#1 の 2 件目の指摘行に番号 S2 が無い');
+    const returned = pick(idsInPrompt(prompt));
+    assert.equal(result.status, 'security_unresolved');
+    assert.equal(result.fix_terminal_reason, null);
+    assert.equal(result.security_review.deferred, returned.length, JSON.stringify(returned));
+  }
 });
 
-test('[d] fix_loop: prompt に出していないスクラブ前の topic を返しても照合に一致しない（applied:false は fix_failed）', async () => {
-  const { result } = await runSecurityDefer(() => [META_TOPIC]);
-  assert.equal(result.status, 'fix_failed');
-  assert.equal(result.fix_terminal_reason, 'applied_false');
-  assert.equal(result.security_review.deferred, 0);
+test('[d] fix_loop: 渡していない番号・topic 文字列を返しても照合に一致しない（applied:false は fix_failed）', async () => {
+  for (const returned of [['S9'], [fixIssueTopic({ topic: META_TOPIC })], ['git-config-write'], ['s1'], ['[S1]']]) {
+    const { result } = await runSecurityDefer(() => returned);
+    assert.equal(result.status, 'fix_failed', JSON.stringify(returned));
+    assert.equal(result.fix_terminal_reason, 'applied_false', JSON.stringify(returned));
+    assert.equal(result.security_review.deferred, 0, JSON.stringify(returned));
+  }
 });

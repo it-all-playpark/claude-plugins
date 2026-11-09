@@ -1,6 +1,6 @@
 import { test } from 'vitest'
 import assert from 'node:assert/strict'
-import { scrubReviewFindingText, buildFixIssuesText, fixIssueTopic } from './review-finding-scrub.mjs'
+import { scrubReviewFindingText, buildFixIssuesText, fixIssueTopic, securityFindingIds } from './review-finding-scrub.mjs'
 
 // issue #503: pr-reviewer の suggestion に混入し得るメタレベル指示（『将来の prompt に〜と書け/書くな』
 // 『分類器に検知されるから〜』等）が fix agent への実行指示に変換される欠陥の回帰テスト。
@@ -111,7 +111,23 @@ test('buildFixIssuesText: 複数 finding は改行 join される', () => {
   assert.match(lines[1], /^- \[major\] b\.ts:2 d2 → s2$/)
 })
 
-// issue #1155: fix は指摘行の topic を deferred_security_topics に写して返すので、topic を指摘行に出す
+// security review の指摘行にだけ workflow が番号を振り、fix は人に返した指摘をその番号で返す（issue #1289）
+test('buildFixIssuesText: security の指摘行にだけ行頭に [S1] [S2] の番号を振り、review の指摘行には振らない', () => {
+  const review = [{ severity: 'major', topic: 'swallow', file: 'src/a.js', line: 12, description: 'r1', suggestion: null }]
+  const security = [
+    { severity: 'critical', topic: 'hardlink-write', file: 'scripts/x.sh', line: 3, description: 's1', suggestion: null },
+    { severity: 'major', topic: 'hardlink-write', file: 'scripts/y.sh', line: 4, description: 's2', suggestion: null },
+  ]
+  const lines = `${buildFixIssuesText(review)}\n${buildFixIssuesText(security, { security: true })}`.split('\n')
+  assert.deepEqual(lines, [
+    '- [major] [topic: swallow] src/a.js:12 r1',
+    '- [S1] [critical] [topic: hardlink-write] scripts/x.sh:3 s1',
+    '- [S2] [major] [topic: hardlink-write] scripts/y.sh:4 s2',
+  ])
+  assert.deepEqual(securityFindingIds(security), ['S1', 'S2'], '指摘行の番号と照合に使う番号が食い違う')
+})
+
+// fix が指摘を見分けられるよう、topic は指摘行に残す（照合には使わない）
 test('buildFixIssuesText: topic 付きの指摘は指摘行に [topic: <topic>] を出す（topic の無い指摘には出さない）', () => {
   const blocking = [
     { severity: 'major', topic: 'forged-test-log-gate-bypass', file: 'a.ts', line: 1, description: 'd1', suggestion: 's1' },

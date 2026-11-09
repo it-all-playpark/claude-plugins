@@ -67,7 +67,7 @@ test('[fix-direction][a] args.fix_direction が文字列でない・空・空白
   // 4000 字ちょうど（文字で数える）は通す
   const { error, calls } = await run({
     args: withDirection({ fix_direction: 'あ'.repeat(4000) }),
-    overrides: { 'review#1': { decision: 'request-changes', issues: [reviewIssue], summary: 'ng' }, 'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_topics: [] } },
+    overrides: { 'review#1': { decision: 'request-changes', issues: [reviewIssue], summary: 'ng' }, 'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_ids: [] } },
   });
   assert.equal(error, null, error?.message);
   assert.ok(promptOf(calls, 'fix#1').includes('あ'.repeat(4000)));
@@ -78,7 +78,7 @@ test('[fix-direction][a] args.fix_direction が無い（undefined / null）run �
     const args = { pr: '5', nested: NESTED, ...(value === null ? { fix_direction: null } : {}) };
     const { error, calls } = await run({
       args,
-      overrides: { 'review#1': { decision: 'request-changes', issues: [reviewIssue], summary: 'ng' }, 'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_topics: [] } },
+      overrides: { 'review#1': { decision: 'request-changes', issues: [reviewIssue], summary: 'ng' }, 'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_ids: [] } },
     });
     assert.equal(error, null, error?.message);
     assert.ok(!promptOf(calls, 'fix#1').includes(SECTION), `${String(value)}: 方針が無いのに方針の節を入れた`);
@@ -93,7 +93,7 @@ test('[fix-direction][b] review の指摘の fix#i と、その retry（同じ p
     overrides: {
       'review#1': { decision: 'request-changes', issues: [reviewIssue], summary: 'ng' },
       'fix#1': null,
-      'fix#1-retry': { applied: false, files: [], summary: 'stop', deferred_security_topics: [] },
+      'fix#1-retry': { applied: false, files: [], summary: 'stop', deferred_security_ids: [] },
     },
   });
   assertDirectionSection(promptOf(calls, 'fix#1'), 'review fix');
@@ -107,7 +107,7 @@ test('[fix-direction][b] CI 失敗の fix#i に方針が届く', async () => {
     overrides: {
       'ci-check#1': ciFailed,
       'ci-check#1-serial': ciFailed,
-      'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_topics: [] },
+      'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_ids: [] },
     },
   });
   const prompt = promptOf(calls, 'fix#1');
@@ -123,7 +123,7 @@ test('[fix-direction][b] security review の指摘の fix#i（round の fix・se
   ]) {
     const overrides = {
       'security-review#1': reviewWith([secFinding]),
-      'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_topics: [] },
+      'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_ids: [] },
     };
     if (name === 'securityGate の fix') {
       overrides['security-scope#1'] = ({ prompt }) => securityScopeResponse({ target: true, head: securityScopeHeadOf(prompt) });

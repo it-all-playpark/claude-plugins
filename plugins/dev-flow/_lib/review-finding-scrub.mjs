@@ -60,21 +60,29 @@ export function scrubReviewFindingText(text) {
 }
 
 // fix prompt の指摘行に `[topic: <値>]` で出す topic（topic が無ければ null）。topic は PR の作者が影響しうる
-// reviewer の出力なので description/suggestion と同じくスクラブする。fix はこの値を deferred_security_topics に
-// 写して返し、pr-iterate.js の deferredSecurityCount は同じ関数の値と完全一致で照合する（prompt に出す値と
-// 照合に使う値を 1 か所で決め、スクラブで両者がずれないようにする）。
+// reviewer の出力なので description/suggestion と同じくスクラブする。照合には使わない（人に返した指摘は securityFindingIds の番号で受け取る）。
 export function fixIssueTopic(x) {
   return typeof x?.topic === 'string' && x.topic.trim() ? scrubReviewFindingText(x.topic) : null
+}
+
+// security review の指摘に workflow が振る番号（渡した順に S1, S2 …）。fix は直さずに人へ返した指摘の番号を
+// deferred_security_ids で返し、pr-iterate.js の deferredSecurityCount は同じ関数の値と完全一致で照合する（prompt に出す番号と
+// 照合に使う番号を 1 か所で決める）。番号は reviewer・PR の作者の出力から作らない — topic の転写はスクラブ後の値の写し間違いで
+// 一致しなくなり、同じ topic の指摘が 1 件に潰れる。
+export function securityFindingIds(blocking) {
+  return blocking.map((_, k) => `S${k + 1}`)
 }
 
 // pr-iterate.js の fix_loop 経路（issue #503 対象）で issuesText を組み立てる。フォーマットは
 // `- [${severity}] [topic: ${topic}] ${file}:${line} ${description} → ${suggestion}`（topic の無い指摘は
 // `[topic: …]` を出さない）。topic/description/suggestion はスクラブし、severity/file/line は構造フィールドなので素通しする。
-export function buildFixIssuesText(blocking) {
+// security: true（security review の指摘）は行頭に securityFindingIds の番号を `[S1] ` の形で出す。review・CI の指摘には出さない。
+export function buildFixIssuesText(blocking, { security = false } = {}) {
+  const ids = security ? securityFindingIds(blocking) : null
   return blocking
-    .map((x) => {
+    .map((x, k) => {
       const topic = fixIssueTopic(x)
-      return `- [${x.severity}] ${topic ? `[topic: ${topic}] ` : ''}${x.file ?? ''}${x.line ? ':' + x.line : ''} ${scrubReviewFindingText(x.description)}${x.suggestion ? ' → ' + scrubReviewFindingText(x.suggestion) : ''}`
+      return `- ${ids ? `[${ids[k]}] ` : ''}[${x.severity}] ${topic ? `[topic: ${topic}] ` : ''}${x.file ?? ''}${x.line ? ':' + x.line : ''} ${scrubReviewFindingText(x.description)}${x.suggestion ? ' → ' + scrubReviewFindingText(x.suggestion) : ''}`
     })
     .join('\n')
 }
