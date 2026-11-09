@@ -51,6 +51,8 @@ const plain = (v) => JSON.parse(JSON.stringify(v));
 const reimplCalls = (calls) => calls.filter((c) => /^reimpl#\d+:serial:issue-1$/.test(c.label));
 const evalCalls = (calls) => calls.filter((c) => c.agentType === 'dev-flow:evaluator' && c.label.startsWith('eval#'));
 const acObsCalls = (calls) => calls.filter((c) => c.label.startsWith('ac-observational#'));
+// 分類 agent の prompt に載る AC の項目の先頭（ac_index と AC の文面。inline code の候補配列は ac-actor.test.mjs が固定する）
+const acItemHead = (i, ac) => `{"ac_index":${i},"ac":${JSON.stringify(ac)},`;
 
 // 分類 agent の応答は既定で AC-1 だけ観測型（opts.acObs で差し替える。overrides に 'ac-observational#1' があればそれを使う）
 async function run(overrides, opts = {}) {
@@ -76,8 +78,8 @@ test('[observational-ac] (A) inspection の satisfied:true → checked にせず
   // 分類 agent は全 AC を 1 回で受け取る（issue #1259）。verify_command が無ければ観測型 AC の actor は human のまま
   const obs = acObsCalls(calls);
   assert.equal(obs.length, 1, `分類 agent は 1 回: ${calls.map((c) => c.label).join(', ')}`);
-  assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: 0, ac: OBS_AC })), obs[0].prompt);
-  assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: 1, ac: CODE_AC })), obs[0].prompt);
+  assert.ok(obs[0].prompt.includes(acItemHead(0, OBS_AC)), obs[0].prompt);
+  assert.ok(obs[0].prompt.includes(acItemHead(1, CODE_AC)), obs[0].prompt);
   assert.ok(!calls.some((c) => c.label.startsWith('ac-verify-')), 'verify_command が無ければ AC コマンドを実行しない');
   assert.equal(result?.merge_tier, 'HOLD');
   assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), ['ac_human_pending']);
@@ -257,12 +259,12 @@ test('[observational-ac] (M) AC 3 件の issue で分類 agent は 1 回だけ�
   const obs = acObsCalls(calls);
   assert.equal(obs.length, 1, `分類 agent は 1 回: ${calls.map((c) => c.label).join(', ')}`);
   assert.deepEqual(acObservationalPromptIndexes(obs[0].prompt), [0, 1, 2]);
-  for (const [i, ac] of ACS3.entries()) assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: i, ac })), obs[0].prompt);
+  for (const [i, ac] of ACS3.entries()) assert.ok(obs[0].prompt.includes(acItemHead(i, ac)), obs[0].prompt);
   assert.equal(reqObservational(calls), '[true,false,true]', '分類 agent の boolean をそのまま採る');
 });
 
 for (const [name, acObs, observational, human] of [
-  ['agent が null を返した AC', { results: [{ ac_index: 0, observational: null, verify_command: null, expect_paths: [] }, { ac_index: 1, observational: false, verify_command: null, expect_paths: [] }, { ac_index: 2, observational: false, verify_command: null, expect_paths: [] }] }, '[true,false,false]', [0]],
+  ['agent が null を返した AC', acObservationalResponse([null, false, false]), '[true,false,false]', [0]],
   ['agent の応答に無い AC', acObservationalResponse([false, false]), '[false,false,true]', [2]],
   ['agent が失敗（null）した run', null, '[true,true,true]', [0, 1, 2]],
   ['agent が throw した run', () => { throw new Error('injected'); }, '[true,true,true]', [0, 1, 2]],
@@ -289,7 +291,7 @@ test('[observational-ac] (F) 回帰: 全 AC を AC 文面 + title で分類 agen
   assert.equal(obs.length, 1, `分類 agent は 1 回: ${calls.map((c) => c.label).join(', ')}`);
   assert.equal(obs[0].agentType, 'dev-flow:dev-runner');
   assert.ok(obs[0].prompt.includes(JSON.stringify(REG_TITLE)), `title が渡っていない: ${obs[0].prompt}`);
-  for (const [i, ac] of REG_ACS.entries()) assert.ok(obs[0].prompt.includes(JSON.stringify({ ac_index: i, ac })), `AC-${i + 1} が渡っていない: ${obs[0].prompt}`);
+  for (const [i, ac] of REG_ACS.entries()) assert.ok(obs[0].prompt.includes(acItemHead(i, ac)), `AC-${i + 1} が渡っていない: ${obs[0].prompt}`);
   assert.ok(!obs[0].prompt.includes('issue-body.md'), 'issue 本文のファイルを読ませている');
   // diff・evaluator の結果が存在する前（isolation-probe・実装・評価より前）に 1 回だけ走る
   const at = (pred) => calls.findIndex(pred);

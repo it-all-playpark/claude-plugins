@@ -131,7 +131,7 @@ const runCi = (overrides) => runFlow(
 );
 const runAc = (overrides) => runFlow(
   { analyze: prerunAnalyze({ acceptance_criteria: [BUILD_AC, CODE_AC] }) },
-  { 'ac-observational#1': acObservationalResponse([true, false], { 0: { verify_command: BUILD_CMD } }), ...overrides },
+  { 'ac-observational#1': acObservationalResponse([true, false], { 0: { verify_command_index: 0 } }), ...overrides },
 );
 
 test('[bg-job-wait] Validate 後の ci の AC: 上限回数（localVerifyWaitPolls）まで wait し、終わらなければ打ち切って fail-open', async () => {

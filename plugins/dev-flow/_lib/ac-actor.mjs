@@ -58,12 +58,12 @@
 // 証跡なので、未達は差し戻せば満たせる。観測型の判定は true のまま変えない — 達成は red→green の deterministic 昇格
 // だけで、文面が増やせるのは差し戻しの回数（AGENT_AC_REIMPL_MAX で止まる）だけにするため。
 // worktree で実行するコマンドを AC 自体が inline code で指定した観測型 AC（issue #1208）は、分類 agent がそのコマンド
-// （verify_command）と生成されるファイル（expect_paths）を返し、freezeAcVerify が AC の inline code と完全一致するものだけを
-// analyze ゲートで凍結する。workflow はそれを local-verify で sandbox 内で実行し、失敗は dev-implementer へ差し戻し、
+// と生成されるファイルを AC の inline code の候補の番号（verify_command_index / expect_path_indexes）で返し、freezeAcVerify が
+// その番号で AC の inline code から取り出した文字列を analyze ゲートで凍結する。workflow はそれを local-verify で sandbox 内で実行し、失敗は dev-implementer へ差し戻し、
 // 最終 tree の exit 0 は人手 AC の確認材料として終端サマリーに開示するだけにする（_lib/local-verify.mjs）。
 // verify_command の有無で actor を変えない（'human' のまま）し、exit 0 を観測型 AC の proven にも入れない — 実行される
 // script・build 設定・テストは PR が書き換えられるので、exit 0 で HOLD を外すと PR の内容で gate を誘導できる（incentive-structural）。
-// LLM が組み立てた・言い換えたコマンドは実行しない — 実行するものを AC の文面に縛り、実装後に読み直さない
+// agent の出力の文字列は実行しない — 実行するものを AC の文面から決定論で抜き出した inline code に縛り、実装後に読み直さない
 // （implementer が差し戻しの判定に使うコマンドを書き換えられないように）。
 //
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
@@ -200,23 +200,28 @@ export function acVerifyCandidateIndexes(acceptanceCriteria, acObservational, op
 
 // 分類 agent の prompt。材料は issue のタイトルと渡す AC の文面だけ（diff・evaluator の結果・implementer の報告・issue 本文は渡さない）。
 // indexes は全 AC の index（analyze ゲートは AC を絞り込まずに渡す）。
-// verify_command / expect_paths は AC の inline code をそのまま写させる（写し違い・組み立ては freezeAcVerify が捨てる）。
+// 検証コマンドと生成物のパスは、AC ごとに決定論で抜き出した inline code の候補（inline_codes。AC 本文に出てくる順・重複もそのまま）
+// から番号で選ばせる（agent に文字列を作らせない。freezeAcVerify がその番号で inlineCodesOf(ac) から取り出す）。
 // inline code の区切りは文中で「バッククォート」と書く（sync-inlines の stripComments が生のバッククォートを template literal と読むため）。
 export function acObservationalPrompt(issueTitle, acceptanceCriteria, indexes) {
   const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
-  const items = (Array.isArray(indexes) ? indexes : []).map((i) => ({ ac_index: i, ac: String(acs[i] ?? '') }))
+  const items = (Array.isArray(indexes) ? indexes : []).map((i) => {
+    const ac = String(acs[i] ?? '')
+    return { ac_index: i, ac, inline_codes: inlineCodesOf(ac).map((code, index) => ({ index, code })) }
+  })
   return '次の issue の受け入れ基準（AC）それぞれについて、観測型かどうかと、AC が指定した検証コマンドを判定せよ。判定材料は下に示す issue のタイトルと AC の文面だけ。'
     + 'ツールは使わず、ファイル・diff・issue 本文・コマンドの出力を読みに行かない。\n'
     + '観測型（observational:true）: コードとテストを読むだけでは確かめられず、実行した結果・ログ・計測を観測しないと確かめられない AC。'
     + 'AC がテストコードやソースコード自体の書き方・構成について述べているなら false。'
     + '文面だけでは決められない AC は observational:null を返せ（観測型として扱われる）。\n'
-    + 'verify_command: その AC の結果を exit code だけで決められる、worktree を cwd に実行するコマンドを AC 自身が inline code（バッククォートで囲んだ部分）で書いているなら、'
-    + 'その inline code の中身を 1 文字も変えずに写せ。コマンドを組み立てる・言い換える・inline code の一部だけを切り出すことはしない。決まらなければ null。\n'
-    + 'expect_paths: verify_command の終了後に worktree に生成されていることを AC が求めるファイルのうち、AC が inline code で書いたパス（中身をそのまま写す。worktree からの相対パスだけ）。'
-    + '無ければ []。verify_command が null なら []。\n'
+    + 'inline_codes: AC 本文の inline code（バッククォートで囲んだ部分）を本文に出てくる順に並べた候補で、index は 0 始まりの番号。\n'
+    + 'verify_command_index: その AC の結果を exit code だけで決められる、worktree を cwd に実行するコマンドを AC 自身が inline code で書いているなら、'
+    + 'その AC の inline_codes のうちそのコマンドの index。候補に無いコマンドを組み立てる・言い換える・候補の一部だけを使うことはしない。決まらなければ null。\n'
+    + 'expect_path_indexes: verify_command_index のコマンドの終了後に worktree に生成されていることを AC が求めるファイルのうち、AC が inline code で書いたパス（worktree からの相対パスだけ）の、'
+    + 'その AC の inline_codes での index。無ければ []。verify_command_index が null なら []。\n'
     + `issue のタイトル: ${JSON.stringify(String(issueTitle ?? ''))}\n`
     + `AC（ac_index は 0 始まり）: ${JSON.stringify(items)}\n`
-    + '上の全 AC について 1 件ずつ {"results":[{"ac_index":<上の ac_index>,"observational":true|false|null,"verify_command":"<inline code の中身>"|null,"expect_paths":["<inline code の中身>"]}]} の形で返せ。\n'
+    + '上の全 AC について 1 件ずつ {"results":[{"ac_index":<上の ac_index>,"observational":true|false|null,"verify_command_index":<inline_codes の index>|null,"expect_path_indexes":[<inline_codes の index>]}]} の形で返せ。\n'
 }
 
 // AC の inline code の中身（区切りのバッククォートを除いたもの。前後の空白も変えない）。
@@ -229,23 +234,30 @@ function isWorktreeRelativePath(p) {
   return p.trim() !== '' && !p.startsWith('/') && !p.split('/').includes('..')
 }
 
-// 分類 agent が返した AC ごとの verify_command / expect_paths を検証して凍結する（analyze ゲートで 1 回だけ。実装後に読み直さない）。
-// verify_command はその AC の inline code の 1 つと完全一致するときだけ採り、それ以外（AC に無い文字列・inline code の一部・
-// 非文字列）は null。expect_paths はその AC の inline code と完全一致し、/ 始まりでも .. のセグメントを含むものでもないものだけを残す。
+// codes[k]。k が codes の範囲内の非負整数でなければ null（文字列・小数・負数・範囲外・欠落）。
+function inlineCodeAt(codes, k) {
+  return Number.isInteger(k) && k >= 0 && k < codes.length ? codes[k] : null
+}
+
+// 分類 agent が返した AC ごとの verify_command_index / expect_path_indexes で、その AC の inline code から文字列を取り出して
+// 凍結する（analyze ゲートで 1 回だけ。実装後に読み直さない）。agent の出力の文字列は使わない（verify_command / expect_paths に
+// 文字列を入れた応答も null）。verify_command は範囲内の index が指す空白だけでない inline code のときだけ採り、それ以外は null。
+// expect_paths は範囲内の index が指す inline code のうち、/ 始まりでも .. のセグメントを含むものでもないものだけを値で重複を除いて残す。
 // verify_command が null の AC は expect_paths も []（実行しないコマンドの生成物は確かめようがない）。
-// inline code に verify_command と採った expect_paths 以外が残る AC も null（複合 AC を 1 本のコマンドで達成扱いにしない）。
+// inline code に verify_command と採った expect_paths 以外の値が残る AC も null（複合 AC を 1 本のコマンドで達成扱いにしない）。
 // 返り値は AC ごとの { verify_command: string | null, expect_paths: string[] }（index は acceptanceCriteria と同じ）。
 export function freezeAcVerify(acceptanceCriteria, agentResult) {
   const results = Array.isArray(agentResult?.results) ? agentResult.results : []
   return (Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []).map((ac, i) => {
     const codes = inlineCodesOf(ac)
     const r = results.find((x) => x && x.ac_index === i)
-    const cmd = r && typeof r.verify_command === 'string' && r.verify_command.trim() !== '' && codes.includes(r.verify_command) ? r.verify_command : null
-    if (cmd === null) return { verify_command: null, expect_paths: [] }
-    const paths = (Array.isArray(r.expect_paths) ? r.expect_paths : [])
-      .filter((p) => typeof p === 'string' && codes.includes(p) && isWorktreeRelativePath(p))
-    // verify_command と採った expect_paths 以外の inline code が残る AC（コマンドを複数書いた複合 AC 等）は凍結しない —
-    // 1 本の exit 0 で AC 全体を確かめたことにならないため。
+    const cmd = r ? inlineCodeAt(codes, r.verify_command_index) : null
+    if (cmd === null || cmd.trim() === '') return { verify_command: null, expect_paths: [] }
+    const paths = (Array.isArray(r.expect_path_indexes) ? r.expect_path_indexes : [])
+      .map((k) => inlineCodeAt(codes, k))
+      .filter((p) => p !== null && isWorktreeRelativePath(p))
+    // verify_command と採った expect_paths 以外の値の inline code が残る AC（コマンドを複数書いた複合 AC 等）は凍結しない —
+    // 1 本の exit 0 で AC 全体を確かめたことにならないため。同じ値が 2 回現れる inline code は、どちらかを選べば残りに数えない。
     if (codes.some((c) => c !== cmd && !paths.includes(c))) return { verify_command: null, expect_paths: [] }
     return { verify_command: cmd, expect_paths: [...new Set(paths)] }
   })
