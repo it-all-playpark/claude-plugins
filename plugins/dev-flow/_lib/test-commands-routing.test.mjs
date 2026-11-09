@@ -90,6 +90,16 @@ test('[test-commands] 解決元が resolver なら、dev-implementer と別の a
   assert.equal(lastLine('test#1'), `run-tests start /tmp/wt --base origin/main --commands ${TEST_COMMANDS_FILE}`);
 });
 
+test('[test-commands] resolver の返り値の区切りが空白類（改行等）でも、コマンドファイルには照合した許可リストの語を半角空白で join した値を書く', async () => {
+  const ret = { ...RESOLVED, full_command: 'node\n--test', files_command: 'node\t--test\n{files}' };
+  const { calls, labels } = await runDevFlow({ 'resolve-test-commands': PREPARE_RESOLVER, 'resolve-test-commands-agent': ret });
+  const write = calls.find((c) => c.label === 'resolve-test-commands-write');
+  assert.ok(write, labels.join(', '));
+  const body = JSON.parse(write.prompt.match(/<<<TEST_COMMANDS_BEGIN>>>\n(.*)\n<<<TEST_COMMANDS_END>>>/)[1]);
+  assert.equal(body.full_command, 'node --test');
+  assert.equal(body.files_command, 'node --test {files}');
+});
+
 // 形が不正な返り値（どれも unresolved に倒し、コマンドファイルを書かない。ファイルが無いので run-tests は no_tests）
 const INVALID_RETURNS = {
   null: null,

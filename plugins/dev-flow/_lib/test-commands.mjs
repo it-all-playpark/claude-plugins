@@ -154,13 +154,22 @@ function sameWords(a, b) {
   return a.length === b.length && a.every((w, i) => w === b[i])
 }
 
-// full_command / files_command がどれかの「前置 + その前置で使えるランナー」の組に一致するか
-function isAllowedTestCommandPair(full, files) {
-  if (typeof full !== 'string' || typeof files !== 'string') return false
+// full_command / files_command がどれかの「前置 + その前置で使えるランナー」の組に一致すれば、一致した許可リストの語を
+// 半角空白で join したコマンドを返す（一致しなければ null）。resolver が返した文字列は実行経路へ渡さない — 照合は空白類で
+// 区切るが run-tests は 1 行だけを読むので、改行を含む値（"node\n--test"）を残すと照合した形と違うコマンドが走る。
+function allowedTestCommandPair(full, files) {
+  if (typeof full !== 'string' || typeof files !== 'string') return null
   const fw = full.trim().split(/\s+/)
   const sw = files.trim().split(/\s+/)
-  return TEST_COMMAND_PREFIXES.some((p) => TEST_COMMAND_RUNNERS.some((r) => p.runners.includes(r.name)
-    && sameWords(fw, [...p.words, ...r.full]) && sameWords(sw, [...p.words, ...r.files])))
+  for (const p of TEST_COMMAND_PREFIXES) {
+    for (const r of TEST_COMMAND_RUNNERS) {
+      if (!p.runners.includes(r.name)) continue
+      const f = [...p.words, ...r.full]
+      const s = [...p.words, ...r.files]
+      if (sameWords(fw, f) && sameWords(sw, s)) return { full: f.join(' '), files: s.join(' ') }
+    }
+  }
+  return null
 }
 
 /**
@@ -180,12 +189,13 @@ export function validateResolvedTestCommands(ret, bundleFiles) {
     return { ok: true, record: { source: 'resolver', status: 'unresolved', full_command: null, files_command: null, sources: ret.sources } }
   }
   if (ret.sources.length === 0) return { ok: false, reason: 'resolved なのに sources が空' }
-  if (!isAllowedTestCommandPair(ret.full_command, ret.files_command)) {
+  const pair = allowedTestCommandPair(ret.full_command, ret.files_command)
+  if (!pair) {
     return { ok: false, reason: `full_command / files_command が許可した前置 + ランナーの組に一致しない（${JSON.stringify(ret.full_command)} / ${JSON.stringify(ret.files_command)}）` }
   }
   return {
     ok: true,
-    record: { source: 'resolver', status: 'resolved', full_command: ret.full_command.trim(), files_command: ret.files_command.trim(), sources: ret.sources },
+    record: { source: 'resolver', status: 'resolved', full_command: pair.full, files_command: pair.files, sources: ret.sources },
   }
 }
 

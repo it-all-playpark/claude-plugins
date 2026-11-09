@@ -172,12 +172,19 @@ function sameWords(a, b) {
   return a.length === b.length && a.every((w, i) => w === b[i])
 }
 
-function isAllowedTestCommandPair(full, files) {
-  if (typeof full !== 'string' || typeof files !== 'string') return false
+function allowedTestCommandPair(full, files) {
+  if (typeof full !== 'string' || typeof files !== 'string') return null
   const fw = full.trim().split(/\s+/)
   const sw = files.trim().split(/\s+/)
-  return TEST_COMMAND_PREFIXES.some((p) => TEST_COMMAND_RUNNERS.some((r) => p.runners.includes(r.name)
-    && sameWords(fw, [...p.words, ...r.full]) && sameWords(sw, [...p.words, ...r.files])))
+  for (const p of TEST_COMMAND_PREFIXES) {
+    for (const r of TEST_COMMAND_RUNNERS) {
+      if (!p.runners.includes(r.name)) continue
+      const f = [...p.words, ...r.full]
+      const s = [...p.words, ...r.files]
+      if (sameWords(fw, f) && sameWords(sw, s)) return { full: f.join(' '), files: s.join(' ') }
+    }
+  }
+  return null
 }
 
 function validateResolvedTestCommands(ret, bundleFiles) {
@@ -190,12 +197,13 @@ function validateResolvedTestCommands(ret, bundleFiles) {
     return { ok: true, record: { source: 'resolver', status: 'unresolved', full_command: null, files_command: null, sources: ret.sources } }
   }
   if (ret.sources.length === 0) return { ok: false, reason: 'resolved なのに sources が空' }
-  if (!isAllowedTestCommandPair(ret.full_command, ret.files_command)) {
+  const pair = allowedTestCommandPair(ret.full_command, ret.files_command)
+  if (!pair) {
     return { ok: false, reason: `full_command / files_command が許可した前置 + ランナーの組に一致しない（${JSON.stringify(ret.full_command)} / ${JSON.stringify(ret.files_command)}）` }
   }
   return {
     ok: true,
-    record: { source: 'resolver', status: 'resolved', full_command: ret.full_command.trim(), files_command: ret.files_command.trim(), sources: ret.sources },
+    record: { source: 'resolver', status: 'resolved', full_command: pair.full, files_command: pair.files, sources: ret.sources },
   }
 }
 
