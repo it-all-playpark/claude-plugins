@@ -16,8 +16,9 @@
 // 結果は gate に戻さない — 記録ファイル・PR コメント・journal に書かず、stdout にだけ出す（fix agent も同じ場所・同じ gh
 // アカウントに書けるので clear を偽造でき、指摘の本文を公開すると攻撃経路を公開することになる）。Merge tier は HOLD のまま。
 //
-// exit: 0 = clear（critical / major 0 件かつ reviewed_sha が head と一致）/ 1 = critical か major が残る /
-//       2 = 判定できない（usage・取得の失敗・JSON を取り出せない・schema 不一致・reviewed_sha の不一致）。2 は clear と出さない
+// 判定が PR head に対するものかは 2 の scope.head_sha と PR head の照合で決まる。reviewed_sha は渡した head_sha の写しかを見る出力の整合。
+// exit: 0 = clear（critical / major 0 件かつ reviewed_sha が渡した head_sha の写し）/ 1 = critical か major が残る /
+//       2 = 判定できない（usage・取得の失敗・JSON を取り出せない・schema 不一致・reviewed_sha が写しでない）。2 は clear と出さない
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -181,7 +182,7 @@ const verdict = securityReviewVerdict(review, headSha)
 const { critical, major, minor } = verdict.counts
 const label = verdict.cleared
   ? 'clear（critical / major 0 件）'
-  : verdict.reason === 'blocking' ? '指摘あり（critical / major が残っている）' : '判定できない（reviewed_sha が PR head と一致しない — 古い diff を読んだ可能性）'
+  : verdict.reason === 'blocking' ? '指摘あり（critical / major が残っている）' : '判定できない（出力の reviewed_sha が渡した head_sha の写しでない — 出力の整合違反）'
 out(`判定: ${label}`)
 out(`件数: critical ${critical} / major ${major} / minor ${minor}`)
 out(`review した head: ${clean(review.reviewed_sha)}（PR head ${headSha}）`)

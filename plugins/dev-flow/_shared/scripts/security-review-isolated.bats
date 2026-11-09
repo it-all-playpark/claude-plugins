@@ -190,12 +190,12 @@ MAJOR_ISSUE='[{"severity":"major","topic":"hook-injection","file":"CLAUDE.md","l
     [[ "$output" == *"MINOR_BODY"* ]]
 }
 
-@test "reviewed_sha が PR head と一致しなければ exit 2 で clear と出さない" {
+@test "reviewed_sha が渡した head_sha の写しでなければ exit 2 で clear と出さない（出力の整合違反）" {
     respond '[]' "0123456789012345678901234567890123456789"
     cd "$ROOT"
     run bash "$BIN" 5
     [ "$status" -eq 2 ]
-    [[ "$output" == *"判定: 判定できない（reviewed_sha が PR head と一致しない"* ]]
+    [[ "$output" == *"判定: 判定できない（出力の reviewed_sha が渡した head_sha の写しでない — 出力の整合違反）"* ]]
     [[ "$output" == *"review した head: 0123456789012345678901234567890123456789"* ]]
     [[ "$output" != *"clear"* ]]
 }

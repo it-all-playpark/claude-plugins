@@ -3,8 +3,9 @@
 //
 // 対象の run では、LGTM の候補になった round ごとに security-reviewer を新しく spawn し、PR 全 diff（`<base>...<head>`）を
 // 読ませる。前回の未解消の critical/major は「直ったか確かめる項目」として渡す（moving target の抑制と、直したはずの
-// 指摘の取りこぼし防止）。clear は critical/major が 0 件で、かつ返り値の reviewed_sha が今の PR head と一致したときだけ
-// （古い diff を読んだ review で clear にしない）。clear にならない限り LGTM にしない（fail-closed）。
+// 指摘の取りこぼし防止）。clear は critical/major が 0 件で、かつ返り値の reviewed_sha が渡した head_sha の写しのときだけ
+// （出力の整合。判定が今の PR head に対するものかは workflow が security-scope の head と今の PR head を照合して決める —
+// references/security-review.md の R2）。clear にならない限り LGTM にしない（fail-closed）。
 //
 // security-reviewer は PR の worktree の外（security-review-scope が作る一時ディレクトリ）を作業ディレクトリにし、
 // diff と head sha はデータとして受け取る。読むのはその一時ディレクトリの配下だけで、PR の worktree のファイルは
@@ -147,8 +148,9 @@ export function securityReviewPrompt({ pr, reviewDir, diffPath, headSha, base, w
     + '## Token cap\nsummary は 300 字以内。issues は 1 件 600 字以内。\n';
 }
 
-// security review の判定。clear は critical/major が 0 件で、かつ reviewed_sha が headSha と一致したときだけ。
-// reason: null（clear）/ 'no_result'（review が null）/ 'sha_mismatch'（古い diff を読んだ可能性）/ 'blocking'。
+// security review の判定。clear は critical/major が 0 件で、かつ reviewed_sha が渡した headSha の写しのときだけ。
+// reason: null（clear）/ 'no_result'（review が null）/ 'sha_mismatch'（出力の reviewed_sha が渡した head_sha の写しでない —
+// 出力の整合違反）/ 'blocking'。
 export function securityReviewVerdict(review, headSha) {
   const issues = Array.isArray(review?.issues) ? review.issues : [];
   const blocking = issues.filter((x) => x?.severity === 'critical' || x?.severity === 'major');
@@ -376,7 +378,8 @@ export function matchesStrictSchema(value, schema) {
 }
 
 // 結果ファイル（JSON.parse 済み）の判定。schema に適合しなければ ok:false（判定できない — clear にしない）。適合すれば
-// securityReviewVerdict と同じ規則（critical/major 0 件かつ reviewed_sha が headSha と一致したときだけ clear）。
+// securityReviewVerdict と同じ規則（critical/major 0 件かつ reviewed_sha が渡した headSha の写しのときだけ clear。写しでなければ
+// sha_mismatch — 出力の整合違反）。
 // issues は fix の prompt と次の round の verify_items に渡すので、description / suggestion を Claude 経路の schema の上限で切る。
 export function codexResultVerdict(result, headSha) {
   if (!matchesStrictSchema(result, CODEX_SECURITY_REVIEW_SCHEMA)) {

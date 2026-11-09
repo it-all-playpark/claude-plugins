@@ -2631,7 +2631,7 @@ if (SECURITY_REVIEW_ARG == null) log('security review: args.security_review が�
 let reviewerContextChanged = SECURITY_REVIEW_ARG?.reviewer_context_changed === true
 let securityStatus = null   // 'cleared' | 'unresolved'（null は今の head の review に到達していない。cleared は fix の前に null に戻す）
 // security review の結果（対象外の判定を含む）を観測した head。起動時の対象外は prerun / dev-flow が今の head で判定した結果。
-// reviewer の結果を読めない・reviewed_sha が今の head と違う round は null（その件数をどの head の結果とも言えない）
+// reviewer の結果を読めない・reviewed_sha が渡した head_sha の写しでない（出力の整合違反）round は null（その件数を信用できない）
 let securityReviewHead = securityTarget ? null : shaNow
 let securityRounds = 0      // review の回数（security-reviewer の spawn と、結果を読めた Codex の review の合計）
 // review の前提チェックで clear にできずに止めた理由（閉じた enum の固定 code。PR 由来の文字列は載せない）:
@@ -2844,7 +2844,7 @@ async function securityRound(iteration) {
     return { kind: 'clear' }
   }
   if (verdict.reason === 'no_result') return stop('security-reviewer が結果を返さない')
-  if (verdict.reason === 'sha_mismatch') return stop('review した head が今の PR head と一致しない')
+  if (verdict.reason === 'sha_mismatch') return stop('reviewer の出力の reviewed_sha が渡した head_sha の写しでない（出力の整合違反）')
   securityOpen = verdict.blocking
   securityStatus = 'unresolved'
   const outside = verdict.blocking.filter((f) => isOutsideWorktree(f?.file, isoWt))

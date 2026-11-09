@@ -9,7 +9,8 @@
 //   既定: {ok, cleared, reason, reviewed_sha, counts, error?} — 自由文を出さない（clear を決める中継に PR や Codex の文を
 //     読ませない。reviewed_sha も 40 桁の hex でなければ null）。
 //     ok:false（result.json が無い・読めない・JSON でない・schema に適合しない）は判定できない — cleared は常に false。
-//     cleared は critical/major 0 件かつ reviewed_sha が head_sha と一致したときだけ true。
+//     cleared は critical/major 0 件かつ reviewed_sha が渡した head_sha の写しのときだけ true（写しでなければ reason sha_mismatch —
+//     出力の整合違反。判定が今の PR head に対するものかは workflow の head 照合が決める）。
 //   --issues: {ok, issues, error?} — 指摘の本文（clear でなかった round の fix と verify_items 用）。
 //   usage error だけ exit 2、それ以外は exit 0。
 import { readFileSync } from 'node:fs'

@@ -314,6 +314,15 @@ test('(d) 不変条件アンカーが全て rules に残っている', () => {
   assert.equal(missing.length, 0, `不変条件アンカーが欠落している: ${JSON.stringify(missing)}`);
 });
 
+// reviewed_sha は渡した head_sha の写しかを見る出力の整合で、R2 を守るのは workflow の head 照合。
+// 誤った根拠を incentive-structural（永続）に載せると撤去・変更の判断を誤らせる
+test('(s) 敵対的 security review の incentive-structural は head 照合で clear を限り、reviewed_sha 一致を根拠に挙げない', () => {
+  const line = rulesSrc.split('\n').find((l) => l.startsWith('- 敵対的 security review:'));
+  assert.ok(line, 'rules に「敵対的 security review」の行が無い');
+  assert.ok(line.includes('head 照合'), `敵対的 security review の行に head 照合が無い: ${line}`);
+  assert.ok(!line.includes('`reviewed_sha` 一致で clear'), `敵対的 security review の行が reviewed_sha 一致を clear の根拠に挙げている: ${line}`);
+});
+
 const EXPECTED_PATHS = [
   'plugins/dev-flow/.claude/workflows/**',
   'plugins/dev-flow/agents/**',
