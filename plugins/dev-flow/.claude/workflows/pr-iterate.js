@@ -30,6 +30,13 @@ function nsAgentOpts(opts) {
   return { ...opts, agentType: AGENT_NAMESPACE + bare }
 }
 // ==== END inline: _lib/agent-namespace.mjs ====
+// ==== BEGIN inline: _lib/structured-output-failure.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+function isStructuredOutputFailure(e) {
+  if (e == null) return false
+  const msg = String(e.message ?? e)
+  return msg.includes('without calling StructuredOutput') || msg.includes('StructuredOutput retry cap')
+}
+// ==== END inline: _lib/structured-output-failure.mjs ====
 // ==== BEGIN inline: _lib/stage-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 const TEST_COMMANDS_RESULT_SPEC = {
   source: 'string|null', status: 'string', full_command: 'string|null', files_command: 'string|null',
@@ -382,8 +389,8 @@ const REVIEW_STUCK = 2   // 同一 topic がこの回数出たら stuck と判�
 
 // run あたりの subagent (agent()) 起動数カウント（返り値 subagent_invocations）。agent() の代わりに全 call site を
 // trackedAgent 経由で呼び、SUBAGENT_COUNTS へ計上する。
-// StructuredOutput 契約違反（subagent が StructuredOutput を呼ばず完了 — 一過性のモデル逸脱）に
-// 限定して同一 prompt で 1 回だけリトライする。それ以外の throw はそのまま
+// StructuredOutput 契約違反（有効な StructuredOutput を得られずに終わった — 一過性のモデル逸脱。判定は
+// isStructuredOutputFailure）に限定して同一 prompt で 1 回だけリトライする。それ以外の throw はそのまま
 // 伝播させる（fail-closed 維持）。retry も実 agent() 起動なので SUBAGENT_COUNTS へ再計上する。
 // review: リトライは `opts.retryOnContractViolation === true` の opt-in call site
 // 限定（既定はリトライしない）。commit・push・journal 追記・PR コメント投稿等の副作用を伴う
@@ -408,7 +415,7 @@ async function trackedAgent(prompt, opts) {
     return await agent(prompt, nsAgentOpts(opts));
   } catch (e) {
     if (!opts?.retryOnContractViolation) throw e;
-    if (!String(e?.message ?? e).includes('without calling StructuredOutput')) throw e;
+    if (!isStructuredOutputFailure(e)) throw e;
     log(`⚠️ ${opts?.label ?? 'agent'} が StructuredOutput 契約違反で失敗 — 同一 prompt で 1 回だけリトライ（issue #527）`);
     recordSubagentInvocation(SUBAGENT_COUNTS, opts?.agentType);
     return agent(prompt, nsAgentOpts(opts));

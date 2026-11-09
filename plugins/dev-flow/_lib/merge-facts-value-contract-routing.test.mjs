@@ -173,6 +173,18 @@ test('[merge-facts-value][AC-2] StructuredOutput 契約違反が再試行後も�
   assert.ok(logs.some((l) => l.includes('再試行後も StructuredOutput 契約違反')), 'log に契約違反の診断が出ない');
 });
 
+// schema 不一致の StructuredOutput 呼び出しが上限に達した失敗も転記欠落（issue #1344。danger-grep 自体は成功している）。
+test('[merge-facts-value][AC-2] StructuredOutput retry cap 超過が再試行後も続く → HOLD reason は merge_facts_dropped', async () => {
+  const { result, calls } = await run({
+    'merge-tier-facts': () => { throw new Error('agent({schema}): StructuredOutput retry cap (7) exceeded'); },
+  });
+  assert.equal(calls.filter((c) => c.label === 'merge-tier-facts').length, 2, 'retry cap 超過は 1 回だけ再試行する');
+  assert.equal(result.merge_tier, 'HOLD');
+  const codes = (result.merge_tier_hold_reasons ?? []).map((r) => r.code);
+  assert.ok(codes.includes('merge_facts_dropped'), `merge_facts_dropped が無い: ${JSON.stringify(codes)}`);
+  assert.ok(!codes.includes('danger_fail_closed'), `danger_fail_closed が残っている: ${JSON.stringify(codes)}`);
+});
+
 test('[merge-facts-value][AC-2] 契約違反以外の例外で facts=null → 従来どおり danger_fail_closed', async () => {
   const { result } = await run({
     'merge-tier-facts': () => { throw new Error('isolation guard denied'); },
