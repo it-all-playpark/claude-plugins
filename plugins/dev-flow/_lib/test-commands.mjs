@@ -11,7 +11,7 @@
 //   から dev-runner-haiku の Write でコマンドファイルに書く。コマンドを run-tests の argv で運ばない（転写で中身が変わらず、
 //   PR が既知のパスで書き換えられない — ファイルは prepare が worktree の外に作る推測できないディレクトリにある）。
 // 検証（正当化クラス: incentive-structural）: resolver の返り値は形が不正なら unresolved に倒す（no_tests → HOLD）。
-//   コマンドは TEST_COMMAND_PREFIXES × TEST_COMMAND_RUNNERS の閉じた組だけを受ける（repo 内の定義を経由する起動・
+//   コマンドは TEST_COMMAND_PREFIXES と前置ごとに使える TEST_COMMAND_RUNNERS の閉じた組だけを受ける（repo 内の定義を経由する起動・
 //   テストを実行しないコマンドを返させない）。sources は束に入れたファイルのパスに限る（根拠を束の外に置かせない）。
 
 export const TEST_COMMAND_SOURCES = ['user_config', 'runners', 'resolver']
@@ -76,8 +76,8 @@ export function testCommandResolverPrompt(bundleFile) {
     + `- CI 定義（.github/workflows 等）が実際に実行しているテストの起動方法を最優先の根拠にし、無ければ pyproject.toml / package.json / Cargo.toml 等の宣言から決める。\n`
     + `- full_command はテストを全件実行するコマンド、files_command は \`{files}\` に worktree の root からの相対パスのテストファイル（複数）を並べるとそれらのテストだけを実行するコマンド。どちらも worktree の root を cwd に実行される。\n`
     + `- どちらも「前置 + ランナー」の決まった形からだけ選び、引数・option を足さない（それ以外の形は workflow が受け付けない）。前置とランナーは full_command と files_command で同じものにする。\n`
-    + `  - 前置（無しも可）: ${TEST_COMMAND_PREFIXES.filter((p) => p.length).map((p) => `\`${p.join(' ')}\``).join(' / ')}\n`
     + `  - ランナー（full_command の形 → files_command の形）: ${TEST_COMMAND_RUNNERS.map((r) => `\`${r.full.join(' ')}\` → \`${r.files.join(' ')}\``).join(' / ')}\n`
+    + `  - 前置（無しなら全ランナー可）と、その前置で使えるランナー: ${TEST_COMMAND_PREFIXES.filter((p) => p.words.length).map((p) => `\`${p.words.join(' ')}\`（${p.runners.join(' / ')}）`).join('、')}\n`
     + `  - 例: \`uv run pytest\` / \`uv run pytest {files}\`、\`pnpm exec vitest run\` / \`pnpm exec vitest run {files}\`、\`bundle exec rspec\` / \`bundle exec rspec {files}\`\n`
     + `- CI がこの形で表せない起動（package.json の scripts・Makefile 等のターゲット・repo 内のスクリプト・ここに無いランナー）しかしていない、テストが無いと判断したら status:"unresolved"（full_command / files_command は null）。推測で埋めない。\n`
     + `- sources には根拠にしたファイルのパス（束の「## ファイル: <path>」の path）を 1 件以上入れる。\n\n`
@@ -121,32 +121,46 @@ export function parsePreparedTestCommands(res) {
 // その exit 0 が green の根拠になる。引数・option も足させない（--collect-only 等でテストを実行しない形にできるため）。
 // 前置とランナーは full_command と files_command で同じものを使い、files_command はランナーの files の形（{files} を 1 回含む）。
 // ここに無い起動が要る repo は unresolved（HOLD）になり、人が user 設定 test_commands で固定する。
-export const TEST_COMMAND_PREFIXES = [
-  [], ['uv', 'run'], ['uv', 'run', 'python', '-m'], ['poetry', 'run'], ['poetry', 'run', 'python', '-m'], ['python', '-m'], ['python3', '-m'],
-  ['bundle', 'exec'], ['pnpm', 'exec'], ['npm', 'exec'], ['yarn', 'exec'], ['bun', 'x'],
-]
+// 前置ごとに使えるランナーを持つ（掛け合わせない）。前置はそのエコシステムのランナーだけを起動する — 別エコシステムの名前を
+// 前置に渡すと registry から同名の package を取って実行しうる（bun x rspec 等）。npm exec は持たない: `--` より前の option を
+// 自分の設定として読むので、フラグを含むランナー（node --test）ではフラグがランナーに届かず、テストを実行せずに exit 0 になる。
 export const TEST_COMMAND_RUNNERS = [
-  { full: ['pytest'], files: ['pytest', '{files}'] },
-  { full: ['vitest', 'run'], files: ['vitest', 'run', '{files}'] },
-  { full: ['jest'], files: ['jest', '{files}'] },
-  { full: ['mocha'], files: ['mocha', '{files}'] },
-  { full: ['rspec'], files: ['rspec', '{files}'] },
-  { full: ['node', '--test'], files: ['node', '--test', '{files}'] },
-  { full: ['bun', 'test'], files: ['bun', 'test', '{files}'] },
-  { full: ['deno', 'test'], files: ['deno', 'test', '{files}'] },
+  { name: 'pytest', full: ['pytest'], files: ['pytest', '{files}'] },
+  { name: 'vitest', full: ['vitest', 'run'], files: ['vitest', 'run', '{files}'] },
+  { name: 'jest', full: ['jest'], files: ['jest', '{files}'] },
+  { name: 'mocha', full: ['mocha'], files: ['mocha', '{files}'] },
+  { name: 'rspec', full: ['rspec'], files: ['rspec', '{files}'] },
+  { name: 'node', full: ['node', '--test'], files: ['node', '--test', '{files}'] },
+  { name: 'bun', full: ['bun', 'test'], files: ['bun', 'test', '{files}'] },
+  { name: 'deno', full: ['deno', 'test'], files: ['deno', 'test', '{files}'] },
+]
+const PY_RUNNERS = ['pytest']
+const JS_PKG_RUNNERS = ['vitest', 'jest', 'mocha']
+export const TEST_COMMAND_PREFIXES = [
+  { words: [], runners: TEST_COMMAND_RUNNERS.map((r) => r.name) },
+  { words: ['uv', 'run'], runners: PY_RUNNERS },
+  { words: ['uv', 'run', 'python', '-m'], runners: PY_RUNNERS },
+  { words: ['poetry', 'run'], runners: PY_RUNNERS },
+  { words: ['poetry', 'run', 'python', '-m'], runners: PY_RUNNERS },
+  { words: ['python', '-m'], runners: PY_RUNNERS },
+  { words: ['python3', '-m'], runners: PY_RUNNERS },
+  { words: ['bundle', 'exec'], runners: ['rspec'] },
+  { words: ['pnpm', 'exec'], runners: JS_PKG_RUNNERS },
+  { words: ['yarn', 'exec'], runners: JS_PKG_RUNNERS },
+  { words: ['bun', 'x'], runners: JS_PKG_RUNNERS },
 ]
 
 function sameWords(a, b) {
   return a.length === b.length && a.every((w, i) => w === b[i])
 }
 
-// full_command / files_command がどれかの「前置 + ランナー」の組に一致するか
+// full_command / files_command がどれかの「前置 + その前置で使えるランナー」の組に一致するか
 function isAllowedTestCommandPair(full, files) {
   if (typeof full !== 'string' || typeof files !== 'string') return false
   const fw = full.trim().split(/\s+/)
   const sw = files.trim().split(/\s+/)
-  return TEST_COMMAND_PREFIXES.some((p) => TEST_COMMAND_RUNNERS.some((r) =>
-    sameWords(fw, [...p, ...r.full]) && sameWords(sw, [...p, ...r.files])))
+  return TEST_COMMAND_PREFIXES.some((p) => TEST_COMMAND_RUNNERS.some((r) => p.runners.includes(r.name)
+    && sameWords(fw, [...p.words, ...r.full]) && sameWords(sw, [...p.words, ...r.files])))
 }
 
 /**
