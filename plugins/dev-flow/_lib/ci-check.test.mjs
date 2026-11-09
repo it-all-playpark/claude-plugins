@@ -1,20 +1,19 @@
-// _lib/ci-check.mjs（ci-check / ci-wait-check の定数 / schema / prompt の canonical）の単体テスト。
+// _lib/ci-check.mjs（ci-check / ci-wait-check / ci-verify の定数 / schema / prompt の canonical）の単体テスト。
 //
 // 守っている不変条件:
-//   - ci-check 1 spawn（check-ci 1 + StructuredOutput 1 + margin = 5）と ci-wait-check 1 spawn
-//     （待機 1 + check-ci 1 + StructuredOutput 1 + margin = 6）が dev-runner-haiku-ro の maxTurns を超えない
-//     （agent md を実読して pin。issue #663 / #805 / #806）
+//   - どの prompt も Bash は最終行の check-ci 1 単文（待機は check-ci --wait）なので、1 spawn の必要 turn
+//     （check-ci 1 + StructuredOutput 1 + margin = 5）が stdout-relay の maxTurns を超えない（agent md を実読して pin）
 //   - 既定の上限 CI_WAIT_CEILING_SECONDS=300, CI_POLL_SECONDS=45。poll 回数の上限は待機上限から導く（ciMaxPolls）。
-//     args.ci_wait_ceiling_seconds は正の整数だけ受け、未指定は既定値（ciWaitCeiling。issue #1046）
-//   - prompt にループ指示が無い（1 spawn = 1 判定。ci-check は待機もしない。issue #663）
+//     args.ci_wait_ceiling_seconds は正の整数だけ受け、未指定は既定値（ciWaitCeiling）
+//   - prompt にループ指示が無い（1 spawn = 1 判定。ci-check は待機もしない）
 //   - CI_STATUS の status enum は closed（'error' が欠けると gh fetch 失敗を green と誤認しうる）
-//   - CI_STATUS は check-ci の件数を required に持ち、ciEffectiveStatus は件数から導いた status と食い違う
-//     proxy の status を error に倒す（pending:2 を passed と転記した実例。issue #834）
-//   - CI_WAIT_CHECK は slept を required に持つ（実待機不成立の判別に使う。issue #805）
-//   - prompt が決定論的で、repo 指定の有無で --repo フラグが正しく出し分けられる
-//   - proxy は check-ci --pr の bare 単文だけを実行し、rollup の gh コマンド・--checks-data・head sha の個別取得を
-//     prompt に持たない。ci-check は check-ci の head_sha を返させ、並列 ci-check の採否
-//     （ciHeadRejectReason）は 40 桁 sha の一致だけを採用にする（issue #806）
+//   - prompt の最終行は check-ci を先頭トークンにした bare 単文（hook がこの行と完全一致する Bash だけを通す）で、
+//     head_sha・slept を agent に足させる手順を持たず、示す失敗時の JSON は export した定数と同じ
+//     （hook はその定数との一致で返り値を通す）
+//   - ciEffectiveStatus は null を error にし、それ以外（件数と status が食い違う応答を含む）はそのまま返す
+//     （返り値は hook が check-ci の実 stdout に縛る）
+//   - CI_WAIT_CHECK は slept を required に持つ（実待機不成立の判別に使う）
+//   - 並列 ci-check の採否（ciHeadRejectReason）は 40 桁 sha の一致だけを採用にする
 //
 // prompt 本文が dev-flow.js / pr-iterate.js の inline 区間と全文一致することは
 // _lib/workflow-inlines.sync.test.mjs（sync-inlines --check 相当）が保証するため、ここでは扱わない。
@@ -23,61 +22,86 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { CI_POLL_SECONDS, CI_WAIT_CEILING_SECONDS, ciWaitCeiling, ciMaxPolls, CI_TURN_MARGIN, CI_STATUS, CI_WAIT_CHECK, ciCheckPrompt, ciWaitCheckPrompt, checkCiCommand, ciHeadRejectReason, isFullCommitSha, ciStatusFromCounts, ciEffectiveStatus, CI_VERIFY_POLL_SECONDS, CI_VERIFY_CHECK, ciVerifyPrompt, ciVerifyVerdict } from './ci-check.mjs';
+import { CI_POLL_SECONDS, CI_WAIT_CEILING_SECONDS, ciWaitCeiling, ciMaxPolls, CI_TURN_MARGIN, CI_STATUS, CI_WAIT_CHECK, ciCheckPrompt, ciWaitCheckPrompt, checkCiCommand, ciHeadRejectReason, isFullCommitSha, ciEffectiveStatus, CI_VERIFY_POLL_SECONDS, CI_VERIFY_CHECK, ciVerifyPrompt, ciVerifyVerdict, CI_RELAY_FAILED, CI_WAIT_RELAY_FAILED } from './ci-check.mjs';
 
 // ============================================================
 // 定数
 // ============================================================
 
 // turn 会計の純関数（式は _lib/ci-check.mjs のコメントと一致させる）
-// check-ci 1 + StructuredOutput 1 + margin
-function ciCheckTurns(margin) {
+// check-ci 1（待機する prompt も check-ci --wait の 1 単文）+ StructuredOutput 1 + margin
+function ciRelayTurns(margin) {
   return 1 + 1 + margin;
 }
-// 待機（ci-wait）1 + check-ci 1 + StructuredOutput 1 + margin
-function ciWaitCheckTurns(margin) {
-  return 1 + 1 + 1 + margin;
-}
 function readMaxTurns() {
-  const p = join(dirname(fileURLToPath(import.meta.url)), '..', 'agents', 'dev-runner-haiku-ro.md');
+  const p = join(dirname(fileURLToPath(import.meta.url)), '..', 'agents', 'stdout-relay.md');
   const src = readFileSync(p, 'utf8');
   const m = src.match(/^maxTurns:\s*(\d+)\s*$/m);
   assert.ok(m, `${p} の frontmatter に maxTurns が無い`);
   return Number(m[1]);
 }
+// check-ci が --wait に受ける秒数の上限（check-ci.sh を実読して pin）
+function readCheckCiWaitMax() {
+  const p = join(dirname(fileURLToPath(import.meta.url)), '..', 'pr-iterate', 'scripts', 'check-ci.sh');
+  const m = readFileSync(p, 'utf8').match(/^WAIT_SECONDS_MAX=(\d+)\s*$/m);
+  assert.ok(m, `${p} に WAIT_SECONDS_MAX が無い`);
+  return Number(m[1]);
+}
 
-test('[ci-check] ci-check 1 spawn の必要 turn（check-ci + StructuredOutput + margin = 5）が dev-runner-haiku-ro の maxTurns を超えない', () => {
+// prompt の最終行（hook が Bash と照合する行）
+const lastLine = (p) => p.split('\n').at(-1);
+// prompt が示す失敗時の JSON（`{"` で始まる 1 行の JSON object を全部拾う）
+const failedJsonsOf = (p) => (p.match(/\{"[^{}\n]*\}/g) ?? []).map((s) => JSON.parse(s));
+
+const RELAY_PROMPTS = [
+  ['ciCheckPrompt', ciCheckPrompt({ pr: 7, repo: 'o/n' }), CI_RELAY_FAILED],
+  ['ciCheckPrompt（exclude）', ciCheckPrompt({ pr: 7, repo: 'o/n', exclude: ['e2e', "it's"] }), CI_RELAY_FAILED],
+  ['ciCheckPrompt（repo なし）', ciCheckPrompt({ pr: 7, repo: null }), CI_RELAY_FAILED],
+  ['ciWaitCheckPrompt', ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: CI_POLL_SECONDS }), CI_WAIT_RELAY_FAILED],
+  ['ciWaitCheckPrompt（exclude）', ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: CI_POLL_SECONDS, exclude: ['e2e'] }), CI_WAIT_RELAY_FAILED],
+  ['ciVerifyPrompt（待機なし）', ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: 0 }), CI_RELAY_FAILED],
+  ['ciVerifyPrompt（待機あり）', ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: CI_VERIFY_POLL_SECONDS }), CI_WAIT_RELAY_FAILED],
+];
+
+test('[ci-check] 1 spawn の必要 turn（check-ci + StructuredOutput + margin = 5）が stdout-relay の maxTurns を超えない', () => {
   const maxTurns = readMaxTurns();
-  assert.equal(ciCheckTurns(CI_TURN_MARGIN), 5);
-  assert.ok(ciCheckTurns(CI_TURN_MARGIN) <= maxTurns, `必要 turn ${ciCheckTurns(CI_TURN_MARGIN)} が maxTurns ${maxTurns} を超えている`);
+  assert.equal(ciRelayTurns(CI_TURN_MARGIN), 5);
+  assert.ok(ciRelayTurns(CI_TURN_MARGIN) <= maxTurns, `必要 turn ${ciRelayTurns(CI_TURN_MARGIN)} が maxTurns ${maxTurns} を超えている`);
 });
 
-test('[ci-check] ci-wait-check 1 spawn の必要 turn（待機 + check-ci + StructuredOutput + margin = 6）が dev-runner-haiku-ro の maxTurns を超えない', () => {
-  const maxTurns = readMaxTurns();
-  assert.equal(ciWaitCheckTurns(CI_TURN_MARGIN), 6);
-  assert.ok(ciWaitCheckTurns(CI_TURN_MARGIN) <= maxTurns, `必要 turn ${ciWaitCheckTurns(CI_TURN_MARGIN)} が maxTurns ${maxTurns} を超えている`);
+for (const [name, p, failed] of RELAY_PROMPTS) {
+  test(`[ci-check] ${name}: 最終行は先頭トークンが check-ci の bare 単文 1 本（| && ; リダイレクトを含まない）で、Bash はその 1 本だけ`, () => {
+    const line = lastLine(p);
+    assert.equal(line.split(' ')[0], 'check-ci', `最終行の先頭トークンが check-ci でない: ${line}`);
+    assert.doesNotMatch(line, /[|;&<>`]|\$\(/, `最終行に shell の記号がある: ${line}`);
+    assert.ok(!/^\s|\s$/.test(line), `最終行の前後に空白がある: ${JSON.stringify(line)}`);
+    // 最終行の他に、実行させるコマンド（backtick の bare 単文）を持たない（turn 会計の前提）
+    const body = p.slice(0, p.length - line.length);
+    assert.deepEqual((body.match(/`(check-ci|ci-wait|gh|sleep)\b[^`]*`/g) ?? []), [], `最終行の他に実行させるコマンドがある: ${body}`);
+  });
+
+  test(`[ci-check] ${name}: 示す失敗時の JSON は export した定数と同じで、head_sha・slept を足させる手順が無い`, () => {
+    assert.deepEqual(failedJsonsOf(p), [failed], `prompt が示す失敗時の JSON が定数と食い違う: ${p}`);
+    const withoutFailed = p.split(JSON.stringify(failed)).join('');
+    for (const key of ['head_sha', 'slept']) {
+      assert.ok(!withoutFailed.includes(key), `prompt が ${key} を agent に扱わせている: ${withoutFailed}`);
+    }
+  });
+}
+
+test('[ci-check] 待機する prompt は最終行の check-ci に --wait を付け、待機しない prompt は付けない', () => {
+  assert.equal(lastLine(ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: 45 })), 'check-ci --pr 7 --repo o/n --wait 45');
+  assert.equal(lastLine(ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: 90 })), "check-ci --pr 7 --repo o/n --only 'e2e' --wait 90");
+  assert.equal(lastLine(ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: 0 })), "check-ci --pr 7 --repo o/n --only 'e2e'");
+  assert.equal(lastLine(ciCheckPrompt({ pr: 7, repo: 'o/n' })), 'check-ci --pr 7 --repo o/n');
 });
 
-test('[ci-check] ci-wait-check prompt の Bash 手順は ci-wait / check-ci の 2 単文だけ（turn 会計の前提）', () => {
-  const p = ciWaitCheckPrompt({ pr: 123, repo: 'owner/name', seconds: 45 });
-  const steps = p.slice(p.indexOf('## Steps'), p.indexOf('## Output format'));
-  const bashSteps = steps.match(/^\d+\. `[^`]+`/gm) ?? [];
-  assert.deepEqual(
-    bashSteps.map((s) => s.replace(/^\d+\. `/, '').split(' ')[0]),
-    ['ci-wait', 'check-ci'],
-    `Bash 単文の手順が想定と異なる: ${JSON.stringify(bashSteps)}`,
-  );
-});
-
-test('[ci-check] ci-check prompt の Bash 手順は check-ci の 1 単文だけ（turn 会計の前提）', () => {
-  const p = ciCheckPrompt({ pr: 123, repo: 'owner/name' });
-  const steps = p.slice(p.indexOf('## Steps'), p.indexOf('## Output format'));
-  const bashSteps = steps.match(/^\d+\. `[^`]+`/gm) ?? [];
-  assert.deepEqual(
-    bashSteps.map((s) => s.replace(/^\d+\. `/, '').split(' ')[0]),
-    ['check-ci'],
-    `Bash 単文の手順が想定と異なる: ${JSON.stringify(bashSteps)}`,
-  );
+test('[ci-check] 失敗時の JSON は status:error（待機する prompt は slept:false も）で、CI_STATUS / CI_WAIT_CHECK の required を満たす', () => {
+  assert.equal(CI_RELAY_FAILED.status, 'error');
+  assert.equal(CI_WAIT_RELAY_FAILED.status, 'error');
+  assert.equal(CI_WAIT_RELAY_FAILED.slept, false);
+  for (const k of CI_STATUS.required) assert.ok(k in CI_RELAY_FAILED, `CI_RELAY_FAILED に ${k} が無い`);
+  for (const k of CI_WAIT_CHECK.required) assert.ok(k in CI_WAIT_RELAY_FAILED, `CI_WAIT_RELAY_FAILED に ${k} が無い`);
 });
 
 test('[ci-check] CI_TURN_MARGIN は 3（実測: 文書化 worst case 8 に対し 10 tool call で StructuredOutput 未達）', () => {
@@ -117,7 +141,7 @@ test('[ci-check] CI_STATUS の status enum は 5 値の closed enum', () => {
   );
 });
 
-test('[ci-check] CI_STATUS は status と check-ci の件数（passed / failed / pending / skipped）を required に持つ（issue #834）', () => {
+test('[ci-check] CI_STATUS は status と check-ci の件数（passed / failed / pending / skipped）を required に持つ', () => {
   assert.deepEqual(CI_STATUS.required, ['status', 'passed', 'failed', 'pending', 'skipped']);
   for (const k of ['passed', 'failed', 'pending', 'skipped']) {
     assert.equal(CI_STATUS.properties[k].type, 'integer', `${k} は整数`);
@@ -128,58 +152,31 @@ test('[ci-check] CI_STATUS は status と check-ci の件数（passed / failed /
   }
 });
 
-test('[ci-check] ci-check / ci-wait-check の prompt は件数を一字一句転記させ、Output format に件数キーを含む', () => {
-  for (const p of [ciCheckPrompt({ pr: 1, repo: 'o/n' }), ciWaitCheckPrompt({ pr: 1, repo: 'o/n', seconds: 45 })]) {
-    assert.ok(p.includes('"passed": number, "failed": number, "pending": number, "skipped": number'), p);
-    assert.ok(p.includes('`passed` / `failed` / `pending` / `skipped` の件数は stdout の値を一字一句そのまま写せ'), p);
-  }
-});
-
 // ============================================================
-// 件数からの status 導出（issue #834）
+// ciEffectiveStatus（null だけを error にする。返り値は hook が check-ci の実 stdout に縛る）
 // ============================================================
 
 const counts = (passed, failed, pending, skipped) => ({ passed, failed, pending, skipped });
 
-test('[ci-check] ciStatusFromCounts: failed>0 → failed、pending>0 → pending、件数 0 → no_checks、それ以外 → passed', () => {
-  assert.equal(ciStatusFromCounts(counts(3, 1, 2, 0)), 'failed');
-  assert.equal(ciStatusFromCounts(counts(3, 0, 2, 0)), 'pending');
-  assert.equal(ciStatusFromCounts(counts(0, 0, 0, 0)), 'no_checks');
-  assert.equal(ciStatusFromCounts(counts(3, 0, 0, 1)), 'passed');
-});
-
-test('[ci-check] ciStatusFromCounts: 件数の欠落・非整数・負数は導出不能（null）', () => {
-  assert.equal(ciStatusFromCounts({ passed: 1, failed: 0, pending: 0 }), null);
-  assert.equal(ciStatusFromCounts(counts(1, 0, '0', 0)), null);
-  assert.equal(ciStatusFromCounts(counts(1.5, 0, 0, 0)), null);
-  assert.equal(ciStatusFromCounts(counts(1, -1, 0, 0)), null);
-  assert.equal(ciStatusFromCounts(null), null);
-});
-
-test('[ci-check] ciEffectiveStatus: 件数 pending:2 と status:"passed" の食い違いは passed を採らず error（fail-closed）', () => {
-  const r = ciEffectiveStatus({ status: 'passed', ...counts(5, 0, 2, 0), failed_checks: [] });
-  assert.equal(r.status, 'error');
-  assert.deepEqual(r.count_mismatch, { reported: 'passed', derived: 'pending' });
-});
-
-test('[ci-check] ciEffectiveStatus: 件数と一致する status はそのまま採る（応答の他キーも保持）', () => {
-  for (const [status, c] of [['passed', counts(2, 0, 0, 1)], ['failed', counts(1, 1, 0, 0)], ['pending', counts(1, 0, 1, 0)], ['no_checks', counts(0, 0, 0, 0)]]) {
-    const ci = { status, ...c, failed_checks: [], head_sha: 'a'.repeat(40), epoch: 1 };
-    assert.equal(ciEffectiveStatus(ci), ci, `status=${status} は採るべき`);
-  }
-});
-
-test('[ci-check] ciEffectiveStatus: 件数欠落・件数と食い違う status（failed 件数ありの passed 等）はすべて error', () => {
-  assert.equal(ciEffectiveStatus({ status: 'passed', failed_checks: [] }).status, 'error');
-  assert.equal(ciEffectiveStatus({ status: 'passed', ...counts(1, 1, 0, 0) }).status, 'error');
-  assert.equal(ciEffectiveStatus({ status: 'no_checks', ...counts(1, 0, 0, 0) }).status, 'error');
-  assert.equal(ciEffectiveStatus({ status: 'pending', ...counts(1, 0, 0, 0) }).status, 'error');
-});
-
-test('[ci-check] ciEffectiveStatus: proxy の error は件数と照合せず error のまま、null は error を合成', () => {
-  const e = { status: 'error', ...counts(0, 0, 0, 0), message: 'x' };
-  assert.equal(ciEffectiveStatus(e), e);
+test('[ci-check] ciEffectiveStatus: null は status:error を合成する', () => {
   assert.deepEqual(ciEffectiveStatus(null), { status: 'error', failed_checks: [] });
+  assert.deepEqual(ciEffectiveStatus(undefined), { status: 'error', failed_checks: [] });
+});
+
+test('[ci-check] ciEffectiveStatus: null 以外は件数と status が食い違っても count_mismatch を付けずにそのまま返す', () => {
+  for (const ci of [
+    { status: 'passed', ...counts(2, 0, 0, 1), failed_checks: [], head_sha: 'a'.repeat(40), epoch: 1 },
+    { status: 'passed', ...counts(5, 0, 2, 0), failed_checks: [] },
+    { status: 'no_checks', ...counts(1, 0, 0, 0) },
+    { status: 'pending', ...counts(1, 0, 0, 0) },
+    { status: 'error', ...counts(0, 0, 0, 0), message: 'x' },
+    CI_RELAY_FAILED,
+    CI_WAIT_RELAY_FAILED,
+  ]) {
+    const r = ciEffectiveStatus(ci);
+    assert.equal(r, ci, `応答をそのまま返すべき: ${JSON.stringify(ci)}`);
+    assert.ok(!('count_mismatch' in r), `count_mismatch を付けてはならない: ${JSON.stringify(r)}`);
+  }
 });
 
 test('[ci-check] CI_STATUS の failed_checks 要素は {name, bucket, state}', () => {
@@ -216,42 +213,29 @@ test('[ci-check] ciCheckPrompt は決定論的（同入力 -> 同出力）', () 
   assert.equal(a, b);
 });
 
-test('[ci-check] repo 指定ありなら check-ci に --repo フラグを付ける', () => {
-  const p = ciCheckPrompt({ pr: 123, repo: 'owner/name' });
-  assert.ok(p.includes('`check-ci --pr 123 --repo owner/name`'), p.slice(0, 400));
-});
-
-test('[ci-check] repo が null なら --repo フラグを含まない', () => {
+test('[ci-check] repo 指定ありなら check-ci に --repo フラグを付け、null なら付けない', () => {
+  assert.equal(lastLine(ciCheckPrompt({ pr: 123, repo: 'owner/name' })), 'check-ci --pr 123 --repo owner/name');
   const p = ciCheckPrompt({ pr: 123, repo: null });
-  assert.ok(p.includes('`check-ci --pr 123`'), p.slice(0, 400));
+  assert.equal(lastLine(p), 'check-ci --pr 123');
   assert.ok(!p.includes('--repo'), '--repo は出力されてはならない');
 });
 
 // 3 proxy の prompt は rollup の取得・転写を agent に持たせない: check-ci が gh pr view を 1 回実行して head sha と rollup を
 // 同じ応答から取る。agent が gh の stdout を argv に転写すると、引用符の崩れで CI が全 pass でも ci_error になる。
-test('[ci-check] ci-check / ci-wait-check / ci-verify の prompt は check-ci --pr の bare 単文を持ち、rollup の gh コマンド・--checks-data・--fetch-error-data・headRefOid の個別取得を持たない', () => {
-  const prompts = [
-    ciCheckPrompt({ pr: 7, repo: 'o/n' }),
-    ciCheckPrompt({ pr: 7, repo: 'o/n', exclude: ['e2e'] }),
-    ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: 45 }),
-    ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: 45, exclude: ['e2e'] }),
-    ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: 0 }),
-    ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: CI_VERIFY_POLL_SECONDS }),
-  ];
-  for (const p of prompts) {
-    for (const banned of ['statusCheckRollup', '--checks-data', '--fetch-error-data', 'headRefOid', '--jq']) {
-      assert.ok(!p.includes(banned), `prompt に ${banned} が残っている: ${p}`);
+test('[ci-check] ci-check / ci-wait-check / ci-verify の prompt は rollup の gh コマンド・--checks-data・--fetch-error-data・headRefOid の個別取得・ci-wait を持たない', () => {
+  for (const [name, p] of RELAY_PROMPTS) {
+    for (const banned of ['statusCheckRollup', '--checks-data', '--fetch-error-data', 'headRefOid', '--jq', 'ci-wait ']) {
+      assert.ok(!p.includes(banned), `${name} に ${banned} が残っている: ${p}`);
     }
-    assert.ok(!/`gh /.test(p), `prompt に gh の単文が残っている: ${p}`);
-    assert.ok(p.includes('`check-ci --pr 7 --repo o/n'), `prompt に check-ci --pr の bare 単文が無い: ${p}`);
+    assert.ok(lastLine(p).startsWith('check-ci --pr 7'), `${name} の最終行が check-ci --pr でない: ${lastLine(p)}`);
   }
-  assert.ok(prompts[1].includes(`\`${checkCiCommand({ pr: 7, repo: 'o/n', exclude: ['e2e'] })}\``), prompts[1]);
-  assert.ok(prompts[3].includes("`check-ci --pr 7 --repo o/n --exclude 'e2e'`"), prompts[3]);
-  assert.ok(prompts[5].includes("`check-ci --pr 7 --repo o/n --only 'e2e'`"), prompts[5]);
+  assert.equal(lastLine(RELAY_PROMPTS[1][1]), checkCiCommand({ pr: 7, repo: 'o/n', exclude: ['e2e', "it's"] }));
+  assert.equal(lastLine(RELAY_PROMPTS[4][1]), "check-ci --pr 7 --repo o/n --exclude 'e2e' --wait 45");
 });
 
 test('[ci-check] pr が文字列でも同じ prompt になる（dev-flow は number, pr-iterate は string 由来）', () => {
   assert.equal(ciCheckPrompt({ pr: 123, repo: null }), ciCheckPrompt({ pr: '123', repo: null }));
+  assert.equal(ciWaitCheckPrompt({ pr: 123, repo: 'o/n', seconds: 45 }), ciWaitCheckPrompt({ pr: '123', repo: 'o/n', seconds: 45 }));
 });
 
 test('[ci-check] ciCheckPrompt にループ・sleep 指示が無い（1 spawn = 1 判定）', () => {
@@ -260,37 +244,23 @@ test('[ci-check] ciCheckPrompt にループ・sleep 指示が無い（1 spawn = 
   assert.ok(!p.includes('--max-attempts'), '--max-attempts を含んではならない');
   assert.ok(!p.includes('--poll-seconds'), '--poll-seconds を含んではならない');
   assert.ok(!p.includes('--attempt '), '--attempt を含んではならない');
-  // script 内ポーリング（--wait-seconds）は撤去済み。復活は exec-proxy 内 network I/O の再導入を意味する
-  assert.ok(!p.includes('--wait-seconds'), '--wait-seconds を含んではならない');
+  assert.ok(!p.includes('--wait'), '待機しない prompt は --wait を含んではならない');
   assert.ok(!/\bsleep\b/i.test(p), 'sleep という語を含んではならない');
   assert.ok(!p.includes('繰り返'), '繰り返し指示を含んではならない');
   assert.ok(!p.includes('next_action'), 'next_action への言及を含んではならない');
-  assert.ok(p.includes('"poll_attempts": number'), 'Output format の poll_attempts キーは残す');
 });
 
-test('ciCheckPrompt: check-ci を plugin bin/ の bare 名（先頭トークン）で呼び、skills 絶対パスと bash 前置を含まない（issue #569）', () => {
-  const p = ciCheckPrompt({ pr: 123, repo: 'owner/name' });
-  assert.ok(p.includes('`check-ci --pr 123 --repo owner/name`'), 'bare 名 check-ci --pr を含む');
-  assert.ok(!p.includes('check-ci.sh'), '拡張子付き名を含まない');
-  assert.ok(!p.includes(['~/.claude', 'skills/'].join('/')), 'skills 絶対パスを含まない');
-  assert.ok(!p.includes('bash check-ci'), 'bash 前置を付けない');
+test('ciCheckPrompt: check-ci を plugin bin/ の bare 名（先頭トークン）で呼び、skills 絶対パスと bash 前置を含まない', () => {
+  for (const [name, p] of RELAY_PROMPTS) {
+    assert.ok(!p.includes('check-ci.sh'), `${name}: 拡張子付き名を含まない`);
+    assert.ok(!p.includes(['~/.claude', 'skills/'].join('/')), `${name}: skills 絶対パスを含まない`);
+    assert.ok(!p.includes('bash check-ci'), `${name}: bash 前置を付けない`);
+    assert.ok(!/`sleep \d+`/.test(p), `${name}: bare sleep 単文を含まない`);
+  }
 });
 
-test('[ci-check] ciWaitCheckPrompt は ci-wait → check-ci の順に 1 spawn で実行させ、bare sleep を含まない', () => {
-  const w = ciWaitCheckPrompt({ pr: 123, repo: 'owner/name', seconds: 45 });
-  const iWait = w.indexOf('`ci-wait 45`');
-  const iCheck = w.indexOf('`check-ci --pr 123 --repo owner/name`');
-  assert.ok(iWait >= 0, 'ci-wait 45 を bare 単文として含む');
-  assert.ok(iCheck > iWait, 'check-ci は ci-wait の後');
-  assert.ok(!/`sleep \d+`/.test(w), 'bare sleep 単文を含まない');
-  assert.ok(!w.includes('check-ci.sh'), '拡張子付き名を含まない');
-  assert.ok(w.includes('"slept": boolean'), 'Output format に slept を含む');
-  assert.equal(w, ciWaitCheckPrompt({ pr: '123', repo: 'owner/name', seconds: 45 }), '決定論的で pr の型に依存しない');
-});
-
-test('[ci-check] ciWaitCheckPrompt は slept:true でなければ取得へ進ませず、ループ・再取得を指示しない', () => {
+test('[ci-check] ciWaitCheckPrompt はループ・再取得を指示しない', () => {
   const w = ciWaitCheckPrompt({ pr: 1, repo: null, seconds: 45 });
-  assert.ok(w.includes('`{ "slept": false, "status": "pending", "passed": 0, "failed": 0, "pending": 0, "skipped": 0 }`'), '実待機不成立時の応答形を含む（件数は required なので 0 を入れる）');
   assert.ok(!w.includes('--repo'), 'repo null なら --repo を出さない');
   assert.ok(!/\battempt\b/i.test(w), 'attempt という語を含んではならない');
   assert.ok(!w.includes('繰り返'), '繰り返し指示を含んではならない');
@@ -331,7 +301,7 @@ test('[ci-check] CI 取得を書く docs とスクリプトの先頭コメント
   const targets = {
     'exec-proxy.md の ci-checks 行': rowOf('dev-flow/references/exec-proxy.md', '| ci-checks（ENV'),
     'dev-runner-haiku-ro.md の ci-checks 行': rowOf('agents/dev-runner-haiku-ro.md', '| `ci-checks`'),
-    'dev-runner-haiku-ro.md の ci-wait-check 行': rowOf('agents/dev-runner-haiku-ro.md', '| `ci-wait-check#'),
+    'stdout-relay.md の本文': read('agents/stdout-relay.md').replace(/^---\n[\s\S]*?\n---\n/, ''),
     'check-ci.sh の先頭コメント': headComment('pr-iterate/scripts/check-ci.sh'),
     'merge-tier-facts.sh の先頭コメント': headComment('_shared/scripts/merge-tier-facts.sh'),
   };
@@ -346,12 +316,6 @@ test('[ci-check] CI 取得を書く docs とスクリプトの先頭コメント
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
-
-test('[ci-check] ciCheckPrompt は check-ci の stdout の head_sha をそのまま返させる（head sha を別に取らせない）', () => {
-  const p = ciCheckPrompt({ pr: 123, repo: 'owner/name' });
-  assert.ok(p.includes('"head_sha": string'), 'Output format に head_sha を含む');
-  assert.ok(p.includes('`head_sha` は一字一句そのまま写せ（stdout に無ければ省略）'), 'check-ci の head_sha を転記させる指示を含む');
-});
 
 test('[ci-check] ciHeadRejectReason: 40 桁 sha が一致するときだけ採用（null）。大文字小文字・前後空白は同一視する', () => {
   assert.equal(ciHeadRejectReason({ ci: { status: 'passed', head_sha: SHA_A }, expectedSha: SHA_A }), null);
@@ -384,18 +348,17 @@ test('[ci-check] isFullCommitSha は 40 桁 hex だけを真にする', () => {
 test('[ci-check] exclude は check-ci に --exclude で渡し、空なら prompt を変えない', () => {
   assert.equal(ciCheckPrompt({ pr: 7, repo: 'o/n', exclude: [] }), ciCheckPrompt({ pr: 7, repo: 'o/n' }));
   assert.equal(ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: 45, exclude: [] }), ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: 45 }));
-  assert.ok(ciCheckPrompt({ pr: 7, repo: 'o/n', exclude: ['e2e', "it's"] }).includes(`--exclude 'e2e' --exclude 'it'\\''s'\``));
+  assert.ok(lastLine(ciCheckPrompt({ pr: 7, repo: 'o/n', exclude: ['e2e', "it's"] })).endsWith(`--exclude 'e2e' --exclude 'it'\\''s'`));
 });
 
-test('[ci-check] ci-verify prompt の Bash 手順は（待つときだけ ci-wait）/ check-ci --only で、turn 会計は ci-wait-check と同じ', () => {
-  const bashOf = (p) => (p.slice(p.indexOf('## Steps'), p.indexOf('## Output format')).match(/^\d+\. `[^`]+`/gm) ?? []).map((s) => s.replace(/^\d+\. `/, '').split(' ')[0]);
+test('[ci-check] ci-verify prompt の最終行は check-ci --only（待つときだけ --wait）で、待機は Bash tool の既定 timeout に収まる', () => {
   const waited = ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: CI_VERIFY_POLL_SECONDS });
-  assert.deepEqual(bashOf(waited), ['ci-wait', 'check-ci']);
-  assert.deepEqual(bashOf(ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: 0 })), ['check-ci']);
-  assert.ok(waited.includes(`\`${checkCiCommand({ pr: 7, repo: 'o/n', only: ['e2e'] })}\``), waited);
-  assert.ok(ciWaitCheckTurns(CI_TURN_MARGIN) <= readMaxTurns());
-  // ci-wait は Bash tool の既定 timeout（120 秒）に収まる長さ
-  assert.ok(CI_VERIFY_POLL_SECONDS < 120);
+  assert.equal(lastLine(waited), checkCiCommand({ pr: 7, repo: 'o/n', only: ['e2e'], wait: CI_VERIFY_POLL_SECONDS }));
+  assert.equal(lastLine(ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: 0 })), checkCiCommand({ pr: 7, repo: 'o/n', only: ['e2e'] }));
+  // check-ci --wait は待機 + 取得が Bash tool の既定 timeout（120 秒）に収まる秒数（WAIT_SECONDS_MAX 以下）しか受けない
+  const waitMax = readCheckCiWaitMax();
+  assert.ok(CI_VERIFY_POLL_SECONDS <= waitMax, `CI_VERIFY_POLL_SECONDS=${CI_VERIFY_POLL_SECONDS} が check-ci の WAIT_SECONDS_MAX=${waitMax} を超える`);
+  assert.ok(CI_POLL_SECONDS <= waitMax, `CI_POLL_SECONDS=${CI_POLL_SECONDS} が check-ci の WAIT_SECONDS_MAX=${waitMax} を超える`);
   assert.ok(CI_VERIFY_CHECK.required.every((k) => CI_STATUS.required.includes(k)));
 });
 

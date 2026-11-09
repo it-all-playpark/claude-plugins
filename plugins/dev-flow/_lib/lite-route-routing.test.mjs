@@ -311,7 +311,7 @@ test('[lite-route][E] ci-check-lite prompt が check-ci --pr を使い --checks-
 
   const ciLiteCall = calls.find((c) => c.label === 'ci-check-lite');
   assert.ok(ciLiteCall, "label 'ci-check-lite' の call が見つからない");
-  assert.ok(ciLiteCall.prompt.includes('`check-ci --pr '), 'ci-check-lite prompt に check-ci --pr が含まれるべき');
+  assert.ok(ciLiteCall.prompt.split('\n').at(-1).startsWith('check-ci --pr '), 'ci-check-lite prompt の最終行は check-ci --pr の単文であるべき');
   assert.ok(!ciLiteCall.prompt.includes('--checks-data'), 'ci-check-lite prompt に旧 --checks-data が残っているべきでない');
   assert.ok(!ciLiteCall.prompt.includes('--checks-json'), 'ci-check-lite prompt に旧 --checks-json が残っているべきでない');
   assert.ok(!ciLiteCall.prompt.includes('$TMPDIR/ci-checks'), 'ci-check-lite prompt に $TMPDIR/ci-checks への言及が残っているべきでない');

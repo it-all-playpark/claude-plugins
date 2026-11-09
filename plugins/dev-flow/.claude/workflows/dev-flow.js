@@ -1274,61 +1274,43 @@ const CI_STATUS = {
   },
 };
 
-const CI_COUNTS_NOTE = '`passed` / `failed` / `pending` / `skipped` の件数は stdout の値を一字一句そのまま写せ'
-  + '（stdout に件数キーが無い場合 — status が error のとき — だけ各 0 を入れよ）。';
-
+const CI_RELAY_FAILED = { status: 'error', passed: 0, failed: 0, pending: 0, skipped: 0 };
 function checkNameArgs(flag, names) {
   return (Array.isArray(names) ? names : []).map((name) => ` ${flag} '${String(name).split("'").join("'\\''")}'`).join('');
 }
 
-function checkCiCommand({ pr, repo, exclude = [], only = [] }) {
-  return `check-ci --pr ${pr}${repo ? ' --repo ' + repo : ''}${checkNameArgs('--only', only)}${checkNameArgs('--exclude', exclude)}`;
+function checkCiCommand({ pr, repo, exclude = [], only = [], wait = 0 }) {
+  return `check-ci --pr ${pr}${repo ? ' --repo ' + repo : ''}${checkNameArgs('--only', only)}${checkNameArgs('--exclude', exclude)}`
+    + (Number(wait) > 0 ? ' --wait ' + wait : '');
 }
 
-function checkCiStep({ n, ...opts }) {
-  return `${n}. \`${checkCiCommand(opts)}\` を check-ci を先頭トークンとする bare 単文で実行し`
-    + `（リダイレクト・パイプ・複合コマンドは使わない）、stdout の JSON を読め。\n`;
+function ciRelayPrompt({ objective, command, failed }) {
+  return `## Objective\n${objective}\n\n`
+    + `## Tools\n- 使用可: Bash のみ\n\n`
+    + `## Boundary\n`
+    + `- 読み取り専用。最終行のコマンド以外を実行しない（再実行・再取得をしない）\n`
+    + `- ファイルを変更しない\n\n`
+    + `## Output format\n`
+    + `最終行のコマンドの **stdout の JSON object をそのまま** 返せ（キーの追加・削除・値の書き換え・要約をしない）。`
+    + `exit 非0・stdout 空・JSON 不正・拒否されたときは ${JSON.stringify(failed)} を一字一句そのまま返せ（成功の値を作らない）。`
+    + `prose 禁止。JSON のみ返せ。\n\n`
+    + `## Token cap\nJSON のみ。1 行以内。\n\n`
+    + `## Command\n`
+    + `次のコマンドを 1 回だけ、一字一句そのままの単文で実行せよ（cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトを付けない）:\n`
+    + command;
 }
-
-const CI_PROXY_TOOLS_AND_BOUNDARY = `## Tools\n`
-  + `- 使用可: Bash のみ\n`
-  + `- 禁止: Write, Edit, git commit, git push\n\n`
-  + `## Boundary\n`
-  + `- 読み取り専用。git mutation（commit/push/reset 等）禁止\n`
-  + `- 実行するスクリプト以外のファイルを変更しない\n\n`;
-
-const CI_PROXY_JSON_ONLY_TAIL = `prose 禁止。JSON のみ返せ。\n\n`
-  + `## Token cap\n`
-  + `JSON のみ。1 行以内。`;
 
 function ciCheckPrompt({ pr, repo, exclude = [] }) {
-  return `## Objective\nPR #${pr} の head commit sha と CI ステータスを取得し、JSON を返せ。\n\n`
-    + CI_PROXY_TOOLS_AND_BOUNDARY
-    + `## Steps\n`
-    + checkCiStep({ n: 1, pr, repo, exclude })
-    + `2. 手順 1 の stdout JSON（{status, passed, failed, pending, skipped, failed_checks, head_sha, waited_seconds, poll_attempts, ...}）をそのまま返せ。`
-    + `キーを要約・加工するな。\`head_sha\` は一字一句そのまま写せ（stdout に無ければ省略）。${CI_COUNTS_NOTE}1 回の取得で判定を確定させ、待機や再取得は行うな。\n\n`
-    + `## Output format\n`
-    + `{ "status": "passed"|"failed"|"pending"|"no_checks"|"error", "passed": number, "failed": number, "pending": number, "skipped": number, `
-    + `"failed_checks": [{name, bucket, state}, ...], "waited_seconds": number, "poll_attempts": number, "head_sha": string }\n`
-    + CI_PROXY_JSON_ONLY_TAIL;
-}
-
-function ciStatusFromCounts(ci) {
-  const keys = ['passed', 'failed', 'pending', 'skipped'];
-  if (ci == null || !keys.every((k) => Number.isInteger(ci[k]) && ci[k] >= 0)) return null;
-  if (ci.failed > 0) return 'failed';
-  if (ci.pending > 0) return 'pending';
-  if (ci.passed + ci.failed + ci.pending + ci.skipped === 0) return 'no_checks';
-  return 'passed';
+  return ciRelayPrompt({
+    objective: `PR #${pr} の head commit sha と CI ステータスを 1 回取得し、JSON を返せ。`,
+    command: checkCiCommand({ pr, repo, exclude }),
+    failed: CI_RELAY_FAILED,
+  });
 }
 
 function ciEffectiveStatus(ci) {
   if (ci == null) return { status: 'error', failed_checks: [] };
-  if (ci.status === 'error') return ci;
-  const derived = ciStatusFromCounts(ci);
-  if (derived !== null && derived === ci.status) return ci;
-  return { ...ci, status: 'error', count_mismatch: { reported: ci.status ?? null, derived } };
+  return ci;
 }
 // ==== END inline: _lib/ci-check.mjs ====
 // ==== BEGIN inline: _lib/review-ac.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
@@ -3543,12 +3525,11 @@ if (LITE) {
   } else {
     const ciLiteRaw = await failOpenAgent(
       ciCheckPrompt({ pr: pr.pr_number, repo: REPO }),
-      { agentType: 'dev-runner-haiku-ro', schema: CI_STATUS, label: 'ci-check-lite', phase: 'PR' },
+      { agentType: 'stdout-relay', schema: CI_STATUS, label: 'ci-check-lite', phase: 'PR' },
     )
-    // proxy の status は件数から導いた値と一致するときだけ採る（食い違いは error → full pr-iterate へ委譲）
-    const ciLite = ciLiteRaw == null ? null : ciEffectiveStatus(ciLiteRaw)
-    if (ciLite?.count_mismatch) log(`⚠️ ci-check-lite: proxy の status=${ciLite.count_mismatch.reported} が件数から導いた status=${ciLite.count_mismatch.derived ?? '導出不能'} と食い違う — status=error として扱う`)
-    if (ciLite != null && (ciLite.status === 'passed' || ciLite.status === 'no_checks')) {
+    // 応答は hook が check-ci の実 stdout か失敗時の JSON（status:'error'）に縛る。null も error → full pr-iterate へ委譲
+    const ciLite = ciEffectiveStatus(ciLiteRaw)
+    if (ciLite.status === 'passed' || ciLite.status === 'no_checks') {
       state.liteReview = { decision: reviewLite?.decision ?? null, ci: ciLite.status, summary: reviewLite?.summary ?? null }
       iterate = { status: 'lgtm', fixes_applied: 0 }
       route = 'lite'

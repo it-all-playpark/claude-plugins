@@ -367,7 +367,7 @@ flowchart TD
     STK3 -->|yes| STUCK
     STK3 -->|no| FIX
     SEC -->|"worktree の外を指す /<br/>diff・結果・head が揃わない"| SECU["status: security_unresolved"]
-    CS -->|error| ERR["status: ci_error<br/>CI 状態を確定できない<br/>（proxy が結果を返さない / gh 取得失敗 /<br/>status と件数の食い違い）"]
+    CS -->|error| ERR["status: ci_error<br/>CI 状態を確定できない<br/>（proxy が結果を返さない / gh 取得失敗 /<br/>中継の失敗時の JSON）"]
     CS -->|pending| PEND["status: ci_pending<br/>ceiling 到達・never auto-approve"]
     CS -->|failed| CIF["CI failure を findings 化"]
 
@@ -375,7 +375,7 @@ flowchart TD
     STK1 -->|yes| STUCK["status: stuck"]
     STK1 -->|no| FIX
 
-    BL -->|no| CI["ci-check 1 spawn = 1 判定<br/>gh pr checks → check-ci.sh<br/>pending なら script 側 ci-wait ループ（上限 CI_WAIT_CEILING_SECONDS）"]
+    BL -->|no| CI["ci-check 1 spawn = 1 判定<br/>stdout-relay が check-ci.sh を実行<br/>pending なら script 側 check-ci --wait ループ（上限 CI_WAIT_CEILING_SECONDS）"]
     BL -->|yes| STK2{"同一 topic が反復 ?"}
     STK2 -->|yes| STUCK
     STK2 -->|no| FIX["fix agent が修正適用"]
@@ -397,7 +397,7 @@ flowchart TD
 | `stuck` | 同一 topic が反復（review / CI failure） | merge tier `HOLD` |
 | `fix_failed` | fix 未適用、または commit / push の保証に失敗 | merge tier `HOLD` |
 | `max_reached` | `MAX` iteration で収束せず | merge tier `HOLD` |
-| `ci_error` | CI 状態を確定できない（ci-check の proxy が結果を返さない / check-ci の gh 取得失敗 / proxy の status と件数の食い違い）。`gh pr checks` で実状態を確認する | merge tier `HOLD` |
+| `ci_error` | CI 状態を確定できない（ci-check の proxy が結果を返さない / check-ci の gh 取得失敗 / 中継が hook に拒否され失敗時の JSON を返した）。`gh pr checks` で実状態を確認する | merge tier `HOLD` |
 | `ci_pending` | checks 未完了。自動承認しない | merge tier `HOLD` |
 | `review_contract_error` | pr-reviewer が schema-retry 後も結果を返さない（StructuredOutput 契約違反） | merge tier `HOLD` |
 | `security_unresolved` | 敵対的 security review を今の head で clear にできない（worktree の外を指す critical / major・diff を取れない・review が結果を返さない・review した head が今の head と違う） | merge tier `HOLD`（`security_review_unresolved`） |
@@ -488,7 +488,7 @@ tier は動かない。
 | `BLOCK_MAX` | 2 | BLOCKED 由来の再計画 |
 | `AGENT_AC_REIMPL_MAX` | 2 | agent AC の未達を理由にした evaluate 差し戻し（standard も延長） |
 | `REVIEW_STUCK` | 2 | pr-iterate の同一 topic 反復での stuck 判定 |
-| `CI_WAIT_CEILING_SECONDS` | 300 | pr-iterate の CI pending 待ち（script 側 ci-wait ループ）の nominal 総待機上限（秒）の既定値。prerun が base branch の CI 所要時間から決めた `args.ci_wait_ceiling_seconds`（300〜900）があればそちらを使う |
+| `CI_WAIT_CEILING_SECONDS` | 300 | pr-iterate の CI pending 待ち（script 側 check-ci --wait ループ）の nominal 総待機上限（秒）の既定値。prerun が base branch の CI 所要時間から決めた `args.ci_wait_ceiling_seconds`（300〜900）があればそちらを使う |
 
 <!-- atlas:loop-constants:end -->
 
@@ -510,6 +510,7 @@ pr-iterate の `MAX`（review ⇄ fix 反復、既定 10）は `args.max_iterati
 | `dev-runner` | Setup 末尾の analyze ゲート後の `analyze-clarify#N`（missing_context 生成。ゲートが引いたときだけ）と `ac-observational#N`（全 AC の観測型の分類。ゲート通過後に毎 run 1 回） | sonnet / high |
 | `dev-runner-haiku` | 書き込み・Skill 呼び出しを伴う exec-proxy | haiku / low |
 | `dev-runner-haiku-ro` | read-only exec-proxy | haiku / low |
+| `stdout-relay` | CI 判定の中継（`ci-check#i` / `ci-wait-check#i.k` / `ci-verify#i.k` / `ci-check-lite`）。hook が Bash を prompt の最終行の check-ci 1 単文に、返り値をその実 stdout か失敗時の JSON に縛る | haiku / low |
 | `dev-runner-haiku-wo` | isolation probe 専任（Write のみ） | haiku / low |
 
 model は subagent の frontmatter で決める。品質ゲート agent の call site は `opts.model` を渡さない

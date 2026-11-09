@@ -72,17 +72,17 @@ report と比べて読む。
 ### CI polling の turn 会計
 
 - **何をするか**: CI 待ちは 1 spawn = 1 判定・ループは script 側（`.claude/workflows/pr-iterate.js` と dev-flow の lite route）。
-  初回 poll は `ci-check`、2 回目以降は `ci-wait-check`（`ci-wait` で待ってから 1 回判定）。polling ループを subagent 内に
+  初回 poll は `ci-check`、2 回目以降は `ci-wait-check`（`check-ci --wait` が待ってから 1 回判定する 1 単文）。polling ループを subagent 内に
   置かない。総待機上限は `args.ci_wait_ceiling_seconds`（未指定は `_lib/ci-check.mjs` の `CI_WAIT_CEILING_SECONDS`）。
-  1 spawn の必要 turn（`CI_TURN_MARGIN` を含む）は当該 agent の `maxTurns` を超えない（`_lib/ci-check.test.mjs` が
+  1 spawn の必要 turn（`CI_TURN_MARGIN` を含む）は中継の agent（`agents/stdout-relay.md`）の `maxTurns` を超えない（`_lib/ci-check.test.mjs` が
   agent md を実読して検査）。応答が `slept:true` でなければ積算せず、同じ応答の status も採らずに `ci_pending` で終端する
 - **なぜ**: subagent の turn 会計は CI の所要時間に連動し、ループを subagent に置くと StructuredOutput 未達で `ci_error` に
-  化ける。待機を `ci-wait` にする理由は下の「長い bare `sleep` の拒否」。`CI_TURN_MARGIN` は model が 1 判定に使う tool call 数の
+  化ける。待機を check-ci の中の `ci-wait.sh` にする理由は下の「長い bare `sleep` の拒否」。`CI_TURN_MARGIN` は model が 1 判定に使う tool call 数の
   ばらつきを吸収する
 - **sunset トリガ**: `dev-flow-canary` の `direct_shell` が pass（workflow が自分で待って CI を読める）。`CI_TURN_MARGIN` は
   major モデルリリースごとの dry-run
 - **次のモデル世代での測り直し方**: `direct_shell` が pass なら polling を workflow 内へ移す issue を立てる。dev-flow-health の
-  `model_changes` で `dev-runner-haiku-ro` の model ID の変化が起票されたら実 PR で `ci-check` / `ci-wait-check` を回し、
+  `model_changes` で `stdout-relay` の model ID の変化が起票されたら実 PR で `ci-check` / `ci-wait-check` を回し、
   transcript の API リクエスト数と文書化した手順数の差が `CI_TURN_MARGIN` に収まるかを見る
 
 ### inline generator の橋
@@ -115,13 +115,13 @@ report と比べて読む。
 
 ### 長い bare `sleep` の拒否
 
-- **何をするか**: CI の待機は bare `sleep <秒>` を直接呼ばず、`ci-wait <秒>`（`pr-iterate/scripts/ci-wait.sh`。短い sleep を
-  つないで同じ総待機時間を作る 1 本の script）を bare 単文で呼ぶ
+- **何をするか**: CI の待機は bare `sleep <秒>` を直接呼ばず、`check-ci --wait <秒>` の bare 単文で行う（check-ci が
+  `pr-iterate/scripts/ci-wait.sh` — 短い sleep をつないで同じ総待機時間を作る script — を実行してから 1 回取得する）
 - **なぜ**: harness の Bash tool は、呼び出し全体が `sleep <N>` で N が数秒を超える形を拒否する。bare `sleep` では実際には
   待たずに拒否され、待機の会計が実時間からずれる
 - **sunset トリガ**: major モデルリリースごとの dry-run（同梱の Claude Code 更新を含む）
 - **次のモデル世代での測り直し方**: subagent から長い bare `sleep` を 1 回呼び、拒否されずに実時間だけ待つかを見る。待つなら
-  `ci-wait` を bare `sleep` に置き換える issue を立てる
+  check-ci の中の `ci-wait.sh` の連結を 1 回の `sleep` に置き換える issue を立てる（中継の Bash は check-ci 1 単文のまま）
 
 ### 読み取り系 git の optional lock
 

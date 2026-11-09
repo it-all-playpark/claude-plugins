@@ -60,7 +60,7 @@ test('[failopen-c] dispatch された ci-check prompt が canonical ciCheckPromp
   const ci = calls.find((c) => c.label === 'ci-check#1');
   assert.ok(ci, 'ci-check#1 が dispatch されていない');
   assert.equal(ci.prompt, ciCheckPrompt({ pr: 5, repo: 'acme/skills' }), 'ci-check の呼び出し側は canonical の ciCheckPrompt() をそのまま使うべき（独自 prompt を書かない）');
-  assert.ok(ci.prompt.includes('`check-ci --pr 5 --repo acme/skills`'), 'ci-check prompt に check-ci --pr が含まれるべき');
+  assert.ok(ci.prompt.endsWith('\ncheck-ci --pr 5 --repo acme/skills'), 'ci-check prompt の最終行は check-ci --pr の単文であるべき');
   assert.ok(!ci.prompt.includes('--checks-data'), 'ci-check prompt に旧 --checks-data が残っているべきでない');
   assert.ok(!ci.prompt.includes('--checks-json'), 'ci-check prompt に旧 --checks-json が残っているべきでない');
   assert.ok(!ci.prompt.includes('$TMPDIR/ci-checks'), 'ci-check prompt に $TMPDIR/ci-checks への言及が残っているべきでない');

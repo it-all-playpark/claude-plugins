@@ -6,8 +6,8 @@
 //   nested（dev-flow）・単体起動（wrapper の caller:'standalone'）で同じ扱い。
 // - ci_wait_seconds / ci_poll_attempts が script 側積算で現行と同じキー・意味（(N-1)×M / N）で return 値に載る。
 // - ceiling 到達時は ci_pending 終端（ci_error にならない）。CI failed は現行どおり fix loop へ。
-// - 1 回目の poll は ci-check 単体（待機なし）、2 回目以降は `ci-wait <秒>` → check-ci を
-//   1 spawn（dev-runner-haiku-ro）で行い、独立した ci-wait spawn は無い。
+// - 1 回目の poll は ci-check 単体（待機なし）、2 回目以降は `check-ci --wait <秒>` の 1 単文を
+//   1 spawn（stdout-relay）で行い、独立した ci-wait spawn は無い。
 // - ci-wait-check の slept !== true（slept:false / null / throw）は積算せず、同じ応答の status も採らずに
 //   ci_pending で終端する。
 // - review が request-changes の round・security review が critical/major を返した round は ci-wait-check を起動せず fix へ進む
@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash, securityReviewHeadOf } from './test-helpers/vm-sandbox.mjs';
-import { CI_WAIT_CHECK, checkCiCommand, ciWaitCheckPrompt } from './ci-check.mjs';
+import { CI_WAIT_CHECK, CI_WAIT_RELAY_FAILED, checkCiCommand, ciWaitCheckPrompt } from './ci-check.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const prIteratePath = join(here, '..', '.claude', 'workflows', 'pr-iterate.js');
@@ -51,12 +51,10 @@ test('[ci-wait-loop] pending → passed: ci-check#1 が pending、ci-wait-check#
 
   const wc = calls.find((c) => c.label === 'ci-wait-check#1.2');
   assert.ok(wc != null, "label==='ci-wait-check#1.2' の呼び出しが存在するべき");
-  assert.equal(wc.agentType, 'dev-flow:dev-runner-haiku-ro', `ci-wait-check#1.2 の agentType が想定と異なる: ${wc.agentType}`);
+  assert.equal(wc.agentType, 'dev-flow:stdout-relay', `ci-wait-check#1.2 の agentType が想定と異なる: ${wc.agentType}`);
   assert.equal(wc.prompt, ciWaitCheckPrompt({ pr: 5, repo: 'acme/skills', seconds: 45 }), 'ci-wait-check の呼び出し側は canonical の ciWaitCheckPrompt() をそのまま使うべき');
   assert.equal(JSON.stringify(wc.schema), JSON.stringify(CI_WAIT_CHECK), 'ci-wait-check の schema は canonical の CI_WAIT_CHECK であるべき');
-  const iWait = wc.prompt.indexOf('`ci-wait 45`');
-  const iCheck = wc.prompt.indexOf(`\`${checkCiCommand({ pr: 5, repo: 'acme/skills' })}\``);
-  assert.ok(iWait >= 0 && iCheck > iWait, `1 spawn 内で ci-wait → check-ci の順に実行させるべき。prompt: ${wc.prompt.slice(0, 900)}`);
+  assert.ok(wc.prompt.endsWith(`\n${checkCiCommand({ pr: 5, repo: 'acme/skills', wait: 45 })}`), `1 spawn 内で待機と取得を check-ci --wait の 1 単文で行わせるべき。prompt: ${wc.prompt.slice(-300)}`);
 
   assert.equal(calls.filter((c) => c.label.startsWith('ci-wait#')).length, 0, '独立した ci-wait spawn を出さないべき');
 });
@@ -131,6 +129,8 @@ for (const [name, response] of [
   ['null', null],
   ['slept:false', { slept: false, status: 'pending' }],
   ['slept:false なのに status=passed', { slept: false, status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [] }],
+  // 中継が check-ci の stdout を返せないとき（hook の拒否を含む）に返す失敗時の JSON
+  ['中継の失敗時の JSON（CI_WAIT_RELAY_FAILED）', CI_WAIT_RELAY_FAILED],
 ]) {
   test(`[ci-wait-loop] ci-wait-check が ${name} なら nominal 加算せず、その判定も採らずに即 ci_pending 終端する`, async () => {
     const { result, error, calls } = await run({

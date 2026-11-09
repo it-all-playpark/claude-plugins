@@ -3,6 +3,7 @@
 # Usage: check-ci.sh --pr <N> [--repo <owner/name>]
 #                    [--attempt N] [--max-attempts K] [--poll-seconds M]
 #                    [--only <check name>]... [--exclude <check name>]...
+#                    [--wait <seconds>]
 #
 # The script runs gh exactly once, as an argv array (no shell string, no eval):
 #
@@ -10,11 +11,22 @@
 #
 # gh is read-only here and authenticates from its own credential store. The
 # head sha and the rollup come from the same response, so the verdict always
-# belongs to the reported head_sha. The caller (an exec-proxy subagent) runs
+# belongs to the reported head_sha. The caller (the stdout-relay subagent) runs
 # this script as one bare statement and relays its stdout; it neither fetches
 # the rollup nor transcribes it into argv, so a transcription slip on the way in
-# cannot turn into a wrong verdict. The script does not wait, re-fetch, or write
-# anything to GitHub: the caller owns sleeping (ci-wait) and polling.
+# cannot turn into a wrong verdict. The script never re-fetches and never
+# writes anything to GitHub: the caller owns polling.
+#
+# --wait <seconds> (optional) first waits exactly like ci-wait (it runs
+# ci-wait.sh: a chain of short sleeps, so the relay's Bash call is one bare
+# `check-ci` statement instead of a rejected long bare sleep), then fetches
+# once and adds "slept": true to the output (the error output included). When
+# the wait does not complete, gh is not run and the output is
+#   {"slept":false,"status":"pending","passed":0,"failed":0,"pending":0,"skipped":0}
+# (exit 0), so the caller neither counts the wait nor takes a verdict from it.
+# The wait plus the fetch must fit in the Bash tool's default timeout (120s),
+# so --wait must be an integer 1..WAIT_SECONDS_MAX; anything else exits 1
+# before waiting. One wait and one fetch per run: there is no retry loop.
 #
 # --pr must be a positive integer and --repo (optional; without it gh uses the
 # cwd's repo) must be owner/name. Invalid arguments exit 1 before gh is run.
@@ -70,6 +82,8 @@
 #     "epoch": N | null, "next_action": "poll" | "done" }
 #   { "status": "error", "message": "...", "waited_seconds": N, "poll_attempts": N,
 #     "epoch": N | null, "next_action": "done" }
+# With --wait both carry "slept": true as well (and a wait that did not complete
+# prints only the fixed slept:false object above).
 #
 # "next_action" tells the caller whether to sleep --poll-seconds and re-fetch
 # ("poll", emitted only when status is "pending" and attempt < max-attempts) or
@@ -99,6 +113,8 @@ MAX_ATTEMPTS=1
 POLL_SECONDS=15
 ONLY_JSON='[]'
 EXCLUDE_JSON='[]'
+WAIT=""
+HAVE_WAIT=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --pr) PR="$2"; shift 2 ;;
@@ -108,6 +124,7 @@ while [[ $# -gt 0 ]]; do
         --attempt) ATTEMPT="$2"; shift 2 ;;
         --max-attempts) MAX_ATTEMPTS="$2"; shift 2 ;;
         --poll-seconds) POLL_SECONDS="$2"; shift 2 ;;
+        --wait) WAIT="$2"; HAVE_WAIT=1; shift 2 ;;
         *) die_json "Unknown option: $1" 1 ;;
     esac
 done
@@ -129,6 +146,12 @@ fi
 [[ "$POLL_SECONDS" =~ ^[0-9]+$ ]] || die_json "Invalid --poll-seconds: $POLL_SECONDS. Must be an integer >= ${POLL_MIN}" 1
 (( POLL_SECONDS >= POLL_MIN )) || die_json "Invalid --poll-seconds: $POLL_SECONDS. Must be an integer >= ${POLL_MIN}" 1
 (( (MAX_ATTEMPTS - 1) * POLL_SECONDS <= WAIT_MAX )) || die_json "Invalid wait budget: (--max-attempts - 1) * --poll-seconds must be <= ${WAIT_MAX}" 1
+# --wait の上限: 待機 + gh の取得が Bash tool の既定 timeout（120 秒）に収まる長さ
+WAIT_SECONDS_MAX=100
+if (( HAVE_WAIT == 1 )); then
+    [[ "$WAIT" =~ ^[1-9][0-9]{0,2}$ ]] && (( WAIT <= WAIT_SECONDS_MAX )) \
+        || die_json "Invalid --wait: $WAIT. Must be an integer 1-${WAIT_SECONDS_MAX} (wait + fetch must fit the 120s Bash timeout)" 1
+fi
 
 WAITED=$(( (ATTEMPT - 1) * POLL_SECONDS ))
 
@@ -249,9 +272,25 @@ compute_verdict() {
     status=$(printf '%s' "$result_json" | jq -r '.status')
 }
 
+# --wait: ci-wait.sh と同じ待機（短い sleep の連結）を 1 回。成立しなければ gh を呼ばずに slept:false を出して終える
+SLEPT_JSON='{}'
+if (( HAVE_WAIT == 1 )); then
+    wait_out=""
+    if ! wait_out="$(bash "$SCRIPT_DIR/ci-wait.sh" "$WAIT" 2>/dev/null)" \
+        || ! jq -e '.slept == true' >/dev/null 2>&1 <<<"$wait_out"; then
+        printf '{"slept":false,"status":"pending","passed":0,"failed":0,"pending":0,"skipped":0}\n'
+        exit 0
+    fi
+    SLEPT_JSON='{"slept":true}'
+fi
+
 if ! read_snapshot; then
-    printf '{"status":"error","message":%s,"waited_seconds":%s,"poll_attempts":%s,"epoch":%s,"next_action":"done"}\n' \
-        "$(printf '%s' "$FETCH_ERR" | jq -Rs '.')" "$WAITED" "$ATTEMPT" "$(epoch_field)"
+    printf '%s' "$SLEPT_JSON" | jq -c \
+        --arg m "$FETCH_ERR" \
+        --argjson w "$WAITED" \
+        --argjson p "$ATTEMPT" \
+        --argjson e "$(epoch_field)" \
+        '. + {status:"error", message:$m, waited_seconds:$w, poll_attempts:$p, epoch:$e, next_action:"done"}'
     exit 1
 fi
 
@@ -268,4 +307,5 @@ printf '%s' "$result_json" | jq -c \
     --argjson p "$ATTEMPT" \
     --argjson e "$(epoch_field)" \
     --arg n "$NEXT_ACTION" \
-    '. + {head_sha:$h, waited_seconds:$w, poll_attempts:$p, epoch:$e, next_action:$n}'
+    --argjson s "$SLEPT_JSON" \
+    '$s + . + {head_sha:$h, waited_seconds:$w, poll_attempts:$p, epoch:$e, next_action:$n}'

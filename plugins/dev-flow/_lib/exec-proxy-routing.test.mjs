@@ -9,6 +9,7 @@
 //       redgreen / journal / PR コメント投稿 (post-summary。issue #392 で
 //       per-round post-review#i 投稿は終端 post-summary へ統合済み) など)
 //     - dev-runner: 判断寄り (analyze)。pr-iterate の fix は pr-fixer
+//     - CI 判定の中継（ci-check# / ci-check-lite / ci-wait-check# / ci-verify#）は hook で実 stdout に縛った stdout-relay
 //
 //   検証は dev-flow.js / pr-iterate.js を VM で実行し、agent() に実際に渡った
 //   {label, agentType} を EXPECTED（label → agentType）と突合する。各 label に到達する
@@ -36,6 +37,8 @@ const RO = 'dev-flow:dev-runner-haiku-ro';
 const RW = 'dev-flow:dev-runner-haiku';
 const WO = 'dev-flow:dev-runner-haiku-wo';
 const RUNNER = 'dev-flow:dev-runner';
+// CI 判定の中継（check-ci の 1 単文）。Bash と返り値は hook が prompt の最終行と実 stdout に縛る
+const STDOUT_RELAY = 'dev-flow:stdout-relay';
 
 // label が固定文字列のものは完全一致、`#${i}` / suffix 付きのものは prefix 一致（末尾 '*'）
 const EXPECTED_DEV_FLOW = {
@@ -59,7 +62,7 @@ const EXPECTED_DEV_FLOW = {
   'fix-diff-numstat': RO,
   'issue-labels': RO,
   'cross-repo-artifacts': RO,
-  'ci-check-lite': RO,
+  'ci-check-lite': STDOUT_RELAY,
   // Validate red の分類: diff のファイル一覧（read-only）と base tree での再実行（テスト実行のため write tier）
   'validate-diff#*': RO,
   'base-rerun#*': RW,
@@ -100,8 +103,10 @@ const EXPECTED_PR_ITERATE = {
   'pr-meta': RO,
   // security review の対象判定は reviewer に関わらず hook で縛った中継が取る（issue #1307）
   'security-scope#*': 'dev-flow:security-codex-relay',
-  'ci-check#*': RO,
-  'ci-wait-check#*': RO,
+  'ci-check#*': STDOUT_RELAY,
+  'ci-wait-check#*': STDOUT_RELAY,
+  // LGTM 後の ci_verify.checks の待ち（args.ci_verify を渡した run だけ — runPrIterateCiVerify）
+  'ci-verify#*': STDOUT_RELAY,
   'isolation-cleanup': RW,
   'isolation-probe': WO,
   'commit-ensure#*': RW,
@@ -145,6 +150,22 @@ async function runPrIterate() {
   const { error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
   assertNoCrash(error, 'pr-iterate');
   assert.equal(error, null, `pr-iterate run が throw した: ${error?.message}`);
+  return calls;
+}
+
+// args.ci_verify を渡した run: LGTM 後に ci-verify#1.1（待たない）→ ci-verify#1.2（待つ）を踏ませる
+async function runPrIterateCiVerify() {
+  const { ctx, calls } = makePrIterateSandbox({
+    args: { pr: 5, ci_verify: { label: 'full-ci', checks: ['e2e'], wait_ceiling_seconds: 1500 } },
+    overrides: {
+      'ci-verify#1.1': { status: 'pending', passed: 0, failed: 0, pending: 1, skipped: 0, failed_checks: [], passed_checks: [] },
+      'ci-verify#1.2': { slept: true, status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], passed_checks: [] },
+    },
+  });
+  const { error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
+  assertNoCrash(error, 'pr-iterate-ci-verify');
+  assert.equal(error, null, `pr-iterate（ci_verify）run が throw した: ${error?.message}`);
+  assert.deepEqual(calls.filter((c) => c.label.startsWith('ci-verify#')).map((c) => c.label), ['ci-verify#1.1', 'ci-verify#1.2']);
   return calls;
 }
 
@@ -228,8 +249,10 @@ test('[exec-proxy-routing] dev-flow.js: redgreen-verify は bare 名 `redgreen-v
 // ---- (c) pr-iterate.js routing ----
 
 test('[exec-proxy-routing] pr-iterate.js: 観測される exec-proxy label が EXPECTED の agentType へ routing され、全 label が到達する', async () => {
-  const calls = await runPrIterate();
-  const observed = assertRouting(calls, EXPECTED_PR_ITERATE, 'pr-iterate.js');
+  const observed = new Set([
+    ...assertRouting(await runPrIterate(), EXPECTED_PR_ITERATE, 'pr-iterate.js'),
+    ...assertRouting(await runPrIterateCiVerify(), EXPECTED_PR_ITERATE, 'pr-iterate.js[ci_verify]'),
+  ]);
   const unreached = Object.keys(EXPECTED_PR_ITERATE).filter((k) => !observed.has(k));
   assert.deepEqual(unreached, [], `pr-iterate.js: EXPECTED の label が観測されなかった: ${unreached.join(', ')}`);
 });
