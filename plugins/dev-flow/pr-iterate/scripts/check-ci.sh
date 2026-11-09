@@ -25,8 +25,10 @@
 # no redirection, no pipes):
 #
 #   gh pr view <pr> --repo <owner/repo> --json statusCheckRollup \
-#     --jq '.statusCheckRollup // [] | map(del(.__typename,.completedAt,.detailsUrl,.targetUrl)) | tojson | gsub("'"; "\\u0027")'
-#   (the trailing gsub keeps single quotes out of the stdout that is relayed inside single quotes)
+#     --jq '.statusCheckRollup // [] | map(del(.__typename,.completedAt,.detailsUrl,.targetUrl)) | ([39]|implode) as $q | tojson | split($q) | join(([92]|implode) + "u0027")'
+#   (the trailing split/join rewrites each single quote to the JSON escape backslash + "u0027", so none reach the stdout that is
+#   relayed inside single quotes; the filter builds the quote and backslash from code points so
+#   it holds neither character itself and survives being transcribed inside single quotes)
 #   check-ci.sh --checks-data '<that stdout, verbatim>' \
 #     --fetch-error-data '<that stderr, verbatim, if the gh call failed>' \
 #     --attempt <n> --max-attempts <k> --poll-seconds <m>

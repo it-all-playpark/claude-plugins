@@ -1261,7 +1261,7 @@ function checkNameArgs(flag, names) {
 
 function ciRollupCommand({ pr, repo, withLink = false }) {
   const drop = withLink ? '.__typename,.completedAt' : '.__typename,.completedAt,.detailsUrl,.targetUrl';
-  return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop})) | tojson | gsub("\\u0027"; "\\\\u0027")'`;
+  return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop})) | ([39]|implode) as $q | tojson | split($q) | join(([92]|implode) + "u0027")'`;
 }
 
 function ciFetchSteps({ pr, repo, n, exclude = [], only = [] }) {
