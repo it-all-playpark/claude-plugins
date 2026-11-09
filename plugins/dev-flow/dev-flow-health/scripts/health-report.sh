@@ -56,6 +56,9 @@
 #                          （1 agentType × 1 ID = 1 件）。前回の known_models が空の agentType は種まきだけで変化にしない
 #      transcript の形は Claude Code の内部仕様なので、読めない・形が違うときは model_changes を空にし、理由を
 #      model_scan.error に入れる（advisory なので fail-open — 終了コードと signature 側の出力は変えない）。
+#      transcript は API 応答・agent の出力を含むデータなので、LLM が gh コマンドや issue 本文に埋め込む値は形を縛る:
+#      agentType は dev-flow:[A-Za-z0-9._-]+、model ID は claude-[A-Za-z0-9._-]+ に一致するものだけを数え、
+#      first_seen の timestamp（ISO 8601）と transcript（[A-Za-z0-9._/-]）は形が違えば null にする。
 #
 # Usage:
 #   health-report.sh [--journal-dir DIR] [--repo DIR] [--now ISO8601] [--since ISO8601]
@@ -448,15 +451,17 @@ scan_models() {
             SCAN_ERROR="transcript_unreadable"
             return 0
         fi
-        [[ "$agent_type" == dev-flow:* ]] || continue
+        [[ "$agent_type" =~ ^dev-flow:[A-Za-z0-9._-]+$ ]] || continue
         rel="${f#"$PROJECTS_DIR"/}"
         if ! uses="$(jq -n -R -c --arg at "$agent_type" --arg t "$rel" '
                 [ inputs | fromjson? | objects | select(.type == "assistant")
                   | {model: (.message | if type == "object" then .model else null end),
-                     timestamp: (.timestamp | if type == "string" then . else null end)}
-                  | select((.model | type) == "string" and (.model | startswith("claude-"))) ]
+                     timestamp: (.timestamp | if type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$")
+                                             then . else null end)}
+                  | select((.model | type) == "string" and (.model | test("^claude-[A-Za-z0-9._-]+$"))) ]
                 | group_by(.model)[]
-                | {agent_type: $at, model: .[0].model, timestamp: (map(.timestamp // empty) | min), transcript: $t}' "$f" 2>/dev/null)"; then
+                | {agent_type: $at, model: .[0].model, timestamp: (map(.timestamp // empty) | min),
+                   transcript: (if $t | test("^[A-Za-z0-9._/-]+$") then $t else null end)}' "$f" 2>/dev/null)"; then
             SCAN_ERROR="transcript_unreadable"
             return 0
         fi
