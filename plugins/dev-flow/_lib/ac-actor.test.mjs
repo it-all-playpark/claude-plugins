@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, deterministicAcIndexes, demoteUnprovenObservationalAc, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap, freezeAcVerify, acVerifyCandidateIndexes, testRunAcDisclosures } from './ac-actor.mjs';
+import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, deterministicAcIndexes, demoteUnprovenObservationalAc, isReimplUnfixableGap, proofMissingAgentAcIndexes, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap, freezeAcVerify, acVerifyCandidateIndexes, testRunAcDisclosures } from './ac-actor.mjs';
 import { KNOWN_OBSERVATIONAL_ACS } from './test-helpers/observational-ac-controls.mjs';
 
 // repo 内外が混ざった AC（テスト・README・rules の削除と dotfiles の excludedCommands の変更を 1 つに書いたもの）
@@ -135,13 +135,24 @@ test('[ac-actor] dropCiAcFeedback: ci の AC に結び付いた evaluator feedba
   assert.equal(dropCiAcFeedback(fb, ['agent', 'agent']), fb);
 });
 
-test('[ac-actor] unsatisfiedAcByActor: unreachable_env:true の agent AC は差し戻さず human（人手 AC 待ち）に数える', () => {
-  const actors = ['agent', 'agent'];
-  const r = unsatisfiedAcByActor([
+test('[ac-actor] unsatisfiedAcByActor: 作り直しで埋まらない gap（unreachable_env:true・proof_missing:true）の agent AC は human（人手 AC 待ち）に数え、それ以外の未達は agent のまま', () => {
+  assert.equal(isReimplUnfixableGap({ satisfied: false, unreachable_env: true }), true);
+  assert.equal(isReimplUnfixableGap({ satisfied: false, proof_missing: true }), true);
+  assert.equal(isReimplUnfixableGap({ satisfied: false }), false);
+  assert.equal(isReimplUnfixableGap({ satisfied: false, unreachable_env: false, proof_missing: false }), false);
+  assert.equal(isReimplUnfixableGap(null), false);
+  const actors = ['agent', 'agent', 'agent', 'human'];
+  const results = [
     { ac_index: 0, satisfied: false, unreachable_env: true },
     { ac_index: 1, satisfied: false },
-  ], actors);
-  assert.deepEqual(r, { agent: [1], human: [0], ci: [] });
+    { ac_index: 2, satisfied: false, observational: true, proof_missing: true },
+    { ac_index: 3, satisfied: false, observational: true, proof_missing: true },
+  ];
+  assert.deepEqual(unsatisfiedAcByActor(results, actors), { agent: [1], human: [0, 2, 3], ci: [] });
+  // Evaluate が 1 回だけ差し戻す実証不足の AC は actor agent のものだけ
+  assert.deepEqual(proofMissingAgentAcIndexes(results, actors), [2]);
+  assert.deepEqual(proofMissingAgentAcIndexes([{ ac_index: 2, satisfied: true, proof_missing: true }], actors), []);
+  assert.deepEqual(proofMissingAgentAcIndexes(null, actors), []);
 });
 
 test('[ac-actor] hasJudgedHumanAcGap: 人手 AC 待ちに文面で人手になった AC（HUMAN_AC_PATTERNS・external）以外があるときだけ true', () => {
@@ -173,6 +184,12 @@ test('[ac-actor] agentAcFeedback: evaluator feedback と同じ形で AC 番号�
   assert.match(fb[0].suggestion, /pr_notes/);
   assert.match(fb[0].suggestion, /design_decisions/);
   assert.match(agentAcFeedback([0], ['x'], [])[0].description, /根拠なし/);
+  // 実証不足の AC は未達ではなく、red→green になるテストを足すよう伝える
+  const proof = agentAcFeedback([1], ['a', '`x.test.mjs` で確かめる'], [{ ac_index: 1, satisfied: false, proof_missing: true, evidence: '観測型 AC — test の red→green 実証が無く' }]);
+  assert.equal(proof[0].topic, 'AC-2 実証不足');
+  assert.match(proof[0].description, /evaluator が満たしたと判定したが、test の red→green 実証が無い/);
+  assert.match(proof[0].suggestion, /red→green/);
+  assert.match(proof[0].suggestion, /そのまま返せ/);
 });
 
 test('[ac-scope] repo 外の目印と repo 内の目印が 1 つの AC にあれば mixed、repo 外だけなら external、どちらも無ければ repo', () => {
@@ -332,11 +349,13 @@ test('[ac-observational] demoteUnprovenObservationalAc: 実証の無い観測型
   const out = demoteUnprovenObservationalAc(results, [true, true, false, true], [1]);
   assert.equal(out[0].satisfied, false);
   assert.equal(out[0].observational, true);
+  assert.equal(out[0].proof_missing, true, 'satisfied:true を倒した AC は実証不足');
   assert.match(out[0].evidence, /観測型 AC/);
   assert.match(out[0].evidence, /コードを読んだ/);
   assert.equal(out[1], results[1], 'red→green 実証済みは変えない');
   assert.equal(out[2], results[2], '非観測型は変えない');
   assert.deepEqual(out[3], { ...results[3], observational: true });
+  assert.ok(!('proof_missing' in out[3]), 'もともと satisfied:false の AC（未達）は実証不足にしない');
   assert.equal(results[0].satisfied, true, '入力は書き換えない');
   assert.equal(demoteUnprovenObservationalAc(null, [true], []), null);
   // 倒した AC は actor human なので人手 AC 待ちに数え、差し戻し（agent）には数えない
@@ -363,7 +382,7 @@ test('[ac-observational] テストファイルを inline code で名指しした
   ]) assert.deepEqual(resolveActorsViaAnalyze([ac]).actors, ['agent'], ac);
 });
 
-test('[ac-observational] テストファイルを名指しした観測型 AC: red→green の昇格が無い inspection の satisfied:true は未達に倒れ agent（差し戻し）に数え、昇格済みなら達成のまま', () => {
+test('[ac-observational] テストファイルを名指しした観測型 AC: red→green の昇格が無い inspection の satisfied:true は実証不足に倒れ人手 AC 待ち（judged human gap）に数え、昇格済みなら達成のまま', () => {
   const CODE = 'worker 数の上限を設定で変えられる';
   const { observational, actors } = resolveActorsViaAnalyze([AC_1142_2, CODE], [0]);
   assert.deepEqual(observational, [true, false]);
@@ -374,7 +393,14 @@ test('[ac-observational] テストファイルを名指しした観測型 AC: re
   const unproven = demoteUnprovenObservationalAc(results, observational, deterministicAcIndexes([]));
   assert.equal(unproven[0].satisfied, false);
   assert.equal(unproven[0].observational, true);
-  assert.deepEqual(unsatisfiedAcByActor(unproven, actors), { agent: [0], human: [], ci: [] });
+  assert.equal(unproven[0].proof_missing, true);
+  const gaps = unsatisfiedAcByActor(unproven, actors);
+  assert.deepEqual(gaps, { agent: [], human: [0], ci: [] });
+  // 文面は人手でも repo 外でもないので、Merge tier の hold_ac_human_judged に数える
+  assert.equal(hasJudgedHumanAcGap(gaps.human, [AC_1142_2, CODE], { repo: 'it-all-playpark/claude-plugins' }), true);
+  // もともと satisfied:false（未達）なら実証不足にせず、従来どおり agent（上限まで差し戻し）
+  const unmet = demoteUnprovenObservationalAc([{ ...results[0], satisfied: false }, results[1]], observational, deterministicAcIndexes([]));
+  assert.deepEqual(unsatisfiedAcByActor(unmet, actors), { agent: [0], human: [], ci: [] });
   const proven = demoteUnprovenObservationalAc(results, observational, deterministicAcIndexes([{ id: 'AC-1', checked: true, check: { kind: 'deterministic' } }]));
   assert.equal(proven[0].satisfied, true);
   assert.deepEqual(unsatisfiedAcByActor(proven, actors), { agent: [], human: [], ci: [] });

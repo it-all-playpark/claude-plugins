@@ -176,7 +176,7 @@ export function applyAcVerifyResults(acResults, entries) {
   const kept = acResults.filter((r) => !(r && decided.has(r.ac_index)))
   const replaced = list.map((e) => ({
     ...(acResults.find((r) => r && r.ac_index === e.ac_index) ?? {}),
-    ac_index: e.ac_index, observational: true, satisfied: false, verified_by: 'local', unreachable_env: false,
+    ac_index: e.ac_index, observational: true, satisfied: false, verified_by: 'local', unreachable_env: false, proof_missing: false,
     evidence: `AC のコマンド（\`${e.command}\`）が ${acVerifyHow(e)}${e.reason ? `（${e.reason}）` : ''}（差し戻し上限まで直らなかった）: ${e.log_path ?? 'log なし'}`,
   }))
   return [...kept, ...replaced].sort((a, b) => (Number.isInteger(a?.ac_index) ? a.ac_index : Infinity) - (Number.isInteger(b?.ac_index) ? b.ac_index : Infinity))

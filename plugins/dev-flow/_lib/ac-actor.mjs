@@ -18,9 +18,11 @@
 //     誤判定を語の追加で直す方式は収束しないため）。
 // 判定できない AC は 'agent' に倒す。human への誤分類は差し戻しを失い未達のまま人間へ流れるが、agent への誤分類は
 // 差し戻しの上限（AGENT_AC_REIMPL_MAX）で止まり、HOLD 理由に取りこぼしとして残るため。
-// agent の AC でも、evaluator が未達の理由を実行環境に届かない（unreachable_env:true）と返したものは差し戻さず
-// 人手 AC 待ちに数える（unsatisfiedAcByActor）。差し戻しても worktree 内では満たせず、AGENT_AC_REIMPL_MAX を
-// 使い切ってから HOLD になるだけのため。
+// agent の AC でも、作り直しで埋まらない gap（isReimplUnfixableGap）は差し戻しの上限まで回さず人手 AC 待ちに数える
+// （unsatisfiedAcByActor）。evaluator が未達の理由を実行環境に届かない（unreachable_env:true）と返したものと、
+// evaluator が満たしたと判定したが red→green の実証が無い観測型 AC（proof_missing:true。非退行の AC のように変更前から
+// テストが green なら作り直しで red→green を作れない）がこれに当たる。差し戻しても AGENT_AC_REIMPL_MAX を使い切ってから
+// HOLD になるだけで、終端サマリーが「修正が必要」と人を誤った作業に向けるため。
 //
 // inline code（`...`）は判定前に除く。AC 本文が `（人手）` 等の語を識別子として引用しているだけのものを
 // human にしないため。
@@ -57,6 +59,8 @@
 // actor 'agent' にする（issue #1147）。テストでの検証を AC 自体が指定しており、red→green の実証は worktree 内で作れる
 // 証跡なので、未達は差し戻せば満たせる。観測型の判定は true のまま変えない — 達成は red→green の deterministic 昇格
 // だけで、文面が増やせるのは差し戻しの回数（AGENT_AC_REIMPL_MAX で止まる）だけにするため。
+// evaluator が満たしたと判定して実証だけが無い（proof_missing）AC は、Evaluate が run 全体で 1 回だけ差し戻して
+// red→green のテストを足させ、それでも実証が無ければ人手 AC 待ちにする（作り直しで実証を作れない AC に上限まで spawn を使わない）。
 // worktree で実行するコマンドを AC 自体が inline code で指定した観測型 AC（issue #1208）は、分類 agent がそのコマンド
 // と生成されるファイルを AC の inline code の候補の番号（verify_command_index / expect_path_indexes）で返し、freezeAcVerify が
 // その番号で AC の inline code から取り出した文字列を analyze ゲートで凍結する。workflow はそれを local-verify で sandbox 内で実行し、失敗は dev-implementer へ差し戻し、
@@ -436,8 +440,9 @@ export function deterministicAcIndexes(ledgerItems) {
 
 // evaluator / final-ac-reconcile の ac_results で、deterministic 昇格していない観測型 AC を satisfied:false に倒し
 // observational:true を付ける（inspection や red→green 不成立の satisfied:true を達成扱いにしない）。
-// 倒した AC は actor 'human' なら unsatisfiedAcByActor で人手 AC 待ちに数えられて差し戻さず、テストファイルを名指しした
-// actor 'agent' の AC なら差し戻しの対象になる。
+// satisfied:true を倒した AC にだけ proof_missing:true（実証不足）を付け、もともと satisfied:false の AC（未達）には付けない。
+// 倒した AC は isReimplUnfixableGap で人手 AC 待ちに数える。テストファイルを名指しした actor 'agent' の AC は、
+// Evaluate が run 全体で 1 回だけ差し戻す（evaluator が満たしたと判定した AC は、作り直しで red→green を作れるとは限らない）。
 // 非配列はそのまま返す。
 export function demoteUnprovenObservationalAc(acResults, observational, provenIndexes) {
   if (!Array.isArray(acResults)) return acResults
@@ -447,8 +452,26 @@ export function demoteUnprovenObservationalAc(acResults, observational, provenIn
     if (!r || !Number.isInteger(r.ac_index) || obs[r.ac_index] !== true || proven.includes(r.ac_index)) return r
     if (r.satisfied !== true) return { ...r, observational: true }
     const evidence = typeof r.evidence === 'string' && r.evidence.trim() ? `（evaluator: ${r.evidence.trim()}）` : ''
-    return { ...r, satisfied: false, observational: true, evidence: `観測型 AC — test の red→green 実証が無く、実行しないと確かめられない${evidence}` }
+    return { ...r, satisfied: false, observational: true, proof_missing: true, evidence: `観測型 AC — test の red→green 実証が無く、実行しないと確かめられない${evidence}` }
   })
+}
+
+// 作り直し（dev-implementer への差し戻し）で埋まらない gap か。実行環境に届かない未達（unreachable_env:true）と、
+// evaluator が満たしたと判定して red→green の実証だけが無い観測型 AC（proof_missing:true）が当たる。
+// agent→human の付け替え（unsatisfiedAcByActor）はこの述語だけで決める。
+export function isReimplUnfixableGap(r) {
+  return r != null && (r.unreachable_env === true || r.proof_missing === true)
+}
+
+// actor 'agent' で実証不足（proof_missing:true）の未達 AC の index（重複なし）。Evaluate が run 全体で 1 回だけ差し戻す対象。
+export function proofMissingAgentAcIndexes(acResults, actors) {
+  const list = Array.isArray(actors) ? actors : []
+  const out = []
+  for (const r of (Array.isArray(acResults) ? acResults : [])) {
+    if (!r || r.satisfied !== false || r.proof_missing !== true || !Number.isInteger(r.ac_index)) continue
+    if (list[r.ac_index] === 'agent' && !out.includes(r.ac_index)) out.push(r.ac_index)
+  }
+  return out
 }
 
 // analyze ゲートの理由行: repo 内外が混ざった AC ごとに 1 行。非空なら needs_clarification（source=analyze）で止める。
@@ -465,8 +488,7 @@ export function mixedScopeAcReasons(acceptanceCriteria, opts = {}) {
 
 // evaluator / final-ac-reconcile の ac_results から satisfied:false の ac_index を actor 別に返す。
 // actors の範囲外の ac_index（evaluator の誤応答）は数えない。同じ index の重複は 1 件にする。
-// agent の AC で unreachable_env:true（evaluator が未達の理由を実行環境に届かないと判定）のものは human に数える
-// （差し戻さず人手 AC 待ちにする）。
+// agent の AC で作り直しで埋まらない gap（isReimplUnfixableGap）は human に数える（上限まで差し戻さず人手 AC 待ちにする）。
 export function unsatisfiedAcByActor(acResults, actors) {
   const out = { agent: [], human: [], ci: [] }
   const list = Array.isArray(actors) ? actors : []
@@ -474,15 +496,15 @@ export function unsatisfiedAcByActor(acResults, actors) {
     if (!r || r.satisfied !== false || !Number.isInteger(r.ac_index)) continue
     let actor = list[r.ac_index]
     if (!AC_ACTORS.includes(actor)) continue
-    if (actor === 'agent' && r.unreachable_env === true) actor = 'human'
+    if (actor === 'agent' && isReimplUnfixableGap(r)) actor = 'human'
     if (!out[actor].includes(r.ac_index)) out[actor].push(r.ac_index)
   }
   return out
 }
 
 // 人手 AC 待ち（unsatisfiedAcByActor の human の index）に、文面で人手になった AC（HUMAN_AC_PATTERNS に当たる・
-// classifyAcScope が external）ではない AC が 1 件以上あるか。観測型の判定（observational:true）か evaluator の
-// unreachable_env:true で人手になった AC がこれに当たる。dev-flow の HOLD telemetry（hold_ac_human_judged）に載せ、
+// classifyAcScope が external）ではない AC が 1 件以上あるか。観測型の判定（observational:true）か
+// isReimplUnfixableGap（unreachable_env:true・実証不足の proof_missing:true）で人手になった AC がこれに当たる。dev-flow の HOLD telemetry（hold_ac_human_judged）に載せ、
 // dev-flow-health が ac_human_pending の HOLD を dev-flow / 実行環境の不具合の候補として拾う。記録専用で gate には使わない。
 // opts.repo は classifyAcScope と同じ。
 export function hasJudgedHumanAcGap(humanIndexes, acceptanceCriteria, opts = {}) {
@@ -495,13 +517,22 @@ export function hasJudgedHumanAcGap(humanIndexes, acceptanceCriteria, opts = {})
 
 // agent AC の未達を dev-implementer へ渡す fix_feedback 項目にする（evaluator feedback と同じ形）。
 // 「計測して PR 本文に書く」型の AC は、コードのコメントでは PR 本文に届かないので pr_notes / design_decisions で
-// 返すよう suggestion に明記する。
+// 返すよう suggestion に明記する。実証不足（proof_missing:true）の AC は未達ではないので、red→green になるテストを
+// 足すよう伝える（作り直しで実証を作れない AC にテストを作り替えさせないため、そのまま返してよいことも書く）。
 export function agentAcFeedback(indexes, acceptanceCriteria, acResults) {
   const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
   const results = Array.isArray(acResults) ? acResults : []
   return (Array.isArray(indexes) ? indexes : []).map((i) => {
     const r = results.find((x) => x && x.ac_index === i)
     const evidence = r && typeof r.evidence === 'string' && r.evidence.trim() ? r.evidence.trim() : '根拠なし'
+    if (r && r.proof_missing === true) {
+      return {
+        severity: 'major',
+        topic: `AC-${i + 1} 実証不足`,
+        description: `AC-${i + 1}「${String(acs[i] ?? '')}」は evaluator が満たしたと判定したが、test の red→green 実証が無い（${evidence}）`,
+        suggestion: 'AC が新しい挙動を求めるなら、実装を外すと落ちて実装で通るテスト（red→green）を足せ。変更前から green のテストで確かめる AC（非退行など）はテストを作り替えずそのまま返せ（人手 AC 待ちに回る）。この差し戻しは 1 回だけ',
+      }
+    }
     return {
       severity: 'major',
       topic: `AC-${i + 1} 未達`,

@@ -756,8 +756,12 @@ function demoteUnprovenObservationalAc(acResults, observational, provenIndexes) 
     if (!r || !Number.isInteger(r.ac_index) || obs[r.ac_index] !== true || proven.includes(r.ac_index)) return r
     if (r.satisfied !== true) return { ...r, observational: true }
     const evidence = typeof r.evidence === 'string' && r.evidence.trim() ? `（evaluator: ${r.evidence.trim()}）` : ''
-    return { ...r, satisfied: false, observational: true, evidence: `観測型 AC — test の red→green 実証が無く、実行しないと確かめられない${evidence}` }
+    return { ...r, satisfied: false, observational: true, proof_missing: true, evidence: `観測型 AC — test の red→green 実証が無く、実行しないと確かめられない${evidence}` }
   })
+}
+
+function isReimplUnfixableGap(r) {
+  return r != null && (r.unreachable_env === true || r.proof_missing === true)
 }
 
 function unsatisfiedAcByActor(acResults, actors) {
@@ -767,7 +771,7 @@ function unsatisfiedAcByActor(acResults, actors) {
     if (!r || r.satisfied !== false || !Number.isInteger(r.ac_index)) continue
     let actor = list[r.ac_index]
     if (!AC_ACTORS.includes(actor)) continue
-    if (actor === 'agent' && r.unreachable_env === true) actor = 'human'
+    if (actor === 'agent' && isReimplUnfixableGap(r)) actor = 'human'
     if (!out[actor].includes(r.ac_index)) out[actor].push(r.ac_index)
   }
   return out
@@ -854,7 +858,7 @@ function applyAcVerifyResults(acResults, entries) {
   const kept = acResults.filter((r) => !(r && decided.has(r.ac_index)))
   const replaced = list.map((e) => ({
     ...(acResults.find((r) => r && r.ac_index === e.ac_index) ?? {}),
-    ac_index: e.ac_index, observational: true, satisfied: false, verified_by: 'local', unreachable_env: false,
+    ac_index: e.ac_index, observational: true, satisfied: false, verified_by: 'local', unreachable_env: false, proof_missing: false,
     evidence: `AC のコマンド（\`${e.command}\`）が ${acVerifyHow(e)}${e.reason ? `（${e.reason}）` : ''}（差し戻し上限まで直らなかった）: ${e.log_path ?? 'log なし'}`,
   }))
   return [...kept, ...replaced].sort((a, b) => (Number.isInteger(a?.ac_index) ? a.ac_index : Infinity) - (Number.isInteger(b?.ac_index) ? b.ac_index : Infinity))
