@@ -48,7 +48,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
   起点検証・書き込み probe・`.devflow-tmp` の clean・issue analyze（`analyze-issue --contract` の決定論 parse + Jev 有界判定）・
   framework 検出を済ませ、別の Bash 呼び出しの `ensure-worktree-deps --setup <worktree>/.devflow-tmp/prerun-setup.json` で deps を入れる
   （install は repo の任意コードを走らせるので prerun の子にしない）。`EnterWorktree` → `Workflow({ args: { issue, setup } })` の順で起動し、
-  Setup は `args.setup` を検証して REQ を組み、次のゲートを順に判定する（通過後の spawn は分類 agent と isolation probe 各 1 回）:
+  Setup は `args.setup` を検証して REQ を組み、次を順に行う:
   - blocked_by ゲート — `args.setup.analyze.blockers` に open な issue が 1 つでもあれば止める
   - analyze ゲート — AC 空 / AC が上限超え / comment_conflicts 非空 / uncertain 非空 / repo 内外が混ざった AC。引いたときだけ missing_context を書く
     agent を 1 spawn する。repo 内外の混在は `classifyAcScope` が決定論で判定し、
@@ -61,6 +61,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
     候補を絞らない — 取りこぼしがコード読みで達成扱いになる）。ci AC は repo の `"dev-flow".ci_verify` の宣言に当たる AC（`matchesCiVerify`）
   - isolation probe — ゲート通過後・Implement の前に、tools を Write だけにした `dev-runner-haiku-wo` が worktree 直下
     `.devflow-tmp/.isolation-probe-<token>` に書けるかを確かめる（implementer と同じ Write tool の経路の検証。token は `args.setup.epoch`）
+  - テストコマンドの解決 — `dev-flow-test-commands.js` を 1 回起動
 - **失敗の扱い**:
   - `args.setup` の欠落・`ok:false`・型不正、analyze の whitelist 不合格は throw（fail-closed。workflow 内に fallback を置かない）
   - analyze 段の失敗・open な blocker・analyze ゲートは needs_clarification で終端（fail-closed。REQ を推測で組まない。決定論は意味的矛盾の
@@ -96,7 +97,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
 ## Validate
 
 - **判定**: test が green か。exec-proxy `run-tests start <WT> --base origin/<base>` → `run-tests wait <WT>` の繰り返し（`runTestsJob`）の stdout の
-  転写だけで、base の `tests/run-*.sh` 全本が exit 0 なら green（欠落は error、変更は `test_runner_changed`）。
+  転写だけで、解決したコマンドか base の `tests/run-*.sh` 全本が exit 0 なら green（欠落は error、変更は `test_runner_changed`）。
   直前に `workspace-prebuild <WT>` が pnpm ワークスペースの成果物を作り直す
   - ランナーの契約: `DEVFLOW_CHANGED_FILES`（差分と untracked の WT 相対パスを 1 行 1 件で書いた
     ファイルの絶対パス）と `DEVFLOW_BASE`（merge-base の sha）を渡す（未設定は全件実行。選択はランナー側）。`DEVFLOW_FAILED_FILES`

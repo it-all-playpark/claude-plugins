@@ -1,6 +1,7 @@
 # devflow-config.sh - repo 設定 "dev-flow".<key>（ci_verify / local_verify / pr_title_format / security_reviewer /
-# branch_format）を読む共有ヘルパー（source 専用。単体では実行しない）。dev-flow-prerun（dev-flow/scripts/prerun.sh）と
-# pr-iterate-prerun（pr-iterate-prerun.sh。security-reviewer-config.sh 経由）、dev-flow-ready-set（ready-set.sh）が使う。
+# branch_format / test_commands）を読む共有ヘルパー（source 専用。単体では実行しない）。dev-flow-prerun（dev-flow/scripts/prerun.sh）と
+# pr-iterate-prerun（pr-iterate-prerun.sh。security-reviewer-config.sh 経由）、dev-flow-ready-set（ready-set.sh）、
+# test-commands-prepare（test-commands-prepare.sh。test_commands の形はそこで検証する）が使う。
 #
 # 読むのは PR が書き換えられない場所だけ。キーごとに次の順で最初に null でない値を返し、どこにも無ければ null:
 #   (1) user 設定の repo 別の節 "dev-flow".repos["<owner>/<repo>"].<key>（user 設定のファイルの順）

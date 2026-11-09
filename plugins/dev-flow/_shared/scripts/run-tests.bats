@@ -5,7 +5,7 @@ bats_require_minimum_version 1.5.0
 #
 # Strategy: mktemp -d に tests/run-*.sh の fixture（exit 0 / 1 / 126 を返す script、bats / vitest 形式の
 # 失敗出力を吐く script）を置き、status / tests / green / scripts / failed_files を stdout の JSON 1 行で検査する。
-# tests/run-*.sh が無い repo のフォールバックは npm / pnpm を stub（PATH 先頭）に差し替えて実 install なしで回す。
+# 解決したテストコマンド（--commands。issue #1278）は WT 外に書いたコマンドファイルと、PATH 先頭の stub（fakerunner / pnpm）で回す。
 # untracked の intent-to-add（issue #833）は WT を git init した fixture で、git grep invariant の red と index の状態を見る。
 # 変更ファイルの受け渡し（issue #835）は、受け取った DEVFLOW_CHANGED_FILES / DEVFLOW_BASE を WT 外へ書き出す
 # probe ランナー（make_env_probe）で、値と一覧の中身・未設定の各経路を見る。
@@ -296,79 +296,18 @@ EOF
     [[ "$stderr" != *"ok 500 t"* ]]
 }
 
-@test "run-*.sh 無し: package.json の scripts.test があれば npm test を同じ規則で実行する（exit 0 → passed）" {
-    echo '{"name":"x","scripts":{"test":"node t.js"}}' > "$WT/package.json"
-    printf '#!/usr/bin/env bash\necho "$PWD $*" > "%s/npm.log"\nexit 0\n' "$TMP_DIR" > "$STUB_DIR/npm"
-    chmod +x "$STUB_DIR/npm"
-    export PATH="$STUB_DIR:$PATH"
-    run_tests
-    echo "$JSON" | jq -e '.status == "passed" and .tests == "passed" and .green == true'
-    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "npm test", exit: 0, launch_failed: false}]'
-    [ "$(cat "$TMP_DIR/npm.log")" = "$WT test" ]
+# --- 解決したテストコマンド（--commands。issue #1278）---
+
+# $1 = コマンドファイルの中身（JSON）。WT の外（$TMP_DIR）に書き、そのパスを $CMDS に入れる
+make_commands() {
+    CMDS="$TMP_DIR/commands.json"
+    printf '%s\n' "$1" > "$CMDS"
 }
 
-@test "run-*.sh 無し: pnpm-lock.yaml があれば pnpm test、exit 1 → failed" {
-    echo '{"name":"x","scripts":{"test":"vitest run"}}' > "$WT/package.json"
-    : > "$WT/pnpm-lock.yaml"
-    printf '#!/usr/bin/env bash\necho " FAIL  src/a.test.ts > x"\necho "[ELIFECYCLE] Test failed. See above for more details."\necho "Error: ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL"\nexit 1\n' > "$STUB_DIR/pnpm"
-    chmod +x "$STUB_DIR/pnpm"
-    export PATH="$STUB_DIR:$PATH"
-    run_tests
-    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
-    echo "$JSON" | jq -e '.failed_files == ["src/a.test.ts"]'
-}
-
-@test "run-*.sh 無し: pnpm test がテスト前の依存 install で失敗したら起動失敗として error（failed にしない）" {
-    echo '{"name":"x","scripts":{"test":"vitest run"}}' > "$WT/package.json"
-    : > "$WT/pnpm-lock.yaml"
-    printf '#!/usr/bin/env bash\necho "\033[31m[ERR_PNPM_EPERM]\033[39m [importPackage x] Operation not permitted"\necho "pnpm: Command failed with exit code 1: '"'"'/opt/pnpm/11.0.8/node_modules/@pnpm/exe/pnpm'"'"' install"\nexit 1\n' > "$STUB_DIR/pnpm"
-    chmod +x "$STUB_DIR/pnpm"
-    export PATH="$STUB_DIR:$PATH"
-    run_tests
-    echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false'
-    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: true}] and .failed_files == []'
-    echo "$JSON" | jq -e '.summary | contains("launch failed: pnpm test")'
-}
-
-@test "run-*.sh 無し: pnpm test がスクリプト起動前に pnpm 自身のエラーで終了したら起動失敗として error（failed にしない）" {
-    echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
-    : > "$WT/pnpm-lock.yaml"
-    printf '#!/usr/bin/env bash\necho " ERROR  packages field missing or empty"\nexit 1\n' > "$STUB_DIR/pnpm"
-    chmod +x "$STUB_DIR/pnpm"
-    export PATH="$STUB_DIR:$PATH"
-    run_tests
-    echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false'
-    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: true}] and .failed_files == []'
-    echo "$JSON" | jq -e '.summary | contains("launch failed: pnpm test")'
-}
-
-@test "run-*.sh 無し: pnpm test がスクリプトを起動した後の ERROR 行は red のまま（launch_failed にしない）" {
-    echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
-    : > "$WT/pnpm-lock.yaml"
-    printf '#!/usr/bin/env bash\necho\necho "> x@1.0.0 test /wt"\necho "> jest"\necho\necho " ERROR  db connection refused"\nexit 1\n' > "$STUB_DIR/pnpm"
-    chmod +x "$STUB_DIR/pnpm"
-    export PATH="$STUB_DIR:$PATH"
-    run_tests
-    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
-}
-
-@test "run-*.sh 無し: pnpm のエラー見出し行が無ければ起動の痕跡が無くても（--silent 等）red のまま" {
-    echo '{"name":"x","scripts":{"test":"jest"}}' > "$WT/package.json"
-    : > "$WT/pnpm-lock.yaml"
-    printf '#!/usr/bin/env bash\necho "Tests: 1 failed, 1 total"\nexit 1\n' > "$STUB_DIR/pnpm"
-    chmod +x "$STUB_DIR/pnpm"
-    export PATH="$STUB_DIR:$PATH"
-    run_tests
-    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm test", exit: 1, launch_failed: false}]'
-}
-
-@test "run-*.sh 無し: フォールバックの exit 126 も起動失敗として error" {
-    echo '{"name":"x","scripts":{"test":"node t.js"}}' > "$WT/package.json"
-    printf '#!/usr/bin/env bash\nexit 126\n' > "$STUB_DIR/npm"
-    chmod +x "$STUB_DIR/npm"
-    export PATH="$STUB_DIR:$PATH"
-    run_tests
-    echo "$JSON" | jq -e '.status == "error" and .scripts[0].launch_failed == true'
+# resolver が解決した形のコマンドファイルを書く（$1 = full_command、$2 = files_command（省略時は null））
+resolved_commands() {
+    make_commands "$(jq -nc --arg f "$1" --arg g "${2-}" \
+        '{source: "resolver", status: "resolved", full_command: $f, files_command: (if $g == "" then null else $g end), sources: ["pyproject.toml"]}')"
 }
 
 # $1 = stub の絶対パス、$2 = calls.log に残す名前、$3 = exit code。"$PWD <名前> $*" を $TMP_DIR/calls.log に追記する
@@ -378,44 +317,127 @@ make_runner_stub() {
     chmod +x "$1"
 }
 
-@test "run-*.sh 無し: Gemfile.lock に rspec-core があれば bundle exec rspec、無く bin/rails があれば bin/rails test で全件実行する" {
-    printf 'GEM\n  specs:\n    rspec-core (3.13.0)\n' > "$WT/Gemfile.lock"
-    make_runner_stub "$STUB_DIR/bundle" bundle 0
-    make_runner_stub "$WT/bin/rails" bin/rails 1
-    export PATH="$STUB_DIR:$PATH"
-    run_tests
-    echo "$JSON" | jq -e '.status == "passed" and .green == true'
-    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "bundle exec rspec", exit: 0, launch_failed: false}]'
-    [ "$(cat "$TMP_DIR/calls.log")" = "$WT bundle exec rspec" ]
-
-    rm "$TMP_DIR/calls.log"
-    printf 'GEM\n  specs:\n    minitest (5.25.1)\n' > "$WT/Gemfile.lock"
-    run_tests
-    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "bin/rails test", exit: 1, launch_failed: false}]'
-    [ "$(cat "$TMP_DIR/calls.log")" = "$WT bin/rails test" ]
-}
-
-@test "run-*.sh 無し: composer.json に pestphp/pest があれば vendor/bin/pest、無く phpunit/phpunit があれば vendor/bin/phpunit で全件実行する" {
-    echo '{"require-dev":{"pestphp/pest":"^3.0","phpunit/phpunit":"^11.0"}}' > "$WT/composer.json"
-    make_runner_stub "$WT/vendor/bin/pest" vendor/bin/pest 0
-    make_runner_stub "$WT/vendor/bin/phpunit" vendor/bin/phpunit 1
-    run_tests
-    echo "$JSON" | jq -e '.status == "passed" and .green == true'
-    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "vendor/bin/pest", exit: 0, launch_failed: false}]'
-    [ "$(cat "$TMP_DIR/calls.log")" = "$WT vendor/bin/pest" ]
-
-    rm "$TMP_DIR/calls.log"
-    echo '{"require":{"phpunit/phpunit":"^11.0"}}' > "$WT/composer.json"
-    run_tests
-    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "vendor/bin/phpunit", exit: 1, launch_failed: false}]'
-    [ "$(cat "$TMP_DIR/calls.log")" = "$WT vendor/bin/phpunit" ]
-}
-
-@test "run-*.sh もフォールバックも無ければ tests no_tests（scripts 空・green false）" {
+@test "解決したコマンド: full_command を <WT> を cwd に shell を通さない argv で実行し、exit 0 なら passed" {
     rmdir "$WT/tests"
+    make_runner_stub "$STUB_DIR/fakerunner" fakerunner 0
+    export PATH="$STUB_DIR:$PATH"
+    resolved_commands "fakerunner -q tests;echo" "fakerunner {files}"
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "passed" and .tests == "passed" and .green == true'
+    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "fakerunner -q tests;echo", exit: 0, launch_failed: false}]'
+    [ "$(cat "$TMP_DIR/calls.log")" = "$WT fakerunner -q tests;echo" ]
+}
+
+@test "解決したコマンド: exit 1 なら failed（failed_files はログから抽出）" {
+    rmdir "$WT/tests"
+    printf '#!/usr/bin/env bash\necho " FAIL  src/a.test.ts > x"\nexit 1\n' > "$STUB_DIR/fakerunner"
+    chmod +x "$STUB_DIR/fakerunner"
+    export PATH="$STUB_DIR:$PATH"
+    resolved_commands "fakerunner run"
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "failed" and .tests == "failed" and .green == false'
+    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "fakerunner run", exit: 1, launch_failed: false}] and .failed_files == ["src/a.test.ts"]'
+}
+
+@test "解決したコマンド: exit 126 / 127（起動失敗）は error" {
+    rmdir "$WT/tests"
+    resolved_commands "no-such-runner-xyz run"
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .scripts[0].exit == 127 and .scripts[0].launch_failed == true'
+    printf '#!/usr/bin/env bash\nexit 126\n' > "$STUB_DIR/fakerunner"
+    chmod +x "$STUB_DIR/fakerunner"
+    export PATH="$STUB_DIR:$PATH"
+    resolved_commands "fakerunner"
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "error" and .scripts[0].launch_failed == true'
+}
+
+@test "コマンドファイル: ファイルが無い・unresolved なら tests/run-*.sh の無い repo は no_tests（scripts 空・green false）" {
+    rmdir "$WT/tests"
+    run_tests --commands "$TMP_DIR/absent.json"
+    echo "$JSON" | jq -e '.status == "passed" and .tests == "no_tests" and .green == false and .scripts == [] and .failed_files == []'
+    make_commands '{"source":"resolver","status":"unresolved","full_command":null,"files_command":null,"sources":[]}'
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "passed" and .tests == "no_tests" and .green == false and .scripts == []'
+}
+
+@test "コマンドファイル: unresolved は base に tests/run-*.sh があっても実行しない（no_tests）" {
+    make_script run-a.sh 'touch "$(dirname "$0")/a.marker"'
+    make_commands '{"source":"user_config","status":"unresolved","full_command":null,"files_command":null,"sources":[]}'
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.tests == "no_tests" and .green == false'
+    [ ! -f "$WT/tests/a.marker" ]
+}
+
+@test "コマンドファイル: resolved のコマンドは base の tests/run-*.sh に代えて実行し、source runners なら tests/run-*.sh を実行する" {
+    make_script run-a.sh 'touch "$(dirname "$0")/a.marker"'
+    make_runner_stub "$STUB_DIR/fakerunner" fakerunner 0
+    export PATH="$STUB_DIR:$PATH"
+    make_commands '{"source":"user_config","status":"resolved","full_command":"fakerunner all","files_command":"fakerunner {files}","sources":[]}'
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "fakerunner all", exit: 0, launch_failed: false}]'
+    [ ! -f "$WT/tests/a.marker" ]
+
+    make_commands '{"source":"runners","status":"resolved","full_command":null,"files_command":null,"sources":["tests/run-a.sh"]}'
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e --arg a "$WT/tests/run-a.sh" '[.scripts[] | del(.log)] == [{path: $a, exit: 0, launch_failed: false}]'
+    [ -f "$WT/tests/a.marker" ]
+}
+
+@test "コマンドファイル: JSON として読めなければテストを実行せず error" {
+    make_script run-a.sh 'touch "$(dirname "$0")/a.marker"'
+    make_commands 'not json'
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false and (.summary | contains("not readable"))'
+    [ ! -f "$WT/tests/a.marker" ]
+}
+
+@test "言語別の決め打ちは無い: package.json の scripts.test だけで tests/run-*.sh もコマンドファイルも無い repo は no_tests" {
+    echo '{"name":"x","scripts":{"test":"node t.js"}}' > "$WT/package.json"
+    : > "$WT/pnpm-lock.yaml"
+    rmdir "$WT/tests"
+    for pm in npm pnpm yarn; do make_runner_stub "$STUB_DIR/$pm" "$pm" 0; done
+    export PATH="$STUB_DIR:$PATH"
     run_tests
     [ "$status" -eq 0 ]
     echo "$JSON" | jq -e '.status == "passed" and .tests == "no_tests" and .green == false and .scripts == [] and .failed_files == []'
+    [ ! -f "$TMP_DIR/calls.log" ]
+}
+
+@test "解決したコマンド: pnpm で始まるコマンドがテスト前の依存 install で失敗したら起動失敗として error（failed にしない）" {
+    rmdir "$WT/tests"
+    printf '#!/usr/bin/env bash\necho "\033[31m[ERR_PNPM_EPERM]\033[39m [importPackage x] Operation not permitted"\necho "pnpm: Command failed with exit code 1: '"'"'/opt/pnpm/11.0.8/node_modules/@pnpm/exe/pnpm'"'"' install"\nexit 1\n' > "$STUB_DIR/pnpm"
+    chmod +x "$STUB_DIR/pnpm"
+    export PATH="$STUB_DIR:$PATH"
+    resolved_commands "pnpm exec vitest run"
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false'
+    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "pnpm exec vitest run", exit: 1, launch_failed: true}] and .failed_files == []'
+    echo "$JSON" | jq -e '.summary | contains("launch failed: pnpm exec vitest run")'
+}
+
+@test "解決したコマンド: pnpm がテストの起動前に pnpm 自身のエラーで終了したら起動失敗として error（failed にしない）" {
+    rmdir "$WT/tests"
+    printf '#!/usr/bin/env bash\necho " ERROR  packages field missing or empty"\nexit 1\n' > "$STUB_DIR/pnpm"
+    chmod +x "$STUB_DIR/pnpm"
+    export PATH="$STUB_DIR:$PATH"
+    resolved_commands "pnpm exec vitest run"
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "error" and [.scripts[] | del(.log)] == [{path: "pnpm exec vitest run", exit: 1, launch_failed: true}]'
+}
+
+@test "解決したコマンド: pnpm がテストを起動した後の ERROR 行・エラー見出しの無い失敗は red のまま（launch_failed にしない）" {
+    rmdir "$WT/tests"
+    printf '#!/usr/bin/env bash\necho " FAIL  src/a.test.ts > x"\necho " ERROR  db connection refused"\nexit 1\n' > "$STUB_DIR/pnpm"
+    chmod +x "$STUB_DIR/pnpm"
+    export PATH="$STUB_DIR:$PATH"
+    resolved_commands "pnpm exec vitest run"
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[] | del(.log)] == [{path: "pnpm exec vitest run", exit: 1, launch_failed: false}]'
+
+    printf '#!/usr/bin/env bash\necho "Tests: 1 failed, 1 total"\nexit 1\n' > "$STUB_DIR/pnpm"
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "failed" and .scripts[0].launch_failed == false'
 }
 
 @test "workspace-prebuild が failed ならテストを 1 本も実行せず failed、reason を summary の先頭に置く" {
@@ -507,7 +529,8 @@ make_grep_invariant() {
     : > "$WT/a.bats"
     init_repo
     for args in "" "$WT" "$WT --base origin/main" "start $WT" "start $WT --files a.bats" "start $WT --base HEAD --files" \
-        "start $WT --base HEAD a.bats" "wait" "stop" "wait $WT --wait-sec x" "stop $WT --wait-sec 1"; do
+        "start $WT --base HEAD a.bats" "start $WT --base HEAD --commands" "start $WT --base HEAD --files a.bats --commands x" \
+        "wait" "stop" "wait $WT --wait-sec x" "stop $WT --wait-sec 1"; do
         # shellcheck disable=SC2086
         run bash "$SCRIPT" $args
         [ "$status" -eq 2 ]
@@ -667,16 +690,16 @@ git_commit() {
     [ "$(cat "$TMP_DIR/list.out")" = "added.txt" ]
 }
 
-@test "--base: フォールバック経路（npm test）には変数を渡さない（DEVFLOW_FAILED_FILES も）" {
-    echo '{"name":"x","scripts":{"test":"node t.js"}}' > "$WT/package.json"
+@test "--base: 解決したテストコマンドには変数を渡さない（DEVFLOW_FAILED_FILES も）" {
     rmdir "$WT/tests"
     init_repo
     echo new > "$WT/added.txt"
-    printf '#!/usr/bin/env bash\nprintf "%%s\\n%%s\\n%%s\\n" "${DEVFLOW_CHANGED_FILES-unset}" "${DEVFLOW_BASE-unset}" "${DEVFLOW_FAILED_FILES-unset}" > "%s/env.out"\nexit 0\n' "$TMP_DIR" > "$STUB_DIR/npm"
-    chmod +x "$STUB_DIR/npm"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n%%s\\n%%s\\n" "${DEVFLOW_CHANGED_FILES-unset}" "${DEVFLOW_BASE-unset}" "${DEVFLOW_FAILED_FILES-unset}" > "%s/env.out"\nexit 0\n' "$TMP_DIR" > "$STUB_DIR/fakerunner"
+    chmod +x "$STUB_DIR/fakerunner"
     export PATH="$STUB_DIR:$PATH" DEVFLOW_FAILED_FILES="$TMP_DIR/outer-failed.txt"
-    run_tests_base HEAD
-    echo "$JSON" | jq -e '.status == "passed" and [.scripts[] | del(.log)] == [{path: "npm test", exit: 0, launch_failed: false}]'
+    resolved_commands "fakerunner run"
+    run_tests --base HEAD --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "passed" and [.scripts[] | del(.log)] == [{path: "fakerunner run", exit: 0, launch_failed: false}]'
     [ "$(cat "$TMP_DIR/env.out")" = "$(printf 'unset\nunset\nunset')" ]
 }
 
@@ -733,17 +756,42 @@ EOF
     [ "$status" -eq 2 ]
 }
 
-@test "--files: tests/run-*.sh が無い repo はフォールバックを実行せず error" {
+@test "--files: tests/run-*.sh も解決したテストコマンドも無い repo は何も実行せず error" {
     echo '{"name":"x","scripts":{"test":"node t.js"}}' > "$WT/package.json"
     rmdir "$WT/tests"
     : > "$WT/a.test.mjs"
-    printf '#!/usr/bin/env bash\ntouch "%s/npm.ran"\nexit 0\n' "$TMP_DIR" > "$STUB_DIR/npm"
-    chmod +x "$STUB_DIR/npm"
+    make_runner_stub "$STUB_DIR/npm" npm 0
     export PATH="$STUB_DIR:$PATH"
     run_tests_files a.test.mjs
     [ "$status" -eq 0 ]
     echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false'
-    [ ! -f "$TMP_DIR/npm.ran" ]
+    [ ! -f "$TMP_DIR/calls.log" ]
+}
+
+@test "--files: 解決したテストコマンドは files_command の {files} の語を一覧のパスに置き換えて実行する（空白を含むパスも 1 引数）" {
+    rmdir "$WT/tests"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$PWD" "$@" > "%s/argv.out"\nexit 1\n' "$TMP_DIR" > "$STUB_DIR/fakerunner"
+    chmod +x "$STUB_DIR/fakerunner"
+    export PATH="$STUB_DIR:$PATH"
+    : > "$WT/a b.test.mjs"
+    : > "$WT/c.test.mjs"
+    resolved_commands "fakerunner run" "fakerunner run {files} --reporter dot"
+    run_tests --commands "$CMDS" --files "a b.test.mjs" c.test.mjs
+    echo "$JSON" | jq -e '.status == "failed" and .scripts[0].path == "fakerunner run a b.test.mjs c.test.mjs --reporter dot"'
+    [ "$(cat "$TMP_DIR/argv.out")" = "$(printf '%s\n' "$WT" run "a b.test.mjs" c.test.mjs --reporter dot)" ]
+}
+
+@test "--files: files_command に {files} の語がちょうど 1 つ無ければ何も実行せず error" {
+    rmdir "$WT/tests"
+    make_runner_stub "$STUB_DIR/fakerunner" fakerunner 0
+    export PATH="$STUB_DIR:$PATH"
+    : > "$WT/a.test.mjs"
+    for g in "" "fakerunner run" "fakerunner {files} {files}"; do
+        resolved_commands "fakerunner run" "$g"
+        run_tests --commands "$CMDS" --files a.test.mjs
+        echo "$JSON" | jq -e '.status == "error" and .tests == "error" and (.summary | contains("{files}"))'
+    done
+    [ ! -f "$TMP_DIR/calls.log" ]
 }
 
 # --- 落ちたテストファイルの受け取り（issue #1249）---

@@ -11,6 +11,15 @@
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ inline 生成される。
 // 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
 
+// dev-flow-test-commands.js（テストコマンドの解決。issue #1278）の引数と返り値。返り値はコマンドファイルの中身
+// （_lib/test-commands.mjs）に commands_file（run-tests の --commands。解決できなければ null もある）と error を足したもの。
+// dev-flow は Setup で 1 回だけ起動し、返り値を test_commands として evaluate / pr-iterate / finalize へ渡す。
+export const TEST_COMMANDS_ARGS_SPEC = { worktree: 'string', base: 'string' }
+export const TEST_COMMANDS_RESULT_SPEC = {
+  source: 'string|null', status: 'string', full_command: 'string|null', files_command: 'string|null',
+  sources: 'array', commands_file: 'string|null', error: 'string|null',
+}
+
 // dev-flow-evaluate.js（Diff triage・Evaluate・Evaluate 後の Validate と green-fix の再評価）の引数。
 // state は Validate までの state をそのまま渡す（ledger・shape・security review の対象判定は子が Diff triage で決める）。
 // notes は実装 spawn・evaluator の prompt に足す注記（Setup と Implement で決まる値）。
@@ -29,6 +38,7 @@ export const EVALUATE_ARGS_SPEC = {
   },
   ci_ac_indexes: 'array',
   notes: { deletion: 'string', deps: 'string', turbopack: 'string', test_discovery: 'string' },
+  test_commands: TEST_COMMANDS_RESULT_SPEC,
 }
 
 // dev-flow-evaluate.js の返り値。state は PR 工程以降が読む state（評価ループの途中経過は返さない）。
@@ -67,6 +77,7 @@ export const FINALIZE_ARGS_SPEC = {
   ci_ac_indexes: 'array',
   test_discovery_note: 'string',
   redgreen_state_dir: 'string|null',
+  test_commands: TEST_COMMANDS_RESULT_SPEC,
 }
 
 // dev-flow-finalize.js の返り値。result は dev-flow の返り値（journal_log_status は親が足す）、handoff は親が journal

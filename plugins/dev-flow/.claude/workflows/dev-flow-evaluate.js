@@ -26,6 +26,11 @@ function nsAgentOpts(opts) {
 }
 // ==== END inline: _lib/agent-namespace.mjs ====
 // ==== BEGIN inline: _lib/stage-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+const TEST_COMMANDS_RESULT_SPEC = {
+  source: 'string|null', status: 'string', full_command: 'string|null', files_command: 'string|null',
+  sources: 'array', commands_file: 'string|null', error: 'string|null',
+}
+
 const EVALUATE_ARGS_SPEC = {
   issue: 'string',
   repo: 'string|null',
@@ -41,6 +46,7 @@ const EVALUATE_ARGS_SPEC = {
   },
   ci_ac_indexes: 'array',
   notes: { deletion: 'string', deps: 'string', turbopack: 'string', test_discovery: 'string' },
+  test_commands: TEST_COMMANDS_RESULT_SPEC,
 }
 
 function stageTypeOf(value) {
@@ -1388,8 +1394,12 @@ function planWithoutPrBodyMaterial(plan) {
 const RUN_TESTS_WAIT_SEC = 450
 const RUN_TESTS_MAX_WAIT_SEC = 3600
 
-function runTestsPrompt(wt, base) {
-  return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base}`);
+function runTestsStartCommand(wt, base, commandsFile) {
+  return `run-tests start ${wt} --base ${base}${commandsFile ? ` --commands ${commandsFile}` : ''}`;
+}
+
+function runTestsPrompt(wt, base, commandsFile) {
+  return runTestsCommandPrompt(wt, runTestsStartCommand(wt, base, commandsFile));
 }
 
 function runTestsWaitPrompt(wt) {
@@ -1708,8 +1718,8 @@ function adoptReportedFiles(plan, results) {
   return { ...plan, serial: (plan.serial ?? []).map(adopt) }
 }
 
-function makeImplementLoop({ wt, issue, repo, base, spawn, spawnFailOpen, log, notes }) {
-  const testRunPrompt = runTestsPrompt(wt, `origin/${base}`)
+function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFailOpen, log, notes }) {
+  const testRunPrompt = runTestsPrompt(wt, `origin/${base}`, commandsFile)
   const hookPrompt = preCommitHookPrompt(wt)
 
   function runTestsAgent(label, phase) {
@@ -2169,7 +2179,7 @@ function diffTriageTopLevelKeys(unified) {
 
 // Evaluate 差し戻し・post-eval 再テストの実装 spawn と test ⇄ green-fix ループは Validate と共有する（_lib/implement-loop.mjs）。
 const { runImplement, trimPrSectionsIfOver, rewriteNonJapanesePrBodyItems, runValidateLoop } = makeImplementLoop({
-  wt: WT, issue: ISSUE, repo: REPO, base: BASE, spawn: trackedAgent, spawnFailOpen: failOpenAgent, log,
+  wt: WT, issue: ISSUE, repo: REPO, base: BASE, commandsFile: ARGS.test_commands.commands_file, spawn: trackedAgent, spawnFailOpen: failOpenAgent, log,
   notes: () => ({ deletion: ARGS.notes.deletion, deps: ARGS.notes.deps, turbopack: TURBOPACK_NOTE }),
 })
 

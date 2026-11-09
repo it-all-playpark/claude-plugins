@@ -102,6 +102,12 @@ const AGENTS = [
     tools: { exact: ['Bash'], exclude: ['Read', 'Write', 'Edit', 'Skill', 'TodoWrite', 'Glob', 'Grep'] },
   },
   { name: 'dev-implementer', effort: 'high' },
+  // test-command-resolver は Setup のテストコマンドの解決（issue #1278）。束のファイルを読むだけ（コマンド実行・書き込み・
+  // 検索の tool を持たせない — 実行と判定は run-tests、コマンドファイルの書き込みは workflow が検証した後に dev-runner-haiku が行う）
+  {
+    name: 'test-command-resolver', model: 'sonnet', effort: 'medium', maxTurns: 'finite',
+    tools: { exact: ['Read'], exclude: ['Bash', 'Write', 'Edit', 'Skill', 'TodoWrite', 'Glob', 'Grep'] },
+  },
   // issue-plan-reviewer は git-issue の Blocking Categories の判定者。読み取りだけ（gh・書き込みを持たせない —
   // 同じ仕組みの修正が続いているかの判定は書き手側に残す）
   {

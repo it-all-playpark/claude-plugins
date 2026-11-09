@@ -30,6 +30,35 @@ function nsAgentOpts(opts) {
   return { ...opts, agentType: AGENT_NAMESPACE + bare }
 }
 // ==== END inline: _lib/agent-namespace.mjs ====
+// ==== BEGIN inline: _lib/stage-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+const TEST_COMMANDS_RESULT_SPEC = {
+  source: 'string|null', status: 'string', full_command: 'string|null', files_command: 'string|null',
+  sources: 'array', commands_file: 'string|null', error: 'string|null',
+}
+
+function stageTypeOf(value) {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  return typeof value
+}
+
+function stageShapeErrors(value, spec, path = '') {
+  if (stageTypeOf(value) !== 'object') return [`${path || '(root)'}: object が必要（受信: ${stageTypeOf(value)}）`]
+  const errors = []
+  for (const [key, want] of Object.entries(spec)) {
+    const at = path ? `${path}.${key}` : key
+    const v = value[key]
+    if (v === undefined) {
+      errors.push(`${at}: 欠落`)
+    } else if (typeof want === 'object') {
+      errors.push(...stageShapeErrors(v, want, at))
+    } else if (!want.split('|').includes(stageTypeOf(v))) {
+      errors.push(`${at}: ${want} が必要（受信: ${stageTypeOf(v)}）`)
+    }
+  }
+  return errors
+}
+// ==== END inline: _lib/stage-contract.mjs ====
 
 // ==== BEGIN inline: _lib/resolve-arg.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 function resolvePositiveIntArg(args, name) {
@@ -278,6 +307,16 @@ const CI_VERIFY = args?.ci_verify == null
       return v
     })()
 const CI_EXCLUDE = CI_VERIFY ? CI_VERIFY.checks : []
+// test_commands: dev-flow が Setup で解決したテストコマンド（dev-flow-test-commands の返り値）。nested 起動はこれを使い、
+// 解決し直さない。単体起動（wrapper）は渡さず、テストを実行するときに同じ解決の工程を 1 回だけ起動する（resolveTestCommands）。
+// 不正形は明示 throw。
+const TEST_COMMANDS_ARG = args?.test_commands == null
+  ? null
+  : (() => {
+      const errors = stageShapeErrors(args.test_commands, TEST_COMMANDS_RESULT_SPEC)
+      if (errors.length) throw new Error(`pr-iterate: args.test_commands が不正形です（${errors.join(' / ')}）`)
+      return args.test_commands
+    })()
 // prior_devflow: 単体起動の wrapper が pr-iterate-prerun の出力から渡す、PR に載っていた最後の dev-flow サマリー
 // { tier, codes, url, head_sha }（無ければ null）。tier が HOLD なら終端サマリーに HOLD 理由の回収状況を出す。dev-flow は渡さない。
 // head_sha は marker の head（その HOLD を付けた PR head。小文字 40 桁 hex、marker に無ければ null）。不正形（head_sha の欠落を含む）は明示 throw。
@@ -1831,8 +1870,12 @@ async function waitBgJob({ start, wait, maxPolls, schema }) {
 const RUN_TESTS_WAIT_SEC = 450
 const RUN_TESTS_MAX_WAIT_SEC = 3600
 
-function runTestsPrompt(wt, base) {
-  return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base}`);
+function runTestsStartCommand(wt, base, commandsFile) {
+  return `run-tests start ${wt} --base ${base}${commandsFile ? ` --commands ${commandsFile}` : ''}`;
+}
+
+function runTestsPrompt(wt, base, commandsFile) {
+  return runTestsCommandPrompt(wt, runTestsStartCommand(wt, base, commandsFile));
 }
 
 function runTestsWaitPrompt(wt) {
@@ -1882,6 +1925,18 @@ async function runTestsJob({ wt, startPrompt, label, schema, waitJob, spawn, spa
   return res;
 }
 // ==== END inline: _lib/run-tests-prompt.mjs ====
+// ==== BEGIN inline: _lib/test-commands.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+function testCommandsResult(record, commandsFile, error = null) {
+  return {
+    source: record.source, status: record.status, full_command: record.full_command, files_command: record.files_command,
+    sources: record.sources, commands_file: commandsFile, error,
+  }
+}
+
+function unresolvedTestCommands(source, commandsFile, error) {
+  return testCommandsResult({ source, status: 'unresolved', full_command: null, files_command: null, sources: [] }, commandsFile, error)
+}
+// ==== END inline: _lib/test-commands.mjs ====
 
 phase('Iterate')
 
@@ -3239,6 +3294,20 @@ if (status !== 'lgtm') {
 // （結果は開示だけで、どれが green でも final_test_red は未解消のまま）。どちらも fail-open — 取れなければ「不明」「実行できなかった」と出す。
 // HOLD 時と同じ head・head 不明・dev-flow からの nested 起動では (a)(b) を起動しない。
 let finalTestCheck = null
+// dev-flow の Setup と同じ工程（dev-flow-test-commands.js）でテストコマンドを解決する。throw・形の不正な返り値は解決できなかった
+// ものとして扱う（commands_file null — run-tests は base の tree の tests/run-*.sh だけを見る）
+async function resolveTestCommands(wt, base) {
+  try {
+    const res = await workflow('dev-flow:dev-flow-test-commands-run', { worktree: wt, base })
+    const errors = stageShapeErrors(res, TEST_COMMANDS_RESULT_SPEC)
+    if (!errors.length) return res
+    log(`⚠️ dev-flow-test-commands の返り値の形が不正（${errors.join(' / ')}）— テストコマンドを解決できなかったものとして扱う`)
+    return unresolvedTestCommands(null, null, `dev-flow-test-commands の返り値の形が不正（${errors.join(' / ')}）`)
+  } catch (e) {
+    log(`⚠️ dev-flow-test-commands が throw（${e?.message ?? e}）— テストコマンドを解決できなかったものとして扱う`)
+    return unresolvedTestCommands(null, null, `dev-flow-test-commands が throw（${e?.message ?? e}）`)
+  }
+}
 if (NESTED?.caller !== 'dev-flow' && PRIOR_DEVFLOW?.tier === 'HOLD' && PRIOR_DEVFLOW.codes.includes('final_test_red')) {
   const holdHead = PRIOR_DEVFLOW.head_sha
   const endHead = isFullCommitSha(shaNow) ? shaNow.trim().toLowerCase() : null
@@ -3257,8 +3326,10 @@ if (NESTED?.caller !== 'dev-flow' && PRIOR_DEVFLOW?.tier === 'HOLD' && PRIOR_DEV
     )
     const base = prMeta?.base_ref || ''
     const holdTestSpawn = (prompt, o) => failOpenAgent(prompt, { agentType: 'dev-runner-haiku', phase: 'Iterate', ...o })
+    // テストを実行するのはここだけなので、test_commands を受け取っていない単体起動はここで解決の工程を 1 回だけ起動する
+    const testCommands = base ? (TEST_COMMANDS_ARG ?? await resolveTestCommands(isoWt, base)) : null
     const tests = base
-      ? await runTestsJob({ wt: isoWt, startPrompt: runTestsPrompt(isoWt, `origin/${base}`), label: 'hold-test-run', schema: HOLD_TEST_RUN, waitJob: waitBgJob, spawn: holdTestSpawn, spawnStop: holdTestSpawn })
+      ? await runTestsJob({ wt: isoWt, startPrompt: runTestsPrompt(isoWt, `origin/${base}`, testCommands.commands_file), label: 'hold-test-run', schema: HOLD_TEST_RUN, waitJob: waitBgJob, spawn: holdTestSpawn, spawnStop: holdTestSpawn })
       : null
     finalTestCheck = { ran: true, holdHead, endHead, changes: testRelatedChanges(diff), tests }
     log(`final_test_red の確認範囲: テスト関連の変更 ${finalTestCheck.changes.status}（${finalTestCheck.changes.files.length} 件）・最終 tree の全件テスト ${tests?.tests ?? '実行できず'} — HOLD は外さない`)

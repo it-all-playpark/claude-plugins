@@ -27,13 +27,20 @@
 export const RUN_TESTS_WAIT_SEC = 450
 export const RUN_TESTS_MAX_WAIT_SEC = 3600
 
+// --commands: Setup で解決したテストコマンドのファイル（dev-flow-test-commands の commands_file。worktree の外）。コマンド自体は
+// argv で運ばない（issue #1278）。null は解決の工程が失敗した run で、run-tests は base の tests/run-*.sh だけを見る。
+function runTestsStartCommand(wt, base, commandsFile) {
+  return `run-tests start ${wt} --base ${base}${commandsFile ? ` --commands ${commandsFile}` : ''}`;
+}
+
 /**
  * @param {string} wt worktree の絶対パス
  * @param {string} base 変更ファイルの起点 ref（`origin/<base branch>`）
+ * @param {string|null} commandsFile 解決したテストコマンドのファイル（null なら --commands を付けない）
  * @returns {string}
  */
-export function runTestsPrompt(wt, base) {
-  return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base}`);
+export function runTestsPrompt(wt, base, commandsFile) {
+  return runTestsCommandPrompt(wt, runTestsStartCommand(wt, base, commandsFile));
 }
 
 // Final reconcile の test#final-rerun / test#validate-rerun: 全件実行（test#final / skip の run の Validate）が落ちた
@@ -43,11 +50,12 @@ export function runTestsPrompt(wt, base) {
 /**
  * @param {string} wt worktree の絶対パス
  * @param {string} base ランナーの集合を決める ref（runTestsPrompt と同じ `origin/<base branch>`）
+ * @param {string|null} commandsFile runTestsPrompt と同じテストコマンドのファイル
  * @param {string[]} files 再実行するテストファイル（WT 相対）
  * @returns {string}
  */
-export function runTestFilesPrompt(wt, base, files) {
-  return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base} --files ${files.join(' ')}`);
+export function runTestFilesPrompt(wt, base, commandsFile, files) {
+  return runTestsCommandPrompt(wt, `${runTestsStartCommand(wt, base, commandsFile)} --files ${files.join(' ')}`);
 }
 
 /**
