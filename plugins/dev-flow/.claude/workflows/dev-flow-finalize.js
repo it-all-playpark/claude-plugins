@@ -638,6 +638,34 @@ function classifyAcScope(ac, opts = {}) {
   return EXPLICIT_HUMAN_RE.test(String(ac ?? '').replace(INLINE_CODE_RE, ' ')) ? 'external' : 'mixed'
 }
 
+function inlineCodesOf(ac) {
+  return (String(ac ?? '').match(INLINE_CODE_RE) ?? []).map((m) => m.slice(1, -1))
+}
+
+const TEST_RUN_KINDS = ['validate', 'test_final']
+
+const TEST_ENTRY_PREFIX_RE = /^(?:bash )?(?:\.\/)?/
+
+function testRunAcDisclosures({ acceptanceCriteria, result, run, changedFiles, worktree }) {
+  if (!TEST_RUN_KINDS.includes(run)) throw new Error(`testRunAcDisclosures: invalid run: ${run}`)
+  if (!result || typeof result !== 'object' || typeof worktree !== 'string' || worktree === '') return []
+  const root = worktree.replace(/\/+$/, '') + '/'
+  const ran = (Array.isArray(result.scripts) ? result.scripts : [])
+    .map((s) => (s && typeof s.path === 'string' && s.path.startsWith(root) ? s.path.slice(root.length) : ''))
+    .filter((p) => p !== '')
+  const green = result.tests === 'passed' && result.green === true
+  const changed = Array.isArray(changedFiles) ? changedFiles : null
+  const acs = Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []
+  const out = []
+  for (let i = 0; i < acs.length; i++) {
+    const entries = inlineCodesOf(acs[i]).map((c) => c.replace(TEST_ENTRY_PREFIX_RE, ''))
+    if (!entries.length || !entries.every((e) => ran.includes(e))) continue
+    const uniq = [...new Set(entries)]
+    out.push({ ac_index: i, run, entries: uniq, green, entry_changed: changed === null ? null : uniq.some((e) => changed.includes(e)) })
+  }
+  return out
+}
+
 function ciAcIndexes(actors) {
   const out = []
   const list = Array.isArray(actors) ? actors : []
@@ -1430,6 +1458,7 @@ function buildDevflowSummaryBody({
   ciVerify,
   localVerify,
   acVerify,
+  testRunAc,
   conflictAutoresolve,
   securityReview,
   headSha,
@@ -1529,6 +1558,21 @@ function buildDevflowSummaryBody({
     if (!d) return '';
     return ` / AC のコマンド \`${mdCell(d.command)}\` は最終 tree で exit ${d.exit_code ?? 0}（${d.log_path ? 'log: ' + mdCell(d.log_path) : 'log なし'}）— 人手確認の材料（AC の達成判定には使っていない）`;
   };
+  const TEST_RUN_LABELS = { validate: 'Validate', test_final: 'Final reconcile の test#final' };
+  const testRunAcByIndex = new Map((Array.isArray(testRunAc) ? testRunAc : [])
+    .filter((d) => d != null && Number.isInteger(d.ac_index) && Object.prototype.hasOwnProperty.call(TEST_RUN_LABELS, d.run) && Array.isArray(d.entries) && d.entries.length > 0)
+    .map((d) => [d.ac_index, d]));
+  const testRunNote = (k) => {
+    const d = testRunAcByIndex.get(k);
+    if (!d) return '';
+    const changedNote = d.entry_changed === true ? 'PR がこの入口を変更している'
+      : d.entry_changed === false ? 'PR はこの入口を変更していない'
+        : 'PR による入口の変更の有無は不明（変更ファイル一覧を取得できなかった）';
+    const entries = d.entries.map((e) => `\`${mdCell(e)}\``).join('・');
+    return ` / pipeline の ${TEST_RUN_LABELS[d.run]}（run: ${d.run}）が入口 ${entries} を実行して ${d.green === true ? 'green' : 'red'}（${changedNote}）`
+      + '— 選択実行の可能性があり全件実行とは限らない。人手確認の材料（AC の達成判定には使っていない）';
+  };
+  const acRunNotes = (k) => acVerifyNote(k) + testRunNote(k);
   const acUnsatisfiedCode = (k) => {
     if (acAgentGaps.includes(k)) return 'ac_agent_unsatisfied';
     if (acHumanGaps.includes(k)) return 'ac_human_pending';
@@ -1886,7 +1930,7 @@ function buildDevflowSummaryBody({
     ].join(' / ');
     const current = [
       ...g.blocking.map((it) => (it.evidence ? mdCell(it.evidence) : '未解消')),
-      ...(g.ac != null ? [`AC 判定 satisfied:false（${g.ac.verified_by != null ? g.ac.verified_by : 'inspection'}）${g.ac.evidence ? ': ' + mdCell(g.ac.evidence) : ''}${acVerifyNote(g.acIndex)}`] : []),
+      ...(g.ac != null ? [`AC 判定 satisfied:false（${g.ac.verified_by != null ? g.ac.verified_by : 'inspection'}）${g.ac.evidence ? ': ' + mdCell(g.ac.evidence) : ''}${acRunNotes(g.acIndex)}`] : []),
       ...g.escalate.map((it) => 'ESCALATE: ' + escalateCurrent(it)),
     ].join(' / ');
     return { _kind: 'ac_group', _line: `| ❌ 未解消 | 必須（${g.label} に紐づく ${count} 件${breakdown}） | ac | ${content} | ${current} | ${g.actions.join('・')} |` };
@@ -1959,7 +2003,7 @@ function buildDevflowSummaryBody({
       lines.push('|---|---|---|---|');
       for (const ac of unsatisfiedACRows) {
         const verifiedBy = ac.verified_by != null ? ac.verified_by : 'inspection';
-        const evidenceCell = (ac.evidence ? mdCell(ac.evidence) : '—') + acVerifyNote(ac.ac_index);
+        const evidenceCell = (ac.evidence ? mdCell(ac.evidence) : '—') + acRunNotes(ac.ac_index);
         lines.push(`| ❌ 未達 | AC#${ac.ac_index + 1}${ac.observational === true ? '（観測型）' : ''}${ac.ci === true ? '（CI）' : ''} | ${verifiedBy} | ${evidenceCell} |`);
       }
     }
@@ -3844,8 +3888,21 @@ if (ciTargets.length > 0) {
   }
 }
 
+// pipeline が最終 tree で実行したテストの入口だけを inline code に書いた観測型 AC に、その run の結果と PR による入口の変更の有無を
+// 開示する（testRunAcDisclosures）。fix 適用 run は test#final の結果だけを使い（Validate は最終 tree と異なる tree の結果）、
+// test#final が無い（sync 失敗・throw）なら開示しない。開示だけで、AC の達成判定・merge tier は変えない — 入口とテストは PR が
+// 書き換えられ、run-tests の選択実行の green は AC が求める全件 green より弱い。変更ファイルは pipeline が base との差分から求めた changed.files。
+const testRunAcFinal = (iterate?.fixes_applied ?? 0) > 0
+const testRunAc = testRunAcDisclosures({
+  acceptanceCriteria: req.acceptance_criteria,
+  result: testRunAcFinal ? finalTestRun : state.val,
+  run: testRunAcFinal ? 'test_final' : 'validate',
+  changedFiles: changed?.files ?? null,
+  worktree: WT,
+}).filter((d) => req.ac_observational?.[d.ac_index] === true)
+
 // Post-summary: 終端サマリーを PR にコメント投稿する（失敗は警告のみ）。
-const summaryAcResults = finalAcReconcile === 'reverified' ? state.finalAcResults : (state.evalResult?.ac_results ?? null)
+const summaryAcResults =finalAcReconcile === 'reverified' ? state.finalAcResults : (state.evalResult?.ac_results ?? null)
 const summaryBody = buildDevflowSummaryBody({
   pr: pr.pr_number,
   mergeTier: mergeTier.tier,
@@ -3889,6 +3946,7 @@ const summaryBody = buildDevflowSummaryBody({
   localVerify: state.localVerify ?? null,
   // 最終 tree で exit 0 だった AC コマンド（reconcileAcVerifyTree の後）。人手 AC の行に確認材料として載せるだけ
   acVerify: acVerifyDisclosures(state.acVerify),
+  testRunAc,
   conflictAutoresolve: iterate?.conflict_autoresolve ?? null,
   securityReview: securityReviewFinal,
   // merge tier を判定した PR head（merge-tier-facts の headRefOid）。取得失敗は marker に head を載せない
