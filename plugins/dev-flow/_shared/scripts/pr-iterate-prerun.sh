@@ -32,7 +32,7 @@
 # 再利用する worktree の basename が git / git-* のときも ok:false で人間に返す（worktree 分離ガードの拒否。移動はしない）。
 #
 # Output (stdout, JSON 1 行):
-#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, plugin_commit, pr_intent?, fix_direction?, error?}
+#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_reviewer, plugin_commit, pr_intent?, fix_direction?, error?}
 #   plugin_commit: 実行中の dev-flow plugin の commit（12 桁 hex）。dev-flow-prerun と同じ dev-flow/scripts/plugin-commit.sh で
 #     plugin root から決める（telemetry 記録専用で gate の入力にしない）。決められなければ null（ok:false でも載せる）
 #   fix_direction: --direction のファイルの本文（ok:true で --direction を渡したときだけ載せる）
@@ -50,14 +50,11 @@
 #     head_mismatch は head_sha が今の PR head（headRefOid）と違うか、head_sha が null のとき true。終端サマリーが無ければ null
 #   ci_wait_ceiling_seconds: pr-iterate の CI 待ちの上限（秒）。repo の PR で走った成功 run の workflow ごとの所要時間から
 #     決める（ci-wait-ceiling.sh。base_ref が決まる前に止まった ok:false と gh の読み取り失敗は 300）
-#   security_review: 敵対的 security review の起動時の判定 {target, reasons, reviewer_context_changed, reviewer}。reviewer は review を回す
-#     CLI の opt-in（"dev-flow".security_reviewer。devflow-config.sh で user 設定の repo 別の節・PR の base の origin/<base>・user 設定から読み、
-#     PR head・メイン checkout の作業ツリーの設定は読まない。
-#     無ければ "claude"。ok:false の早期終端では載せない — workflow は省略を "claude" として扱う）。origin/<base>...<PR head> の diff を
-#     security-review-scope.sh で判定し、全ファイルが許可リストに当たるときだけ target:false。判定できない（ok:false の
-#     早期終端・base 不明・node 不在・取得失敗）ときは target:true。reviewer_context_changed は diff が reviewer の指示ファイル
-#     （CLAUDE.md / AGENTS.md / repo 直下の .claude/ 等）を変えるか — 判定できたうえで false のときだけ false（workflow は
-#     この決定論の値を run の終わりまで固定する。run 中の判定は LLM の中継を通るので PR の指示文で偽れる）
+#   security_reviewer: 敵対的 security review を回す CLI の opt-in（"dev-flow".security_reviewer。devflow-config.sh で user 設定の
+#     repo 別の節・PR の base の origin/<base>・user 設定から読み、PR head・メイン checkout の作業ツリーの設定は読まない。
+#     無ければ "claude"。値は検証せずに渡す — workflow が範囲外を明示 error にする。ok:false の早期終端では null）。
+#     対象判定（target / reasons / reviewer_context_changed）は出さない — workflow が reviewer に関わらず hook で縛った
+#     security-codex-relay で取り、引数で受け取らない
 #   不明な値は null。ok:false でも exit 0（引数不正と --direction の拒否のみ exit 2、stdout 空）。
 #
 # GitHub I/O は `gh pr view` と `gh run list`（PR で走った成功 run。いずれも読み取り）のみ。push / comment / worktree の削除（この呼び出しで作った
@@ -173,8 +170,8 @@ prior_devflow="null"
 prior_summary="null"
 pr_intent="null"
 ci_wait_ceiling_seconds="$CI_WAIT_CEILING_DEFAULT"
-# 敵対的 security review の起動時の判定。判定できるまで（ok:false の早期終端を含む）は対象（fail-closed）
-security_review='{"target":true,"reasons":["not_determined"],"reviewer_context_changed":true}'
+# security review を回す CLI の opt-in。ok:false の早期終端では null（読む前に止まる）
+security_reviewer="null"
 error=""
 
 emit() {
@@ -194,7 +191,7 @@ emit() {
         --argjson prior_devflow "$prior_devflow" \
         --argjson prior_summary "$prior_summary" \
         --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
-        --argjson security_review "$security_review" \
+        --argjson security_reviewer "$security_reviewer" \
         --argjson fix_direction "${DIRECTION_JSON:-null}" \
         --argjson pr_intent "$pr_intent" \
         --arg plugin_commit "$plugin_commit" \
@@ -205,7 +202,7 @@ emit() {
          head_sha: ($head_sha | nz), repo: ($repo | nz), epoch: $epoch,
          worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree,
          prior_devflow: $prior_devflow, prior_summary: $prior_summary, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds,
-         security_review: $security_review,
+         security_reviewer: $security_reviewer,
          plugin_commit: (if ($plugin_commit | test("^[0-9a-f]{12}$")) then $plugin_commit else null end)}
         + (if $ok and $pr_intent != null then {pr_intent: $pr_intent} else {} end)
         + (if $ok and $fix_direction != null then {fix_direction: $fix_direction} else {} end)
@@ -465,28 +462,13 @@ git -C "$WT" clean -fdx -- '.devflow-tmp/.isolation-probe*' >/dev/null 2>&1 || t
 exclude_devflow_tmp "$WT" || true
 
 # ============================================================================
-# Segment 5: 敵対的 security review の起動時の判定
+# Segment 5: security review を回す CLI の opt-in
 # ============================================================================
 
-# PR 全体（origin/<base>...<PR head>）の diff が決定論の許可リスト（_lib/security-review-scope.mjs）だけなら対象外。
-# 判定できない（base 不明・node 不在・取得失敗・出力が読めない）ときは対象のまま。workflow は LGTM の前に PR head の diff で
-# 判定し直し、どれか 1 回でも対象なら対象のまま扱う。
-if [[ -n "$base_ref" ]]; then
-    scope_out="$(bash "$(dirname "${BASH_SOURCE[0]}")/security-review-scope.sh" "$WT" "origin/${base_ref}" "$head_sha" 2>/dev/null)" || scope_out=""
-    if scope_json="$(printf '%s' "$scope_out" | jq -ce '
-        (type == "object" and .ok == true and .reviewer_context_changed == false | not) as $ctx
-        | if type == "object" and .ok == true and .target == false then {target: false, reasons: [], reviewer_context_changed: $ctx}
-        else {target: true, reasons: ((.reasons // []) | map(select(type == "string")) | .[:20]), reviewer_context_changed: $ctx} end' 2>/dev/null)"; then
-        security_review="$scope_json"
-    else
-        security_review='{"target":true,"reasons":["scope_unreadable"],"reviewer_context_changed":true}'
-    fi
-fi
-
-# security review を回す CLI の opt-in（"dev-flow".security_reviewer。issue #1087）。読む場所と優先順は
-# devflow-config.sh（dev-flow-prerun と共通。security-reviewer-config.sh が既定値 "claude" を足す）で、base ref は PR の base。
-# PR head（worktree）とメイン checkout の作業ツリーの設定ファイルは読まない
+# "dev-flow".security_reviewer（issue #1087）。読む場所と優先順は devflow-config.sh（dev-flow-prerun と共通。
+# security-reviewer-config.sh が既定値 "claude" を足す）で、base ref は PR の base。PR head（worktree）とメイン checkout の
+# 作業ツリーの設定ファイルは読まない。対象判定はここで取らない — workflow が reviewer に関わらず hook で縛った
+# security-codex-relay で取る（wrapper の LLM が転記する値を判定の入力にしない）
 security_reviewer="$(security_reviewer_config "$ROOT" "$base_ref")"
-security_review="$(printf '%s' "$security_review" | jq -c --argjson r "$security_reviewer" '. + {reviewer: $r}')"
 
 emit true

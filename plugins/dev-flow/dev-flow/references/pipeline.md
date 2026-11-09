@@ -131,7 +131,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
     `issue_type`・`breaking_change === true` → complex）を通った run だけ、行数で下げ方向にだけ補正する。LLM の事前見積もりは使わない
   - Evaluate を走らせるか（`runEval`）— micro 以外、または danger-grep / testsurf の hit・green-fix・drop・宣言外変更がある run
   - 宣言外変更 — implementer が申告しなかった変更を concern に積み、evaluator の重点監査に回す
-  - 敵対的 security review の対象か（security-scope。`security-review.md`）— lite route の入口と nested pr-iterate の引数になる
+  - security review 対象か: lite の入口。pr-iterate は引数で受けず reviewer 不問で hook が縛る `security-codex-relay` が取る
 - shape は Evaluate の深さを決める: micro は evaluator を回さない（`runEval` で強制されたときだけ回す）、standard は
   差し戻さない（例外は agent AC の未達）、complex は差し戻しループを回す
 - **失敗の扱い**:

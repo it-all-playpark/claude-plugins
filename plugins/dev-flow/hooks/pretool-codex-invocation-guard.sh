@@ -3,7 +3,8 @@
 # （issue #1087）、Bash と返り値をその spawn の workflow の prompt と実 stdout に縛る（issue #1116）
 #
 # 目的:
-#   pr-iterate の Codex 経路は、security-scope・prep・codex の起動・result.json の判定を security-codex-relay に写させる。中継は PR の
+#   pr-iterate は対象判定（GitHub の PR の sha・fetch・security-scope）を reviewer に関わらず、Codex 経路はさらに prep・codex の起動・
+#   result.json の判定を security-codex-relay に写させる。中継は PR の
 #   worktree を cwd に起動し（PR が変えた CLAUDE.md 等を受け取り得る）、codex の出力や指摘の本文（Codex が diff を引用した文）を読む
 #   round もあるので、誘導されて別のコマンド（result.json の上書き・flag を変えた codex の起動）を実行し得る。文字列の一致で
 #   「危ないコマンド」を探すやり方は、引用の分割（cod''ex）・バックスラッシュ・$ 展開・glob で語を組み立てられるので止められない。
@@ -19,7 +20,9 @@
 #   1. 入力に `security-codex-relay` の文字列が無い → 無出力 exit 0（他の agent・メイン session の高速経路）
 #   2. JSON として読めない → deny。`agent_type` が `dev-flow:security-codex-relay` でない・tool が Bash / StructuredOutput でない
 #      → 無出力 exit 0
-#   3. Bash は command が次の形のどれかと完全に一致するときだけ 4 へ進む（改行・余分な空白・引用符・shell の記号を含む形は一致しない）:
+#   3. Bash は command が次の形のどれかと完全に一致するときだけ 4 へ進む（改行・余分な空白・引用符・shell の記号を含む形は一致しない）。
+#      先頭の 3 形（gh pr view → git fetch → security-review-scope）は pr-iterate の対象判定で、reviewer（claude / codex）に関わらず
+#      round 1 の前と各 round にこの中継が取る — pr-iterate は判定を引数で受け取らないので、判定の入力はこの hook で縛った形だけになる:
 #        gh pr view <pr> --repo <owner>/<name> --json baseRefOid,headRefOid
 #        git fetch origin <base> refs/pull/<pr>/head
 #        security-review-scope <W> <sha> <sha> --save-diff

@@ -29,7 +29,7 @@
 
 export const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer', 'hooks_not_running'];
 
-// security_reviewer の閉じた enum（pr-iterate の parseSecurityReviewArg と同じ値）
+// security_reviewer の閉じた enum（pr-iterate の args.security_reviewer と同じ値）
 export const SECURITY_REVIEWERS = ['claude', 'codex'];
 
 export const PRERUN_MISSING_MSG = 'dev-flow: args.setup が無い — /dev-flow wrapper（dev-flow/SKILL.md の preflight）で `dev-flow-prerun --issue <N> --worktree <path>` を実行し、続けて別の Bash 呼び出しで `ensure-worktree-deps --setup <worktree>/.devflow-tmp/prerun-setup.json` を実行して、その stdout JSON を Workflow の args.setup に渡せ（workflow 内 fallback は無い）';
@@ -112,7 +112,7 @@ export function validatePrerunSetup(raw, issue) {
   // 決め（_shared/scripts/ci-wait-ceiling.sh）、dev-flow は加工せず pr-iterate の args.ci_wait_ceiling_seconds へ渡す
   if (!(Number.isInteger(raw.ci_wait_ceiling_seconds) && raw.ci_wait_ceiling_seconds > 0)) fail('ci_wait_ceiling_seconds', raw.ci_wait_ceiling_seconds);
   // security_reviewer は nested pr-iterate の security review を回す CLI の opt-in（"dev-flow".security_reviewer）。prerun が
-  // base branch か user 設定から読み（未設定は "claude"）、dev-flow は pr-iterate の args.security_review.reviewer へ渡す。
+  // base branch か user 設定から読み（未設定は "claude"）、dev-flow は pr-iterate の args.security_reviewer へ渡す。
   // 品質ゲートの判定者なので、欠落・out-of-enum を "claude" に倒さず明示 error にする
   if (!SECURITY_REVIEWERS.includes(raw.security_reviewer)) {
     throw new Error(`dev-flow: args.setup の必須キーが欠落/型不正: security_reviewer（${SECURITY_REVIEWERS.join(' | ')}。受信: ${stringifyForError(raw.security_reviewer)}）— skill-config の "dev-flow".security_reviewer を直して dev-flow-prerun を再実行せよ`);

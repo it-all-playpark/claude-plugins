@@ -342,7 +342,7 @@ test('[lite-route][E] ci-check-lite が throw しても lite 経路は full pr-i
 //     （_lib/security-review-scope.mjs の許可リスト）に当たるときだけ（issue #1063）
 // ============================================================
 
-test('[lite-route][F] clean-micro でも security-scope が対象外を返さなければ lite に入らず、対象として pr-iterate へ渡す', async () => {
+test('[lite-route][F] clean-micro でも security-scope が対象外を返さなければ lite に入らず、フルの pr-iterate へ委譲する', async () => {
   for (const [name, securityScope] of [
     ['target:true', { ok: true, target: true, reasons: ['not_allowlisted: src/foo.ts'] }],
     ['ok:false（取得失敗）', { ok: false, target: true, reasons: ['scope_unavailable'], error: 'x' }],
@@ -356,7 +356,6 @@ test('[lite-route][F] clean-micro でも security-scope が対象外を返さな
     assert.equal(err, null, `${name}: run が throw した: ${err?.message}`);
     assert.equal(calls.filter((c) => c.agentType === 'dev-flow:pr-reviewer').length, 0, `${name}: lite の pr-reviewer が呼ばれた`);
     assert.equal(workflowCalls.length, 1, `${name}: フル pr-iterate へ委譲されるべき`);
-    assert.equal(workflowCalls[0].opts.security_review.target, true, `${name}: pr-iterate に対象として渡すべき`);
   }
 });
 

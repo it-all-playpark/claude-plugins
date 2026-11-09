@@ -368,13 +368,23 @@ const FIX_DIRECTION = args?.fix_direction == null
 // データで入れる（_lib/review-ac.mjs の securityFixIntentBlock）。PR の作者が書けるので fix_direction より下に置き、review・
 // security review の prompt には入れない。dev-flow は渡さない（AC を意図として使う）。不正形は明示 throw（parsePrIntentArg）。
 const PR_INTENT = parsePrIntentArg(args?.pr_intent, FIX_DIRECTION_MAX_CHARS)
-// security_review: 起動時の敵対的 security review の対象判定 { target, reasons }（dev-flow は Diff triage の判定、
-// 単体起動の wrapper は pr-iterate-prerun の出力を渡す）。無いときは対象として扱う（判定できない入力を
-// 対象外と同一視しない）。不正形は明示 throw（_lib/security-review.mjs の parseSecurityReviewArg）。
-const SECURITY_REVIEW_ARG = parseSecurityReviewArg(args?.security_review)
-// review を回す CLI（'claude' / 'codex'）。'codex' は pr-iterate-prerun が base branch か user 設定の opt-in から決めた値で、
-// 渡されないとき（dev-flow の nested 起動・args.security_review が無い）は 'claude'。品質ゲートの判定者を設定の明示なしに変えない
-const SECURITY_REVIEWER = SECURITY_REVIEW_ARG?.reviewer ?? 'claude'
+// 敵対的 security review の対象判定（target / reasons / reviewer_context_changed）は引数で受け取らない。起動時（security-scope#0）も
+// round ごと（security-scope#i）も、reviewer・呼び出し元に関わらず hook で縛った security-codex-relay が取る（下の「敵対的 security review」）。
+// 引数の値は wrapper の LLM が転記するので PR の文で偽れ、caller も同じ LLM が書く — 受け取る口を残さず、渡されたら明示 throw
+if (args?.security_review !== undefined) {
+  throw new Error('pr-iterate: args.security_review は受け取らない（対象判定は pr-iterate が security-codex-relay で取る）。渡さずに起動する')
+}
+// review を回す CLI（'claude' / 'codex'）。dev-flow は dev-flow-prerun、単体起動の wrapper は pr-iterate-prerun が base branch か
+// user 設定の opt-in から決めた値を渡す。省略は 'claude'（品質ゲートの判定者を設定の明示なしに変えない）。範囲外は明示 throw
+const SECURITY_REVIEWERS = ['claude', 'codex']
+const SECURITY_REVIEWER = args?.security_reviewer == null
+  ? 'claude'
+  : (() => {
+      if (!SECURITY_REVIEWERS.includes(args.security_reviewer)) {
+        throw new Error(`pr-iterate: args.security_reviewer は ${SECURITY_REVIEWERS.join(' / ')} のいずれか（受信: ${JSON.stringify(args.security_reviewer)}）`)
+      }
+      return args.security_reviewer
+    })()
 // 終端サマリーの PR コメント投稿。dev-flow は自分の終端サマリーを投稿するので caller:'dev-flow' のときだけ止め、
 // 単体起動（wrapper 経由の caller:'standalone' / nested 無しの直接起動）は投稿する
 const POST_TERMINAL_SUMMARY = NESTED?.caller !== 'dev-flow'
@@ -1586,17 +1596,6 @@ const SECURITY_FIX_GUIDANCE = 'security review の指摘の直し方:\n'
   + '両方を満たす設計が無くて返した指摘は、summary にぶつかる意図（AC の番号、または PR の意図の該当箇所）と破れた不変条件を書く。'
   + '直した指摘の番号は入れない\n';
 
-function parseSecurityReviewArg(raw) {
-  if (raw == null) return null;
-  const reviewers = ['claude', 'codex'];
-  const reasonsOk = raw.reasons === undefined || (Array.isArray(raw.reasons) && raw.reasons.every((s) => typeof s === 'string'));
-  const reviewerOk = raw.reviewer === undefined || reviewers.includes(raw.reviewer);
-  if (typeof raw !== 'object' || typeof raw.target !== 'boolean' || !reasonsOk || typeof raw.reviewer_context_changed !== 'boolean' || !reviewerOk) {
-    throw new Error(`pr-iterate: args.security_review が不正形です（target: boolean / reasons: string[]（省略可） / reviewer_context_changed: boolean / reviewer: ${reviewers.join(' | ')}（省略可））: ${JSON.stringify(raw)}`);
-  }
-  return { target: raw.target, reasons: raw.reasons ?? [], reviewer_context_changed: raw.reviewer_context_changed, reviewer: raw.reviewer ?? 'claude' };
-}
-
 const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
 
 function securityReviewPrompt({ pr, reviewDir, diffPath, headSha, base, worktree, verifyItems = [] }) {
@@ -2616,28 +2615,68 @@ async function ensureFixCommitted(i, shaPrev) {
 }
 
 // ---- 敵対的 security review ----
-// 信頼境界をまたぎうる変更を含む PR は、LGTM を確定する前に security-reviewer の review を通す。対象かどうかは起動時の
-// 判定（args.security_review）と、今の PR head の `<base>...<head>` の diff で取り直す判定（security-scope#i）のどれか
+// 信頼境界をまたぎうる変更を含む PR は、LGTM を確定する前に security-reviewer の review を通す。対象かどうかは round 1 の前の
+// 判定（security-scope#0）と、今の PR head の `<base>...<head>` の diff で取り直す判定（security-scope#i）のどれか
 // 1 回でも対象なら、run の終わりまで対象のまま（後の判定で対象外に戻さない — diff を書き換えて判定だけをすり抜ける経路を
 // 残さない）。対象外にできるのは決定論の許可リスト（_lib/security-review-scope.mjs）に全ファイルが当たる diff だけ。
+// 判定はどちらも reviewer（claude / codex）・呼び出し元に関わらず security-codex-relay で取る（securityScopeOf）。
 // round の開始時に対象の run は各 round で review#i と並列に security review を回し、review の blocking と security の
 // critical/major を 1 回の fix#i にまとめる（major が 1 件ずつ見つかるたびに「fix → 再 review → CI 待ち → security review」の
 // cycle を足さない）。対象でない run は LGTM の候補の round でだけ判定を取り直す。security review の結果は件数だけを
 // 返り値・終端サマリーに出し、指摘の本文（攻撃経路）は公開コメントにも history にも載せない（fix の prompt にだけ渡す）。
-let securityTarget = SECURITY_REVIEW_ARG == null ? true : SECURITY_REVIEW_ARG.target
-if (SECURITY_REVIEW_ARG == null) log('security review: args.security_review が無い — 対象として扱う（fail-closed）')
-// diff が reviewer の指示ファイルを変えるか。起動時の決定論の値（args）と run 中の判定のどれか 1 回でも true なら run の終わりまで
-// true（run 中の判定は PR の worktree を cwd に起動する中継の返り値で、PR が書いた指示文で false に偽れるため、後の判定で戻さない）
-let reviewerContextChanged = SECURITY_REVIEW_ARG?.reviewer_context_changed === true
+//
+// GitHub の PR の head と base の sha を取り（security-pr-head#<n>）、その object を fetch して（security-pr-fetch#<n>）、scope も
+// その 2 つの sha で取る（security-scope#<n>）。中継はすべて security-codex-relay（hook がコマンドを prompt の最終行に、返り値を
+// 実 stdout に縛る — PR の worktree を cwd に起動しても、PR が書いた指示文で判定を偽れない）。手元の HEAD・origin/<base>・shaNow は
+// PR の worktree で動く中継の操作や自由な返り値で変わるので、review する tree の基準にしない。返り値は { prHead, scope }
+// （取れなければ null。base branch 名か repo が不明なら起動しない）
+async function securityScopeOf(n) {
+  const base = prMeta?.base_ref || ''
+  if (!base || !REPO) {
+    log(`⚠️ security-scope#${n}: ${!base ? 'base branch 名' : 'repo'}が不明 — GitHub の PR の sha を取れず、対象として扱う`)
+    return { prHead: null, scope: null }
+  }
+  const prHead = prHeadOf(await failOpenAgent(
+    securityPrHeadPrompt({ pr: PR, repo: REPO }),
+    { agentType: 'security-codex-relay', schema: SECURITY_PR_HEAD_SCHEMA, label: `security-pr-head#${n}`, phase: 'Iterate' },
+  ))
+  if (prHead == null) return { prHead: null, scope: null }
+  await failOpenAgent(
+    securityPrFetchPrompt({ base, pr: PR }),
+    { agentType: 'security-codex-relay', schema: SECURITY_CODEX_RUN_SCHEMA, label: `security-pr-fetch#${n}`, phase: 'Iterate' },
+  )
+  const scope = await failOpenAgent(
+    securityScopePrompt({ worktree: isoWt, base: prHead.base, head: prHead.head, saveDiff: true }),
+    { agentType: 'security-codex-relay', schema: SECURITY_SCOPE_SCHEMA, label: `security-scope#${n}`, phase: 'Iterate' },
+  )
+  return { prHead, scope }
+}
+// scope の判定を使えるのは、GitHub の PR の sha が取れ、scope の head_sha がその head と今の PR head（shaNow。40 桁で分かるとき）の
+// 両方に一致するときだけ（別の tree の判定で対象外・reviewer_context_changed:false にしない）
+function securityScopeHeadOk(prHead, scope) {
+  const head = typeof scope?.head_sha === 'string' ? scope.head_sha.trim().toLowerCase() : ''
+  return prHead != null && isFullCommitSha(head) && head === prHead.head
+    && (!isFullCommitSha(shaNow) || head === shaNow.trim().toLowerCase())
+}
+// round 1 の前の判定（security-scope#0）。securityTarget・reviewerContextChanged・securityReviewHead の初期値はこの結果だけから
+// 決める。pr-head・scope の失敗、head の食い違いは対象かつ reviewer_context_changed:true（fail-closed — 判定できない入力を
+// 対象外・指示ファイルを変えない PR と同一視しない）
+const securityScope0 = await securityScopeOf(0)
+const securityScope0Ok = securityScopeHeadOk(securityScope0.prHead, securityScope0.scope)
+if (!securityScope0Ok) log('⚠️ security-scope#0 の判定を使えない（GitHub の PR の sha・diff を取れない、または head が食い違う）— 対象・reviewer_context_changed として扱う（fail-closed）')
+let securityTarget = !(securityScope0Ok && isSecurityScopeExempt(securityScope0.scope))
+// diff が reviewer の指示ファイルを変えるか。security-scope#0 と run 中の判定のどれか 1 回でも true なら run の終わりまで true
+// （後の判定で戻さない — 一度変えた PR の判定を、後の diff の書き換えですり抜けさせない）
+let reviewerContextChanged = !securityScope0Ok || isReviewerContextChanged(securityScope0.scope)
 let securityStatus = null   // 'cleared' | 'unresolved'（null は今の head の review に到達していない。cleared は fix の前に null に戻す）
-// security review の結果（対象外の判定を含む）を観測した head。起動時の対象外は prerun / dev-flow が今の head で判定した結果。
+// security review の結果（対象外の判定を含む）を観測した head。security-scope#0 の対象外はその scope の head（GitHub の PR head と照合済み）。
 // reviewer の結果を読めない・reviewed_sha が渡した head_sha の写しでない（出力の整合違反）round は null（その件数を信用できない）
-let securityReviewHead = securityTarget ? null : shaNow
+let securityReviewHead = securityTarget ? null : securityScope0.scope.head_sha.trim()
 let securityRounds = 0      // review の回数（security-reviewer の spawn と、結果を読めた Codex の review の合計）
 // review の前提チェックで clear にできずに止めた理由（閉じた enum の固定 code。PR 由来の文字列は載せない）:
 // 'diff_unavailable' / 'head_unknown' / 'head_mismatch' / 'review_dir_invalid' / 'reviewer_context_changed' /
 // 'reviewer_context_codex_unavailable'（指示ファイルを変える PR を Codex 経路で判定できず、Claude 経路にも倒さずに止めた） /
-// 'pr_head_unknown'（Codex 経路で GitHub の PR の head と base の sha を取れない）。
+// 'pr_head_unknown'（GitHub の PR の head と base の sha を取れない）。
 // review を実行してから止めた・止めていないときは null
 let securityStopReason = null
 let securityCounts = { critical: 0, major: 0, minor: 0 }  // 最後の review の件数
@@ -2733,39 +2772,15 @@ function securityHeadMayChange() {
 //   stuck は同じ指摘が REVIEW_STUCK 回続いた）/ { kind: 'stop', why }（clear にできない。LGTM の候補の round で security_unresolved）
 async function securityRound(iteration) {
   const base = prMeta?.base_ref || ''
-  // Codex 経路の run は GitHub の PR の head と base の sha を取り（security-pr-head#i）、その object を fetch して（security-pr-fetch#i）、
-  // scope もその 2 つの sha で取る。中継はすべて security-codex-relay（hook がコマンドを prompt の行に、返り値を実 stdout に縛る）。
-  // 手元の HEAD・origin/<base>・shaNow は PR の worktree で動く中継の操作や自由な返り値で変わるので、review する tree の基準にしない。
-  // shaNow が GitHub の head と食い違えば（push されていない commit 等）下の head_mismatch で止める
+  // 判定は reviewer に関わらず security-codex-relay で GitHub の PR の sha から取る（securityScopeOf）。shaNow が GitHub の head と
+  // 食い違えば（push されていない commit 等）対象として扱い、下の head_mismatch で止める
   const codexRun = SECURITY_REVIEWER === 'codex'
-  let prHead = null
-  if (codexRun && base && REPO) {
-    prHead = prHeadOf(await failOpenAgent(
-      securityPrHeadPrompt({ pr: PR, repo: REPO }),
-      { agentType: 'security-codex-relay', schema: SECURITY_PR_HEAD_SCHEMA, label: `security-pr-head#${iteration}`, phase: 'Iterate' },
-    ))
-    if (prHead != null) {
-      await failOpenAgent(
-        securityPrFetchPrompt({ base, pr: PR }),
-        { agentType: 'security-codex-relay', schema: SECURITY_CODEX_RUN_SCHEMA, label: `security-pr-fetch#${iteration}`, phase: 'Iterate' },
-      )
-    }
-  }
-  const scopeArgs = codexRun
-    ? (prHead == null ? null : { base: prHead.base, head: prHead.head })
-    : (base ? { base: `origin/${base}`, head: isFullCommitSha(shaNow) ? shaNow : 'HEAD' } : null)
-  const scope = scopeArgs
-    ? await failOpenAgent(
-        securityScopePrompt({ worktree: isoWt, ...scopeArgs, saveDiff: true }),
-        { agentType: codexRun ? 'security-codex-relay' : 'dev-runner-haiku-ro', schema: SECURITY_SCOPE_SCHEMA, label: `security-scope#${iteration}`, phase: 'Iterate' },
-      )
-    : null
-  if (!base) log(`⚠️ iteration ${iteration}: base branch 名が不明 — security review の対象判定ができず対象として扱う`)
-  const exempt = isSecurityScopeExempt(scope)
+  const { prHead, scope } = await securityScopeOf(iteration)
+  const exempt = securityScopeHeadOk(prHead, scope) && isSecurityScopeExempt(scope)
   if (!exempt && !securityTarget) log(`iteration ${iteration}: security-scope#${iteration} が対象と判定（${scope == null ? '取得失敗' : (scope.reasons ?? []).slice(0, 3).join(' / ')}）— run の終わりまで対象として扱う`)
   securityTarget = securityTarget || !exempt
   if (!securityTarget) {
-    securityReviewHead = isFullCommitSha(scope?.head_sha) ? scope.head_sha.trim() : shaNow
+    securityReviewHead = scope.head_sha.trim()
     log(`iteration ${iteration}: security review 対象外（変更が許可リストだけ）`)
     return { kind: 'not_target' }
   }
@@ -2780,10 +2795,10 @@ async function securityRound(iteration) {
   const headSha = typeof scope?.head_sha === 'string' ? scope.head_sha.trim() : ''
   const reviewDir = typeof scope?.review_dir === 'string' ? scope.review_dir.trim() : ''
   const diffPath = typeof scope?.diff_path === 'string' ? scope.diff_path.trim() : ''
-  if (codexRun && prHead == null) return stop('GitHub の PR の head と base の sha を取れない', 'pr_head_unknown')
+  if (prHead == null) return stop('GitHub の PR の head と base の sha を取れない', 'pr_head_unknown')
   if (scope?.ok !== true) return stop('PR の diff を取得できない', 'diff_unavailable')
   if (!isFullCommitSha(headSha)) return stop('PR head の sha が分からない', 'head_unknown')
-  if (codexRun && headSha.toLowerCase() !== prHead.head) return stop(`diff の head ${headSha.slice(0, 7)} が GitHub の PR head ${prHead.head.slice(0, 7)} と一致しない`, 'head_mismatch')
+  if (headSha.toLowerCase() !== prHead.head) return stop(`diff の head ${headSha.slice(0, 7)} が GitHub の PR head ${prHead.head.slice(0, 7)} と一致しない`, 'head_mismatch')
   if (isFullCommitSha(shaNow) && headSha.toLowerCase() !== shaNow.toLowerCase()) return stop(`diff の head ${headSha.slice(0, 7)} が今の PR head ${shaNow.slice(0, 7)} と一致しない`, 'head_mismatch')
   // workflow からは realpath を取れず、prefix 比較は `..`・空の要素・大文字小文字の違い（macOS の FS は区別しない）・symlink で
   // worktree の中を外と見誤る。CLI が mkdtemp で作る形（`/<…>/dev-flow-security-review-XXXXXX/pr.diff`）だけを受け付け、

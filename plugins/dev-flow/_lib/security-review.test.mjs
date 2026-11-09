@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import {
   CODEX_SECURITY_REVIEW_SCHEMA, SECURITY_CODEX_RELAY_FAILED, SECURITY_CODEX_RUN_DONE, SECURITY_CODEX_VERDICT_RELAY_FAILED,
   SECURITY_REVIEW_BOUNDARY, codexIssuesPrompt, codexPrepPrompt, codexResultVerdict, codexRunPrompt, codexSecurityReviewCommand,
-  codexSecurityReviewPrompt, codexVerdictPrompt, parseSecurityReviewArg, securityReviewPrompt, securityReviewVerdict,
+  codexSecurityReviewPrompt, codexVerdictPrompt, securityReviewPrompt, securityReviewVerdict,
 } from './security-review.mjs';
 import {
   SECURITY_PR_HEAD_RELAY_FAILED, SECURITY_SCOPE_RELAY_FAILED, securityPrFetchPrompt, securityPrHeadPrompt, securityScopePrompt,
@@ -97,13 +97,6 @@ test('[security-review][3] codexSecurityReviewCommand は先頭トークン code
     + ' --disable shell_tool --disable unified_exec --disable apps --disable browser_use --disable computer_use'
     + ` -c model_instructions_file=${d}/prompt.md --output-schema ${d}/schema.json -o ${d}/result.json`
     + ' "Run the security review described in your instructions and reply only with the JSON object defined by the output schema."');
-});
-
-test('[security-review][3] parseSecurityReviewArg は reviewer を claude / codex で受け（省略は claude）、それ以外は明示 throw', () => {
-  const base = { target: true, reasons: [], reviewer_context_changed: false };
-  assert.equal(parseSecurityReviewArg(base).reviewer, 'claude');
-  assert.equal(parseSecurityReviewArg({ ...base, reviewer: 'codex' }).reviewer, 'codex');
-  assert.throws(() => parseSecurityReviewArg({ ...base, reviewer: 'gemini' }), /args\.security_review が不正形/);
 });
 
 // workflow の prompt を harness の枠（実測の形: 枠の文の後に各行を 2 字下げ）で載せた中継の transcript を置き、hook を起動する

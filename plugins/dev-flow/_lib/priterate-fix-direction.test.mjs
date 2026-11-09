@@ -25,7 +25,7 @@ const devFlowSrc = readFileSync(join(here, '..', '.claude/workflows/dev-flow.js'
 const SHA_B = 'b'.repeat(40);
 const DIRECTION = 'DIRECTION-BODY: hardlink-write は入力のパスを受け取らない形にして直す。人に返さない';
 const SECTION = '## 人が決めた修正方針';
-const NESTED = { caller: 'standalone', cwd: '/tmp/wt', head_ref: 'feature/x', head_sha: 'a'.repeat(40), base_ref: 'main' };
+const NESTED = { caller: 'standalone', cwd: '/tmp/wt', head_ref: 'feature/x', head_sha: 'a'.repeat(40), base_ref: 'main', repo: 'acme/skills' };
 const reviewIssue = { severity: 'major', topic: 'swallow', file: 'src/a.js', line: 1, description: 'null を握りつぶしている', suggestion: 'throw に戻す' };
 const secFinding = { severity: 'critical', topic: 'hardlink-write', file: 'scripts/set-names.sh', line: 3, description: 'hardlink で .git/config を書ける', suggestion: 'パスを受け取らない' };
 const pushed = { dirty: false, committed: false, pushed: false, head_sha: SHA_B };
@@ -119,13 +119,15 @@ test('[fix-direction][b] security review の指摘の fix#i（round の fix・se
   const reviewWith = (issues) => ({ prompt }) => ({ reviewed_sha: securityReviewHeadOf(prompt), issues, summary: 'review した' });
   for (const [name, args] of [
     ['round の fix', withDirection()],
-    ['securityGate の fix', withDirection({ security_review: { target: false, reasons: [], reviewer_context_changed: false } })],
+    ['securityGate の fix', withDirection()],
   ]) {
     const overrides = {
       'security-review#1': reviewWith([secFinding]),
       'fix#1': { applied: false, files: [], summary: 'stop', deferred_security_ids: [] },
     };
     if (name === 'securityGate の fix') {
+      // round 1 の前の判定（security-scope#0）が対象外で、LGTM の候補の round の判定（security-scope#1）が対象
+      overrides['security-scope#0'] = ({ prompt }) => securityScopeResponse({ target: false, head: securityScopeHeadOf(prompt) });
       overrides['security-scope#1'] = ({ prompt }) => securityScopeResponse({ target: true, head: securityScopeHeadOf(prompt) });
     }
     const { calls } = await run({ args, overrides });
@@ -165,7 +167,7 @@ test('[fix-direction][c] review（pr-reviewer）・security review（security-re
 test('[fix-direction][c] Codex 経路の中継（security-pr-head / prep / codex exec / 判定 / 指摘）の prompt にも方針を入れない', async () => {
   const codexHeadOf = (prompt) => prompt.match(/security-review-codex-result \S+ ([0-9a-f]{40})/)[1];
   const { calls } = await run({
-    args: { pr: '5', fix_direction: DIRECTION, security_review: { target: true, reasons: [], reviewer_context_changed: false, reviewer: 'codex' } },
+    args: { pr: '5', fix_direction: DIRECTION, security_reviewer: 'codex' },
     overrides: {
       'security-codex-prep#1': { ok: true },
       'security-codex-verdict#1': ({ prompt }) => ({ ok: true, cleared: true, reason: null, reviewed_sha: codexHeadOf(prompt), counts: { critical: 0, major: 0, minor: 0 } }),

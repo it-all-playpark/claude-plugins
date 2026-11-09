@@ -74,6 +74,21 @@ test('[priterate-skill-wrapper] Workflow の args に prerun の ci_wait_ceiling
   assert.ok(args.includes('ci_wait_ceiling_seconds: <ci_wait_ceiling_seconds>'), `Workflow の args に ci_wait_ceiling_seconds が無い: ${args}`);
 });
 
+test('[priterate-skill-wrapper] prerun 出力・Workflow の args は security review の対象判定（security_review）ではなく opt-in の security_reviewer を持つ（issue #1307）', () => {
+  // 判定は workflow が security-codex-relay で取る。wrapper の LLM が転記する値を判定の入力にしない
+  const prerunOutput = steps.match(/JSON 1 行（`\{([^}]*)\}`）/);
+  const keys = prerunOutput ? prerunOutput[1].split(/,\s*/) : [];
+  assert.ok(keys.includes('security_reviewer') && !keys.includes('security_review'), `prerun 出力の一覧: ${prerunOutput?.[1]}`);
+  const launch = steps.slice(steps.indexOf("Workflow({ name: 'dev-flow:pr-iterate-run'"));
+  const args = launch.slice(0, launch.indexOf('} })'));
+  assert.ok(args.includes('security_reviewer: <security_reviewer>'), `Workflow の args に security_reviewer が無い: ${args}`);
+  assert.ok(!/\bsecurity_review:/.test(args), `Workflow の args に security_review が残っている: ${args}`);
+  // pr-iterate-prerun.sh の Output 欄（スクリプトの出力契約）も同じキーを持つ
+  const prerunSrc = readFileSync(join(pluginRoot, '_shared/scripts/pr-iterate-prerun.sh'), 'utf8');
+  const contract = prerunSrc.match(/^#\s+\{ok, pr, ([^}]*)\}$/m);
+  assert.ok(contract && contract[1].split(/,\s*/).includes('security_reviewer') && !contract[1].split(/,\s*/).includes('security_review'), `pr-iterate-prerun.sh の Output 欄: ${contract?.[1]}`);
+});
+
 test('[priterate-skill-wrapper] /pr-iterate <PR> --direction <file> を受け、prerun に --direction を渡し、出力の fix_direction を加工せずに args.fix_direction へ転記する（issue #1122）', () => {
   assert.ok(src.includes('/pr-iterate <PR> --direction <file>'), '--direction 付きの起動形が書かれていない');
   const prerunStep = steps.slice(0, steps.indexOf("EnterWorktree({ path: '<prerun 出力の worktree>' })"));

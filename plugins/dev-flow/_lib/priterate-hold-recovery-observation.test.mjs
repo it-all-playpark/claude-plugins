@@ -16,17 +16,18 @@ const HEAD1 = '1'.repeat(40);
 const HEAD2 = '2'.repeat(40);
 const MERGE = '3'.repeat(40);
 const NESTED = { caller: 'standalone', cwd: '/tmp/wt', head_ref: 'feature/x', base_ref: 'main', head_sha: HEAD1, repo: 'acme/skills', epoch: 4242 };
-const NOT_TARGET = { target: false, reasons: [], reviewer_context_changed: false };
+// round 1 の前の判定（security-scope#0）が対象外（run の既定）。target:true の run は sandbox の既定の応答（対象）を使う
+const NOT_TARGET = { 'security-scope#0': securityScopeResponse({ target: false, head: HEAD1 }) };
 
 const ci = (status, head_sha = HEAD1) => ({ status, ...ciCounts(status), failed_checks: status === 'failed' ? [{ name: 'bats', bucket: 'fail', state: 'FAILURE' }] : [], head_sha });
 const mergeable = (state, headRefOid = HEAD1) => ({ mergeable: state, mergeStateStatus: state === 'CONFLICTING' ? 'DIRTY' : 'CLEAN', headRefOid });
 const BLOCKING = { decision: 'request-changes', issues: [{ severity: 'major', topic: 't1', file: 'src/a.js', line: 1, description: 'x', suggestion: 'y' }], summary: 'ng' };
 const ENSURED_HEAD2 = { dirty: false, committed: true, pushed: true, head_sha: HEAD2 };
 
-async function run(codes, overrides, args = {}) {
+async function run(codes, overrides, args = {}, { target = false } = {}) {
   const { ctx, calls } = makePrIterateSandbox({
-    overrides,
-    args: { pr: 5, nested: NESTED, security_review: NOT_TARGET, prior_devflow: { tier: 'HOLD', codes, url: 'https://github.com/acme/skills/pull/5#issuecomment-1', head_sha: null }, ...args },
+    overrides: target ? overrides : { ...NOT_TARGET, ...overrides },
+    args: { pr: 5, nested: NESTED, prior_devflow: { tier: 'HOLD', codes, url: 'https://github.com/acme/skills/pull/5#issuecomment-1', head_sha: null }, ...args },
   });
   const { result, error } = await runWorkflowCapture(src, ctx, '.claude/workflows/pr-iterate.js');
   assertNoCrash(error, 'priterate-hold-recovery-observation');
@@ -50,7 +51,7 @@ test('[hold-recovery] 同じ head で CI passed・conflict なし・対象外を
 });
 
 test('[hold-recovery] 対象の run の security review は clear を観測した head と組になり、終端 head と同じなら解消', async () => {
-  const { rows } = await run(['security_review_unresolved'], { 'ci-check#1': ci('passed'), 'mergeable-check#1': mergeable('MERGEABLE') }, { security_review: undefined });
+  const { rows } = await run(['security_review_unresolved'], { 'ci-check#1': ci('passed'), 'mergeable-check#1': mergeable('MERGEABLE') }, {}, { target: true });
   assert.deepEqual(rows, ['- `security_review_unresolved` — ✅ 解消 — この run の security review: cleared']);
 });
 
@@ -58,7 +59,7 @@ test('[hold-recovery] reviewed_sha が別の head の security review は critic
   const { result, rows } = await run(['security_review_unresolved'], {
     'ci-check#1': ci('passed'), 'mergeable-check#1': mergeable('MERGEABLE'),
     'security-review#1': { reviewed_sha: HEAD2, issues: [{ severity: 'critical', topic: 's1', file: 'src/a.js', line: 1, description: 'x', suggestion: 'y' }], summary: 'ng' },
-  }, { security_review: undefined });
+  }, {}, { target: true });
   assert.equal(result.status, 'security_unresolved');
   assert.deepEqual(rows, ['- `security_review_unresolved` — ❔ 未確認 — この run の security review: unresolved — 観測した head が終端 head と同じか確かめられない']);
 });

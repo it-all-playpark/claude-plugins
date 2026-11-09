@@ -603,10 +603,28 @@ export function porcelainVerdictResponse(lines, baseline = [], { exitCode = 0, m
  * overrides[label] があればそれを優先する（関数なら {label, agentType, prompt, opts} で呼ぶ、
  * 値ならそのまま、null なら null）。
  *
+ * security-pr-head#n の既定の headRefOid は GitHub の PR head（最後に push された head）: args.nested.head_sha から始め、
+ * pr-meta・commit-ensure#i の応答（override を含む）の head_sha と、自動解消した conflict-resolve#i の head_after で置き換える。
+ * 40 桁の sha でなければ SECURITY_SCOPE_DEFAULT_HEAD（workflow の shaNow も 40 桁でなく、照合しない）。
+ *
  * @param {Record<string, unknown>} [overrides={}]
+ * @param {Function|null} [rounds=null]
+ * @param {{initialHead?: unknown}} [o]
  * @returns {(ctx: {label: string, agentType: string, prompt: string, opts?: Record<string, unknown>}) => unknown}
  */
-export function prIterateResponder(overrides = {}, rounds = null) {
+export function prIterateResponder(overrides = {}, rounds = null, { initialHead = null } = {}) {
+  const fullSha = (v) => (typeof v === 'string' && /^[0-9a-f]{40}$/i.test(v.trim()) ? v.trim() : null);
+  let prHead = fullSha(initialHead);
+  const respond = defaultPrIterateResponse(overrides, rounds, () => prHead ?? SECURITY_SCOPE_DEFAULT_HEAD);
+  return function (callCtx) {
+    const res = respond(callCtx);
+    if (callCtx.label === 'pr-meta' || /^commit-ensure#\d+$/.test(callCtx.label)) prHead = fullSha(res?.head_sha);
+    if (/^conflict-resolve#\d+$/.test(callCtx.label) && res?.result?.status === 'resolved') prHead = fullSha(res.result.head_after);
+    return res;
+  };
+}
+
+function defaultPrIterateResponse(overrides, rounds, prHeadNow) {
   return function (callCtx) {
     const { label, agentType } = callCtx;
     if (Object.prototype.hasOwnProperty.call(overrides, label)) {
@@ -630,11 +648,11 @@ export function prIterateResponder(overrides = {}, rounds = null) {
     // 単体起動がテストを実行するときのテストコマンドの解決（dev-flow-test-commands.js）
     if (label === 'resolve-test-commands') return testCommandsPrepareResponse();
     if (agentType === 'dev-flow:pr-reviewer') return { decision: 'approve', issues: [], summary: 'ok' };
-    // 敵対的 security review（issue #1063）: args.security_review の無い単体起動は対象なので、LGTM の前に
-    // security-scope#i（今の head の diff）→ security-review#i が走る。既定は対象・clear（head は prompt の値を写す）
+    // 敵対的 security review（issue #1063）: round 1 の前（#0）と各 round で security-pr-head#n → security-pr-fetch#n →
+    // security-scope#n（GitHub の PR の sha の diff）が走り、対象なら security-review#i。既定は対象・clear（head は prompt の値を写す）
     if (label.startsWith('security-scope#')) return securityScopeResponse({ target: true, head: securityScopeHeadOf(callCtx.prompt) });
-    // Codex 経路の GitHub の PR の head と base（gh pr view の stdout と同形）と fetch の中継
-    if (label.startsWith('security-pr-head#')) return { baseRefOid: SECURITY_PR_BASE_DEFAULT, headRefOid: SECURITY_SCOPE_DEFAULT_HEAD };
+    // GitHub の PR の head と base（gh pr view の stdout と同形）と fetch の中継
+    if (label.startsWith('security-pr-head#')) return { baseRefOid: SECURITY_PR_BASE_DEFAULT, headRefOid: prHeadNow() };
     if (label.startsWith('security-pr-fetch#')) return { done: true };
     if (agentType === 'dev-flow:security-reviewer') return { reviewed_sha: securityReviewHeadOf(callCtx.prompt), issues: [], summary: 'ok' };
     if (label.startsWith('fix#')) return { applied: true, files: [], summary: 'fixed', deferred_security_ids: [] };
@@ -703,7 +721,7 @@ export function prIterateRounds({ reviewer, fix, ci, commitEnsure } = {}) {
  * @returns {ReturnType<typeof makeRecordingSandbox>}
  */
 export function makePrIterateSandbox({ overrides = {}, rounds = null, args = '5', extra = {}, calls = [] } = {}) {
-  return makeRecordingSandbox(prIterateResponder(overrides, rounds), {
+  return makeRecordingSandbox(prIterateResponder(overrides, rounds, { initialHead: args?.nested?.head_sha }), {
     workflow: async () => ({ status: 'lgtm' }),
     args,
     // pr-iterate.js は各 round で review#i と ci-check#i を parallel() で同時に起動する（issue #806）。

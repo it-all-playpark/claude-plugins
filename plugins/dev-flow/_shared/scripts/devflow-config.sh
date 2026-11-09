@@ -13,7 +13,7 @@
 # 作業ツリーは sandbox 内で実行される PR のコードから書けるので、PR が自分の判定条件（どの check で判定するか・
 # どのコマンドの exit 0 で satisfied にするか・gate の判定者）を選べてしまう。repo 別の上書きを user 設定にだけ
 # 置くのも同じ理由（repo に置く gitignore 済みのファイルも作業ツリーにある）。
-# 値の検証は workflow（_lib/prerun-setup.mjs、pr-iterate は parseSecurityReviewArg）が行う。branch_format だけは worktree を
+# 値の検証は workflow（_lib/prerun-setup.mjs、pr-iterate は args.security_reviewer の検査）が行う。branch_format だけは worktree を
 # 作る前にブランチ名を決めるので、ここの devflow_branch_format_of が検証する。JSON として読めない
 # ファイルと、object でない "dev-flow".repos・repo 別の節は未設定として扱う。
 

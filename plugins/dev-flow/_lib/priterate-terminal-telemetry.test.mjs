@@ -113,7 +113,7 @@ test('[terminal-telemetry] 即 lgtm: fix_terminal_reason null / terminal_path=re
   assert.equal(telemetry.security_review_stop_reason, null, '前提チェックで止めていない run の stop_reason は null');
   assert.equal(telemetry.security_review_status, 'cleared');
   assert.equal(telemetry.iterate_caller, 'direct', 'nested 無しの直接起動は direct');
-  // args.security_review の無い単体起動は対象（fail-closed）で、LGTM の前に security-reviewer を 1 回 spawn する
+  // security-scope#0 が対象の単体起動（sandbox の既定）は、LGTM の前に security-reviewer を 1 回 spawn する
   assert.equal(telemetry.security_review_target, true);
   assert.equal(telemetry.security_review_rounds, 1);
   assert.equal(telemetry.ci_wait_ceiling_seconds, 300, '上限未指定の run は既定 300 秒');

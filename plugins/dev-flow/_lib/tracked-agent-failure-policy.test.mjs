@@ -582,6 +582,14 @@ const EXPECTED_PR_ITERATE = {
   'mergeable-check#2': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはconflict不明として自動解消を試みずlgtmへ進むfail-open' },
   'conflict-resolve#1': { config: PR_B8, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはproxy_failedとして記録し自動解消せずlgtmへ（Merge tierがconflictをHOLD）' },
   // ── issue #1063: LGTM 前の敵対的 security review（対象判定 + security-reviewer）──
+  // round 1 の前の判定（#0）と各 round の判定は security-codex-relay で GitHub の PR の sha を取り、fetch して scope を取る（issue #1307）
+  'security-pr-head#0': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはGitHubのPR headを取れないとして対象・reviewer_context_changedに倒すfail-closed' },
+  'security-pr-fetch#0': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。返り値は使わず、fetchの失敗はscopeがshaのobjectを読めないことで対象に倒れる' },
+  'security-scope#0': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは対象・reviewer_context_changedとして扱いLGTMにしない（fail-closed）' },
+  'security-pr-head#1': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは対象として扱いpr_head_unknownでsecurity_unresolvedへ（LGTMにしない）' },
+  'security-pr-fetch#1': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。返り値は使わず、fetchの失敗はscopeがshaのobjectを読めないことで対象に倒れる' },
+  'security-pr-head#2': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは対象として扱いpr_head_unknownでsecurity_unresolvedへ（LGTMにしない）' },
+  'security-pr-fetch#2': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。返り値は使わず、fetchの失敗はscopeがshaのobjectを読めないことで対象に倒れる' },
   'security-scope#1': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは対象として扱い、diffが無いのでreviewできずsecurity_unresolvedで終端（LGTMにしない）' },
   'security-scope#2': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは対象として扱い、diffが無いのでreviewできずsecurity_unresolvedで終端（LGTMにしない）' },
   'security-review#1': { config: PR_B1, policy: 'continue', reason: 'securityGate内try/catchで吸収し結果なし（no_result）としてsecurity_unresolvedで終端（LGTMにしない）' },
