@@ -30,7 +30,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 1. **prerun 実行**: launch dir（リポジトリルートか、その worktree）で Bash 1 コマンドとして
    `pr-iterate-prerun <PR>` を実行する（PR が cwd の repo と別なら `--repo owner/name` を付ける）。前置形
    （`cd X && ...` / `VAR=x ...` / `bash <path>` 等）は使わず、bare 名を先頭トークンにする。stdout の
-   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_review, plugin_commit, pr_intent?, fix_direction?, error?}`）
+   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_reviewer, plugin_commit, pr_intent?, fix_direction?, error?}`）
    をそのまま保持する。
 
    `/pr-iterate <PR> --direction <file>` で起動されたら、prerun に `--direction <file>` を付ける（`<file>` は人が渡した
@@ -62,11 +62,10 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      marker の head（その結論を出した head）が今の PR head と違うか、marker に head が無いとき true
    - PR の base branch で直近に成功した CI の所要時間から CI 待ちの上限（秒）を決め、`ci_wait_ceiling_seconds` に載せる
      （dev-flow の nested 起動と同じ求め方。読み取りに失敗したら 300）
-   - PR 全体（`origin/<base>...<PR head>`）の diff が敵対的 security review の対象かを決定論の許可リストで判定し、
-     `security_review`（`{target, reasons, reviewer_context_changed, reviewer}`）に載せる。判定できないときは `target:true`・
-     `reviewer_context_changed:true`。`reviewer` は review を回す CLI の opt-in（`"dev-flow".security_reviewer`。dev-flow と共通の
+   - 敵対的 security review を回す CLI の opt-in（`"dev-flow".security_reviewer`）を `security_reviewer` に載せる。dev-flow と共通の
      `_shared/scripts/devflow-config.sh` で、user 設定の repo 別の節 → PR の base の `origin/<base>` の `skill-config.json` →
-     `.claude/skill-config.json` → user 設定の順に読み（書き方は `dev-flow/SKILL.md`）、PR head（worktree）とメイン checkout の作業ツリーの設定は読まない。無ければ `"claude"`）
+     `.claude/skill-config.json` → user 設定の順に読み（書き方は `dev-flow/SKILL.md`）、PR head（worktree）とメイン checkout の作業ツリーの設定は読まない。無ければ `"claude"`。
+     security review の対象判定は prerun では取らない（workflow が reviewer に関わらず hook で縛った `security-codex-relay` で取る）
    - 実行中の dev-flow plugin の commit（12 桁 hex）を `dev-flow-prerun` と同じ方法で決め、`plugin_commit` に載せる
      （決められなければ null）。journal entry の世代の記録専用
    - 同じ `gh pr view` で PR の title と body を取り、`pr_intent`（`{title, body, body_omitted}`）に載せる（`ok:false` では載せない）。
@@ -85,7 +84,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    worktree なら不要）。別の worktree に入っている場合は先に `ExitWorktree`（worktree は keep）で launch dir へ
    戻ってから入る。
 
-3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`prior_summary`・`ci_wait_ceiling_seconds`・`security_review`・`plugin_commit`・`pr_intent`・`fix_direction` の値は prerun 出力をそのまま転記し、加工・要約しない:
+3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`prior_summary`・`ci_wait_ceiling_seconds`・`security_reviewer`・`plugin_commit`・`pr_intent`・`fix_direction` の値は prerun 出力をそのまま転記し、加工・要約しない:
 
    ```
    Workflow({ name: 'dev-flow:pr-iterate-run', args: {
@@ -95,7 +94,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      prior_devflow: <prior_devflow>,
      prior_summary: <prior_summary>,
      ci_wait_ceiling_seconds: <ci_wait_ceiling_seconds>,
-     security_review: <security_review>,
+     security_reviewer: <security_reviewer>,
      plugin_commit: <plugin_commit>,
      pr_intent: <pr_intent>,
      fix_direction: <fix_direction>,
@@ -115,9 +114,11 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      指摘の fix）に渡し、security review の指摘の直し方と食い違えば方針を優先させる（worktree の外に書かない等の Boundary は
      優先させない）。review・security review の判定者には渡さない。終端サマリーには方針を渡したことだけが載り、本文は載らない
 
-   - `security_review` を省くと workflow は対象として扱う（fail-closed）。対象の PR は、LGTM の前に PR 全 diff を
-     敵対的 security review（security-reviewer）が読み、critical / major が 0 件になるまで LGTM にしない。
-     終端サマリーには指摘の件数だけが載る。`reviewer:"codex"` なら Codex CLI が review する（Codex を起動できなければ
+   - security review の対象判定は渡さない（`security_review` を渡すと workflow は明示 error で止まる）。workflow が round 1 の前と
+     各 round で、reviewer に関わらず hook で縛った `security-codex-relay` で GitHub の PR の head・base の sha の diff から判定を取る。
+     対象の PR は、LGTM の前に PR 全 diff を敵対的 security review（security-reviewer）が読み、critical / major が 0 件になるまで LGTM にしない。
+     終端サマリーには指摘の件数だけが載る。`security_reviewer` は `claude` / `codex`（それ以外は workflow が明示 error で止まる）で、
+     `"codex"` なら Codex CLI が review する（Codex を起動できなければ
      security-reviewer の判定に戻る）。指示ファイルを変える PR は、Claude 経路では自動の review で clear にせず止める
      （`security-review-isolated` で人が確かめる）。Codex 経路では止めずに Codex で review し、Codex を起動できない round だけ
      security-reviewer に戻さずに止める

@@ -242,8 +242,8 @@ flowchart TD
 ```
 
 nested 起動する `pr-iterate` には issue の acceptance criteria と
-nested context（cwd / head_ref / repo / epoch）と、Diff triage の敵対的 security review の対象判定
-（`security_review`）を渡す。Diff triage は merge-base と作業ツリーの diff を `security-review-scope --working-tree`
+nested context（cwd / head_ref / repo / epoch）と、security review を回す CLI の opt-in（`security_reviewer`）を渡す。
+対象判定は渡さない（pr-iterate が自分で取る）。Diff triage は merge-base と作業ツリーの diff を `security-review-scope --working-tree`
 で判定し、全ファイルが決定論の許可リスト（指示ファイルでない文書・テスト）に当たる run だけが対象外 — lite route に
 入れるのもこの run だけ。
 
@@ -344,8 +344,9 @@ CI gate を通らなければ LGTM にならず、**CI pending を成功扱い�
 同じ topic が `REVIEW_STUCK` 回繰り返された時点で stuck と判定して人間へ渡す。
 
 CI gate を通った round でも、LGTM を確定する前に **敵対的 security review** の gate がある。今の PR head の
-`<base>...<head>` の diff を `security-scope#i` が決定論の許可リストで判定し、起動時の判定（`args.security_review`。
-無ければ対象）か run 中の判定のどれか 1 回でも対象なら run の終わりまで対象のまま。対象なら `security-reviewer` を
+`<base>...<head>` の diff を `security-scope#i` が決定論の許可リストで判定し、round 1 の前の判定（`security-scope#0`）か
+run 中の判定のどれか 1 回でも対象なら run の終わりまで対象のまま。判定は reviewer に関わらず hook で縛った `security-codex-relay` が
+GitHub の PR の base / head の sha で取り、引数では受け取らない。対象なら `security-reviewer` を
 毎回新しく spawn して PR 全 diff（worktree の外に保存した file）を読ませ、critical / major が 0 件かつ `reviewed_sha` が
 今の head と一致したときだけ LGTM にする。critical / major は fix に回し（同じ指摘の反復は stuck）、worktree の外を
 指す指摘・diff を取れない・review が結果を返さない・head 不一致は `security_unresolved` で終端する。終端サマリーには

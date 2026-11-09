@@ -3501,9 +3501,9 @@ const prIterateArgs = () => ({
   plugin_commit: PLUGIN_COMMIT,
   // CI 待ちの上限（秒）。dev-flow-prerun が base の CI 所要時間から決めた値（単体起動の pr-iterate-prerun と同じ求め方）
   ci_wait_ceiling_seconds: PRERUN.ci_wait_ceiling_seconds,
-  // 敵対的 security review の起動時の判定（Diff triage）。pr-iterate は LGTM の前に PR head の diff で判定し直す。
-  // reviewer は review を回す CLI の opt-in（dev-flow-prerun が base branch か user 設定から読んだ値。単体起動の pr-iterate-prerun と同じ規則）
-  security_review: { target: state.securityReview.target, reasons: state.securityReview.reasons, reviewer_context_changed: state.securityReview.reviewer_context_changed, reviewer: PRERUN.security_reviewer },
+  // 敵対的 security review を回す CLI の opt-in（dev-flow-prerun が base branch か user 設定から読んだ値。単体起動の pr-iterate-prerun と
+  // 同じ規則）。対象判定は渡さない — pr-iterate が reviewer に関わらず hook で縛った security-codex-relay で取る
+  security_reviewer: PRERUN.security_reviewer,
   // Setup で解決したテストコマンド（pr-iterate は解決し直さない）
   test_commands: TEST_COMMANDS,
   ...(CI_AC_INDEXES.length ? { ci_verify: { label: CI_VERIFY.label, checks: CI_VERIFY.checks, wait_ceiling_seconds: CI_VERIFY.wait_ceiling_seconds, ...(LOCAL_VERIFY_DECIDED ? { wait: false } : {}) } } : {}),

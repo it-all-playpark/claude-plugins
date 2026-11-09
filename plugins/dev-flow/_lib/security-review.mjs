@@ -1,5 +1,5 @@
 // security-review.mjs — pr-iterate が LGTM を確定する前に回す敵対的 security review（issue #1063）の
-// 引数検証・prompt・判定。
+// prompt・判定。
 //
 // 対象の run では、LGTM の候補になった round ごとに security-reviewer を新しく spawn し、PR 全 diff（`<base>...<head>`）を
 // 読ませる。前回の未解消の critical/major は「直ったか確かめる項目」として渡す（moving target の抑制と、直したはずの
@@ -96,25 +96,6 @@ export const SECURITY_FIX_GUIDANCE = 'security review の指摘の直し方:\n'
   + '両方を満たす設計が無くて返した指摘は、summary にぶつかる意図（AC の番号、または PR の意図の該当箇所）と破れた不変条件を書く。'
   + '直した指摘の番号は入れない\n';
 
-// args.security_review（起動時の判定。dev-flow の Diff triage / pr-iterate-prerun の出力）。
-// 無ければ null（呼び出し側が対象として扱う — 判定できない入力は対象）。不正形は明示 throw（legacy fallback なし）。
-// reviewer_context_changed は起動時に決定論で取った「diff が reviewer の指示ファイルを変えるか」。run 中の判定は PR の
-// worktree を cwd に起動する中継（LLM）を通るので、PR が書いた指示文でその値を偽れる。起動時の値を run の終わりまで固定し、
-// 一度 true なら clear にしない。
-// reviewer は review を回す CLI の opt-in（pr-iterate-prerun が base branch の skill-config.json か user 設定の
-// `"dev-flow".security_reviewer` から読む。PR head の設定は読まない）。省略は 'claude'（opt-in していない）。
-// workflow の top-level で inline 区間より前に呼ばれるので、列挙は関数の中に置く（const は初期化前に参照できない）。
-export function parseSecurityReviewArg(raw) {
-  if (raw == null) return null;
-  const reviewers = ['claude', 'codex'];
-  const reasonsOk = raw.reasons === undefined || (Array.isArray(raw.reasons) && raw.reasons.every((s) => typeof s === 'string'));
-  const reviewerOk = raw.reviewer === undefined || reviewers.includes(raw.reviewer);
-  if (typeof raw !== 'object' || typeof raw.target !== 'boolean' || !reasonsOk || typeof raw.reviewer_context_changed !== 'boolean' || !reviewerOk) {
-    throw new Error(`pr-iterate: args.security_review が不正形です（target: boolean / reasons: string[]（省略可） / reviewer_context_changed: boolean / reviewer: ${reviewers.join(' | ')}（省略可））: ${JSON.stringify(raw)}`);
-  }
-  return { target: raw.target, reasons: raw.reasons ?? [], reviewer_context_changed: raw.reviewer_context_changed, reviewer: raw.reviewer ?? 'claude' };
-}
-
 const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
 
 // LGTM の候補になった round の security-reviewer prompt。verifyItems は前回の review で未解消の critical/major。
@@ -168,7 +149,7 @@ export function securityReviewVerdict(review, headSha) {
   return { cleared: true, reason: null, blocking, counts };
 }
 
-// ---- Codex 経路（args.security_review.reviewer === 'codex'。issue #1087）----
+// ---- Codex 経路（args.security_reviewer === 'codex'。issue #1087）----
 // Claude の subagent は PR の worktree を cwd に起動し、PR が書いた指示ファイル（CLAUDE.md 等）が判定者に届き得るので、
 // 指示ファイルを変える PR は自動 review で clear にできない（reviewer_context_changed で止める）。Codex CLI は空の
 // ディレクトリを作業ディレクトリ（-C）にすれば cwd の AGENTS.md を読まず、shell 等の読み取り手段を外せば diff の外を読めない。

@@ -98,7 +98,8 @@ const EXPECTED_DEV_FLOW = {
 
 const EXPECTED_PR_ITERATE = {
   'pr-meta': RO,
-  'security-scope#*': RO,
+  // security review の対象判定は reviewer に関わらず hook で縛った中継が取る（issue #1307）
+  'security-scope#*': 'dev-flow:security-codex-relay',
   'ci-check#*': RO,
   'ci-wait-check#*': RO,
   'isolation-cleanup': RW,

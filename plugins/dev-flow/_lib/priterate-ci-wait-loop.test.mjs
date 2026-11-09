@@ -178,7 +178,7 @@ test('[ci-wait-loop] failed は待たずに即 fix loop へ（ci-wait-check 0 �
 });
 
 // review が request-changes の round・security review が critical/major を返した round は CI を待たずに fix へ進む（issue #1100）。
-// args.security_review の無い単体起動は security review の対象なので、security-review#1 は review#1 と並列に走る
+// security-scope#0 が対象の単体起動（sandbox の既定）なので、security-review#1 は review#1 と並列に走る
 const SECURITY_MAJOR = { severity: 'major', topic: 'cmd-injection', file: 'scripts/x.sh', line: 3, description: 'argv を eval に渡している', suggestion: 'eval を外す' };
 for (const [name, overrides, fixText] of [
   ['review が request-changes', { 'review#1': { decision: 'request-changes', issues: [{ severity: 'major', topic: 't', file: 'src/a.js', line: 1, description: 'null を握りつぶしている', suggestion: '' }], summary: 'ng' } }, 'null を握りつぶしている'],

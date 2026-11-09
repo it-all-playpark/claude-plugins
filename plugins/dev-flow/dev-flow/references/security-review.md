@@ -11,11 +11,13 @@
 
 - R1 PR の内容（diff・PR 本文・コメント・ファイル名）で判定を誘導させない — reviewer は diff をデータとして読み、PR が書いた
   指示ファイルを読み込まない（read-scope hook・Claude 経路は `reviewer_context_changed` で止める）。clear を決める中継に自由文を
-  読ませない。Codex 経路の中継の Bash と返り値は hook が workflow の prompt の行と実 stdout に縛る（PR の CLAUDE.md を受け取っても偽れない）
-- R2 判定は今の PR head に対するもの — workflow が security-scope の取った diff の head_sha を今の PR head（`shaNow`。Codex 経路は
-  GitHub の PR head も）と照合し、食い違えば review せず止める。diff は head ごとに新しく作る保存先に書き、前の head の diff・結果を
-  読ませない。手で回す経路は `security-review-isolated` が scope の head_sha と PR head を照合する。Claude 経路で `shaNow` が取れない
-  round は照合できず、scope の head_sha が 40 桁であることだけを確かめる。head が変わりうる時点で cleared を捨てる。返り値の
+  読ませない。pr-iterate の対象判定（`target` / `reasons` / `reviewer_context_changed`）は reviewer（claude / codex）・呼び出し元に関わらず
+  `security-codex-relay` が取り、引数で受け取らない（wrapper の LLM が転記する値は PR の文で書き換えられる）。`security-codex-relay` の
+  Bash と返り値は hook が workflow の prompt の行と実 stdout に縛る（PR の CLAUDE.md を受け取っても偽れない）
+- R2 判定は今の PR head に対するもの — workflow が security-scope の取った diff の head_sha を GitHub の PR head（縛った `gh pr view` の
+  stdout）と今の PR head（`shaNow`）の両方と照合し、食い違えば対象として扱い review せず止める。diff は head ごとに新しく作る保存先に書き、前の head の diff・結果を
+  読ませない。手で回す経路は `security-review-isolated` が scope の head_sha と PR head を照合する。`shaNow` が取れない
+  round は GitHub の PR head とだけ照合する。head が変わりうる時点で cleared を捨てる。返り値の
   `reviewed_sha` は渡した head_sha の写しかを見る出力の整合で、R2 の根拠にしない（reviewer は渡された値を写せるだけ）
 - R3 review の仕組みが、PR に制御される入力を sandbox の外で実行しない — Codex 経路の codex も Claude の sandbox の中で動かす前提にし、
   中継の Bash は固定形の allowlist に限る（flag を変えた codex・別のコマンドを中継に実行させない）
@@ -61,9 +63,13 @@
   README.md 等）。起点は `isReviewerContextPath` に当たるファイルだけ。symlink・ディレクトリを指す import 先は配下まで含める。
   たどれない場合（repo の外を指す symlink・たどりの上限 `MAX_IMPORT_STEPS` の超過・import 一覧が読めない `imports_unavailable`）は
   対象かつ `reviewer_context_changed` を true にする（fail-closed）。import の書き方の解釈は `_lib/security-review-scope.mjs` が持つ
-- 起動時の判定は Diff triage の security-scope（merge-base と作業ツリーの diff）、単体起動は `pr-iterate-prerun`
-  （`<base>...<PR head>` の diff）。pr-iterate は run 中に PR head の diff で取り直し、起動時・run 中のどれか 1 回でも対象なら run の
-  終わりまで対象（`args.security_review` が無い run も対象）
+- dev-flow の Diff triage は security-scope（merge-base と作業ツリーの diff）で判定し、lite route の入口と Merge tier が読む。
+  pr-iterate は判定を引数で受け取らず（`args.security_review` は明示 error）、round 1 の前（`security-scope#0`）と round ごと
+  （`security-scope#i`）に、reviewer に関わらず `security-codex-relay` で取る: `security-pr-head#n`（`gh pr view <PR> --repo <repo>
+  --json baseRefOid,headRefOid`）→ `security-pr-fetch#n`（`git fetch origin <base> refs/pull/<PR>/head`）→ `security-scope#n`
+  （`security-review-scope <wt> <base の sha> <head の sha> --save-diff`）。どれか 1 回でも対象なら run の終わりまで対象、
+  `reviewer_context_changed` も一度 true なら戻さない。pr-head・scope の失敗（null・失敗時の JSON・`ok:false`）と、scope の head_sha が
+  GitHub の PR head・`shaNow` と食い違う判定は使わず対象として扱う（`security-scope#0` では `reviewer_context_changed` も true）
 - security-scope の CLI は stdout・stderr に PR 由来の文字列（ファイルパス・git の stderr）を出さない。reasons は固定 code と
   件数、error は固定 code だけ。stdout を写す exec-proxy の agent に判定を書き換える文を渡さないため
 
@@ -73,8 +79,8 @@
 pr-iterate      → 対象の run は各 round で、review#i（・ci-check#i）と同じ parallel() で review と同じ head に対して
                   security-scope#i → security-review#i を起動する（review の decision を待たない）。対象でない run は
                   CI gate を通り conflict も無い round（LGTM の候補）でだけ security-scope#i を取り直す:
-                  security-scope#i: `security-review-scope <wt> origin/<base> <shaNow|HEAD> --save-diff`（Codex 経路の run は
-                    下の「Codex 経路」の形 — GitHub の PR の head と base の sha で取る）
+                  security-pr-head#i → security-pr-fetch#i → security-scope#i（security-codex-relay。GitHub の PR の base と head の
+                    sha で取る — 上の「対象の判定」）
                     → worktree の外の新しい保存先 `dev-flow-security-review-XXXXXX/pr.diff` に diff を書く
                   対象なら security-review#i（security-reviewer を毎回新しく spawn。pr.diff のパスと head sha と
                     前回の未解消 critical/major を DATA として渡す）
@@ -90,7 +96,7 @@ pr-iterate      → 対象の run は各 round で、review#i（・ci-check#i）
                         applied を見る前にその round で status: security_unresolved（applied:true なら commit-ensure#i の後。
                         保証に失敗すれば fix_failed）。次の review・security review は spawn しない
                     → 前提チェックで clear にできない（worktree の外を指す・diff / head / 保存先が揃わない・結果なし・head 不一致・
-                      Claude 経路で reviewer_context_changed が false でない — 起動時の args.security_review の決定論の値と run 中の判定の
+                      Claude 経路で reviewer_context_changed が false でない — security-scope#0 と run 中の判定の
                       どれか 1 回でも true なら run の終わりまで true）→ LGTM の候補の round で status: security_unresolved
                       （review が request-changes の round はその fix へ進み、次の round で取り直す）
                   clear はその round の head についての結果。fix・conflict の自動解消で head が変わりうる時点で返り値の
@@ -126,16 +132,13 @@ opt-in（`"dev-flow".security_reviewer = "codex"`）。
                   URL から決め、大文字・小文字を区別せずに照合。例 {"dev-flow": {"repos": {"acme/app": {"security_reviewer": "codex"}}}}）、
                   (2) base branch（origin/<base>）の skill-config.json / .claude/skill-config.json、(3) user 設定の
                   "dev-flow".security_reviewer の順に読み、
-                  args.security_review.reviewer で渡す（PR head（worktree）とメイン checkout の作業ツリーの設定ファイルは
+                  args.security_reviewer で渡す（PR head（worktree）とメイン checkout の作業ツリーの設定ファイルは
                   読まない。無ければ "claude"。読み先は dev-flow の他の repo 設定と共通の _shared/scripts/devflow-config.sh）
 /dev-flow       → dev-flow-prerun が同じ規則（devflow-config.sh を共有）で解決した base から読み、
                   setup.security_reviewer に載せる（claude / codex 以外・欠落は prerun-setup.mjs が明示 error）
-                  → prIterateArgs() が nested pr-iterate の args.security_review.reviewer で渡す
-pr-iterate      → security-pr-head#i（security-codex-relay）: `gh pr view <PR> --repo <repo> --json baseRefOid,headRefOid`
-                    → 返り値（stdout に縛られる）の 2 つの sha が review の基準。取れなければ止める
-                  security-pr-fetch#i（security-codex-relay）: `git fetch origin <base> refs/pull/<PR>/head`（返り値は `{"done":true}` だけ）
-                  security-scope#i（security-codex-relay）: `security-review-scope <wt> <base の sha> <head の sha> --save-diff`
-                    → head_sha が GitHub の PR head か shaNow と食い違えば止める
+                  → prIterateArgs() が nested pr-iterate の args.security_reviewer で渡す
+pr-iterate      → security-pr-head#i → security-pr-fetch#i → security-scope#i（Claude 経路と同じ。上の「対象の判定」）
+                    → 返り値（stdout に縛られる）の 2 つの sha が review の基準。取れない・head_sha が GitHub の PR head か shaNow と食い違えば止める
                   の前提チェックを通った round で（指示ファイルを変える PR も止めずに review する — 判定者の codex は空の cwd で動き、
                   中継のコマンドと返り値は hook が縛るので、中継が PR の CLAUDE.md を受け取っても判定を偽れない）:
                   security-codex-prep#i（security-codex-relay）: `security-review-codex-prep <保存先> <head> <PR>[ --verify-from <前回の保存先>]`

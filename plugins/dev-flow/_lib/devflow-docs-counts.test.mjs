@@ -341,6 +341,14 @@ test('security-review.md: 守る要件と境界（R1〜R3）と経路を持ち�
   const r2 = boundary.slice(boundary.indexOf('- R2 '), boundary.indexOf('- R3 '));
   assert.ok(r2.includes('`shaNow`'), `security-review.md の R2 が今の PR head（shaNow）との照合を根拠にしていない:\n${r2}`);
   assert.ok(!r2.includes('`reviewed_sha` が今の head と一致した clear だけを使い'), `security-review.md の R2 が reviewed_sha の一致を根拠にしている:\n${r2}`);
+  // pr-iterate の対象判定は reviewer に関わらず hook で縛った security-codex-relay が取り、引数で受け取らない（issue #1307）。
+  // GitHub の PR head との照合も Codex 経路に限らない
+  const r1 = boundary.slice(boundary.indexOf('- R1 '), boundary.indexOf('- R2 '));
+  assert.ok(r1.includes('pr-iterate の対象判定') && r1.includes('reviewer（claude / codex）・呼び出し元に関わらず') && r1.includes('`security-codex-relay` が取り、引数で受け取らない'),
+    `security-review.md の R1 が pr-iterate の対象判定を security-codex-relay が取ると書いていない:\n${r1}`);
+  assert.match(r1, /`security-codex-relay` の\s+Bash と返り値は hook が[^。]*縛る/, `security-review.md の R1 が security-codex-relay を hook で縛ると書いていない:\n${r1}`);
+  assert.ok(r2.includes('GitHub の PR head'), `security-review.md の R2 が GitHub の PR head との照合を書いていない:\n${r2}`);
+  assert.doesNotMatch(r2, /Codex 経路[^。]*GitHub の PR head/, `security-review.md の R2 が GitHub の PR head との照合を Codex 経路に限っている:\n${r2}`);
   assert.ok(!sectionOf(md, '## Claude 経路').includes('reviewed_sha が今の head →'), 'security-review.md の Claude 経路の図が reviewed_sha を今の head との一致として書いている');
   for (const h of ['## 対象の判定', '## Claude 経路', '## Codex 経路']) assert.ok(md.includes(`${h}\n`), `security-review.md に ${h} が無い`);
   // 対象の判定は security-review-scope.mjs と同じ範囲を書く: isReviewerContextPath を起点にした import の閉包と、たどれないときの fail-closed

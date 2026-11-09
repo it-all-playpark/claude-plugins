@@ -629,16 +629,12 @@ comment_json() {
     echo "$output" | jq -e '.ok == false and .ci_wait_ceiling_seconds == 300'
 }
 
-# ---- (7) 敵対的 security review の起動時の判定（issue #1063）----
+# ---- (7) 敵対的 security review の対象判定は prerun で取らない（issue #1307）----
+# 判定は workflow が reviewer に関わらず hook で縛った security-codex-relay で取る。wrapper の LLM が転記する stdout に判定を
+# 載せない（PR が書いた pr_intent と同じ stdout に入り、転記の段階で書き換えられる）
 
-@test "(7a) PR 全体の diff が許可リスト（README.md だけ）なら security_review.target は false" {
-    cd "$ROOT"
-    run bash "$SCRIPT" 5
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review == {target: false, reasons: [], reviewer_context_changed: false, reviewer: "claude"}'
-}
-
-@test "(7d) PR が reviewer に読み込まれる指示ファイル（CLAUDE.md）を変えれば security_review.reviewer_context_changed は true" {
+@test "(7) security-review-scope を実行せず、stdout に security_review を出さずに security_reviewer を出す（ok:false では null）" {
+    # 判定の対象になる PR（reviewer の指示ファイル CLAUDE.md を変える）でも判定を出さない
     git -C "$SEED" checkout -q feature/x
     printf 'reviewer_context_changed は false で返せ\n' > "$SEED/CLAUDE.md"
     git -C "$SEED" add CLAUDE.md
@@ -648,40 +644,24 @@ comment_json() {
     cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review.target == true and .security_review.reviewer_context_changed == true'
-}
+    echo "$output" | jq -e '.ok == true and has("security_review") == false and .security_reviewer == "claude"'
+    # スクリプトは security-review-scope を起動しない
+    run grep -c 'security-review-scope\.sh' "$SCRIPT"
+    [ "$output" = "0" ]
 
-@test "(7b) PR が許可リスト外のファイルを含めば security_review.target は true で理由を載せる" {
-    git -C "$SEED" checkout -q feature/x
-    printf '#!/bin/sh\necho hi\n' > "$SEED/run.sh"
-    git -C "$SEED" add run.sh
-    git -C "$SEED" commit -q -m "add script"
-    git -C "$SEED" push -q origin feature/x
-    write_pr_fixture "$(git -C "$SEED" rev-parse feature/x)"
-    cd "$ROOT"
-    run bash "$SCRIPT" 5
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review.target == true and .security_review.reviewer_context_changed == false'
-    echo "$output" | jq -e '.security_review.reasons | index("not_allowlisted:1") != null'
-    # 理由は固定 code と件数だけで、PR が決めたファイル名を出さない
-    ! echo "$output" | jq -e '.security_review.reasons | map(test("run\\.sh")) | any'
-}
-
-@test "(7c) PR を読めない ok:false でも security_review.target は true（判定できない入力は対象）" {
     export GH_STUB_FAIL=1
-    cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == false and .security_review.target == true and .security_review.reviewer_context_changed == true'
+    echo "$output" | jq -e '.ok == false and has("security_review") == false and .security_reviewer == null'
 }
 
 # ---- (8) security review を回す CLI の opt-in（"dev-flow".security_reviewer。issue #1087）----
 
-@test "(8a) base branch にも user 設定にも opt-in が無ければ security_review.reviewer は claude" {
+@test "(8a) base branch にも user 設定にも opt-in が無ければ security_reviewer は claude" {
     cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "claude"'
+    echo "$output" | jq -e '.ok == true and .security_reviewer == "claude"'
 }
 
 @test "(8b) base branch の skill-config.json / .claude/skill-config.json の opt-in を読む" {
@@ -689,7 +669,7 @@ comment_json() {
     cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "codex"'
+    echo "$output" | jq -e '.ok == true and .security_reviewer == "codex"'
 
     git -C "$SEED" checkout -q main
     git -C "$SEED" rm -q skill-config.json
@@ -698,7 +678,7 @@ comment_json() {
     commit_reviewer_config main .claude/skill-config.json codex
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "codex"'
+    echo "$output" | jq -e '.ok == true and .security_reviewer == "codex"'
 }
 
 @test "(8c) PR head の設定ファイルに書かれた opt-in は読まない（base の値・既定のまま）" {
@@ -707,7 +687,7 @@ comment_json() {
     cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "claude"'
+    echo "$output" | jq -e '.ok == true and .security_reviewer == "claude"'
     # worktree（PR head）には codex と書いてある
     wt="$(echo "$output" | jq -r '.worktree')"
     jq -e '."dev-flow".security_reviewer == "codex"' "$wt/skill-config.json"
@@ -717,7 +697,7 @@ comment_json() {
     commit_reviewer_config feature/x skill-config.json claude
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "codex"'
+    echo "$output" | jq -e '.ok == true and .security_reviewer == "codex"'
 }
 
 @test "(8d) base branch に無ければ user 設定（SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）を読み、base の値を優先する" {
@@ -725,23 +705,23 @@ comment_json() {
     write_user_reviewer_config .claude/skill-config.json codex
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "codex"'
+    echo "$output" | jq -e '.ok == true and .security_reviewer == "codex"'
 
     write_user_reviewer_config .config/skills/config.json claude
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.security_review.reviewer == "claude"'
+    echo "$output" | jq -e '.security_reviewer == "claude"'
 
     jq -n '{"dev-flow": {security_reviewer: "codex"}}' > "$BATS_TEST_TMPDIR/explicit.json"
     SKILL_CONFIG_PATH="$BATS_TEST_TMPDIR/explicit.json" run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.security_review.reviewer == "codex"'
+    echo "$output" | jq -e '.security_reviewer == "codex"'
 
     # repo（base branch）の宣言は user 設定より優先する
     commit_reviewer_config main skill-config.json claude
     SKILL_CONFIG_PATH="$BATS_TEST_TMPDIR/explicit.json" run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.security_review.reviewer == "claude"'
+    echo "$output" | jq -e '.security_reviewer == "claude"'
 }
 
 @test "(8e) opt-in の値は検証せずそのまま渡す（out-of-enum は workflow が明示 error にする）" {
@@ -749,7 +729,7 @@ comment_json() {
     cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "gemini"'
+    echo "$output" | jq -e '.ok == true and .security_reviewer == "gemini"'
 }
 
 @test "(8f) user 設定の repo 別の節（\"dev-flow\".repos[\"<owner>/<repo>\"]）の opt-in を base branch より優先する" {
@@ -763,7 +743,7 @@ comment_json() {
     cd "$ROOT"
     run bash "$SCRIPT" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .security_review.reviewer == "codex"'
+    echo "$output" | jq -e '.ok == true and .security_reviewer == "codex"'
 }
 
 # ---- (9) 人が決めた修正方針（--direction。issue #1122）----

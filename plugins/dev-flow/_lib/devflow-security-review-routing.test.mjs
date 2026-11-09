@@ -1,6 +1,6 @@
 // _lib/devflow-security-review-routing.test.mjs
 // dev-flow の敵対的 security review の配線（issue #1063）を VM 実行で pin する。
-//   (a) Diff triage の対象判定を nested pr-iterate へ args.security_review で渡す
+//   (a) Diff triage の対象判定は nested pr-iterate へ渡さない（pr-iterate が security-codex-relay で取る。issue #1307）
 //   (b) 対象の run で pr-iterate が今の head で clear にしない（critical/major が上限まで残る・worktree の外を指す・
 //       review に到達しない）と、Merge tier は専用の hold code security_review_unresolved で HOLD
 //   (c) 対象で clear・対象外の run はこの code を積まない（clear なら pr-iterate の終端 status に依らない。
@@ -8,7 +8,7 @@
 //   (d) 公開の終端サマリーには security review の件数だけが載る
 //   (e) pr-iterate が review 前に止めた理由（security_review.stop_reason）を引き継ぎ、終端サマリーを出し分ける（issue #1082）
 //   (f) fix が人の判断に返した security の指摘の件数（security_review.deferred）を引き継ぎ、終端サマリーに件数を出す（issue #1121）
-//   (g) prerun が読んだ security review の CLI の opt-in（args.setup.security_reviewer）を security_review.reviewer で渡す（issue #1125）
+//   (g) prerun が読んだ security review の CLI の opt-in（args.setup.security_reviewer）を args.security_reviewer で渡す（issue #1125）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -37,33 +37,27 @@ async function run({ overrides = TARGET, iterate, setup = {} } = {}) {
 }
 const codes = (result) => JSON.parse(JSON.stringify(result.merge_tier_hold_reasons.map((r) => r.code)));
 
-test('[devflow-security-review] (a) Diff triage の対象判定を nested pr-iterate の args.security_review で渡す', async () => {
-  const { workflowCalls, calls } = await run({ iterate: { status: 'lgtm', fixes_applied: 0, security_review: sr('cleared', { critical: 0 }) } });
-  assert.equal(workflowCalls.length, 1);
-  assert.deepEqual(JSON.parse(JSON.stringify(workflowCalls[0].opts.security_review)), { target: true, reasons: ['not_allowlisted:1'], reviewer_context_changed: false, reviewer: 'claude' });
-  // reviewer の指示ファイルを変える diff（と取得失敗）は reviewer_context_changed:true で渡す（pr-iterate が run の終わりまで固定する）
-  for (const scope of [securityScopeResponse({ target: true, head: null, contextChanged: true }), null]) {
-    const changed = await run({ overrides: { 'security-scope': scope }, iterate: { status: 'security_unresolved', fixes_applied: 0, security_review: sr('unresolved') } });
-    assert.equal(changed.workflowCalls[0].opts.security_review.reviewer_context_changed, true, JSON.stringify(scope));
+test('[devflow-security-review] (a)(g) nested pr-iterate には Diff triage の対象判定を渡さず（pr-iterate が security-codex-relay で取る）、args.setup.security_reviewer を args.security_reviewer で渡す', async () => {
+  // Diff triage の対象・対象外・指示ファイルを変える diff・取得失敗のどれでも、判定は渡さずに opt-in の値だけを渡す
+  for (const [reviewer, scope] of [
+    ['claude', TARGET['security-scope']],
+    ['codex', TARGET['security-scope']],
+    ['claude', securityScopeResponse({ target: false, head: null })],
+    ['codex', securityScopeResponse({ target: true, head: null, contextChanged: true })],
+    ['claude', null],
+  ]) {
+    const name = `${reviewer} / ${JSON.stringify(scope)}`;
+    const { workflowCalls } = await run({ setup: { security_reviewer: reviewer }, overrides: { 'security-scope': scope }, iterate: { status: 'lgtm', fixes_applied: 0, security_review: sr('cleared', { critical: 0 }) } });
+    assert.equal(workflowCalls.length, 1, name);
+    const opts = workflowCalls[0].opts;
+    assert.ok(!('security_review' in opts), `${name}: nested pr-iterate に security_review を渡した: ${JSON.stringify(opts.security_review)}`);
+    assert.equal(opts.security_reviewer, reviewer, name);
   }
+  // Diff triage の対象判定は lite route の入口と Merge tier が読む（exec-proxy の起動形は変えない）
+  const { calls } = await run({ iterate: { status: 'lgtm', fixes_applied: 0, security_review: sr('cleared', { critical: 0 }) } });
   const scope = calls.find((c) => c.label === 'security-scope');
   assert.equal(scope.agentType, 'dev-flow:dev-runner-haiku-ro');
   assert.ok(scope.prompt.endsWith('\nsecurity-review-scope /tmp/wt origin/main --working-tree'), scope.prompt);
-});
-
-test('[devflow-security-review] (g) args.setup.security_reviewer（prerun が base branch か user 設定から読んだ opt-in）を nested pr-iterate の args.security_review.reviewer で渡す', async () => {
-  for (const reviewer of ['codex', 'claude']) {
-    const { workflowCalls } = await run({ setup: { security_reviewer: reviewer }, iterate: { status: 'lgtm', fixes_applied: 0, security_review: sr('cleared', { critical: 0 }) } });
-    assert.equal(workflowCalls.length, 1, reviewer);
-    assert.equal(workflowCalls[0].opts.security_review.reviewer, reviewer, JSON.stringify(workflowCalls[0].opts.security_review));
-  }
-  // 指示ファイルを変える PR（reviewer_context_changed:true）でも opt-in の値をそのまま渡す（Codex で判定させる）
-  const changed = await run({
-    setup: { security_reviewer: 'codex' },
-    overrides: { 'security-scope': securityScopeResponse({ target: true, head: null, contextChanged: true }) },
-    iterate: { status: 'lgtm', fixes_applied: 0, security_review: sr('cleared', { critical: 0 }) },
-  });
-  assert.deepEqual(JSON.parse(JSON.stringify(changed.workflowCalls[0].opts.security_review)), { target: true, reasons: ['not_allowlisted:1'], reviewer_context_changed: true, reviewer: 'codex' });
 });
 
 test('[devflow-security-review] (b) 対象の run で pr-iterate が clear にしないまま終われば、どの status でも security_review_unresolved で HOLD', async () => {

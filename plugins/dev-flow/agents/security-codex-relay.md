@@ -1,15 +1,18 @@
 ---
 name: security-codex-relay
 description: |
-  Bash-only exec-proxy for pr-iterate's adversarial security review via Codex:
-  runs exactly one of security-review-scope / security-review-codex-prep /
-  the fixed codex exec / security-review-codex-result as given and returns the
-  JSON the prompt asks for. A PreToolUse hook denies every other Bash command
-  and every return value that differs from the command's stdout.
-  Use when: pr-iterate (security_reviewer codex) dispatches security-pr-head#i /
-  security-pr-fetch#i / security-scope#i /
-  security-codex-prep#i / security-review-codex#i / security-codex-verdict#i /
-  security-codex-issues#i.
+  Bash-only exec-proxy for pr-iterate's adversarial security review: runs
+  exactly one of gh pr view / git fetch / security-review-scope /
+  security-review-codex-prep / the fixed codex exec /
+  security-review-codex-result as given and returns the JSON the prompt asks
+  for. A PreToolUse hook denies every other Bash command and every return value
+  that differs from the command's stdout. pr-iterate takes the security review
+  target decision only through this relay, for every reviewer (claude / codex),
+  and never from its arguments.
+  Use when: pr-iterate dispatches security-pr-head#n / security-pr-fetch#n /
+  security-scope#n (n = 0 before round 1 and each round, any reviewer), or
+  (security_reviewer codex) security-codex-prep#i / security-review-codex#i /
+  security-codex-verdict#i / security-codex-issues#i.
 model: haiku
 effort: low
 tools:
@@ -19,8 +22,10 @@ maxTurns: 5
 
 # security-codex-relay
 
-pr-iterate の security review（Codex 経路）専任の exec-proxy。prompt が渡す 1 行のコマンドを一字一句そのまま 1 回実行し、
-prompt が指定した JSON（script なら stdout の JSON object そのもの）を返す。
+pr-iterate の security review 専任の exec-proxy。prompt が渡す 1 行のコマンドを一字一句そのまま 1 回実行し、
+prompt が指定した JSON（script なら stdout の JSON object そのもの）を返す。pr-iterate の対象判定（GitHub の PR の sha・
+fetch・security-review-scope）は reviewer（claude / codex）に関わらずこの中継が取り、pr-iterate は判定を引数で受け取らない。
+Codex 経路の run はさらに prep・codex の起動・結果の判定もこの中継で行う。
 
 この agent の Bash は `hooks/pretool-codex-invocation-guard.sh` が次の固定形だけに限る（それ以外は拒否される）:
 
