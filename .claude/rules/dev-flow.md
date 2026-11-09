@@ -21,6 +21,7 @@ paths:
 - `exec-proxy.md` — exec-proxy の失敗ポリシー表
 - `analyze-issue.md` — analyze の出力キー
 - `capability-bound.md` — 能力しだいの判断と sunset トリガ
+- `justification-classes.md` — 正当化クラスごとの機構の一覧
 
 ## 構造
 
@@ -48,10 +49,10 @@ paths:
 
 ## 正当化クラス（W7）
 
-- distrust 機構と agent への指示は下のクラスか capability-bound を宣言する（無いと撤去判断ができない）
-- **incentive-structural**（永続。勝利宣言の self-judge と moving target を断つ。賢いモデルほど巧妙に逸脱する）: frozen target（`evalSeen` / `blockSeen` / `reviewSeen`）・stuck 打ち切り（`EVAL_STUCK` / `REVIEW_STUCK`）・critical の append と severity `floor`・hard cap（`EVAL_MAX` / `GREEN_MAX` / `BLOCK_MAX` / `DESIGN_REPLAN_MAX` / `AGENT_AC_REIMPL_MAX`）・guard_blocked の replan 除外・blocking_reason 決定論スクラバー（`scrubBlockingDetail`）・review-finding 決定論スクラバー（`scrubReviewFindingText`。finding の文を fix prompt へ verbatim に流さない）
-- **指示の incentive-structural**（永続。逸脱が optimization pressure・context 分断由来）: self-judge 禁止・feedback 全件対応・self-contained 記述・topic 反復でアプローチ変更
-- **blast-radius**（永続。不可逆性・accountability で正当化）: human merge・danger-grep → security path・seeded SEC と HOLD・pr-iterate の critical/major-always-blocks・Final reconcile・TESTSURF seeding・lite route の critical/major で昇格・health の status 判定は `health-report.sh` だけ・sunset 昇格は人間 merge 経由
+- distrust 機構と agent への指示は下のクラスか capability-bound を宣言する（無いと撤去判断ができない）。クラスごとの機構の列挙は `justification-classes.md`
+- **incentive-structural**（永続。勝利宣言の self-judge と moving target を断つ。賢いモデルほど巧妙に逸脱する）: frozen target・stuck 打ち切り・hard cap・review-finding 決定論スクラバー 等
+- **指示の incentive-structural**（永続。逸脱が optimization pressure・context 分断由来）
+- **blast-radius**（永続。不可逆性・accountability で正当化）: human merge・Final reconcile 等
 - **contract**（永続・指示）: 出力 schema・StructuredOutput 義務・Boundary など呼び出し側が依存する指示
 - 敵対的 security review: critical/major 0 件まで LGTM にしない gate は blast-radius。incentive-structural: 許可リストで対象判定（判定不能・一度対象は対象）・毎回新 spawn・`reviewed_sha` 一致で clear・PR の文はデータ・公開は件数・`reviewer_context_changed`・Codex 中継（hook で縛る）の判定不能で停止。許可リスト拡大は非読込・非実行を示してから
 - 上の 3 クラスはモデル更新で撤去しない。capability-bound の判断は `capability-bound.md` にだけ置く

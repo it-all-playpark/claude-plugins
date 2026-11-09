@@ -115,9 +115,10 @@ const pipelineSrc = readFileSync(join(REFERENCES_ABS, 'pipeline.md'), 'utf8');
 const securityReviewSrc = readFileSync(join(REFERENCES_ABS, 'security-review.md'), 'utf8');
 const execProxySrc = readFileSync(join(REFERENCES_ABS, 'exec-proxy.md'), 'utf8');
 const telemetrySrc = readFileSync(join(REFERENCES_ABS, 'telemetry.md'), 'utf8');
-const NAMED_DOCS = [['rules', rulesSrc], ['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc], ['exec-proxy.md', execProxySrc], ['telemetry.md', telemetrySrc]];
+const justificationSrc = readFileSync(join(REFERENCES_ABS, 'justification-classes.md'), 'utf8');
+const NAMED_DOCS = [['rules', rulesSrc], ['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc], ['exec-proxy.md', execProxySrc], ['telemetry.md', telemetrySrc], ['justification-classes.md', justificationSrc]];
 
-test('(h) rules と references（capability-bound.md / pipeline.md / security-review.md / exec-proxy.md / telemetry.md）が挙げる定数・識別子・パスはコードに実在し、値を書き写さない', () => {
+test('(h) rules と references（capability-bound.md / pipeline.md / security-review.md / exec-proxy.md / telemetry.md / justification-classes.md）が挙げる定数・識別子・パスはコードに実在し、値を書き写さない', () => {
   const missing = [];
   for (const [name, src] of NAMED_DOCS) {
     for (const [, raw] of src.matchAll(/`([^`\n]+)`/g)) {
@@ -137,8 +138,31 @@ test('(h) rules と references（capability-bound.md / pipeline.md / security-re
   assert.deepEqual(missing, [], `コードに実在しないものを挙げている:\n${missing.join('\n')}`);
 });
 
-test('(i) capability-bound.md / pipeline.md / security-review.md / exec-proxy.md / telemetry.md に経緯記述（禁止辞書ヒット）が存在しない', () => {
-  const hits = [['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc], ['exec-proxy.md', execProxySrc], ['telemetry.md', telemetrySrc]].flatMap(([name, src]) =>
+// justification-classes.md: rules の正当化クラス節から移した機構の列挙。機構はクラスの節から動かさない
+// （capability-bound に移すと sunset で撤去されうる）。rules と security-review.md 冒頭は列挙先としてここを指す
+const JUSTIFICATION_MECHANISMS = {
+  'incentive-structural': ['`evalSeen`', '`blockSeen`', '`reviewSeen`', '`EVAL_STUCK`', '`REVIEW_STUCK`', '`EVAL_MAX`', '`GREEN_MAX`', '`BLOCK_MAX`', '`DESIGN_REPLAN_MAX`', '`AGENT_AC_REIMPL_MAX`', 'guard_blocked の replan 除外', '`scrubBlockingDetail`', '`scrubReviewFindingText`'],
+  '指示の incentive-structural': ['self-judge 禁止', 'feedback 全件対応', 'self-contained 記述', 'topic 反復でアプローチ変更'],
+  'blast-radius': ['human merge', 'critical/major-always-blocks', 'Final reconcile', 'TESTSURF seeding', '`health-report.sh`'],
+};
+
+test('(o) justification-classes.md がクラスごとの節に機構を全件持ち、rules と security-review.md 冒頭がそこを指す', () => {
+  const sections = Object.fromEntries(justificationSrc.split(/^## /m).slice(1).map((block) => {
+    const [title, ...rest] = block.split('\n');
+    return [title.trim(), rest.join('\n')];
+  }));
+  for (const [cls, mechanisms] of Object.entries(JUSTIFICATION_MECHANISMS)) {
+    assert.ok(sections[cls] !== undefined, `justification-classes.md に "## ${cls}" 節が無い`);
+    for (const m of mechanisms) {
+      assert.ok(sections[cls].includes(m), `justification-classes.md の "## ${cls}" 節に ${m} が無い`);
+    }
+  }
+  assert.ok(rulesSrc.includes('`justification-classes.md`'), 'rules が機構の列挙先 justification-classes.md を指していない');
+  assert.ok(securityReviewSrc.split('\n## ')[0].includes('`justification-classes.md`'), 'security-review.md 冒頭が justification-classes.md を指していない');
+});
+
+test('(i) capability-bound.md / pipeline.md / security-review.md / exec-proxy.md / telemetry.md / justification-classes.md に経緯記述（禁止辞書ヒット）が存在しない', () => {
+  const hits = [['capability-bound.md', capSrc], ['pipeline.md', pipelineSrc], ['security-review.md', securityReviewSrc], ['exec-proxy.md', execProxySrc], ['telemetry.md', telemetrySrc], ['justification-classes.md', justificationSrc]].flatMap(([name, src]) =>
     src.split('\n').flatMap((line, i) => {
       const terms = findHistoryTerms(line);
       return terms.length > 0 ? [`${name}:${i + 1}: ${line} (${terms.join(',')})`] : [];
@@ -231,6 +255,7 @@ const INVARIANT_ANCHORS = [
   'written:false',
   'verbatim 転写',
   'review-finding 決定論スクラバー',
+  'モデル更新で撤去しない',
 ];
 
 test('(d) 不変条件アンカーが全て rules に残っている', () => {
