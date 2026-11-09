@@ -3,12 +3,10 @@
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
 // 直接 workflow 側を編集しない。全文一致は _lib/workflow-inlines.sync.test.mjs が CI 保証。
 
-// gate_policy の trust 昇順 4 値。
+// gate_policy の 2 値（LLM major を advisory / blocking のどちらに置くか）。
 export const GATE_POLICIES = [
-  'deterministic-only',
   'llm-major-advisory',
   'llm-major-blocking',
-  'llm-autonomous',
 ];
 
 // デフォルト gate_policy。
@@ -32,10 +30,8 @@ export function resolveGatePolicy(value) {
 //   - item.source === 'seed'
 //
 // LLM major（critical でなく deterministic でなく seed でない major）の写像:
-//   deterministic-only  → advisory
 //   llm-major-advisory  → advisory
 //   llm-major-blocking  → blocking
-//   llm-autonomous      → advisory
 //
 // LLM minor は全 policy で advisory。
 export function gateLane(item, policy) {

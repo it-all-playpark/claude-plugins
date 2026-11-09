@@ -7,7 +7,7 @@ import {
   testsurfPatternsOf,
   reconcileTestsurf,
 } from './testsurf.mjs';
-import { gateLane } from './gate-policy.mjs';
+import { GATE_POLICIES, gateLane } from './gate-policy.mjs';
 
 // ---- TESTSURF_PATTERNS ----
 
@@ -244,10 +244,10 @@ test('(k) 既存 TESTSURF id への重複 append なし（単調性）', () => {
   assert.equal(out.items.filter((it) => it.id === 'TESTSURF-SKIP').length, 1);
 });
 
-test('gateLane 連携: TESTSURF seed item は blocking lane になる', () => {
+test('gateLane 連携: TESTSURF seed item は全 policy で blocking lane になる', () => {
   const risk = { ok: true, hits: [{ file: 'a.test.js', class: 'test-weakening', pattern: 'skip' }] };
   const out = reconcileTestsurf(emptyLedger(), risk);
-  assert.equal(gateLane(out.items[0], 'llm-major-advisory'), 'blocking');
-  assert.equal(gateLane(out.items[0], 'deterministic-only'), 'blocking');
-  assert.equal(gateLane(out.items[0], 'llm-autonomous'), 'blocking');
+  for (const p of GATE_POLICIES) {
+    assert.equal(gateLane(out.items[0], p), 'blocking', `policy=${p}`);
+  }
 });
