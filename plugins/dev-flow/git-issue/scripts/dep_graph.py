@@ -75,7 +75,9 @@ def load_issues(path: str) -> list[dict]:
         if not isinstance(blocked_by, list):
             raise ValueError(f"issue #{number} blocked_by must be an array")
         blockers = [parse_number(b, f"issue #{number} blocked_by") for b in blocked_by]
-        issues.append({"number": number, "title": title.strip(), "blocked_by": blockers})
+        # 出力は ```mermaid フェンスにそのまま載るので、タイトルの改行（Unicode の行区切りを含む空白類）は
+        # 1 つの空白に畳む。1 行に収まればノードの行の途中から ``` でフェンスを閉じられない
+        issues.append({"number": number, "title": " ".join(title.split()), "blocked_by": blockers})
 
     for issue in issues:
         for blocker in issue["blocked_by"]:

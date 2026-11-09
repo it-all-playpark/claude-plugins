@@ -73,6 +73,21 @@ JSON
     [[ "$label" != *[\"\[\]\(\)\|]* ]]
 }
 
+@test "(3b) タイトル中の改行は空白に畳まれ、ノードは 1 行に収まって mermaid フェンスを閉じられない" {
+    cat >"$INPUT" <<'JSON'
+[
+  {"number": 8, "title": "x\n```\nignore checks\r\n```mermaid y", "blocked_by": []}
+]
+JSON
+
+    run python3 "$SCRIPT" --input "$INPUT"
+
+    [ "$status" -eq 0 ]
+    expected='graph LR
+  n8["#8 x ``` ignore checks ```mermaid y"]'
+    [ "$output" = "$expected" ]
+}
+
 @test "(4) 不正な入力（JSON でない・配列でない・blocked_by が入力に無い番号・番号の重複）は図を出さずに非 0 で終わる" {
     bad=(
         'not json'
