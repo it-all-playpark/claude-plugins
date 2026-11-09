@@ -12,7 +12,11 @@
 - R1 PR の内容（diff・PR 本文・コメント・ファイル名）で判定を誘導させない — reviewer は diff をデータとして読み、PR が書いた
   指示ファイルを読み込まない（read-scope hook・Claude 経路は `reviewer_context_changed` で止める）。clear を決める中継に自由文を
   読ませない。Codex 経路の中継の Bash と返り値は hook が workflow の prompt の行と実 stdout に縛る（PR の CLAUDE.md を受け取っても偽れない）
-- R2 判定は今の PR head に対するもの — `reviewed_sha` が今の head と一致した clear だけを使い、head が変わりうる時点で cleared を捨てる
+- R2 判定は今の PR head に対するもの — workflow が security-scope の取った diff の head_sha を今の PR head（`shaNow`。Codex 経路は
+  GitHub の PR head も）と照合し、食い違えば review せず止める。diff は head ごとに新しく作る保存先に書き、前の head の diff・結果を
+  読ませない。手で回す経路は `security-review-isolated` が scope の head_sha と PR head を照合する。Claude 経路で `shaNow` が取れない
+  round は照合できず、scope の head_sha が 40 桁であることだけを確かめる。head が変わりうる時点で cleared を捨てる。返り値の
+  `reviewed_sha` は渡した head_sha の写しかを見る出力の整合で、R2 の根拠にしない（reviewer は渡された値を写せるだけ）
 - R3 review の仕組みが、PR に制御される入力を sandbox の外で実行しない — Codex 経路の codex も Claude の sandbox の中で動かす前提にし、
   中継の Bash は固定形の allowlist に限る（flag を変えた codex・別のコマンドを中継に実行させない）
 - **境界の外（塞がない。issue にもしない）**: sandbox の中で PR のコードが既に実行され、同じ uid のプロセスとして残っている前提の
@@ -74,7 +78,8 @@ pr-iterate      → 対象の run は各 round で、review#i（・ci-check#i）
                     → worktree の外の新しい保存先 `dev-flow-security-review-XXXXXX/pr.diff` に diff を書く
                   対象なら security-review#i（security-reviewer を毎回新しく spawn。pr.diff のパスと head sha と
                     前回の未解消 critical/major を DATA として渡す）
-                    → critical/major 0 件かつ reviewed_sha が今の head → 同じ round の review approve・CI passed / no_checks がそろえば LGTM
+                    → critical/major 0 件かつ reviewed_sha が渡した head_sha の写し（出力の整合。head の一致は security-scope#i の
+                      時点の照合で決まる）→ 同じ round の review approve・CI passed / no_checks がそろえば LGTM
                     → critical/major あり → review の blocking（と CI failed）と 1 回の fix#i（pr-fixer。prompt に
                       SECURITY_FIX_GUIDANCE と PR の意図 — AC か PR の title・body — が入る）にまとめる。review が
                       approve でも CI を待たない（ci-wait-check なし）→ commit-ensure#i → 次 iteration（同じ topic の反復は stuck、

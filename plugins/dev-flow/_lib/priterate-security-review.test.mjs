@@ -3,7 +3,8 @@
 //   (A) 対象判定: LGTM の候補の round ごとに今の PR head の `<base>...<head>` の diff で判定し、起動時の判定
 //       （args.security_review）か run 中の判定のどれか 1 回でも対象なら run の終わりまで対象。args が無ければ対象
 //   (B) 対象の run: security-reviewer を毎回新しく spawn し、PR 全 diff と前回の未解消の指摘を渡し、critical/major 0 件
-//       かつ reviewed_sha が今の head と一致したときだけ clear
+//       かつ reviewed_sha が渡した head_sha の写し（出力の整合）のときだけ clear。判定が今の PR head に対するものかは
+//       security-scope の head と今の PR head の照合で決まり、食い違えば review せず clear にしない
 //   (C) clear にならない終わり方（上限まで残る・stuck・worktree の外を指す・LGTM の前に別理由で終端）は lgtm 以外の status で、
 //       終端サマリーは「未完了」を出す
 //   (D) security-reviewer は PR の worktree の外を作業ディレクトリにし、diff と head sha を DATA として受け取る。
@@ -175,7 +176,7 @@ test('[security-review][B] round ごとに新しい spawn で PR 全 diff を読
   assert.equal(result.fixes_applied, 1);
 });
 
-test('[security-review][B] critical/major 0 件でも reviewed_sha が今の head と一致しなければ clear にしない', async () => {
+test('[security-review][B] critical/major 0 件でも reviewed_sha が渡した head_sha の写しでなければ（出力の整合違反）clear にしない', async () => {
   for (const reviewed of [SHA_B, '', 'abc']) {
     const { result } = await run({
       overrides: {
@@ -593,7 +594,7 @@ test('[security-review][F] Codex の critical/major は fix に回し、次の r
 
 test('[security-review][F] Codex の結果は reviewed_sha の不一致・判定と指摘の食い違い・指摘を取れないときに clear にしない（Claude 経路にも倒さない）', async () => {
   for (const [name, overrides] of [
-    ['reviewed_sha が今の head と違う', codexRound(1, [], { reviewedSha: SHA_B, cleared: false })],
+    ['reviewed_sha が渡した head_sha の写しでない', codexRound(1, [], { reviewedSha: SHA_B, cleared: false })],
     ['判定が clear と言わないのに指摘が空', codexRound(1, [], { cleared: false })],
     ['判定が clear と言わず指摘の中継が null', { ...codexRound(1, [finding('cmd-injection')]), 'security-codex-issues#1': null }],
     ['判定が clear と言わず指摘の中継が ok:false', { ...codexRound(1, [finding('cmd-injection')]), 'security-codex-issues#1': { ok: false, issues: [], error: 'relay_failed' } }],

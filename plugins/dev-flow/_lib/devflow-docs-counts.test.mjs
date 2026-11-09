@@ -336,6 +336,11 @@ test('security-review.md: 守る要件と境界（R1〜R3）と経路を持ち�
   for (const s of ['- R1 ', '- R2 ', '- R3 ', '**境界の外（塞がない。issue にもしない）**', '`SECURITY_REVIEW_BOUNDARY`', '`SECURITY_FIX_GUIDANCE`']) {
     assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
   }
+  // R2 の根拠は workflow / script の head 照合。reviewed_sha は渡した head_sha の写しかを見る出力の整合で、根拠にしない
+  const r2 = boundary.slice(boundary.indexOf('- R2 '), boundary.indexOf('- R3 '));
+  assert.ok(r2.includes('`shaNow`'), `security-review.md の R2 が今の PR head（shaNow）との照合を根拠にしていない:\n${r2}`);
+  assert.ok(!r2.includes('`reviewed_sha` が今の head と一致した clear だけを使い'), `security-review.md の R2 が reviewed_sha の一致を根拠にしている:\n${r2}`);
+  assert.ok(!sectionOf(md, '## Claude 経路').includes('reviewed_sha が今の head →'), 'security-review.md の Claude 経路の図が reviewed_sha を今の head との一致として書いている');
   for (const h of ['## 対象の判定', '## Claude 経路', '## Codex 経路']) assert.ok(md.includes(`${h}\n`), `security-review.md に ${h} が無い`);
   // 対象の判定は security-review-scope.mjs と同じ範囲を書く: isReviewerContextPath を起点にした import の閉包と、たどれないときの fail-closed
   const scope = sectionOf(md, '## 対象の判定');
