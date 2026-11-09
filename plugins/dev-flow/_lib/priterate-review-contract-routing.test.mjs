@@ -1,9 +1,7 @@
-// F3: pr-iterate の review 経路（decision × blocking）route ベース再構成の routing test（issue #321）
+// F3: pr-iterate の review 経路（blocking 件数）route ベース再構成の routing test（issue #321, #1283）
 // classifyReviewRoute（_lib/review-normalize.mjs）ベースの分岐を pin する:
 //   - blocking 0 件 → ci_gate（decision に依らず fix agent を起動しない）
-//   - approve + blocking あり → 同一 iteration 内で 1 回だけ再 review（contract retry）
-//     - 再矛盾 → status: 'review_contract_error'（無限ループしない）
-//     - 解消 → ci_gate / fix_loop へ正しく合流
+//   - approve + blocking あり → 再 review せず fix loop へ（decision は表示・記録専用。history には approve のまま残る）
 //   - minor findings は fix loop を起動しないが終端サマリーに保持される（issue #392 で per-round 投稿は廃止・終端 post-summary へ統合）
 //   - 既存正常経路（approve→CI gate、request-changes→fix loop）は不変（AC-6 回帰）
 //
@@ -95,60 +93,46 @@ test('[AC-2] request-changes decision + issues:[](blocking 0件) -> fix# 起動�
   assert.equal(result?.status, 'lgtm', `status は lgtm であるべきだが '${result?.status}' だった`);
 });
 
-// ---- (3) [AC-3] approve+blocking の再 review が矛盾解消 -> fix loop へ合流 -> lgtm ----
-test('[AC-3] approve+major の1回だけ再reviewで矛盾解消(request-changes) -> fix loop 合流 -> fix後 lgtm', async () => {
-  const agentCalls = [];
+// ---- (3) approve + blocking の同居: 再 review せず blocking 件数だけで fix loop に送る（issue #1283）----
+// review#1 = approve + major 1 件、fix 後の review#2 = approve + issues:[]
+function approveWithMajorReviewer() {
   const majorIssue = { severity: 'major', topic: 't1', file: 'a.ts', description: 'd1', suggestion: 's1' };
-  const reviewerStub = (label) => {
-    if (label === 'review#1') return { decision: 'approve', issues: [majorIssue], summary: 'mismatch-round1' };
-    if (label === 'review#1-contract-retry') return { decision: 'request-changes', issues: [majorIssue], summary: 'resolved-to-request-changes' };
+  return (label) => {
+    if (label === 'review#1') return { decision: 'approve', issues: [majorIssue], summary: 'approve-with-major' };
     if (label === 'review#2') return { decision: 'approve', issues: [], summary: 'ok-round2' };
     throw new Error(`unexpected pr-reviewer label: ${label}`);
   };
-  const agentStub = buildAgentStub({ reviewerStub, agentCalls });
+}
+
+test('[#1283 AC-2] approve + major 1 件 -> 再 review せず fix#1 を 1 回起動し、fix 後の review#2 が approve + issues:[] なら lgtm', async () => {
+  const agentCalls = [];
+  const agentStub = buildAgentStub({ reviewerStub: approveWithMajorReviewer(), agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
   assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
-  const reviewerCalls = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
-  assert.equal(reviewerCalls.length, 3, `pr-reviewer 呼び出しは 3 回（review#1 + retry + review#2）であるべきだが ${reviewerCalls.length} 回だった。labels: ${reviewerCalls.map((c) => c.label).join(', ')}`);
-  assert.ok(reviewerCalls.some((c) => c.label === 'review#1'), 'review#1 が呼ばれるべき');
-  assert.ok(reviewerCalls.some((c) => c.label === 'review#1-contract-retry'), 'review#1-contract-retry が呼ばれるべき');
-  assert.ok(reviewerCalls.some((c) => c.label === 'review#2'), 'fix 後の review#2 が呼ばれるべき');
+  const reviewerLabels = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer').map((c) => c.label);
+  assert.deepEqual(reviewerLabels, ['review#1', 'review#2'], `iteration 1 の pr-reviewer 呼び出しは review#1 だけであるべき。labels: ${reviewerLabels.join(', ')}`);
 
-  const fixCalls = agentCalls.filter((c) => c.label.startsWith('fix#'));
-  assert.equal(fixCalls.length, 1, `fix# は 1 回であるべきだが ${fixCalls.length} 回だった`);
+  const fixLabels = agentCalls.filter((c) => c.label.startsWith('fix#')).map((c) => c.label);
+  assert.deepEqual(fixLabels, ['fix#1'], `fix# は fix#1 の 1 回だけであるべき。labels: ${fixLabels.join(', ')}`);
 
   assert.equal(result?.status, 'lgtm', `result.status は lgtm であるべきだが '${result?.status}' だった`);
 });
 
-// ---- (4) [AC-4] 再試行後も矛盾再発 -> review_contract_error で終端（無限ループしない）----
-test('[AC-4] approve+major が retry 後も再発 -> review_contract_error で終端、無限ループしない', async () => {
+test('[#1283 AC-3] approve + major 1 件の round の history は reviewer が返した decision=approve を保持し blocking 1 件を残す', async () => {
   const agentCalls = [];
-  const majorIssue = { severity: 'major', topic: 't1', file: 'a.ts', description: 'd1', suggestion: 's1' };
-  const reviewerStub = (label) => {
-    if (label === 'review#1' || label === 'review#1-contract-retry') {
-      return { decision: 'approve', issues: [majorIssue], summary: 'still-mismatched' };
-    }
-    throw new Error(`unexpected pr-reviewer label (should not go past retry): ${label}`);
-  };
-  const agentStub = buildAgentStub({ reviewerStub, agentCalls });
+  const agentStub = buildAgentStub({ reviewerStub: approveWithMajorReviewer(), agentCalls });
   const ctx = makeSandbox(agentStub);
   const { result, error } = await runPrIterate(ctx);
   assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
-  const reviewerCalls = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
-  assert.equal(reviewerCalls.length, 2, `pr-reviewer 呼び出しは 2 回のみ（review#1 + retry、無限ループしない）であるべきだが ${reviewerCalls.length} 回だった`);
-
-  const fixCalls = agentCalls.filter((c) => c.label.startsWith('fix#'));
-  assert.equal(fixCalls.length, 0, `fix# は 0 回であるべきだが ${fixCalls.length} 回だった`);
-
-  const ciCalls = agentCalls.filter((c) => c.prompt.includes('check-ci --checks-data'));
-  assert.equal(ciCalls.length, 0, `ci-check は 0 回であるべきだが ${ciCalls.length} 回だった`);
-
-  assert.equal(result?.status, 'review_contract_error', `result.status は review_contract_error であるべきだが '${result?.status}' だった`);
+  const round1 = (result?.history ?? []).find((h) => h.iteration === 1);
+  assert.ok(round1 != null, `history に iteration 1 のエントリがあるべき。history: ${JSON.stringify(result?.history)}`);
+  assert.equal(round1.decision, 'approve', `iteration 1 の decision は reviewer が返した approve のままであるべきだが '${round1.decision}' だった`);
+  assert.equal(round1.blocking.length, 1, `iteration 1 の blocking は 1 件であるべきだが ${round1.blocking.length} 件だった`);
 });
 
 // ---- (5) [AC-5] minor findings は消えず終端サマリーに保持される（issue #392 で per-round 投稿は廃止・終端 post-summary へ統合）----
@@ -175,8 +159,8 @@ test('[AC-5] minor findings が終端 post-summary の本文に保持される�
   );
 });
 
-// ---- (6) [AC-6 回帰・その1] 通常 approve -> CI gate -> lgtm（retry 呼び出し 0）----
-test('[AC-6 回帰] approve + issues:[] + CI passed -> lgtm（retry label 呼び出し 0、既存正常経路不変）', async () => {
+// ---- (6) [AC-6 回帰・その1] 通常 approve -> CI gate -> lgtm ----
+test('[AC-6 回帰] approve + issues:[] + CI passed -> lgtm（既存正常経路不変）', async () => {
   const agentCalls = [];
   const reviewerStub = () => ({ decision: 'approve', issues: [], summary: 'ok' });
   const agentStub = buildAgentStub({ reviewerStub, agentCalls });
@@ -185,8 +169,6 @@ test('[AC-6 回帰] approve + issues:[] + CI passed -> lgtm（retry label 呼び
   assertNoCrash(error);
   if (error) assert.fail(`予期しない error: ${error.name}: ${error.message}`);
 
-  const retryCalls = agentCalls.filter((c) => c.label.includes('contract-retry'));
-  assert.equal(retryCalls.length, 0, `retry 呼び出しは 0 回であるべきだが ${retryCalls.length} 回だった`);
   assert.equal(result?.status, 'lgtm', `result.status は lgtm であるべきだが '${result?.status}' だった`);
 });
 

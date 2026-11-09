@@ -436,21 +436,13 @@ function makeSeenTracker(threshold) {
 // ==== BEGIN inline: _lib/review-normalize.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 const REVIEW_ROUTE_CI_GATE = 'ci_gate';
 const REVIEW_ROUTE_FIX_LOOP = 'fix_loop';
-const REVIEW_ROUTE_CONTRACT_MISMATCH = 'contract_mismatch';
 
 function classifyReviewRoute(review) {
   const issues = Array.isArray(review?.issues) ? review.issues : [];
   const blocking = issues.filter((x) => x.severity === 'critical' || x.severity === 'major');
   const minor = issues.filter((x) => x.severity === 'minor');
 
-  let route;
-  if (blocking.length === 0) {
-    route = REVIEW_ROUTE_CI_GATE;
-  } else if (review?.decision === 'approve') {
-    route = REVIEW_ROUTE_CONTRACT_MISMATCH;
-  } else {
-    route = REVIEW_ROUTE_FIX_LOOP;
-  }
+  const route = blocking.length === 0 ? REVIEW_ROUTE_CI_GATE : REVIEW_ROUTE_FIX_LOOP;
 
   return { route, blocking, minor };
 }
@@ -698,7 +690,7 @@ const STATUS_HEADLINE = {
   'max_reached': '⚠️ 反復上限到達',
   'ci_error': '⚠️ CI エラー — CI ステータスを確定できなかった（proxy が結果を返さなかった）。`gh pr checks <PR>` で実状態を確認すること。人間へエスカレーション',
   'ci_pending': '⏳ CI 未完了 — checks pending。人間/CI 完了待ちへエスカレーション',
-  'review_contract_error': '⚠️ REVIEW CONTRACT ERROR — reviewer の decision/blocking 矛盾の再発、または reviewer が StructuredOutput 契約違反で結果を返さず。人間へエスカレーション',
+  'review_contract_error': '⚠️ REVIEW CONTRACT ERROR — reviewer が StructuredOutput 契約違反で結果を返さず（schema-retry 後も null）。人間へエスカレーション',
   'security_unresolved': '🛡️ SECURITY REVIEW 未完了 — 敵対的 security review が今の head で clear にならなかった。人間へエスカレーション',
 };
 
@@ -2399,7 +2391,7 @@ if (shaNow == null) log('⚠️ review#1 時点の head sha を取得できず �
 // fix agent が throw（StructuredOutput 契約違反等の harness 例外）または null（schema 不一致/技術的
 // 失敗）の場合のみ、同一 findings で 1 回だけ再試行する（callReviewAgent と同一契約）。
 // applied:false（agent の明示判断による修正不能）は retry しない — stuck 検出等の incentive-structural
-// 機構は不変。retry は iteration ごと最大 1 回で有限（review#N-contract-retry :604-614 と同パターン、
+// 機構は不変。retry は iteration ごと最大 1 回で有限（review#N-schema-retry と同パターン、
 // MAX 非消費）
 // fix は専用 agent pr-fixer で起動し、model / effort / maxTurns は frontmatter（opus / medium / 100）で決める。
 // turn の上限は agent() の opts では変えられないため、opts で model / effort を渡さない。
@@ -2971,52 +2963,16 @@ for (i = 1; i <= MAX; i++) {
   }
   lastReview = review
 
-  let effReview = review
-  let outcome = routeInsideWorktree(classifyReviewRoute(review), i)
-
-  // contract mismatch（approve だが blocking あり）: 同一 iteration 内で 1 回だけ再 review する。
-  // MAX は消費しない — 有限性は「iteration ごと最大 1 回」で担保する。
-  if (outcome.route === 'contract_mismatch') {
-    log(`⚠️ iteration ${i}: review contract mismatch — decision=approve だが blocking ${outcome.blocking.length} 件。1 回だけ再 review する`)
-    const rereview = await callReviewAgent(
-      reviewPrompt
-      + `\n\n直前の review 出力は decision='approve' なのに critical/major の issues が ${outcome.blocking.length} 件あり矛盾している。`
-      + `直前の出力: ${JSON.stringify(review)}。`
-      + `blocking issues が実在するなら decision を request-changes/comment にし、実在しないなら issues から除いて、`
-      + `decision と issues が整合した結果を再出力せよ。既出問題の topic 文字列は同一のものを再利用せよ。`,
-      `review#${i}-contract-retry`,
-    )
-    if (rereview == null) {
-      terminal = 'review_contract_error'
-      log(`⚠️ iteration ${i}: review#${i}-contract-retry が schema-retry 後も結果を返さず（StructuredOutput 契約違反）。人間へエスカレーション`)
-      history.push({ iteration: i, decision: review.decision, summary: review.summary, blocking: outcome.blocking, minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines })
-      observeAdoptedCi(ciAdopted)
-      break
-    }
-    effReview = rereview
-    lastReview = rereview
-    outcome = routeInsideWorktree(classifyReviewRoute(rereview), i)
-
-    if (outcome.route === 'contract_mismatch') {
-      // 再 review 後も decision と blocking の矛盾が再発 — 無限ループせず人間へエスカレーション。
-      // 注意: この mismatch review の blocking は reviewSeen に register しない
-      // （fix を挟まない再 review が REVIEW_STUCK を 1 iteration 内で誤発火させるため）。
-      terminal = 'review_contract_error'
-      log(`⚠️ iteration ${i}: review contract mismatch が再 review 後も再発（decision=approve、blocking ${outcome.blocking.length} 件）。人間へエスカレーション`)
-
-      history.push({ iteration: i, decision: effReview.decision, summary: effReview.summary, blocking: outcome.blocking, minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines })
-      observeAdoptedCi(ciAdopted)
-
-      break
-    }
-  }
+  // route は blocking（critical / major）の件数だけで決まる。decision は表示・記録専用で、approve と blocking が
+  // 同居しても再 review せず fix loop に送る。history には reviewer が返した decision をそのまま残す。
+  const outcome = routeInsideWorktree(classifyReviewRoute(review), i)
   // full review の critical（fix の対象にしたもの）で次 round の scope を決める。delta / remerge round は値を変えない。
   criticalPending = nextCriticalPending({ pending: criticalPending, scope: roundScope, blocking: outcome.blocking })
 
   // security review が critical/major を返した round は review が approve でも CI gate（待機）に入らず fix へ進む
   if (outcome.route === 'ci_gate' && secBlocking == null) {
     // CI gate — restores the gate lost in eb8aa7e。blocking 0 件の comment/request-changes も
-    // ここへ合流する。lgtm 確定時の投稿のみ decision で分岐する（approve でなければ捏造しない）。
+    // ここへ合流する。decision は終端サマリーと history の表示・記録だけに使い、LGTM の確定には効かない。
     // pr-reviewer may LGTM the code but CI must also be green before we declare lgtm.
     // no_checks is treated as passing (consistent with e4e2b92: repos without CI are fine).
     //
@@ -3097,7 +3053,7 @@ for (i = 1; i <= MAX; i++) {
           terminalPath = 'ci'
           for (const x of verifyFindings) reviewSeen.register(x)
           const verifyStuckTopics = reviewSeen.stuckTopics()
-          const verifyRound = { iteration: i, decision: effReview.decision, summary: effReview.summary, blocking: verifyFindings, minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines }
+          const verifyRound = { iteration: i, decision: review.decision, summary: review.summary, blocking: verifyFindings, minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines }
           history.push(verifyRound)
           if (verifyStuckTopics.length) {
             terminal = 'stuck'
@@ -3123,13 +3079,13 @@ for (i = 1; i <= MAX; i++) {
       const conflict = await autoResolveConflict(i)
       if (conflict === 'push_failed') break
       if (conflict === 'pushed') {
-        history.push({ iteration: i, decision: effReview.decision, summary: effReview.summary, blocking: [], minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines })
+        history.push({ iteration: i, decision: review.decision, summary: review.summary, blocking: [], minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines })
         continue
       }
       // 敵対的 security review: この round の review と同じ head の結果（並列で取った secPre。round の開始時に対象でなかった
       // run はここで対象判定を取り直す）が clear のときだけ LGTM にする。
       // security の指摘は history の blocking に載せない（終端サマリーに本文が出るため。件数は security_review に載る）
-      const secRound = { iteration: i, decision: effReview.decision, summary: effReview.summary, blocking: [], minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines }
+      const secRound = { iteration: i, decision: review.decision, summary: review.summary, blocking: [], minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines }
       const sec = await securityGate(i, secRound, secPre)
       if (sec !== 'clear') {
         history.push(secRound)
@@ -3140,7 +3096,7 @@ for (i = 1; i <= MAX; i++) {
       log(`iteration ${i}: LGTM（CI status=${ciEff.status}）`)
 
       // lgtm 確定ラウンドの history を記録（blocking なし、minor は保持）
-      history.push({ iteration: i, decision: effReview.decision, summary: effReview.summary, blocking: [], minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines })
+      history.push({ iteration: i, decision: review.decision, summary: review.summary, blocking: [], minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines })
 
       break
     } else if (ciEff.status === 'error') {
@@ -3166,11 +3122,11 @@ for (i = 1; i <= MAX; i++) {
       // repeated identical CI failures (same ci::<name> topic) trigger REVIEW_STUCK escalation.
       for (const x of ciFindings) reviewSeen.register(x)
       const ciStuckTopics = reviewSeen.stuckTopics()
-      log(`iteration ${i}: ${effReview.decision} だが CI failed — ${ciFindings.length} failing check(s)`
+      log(`iteration ${i}: ${review.decision} だが CI failed — ${ciFindings.length} failing check(s)`
         + `${ciStuckTopics.length ? ` [REVIEW_STUCK: ${ciStuckTopics.join(' / ')}]` : ''}`)
 
       // CI-failed ラウンドの history 記録（blocking は synthetic CI findings、minor は保持）
-      const ciRound = { iteration: i, decision: effReview.decision, summary: effReview.summary, blocking: ciFindings, minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines }
+      const ciRound = { iteration: i, decision: review.decision, summary: review.summary, blocking: ciFindings, minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines }
       history.push(ciRound)
 
       if (ciStuckTopics.length) {
@@ -3191,7 +3147,7 @@ for (i = 1; i <= MAX; i++) {
       continue
     }
   } else {
-    // outcome.route === 'fix_loop'（review の blocking あり、decision は request-changes/comment）か、
+    // outcome.route === 'fix_loop'（review の blocking あり、decision は問わない — approve でも fix へ）か、
     // security review が critical/major を返した round（review は approve でもよい — reviewBlocking は空）
     const reviewBlocking = outcome.blocking
 
@@ -3220,13 +3176,13 @@ for (i = 1; i <= MAX; i++) {
     // blocking findings を topic 単位で累積し出現回数を数える（stuck 検出 fingerprint）
     for (const x of blocking) reviewSeen.register(x)
     const stuckTopics = reviewSeen.stuckTopics()
-    log(`iteration ${i}: ${effReview.decision} — blocking ${reviewBlocking.length} 件${ciFindings.length ? ` + CI ${ciFindings.length} 件` : ''}`
+    log(`iteration ${i}: ${review.decision} — blocking ${reviewBlocking.length} 件${ciFindings.length ? ` + CI ${ciFindings.length} 件` : ''}`
       + `${secBlocking ? ` + security review の critical/major ${secBlocking.blocking.length} 件` : ''}`
       + `${stuckTopics.length ? ` [REVIEW_STUCK: ${stuckTopics.join(' / ')}]` : ''}`)
 
     // history に記録（blocking findings と minor を含む。CI finding は blocking に合流済み。
     // security の指摘は載せない — 終端サマリーに本文が出るため。件数は security_review に載る）
-    const round = { iteration: i, decision: effReview.decision, summary: effReview.summary, blocking, minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines }
+    const round = { iteration: i, decision: review.decision, summary: review.summary, blocking, minor: outcome.minor, scope: roundScope, delta_lines: roundDeltaLines }
     history.push(round)
 
     // stuck: 同一 topic が REVIEW_STUCK 回繰り返した = fix が刺さっていない。relax せず人間へエスカレーション。

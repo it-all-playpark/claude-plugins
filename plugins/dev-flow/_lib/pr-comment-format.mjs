@@ -46,7 +46,7 @@ const STATUS_HEADLINE = {
   'max_reached': '⚠️ 反復上限到達',
   'ci_error': '⚠️ CI エラー — CI ステータスを確定できなかった（proxy が結果を返さなかった）。`gh pr checks <PR>` で実状態を確認すること。人間へエスカレーション',
   'ci_pending': '⏳ CI 未完了 — checks pending。人間/CI 完了待ちへエスカレーション',
-  'review_contract_error': '⚠️ REVIEW CONTRACT ERROR — reviewer の decision/blocking 矛盾の再発、または reviewer が StructuredOutput 契約違反で結果を返さず。人間へエスカレーション',
+  'review_contract_error': '⚠️ REVIEW CONTRACT ERROR — reviewer が StructuredOutput 契約違反で結果を返さず（schema-retry 後も null）。人間へエスカレーション',
   'security_unresolved': '🛡️ SECURITY REVIEW 未完了 — 敵対的 security review が今の head で clear にならなかった。人間へエスカレーション',
 };
 

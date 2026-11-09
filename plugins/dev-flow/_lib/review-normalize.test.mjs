@@ -4,7 +4,6 @@ import {
   classifyReviewRoute,
   REVIEW_ROUTE_CI_GATE,
   REVIEW_ROUTE_FIX_LOOP,
-  REVIEW_ROUTE_CONTRACT_MISMATCH,
   isOutsideWorktree,
   excludeOutsideWorktree,
 } from './review-normalize.mjs';
@@ -31,18 +30,18 @@ test('request-changes + issues:[] → ci_gate', () => {
   assert.deepEqual(result.blocking, []);
 });
 
-test('approve + [major] → contract_mismatch / blocking 1', () => {
+test('approve + [major] → fix_loop / blocking 1（decision は route に効かない）', () => {
   const major = { severity: 'major', description: 'm' };
   const result = classifyReviewRoute({ decision: 'approve', issues: [major] });
-  assert.equal(result.route, REVIEW_ROUTE_CONTRACT_MISMATCH);
+  assert.equal(result.route, REVIEW_ROUTE_FIX_LOOP);
   assert.deepEqual(result.blocking, [major]);
 });
 
-test('approve + [critical, minor] → contract_mismatch / blocking 1 / minor 1', () => {
+test('approve + [critical, minor] → fix_loop / blocking 1 / minor 1（decision は route に効かない）', () => {
   const critical = { severity: 'critical', description: 'c' };
   const minor = { severity: 'minor', description: 'n' };
   const result = classifyReviewRoute({ decision: 'approve', issues: [critical, minor] });
-  assert.equal(result.route, REVIEW_ROUTE_CONTRACT_MISMATCH);
+  assert.equal(result.route, REVIEW_ROUTE_FIX_LOOP);
   assert.deepEqual(result.blocking, [critical]);
   assert.deepEqual(result.minor, [minor]);
 });
@@ -125,7 +124,7 @@ test('excludeOutsideWorktree: 外を指す blocking を outside に分け、残�
   assert.deepEqual(onlyOutside.outcome.blocking, []);
 
   const approveOutside = excludeOutsideWorktree(classifyReviewRoute({ decision: 'approve', issues: [outside] }), WT);
-  assert.equal(approveOutside.outcome.route, REVIEW_ROUTE_CI_GATE, 'approve + 外の blocking だけなら contract mismatch にしない');
+  assert.equal(approveOutside.outcome.route, REVIEW_ROUTE_CI_GATE, 'approve + 外の blocking だけなら fix loop にしない');
 
   const none = classifyReviewRoute({ decision: 'request-changes', issues: [inside] });
   const r = excludeOutsideWorktree(none, WT);
