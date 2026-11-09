@@ -260,6 +260,25 @@ test('[ci-check] ciRollupCommand: --jq は判定に要るキーだけを残し�
   assert.equal(linked[1].targetUrl, 'https://x/2');
 });
 
+// proxy が --jq を単一引用符ごと転写するとき、エスケープ表記を戻して書くと引用が閉じ、worktree 隔離ガードに拒否される
+// （CI 全 pass でも ci_error）。filter には転写で形が変わりうるバックスラッシュと単一引用符を書かない。
+test('[ci-check] ciRollupCommand: --jq の filter はバックスラッシュも単一引用符も含まない', () => {
+  for (const withLink of [false, true]) {
+    const command = ciRollupCommand({ pr: 1, repo: 'o/n', withLink });
+    const filter = command.match(/--jq '(.+)'$/)[1];
+    assert.ok(!filter.includes('\\'), `withLink=${withLink}: ${filter}`);
+    assert.ok(!filter.includes("'"), `withLink=${withLink}: ${filter}`);
+  }
+});
+
+test('[ci-check] check-ci.sh 冒頭コメントの例の --jq filter は ciRollupCommand（withLink: false）と一字一句同じ', () => {
+  const p = join(dirname(fileURLToPath(import.meta.url)), '..', 'pr-iterate', 'scripts', 'check-ci.sh');
+  const line = readFileSync(p, 'utf8').split('\n').find((l) => /^#\s+--jq '/.test(l));
+  assert.ok(line, `${p} の冒頭コメントに --jq の例が無い`);
+  const documented = line.match(/--jq '(.+)'$/)[1];
+  assert.equal(documented, ciRollupCommand({ pr: 1, repo: null }).match(/--jq '(.+)'$/)[1]);
+});
+
 test('[ci-check] ciRollupCommand: rollup が null の PR でも --jq は失敗せず空配列を返す', () => {
   assert.deepEqual(foldWith(ciRollupCommand({ pr: 1, repo: null }), { statusCheckRollup: null }), []);
 });
