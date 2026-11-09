@@ -263,12 +263,11 @@ test('[eval-convergence] AC#3: critical_resolutions {resolved:true, evidence} �
 // AC#1〜AC#3（verdict と収束の独立、critical_resolutions のみで解消）が VM 挙動として既に
 // 検証済みのためここでは重複させない。
 //
-// critical_resolutions 契約は「未解消 critical 一覧」（前 iteration の critical feedback）または
-// 「既出 feedback」（priorFeedback）が prompt に渡る場合にのみ注入される（dev-flow.js の実装。
-// runValidateLoop 同様、初回 eval#1 には prior state が無いため注入されない）。そのため
-// AC#3 と同じ 2 iteration フィクスチャ（1 回目 critical → 2 回目解消）を使い、注入が実際に
-// 起きる eval#2 の prompt で検証する。
-test('[eval-convergence] contract: eval#2 prompt に EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions が verbatim 含まれる（issue #174。収束契約は dev-flow.js prompt が唯一の operative contract。evaluator.md は sandbox 保護で workflow から編集不可）', async () => {
+// critical_resolutions 契約は dev-flow-evaluate.js の eval#i が「未解消 critical 一覧」（前 iteration の
+// critical feedback）を prompt に渡す場合にのみ一覧と一緒に注入される（初回 eval#1 には prior state が無いため
+// 注入されない）。そのため AC#3 と同じ 2 iteration フィクスチャ（1 回目 critical → 2 回目解消）を使い、
+// 注入が実際に起きる eval#2 の prompt で検証する。
+test('[eval-convergence] contract: eval#2 prompt に EVALUATOR_OPERATIONAL_CONTRACT.critical_resolutions が verbatim 含まれる（issue #174。各起動が使う契約は dev-flow-evaluate.js が prompt に注入するので agent 定義には置かない）', async () => {
 
   const ac4 = [
     { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
@@ -321,12 +320,11 @@ test('[eval-convergence] contract: eval#2 prompt に EVALUATOR_OPERATIONAL_CONTR
     'eval#2 の prompt に critical_resolutions キーが含まれていない',
   );
 
-  // evaluator.md 側: 同期文言（issue #227 で同期済み）— critical_resolutions / security_clearance の
-  // 出力契約が記載され、「新規のみ報告」指示が維持され、沈黙=解消の旧記述が存在しないこと。
-  // evaluator.md は agent 定義文書であり agent() prompt ではないため AC-1 対象外（現状維持）。
+  // evaluator.md 側: 契約の全文は持たず、critical_resolutions / security_clearance の出力キーと
+  // 「新規のみ報告」指示を書き、沈黙=解消の旧記述が存在しないこと。
   const agentMd = readFileSync(new URL('../.claude/agents/evaluator.md', import.meta.url), 'utf8');
-  assert.ok(agentMd.includes('critical_resolutions'), 'evaluator.md に critical_resolutions 契約が記載されていること（issue #227）');
-  assert.ok(agentMd.includes('security_clearance'), 'evaluator.md に security_clearance 契約が記載されていること（issue #227）');
+  assert.ok(agentMd.includes('critical_resolutions'), 'evaluator.md に critical_resolutions の出力キーが記載されていること（issue #227）');
+  assert.ok(agentMd.includes('security_clearance'), 'evaluator.md に security_clearance の出力キーが記載されていること（issue #227）');
   assert.ok(agentMd.includes('新規の critical/major のみ報告'));
   assert.ok(!agentMd.includes('解消とみなす'), '沈黙=解消の旧記述が存在しないこと');
 });

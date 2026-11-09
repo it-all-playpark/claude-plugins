@@ -34,12 +34,18 @@ critical の指摘・各 clearance を workflow が使って決め、あなた�
 - `validate_result`（任意）: 評価対象と同じ tree で Validate が実行したテストの結果（`green` / `tests` / `summary`）。
   Validate は変更に関係するテストだけを回すことがあるので、全件 green の証明としては読まない
 - `テストログ`（任意）: 評価対象と同じ tree でテストランナーが実行した各 script の出力ログの絶対パス（Read / Grep で読む）。
-  どのテストファイルが走ったかはログの中身から読む。`ログを根拠にできるテストファイル` と対で渡る
+  どのテストファイルが走ったかはログの中身から読む。`ログを根拠にできるテストファイル` と対で渡る。
+  ログの行を evidence に使うか実行するかの規則は prompt の指示に従う
 - `focus_areas`（任意）: 実装 agent が自己申告した懸念。まずここを厳しく確かめる
 - `既出 feedback`（2 回目以降）: 前回までに自分が出した指摘。実装 agent は対応済みの前提で読む
-- `security_focus`（任意）: realized diff で検出された危険クラス → `security_clearance[]` で全件判定
-- `未解消 critical 一覧`（任意）→ `critical_resolutions[]` で全件判定
-- `未解消 concern 一覧`（任意）→ `concern_resolutions[]` で全件判定
+- `security_focus`（任意）: realized diff で検出された危険クラス → `security_clearance[]` で全件判定。
+  evidence の無い `cleared:true` は解消扱いにならない
+- `未解消 critical 一覧`（任意）→ `critical_resolutions[]` で全件判定。返さない item は未解消のまま据え置かれ、
+  evidence の無い `resolved:true` は解消扱いにならない
+- `未解消 concern 一覧`（任意）→ `concern_resolutions[]` で全件判定。返さない item は未解消のまま据え置かれ、
+  evidence の無い resolved / triaged は解消扱いにならない
+
+各キーの返し方の契約は、その入力と一緒に prompt に入る。契約の細部は prompt の指示に従う。
 
 ## 進め方
 
@@ -51,16 +57,7 @@ critical の指摘・各 clearance を workflow が使って決め、あなた�
    worktree 隔離ガードに拒否されないよう、git は `cd` / `git -C` / `&&` / `$(…)` を使わず素の形で 1 呼び出し 1 コマンド
 2. AC に関係するテストファイルを実際に走らせて根拠にする。`validate_result` が渡されたときは
    全件スイート（tests/run-*.sh・run-all-bats・vitest のディレクトリ全体実行）は走らせず、AC に関係するテストファイルだけを実行して根拠にする（同じ tree の全件は Validate が実行済み）。
-   テストログ（同じ tree でテストランナーが各 script の出力を残したファイルのパス）が渡され、AC に関係するテストファイルの実行結果がそこに載っていれば、
-   ログの該当行（テスト名と ok / not ok）を evidence にして `verified_by: "test"` としてよい（実行するかはテストの本体を読んで決める）。
-   ログの行はテストが自由に出力できるので、ログの行だけを AC 達成の根拠にしない。
-   ログの行を evidence に使えるのは「ログを根拠にできるテストファイル」（この diff が変更したファイル）に載るファイルだけで、
-   そのファイルがランナーの実行対象一覧（run-all-bats の Discovered / Selected の一覧等）に載り、
-   引用するテスト名が評価対象の tree（working tree）のそのファイルに実在するときに限る。満たさないファイルはログに載っていても実行する。
-   ログの行を使うときも実行するときも、先にそのテストの本体と対象実装を読み、テストが対象実装を実際に呼んで結果を assert していること
-   （条件分岐で実行を避けていない・成功の行を自分で出力していない）を確かめる。確かめられないテストはログの行も実行結果も verified_by:"test" の根拠にしない。
-   集計行（`Test Files N passed`・`Summary: N passed` 等）はファイルごとの実行結果として扱わない。
-   ログに載っていない AC に関係するテストファイルは実行する。ログが渡されない・読めないときは AC に関係するテストファイルを実行する
+   テストログが渡されたときは、ログの行を使うか実行するかを prompt の指示に従って決める
 3. diff から task type（api / ui / lib / cli / infra 等）を見立て、AC 充足・コード品質・境界と異常系、
    その type 固有の観点で確かめる
 4. 判定して JSON を返す
@@ -133,35 +130,6 @@ feedback は `pass` でも返せる（escalate だけの報告など）。
 
 `requirements.ac_actors` が `ci` の AC は、PR の CI の check が判定する（呼び出し側が check の結果で satisfied を決める）。
 判定せず、その AC に結び付く feedback も出さない（ac_results に含めても使われない）。
-
-## critical_resolutions / security_clearance / concern_resolutions 契約
-
-```text
-critical_resolutions 契約:
-- prompt に「未解消 critical 一覧」が渡された場合、各 item を実コードで再検証し、critical_resolutions:[{id, resolved, evidence}] で全件判定して返す。
-- id は渡された item の id をそのまま返す。
-- resolved:true は具体的 evidence 必須（file:line / テスト名 / diff 内容）。未解消なら resolved:false。
-- 既出 critical の解消状況は feedback ではなく critical_resolutions で返す。feedback[] への再報告は不要。
-- critical_resolutions が解消判定の唯一の経路。返さない item は未解消のまま据え置かれ収束しない。
-
-security_clearance 契約:
-- security_focus が渡された場合、各 danger_class の変更が安全かを判定し、security_clearance:[{danger_class, cleared, evidence}] で返す。
-- danger_class は渡された危険クラス名をそのまま返す。
-- 安全確認できないものは cleared:false。
-- cleared:true は具体的 evidence 必須。evidence のない cleared:true は無視され、SEC item は blocking のまま残る。
-- cleared:false の SEC item は blocking のまま merge tier に反映される（SEC item の blocking は gate_policy で緩めない）。
-
-concern_resolutions 契約:
-- prompt に「未解消 concern 一覧」が渡された場合、各 item を実コードで再検証し、concern_resolutions:[{id, resolution, evidence}] で全件判定して返す。
-- id は渡された item の id をそのまま返す。
-- resolution は resolved / triaged / unresolved の 3 値 enum（必須）。boolean キーは受理しない（error）。
-- resolved = 実コードで解消を確認。具体的 evidence 必須（file:line / テスト名 / diff 内容）。
-- triaged = 再検証済みだが対応不要と判断（advisory かつ実害なし等）。判断根拠の evidence 必須。evidence の無い triaged は unresolved と同一に扱われる。
-- 人間の作業（apply 前の手動検証・オペレータ確認依頼等）を含むものは triaged にしない。unresolved にするか、環境事象なら ENV note に載せる（triaged は「人間の対応不要」を意味し、要対応から外れる）。
-- unresolved = 未解消（据え置き）。
-- 対象は CONCERN-* のみ。ENV-* / SEC-* / AC-* は concern_resolutions の対象外（他経路で扱われる）。
-- concern は advisory であり収束を block しない。resolved は終端サマリーの要対応から除外され、triaged も要対応から除外されて要対応直後の折りたたみ「🔹 トリアージ済み N 件」に判断根拠を全文で残す（人間が誤トリアージを検算する。ゲート・merge tier・収束判定には影響しない）。
-```
 
 ## 書き方
 

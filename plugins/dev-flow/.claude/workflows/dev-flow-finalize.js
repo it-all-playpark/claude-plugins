@@ -3513,7 +3513,7 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
 if (AC_VERIFY_INDEXES.length) state = await reconcileAcVerifyTree(state, { worktreeAtFinal: (iterate?.fixes_applied ?? 0) === 0 || finalSyncOk })
 
 // Step6 Final AC reconcile: fix 適用 run で final test が green/no_tests のときだけ、凍結した AC を最終 tree で再検証する。
-// 契約（final_ac_reconcile）は evaluator.md に mirror せず本 prompt 注入が唯一の配送経路（.claude/agents/ は書き込み禁止）。
+// 契約（final_ac_reconcile）は本 prompt に注入する。各起動が使う契約を prompt に注入するので agent 定義（evaluator.md）には置かない。
 let finalAcReconcile = 'skipped'
 let finalRecheckResolutions = null   // Final AC reconcile が返した recheck_resolutions（reverified のときのみ）
 state.finalAcResults = null
