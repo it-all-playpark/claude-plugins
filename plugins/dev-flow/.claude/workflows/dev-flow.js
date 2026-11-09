@@ -908,10 +908,8 @@ async function waitBgJob({ start, wait, maxPolls, schema }) {
 
 // ==== BEGIN inline: _lib/gate-policy.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 const GATE_POLICIES = [
-  'deterministic-only',
   'llm-major-advisory',
   'llm-major-blocking',
-  'llm-autonomous',
 ];
 
 const DEFAULT_GATE_POLICY = 'llm-major-advisory';

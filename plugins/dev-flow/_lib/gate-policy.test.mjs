@@ -13,13 +13,8 @@ import {
 
 // ---- (1) resolveGatePolicy ----
 
-test('GATE_POLICIES は trust 昇順の 4 値配列', () => {
-  assert.deepEqual(GATE_POLICIES, [
-    'deterministic-only',
-    'llm-major-advisory',
-    'llm-major-blocking',
-    'llm-autonomous',
-  ]);
+test('GATE_POLICIES は llm-major-advisory / llm-major-blocking の 2 値配列', () => {
+  assert.deepEqual(GATE_POLICIES, ['llm-major-advisory', 'llm-major-blocking']);
 });
 
 test('DEFAULT_GATE_POLICY は llm-major-advisory', () => {
@@ -52,6 +47,17 @@ test('resolveGatePolicy: 未知の値は throw', () => {
   assert.throws(
     () => resolveGatePolicy('bogus'),
     /gate-policy: 未知の gate_policy "bogus".*許可/,
+  );
+});
+
+test('resolveGatePolicy: 削除した deterministic-only / llm-autonomous は未知の値として throw', () => {
+  assert.throws(
+    () => resolveGatePolicy('deterministic-only'),
+    /未知の gate_policy "deterministic-only"/,
+  );
+  assert.throws(
+    () => resolveGatePolicy('llm-autonomous'),
+    /未知の gate_policy "llm-autonomous"/,
   );
 });
 
@@ -136,16 +142,6 @@ test('gateLane: llm-major-blocking で LLM major は blocking', () => {
 test('gateLane: llm-major-advisory で LLM major は advisory', () => {
   const item = mkItem({ severity: 'major', source: 'evaluator', check: null });
   assert.equal(gateLane(item, 'llm-major-advisory'), 'advisory');
-});
-
-test('gateLane: deterministic-only で LLM major は advisory', () => {
-  const item = mkItem({ severity: 'major', source: 'evaluator', check: null });
-  assert.equal(gateLane(item, 'deterministic-only'), 'advisory');
-});
-
-test('gateLane: llm-autonomous で LLM major は advisory', () => {
-  const item = mkItem({ severity: 'major', source: 'evaluator', check: null });
-  assert.equal(gateLane(item, 'llm-autonomous'), 'advisory');
 });
 
 // ---- LLM minor は全 policy で advisory ----
