@@ -1197,6 +1197,8 @@ function holdReasonDisplay(code, ctx) {
       return testRedRow('Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', ctx.redFacts[code], '修正が必要（落ちたテストを直して push する）');
     case 'validate_tests_not_run':
       return { current: 'テストが 1 件も実行されていない（ローカルは起動失敗）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
+    case 'no_tests_run':
+      return { current: 'テストを 1 本も実行していない（実行対象のテストが 0 本）', action: 'テストの要否と実行方法を確認する' };
     case 'final_ac_unavailable':
       return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
     case 'iterate_non_lgtm':

@@ -44,7 +44,7 @@ function makeSandbox(responses) {
     }
     // Validate: test runner（label が 'test' で始まる）
     if (label.startsWith('test')) {
-      return { tests: 'no_tests', green: true, summary: '' };
+      return { tests: 'passed', green: true, summary: '' };
     }
     // Evaluate: evaluator stub が呼び出し回数を記録し、responses 配列に応じた応答を返す
     if (agentType === 'dev-flow:evaluator') {

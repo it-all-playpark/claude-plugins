@@ -1072,13 +1072,13 @@ test('classifyMergeTier: evalStaleness:undefined/null → throw しない(従来
 
 // ---- issue #658: HOLD_REASON_CODES + holdReasons[].code + disclosures ----
 
-test('HOLD_REASON_CODES は 21 の閉じた enum と一致', () => {
+test('HOLD_REASON_CODES は 22 の閉じた enum と一致', () => {
   assert.deepEqual(HOLD_REASON_CODES, [
     'ledger_unconverged', 'danger_unresolved', 'breaking_structured', 'escalate',
     'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
     'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
     'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
-    'security_review_unresolved', 'validate_test_red', 'validate_tests_not_run',
+    'security_review_unresolved', 'validate_test_red', 'validate_tests_not_run', 'no_tests_run',
   ]);
 });
 
@@ -1388,7 +1388,7 @@ test('classifyMergeTier: finalReconcile skipped + Validate red（tests:failed / 
   assert.deepEqual(codesOf(both), ['validate_test_red', 'iterate_non_lgtm']);
 });
 
-test('classifyMergeTier: finalReconcile skipped で Validate が green / no_tests なら validate_test_red を出さず、未指定時と完全一致', () => {
+test('classifyMergeTier: finalReconcile skipped で Validate が green なら validate_test_red を出さず、未指定時と完全一致', () => {
   const cases = [
     ['REVIEW', baseCleanInput({ finalReconcile: 'skipped' })],
     ['HOLD（既存理由）', baseCleanInput({ finalReconcile: 'skipped', iterateStatus: 'stuck', unsatisfiedHumanAc: true })],
@@ -1397,7 +1397,6 @@ test('classifyMergeTier: finalReconcile skipped で Validate が green / no_test
     { tests: 'passed', green: true },
     // base でも落ちる既存失敗だけの red は Validate が green:true にして抜ける
     { tests: 'failed', green: true },
-    { tests: 'no_tests', green: false },
   ];
   for (const [name, input] of cases) {
     const baseline = classifyMergeTier(input);
@@ -1480,6 +1479,49 @@ test('classifyMergeTier: finalReconcile が skipped 以外 / Validate tests が 
     assert.deepEqual(r, baseline, JSON.stringify(input));
     assert.ok(!codesOf(r).includes('validate_tests_not_run'), JSON.stringify(input));
   }
+});
+
+// ---- no_tests_run（Validate / test#final が tests:no_tests = 実行対象のテストが 0 本の run、issue #1276）----
+
+const VALIDATE_NO_TESTS = { tests: 'no_tests', green: false };
+const NO_TESTS_REASON_HEAD = 'テストを 1 本も実行していない';
+
+test('classifyMergeTier: Validate tests:no_tests は blocking 理由 no_tests_run（human_judgment）を 1 件積んで HOLD。passed / green では積まない', () => {
+  // classifyMergeTier は gate_policy を受け取らず、policy が左右するのは converged / evalSkipped だけ — どちらの値でも積まれる
+  for (const fr of [{ finalReconcile: 'skipped' }, {}]) {
+    const r = classifyMergeTier(baseCleanInput({ ...fr, validateResult: VALIDATE_NO_TESTS }));
+    assert.equal(r.tier, 'HOLD', `${JSON.stringify(fr)}: ${JSON.stringify(r)}`);
+    assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['no_tests_run', 'human_judgment']], JSON.stringify(fr));
+    assert.ok(r.holdReasons[0].reason.startsWith(NO_TESTS_REASON_HEAD), r.holdReasons[0].reason);
+    assert.ok(r.holdReasons[0].reason.includes('Validate'), r.holdReasons[0].reason);
+    assert.equal(r.holdKind, 'human_judgment');
+  }
+  for (const extra of [{ evalSkipped: true }, { converged: false }]) {
+    const r = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_NO_TESTS, ...extra }));
+    assert.equal(r.tier, 'HOLD', JSON.stringify(extra));
+    assert.equal(codesOf(r).filter((c) => c === 'no_tests_run').length, 1, JSON.stringify(extra));
+  }
+  const passed = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: { tests: 'passed', green: true } }));
+  assert.equal(passed.tier, 'REVIEW', JSON.stringify(passed));
+  assert.ok(!codesOf(passed).includes('no_tests_run'));
+  assert.ok(!passed.reasons.some((x) => x.startsWith(NO_TESTS_REASON_HEAD)), JSON.stringify(passed.reasons));
+});
+
+test('classifyMergeTier: Final reconcile の test#final が tests:no_tests（finalTestNoTests:true）なら Validate と同じ no_tests_run で HOLD', () => {
+  const r = classifyMergeTier(baseCleanInput({
+    finalReconcile: 'reverified', finalTestGreen: null, finalTestNoTests: true, validateResult: { tests: 'passed', green: true },
+  }));
+  assert.equal(r.tier, 'HOLD', JSON.stringify(r));
+  assert.deepEqual(r.holdReasons.map((x) => [x.code, x.kind]), [['no_tests_run', 'human_judgment']]);
+  assert.ok(r.holdReasons[0].reason.startsWith(NO_TESTS_REASON_HEAD), r.holdReasons[0].reason);
+  assert.ok(r.holdReasons[0].reason.includes('test#final'), r.holdReasons[0].reason);
+  // Validate も test#final も no_tests の run でも理由は 1 件
+  const both = classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestNoTests: true, validateResult: VALIDATE_NO_TESTS }));
+  assert.deepEqual(codesOf(both), ['no_tests_run']);
+  // 最終 tree でテストを走らせ直して green の run は Validate の no_tests を見ない（最終 tree の判定に任せる）
+  const reverifiedGreen = classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: true, finalTestNoTests: false, validateResult: VALIDATE_NO_TESTS }));
+  assert.equal(reverifiedGreen.tier, 'REVIEW', JSON.stringify(reverifiedGreen));
+  assert.throws(() => classifyMergeTier(baseCleanInput({ finalTestNoTests: 'yes' })), /invalid finalTestNoTests/);
 });
 
 test('classifyMergeTier: setupDeps の契約外形状は明示 error', () => {

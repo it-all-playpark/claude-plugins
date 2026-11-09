@@ -2497,13 +2497,17 @@ function makeImplementLoop({ wt, issue, repo, base, spawn, spawnFailOpen, log, n
       } else {
         log(`validate iteration ${i}: tests=${v.tests} green=${v.green}`)
       }
-      const testsOk = v.green === true || v.tests === 'no_tests'
+      const testsOk = v.green === true
       if (testsOk && !hookFail) break
       if (v.tests === 'error' && !hookFail) {
         log(`⚠️ ${phaseName}: tests=error（起動失敗: ${String(v.summary ?? '').slice(0, 200)}）— green-fix をスキップ（環境失敗はコード修正で解消しない。merge tier で HOLD）`)
         break
       }
-      let testsToFix = !testsOk && v.tests !== 'error'
+      if (v.tests === 'no_tests' && !hookFail) {
+        log(`⚠️ ${phaseName}: tests=no_tests（実行対象のテストが 0 本）— 通過扱いにせず green-fix もスキップ（テストを 1 本も実行していない。merge tier で HOLD）`)
+        break
+      }
+      let testsToFix = !testsOk && v.tests !== 'error' && v.tests !== 'no_tests'
       let envNote = ''
       if (v.tests === 'failed') {
         const tri = await triageBaseFailures(v, baseFailing, iterLabel, phaseName)

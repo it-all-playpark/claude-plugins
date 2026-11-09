@@ -2,7 +2,7 @@
 
 `/dev-flow` と `/pr-iterate` の phase ごとの地図。各 phase の節は、何を判定するか（**判定**）、失敗を fail-closed / fail-safe /
 fail-open のどれで扱うかとその理由（**失敗の扱い**）、コードの場所（**コード**）を持つ。回数・秒数・`maxTurns`・enum の値・
-label の一覧は書き写さず、定数名かファイルで指す（値の正はコード）。
+label の一覧は書き写さず定数名かファイルで指す（値の正はコード）。
 
 ほかの置き場所:
 
@@ -11,8 +11,7 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 - 敵対的 security review の守る要件と境界（R1〜R3）と経路は `security-review.md`
 - exec-proxy の一覧と proxy ごとの失敗ポリシー表は `exec-proxy.md`、telemetry キーは `telemetry.md`、analyze の出力は `analyze-issue.md`
 
-本文のパス（`.claude/workflows/`・`agents/`・`_lib/`・`_shared/`・`hooks/`）は `plugins/dev-flow/` を root とする plugin 相対パス。
-`tools/` と `.claude/rules/` は repo root。
+本文のパス（`.claude/workflows/`・`agents/`・`_lib/`・`_shared/`・`hooks/`）は `plugins/dev-flow/` 相対。`tools/` と `.claude/rules/` は repo root。
 
 失敗の扱いの語:
 
@@ -101,10 +100,10 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   成果物を作り直す
   - ランナーの契約: merge-base を解決できたときだけ `DEVFLOW_CHANGED_FILES`（差分と untracked の WT 相対パスを 1 行 1 件で書いた
     ファイルの絶対パス）と `DEVFLOW_BASE`（merge-base の sha）を渡す（未設定は全件実行。選択はランナー側）。`DEVFLOW_FAILED_FILES`
-    には exit 非 0 のランナーが落ちたテストファイルを同じ書式で漏れなく書く。漏れは base との切り分けで見落とされ green に倒しうる。
+    には exit 非 0 のランナーが落ちたテストファイルを同じ書式で漏れなく書く（漏れは base との切り分けで見落とされる）。
     全部を書けないなら書かない
   - 各回の test 前に `pre-commit-hook <WT>` が対象 repo の pre-commit hook を PR phase の commit と同じ stage で回し、exit 非 0 は
-    その回を green にせずログのパスだけ green-fix に渡す（hook 無し・結果不明は何も足さない）
+    その回を green にせずログのパスだけ green-fix に渡す
   - red なら green-fix（同じ `dev-implementer` を sonnet で）を `GREEN_MAX` まで回す。その前に失敗を分類し、diff と無関係で base でも
     落ちるテストは ENV 項目（advisory）として green 要件から外す（`_lib/base-failure-triage.mjs`）
   - empty-diff gate — working tree が base と同じ tree なら 1 回差し戻し、Validate をやり直す
@@ -113,10 +112,11 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
 - **失敗の扱い**:
   - `tests:'error'`（起動失敗。待機の上限・start / wait の null・schema 不一致も stop して同じ）は green-fix せずに抜け、
     `GREEN_MAX` 到達の red はそのまま先へ進む（fail-safe。Final reconcile を skip した run は Merge tier の HOLD 理由になる）
-  - base 失敗の分類材料（`failed_files`・diff の一覧・base での再実行）が欠けた失敗はすべて green-fix の対象（fail-safe。green 要件を緩めない）
+  - `tests:'no_tests'`（実行対象 0 本）は通過扱いにせず green-fix もせずに抜ける（コード修正の問題ではない）。Merge tier が `no_tests_run` で HOLD
+  - base 失敗の分類材料（`failed_files`・diff の一覧・base 再実行）が欠けた失敗はすべて green-fix の対象（fail-safe）
   - workspace-prebuild の失敗はテストを実行せず red（fail-safe）
   - 差し戻し後も空 diff なら throw（fail-closed）。例外は人間の cross-repo ラベル opt-in と、worktree 外の dirty な成果物の決定論の証拠が
-    揃ったときの graceful 終端（`_lib/cross-repo-gate.mjs`）
+    揃ったときの graceful 終端
   - local-verify が pg-broker に届かない・結果を取れない・Validate が red なら、pr-iterate の CI 待ちに戻す（fail-open。理由は終端サマリーの参考に出す）
 - **コード**: `execValidatePhase`・`execLocalVerify`・`execAcVerify`（`.claude/workflows/dev-flow.js`）、`_lib/implement-loop.mjs`、
   `_lib/run-tests-prompt.mjs`、`_lib/base-failure-triage.mjs`、`_lib/cross-repo-gate.mjs`、`_lib/local-verify.mjs`
@@ -229,22 +229,21 @@ label の一覧は書き写さず、定数名かファイルで指す（値の�
   - worktree を PR の最終 HEAD に同期し、Validate と同じ start / wait を 1 回だけ実行する（green-fix はしない）。red で
     落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake 候補として開示する（HOLD・`EVAL-*` は外さない。
     PR が書いたテストの出力。`_lib/final-test-rerun.mjs`）
-  - テストを実行できなければ `unavailable`。PR の CI の success では代えない
-    （PR が CI を書き換えうる）
-  - 最終の changed-files で宣言外変更を監査し直す
+  - テストを実行できなければ `unavailable`（PR の CI の success では代えない。PR が CI を書き換えうる）
+  - 最終の changed-files で宣言外変更を再監査
   - final test が green（no_tests を含む）の run（`reverified`）だけ、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・fix が触った
     解消済み item を判定し直す（`shouldRunFinalAcReconcile`）。未 checked の `EVAL-*` blocking（escalate 除く）は一覧と
     `critical_resolutions` 契約を渡し、Evaluate と同じ `acceptedCriticalResolutions` で解消したものだけ checked（unavailable の応答・test の green では外さない）。SEC seed・TESTSURF・AC-FINAL は対象外
   - Evaluate で red→green を実証していない観測型 AC に Final AC reconcile が `verified_by:'test'` と `test_files` / `impl_files` を返したら、
     最終 tree で redgreen-verify（`redgreen-final`。impl は `origin/<base>` との merge-base まで戻す）を `start` / `wait` で実行し、red→green が成立して
-    vdelta が deny しなければ deterministic に昇格する（`finalRedgreenTargets`）。fix がテストを直した run を人手 AC 待ちにしないため
-  - test#final が green か no_tests なら、Final AC reconcile に test#final の `tests` / `green` と各 script のログパスを渡し、
-    実行済みのテストファイルを再実行させない（根拠にできるのは changed-files-final のファイルだけ）
-- skip した run の PR tree のテスト状態は Validate の結果のままで、`tests:'failed'` は `validate_test_red`（上と同じ再実行で開示）、
-  `tests:'error'` は `validate_tests_not_run` で HOLD（PR の CI の success では解除しない）
+    vdelta が deny しなければ deterministic に昇格する（`finalRedgreenTargets`。fix がテストを直した run を人手 AC 待ちにしない）
+  - test#final が green か no_tests なら、Final AC reconcile に `tests` / `green` と各 script のログパスを渡し、
+    実行済みのテストを再実行させない（根拠にできるのは changed-files-final のファイルだけ）
+- skip した run の PR tree のテスト状態は Validate の結果のまま: `tests:'failed'` は `validate_test_red`（上と同じ再実行で開示）、
+  `tests:'error'` は `validate_tests_not_run`（PR の CI の success では解除しない）、`tests:'no_tests'` は `no_tests_run` で HOLD
 - **失敗の扱い**:
   - 同期失敗・throw・`tests:'error'` は `unavailable`（fail-safe → HOLD `final_reconcile_unavailable`）。
-    flake の再実行は落ちたファイルだけで 1 回まで（繰り返すほど本物の red を通す）
+    flake の再実行は落ちたファイルだけで 1 回まで（繰り返すと本物の red を通す）
   - Final AC reconcile の応答が検証に通らなければ `unavailable`（fail-closed → HOLD）
   - `redgreen-final` の失敗（Evaluate と同じ + throw）・red→green 不成立・vdelta の deny は昇格せず、観測型 AC は人手 AC 待ちのまま（fail-safe）
   - changed-files の取得失敗は宣言外の再監査を skip（fail-open。test gate は維持）。PR 本文の AC checkbox の更新失敗も fail-open
