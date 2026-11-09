@@ -1,0 +1,213 @@
+#!/usr/bin/env bats
+# Tests for git-issue/scripts/issue_path_history.py
+#
+# gh stub を PATH の先頭に置き（create_issue.bats の use_gh_stub と同じ形）、パスごとの検索・直近 N 日の窓・
+# 番号での重複除去・パスをシェルに評価させないこと・失敗を 0 件として返さないことを確かめる。
+
+setup() {
+    command -v python3 >/dev/null || skip "python3 not available"
+    command -v jq >/dev/null || skip "jq not available"
+
+    SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/issue_path_history.py"
+    PATH_FILE="$BATS_TEST_TMPDIR/paths.txt"
+}
+
+# ---- gh stub ----
+# 呼び出しを $GH_LOG に 1 行ずつ記録し、最後に受け取った --search の値を $GH_LAST_SEARCH に書く。
+# 応答は $GH_STUB_FIXTURE の `<path>\t<number>\t<何日前に close したか>` 行のうち、--search の
+# `"<path>" in:body` の path に一致する行から作る（closedAt は実行時刻から作る）。
+# --search が `closed:>=` で始まる（パスを含めない窓の取得）ときは $GH_STUB_WINDOW_JSON の中身（未設定なら []）を返す。
+# GH_STUB_EXIT を設定すると stderr にエラーを出してその値で終わる。
+use_gh_stub() {
+    local bin="$BATS_TEST_TMPDIR/bin"
+    mkdir -p "$bin"
+    cat >"$bin/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$GH_LOG"
+if [[ -n "${GH_STUB_EXIT:-}" ]]; then
+    echo "HTTP 502: Bad Gateway" >&2
+    exit "$GH_STUB_EXIT"
+fi
+search=""
+prev=""
+for a in "$@"; do
+    [[ "$prev" == "--search" ]] && search="$a"
+    prev="$a"
+done
+if [[ "$search" == closed:\>=* ]]; then
+    if [[ -n "${GH_STUB_WINDOW_JSON:-}" ]]; then cat "$GH_STUB_WINDOW_JSON"; else printf '[]\n'; fi
+    exit 0
+fi
+printf '%s' "$search" >"$GH_LAST_SEARCH"
+path="${search#\"}"
+path="${path%\" in:body}"
+closed_at() {
+    date -u -d "$1 days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-"$1"d +%Y-%m-%dT%H:%M:%SZ
+}
+sep=""
+printf '['
+while IFS=$'\t' read -r p number days; do
+    [[ "$p" == "$path" ]] || continue
+    printf '%s{"number":%d,"title":"issue %d","closedAt":"%s","body":"body %d"}' \
+        "$sep" "$number" "$number" "$(closed_at "$days")" "$number"
+    sep=","
+done <"$GH_STUB_FIXTURE"
+printf ']\n'
+STUB
+    chmod +x "$bin/gh"
+    export PATH="$bin:$PATH"
+    export GH_LOG="$BATS_TEST_TMPDIR/gh.log"
+    export GH_LAST_SEARCH="$BATS_TEST_TMPDIR/last-search.txt"
+    export GH_STUB_FIXTURE="$BATS_TEST_TMPDIR/fixture.tsv"
+    : >"$GH_LOG"
+    : >"$GH_STUB_FIXTURE"
+}
+
+fixture() {
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$GH_STUB_FIXTURE"
+}
+
+@test "(1) 2 つのパスに当たった同じ issue は 1 件にまとまり、両方のパスを持つ" {
+    use_gh_stub
+    printf '%s\n' "src/a.py" "" "src/b.py" >"$PATH_FILE"
+    fixture "src/a.py" 10 5
+    fixture "src/b.py" 10 5
+    fixture "src/b.py" 11 3
+
+    run python3 "$SCRIPT" --path-file "$PATH_FILE" --repo acme/app
+
+    [ "$status" -eq 0 ]
+    jq -e '.ok == true and .window_days == 30' <<<"$output"
+    [ "$(jq '.issues | length' <<<"$output")" -eq 2 ]
+    [ "$(jq -c '.issues[] | select(.number == 10) | .matched_paths' <<<"$output")" = '["src/a.py","src/b.py"]' ]
+    [ "$(jq -c '.issues[] | select(.number == 11) | .matched_paths' <<<"$output")" = '["src/b.py"]' ]
+    # 空行は無視し、パスごとに 1 回ずつ argv で検索する（ほかはパスを含めない窓の取得 1 回）
+    [ "$(grep -c -- ' in:body ' "$GH_LOG")" -eq 2 ]
+    [ "$(wc -l <"$GH_LOG" | tr -d ' ')" -eq 3 ]
+    grep -qF -- 'issue list --state closed --search "src/a.py" in:body --json number,title,closedAt,body' "$GH_LOG"
+    grep -qF -- '--repo acme/app' "$GH_LOG"
+}
+
+@test "(2) closedAt が 29 日前の issue は含まれ、31 日前の issue は含まれない（既定 30 日）" {
+    use_gh_stub
+    printf '%s\n' "src/a.py" >"$PATH_FILE"
+    fixture "src/a.py" 20 29
+    fixture "src/a.py" 21 31
+
+    run python3 "$SCRIPT" --path-file "$PATH_FILE"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -c '[.issues[].number]' <<<"$output")" = '[20]' ]
+}
+
+@test "(3) --days で窓を変えられる" {
+    use_gh_stub
+    printf '%s\n' "src/a.py" >"$PATH_FILE"
+    fixture "src/a.py" 20 29
+    fixture "src/a.py" 21 31
+
+    run python3 "$SCRIPT" --path-file "$PATH_FILE" --days 60
+
+    [ "$status" -eq 0 ]
+    jq -e '.window_days == 60' <<<"$output"
+    [ "$(jq -c '[.issues[].number] | sort' <<<"$output")" = '[20,21]' ]
+}
+
+@test "(4) \$(…)・二重引用符・バッククォートを含むパスはシェルに評価されず、1 引数の --search で渡る" {
+    use_gh_stub
+    MARKER="$BATS_TEST_TMPDIR/marker"
+    P='src/$(touch '"$MARKER"')/a"b`touch '"$MARKER"'2`.ts'
+    printf '%s\n' "$P" >"$PATH_FILE"
+
+    run python3 "$SCRIPT" --path-file "$PATH_FILE"
+
+    [ "$status" -eq 0 ]
+    jq -e '.ok == true and .issues == []' <<<"$output"
+    [ ! -e "$MARKER" ]
+    [ ! -e "${MARKER}2" ]
+    [ "$(cat "$GH_LAST_SEARCH")" = "\"$P\" in:body" ]
+}
+
+@test "(4b) 二重引用符で検索条件を足して結果を空にしても、窓の issue の本文照合で拾う" {
+    use_gh_stub
+    P='src/a" created:>2099-01-01 "b.py'
+    printf '%s\n' "$P" "src/c.py" >"$PATH_FILE"
+    fixture "src/c.py" 30 1
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    export GH_STUB_WINDOW_JSON="$BATS_TEST_TMPDIR/window.json"
+    jq -n --arg p "$P" --arg now "$now" '[
+        {number: 40, title: "t40", closedAt: $now, body: ("fix " + $p)},
+        {number: 41, title: "t41", closedAt: $now, body: "src/a.py only"}
+    ]' >"$GH_STUB_WINDOW_JSON"
+
+    run python3 "$SCRIPT" --path-file "$PATH_FILE"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -c '[.issues[].number] | sort' <<<"$output")" = '[30,40]' ]
+    [ "$(jq -c --arg p "$P" '.issues[] | select(.number == 40) | .matched_paths == [$p]' <<<"$output")" = 'true' ]
+    # 窓の取得はパスを検索式に含めない
+    grep -E -- '--search closed:>=[0-9]{4}-[0-9]{2}-[0-9]{2} ' "$GH_LOG"
+}
+
+@test "(4c) 引用符の無いパスでも、パスの検索から落ちた窓の issue を本文照合で拾う" {
+    use_gh_stub
+    printf '%s\n' "src/a.py" >"$PATH_FILE"
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    export GH_STUB_WINDOW_JSON="$BATS_TEST_TMPDIR/window.json"
+    jq -n --arg now "$now" '[
+        {number: 50, title: "t50", closedAt: $now, body: "fix src/a.py"},
+        {number: 51, title: "t51", closedAt: $now, body: "src/b.py only"}
+    ]' >"$GH_STUB_WINDOW_JSON"
+
+    run python3 "$SCRIPT" --path-file "$PATH_FILE"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -c '[.issues[].number]' <<<"$output")" = '[50]' ]
+    [ "$(jq -c '.issues[0].matched_paths' <<<"$output")" = '["src/a.py"]' ]
+}
+
+@test "(4d) 窓の取得が上限に達したら欠けうるので、引用符の無いパスでも ok:false を出して非 0 で終わる" {
+    use_gh_stub
+    printf '%s\n' 'src/a.py' >"$PATH_FILE"
+    export GH_STUB_WINDOW_JSON="$BATS_TEST_TMPDIR/window.json"
+    jq -n '[range(1000) | {number: ., title: "t", closedAt: "2099-01-01T00:00:00Z", body: "x"}]' >"$GH_STUB_WINDOW_JSON"
+
+    run python3 "$SCRIPT" --path-file "$PATH_FILE"
+
+    [ "$status" -ne 0 ]
+    jq -e '.ok == false and (.error | contains("limit"))' <<<"$output"
+}
+
+@test "(5) gh が非 0 で終わると ok:false を出して非 0 で終わる" {
+    use_gh_stub
+    export GH_STUB_EXIT=1
+    printf '%s\n' "src/a.py" >"$PATH_FILE"
+
+    run python3 "$SCRIPT" --path-file "$PATH_FILE"
+
+    [ "$status" -ne 0 ]
+    jq -e '.ok == false and (.error | contains("HTTP 502"))' <<<"$output"
+    jq -e 'has("issues") | not' <<<"$output"
+}
+
+@test "(6) --path-file が無いと ok:false を出して非 0 で終わる" {
+    use_gh_stub
+
+    run python3 "$SCRIPT"
+
+    [ "$status" -ne 0 ]
+    jq -e '.ok == false and (.error | contains("--path-file"))' <<<"$output"
+    [ ! -s "$GH_LOG" ]
+}
+
+@test "(7) --path-file が読めない（存在しない・ディレクトリ）と ok:false を出して非 0 で終わる" {
+    use_gh_stub
+
+    for f in "$BATS_TEST_TMPDIR/missing.txt" "$BATS_TEST_TMPDIR"; do
+        run python3 "$SCRIPT" --path-file "$f"
+
+        [ "$status" -ne 0 ]
+        jq -e '.ok == false and (.error | contains("cannot read --path-file"))' <<<"$output"
+    done
+    [ ! -s "$GH_LOG" ]
+}
