@@ -355,11 +355,8 @@ CI gate を通った round でも、LGTM を確定する前に **敵対的 secur
 flowchart TD
     IN["pr-iterate PR 番号<br/>MAX / REVIEW_STUCK<br/>nested 起動時（dev-flow / /pr-iterate wrapper）は<br/>pr-meta / isolation-cleanup を skip<br/>（isolation probe 本体は不変で実行）"] --> LOOP["iteration i"]
     LOOP --> REV["pr-reviewer が実 diff を宣言意図に照合<br/>issue の acceptance criteria も判定に含める"]
-    REV --> D{"decision"}
-    REV -.->|"結果を返さない /<br/>approve と blocking の矛盾が<br/>1 回の再 review 後も再発"| RCE["status: review_contract_error"]
-
-    D -->|approve| CI["ci-check 1 spawn = 1 判定<br/>gh pr checks → check-ci.sh<br/>pending なら script 側 ci-wait ループ（上限 CI_WAIT_CEILING_SECONDS）"]
-    D -->|"request_changes / comment"| BL{"blocking findings あり ?"}
+    REV --> BL{"blocking findings<br/>（critical / major）あり ?<br/>decision は表示・記録専用で経路に効かない"}
+    REV -.->|"schema-retry 後も<br/>結果を返さない"| RCE["status: review_contract_error"]
 
     CI --> CS{"status"}
     CS -->|"passed / no_checks"| SEC{"security review<br/>対象 ?"}
@@ -377,7 +374,7 @@ flowchart TD
     STK1 -->|yes| STUCK["status: stuck"]
     STK1 -->|no| FIX
 
-    BL -->|no| CI
+    BL -->|no| CI["ci-check 1 spawn = 1 判定<br/>gh pr checks → check-ci.sh<br/>pending なら script 側 ci-wait ループ（上限 CI_WAIT_CEILING_SECONDS）"]
     BL -->|yes| STK2{"同一 topic が反復 ?"}
     STK2 -->|yes| STUCK
     STK2 -->|no| FIX["fix agent が修正適用"]
@@ -401,7 +398,7 @@ flowchart TD
 | `max_reached` | `MAX` iteration で収束せず | merge tier `HOLD` |
 | `ci_error` | CI 状態を確定できない（ci-check の proxy が結果を返さない / check-ci の gh 取得失敗 / proxy の status と件数の食い違い）。`gh pr checks` で実状態を確認する | merge tier `HOLD` |
 | `ci_pending` | checks 未完了。自動承認しない | merge tier `HOLD` |
-| `review_contract_error` | pr-reviewer が schema-retry 後も結果を返さない、または decision=approve と blocking の矛盾が 1 回の再 review 後も再発 | merge tier `HOLD` |
+| `review_contract_error` | pr-reviewer が schema-retry 後も結果を返さない（StructuredOutput 契約違反） | merge tier `HOLD` |
 | `security_unresolved` | 敵対的 security review を今の head で clear にできない（worktree の外を指す critical / major・diff を取れない・review が結果を返さない・review した head が今の head と違う） | merge tier `HOLD`（`security_review_unresolved`） |
 
 ---

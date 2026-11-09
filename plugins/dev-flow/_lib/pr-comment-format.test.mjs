@@ -496,17 +496,20 @@ test('buildTerminalSummaryBody: 長文 summary truncation + evidence がテー�
 
 // --- New tests: minor findings + review_contract_error status (issue #321, F2) ---------
 
-// (4) STATUS_HEADLINE: review_contract_error
-test('buildTerminalSummaryBody: review_contract_error -> ⚠️ REVIEW CONTRACT ERROR 見出しとマーカーが出る', () => {
+// (4) STATUS_HEADLINE: review_contract_error（review が schema-retry 後も null のときだけの終端。issue #1283）
+test('buildTerminalSummaryBody: review_contract_error -> StructuredOutput 契約違反だけを説明する見出しとマーカーが出る', () => {
   const body = buildTerminalSummaryBody({
     pr: 30,
     status: 'review_contract_error',
     iterations: 4,
-    lastDecision: 'approve',
-    lastSummary: 'decision と blocking が矛盾',
+    lastDecision: null,
+    lastSummary: null,
     history: [],
   });
-  assert.ok(body.includes('⚠️ REVIEW CONTRACT ERROR'), 'review_contract_error 見出しを含む');
+  assert.ok(
+    body.includes('\n### ⚠️ REVIEW CONTRACT ERROR — reviewer が StructuredOutput 契約違反で結果を返さず（schema-retry 後も null）。人間へエスカレーション\n'),
+    'review_contract_error 見出しの全文を含む',
+  );
   assert.ok(body.includes('<!-- pr-iterate:review_contract_error:4 -->'), '終端マーカーに review_contract_error が出る');
 });
 

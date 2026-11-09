@@ -1,10 +1,8 @@
-// F2: review agent（review#i / review#i-contract-retry）が StructuredOutput 契約違反で throw / null を
+// F2: review agent（review#i）が StructuredOutput 契約違反で throw / null を
 // 返した場合の pr-iterate 側リカバリを pin する（issue #437）。
 //   - throw も null も同一の「契約失敗」として扱い、同一 prompt で 1 回だけ schema-retry する
 //   - retry で成功すれば通常経路へ完全合流する
 //   - retry 後も失敗（throw/null）なら run 全体を落とさず status:'review_contract_error' で graceful 終了
-//   - review#i-contract-retry（contract mismatch 経路）が throw/null になった場合も同様に graceful 終了し、
-//     元の mismatch review のデータで history を残す
 //
 // harness は test-helpers/vm-sandbox.mjs の makePrIterateSandbox / runWorkflowCapture。round 系 call の応答だけを
 // buildAgentStub の rounds で返し、それ以外は pr-iterate 単体起動の既定 responder に任せる。
@@ -123,33 +121,6 @@ test('[T3] review#1 が null を返し続ける(throwでなくnull) -> schema-re
   );
 
   assert.equal(result?.status, 'review_contract_error', `result.status は review_contract_error であるべきだが '${result?.status}' だった`);
-});
-
-// ---- T4: review#1-contract-retry が throw、schema-retry も throw -> graceful 終了、history に元の mismatch を保持 ----
-test('[T4] review#1 contract mismatch -> review#1-contract-retry throw -> schema-retry も throw -> status:review_contract_error、history に iteration 1 が残る', async () => {
-  const agentCalls = [];
-  const majorIssue = { severity: 'major', topic: 't1', file: 'a.ts', description: 'd1', suggestion: 's1' };
-  const reviewerStub = (label) => {
-    if (label === 'review#1') return { decision: 'approve', issues: [majorIssue], summary: 'mismatch' };
-    if (label === 'review#1-contract-retry' || label === 'review#1-contract-retry-schema-retry') {
-      throw new Error('StructuredOutput 契約違反');
-    }
-    throw new Error(`unexpected pr-reviewer label: ${label}`);
-  };
-  const agentStub = buildAgentStub({ reviewerStub, agentCalls });
-  const ctx = makeSandbox(agentStub);
-  const { result, error } = await runPrIterate(ctx);
-  assertNoCrash(error);
-  assert.equal(error, null, `run 全体が例外終了してはならないが error が発生: ${error?.name}: ${error?.message}`);
-
-  const reviewerCalls = agentCalls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
-  assert.equal(reviewerCalls.length, 3, `pr-reviewer 呼び出しは 3 回（review#1 + contract-retry + contract-retry-schema-retry）であるべきだが ${reviewerCalls.length} 回だった`);
-
-  assert.equal(result?.status, 'review_contract_error', `result.status は review_contract_error であるべきだが '${result?.status}' だった`);
-
-  assert.equal(result?.history?.length, 1, `history は 1 件であるべきだが ${result?.history?.length} 件だった`);
-  assert.equal(result.history[0].iteration, 1, 'history[0].iteration は 1 であるべき');
-  assert.equal(result.history[0].blocking?.length, 1, 'history[0].blocking は元の mismatch review の 1 件を保持するべき');
 });
 
 // ---- T5 回帰: 正常経路（throw/null なし）で schema-retry ラベル呼び出し 0 回、review_null_retries=0 ----

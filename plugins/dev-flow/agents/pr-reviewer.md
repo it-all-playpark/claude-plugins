@@ -177,6 +177,9 @@ decision 判定:
 - critical or major がある → **`request-changes`**
 - 判断に迷う指摘のみ（minor 中心で blocking でない）→ **`comment`**
 
+decision は表示・記録専用で、経路（fix に回すか CI gate に進むか）は critical / major の件数だけで決まる。
+decision と issues が食い違っても（`approve` なのに critical / major がある等）、critical / major は fix に回る。
+
 ### confidence の判定基準（省略可・任意。issue #561, #154 スコープ3）
 
 `confidence`: この decision 自体がどの程度確かかの自己申告 `[0,1]`（0=当てずっぽう、1=決定論的証拠で
