@@ -34,6 +34,8 @@
  *     （danger-grep と dev-implementer の両 stub に同じ一覧を渡すと宣言外 0 件で shape だけが変わる）
  *   - shapeOverrides('micro'|'complex'): 上記を impl / reimpl#1..2 / danger-grep（+ micro は ci-check-lite）の
  *     override にまとめたもの。既定（override なし）は standard
+ *   - PORCELAIN_BASELINE_DIGEST / porcelainBaselineResponse(digest?) / porcelainVerdictResponse(lines, baseline?, o?):
+ *     pr-iterate の porcelain-verdict（fix-baseline#i / commit-ensure-status#i / worktree-dirty-check）の stdout と同形の応答
  *   - prIterateResponder(overrides?): pr-iterate.js 単体起動の既定 responder
  *   - makeDevFlowSandbox({overrides?, issue?, workflow?, extra?}?): devFlowResponder を使った
  *     makeRecordingSandbox の薄い wrapper
@@ -48,6 +50,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { porcelainVerdict } from '../porcelain-verdict.mjs';
 
 // ============================================================
 // JS_GLOBALS: VM sandbox に expose する JS 組み込み 15 個
@@ -541,6 +544,28 @@ export function securityScopeHeadOf(prompt) {
 export function securityReviewHeadOf(prompt) {
   const m = String(prompt).match(/^head_sha: ([0-9a-f]{40})$/m);
   return m ? m[1] : '';
+}
+
+// ============================================================
+// porcelain-verdict（label 'fix-baseline#i' / 'commit-ensure-status#i' / 'worktree-dirty-check'）の応答
+// ============================================================
+
+/** fix-baseline#i の応答の baseline_digest の既定（sha256 の形）。 */
+export const PORCELAIN_BASELINE_DIGEST = 'd'.repeat(64);
+
+/** `porcelain-verdict baseline` の stdout と同形の応答。 */
+export const porcelainBaselineResponse = (digest = PORCELAIN_BASELINE_DIGEST) => ({ exit_code: 0, baseline_digest: digest });
+
+/**
+ * `porcelain-verdict check` の stdout と同形の応答を、判定の規則（_lib/porcelain-verdict.mjs）で作る。
+ * lines は status の porcelain 行、baseline は基準線の行（null = 基準線なし）。
+ *
+ * @param {string[]} lines
+ * @param {string[]|null} [baseline]
+ * @param {{exitCode?: number, mismatch?: boolean}} [o]
+ */
+export function porcelainVerdictResponse(lines, baseline = [], { exitCode = 0, mismatch = false } = {}) {
+  return porcelainVerdict({ output: lines.map((l) => `${l}\n`).join(''), exitCode, baseline, mismatch });
 }
 
 // ============================================================
