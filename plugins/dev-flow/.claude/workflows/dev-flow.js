@@ -1204,7 +1204,13 @@ function classifyBaseRerun(rerunFiles, results) {
 function stuckTopicKey(x) {
   if (x == null) return '';
   if (typeof x === 'string') return x;
-  if (typeof x.topic === 'string' && x.topic.trim()) return x.topic.trim();
+  if (typeof x.topic === 'string' && x.topic.trim()) {
+    const topic = x.topic.trim();
+    const sep = topic.indexOf('::');
+    const cls = (sep < 0 ? topic : topic.slice(0, sep)).toLowerCase().replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (sep < 0) return cls;
+    return `${cls}::${topic.slice(sep + 2).trim().replace(/\s+/g, ' ')}`;
+  }
   if (x.file != null) {
     return `${String(x.file)}::${x.description != null ? String(x.description) : JSON.stringify(x)}`;
   }

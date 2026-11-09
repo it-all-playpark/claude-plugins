@@ -1,4 +1,4 @@
-// dev-flow.js の blockSeen/evalSeen と pr-iterate.js の reviewSeen が共有する
+// dev-flow.js の blockSeen、dev-flow-evaluate.js の evalSeen、pr-iterate.js の reviewSeen / securitySeen が共有する
 // stuck 検出 canonical。incentive-structural クラス — W7、撤去禁止。issue #123/#125/#126/#208。
 //
 // INLINE COPY POLICY: 本ファイルは tools/sync-inlines.mjs --write で workflow へ全文 inline 生成される。
@@ -10,14 +10,24 @@
 // topic fingerprint を導出する。
 // (a) x == null → ''
 // (b) typeof x === 'string' → x をそのまま返す
-// (c) typeof x.topic === 'string' かつ x.topic.trim() が非空 → x.topic.trim()
+// (c) typeof x.topic === 'string' かつ x.topic.trim() が非空 → 表記ゆれを吸収したキー
+//     最初の `::` より前の problem-class は小文字化し、空白・`_`・ハイフンの連なりを 1 つのハイフンにまとめ、
+//     前後のハイフンを落とす。`::` より後ろの詳細は trim と空白の圧縮だけで大小文字を保つ
+//     （case-sensitive な FS では大小文字だけが違う別ファイルがあり得る）。同義語の統合はしない
+//     （別の問題が 1 つの topic に畳まれて早く stuck する）。
 // (d) x.file != null → `${String(x.file)}::${x.description != null ? String(x.description) : JSON.stringify(x)}`
 // (e) x.description != null かつ String(x.description) が非空 → String(x.description)
 // (f) それ以外 → JSON.stringify(x)
 export function stuckTopicKey(x) {
   if (x == null) return '';
   if (typeof x === 'string') return x;
-  if (typeof x.topic === 'string' && x.topic.trim()) return x.topic.trim();
+  if (typeof x.topic === 'string' && x.topic.trim()) {
+    const topic = x.topic.trim();
+    const sep = topic.indexOf('::');
+    const cls = (sep < 0 ? topic : topic.slice(0, sep)).toLowerCase().replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (sep < 0) return cls;
+    return `${cls}::${topic.slice(sep + 2).trim().replace(/\s+/g, ' ')}`;
+  }
   if (x.file != null) {
     return `${String(x.file)}::${x.description != null ? String(x.description) : JSON.stringify(x)}`;
   }

@@ -22,6 +22,27 @@ test('stuckTopicKey: topic プロパティが優先（trim あり）', () => {
   assert.equal(stuckTopicKey({ topic: 'topic-val' }), 'topic-val');
 });
 
+test('stuckTopicKey: problem-class の大小文字・空白・_・ハイフンの表記ゆれは同じキーになる', () => {
+  const keys = [
+    'Input Validation Missing::create-user',
+    ' input_validation--missing ::create-user',
+    'input-validation-missing::create-user',
+  ].map((topic) => stuckTopicKey({ topic }));
+  assert.deepEqual(keys, Array(3).fill('input-validation-missing::create-user'));
+});
+
+test('stuckTopicKey: `::` より後ろの詳細は大小文字を区別し、trim と空白の圧縮だけをする', () => {
+  assert.notEqual(
+    stuckTopicKey({ topic: 'test-missing::src/Foo.ts' }),
+    stuckTopicKey({ topic: 'test-missing::src/foo.ts' }),
+  );
+  assert.equal(stuckTopicKey({ topic: 'logic-bug::  Resolve   Gate  ' }), 'logic-bug::Resolve Gate');
+});
+
+test('stuckTopicKey: `::` を含まない topic でも problem-class の正規化がかかる', () => {
+  assert.equal(stuckTopicKey({ topic: ' Edge_Case  Unhandled- ' }), 'edge-case-unhandled');
+});
+
 test('stuckTopicKey: 空 topic は topic を使わず次へ fallback', () => {
   // 空 topic + file あり → `file::description`
   assert.equal(
@@ -72,7 +93,14 @@ test('makeSeenTracker: 同一 topic 2 回 register → threshold=2 で stuckTopi
   tracker.register(item);
   assert.deepEqual(tracker.stuckTopics(), []);
   tracker.register(item);
-  assert.deepEqual(tracker.stuckTopics(), ['T1']);
+  assert.deepEqual(tracker.stuckTopics(), ['t1']);
+});
+
+test('makeSeenTracker: 表記だけが違う topic 2 回 register → threshold=2 で stuckTopics に 1 件入る', () => {
+  const tracker = makeSeenTracker(2);
+  tracker.register({ topic: 'Input Validation Missing::create-user' });
+  tracker.register({ topic: ' input_validation--missing ::create-user' });
+  assert.deepEqual(tracker.stuckTopics(), ['input-validation-missing::create-user']);
 });
 
 test('makeSeenTracker: 1 回では stuckTopics に含まれない', () => {
@@ -101,7 +129,7 @@ test('makeSeenTracker: 同一 topic 再 register で item が最新版に上書�
   // prior() は最新 item v3 を返す
   assert.deepEqual(tracker.prior(), [v3]);
   // count=3 で threshold=3 を満たす
-  assert.deepEqual(tracker.stuckTopics(), ['X']);
+  assert.deepEqual(tracker.stuckTopics(), ['x']);
 });
 
 test('makeSeenTracker: threshold=Infinity で stuckTopics() は常に []', () => {
@@ -118,7 +146,7 @@ test('makeSeenTracker: 異なる topic は独立カウント', () => {
   tracker.register({ topic: 'B' });
   tracker.register({ topic: 'A' });
   // A は 2 回 → stuck、B は 1 回 → not stuck
-  assert.deepEqual(tracker.stuckTopics(), ['A']);
+  assert.deepEqual(tracker.stuckTopics(), ['a']);
   // prior() は A と B 両方を含む
   assert.equal(tracker.prior().length, 2);
 });

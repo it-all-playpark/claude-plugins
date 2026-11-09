@@ -65,10 +65,10 @@ test('辞書本文に必須 problem-class が全て含まれる', () => {
   );
 });
 
-// (3b) plan-reviewer / parallel 分解は存在しないため、検出元・problem-class に現れない
-test('辞書本文に plan-reviewer と parallel 分解由来の problem-class が含まれない', () => {
+// (3b) plan-reviewer / parallel 分解 / planSeen は存在しないため、検出元・problem-class・stuck カウンタに現れない
+test('辞書本文に plan-reviewer と parallel 分解由来の problem-class と planSeen が含まれない', () => {
   const content = readFileSync(DICT_PATH, 'utf-8');
-  const stale = ['plan-reviewer', 'file-conflict-in-parallel', 'dependency-contradiction'].filter((s) =>
+  const stale = ['plan-reviewer', 'file-conflict-in-parallel', 'dependency-contradiction', 'planSeen'].filter((s) =>
     content.includes(s),
   );
   assert.deepEqual(stale, [], `辞書に撤去済みの検出元 / problem-class が残っている: ${stale.join(', ')}`);

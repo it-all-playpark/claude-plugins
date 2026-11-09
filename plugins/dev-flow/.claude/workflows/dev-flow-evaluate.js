@@ -988,7 +988,13 @@ function greenFixRecheckItems(findings) {
 function stuckTopicKey(x) {
   if (x == null) return '';
   if (typeof x === 'string') return x;
-  if (typeof x.topic === 'string' && x.topic.trim()) return x.topic.trim();
+  if (typeof x.topic === 'string' && x.topic.trim()) {
+    const topic = x.topic.trim();
+    const sep = topic.indexOf('::');
+    const cls = (sep < 0 ? topic : topic.slice(0, sep)).toLowerCase().replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (sep < 0) return cls;
+    return `${cls}::${topic.slice(sep + 2).trim().replace(/\s+/g, ' ')}`;
+  }
   if (x.file != null) {
     return `${String(x.file)}::${x.description != null ? String(x.description) : JSON.stringify(x)}`;
   }
@@ -2476,8 +2482,10 @@ async function execEvaluatePhase(state) {
       const isCritical = f.severity === 'critical'
       const isEscalate = f.escalate === true
       if (!isCritical && !isEscalate) continue
+      // ledger の id と表示は evaluator が書いた topic のまま（stuck 突合用に正規化したキーにしない）
+      const label = (typeof f.topic === 'string' && f.topic.trim()) ? f.topic.trim() : stuckTopicKey(f)
       ledger = appendItem(ledger, {
-        id: `EVAL-${i}-${stuckTopicKey(f).slice(0, 24)}`, text: stuckTopicKey(f),
+        id: `EVAL-${i}-${label.slice(0, 24)}`, text: label,
         dimension: f.dimension ?? 'eval',
         severity: isCritical ? 'critical' : (f.severity === 'minor' ? 'minor' : 'major'),
         source: 'evaluator', check: { kind: 'inspection' },
