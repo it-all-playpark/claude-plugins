@@ -9,7 +9,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash, ciCounts } from './test-helpers/vm-sandbox.mjs';
+import {
+  makePrIterateSandbox, runWorkflowCapture, assertNoCrash, ciCounts, porcelainBaselineResponse, porcelainVerdictResponse,
+} from './test-helpers/vm-sandbox.mjs';
 import { PR_PUSH_MAX_WAIT_SEC, PR_PUSH_WAIT_SEC, prPushLogPath } from './pr-artifacts.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -38,10 +40,10 @@ const MERGEABLE = { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' };
 // round 1 の review が指摘 → fix#1 → commit-ensure#1 が未コミット変更を回収して push する → round 2 で LGTM
 const FIX_ROUND = {
   'review#1': { decision: 'request-changes', issues: [ISSUE], summary: 'ng' },
-  'fix-baseline#1': { exit_code: 0, porcelain: [] },
-  'commit-ensure-status#1': { exit_code: 0, porcelain: [' M a.ts'] },
+  'fix-baseline#1': porcelainBaselineResponse(),
+  'commit-ensure-status#1': porcelainVerdictResponse([' M a.ts'], []),
 };
-const ensureResponse = (fields) => ({ dirty: true, committed: true, pushed: false, head_sha: HEAD2, porcelain: [' M a.ts'], porcelain_after: [], ...fields });
+const ensureResponse = (fields) => ({ dirty: true, committed: true, pushed: false, head_sha: HEAD2, ...fields });
 
 // round 1 で CONFLICTING → conflict-resolve#1 が解消して push する → round 2 で LGTM
 const CONFLICT_ROUND = {

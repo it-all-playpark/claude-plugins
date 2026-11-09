@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, mergeTierFacts, analyzeArgs } from './test-helpers/vm-sandbox.mjs';
+import {
+  makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, mergeTierFacts, analyzeArgs, porcelainBaselineResponse, porcelainVerdictResponse,
+} from './test-helpers/vm-sandbox.mjs';
 import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 
 /**
@@ -431,8 +433,8 @@ const PR_B2 = {
   overrides: {
     'review#1': () => ({ decision: 'request-changes', issues: [{ severity: 'critical', description: 'x', suggestion: 'y' }], summary: 'nope' }),
     'review#2': { decision: 'approve', issues: [], summary: 'ok now' },
-    // 基準線を取れた round だけが commit-ensure-status（回収の add の材料）を読む
-    'fix-baseline#1': { exit_code: 0, porcelain: [] },
+    // 基準線を取れた round だけが commit-ensure-status（回収の判定と add の材料）を読む
+    'fix-baseline#1': porcelainBaselineResponse(),
   },
 };
 // B3: fix#1 が null → fix-null-retry（fix#1-retry）が applied を返して commit-ensure#1 → review#2 approve。
@@ -456,7 +458,7 @@ const PR_B5 = {
     'review#1': PR_B2.overrides['review#1'],
     'fix#1': null,
     'fix#1-retry': null,
-    'worktree-dirty-check': { dirty: false, files: 0 },
+    'worktree-dirty-check': porcelainVerdictResponse([], null),
   },
 };
 // B6: review#1 が approve（既定）→ ci_gate で ci-check#1 が pending → script 側 poll ループが
@@ -510,8 +512,8 @@ const EXPECTED_PR_ITERATE = {
   'ci-check#1': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはstatus:errorに合成しci_errorへ流す' },
   'post-summary': { config: PR_B1, policy: 'continue', reason: 'failOpenAgent経由。投稿失敗はfail-openでgate判定に影響しない' },
   'journal-log': { config: PR_B1, policy: 'continue', reason: 'runJournalHandoff内try/catchで吸収するfail-open経路' },
-  'fix-baseline#1': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは基準線なしとしてfix後の全porcelain行で判定するfail-safe' },
-  'commit-ensure-status#1': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは回収のaddを組み立てず、新規行が残ればcommit_unensuredで止めるfail-safe' },
+  'fix-baseline#1': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullはdigestなし（基準線なし）としてfix後の全porcelain行で判定させ回収しないfail-safe' },
+  'commit-ensure-status#1': { config: PR_B2, policy: 'continue', reason: 'failOpenAgent経由。throw/nullは回収せず（addもcommitも指示しない）、新規行が残ればcommit_unensuredで止めるfail-safe' },
   'fix#1': { config: PR_B2, policy: 'continue', reason: 'callFixAgent内try/catchで吸収しnull-retryへ倒すfail-safe経路' },
   'commit-ensure#1': { config: PR_B2, policy: 'continue', reason: 'try/catchで吸収しfix_failedエスカレーションへ倒すfail-safe経路' },
   'review#2': { config: PR_B2, policy: 'continue', reason: 'callReviewAgent内try/catchで吸収しschema-retryへ倒すfail-safe経路' },
@@ -564,6 +566,77 @@ test('pr-iterate.js: 全 baseline で観測される label は EXPECTED_PR_ITERA
     `  2. failOpenAgent(...) 経由にする（throw を fail-open で吸収）\n` +
     `  3. この EXPECTED_PR_ITERATE に policy と reason（20 字以上）を登録する`,
   );
+});
+
+// ── 判定スクリプト（porcelain-verdict）の応答の失敗（issue #1284）────────────
+// fix-baseline・commit-ensure の判定が取れない round は回収しない。agent が回収済み（committed・pushed）と申告しても
+// fix_failed（fail-safe）。終端の worktree-dirty-check は advisory なので 'unknown'（fail-open）で run を続ける。
+const CLAIMS_RECOVERED = { dirty: true, committed: true, pushed: true };
+const VERDICT_FAILURES = {
+  'fix-baseline#1': {
+    null: null,
+    'schema 不一致': { exit_code: 0, porcelain: [] },
+    throw: THROW,
+    'exit 非0': { exit_code: 128, baseline_digest: 'd'.repeat(64) },
+  },
+  'commit-ensure-status#1': {
+    null: null,
+    'schema 不一致': { exit_code: 0, porcelain: [' M a.ts'] },
+    throw: THROW,
+    'exit 非0': porcelainVerdictResponse([], [], { exitCode: 128 }),
+  },
+  // commit-ensure#1 自身の応答（判定スクリプトの dirty を写したもの）。schema 不一致は harness が null にする
+  'commit-ensure#1': {
+    null: null,
+    throw: THROW,
+  },
+};
+for (const [label, cases] of Object.entries(VERDICT_FAILURES)) {
+  for (const [name, response] of Object.entries(cases)) {
+    test(`pr-iterate.js: ${label} の判定の応答が ${name} -> commit-ensure は fix_failed（fail-safe）`, async () => {
+      const overrides = {
+        ...PR_B2.overrides,
+        'commit-ensure-status#1': porcelainVerdictResponse([' M a.ts'], []),
+        'commit-ensure#1': CLAIMS_RECOVERED,
+        [label]: response,
+      };
+      const { result, error, calls } = await runPrIterateBaseline({ overrides });
+      assert.equal(error, null, `run が abort した: ${error?.message}`);
+      assert.ok(calls.some((c) => c.label === label), `${label} に到達していない`);
+      assert.equal(result?.status, 'fix_failed', `${label} ${name}: status=${result?.status}`);
+      assert.equal(result?.fix_terminal_reason, 'commit_unensured');
+    });
+  }
+}
+
+test('pr-iterate.js: 判定の応答が揃えば同じ round は回収して lgtm（上の fix_failed が判定の失敗による）', async () => {
+  const overrides = { ...PR_B2.overrides, 'commit-ensure-status#1': porcelainVerdictResponse([' M a.ts'], []), 'commit-ensure#1': CLAIMS_RECOVERED };
+  const { result, error } = await runPrIterateBaseline({ overrides });
+  assert.equal(error, null);
+  assert.equal(result?.status, 'lgtm');
+  assert.equal(result?.fix_uncommitted_recovered, 1);
+});
+
+for (const [name, response] of Object.entries({
+  null: null,
+  'schema 不一致': { dirty: false, files: 0 },
+  throw: THROW,
+  'exit 非0': porcelainVerdictResponse([], null, { exitCode: 128 }),
+})) {
+  test(`pr-iterate.js: worktree-dirty-check の判定の応答が ${name} -> worktree_dirty は unknown（fail-open）で終端の status は変えない`, async () => {
+    const { result, error, calls } = await runPrIterateBaseline({ overrides: { ...PR_B5.overrides, 'worktree-dirty-check': response } });
+    assert.equal(error, null, `run が abort した: ${error?.message}`);
+    assert.ok(calls.some((c) => c.label === 'worktree-dirty-check'));
+    assert.equal(result?.status, 'fix_failed');
+    assert.equal(result?.worktree_dirty, 'unknown');
+  });
+}
+
+test('pr-iterate.js: worktree-dirty-check の判定が取れれば clean / dirty（上の unknown が判定の失敗による）', async () => {
+  for (const [lines, expected] of [[[], 'clean'], [[' M a.ts'], 'dirty']]) {
+    const { result } = await runPrIterateBaseline({ overrides: { ...PR_B5.overrides, 'worktree-dirty-check': porcelainVerdictResponse(lines, null) } });
+    assert.equal(result?.worktree_dirty, expected);
+  }
 });
 
 test("pr-iterate.js baseline に 'pr-meta' / 'isolation-probe' が含まれる（走査ズレ検出）", async () => {

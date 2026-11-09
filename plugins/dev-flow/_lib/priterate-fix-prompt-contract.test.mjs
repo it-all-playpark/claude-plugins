@@ -14,7 +14,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash, securityReviewHeadOf } from './test-helpers/vm-sandbox.mjs';
+import {
+  makePrIterateSandbox, runWorkflowCapture, assertNoCrash, securityReviewHeadOf, porcelainBaselineResponse, porcelainVerdictResponse,
+} from './test-helpers/vm-sandbox.mjs';
 import { PR_PUSH_MAX_WAIT_SEC, PR_PUSH_WAIT_SEC, prPushLogPath } from './pr-artifacts.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -124,8 +126,9 @@ test('[fix-prompt-contract] (e) commit-ensure#1 prompt の push は最初の wai
   const { ctx, calls } = makePrIterateSandbox({
     overrides: {
       'review#1': { decision: 'request-changes', issues: [{ severity: 'major', topic: 't', file: 'src/a.js', line: 1, description: 'd', suggestion: '' }], summary: 'ng' },
-      // 回収の commit・push は基準線を取れた round にだけ指示する
-      'fix-baseline#1': { exit_code: 0, porcelain: [] },
+      // 回収の commit・push は基準線を取れ、判定スクリプトが回収可とした round にだけ指示する
+      'fix-baseline#1': porcelainBaselineResponse(),
+      'commit-ensure-status#1': porcelainVerdictResponse([' M src/a.js'], []),
     },
   });
   const { error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
