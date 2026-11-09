@@ -2,6 +2,9 @@
 // AC の actor 分類（agent / human / ci）と、ac_results の actor 別集計・差し戻し用 fix_feedback の pin（issue #747 / #861）。
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, deterministicAcIndexes, demoteUnprovenObservationalAc, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap, freezeAcVerify, acVerifyCandidateIndexes } from './ac-actor.mjs';
 import { KNOWN_OBSERVATIONAL_ACS } from './test-helpers/observational-ac-controls.mjs';
 
@@ -298,7 +301,7 @@ test('[ac-observational] acObservationalPrompt: issue のタイトルと渡す A
   const acs = ['ログの件数表示を修正する', 'エラー件数を返す関数にテストを足す', '実行ログに 1 件以上記録される'];
   const prompt = acObservationalPrompt('fix: ログの件数', acs, [1]);
   assert.ok(prompt.includes('"fix: ログの件数"'), prompt);
-  assert.ok(prompt.includes('{"ac_index":1,"ac":"エラー件数を返す関数にテストを足す"}'), prompt);
+  assert.ok(prompt.includes('{"ac_index":1,"ac":"エラー件数を返す関数にテストを足す","inline_codes":[]}'), prompt);
   assert.ok(!prompt.includes(acs[0]) && !prompt.includes(acs[2]), `渡していない AC を含めている: ${prompt}`);
   assert.match(prompt, /コードとテストを読むだけでは確かめられず、実行した結果・ログ・計測を観測しないと確かめられない/);
   assert.match(prompt, /テストコードやソースコード自体の書き方・構成について述べているなら false/);
@@ -399,9 +402,10 @@ const BUILD_CMD = 'timeout 300 pnpm --filter @acme/landing build';
 const BUILD_PATHS = ['packages/landing/out/index.html', 'packages/landing/out/404.html'];
 const BUILD_AC = `sandbox 内で \`${BUILD_CMD}\` が exit 0 で終わり、\`${BUILD_PATHS[0]}\` と \`${BUILD_PATHS[1]}\` が生成される`;
 
-test('[ac-verify] freezeAcVerify: AC の inline code と完全一致する verify_command / expect_paths（build の完走を指定した AC）を凍結する', () => {
+// BUILD_AC の inline code の候補は [BUILD_CMD, BUILD_PATHS[0], BUILD_PATHS[1]]（index 0 / 1 / 2）
+test('[ac-verify] freezeAcVerify: verify_command_index / expect_path_indexes が指す AC の inline code（build の完走を指定した AC）を凍結する', () => {
   const frozen = freezeAcVerify(['worker 数の上限を設定で変えられる', BUILD_AC], {
-    results: [{ ac_index: 1, observational: true, verify_command: BUILD_CMD, expect_paths: [...BUILD_PATHS] }],
+    results: [{ ac_index: 1, observational: true, verify_command_index: 0, expect_path_indexes: [1, 2] }],
   });
   assert.deepEqual(frozen, [
     { verify_command: null, expect_paths: [] },
@@ -409,40 +413,62 @@ test('[ac-verify] freezeAcVerify: AC の inline code と完全一致する verif
   ]);
 });
 
-test('[ac-verify] freezeAcVerify: AC に無い文字列・inline code の一部だけ・.. を含むパス・/ 始まりのパスは採らない', () => {
+test('[ac-verify] freezeAcVerify: verify_command_index が範囲内の非負整数でない応答・旧形式（文字列の verify_command）の応答は凍結しない', () => {
+  const NONE = { verify_command: null, expect_paths: [] };
   const freeze = (r) => freezeAcVerify([BUILD_AC], { results: [{ ac_index: 0, observational: true, ...r }] })[0];
-  // AC に無いコマンド（LLM が組み立てた・言い換えた）
-  assert.deepEqual(freeze({ verify_command: 'pnpm --filter @acme/landing build && ls out', expect_paths: BUILD_PATHS }), { verify_command: null, expect_paths: [] });
-  assert.equal(freeze({ verify_command: 'pnpm build', expect_paths: [] }).verify_command, null);
-  // inline code の一部だけ（timeout を外した・前後に空白を足した）
-  assert.equal(freeze({ verify_command: 'pnpm --filter @acme/landing build', expect_paths: [] }).verify_command, null);
-  assert.equal(freeze({ verify_command: ` ${BUILD_CMD} `, expect_paths: [] }).verify_command, null);
-  // パス: AC に無い・一部だけ・.. を含む・/ 始まりは除外し、残りは採る
-  const paths = freeze({ verify_command: BUILD_CMD, expect_paths: ['packages/landing/out/other.html', 'out/index.html', ...BUILD_PATHS, 42] }).expect_paths;
-  assert.deepEqual(paths, BUILD_PATHS);
-  const site = (ac, expectPaths) => freezeAcVerify([ac], { results: [{ ac_index: 0, observational: true, verify_command: 'make site', expect_paths: expectPaths }] })[0];
-  assert.deepEqual(site('`make site` が exit 0 で、`site/./index.html` が生成される', ['site/./index.html']), { verify_command: 'make site', expect_paths: ['site/./index.html'] });
-  // .. を含む・/ 始まりのパスは採らない（採らなかった inline code が残るので AC ごと凍結しない）
-  assert.deepEqual(site('`make site` が exit 0 で、`../site/index.html` が生成される', ['../site/index.html']), { verify_command: null, expect_paths: [] });
-  assert.deepEqual(site('`make site` が exit 0 で、`/tmp/site/index.html` が生成される', ['/tmp/site/index.html']), { verify_command: null, expect_paths: [] });
-  // verify_command が採れなければ expect_paths も採らない。応答なし・形が違う・index 違いは null
-  assert.deepEqual(freeze({ verify_command: null, expect_paths: BUILD_PATHS }), { verify_command: null, expect_paths: [] });
-  assert.deepEqual(freezeAcVerify([BUILD_AC], null), [{ verify_command: null, expect_paths: [] }]);
-  assert.deepEqual(freezeAcVerify([BUILD_AC], { results: [{ ac_index: 1, verify_command: BUILD_CMD, expect_paths: [] }] }), [{ verify_command: null, expect_paths: [] }]);
+  for (const [name, r] of [
+    ['範囲外', { verify_command_index: 3, expect_path_indexes: [1, 2] }],
+    ['負数', { verify_command_index: -1, expect_path_indexes: [1, 2] }],
+    ['非整数', { verify_command_index: 0.5, expect_path_indexes: [1, 2] }],
+    ['文字列', { verify_command_index: '0', expect_path_indexes: [1, 2] }],
+    ['null', { verify_command_index: null, expect_path_indexes: [1, 2] }],
+    ['欠落', { expect_path_indexes: [1, 2] }],
+    ['旧形式（文字列の verify_command / expect_paths）', { verify_command: BUILD_CMD, expect_paths: [...BUILD_PATHS] }],
+    ['旧形式と index の混在（旧形式の文字列は使わない）', { verify_command: BUILD_CMD, verify_command_index: 9, expect_path_indexes: [1, 2] }],
+  ]) assert.deepEqual(freeze(r), NONE, name);
+  // 空白だけの inline code は verify_command に採らない
+  assert.deepEqual(freezeAcVerify(['`  ` が exit 0 で終わる'], { results: [{ ac_index: 0, observational: true, verify_command_index: 0, expect_path_indexes: [] }] }), [NONE]);
+  // 応答なし・形が違う・ac_index 違いは null
+  assert.deepEqual(freezeAcVerify([BUILD_AC], null), [NONE]);
+  assert.deepEqual(freezeAcVerify([BUILD_AC], { results: [{ ac_index: 1, verify_command_index: 0, expect_path_indexes: [1, 2] }] }), [NONE]);
   assert.deepEqual(freezeAcVerify(undefined, { results: [] }), []);
+});
+
+test('[ac-verify] freezeAcVerify: expect_path_indexes は範囲内の非負整数が指す worktree 相対のパスだけを、値で重複を除いて採る', () => {
+  const freeze = (r) => freezeAcVerify([BUILD_AC], { results: [{ ac_index: 0, observational: true, verify_command_index: 0, ...r }] })[0];
+  // 範囲外・負数・非整数・文字列の index は捨て、残りは採る
+  assert.deepEqual(freeze({ expect_path_indexes: [1, 7, -1, 1.5, '2', 2] }), { verify_command: BUILD_CMD, expect_paths: BUILD_PATHS });
+  // 同じパスを 2 つの index で選んだ（同じ値の inline code が 2 回現れる AC）場合は 1 つにまとめる
+  const twice = '`make site` が exit 0 で、`site/index.html` が生成される（`site/index.html` は空でない）';
+  assert.deepEqual(freezeAcVerify([twice], { results: [{ ac_index: 0, observational: true, verify_command_index: 0, expect_path_indexes: [1, 2] }] })[0], { verify_command: 'make site', expect_paths: ['site/index.html'] });
+  const site = (ac, expectPathIndexes) => freezeAcVerify([ac], { results: [{ ac_index: 0, observational: true, verify_command_index: 0, expect_path_indexes: expectPathIndexes }] })[0];
+  assert.deepEqual(site('`make site` が exit 0 で、`site/./index.html` が生成される', [1]), { verify_command: 'make site', expect_paths: ['site/./index.html'] });
+  // .. を含む・/ 始まりのパスは index で選んでも採らない（採らなかった inline code が残るので AC ごと凍結しない）
+  assert.deepEqual(site('`make site` が exit 0 で、`../site/index.html` が生成される', [1]), { verify_command: null, expect_paths: [] });
+  assert.deepEqual(site('`make site` が exit 0 で、`/tmp/site/index.html` が生成される', [1]), { verify_command: null, expect_paths: [] });
+  // verify_command が採れなければ expect_paths も採らない
+  assert.deepEqual(freeze({ verify_command_index: null, expect_path_indexes: [1, 2] }), { verify_command: null, expect_paths: [] });
 });
 
 test('[ac-verify] freezeAcVerify: verify_command と採った expect_paths 以外の inline code が残る AC（複数コマンドの複合 AC 等）は凍結しない', () => {
   const multi = '`node --test plugins/dev-flow/_lib/` と `bash tests/run-all-bats.sh` が通り、`tools/sync-inlines.mjs --write` を実行した後の inline 区間が一致する';
-  for (const cmd of ['node --test plugins/dev-flow/_lib/', 'bash tests/run-all-bats.sh']) {
-    assert.deepEqual(freezeAcVerify([multi], { results: [{ ac_index: 0, observational: true, verify_command: cmd, expect_paths: [] }] }), [{ verify_command: null, expect_paths: [] }], cmd);
+  for (const k of [0, 1, 2]) {
+    assert.deepEqual(freezeAcVerify([multi], { results: [{ ac_index: 0, observational: true, verify_command_index: k, expect_path_indexes: [] }] }), [{ verify_command: null, expect_paths: [] }], String(k));
   }
   // 生成物のパスを expect_paths に採らなかった AC も、残った inline code を確かめていないので凍結しない
-  assert.deepEqual(freezeAcVerify([BUILD_AC], { results: [{ ac_index: 0, observational: true, verify_command: BUILD_CMD, expect_paths: [BUILD_PATHS[0]] }] }), [{ verify_command: null, expect_paths: [] }]);
+  assert.deepEqual(freezeAcVerify([BUILD_AC], { results: [{ ac_index: 0, observational: true, verify_command_index: 0, expect_path_indexes: [1] }] }), [{ verify_command: null, expect_paths: [] }]);
+  // 残りは値で数える: 同じコマンドが 2 回現れる AC は、どちらの index を選んでも凍結する
+  const repeated = '`pnpm build` が exit 0 で終わる（`pnpm build` を 2 回続けて実行しても壊れない）';
+  for (const k of [0, 1]) {
+    assert.deepEqual(freezeAcVerify([repeated], { results: [{ ac_index: 0, observational: true, verify_command_index: k, expect_path_indexes: [] }] }), [{ verify_command: 'pnpm build', expect_paths: [] }], String(k));
+  }
+  // 選ばれなかった別の値が 1 つでも残れば凍結しない
+  const repeatedPlus = '`pnpm build` が exit 0 で終わり、`pnpm build` の後に `pnpm lint` も通る';
+  assert.deepEqual(freezeAcVerify([repeatedPlus], { results: [{ ac_index: 0, observational: true, verify_command_index: 0, expect_path_indexes: [] }] }), [{ verify_command: null, expect_paths: [] }]);
 });
 
 test('[ac-verify] classifyAcActor: verify_command が凍結された観測型 AC も、テストファイルの名指しが無ければ human のまま（verify_command の有無で actor を変えない）', () => {
-  const acVerify = freezeAcVerify([BUILD_AC], { results: [{ ac_index: 0, observational: true, verify_command: BUILD_CMD, expect_paths: BUILD_PATHS }] });
+  const acVerify = freezeAcVerify([BUILD_AC], { results: [{ ac_index: 0, observational: true, verify_command_index: 0, expect_path_indexes: [1, 2] }] });
   assert.equal(acVerify[0].verify_command, BUILD_CMD, '前提: verify_command が凍結されている');
   assert.equal(classifyAcActor(BUILD_AC, { observational: true, verifyCommand: acVerify[0].verify_command }), 'human');
   assert.equal(classifyAcActor(BUILD_AC, { observational: true }), 'human');
@@ -464,15 +490,30 @@ test('[ac-verify] acVerifyCandidateIndexes: 観測型が true で文面上の ac
   assert.deepEqual(acVerifyCandidateIndexes(undefined, undefined), []);
 });
 
-test('[ac-verify] acObservationalPrompt: verify_command（exit code だけで結果が決まる inline code。決まらなければ null）と expect_paths を返させ、材料は title と渡す AC の文面だけ', () => {
-  const acs = ['worker 数の上限を設定で変えられる', BUILD_AC];
-  const prompt = acObservationalPrompt('fix(landing): build を直す', acs, [1]);
+test('[ac-verify] acObservationalPrompt: AC ごとに inline code の候補配列（0 始まりの番号付き・出てくる順・重複そのまま）を載せ、verify_command_index / expect_path_indexes を返させる', () => {
+  const repeated = '`pnpm build` が exit 0 で終わり、`out/a.html` が生成される（`pnpm build` を 2 回続けても壊れない）';
+  const acs = ['worker 数の上限を設定で変えられる', BUILD_AC, repeated];
+  const prompt = acObservationalPrompt('fix(landing): build を直す', acs, [1, 2]);
   assert.ok(prompt.includes('"fix(landing): build を直す"'), prompt);
-  assert.ok(prompt.includes(JSON.stringify({ ac_index: 1, ac: BUILD_AC })), prompt);
+  assert.ok(prompt.includes(JSON.stringify({ ac_index: 1, ac: BUILD_AC, inline_codes: [{ index: 0, code: BUILD_CMD }, { index: 1, code: BUILD_PATHS[0] }, { index: 2, code: BUILD_PATHS[1] }] })), prompt);
+  assert.ok(prompt.includes(JSON.stringify({ ac_index: 2, ac: repeated, inline_codes: [{ index: 0, code: 'pnpm build' }, { index: 1, code: 'out/a.html' }, { index: 2, code: 'pnpm build' }] })), prompt);
   assert.ok(!prompt.includes(acs[0]), `渡していない AC を含めている: ${prompt}`);
-  assert.match(prompt, /verify_command: その AC の結果を exit code だけで決められる、worktree を cwd に実行するコマンド/);
-  assert.match(prompt, /inline code の中身を 1 文字も変えずに写せ/);
+  assert.match(prompt, /verify_command_index: その AC の結果を exit code だけで決められる、worktree を cwd に実行するコマンド/);
+  assert.match(prompt, /inline_codes のうちそのコマンドの index/);
   assert.match(prompt, /決まらなければ null/);
-  assert.match(prompt, /expect_paths: /);
-  assert.ok(prompt.includes('"verify_command":"<inline code の中身>"|null,"expect_paths":["<inline code の中身>"]'), prompt);
+  assert.match(prompt, /expect_path_indexes: /);
+  assert.ok(prompt.includes('"verify_command_index":<inline_codes の index>|null,"expect_path_indexes":[<inline_codes の index>]'), prompt);
+  // 転写の指示は無い（agent に文字列を作らせない）
+  for (const s of ['1 文字も変えずに写せ', '中身をそのまま写す', '"<inline code の中身>"', '"verify_command":', '"expect_paths":']) assert.ok(!prompt.includes(s), `${s}: ${prompt}`);
+});
+
+test('[ac-verify] dev-flow.js の AC_OBSERVATIONAL schema は results の項目に verify_command_index / expect_path_indexes を求め、文字列の verify_command / expect_paths を持たない', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '.claude/workflows/dev-flow.js'), 'utf8');
+  const start = src.indexOf('const AC_OBSERVATIONAL = {');
+  assert.ok(start >= 0, 'AC_OBSERVATIONAL の定義が見つからない');
+  const block = src.slice(start, src.indexOf('\n}\n', start) + 2);
+  assert.ok(block.includes("required: ['ac_index', 'observational', 'verify_command_index', 'expect_path_indexes']"), block);
+  assert.ok(block.includes("verify_command_index: { type: ['integer', 'null'] }"), block);
+  assert.ok(block.includes("expect_path_indexes: { type: 'array', items: { type: 'integer' } }"), block);
+  assert.ok(!/\bverify_command:/.test(block) && !/\bexpect_paths:/.test(block), block);
 });

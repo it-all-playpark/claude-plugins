@@ -248,7 +248,7 @@ test('[local-verify-routing] (AV-2) applyAcVerifyResults / mergeAcVerifyGaps: �
   assert.deepEqual(mergeAcVerifyGaps(gaps, [entry('failed')]), { agent: [0, 1], human: [], ci: [3] });
 });
 
-async function runAc({ overrides = {}, iterate = {}, acObs = acObservationalResponse([true, false], { 0: { verify_command: BUILD_CMD, expect_paths: [...BUILD_PATHS] } }) } = {}) {
+async function runAc({ overrides = {}, iterate = {}, acObs = acObservationalResponse([true, false], { 0: { verify_command_index: 0, expect_path_indexes: [1, 2] } }) } = {}) {
   const { ctx, calls, logs } = makeDevFlowSandbox({
     overrides: { 'ac-observational#1': acObs, ...overrides },
     workflow: async () => ({ status: 'lgtm', iterations: 1, fixes_applied: 0, ...iterate }),
@@ -342,8 +342,19 @@ test('[local-verify-routing] (AE) AC コマンドを確かめられない（erro
   assert.deepEqual(plain(errored.result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });
   assert.ok(!errored.summary.includes('人手確認の材料'), errored.summary);
 
-  // 分類 agent が AC に無いコマンドを返した → 凍結されず、AC コマンドを実行しない（従来どおり人手 AC 待ち）
-  const rewritten = await runAc({ acObs: acObservationalResponse([true, false], { 0: { verify_command: 'pnpm build' } }) });
-  assert.equal(acVerifyCalls(rewritten.calls).length, 0);
-  assert.deepEqual(plain(rewritten.result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] });
+  // 分類 agent が AC の inline code に無い番号（範囲外の index）を返した・旧形式の文字列（AC と完全一致するコマンドでも）を返した
+  // → 凍結されず、AC コマンドを実行しない（従来どおり人手 AC 待ち）
+  for (const [name, acObs] of [
+    ['範囲外の index', acObservationalResponse([true, false], { 0: { verify_command_index: 3, expect_path_indexes: [1, 2] } })],
+    ['旧形式の文字列', { results: [
+      { ac_index: 0, observational: true, verify_command: BUILD_CMD, expect_paths: [...BUILD_PATHS] },
+      { ac_index: 1, observational: false, verify_command: null, expect_paths: [] },
+    ] }],
+  ]) {
+    const rewritten = await runAc({ acObs });
+    assert.equal(acVerifyCalls(rewritten.calls).length, 0, name);
+    assert.equal(rewritten.result.merge_tier, 'HOLD', name);
+    assert.deepEqual(plain(rewritten.result.merge_tier_hold_reasons.map((c) => c.code)), ['ac_human_pending'], name);
+    assert.deepEqual(plain(rewritten.result.final_unsatisfied_ac_by_actor), { agent: [], human: [0], ci: [] }, name);
+  }
 });

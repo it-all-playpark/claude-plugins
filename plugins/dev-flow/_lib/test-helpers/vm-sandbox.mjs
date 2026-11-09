@@ -19,7 +19,7 @@
  *     REQ を変えたい test は devFlowArgs(issue, { analyze: prerunAnalyze({...}) }) を extra.args に渡す
  *   - analyzeArgs(issue?, analyzeOverrides?): 上記の薄い wrapper（args 全体を返す）
  *   - acObservationalResponse(observational, extra?): 分類 agent（label 'ac-observational#N'）の応答を AC ごとの
- *     観測型判定の配列から組み立てる（extra[i] は AC ごとの verify_command / expect_paths の上書き）
+ *     観測型判定の配列から組み立てる（extra[i] は AC ごとの verify_command_index / expect_path_indexes の上書き）
  *   - acObservationalPromptIndexes(prompt): 分類 agent の prompt に載った AC の ac_index 一覧
  *   - acObservationalNone(prompt): 分類 agent の既定応答（prompt に載った全 AC を観測型でない・検証コマンドなし）。
  *     独自の responder を持つ test は label 'ac-observational#N' にこれを返す
@@ -139,13 +139,13 @@ export function prerunAnalyze(overrides = {}) {
 
 /**
  * 分類 agent の応答 {results} を AC ごとの観測型判定（true / false / null）の配列から組み立てる。
- * verify_command は null、expect_paths は []。extra[i] があればその AC の項目に重ねる。
+ * verify_command_index は null、expect_path_indexes は []。extra[i] があればその AC の項目に重ねる。
  *
  * @param {Array<boolean|null>} observational
  * @param {Record<number, Record<string, unknown>>} [extra={}]
  */
 export function acObservationalResponse(observational, extra = {}) {
-  return { results: observational.map((o, i) => ({ ac_index: i, observational: o, verify_command: null, expect_paths: [], ...(extra[i] ?? {}) })) };
+  return { results: observational.map((o, i) => ({ ac_index: i, observational: o, verify_command_index: null, expect_path_indexes: [], ...(extra[i] ?? {}) })) };
 }
 
 /** 分類 agent の prompt（acObservationalPrompt）に載る AC の ac_index 一覧。 */
@@ -156,7 +156,7 @@ export function acObservationalPromptIndexes(prompt) {
 
 /** 分類 agent の既定応答: prompt に載った全 AC を観測型でない（false）・検証コマンドなしと返す。 */
 export function acObservationalNone(prompt) {
-  return { results: acObservationalPromptIndexes(prompt).map((i) => ({ ac_index: i, observational: false, verify_command: null, expect_paths: [] })) };
+  return { results: acObservationalPromptIndexes(prompt).map((i) => ({ ac_index: i, observational: false, verify_command_index: null, expect_path_indexes: [] })) };
 }
 
 // ============================================================

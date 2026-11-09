@@ -70,8 +70,9 @@ AC が観測型（コードとテストを読むだけでは確かめられず�
 
 - agent が null を返した AC・応答に無い AC・agent 自体が失敗した run は、その AC を観測型として扱う（`uncertain` には積まない）。
   観測型への誤判定は人手 AC 待ちの HOLD で止まるだけだが、逆は evaluator のコード読みだけで達成扱いになる
-- 同じ agent は、AC が inline code で指定した検証コマンド（`verify_command`）と生成されるファイル（`expect_paths`）も返す。
-  AC の inline code と完全一致するものだけをゲートで凍結し、観測型で文面上の actor が human / ci でない AC についてだけ
+- 同じ agent は、AC が inline code で指定した検証コマンドと生成されるファイルも、prompt に載せた AC ごとの inline code の
+  候補の番号（`verify_command_index` / `expect_path_indexes`）で返す。番号で AC の inline code から取り出した文字列だけを
+  ゲートで凍結し（agent の出力の文字列は使わない）、観測型で文面上の actor が human / ci でない AC についてだけ
   workflow が local-verify で実行して、失敗は dev-implementer へ差し戻し、最終 tree の exit 0 は
   人手 AC の確認材料として終端サマリーに開示するだけにする（actor は human のまま。exit 0 で HOLD を外さない — 実行される
   中身は PR が書き換えられる）。LLM が組み立てた・言い換えたコマンドは実行しない（実行するものを AC の文面に縛り、
