@@ -70,20 +70,58 @@ def build_command(path: str, repo: str | None) -> list[str]:
     return cmd
 
 
-def search(path: str, repo: str | None) -> list[dict]:
+def build_window_command(cutoff: datetime, repo: str | None) -> list[str]:
+    cmd = [
+        "gh",
+        "issue",
+        "list",
+        "--state",
+        "closed",
+        "--search",
+        f"closed:>={cutoff.date().isoformat()}",
+        "--json",
+        "number,title,closedAt,body",
+        "--limit",
+        str(SEARCH_LIMIT),
+    ]
+    if repo:
+        cmd.extend(["--repo", repo])
+    return cmd
+
+
+def run_gh(cmd: list[str], label: str) -> list[dict]:
     try:
-        result = subprocess.run(build_command(path, repo), capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
     except OSError as e:
         raise RuntimeError(f"cannot run gh: {e}") from e
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "unknown gh error").strip()
-        raise RuntimeError(f"gh issue list failed for {path!r} (exit {result.returncode}): {message}")
+        raise RuntimeError(f"gh issue list failed for {label} (exit {result.returncode}): {message}")
     try:
         issues = json.loads(result.stdout)
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"gh issue list returned invalid JSON for {path!r}: {e}") from e
+        raise RuntimeError(f"gh issue list returned invalid JSON for {label}: {e}") from e
     if not isinstance(issues, list):
-        raise RuntimeError(f"gh issue list returned non-list JSON for {path!r}")
+        raise RuntimeError(f"gh issue list returned non-list JSON for {label}")
+    return issues
+
+
+def search(path: str, repo: str | None) -> list[dict]:
+    return run_gh(build_command(path, repo), repr(path))
+
+
+def window_issues(cutoff: datetime, repo: str | None) -> list[dict]:
+    """Closed issues in the window, fetched without any path in the query.
+
+    二重引用符を含むパスは `"<path>" in:body` の句を抜けて検索条件を足せる（未来の作成日を足して結果を空にする等）。
+    その検索の結果は信用できないので、パスを含めない検索で窓の issue を取り、本文の照合は Python で行う。
+    上限に達した結果は欠けている可能性があるので成功扱いにしない。
+    """
+    issues = run_gh(build_window_command(cutoff, repo), "the closed-issue window")
+    if len(issues) >= SEARCH_LIMIT:
+        raise RuntimeError(
+            f"closed issues in the window reached the fetch limit ({SEARCH_LIMIT}); results may be incomplete"
+        )
     return issues
 
 
@@ -99,8 +137,12 @@ def parse_closed_at(value: object) -> datetime:
 def collect(paths: list[str], repo: str | None, days: int) -> list[dict]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     by_number: dict[int, dict] = {}
+    window = window_issues(cutoff, repo) if any('"' in p for p in paths) else []
     for path in paths:
-        for issue in search(path, repo):
+        found = search(path, repo)
+        if '"' in path:
+            found = found + [i for i in window if isinstance(i.get("body"), str) and path in i["body"]]
+        for issue in found:
             if parse_closed_at(issue.get("closedAt")) < cutoff:
                 continue
             number = issue.get("number")

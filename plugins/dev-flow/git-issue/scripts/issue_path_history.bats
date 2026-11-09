@@ -16,6 +16,7 @@ setup() {
 # 呼び出しを $GH_LOG に 1 行ずつ記録し、最後に受け取った --search の値を $GH_LAST_SEARCH に書く。
 # 応答は $GH_STUB_FIXTURE の `<path>\t<number>\t<何日前に close したか>` 行のうち、--search の
 # `"<path>" in:body` の path に一致する行から作る（closedAt は実行時刻から作る）。
+# --search が `closed:>=` で始まる（パスを含めない窓の取得）ときは $GH_STUB_WINDOW_JSON の中身（未設定なら []）を返す。
 # GH_STUB_EXIT を設定すると stderr にエラーを出してその値で終わる。
 use_gh_stub() {
     local bin="$BATS_TEST_TMPDIR/bin"
@@ -33,6 +34,10 @@ for a in "$@"; do
     [[ "$prev" == "--search" ]] && search="$a"
     prev="$a"
 done
+if [[ "$search" == closed:\>=* ]]; then
+    if [[ -n "${GH_STUB_WINDOW_JSON:-}" ]]; then cat "$GH_STUB_WINDOW_JSON"; else printf '[]\n'; fi
+    exit 0
+fi
 printf '%s' "$search" >"$GH_LAST_SEARCH"
 path="${search#\"}"
 path="${path%\" in:body}"
@@ -120,6 +125,39 @@ fixture() {
     [ ! -e "$MARKER" ]
     [ ! -e "${MARKER}2" ]
     [ "$(cat "$GH_LAST_SEARCH")" = "\"$P\" in:body" ]
+}
+
+@test "(4b) 二重引用符で検索条件を足して結果を空にしても、窓の issue の本文照合で拾う" {
+    use_gh_stub
+    P='src/a" created:>2099-01-01 "b.py'
+    printf '%s\n' "$P" "src/c.py" >"$PATH_FILE"
+    fixture "src/c.py" 30 1
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    export GH_STUB_WINDOW_JSON="$BATS_TEST_TMPDIR/window.json"
+    jq -n --arg p "$P" --arg now "$now" '[
+        {number: 40, title: "t40", closedAt: $now, body: ("fix " + $p)},
+        {number: 41, title: "t41", closedAt: $now, body: "src/a.py only"}
+    ]' >"$GH_STUB_WINDOW_JSON"
+
+    run python3 "$SCRIPT" --path-file "$PATH_FILE"
+
+    [ "$status" -eq 0 ]
+    [ "$(jq -c '[.issues[].number] | sort' <<<"$output")" = '[30,40]' ]
+    [ "$(jq -c --arg p "$P" '.issues[] | select(.number == 40) | .matched_paths == [$p]' <<<"$output")" = 'true' ]
+    # 窓の取得はパスを検索式に含めない
+    grep -E -- '--search closed:>=[0-9]{4}-[0-9]{2}-[0-9]{2} ' "$GH_LOG"
+}
+
+@test "(4c) 窓の取得が上限に達したら欠けうるので ok:false を出して非 0 で終わる" {
+    use_gh_stub
+    printf '%s\n' 'src/a"b.py' >"$PATH_FILE"
+    export GH_STUB_WINDOW_JSON="$BATS_TEST_TMPDIR/window.json"
+    jq -n '[range(1000) | {number: ., title: "t", closedAt: "2099-01-01T00:00:00Z", body: "x"}]' >"$GH_STUB_WINDOW_JSON"
+
+    run python3 "$SCRIPT" --path-file "$PATH_FILE"
+
+    [ "$status" -ne 0 ]
+    jq -e '.ok == false and (.error | contains("limit"))' <<<"$output"
 }
 
 @test "(5) gh が非 0 で終わると ok:false を出して非 0 で終わる" {
