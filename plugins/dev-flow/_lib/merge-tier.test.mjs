@@ -13,6 +13,7 @@ import {
   EVAL_STALENESS_VALUES,
   classifyCiChecks,
   changedTestRunnersOf,
+  partitionUncheckedBlocking,
 } from './merge-tier.mjs';
 import { PR_CLOSES_STATUS_VALUES } from './pr-artifacts.mjs';
 import { parseMergeTierFacts } from './merge-tier-facts.mjs';
@@ -138,7 +139,7 @@ test('reconcileDanger: danger-grep error は全 SEC seed を unchecked のまま
   }
 
   const mergeTier = classifyMergeTier({ iterateStatus: 'lgtm',
-    converged: false,
+    ledgerUnconverged: ['EVAL-1'],
     unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
@@ -201,13 +202,13 @@ test('reconcileDanger: risk.ok:false と risk.ok:true(hit) の evidence 語彙�
 // ---- Task 3: classifyMergeTier ----
 
 test('classifyMergeTier: 未収束 → HOLD', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: false, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: ['EVAL-1'], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
   assert.equal(r.tier, 'HOLD');
   assert.ok(r.reasons.some((x) => /収束/.test(x)));
 });
 
 test('classifyMergeTier: 未解消 danger → HOLD', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: true, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: true, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
   assert.equal(r.tier, 'HOLD');
 });
 
@@ -215,51 +216,51 @@ test('classifyMergeTier: 未解消 danger → HOLD', () => {
 // 持つ（issue #278）。HOLD reason で由来を区別表示できることを origin ごとに担保する。
 
 test('classifyMergeTier: breakingStructured のみ true → HOLD、reasons に構造化判定文言を含み keyword scan 文言を含まない', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: true, breakingKeyword: false, escalateCount: 0 });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: true, breakingKeyword: false, escalateCount: 0 });
   assert.equal(r.tier, 'HOLD');
   assert.ok(r.reasons.some((x) => x.includes('構造化判定')), `reasons に構造化判定文言を含むべきだが: ${JSON.stringify(r.reasons)}`);
   assert.ok(!r.reasons.some((x) => x.includes('keyword scan')), `reasons に keyword scan 文言を含むべきでないが: ${JSON.stringify(r.reasons)}`);
 });
 
 test('classifyMergeTier: breakingKeyword のみ true(breakingStructured false) → REVIEW（keyword-alone は HOLD 不採用、可視化のみ。issue #364）', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: true, escalateCount: 0 });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false, breakingKeyword: true, escalateCount: 0 });
   assert.equal(r.tier, 'REVIEW');
   assert.ok(!r.reasons.some((x) => x.includes('breaking/migration 検出')), `reasons に breaking/migration 検出(HOLD)文言を含むべきでないが: ${JSON.stringify(r.reasons)}`);
   assert.ok(r.reasons.some((x) => x.includes('不採用') && x.includes('keyword')), `reasons に keyword-alone 可視化文言(不採用+keyword)を含むべきだが: ${JSON.stringify(r.reasons)}`);
 });
 
 test('classifyMergeTier: breakingStructured と breakingKeyword が両方 true → HOLD、reasons に構造化判定と keyword scan hit の両文言を含む単一要素が存在する', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: true, breakingKeyword: true, escalateCount: 0 });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: true, breakingKeyword: true, escalateCount: 0 });
   assert.equal(r.tier, 'HOLD');
   const combinedReason = r.reasons.find((x) => x.includes('構造化判定') && x.includes('keyword scan hit'));
   assert.ok(combinedReason, `reasons に構造化判定+keyword scan hit を併記する単一要素を含むべきだが: ${JSON.stringify(r.reasons)}`);
 });
 
 test('classifyMergeTier: breakingStructured / breakingKeyword が両方 false → HOLD にならない（regression）', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
   assert.equal(r.tier, 'REVIEW');
   assert.ok(!r.reasons.some((x) => /breaking|構造化判定|keyword scan/.test(x)), `breaking 関連 reason が無いはずだが: ${JSON.stringify(r.reasons)}`);
 });
 
 test('classifyMergeTier: ESCALATE 項目あり → HOLD', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 2 });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 2 });
   assert.equal(r.tier, 'HOLD');
 });
 
 test('classifyMergeTier: HOLD 理由が 1 つも無い → REVIEW', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
   assert.equal(r.tier, 'REVIEW');
 });
 
 
 test('classifyMergeTier: AC 未達(unsatisfiedAgentAc:true) → HOLD', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0, unsatisfiedAgentAc: true });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0, unsatisfiedAgentAc: true });
   assert.equal(r.tier, 'HOLD');
   assert.ok(r.reasons.some((x) => /AC 未達/.test(x)));
 });
 
 test('classifyMergeTier: unsatisfiedAgentAc:false は既存 REVIEW 挙動不変', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0, unsatisfiedAgentAc: false });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0, unsatisfiedAgentAc: false });
   assert.equal(r.tier, 'REVIEW');
 });
 
@@ -334,20 +335,29 @@ test('classifyMergeTier: evalSkipped:true + HOLD 条件(unsatisfiedAgentAc:true)
 
 // ---- fail_closed フラグ + dangerFailClosed HOLD reason（issue #271）----
 
-test('reconcileDanger: fail-closed (risk.ok:false) では全 SEC seed item が fail_closed===true かつ checked===false', () => {
-  const out = reconcileDanger(ledgerWithSeeds(), { ok: false, error: 'script failed' });
-  for (const it of out.items) {
-    assert.equal(it.fail_closed, true, `${it.id} should be fail_closed`);
-    assert.equal(it.checked, false, `${it.id} should be unchecked`);
+// finalize の dangerFailClosedFinal は riskFinal.ok !== true。partitionUncheckedBlocking は dangerFailClosed と
+// item の fail_closed の両方を見るので、reconcileDanger が付ける fail_closed はこの式と一致していなければならない（issue #1291）。
+test('reconcileDanger: fail-closed (risk.ok !== true: undefined / {ok:false}) では全 SEC seed item が fail_closed===true かつ checked===false', () => {
+  for (const risk of [undefined, { ok: false }, { ok: false, error: 'script failed' }]) {
+    assert.equal(risk?.ok !== true, true, 'finalize の dangerFailClosedFinal と同じ式で fail-closed');
+    const out = reconcileDanger(ledgerWithSeeds(), risk);
+    for (const it of out.items) {
+      assert.equal(it.fail_closed, true, `${it.id} should be fail_closed (${JSON.stringify(risk)})`);
+      assert.equal(it.checked, false, `${it.id} should be unchecked (${JSON.stringify(risk)})`);
+    }
   }
 });
 
-test('reconcileDanger: fail-closed した ledger を clean で再 reconcile すると各 SEC item が fail_closed===false かつ checked===true に戻る(stale フラグ解消)', () => {
+test('reconcileDanger: fail-closed した ledger を risk.ok === true で再 reconcile すると各 SEC item が fail_closed===false に戻る(stale フラグ解消)', () => {
   const failClosed = reconcileDanger(ledgerWithSeeds(), { ok: false, error: 'script failed' });
   const recovered = reconcileDanger(failClosed, { ok: true, hits: [] });
   for (const it of recovered.items) {
     assert.equal(it.fail_closed, false, `${it.id} should have fail_closed cleared`);
     assert.equal(it.checked, true, `${it.id} should be checked (clean)`);
+  }
+  const hitAfterFailClosed = reconcileDanger(failClosed, { ok: true, hits: [{ class: 'auth' }] });
+  for (const it of hitAfterFailClosed.items) {
+    assert.equal(it.fail_closed, false, `${it.id} should have fail_closed cleared (hit)`);
   }
 });
 
@@ -361,7 +371,7 @@ test('reconcileDanger: 実 hit(risk.ok:true + hits) で reconcile した SEC ite
 
 test('classifyMergeTier: dangerFailClosed:true → tier===HOLD かつ reasons に fail-closed 文言を含む', () => {
   const r = classifyMergeTier({ iterateStatus: 'lgtm',
-    converged: false,
+    ledgerUnconverged: ['EVAL-1'],
     unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
@@ -374,7 +384,7 @@ test('classifyMergeTier: dangerFailClosed:true → tier===HOLD かつ reasons �
 // ---- issue #746: merge-tier-facts の転記欠落は danger_fail_closed と別 code で出す ----
 
 test('classifyMergeTier: dangerFailClosed:true + riskValueDropped:true → HOLD、code は merge_facts_dropped（danger-grep 実行不能 と書かない）', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: false, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0, dangerFailClosed: true, riskValueDropped: true });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: ['EVAL-1'], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0, dangerFailClosed: true, riskValueDropped: true });
   assert.equal(r.tier, 'HOLD');
   const item = r.holdReasons.find((x) => x.code === 'merge_facts_dropped');
   assert.ok(item, `holdReasons に merge_facts_dropped を含むべきだが: ${JSON.stringify(r.holdReasons)}`);
@@ -386,34 +396,151 @@ test('classifyMergeTier: dangerFailClosed:true + riskValueDropped:true → HOLD�
 
 test('classifyMergeTier: riskValueDropped:false / 未指定 → 従来どおり danger_fail_closed', () => {
   for (const riskValueDropped of [false, undefined]) {
-    const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: false, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0, dangerFailClosed: true, riskValueDropped });
+    const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: ['EVAL-1'], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0, dangerFailClosed: true, riskValueDropped });
     assert.ok(r.holdReasons.some((x) => x.code === 'danger_fail_closed'));
     assert.ok(!r.holdReasons.some((x) => x.code === 'merge_facts_dropped'));
   }
 });
 
 test('classifyMergeTier: riskValueDropped:true でも dangerFailClosed でなければ reason を積まない', () => {
-  const r = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0, riskValueDropped: true });
+  const r = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0, riskValueDropped: true });
   assert.equal(r.tier, 'REVIEW');
   assert.deepEqual(r.holdReasons, []);
 });
 
 test('classifyMergeTier: riskValueDropped が boolean 以外なら throw', () => {
-  assert.throws(() => classifyMergeTier({ iterateStatus: 'lgtm', converged: true, dangerFailClosed: true, riskValueDropped: 'yes' }), /invalid riskValueDropped/);
+  assert.throws(() => classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], dangerFailClosed: true, riskValueDropped: 'yes' }), /invalid riskValueDropped/);
 });
 
 test('classifyMergeTier: dangerFailClosed 未指定 → 従来通り(regression なし)', () => {
-  const rNotConverged = classifyMergeTier({ iterateStatus: 'lgtm', converged: false, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
+  const rNotConverged = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: ['EVAL-1'], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
   assert.equal(rNotConverged.tier, 'HOLD');
   assert.ok(!rNotConverged.reasons.some((x) => /fail-closed/.test(x)));
 
-  const rBreaking = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: true, breakingKeyword: true, escalateCount: 0 });
+  const rBreaking = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: true, breakingKeyword: true, escalateCount: 0 });
   assert.equal(rBreaking.tier, 'HOLD');
   assert.ok(!rBreaking.reasons.some((x) => /fail-closed/.test(x)));
 
-  const rReview = classifyMergeTier({ iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
+  const rReview = classifyMergeTier({ iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false, escalateCount: 0 });
   assert.equal(rReview.tier, 'REVIEW');
   assert.ok(!rReview.reasons.some((x) => /fail-closed/.test(x)));
+});
+
+// ---- issue #1291: 未 checked blocking item を HOLD 理由の code ごとに 1 つへ振り分ける ----
+
+const SEC_IDS_1291 = seedSecurityLedger().map((it) => it.id);
+const CHECKED_AC_1291 = { id: 'AC-1', text: 'AC 1', dimension: 'ac', severity: 'major', source: 'ac', checked: true, evidence: 'test pass' };
+const TESTSURF_1291 = { id: 'TESTSURF-skip', text: 'skip 追加', dimension: 'test-integrity', severity: 'major', source: 'seed', checked: false };
+const EVAL_OPEN_1291 = { id: 'EVAL-1-null', text: 'null 参照', dimension: 'correctness', severity: 'critical', source: 'evaluator', checked: false };
+const secItems1291 = (...risks) => risks.reduce((l, r) => reconcileDanger(l, r), ledgerWithSeeds()).items;
+
+// 各分岐の fixture。opts は partitionUncheckedBlocking の第 2 引数、expected は各 code に入る id。
+const FIXTURES_1291 = {
+  failClosedOnly: {
+    items: [...secItems1291({ ok: false }), CHECKED_AC_1291],
+    opts: { dangerFailClosed: true, riskValueDropped: false },
+    expected: { danger_fail_closed: SEC_IDS_1291, danger_unresolved: [], testsurf_uncleared: [], ledger_unconverged: [] },
+  },
+  failClosedWithPriorHitFloor: {
+    items: [...secItems1291({ ok: true, hits: [{ class: 'auth' }] }, { ok: false }), CHECKED_AC_1291],
+    opts: { dangerFailClosed: true, riskValueDropped: false },
+    expected: { danger_fail_closed: SEC_IDS_1291, danger_unresolved: [], testsurf_uncleared: [], ledger_unconverged: [] },
+  },
+  failClosedFlagWithoutDangerFailClosed: {
+    items: [...secItems1291({ ok: true, hits: [{ class: 'auth' }] }, { ok: false }), CHECKED_AC_1291],
+    opts: { dangerFailClosed: false, riskValueDropped: false },
+    expected: {
+      danger_fail_closed: [], danger_unresolved: ['SEC-AUTH'], testsurf_uncleared: [],
+      ledger_unconverged: SEC_IDS_1291.filter((id) => id !== 'SEC-AUTH'),
+    },
+  },
+  hitFloorOnly: {
+    items: [...secItems1291({ ok: true, hits: [{ class: 'auth' }] }), CHECKED_AC_1291],
+    opts: { dangerFailClosed: false, riskValueDropped: false },
+    expected: { danger_fail_closed: [], danger_unresolved: ['SEC-AUTH'], testsurf_uncleared: [], ledger_unconverged: [] },
+  },
+  testsurfOnly: {
+    items: [...secItems1291({ ok: true, hits: [] }), CHECKED_AC_1291, TESTSURF_1291],
+    opts: { dangerFailClosed: false, riskValueDropped: false },
+    expected: { danger_fail_closed: [], danger_unresolved: [], testsurf_uncleared: ['TESTSURF-skip'], ledger_unconverged: [] },
+  },
+  plainBlockingOnly: {
+    items: [...secItems1291({ ok: true, hits: [] }), CHECKED_AC_1291, EVAL_OPEN_1291],
+    opts: { dangerFailClosed: false, riskValueDropped: false },
+    expected: { danger_fail_closed: [], danger_unresolved: [], testsurf_uncleared: [], ledger_unconverged: ['EVAL-1-null'] },
+  },
+};
+
+// AC-1 の振り分けをそのまま classifyMergeTier に渡す（finalize と同じ配線）
+function classifyFromPartition(items, opts) {
+  const p = partitionUncheckedBlocking(items, opts);
+  return classifyMergeTier({
+    ...standardBase(), iterateStatus: 'lgtm', evalStaleness: 'none',
+    ledgerUnconverged: p.ledger_unconverged,
+    unresolvedDanger: p.danger_unresolved.length > 0,
+    testsurfUncleared: p.testsurf_uncleared,
+    dangerFailClosed: opts.dangerFailClosed,
+    riskValueDropped: opts.riskValueDropped,
+  });
+}
+
+test('partitionUncheckedBlocking: 各分岐の fixture で未 checked の item id がちょうど 1 つの配列に入り、checked の item はどこにも入らない', () => {
+  for (const [name, { items, opts, expected }] of Object.entries(FIXTURES_1291)) {
+    const out = partitionUncheckedBlocking(items, opts);
+    assert.deepEqual(out, expected, name);
+    const all = Object.values(out).flat();
+    const unchecked = items.filter((it) => !it.checked).map((it) => it.id);
+    assert.deepEqual([...all].sort(), [...unchecked].sort(), `${name}: 未 checked の各 id がちょうど 1 回ずつ現れる`);
+    for (const it of items.filter((x) => x.checked)) assert.ok(!all.includes(it.id), `${name}: checked の ${it.id} が入った`);
+  }
+});
+
+test('partitionUncheckedBlocking: riskValueDropped:true なら fail-closed の SEC seed は merge_facts_dropped に入り、danger_fail_closed の配列を持たない', () => {
+  const out = partitionUncheckedBlocking(FIXTURES_1291.failClosedWithPriorHitFloor.items, { dangerFailClosed: true, riskValueDropped: true });
+  assert.deepEqual(out, { merge_facts_dropped: SEC_IDS_1291, danger_unresolved: [], testsurf_uncleared: [], ledger_unconverged: [] });
+});
+
+test('partitionUncheckedBlocking → classifyMergeTier: 全 SEC seed が fail-closed で他が checked → danger_fail_closed だけで HOLD（ledger_unconverged・danger_unresolved は立たない）', () => {
+  for (const name of ['failClosedOnly', 'failClosedWithPriorHitFloor']) {
+    const r = classifyFromPartition(FIXTURES_1291[name].items, { dangerFailClosed: true, riskValueDropped: false });
+    assert.equal(r.tier, 'HOLD', name);
+    assert.deepEqual(r.holdReasons.map((x) => x.code), ['danger_fail_closed'], name);
+  }
+});
+
+test('partitionUncheckedBlocking → classifyMergeTier: 同じ ledger で riskValueDropped:true → merge_facts_dropped のみ', () => {
+  const r = classifyFromPartition(FIXTURES_1291.failClosedWithPriorHitFloor.items, { dangerFailClosed: true, riskValueDropped: true });
+  assert.equal(r.tier, 'HOLD');
+  assert.deepEqual(r.holdReasons.map((x) => x.code), ['merge_facts_dropped']);
+});
+
+test('partitionUncheckedBlocking → classifyMergeTier: TESTSURF seed だけ未 checked → testsurf_uncleared のみ', () => {
+  const r = classifyFromPartition(FIXTURES_1291.testsurfOnly.items, FIXTURES_1291.testsurfOnly.opts);
+  assert.deepEqual(r.holdReasons.map((x) => x.code), ['testsurf_uncleared']);
+});
+
+test('partitionUncheckedBlocking → classifyMergeTier: 通常 blocking item が fail-closed と別に残る → ledger_unconverged も立ち item_ids はその item だけ', () => {
+  const items = [...FIXTURES_1291.failClosedOnly.items, EVAL_OPEN_1291];
+  const r = classifyFromPartition(items, { dangerFailClosed: true, riskValueDropped: false });
+  assert.deepEqual(r.holdReasons.map((x) => x.code), ['ledger_unconverged', 'danger_fail_closed']);
+  assert.deepEqual(r.holdReasons.find((x) => x.code === 'ledger_unconverged').item_ids, ['EVAL-1-null']);
+});
+
+test('partitionUncheckedBlocking → classifyMergeTier: 未 checked blocking item が 1 件以上ある全 fixture で HOLD が外れない', () => {
+  const fixtures = [
+    ...Object.entries(FIXTURES_1291).map(([name, f]) => [name, f.items, f.opts]),
+    ['failClosedRiskValueDropped', FIXTURES_1291.failClosedWithPriorHitFloor.items, { dangerFailClosed: true, riskValueDropped: true }],
+    ['failClosedPlusPlain', [...FIXTURES_1291.failClosedOnly.items, EVAL_OPEN_1291], { dangerFailClosed: true, riskValueDropped: false }],
+  ];
+  for (const [name, items, opts] of fixtures) {
+    assert.ok(items.some((it) => !it.checked), `${name}: 前提として未 checked blocking item がある`);
+    assert.equal(classifyFromPartition(items, opts).tier, 'HOLD', name);
+  }
+});
+
+test('classifyMergeTier: 旧キー converged は明示 error、ledgerUnconverged が string[] でなければ明示 error', () => {
+  assert.throws(() => classifyMergeTier({ ...standardBase(), iterateStatus: 'lgtm', converged: false }), /converged は廃止/);
+  assert.throws(() => classifyMergeTier({ ...standardBase(), iterateStatus: 'lgtm', ledgerUnconverged: true }), /invalid ledgerUnconverged/);
 });
 
 // ---- reconcileDanger: stale evidence クリア（issue #299）----
@@ -550,7 +677,7 @@ test('newlyUncheckedSecClasses: 入力 ledger を mutate しない', () => {
 
 test('classifyMergeTier: finalReconcile/finalTestGreen 未指定 → 既存挙動不変、reasons に final 関連文言なし', () => {
   const r = classifyMergeTier({
-    converged: true, unresolvedDanger: false,
+    ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'none',
@@ -561,7 +688,7 @@ test('classifyMergeTier: finalReconcile/finalTestGreen 未指定 → 既存挙�
 
 test('classifyMergeTier: finalReconcile:"skipped" + finalTestGreen:null → 既存挙動不変', () => {
   const r = classifyMergeTier({
-    converged: true, unresolvedDanger: false,
+    ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'none',
@@ -573,7 +700,7 @@ test('classifyMergeTier: finalReconcile:"skipped" + finalTestGreen:null → 既�
 
 test('classifyMergeTier: finalReconcile:"reverified" + finalTestGreen:true → REVIEW のまま', () => {
   const r = classifyMergeTier({
-    converged: true, unresolvedDanger: false,
+    ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'none',
@@ -585,7 +712,7 @@ test('classifyMergeTier: finalReconcile:"reverified" + finalTestGreen:true → R
 
 test('classifyMergeTier: finalReconcile:"reverified" + finalTestGreen:false → HOLD + reason に "final test red" を含む', () => {
   const r = classifyMergeTier({
-    converged: true, unresolvedDanger: false,
+    ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'none',
@@ -597,7 +724,7 @@ test('classifyMergeTier: finalReconcile:"reverified" + finalTestGreen:false → 
 
 test('classifyMergeTier: finalReconcile:"unavailable" → HOLD + reason に "Final reconcile 再検証不能" を含む', () => {
   const r = classifyMergeTier({
-    converged: true, unresolvedDanger: false,
+    ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'none',
@@ -609,7 +736,7 @@ test('classifyMergeTier: finalReconcile:"unavailable" → HOLD + reason に "Fin
 
 test('classifyMergeTier: HOLD 理由なしに finalReconcile:"reverified"+finalTestGreen:true を足しても REVIEW のまま', () => {
   const r = classifyMergeTier({
-    converged: true, unresolvedDanger: false,
+    ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'none',
@@ -622,7 +749,7 @@ test('classifyMergeTier: HOLD 理由なしに finalReconcile:"reverified"+finalT
 test('classifyMergeTier: finalReconcile が out-of-enum（"bogus" / 撤去した "ci_verified"）→ throw', () => {
   for (const finalReconcile of ['bogus', 'ci_verified']) {
     assert.throws(() => classifyMergeTier({
-      converged: true, unresolvedDanger: false,
+      ledgerUnconverged: [], unresolvedDanger: false,
       breakingStructured: false, breakingKeyword: false,
       escalateCount: 0,
       iterateStatus: 'lgtm', evalStaleness: 'none',
@@ -635,7 +762,7 @@ test('classifyMergeTier: finalReconcile が out-of-enum（"bogus" / 撤去した
 
 function standardBase() {
   return {
-    converged: true,
+    ledgerUnconverged: [],
     unresolvedDanger: false,
     breakingStructured: false,
     breakingKeyword: false,
@@ -710,9 +837,9 @@ test('classifyMergeTier: iterateStatus:lgtm + evalStaleness:iterate_fixed → ti
 
 // ---- issue #362: testsurfUncleared ----
 
-test('classifyMergeTier: testsurfUncleared 非空 → HOLD reason に対象 id と test-weakening 文言を含む(converged:false と同時発生)', () => {
+test('classifyMergeTier: testsurfUncleared 非空 → HOLD reason に対象 id と test-weakening 文言を含む(ledgerUnconverged 非空と同時発生)', () => {
   const r = classifyMergeTier({
-    converged: false, unresolvedDanger: false,
+    ledgerUnconverged: ['EVAL-1'], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'none',
@@ -726,7 +853,7 @@ test('classifyMergeTier: testsurfUncleared 非空 → HOLD reason に対象 id �
 
 test('classifyMergeTier: testsurfUncleared 未指定/空 → 従来通り(regression なし、test-weakening 文言なし)', () => {
   const base = {
-    converged: true, unresolvedDanger: false,
+    ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'none',
@@ -828,7 +955,7 @@ test('classifyMergeTier: trust 由来の gate 入力は存在しない（未知�
 
 test('classifyMergeTier: evalVerdictFail:true + 収束済み standard → REVIEW かつ開示 reason を含む', () => {
   const r = classifyMergeTier({
-    iterateStatus: 'lgtm', converged: true, unresolvedDanger: false,
+    iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false, escalateCount: 0,
     evalVerdictFail: true,
   });
@@ -838,7 +965,7 @@ test('classifyMergeTier: evalVerdictFail:true + 収束済み standard → REVIEW
 
 test('classifyMergeTier: evalVerdictFail 未指定/null/false は既存挙動と完全一致（pin）', () => {
   const baseInput = {
-    iterateStatus: 'lgtm', converged: true, unresolvedDanger: false,
+    iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false, escalateCount: 0,
   };
   const withoutFlag = classifyMergeTier({ ...baseInput });
@@ -855,7 +982,7 @@ test('classifyMergeTier: evalVerdictFail 未指定/null/false は既存挙動と
 
 test('classifyMergeTier: evalVerdictFail に非 boolean(\'fail\'/1/{}) → throw', () => {
   const baseInput = {
-    iterateStatus: 'lgtm', converged: true, unresolvedDanger: false,
+    iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false, escalateCount: 0,
   };
   for (const bad of ['fail', 1, {}]) {
@@ -869,7 +996,7 @@ test('classifyMergeTier: evalVerdictFail に非 boolean(\'fail\'/1/{}) → throw
 
 test('classifyMergeTier: evalVerdictFail:true + HOLD 条件(unsatisfiedAgentAc:true) → HOLD のまま開示 reason が追記される', () => {
   const r = classifyMergeTier({
-    iterateStatus: 'lgtm', converged: true, unresolvedDanger: false,
+    iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false, escalateCount: 0,
     unsatisfiedAgentAc: true, evalVerdictFail: true,
   });
@@ -882,7 +1009,7 @@ test('classifyMergeTier: evalVerdictFail:true + HOLD 条件(unsatisfiedAgentAc:t
 
 function baseCleanInput(overrides) {
   return {
-    converged: true, unresolvedDanger: false,
+    ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'none',
@@ -932,8 +1059,8 @@ test('classifyMergeTier: finalReconcile:"unavailable" は CI の success の形�
   }
 });
 
-test('classifyMergeTier: finalReconcile:"unavailable" + converged:false → holdReasons 2 件、holdKind human_judgment', () => {
-  const r = classifyMergeTier(baseCleanInput({ converged: false, finalReconcile: 'unavailable' }));
+test('classifyMergeTier: finalReconcile:"unavailable" + ledgerUnconverged 非空 → holdReasons 2 件、holdKind human_judgment', () => {
+  const r = classifyMergeTier(baseCleanInput({ ledgerUnconverged: ['EVAL-1'], finalReconcile: 'unavailable' }));
   assert.equal(r.tier, 'HOLD');
   assert.equal(r.holdKind, 'human_judgment');
   assert.deepEqual(r.holdReasons.map((x) => x.code), ['ledger_unconverged', 'final_reconcile_unavailable']);
@@ -1101,7 +1228,7 @@ test('classifyMergeTier: holdReasons[].code — escalate', () => {
 });
 
 test('classifyMergeTier: holdReasons[].code — ledger_unconverged', () => {
-  const r = classifyMergeTier({ ...standardBase(), converged: false, iterateStatus: 'lgtm', evalStaleness: 'none' });
+  const r = classifyMergeTier({ ...standardBase(), ledgerUnconverged: ['EVAL-1'], iterateStatus: 'lgtm', evalStaleness: 'none' });
   assert.equal(r.tier, 'HOLD');
   const item = r.holdReasons.find((x) => x.reason.includes('収束'));
   assert.ok(item);
@@ -1197,23 +1324,24 @@ test('classifyMergeTier: prClosesStatus が out-of-enum → throw', () => {
     /invalid prClosesStatus/);
 });
 
-test('classifyMergeTier: holdReasons の全要素は {code, reason, kind} のちょうど3キー', () => {
+test('classifyMergeTier: holdReasons の要素は {code, reason, kind} のちょうど3キー（ledger_unconverged だけ item_ids を加えた 4 キー）', () => {
   const r = classifyMergeTier({
-    ...standardBase(), converged: false, iterateStatus: 'lgtm', evalStaleness: 'none', unsatisfiedAgentAc: true,
+    ...standardBase(), ledgerUnconverged: ['EVAL-1'], iterateStatus: 'lgtm', evalStaleness: 'none', unsatisfiedAgentAc: true,
   });
   assert.equal(r.tier, 'HOLD');
   assert.ok(r.holdReasons.length >= 2);
   for (const item of r.holdReasons) {
-    assert.deepEqual(Object.keys(item).sort(), ['code', 'kind', 'reason']);
+    const expected = item.code === 'ledger_unconverged' ? ['code', 'item_ids', 'kind', 'reason'] : ['code', 'kind', 'reason'];
+    assert.deepEqual(Object.keys(item).sort(), expected);
   }
 });
 
 // ---- disclosures（issue #658）: 可視化のみ項目は reasons と disclosures 両方に載る ----
 
 test('disclosures: breakingKeyword のみ(keyword-alone) → HOLD/REVIEW いずれも disclosures に開示 1 件、reasons 末尾にも同文が残る', () => {
-  // HOLD（converged:false + keyword-alone）
+  // HOLD（ledgerUnconverged 非空 + keyword-alone）
   const hold = classifyMergeTier({
-    ...standardBase(), converged: false, breakingKeyword: true, iterateStatus: 'lgtm', evalStaleness: 'none',
+    ...standardBase(), ledgerUnconverged: ['EVAL-1'], breakingKeyword: true, iterateStatus: 'lgtm', evalStaleness: 'none',
   });
   assert.equal(hold.tier, 'HOLD');
   assert.equal(hold.disclosures.length, 1);
@@ -1488,7 +1616,7 @@ const VALIDATE_NO_TESTS = { tests: 'no_tests', green: false };
 const NO_TESTS_REASON_HEAD = 'テストを 1 本も実行していない';
 
 test('classifyMergeTier: Validate tests:no_tests は blocking 理由 no_tests_run（human_judgment）を 1 件積んで HOLD。passed / green では積まない', () => {
-  // classifyMergeTier は gate_policy を受け取らず、policy が左右するのは converged / evalSkipped だけ — どちらの値でも積まれる
+  // classifyMergeTier は gate_policy を受け取らず、policy が左右するのは ledgerUnconverged / evalSkipped だけ — どちらの値でも積まれる
   for (const fr of [{ finalReconcile: 'skipped' }, {}]) {
     const r = classifyMergeTier(baseCleanInput({ ...fr, validateResult: VALIDATE_NO_TESTS }));
     assert.equal(r.tier, 'HOLD', `${JSON.stringify(fr)}: ${JSON.stringify(r)}`);
@@ -1497,7 +1625,7 @@ test('classifyMergeTier: Validate tests:no_tests は blocking 理由 no_tests_ru
     assert.ok(r.holdReasons[0].reason.includes('Validate'), r.holdReasons[0].reason);
     assert.equal(r.holdKind, 'human_judgment');
   }
-  for (const extra of [{ evalSkipped: true }, { converged: false }]) {
+  for (const extra of [{ evalSkipped: true }, { ledgerUnconverged: ['EVAL-1'] }]) {
     const r = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_NO_TESTS, ...extra }));
     assert.equal(r.tier, 'HOLD', JSON.stringify(extra));
     assert.equal(codesOf(r).filter((c) => c === 'no_tests_run').length, 1, JSON.stringify(extra));
@@ -1529,8 +1657,8 @@ test('classifyMergeTier: Final reconcile の test#final が tests:no_tests（fin
 
 test('classifyMergeTier: changedTestRunners が非空なら、そのパスを含む blocking 理由 test_runner_changed（human_judgment）で HOLD', () => {
   const runners = ['tests/run-new.sh', 'tests/run-all-bats.sh'];
-  // classifyMergeTier は gate_policy を受け取らず、policy が左右するのは converged / evalSkipped だけ — どちらの値でも積まれる
-  for (const extra of [{}, { evalSkipped: true }, { converged: false }, { finalReconcile: 'reverified', finalTestGreen: true }]) {
+  // classifyMergeTier は gate_policy を受け取らず、policy が左右するのは ledgerUnconverged / evalSkipped だけ — どちらの値でも積まれる
+  for (const extra of [{}, { evalSkipped: true }, { ledgerUnconverged: ['EVAL-1'] }, { finalReconcile: 'reverified', finalTestGreen: true }]) {
     const r = classifyMergeTier(baseCleanInput({ changedTestRunners: runners, validateResult: { tests: 'passed', green: true }, ...extra }));
     assert.equal(r.tier, 'HOLD', JSON.stringify(extra));
     const held = r.holdReasons.filter((x) => x.code === 'test_runner_changed');

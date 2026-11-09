@@ -185,8 +185,9 @@ test('atlas: 再利用 worktree の起点検証は実装と同じく --no-track 
 
 test('atlas: HOLD 理由表の code が merge-tier.mjs の pushBlocking の code と一致し、件数を書かない', () => {
   const mergeTierSrc = readFileSync(join(pluginRoot, '_lib/merge-tier.mjs'), 'utf8');
-  const impl = [...new Set([...mergeTierSrc.matchAll(/pushBlocking\(\s*'([a-z_]+)'/g)].map((m) => m[1]))].sort();
-  assert.ok(impl.includes('hash_mismatch') && impl.length > 1, `pushBlocking の code が読めない: ${impl.join(', ')}`);
+  // ledger_unconverged だけは item_ids を持つため pushBlocking を通さず blockingReasons.push({ code: ... }) で積む
+  const impl = [...new Set([...mergeTierSrc.matchAll(/(?:pushBlocking\(\s*|blockingReasons\.push\(\{\s*code:\s*)'([a-z_]+)'/g)].map((m) => m[1]))].sort();
+  assert.ok(impl.includes('hash_mismatch') && impl.includes('ledger_unconverged') && impl.length > 1, `HOLD の code が読めない: ${impl.join(', ')}`);
   const table = sectionOf(atlasSrc, '### HOLD 理由');
   const documented = [...table.matchAll(/^\| `([a-z_]+)` \|/gm)].map((m) => m[1]);
   assert.deepEqual([...documented].sort(), impl, 'atlas の HOLD 理由表が merge-tier.mjs の HOLD code とずれている');

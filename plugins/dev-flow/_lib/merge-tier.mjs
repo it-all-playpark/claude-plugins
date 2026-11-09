@@ -81,6 +81,29 @@ export function reconcileDanger(ledger, risk) {
   return { ...ledger, items };
 }
 
+// policy で blocking の item（policyBlockingItems の結果）のうち未 checked のものを、HOLD 理由の code ごとに
+// ちょうど 1 つへ振り分けて item id の配列で返す純関数。classifyMergeTier の ledgerUnconverged / unresolvedDanger /
+// testsurfUncleared はここから導く。振り分けは上から最初に当たったもの:
+//   1. fail-closed の SEC seed → danger_fail_closed（riskValueDropped なら merge_facts_dropped）。danger-grep が
+//      走らなかった（結果が落ちた）ことは前回の hit（floor）より手前の原因なので、floor 付きでもここに入れる。
+//   2. floor 付きの SEC seed → danger_unresolved
+//   3. TESTSURF seed → testsurf_uncleared
+//   4. それ以外 → ledger_unconverged
+// 専用 code に入れた seed を ledger_unconverged から外しても、専用 code がすべて blocking なので HOLD は変わらない。
+export function partitionUncheckedBlocking(blockingItems, { dangerFailClosed, riskValueDropped }) {
+  const failClosedCode = riskValueDropped === true ? 'merge_facts_dropped' : 'danger_fail_closed';
+  const out = { [failClosedCode]: [], danger_unresolved: [], testsurf_uncleared: [], ledger_unconverged: [] };
+  for (const it of blockingItems) {
+    if (it.checked) continue;
+    const isSecSeed = it.source === 'seed' && it.dimension === 'security';
+    if (dangerFailClosed === true && isSecSeed && it.fail_closed === true) out[failClosedCode].push(it.id);
+    else if (isSecSeed && it.floor === true) out.danger_unresolved.push(it.id);
+    else if (it.source === 'seed' && it.dimension === 'test-integrity') out.testsurf_uncleared.push(it.id);
+    else out.ledger_unconverged.push(it.id);
+  }
+  return out;
+}
+
 // Merge tier phase で reconcileDanger 前後の SEC ledger を比較し、one-shot security
 // clearance の対象候補を決定論的に算出する純関数。
 // 「before で checked（Evaluate 時点等で解消済み）だったが after で unchecked に転じた」
@@ -211,6 +234,11 @@ export function classifyMergeableState(meta) {
 // breaking は analyze 構造化判定 (breakingStructured) と issue title/body keyword scan
 // (breakingKeyword) の 2 入力で、reason で由来を区別する（issue #278）。
 // REVIEW: それ以外（標準。人間が LGTM して merge）。
+// s.ledgerUnconverged (optional string[]): partitionUncheckedBlocking の ledger_unconverged（専用 code に振り分けなかった
+//   未 checked blocking item の id）。非空なら 'ledger_unconverged'（human_judgment）で HOLD し、holdReason に item_ids を
+//   載せる（終端サマリーの件数・AC への紐付けの母集団）。未指定・空 = reason 追加なし。string[] でないものは明示 error。
+//   旧キー converged（boolean）は専用 code と重複して立つので受理しない（明示 error）。
+// s.unresolvedDanger (optional boolean): partitionUncheckedBlocking の danger_unresolved が非空か。
 // s.evalSkipped (optional boolean): true の場合、REVIEW の reasons に AC 未検証開示を追記する。
 //   micro path は evaluator 0 回で AC を判定していないため、レビューする人間にその事実を開示する（issue #233）。
 //   danger-grep hit / green-fix で security path により eval が強制実行された場合は false にして虚偽開示を避ける。
@@ -223,10 +251,9 @@ export function classifyMergeableState(meta) {
 //   pr-iterate の LGTM 後の待ちで success にならなかった（上限まで未完了・failure・取得不能・待ちに未到達）。
 //   'ac_ci_pending'（CI の結果を人間が確認して merge する）で HOLD。boolean 以外は明示 error。
 // s.dangerFailClosed (optional boolean): true の場合、danger-grep が実行不能（fail-closed）だったことを
-//   示す専用 HOLD reason を追記する（issue #271）。fail-closed 時は SEC seed item が unchecked のまま
-//   残るため s.converged が既に false になり HOLD へ落ちるが、この reason は「なぜ未収束か」を
-//   security 不明という意味論で明示するための defense-in-depth（danger_hits の実 hit とは別軸）。
-//   未指定 = falsy = reason 追加なし、tier 判定値も従来と完全同一（regression なし）。
+//   示す専用 HOLD reason を追記する（issue #271）。fail-closed で unchecked に戻った SEC seed は
+//   partitionUncheckedBlocking がこの code に振り分ける（ledger_unconverged・danger_unresolved には入れない）ので、
+//   この reason が security 不明の HOLD を担う（danger_hits の実 hit とは別軸）。未指定 = falsy = reason 追加なし。
 // s.riskValueDropped (optional boolean): true かつ dangerFailClosed のとき、fail-closed の原因が
 //   danger-grep 実行不能ではなく merge-tier-facts の subagent 転記で risk.value が落ちたこと（issue #746。
 //   isRiskValueDropped）を示す。reason を 'danger_fail_closed' ではなく 'merge_facts_dropped' で積む
@@ -295,11 +322,9 @@ export function classifyMergeableState(meta) {
 //   'skipped'/'reverified'/未指定は tier 判定不変（fail/pass の gating は unsatisfiedAgentAc /
 //   unsatisfiedHumanAc と ledger 未収束が担う）。未指定 = 従来と完全同一挙動（regression なし）。out-of-enum は明示 error
 //   （後方互換 scaffolding 禁止規約）。
-// s.testsurfUncleared (optional string[]): 未 checked の TESTSURF-* seed item id 一覧（issue #362）。
-//   非空時に専用 HOLD reason を defense-in-depth として追記する（dangerFailClosed reason と同型の
-//   可視化）。TESTSURF item は source:'seed' の unchecked のまま converged=false → HOLD は既に成立
-//   しているため、この reason は tier 判定値そのものは変えない。未指定/空 = reason 追加なし
-//   （regression なし）。
+// s.testsurfUncleared (optional string[]): 未 checked の TESTSURF-* seed item id 一覧（issue #362。
+//   partitionUncheckedBlocking の testsurf_uncleared）。非空なら 'testsurf_uncleared'（human_judgment）で HOLD する。
+//   未指定/空 = reason 追加なし。
 // s.mergeableState (optional 'clean'|'conflicting'|'unknown'): classifyMergeableState() が
 //   gh pr view --json mergeable,mergeStateStatus を写像した結果（issue #405）。'conflicting' は
 //   他条件によらず無条件 HOLD reason を追記する（blast-radius クラス、gate_policy に依らず不変 —
@@ -344,7 +369,7 @@ export function classifyMergeableState(meta) {
 //   issue #658 で disclosures を追加）。
 //   reasons は従来どおり string[]（HOLD 時は blocking 文言 + 可視化行、REVIEW 時は従来文言 +
 //   可視化行）。holdReasons は HOLD 時のみ blocking 文言の [{ code, reason, kind }]（可視化行は
-//   含めない）、REVIEW 時は []。code は HOLD_REASON_CODES の閉じた enum（summary 側の
+//   含めない。'ledger_unconverged' だけ item_ids も持つ）、REVIEW 時は []。code は HOLD_REASON_CODES の閉じた enum（summary 側の
 //   現状/対応写像キー）。holdKind は aggregateHoldKind(holdReasons)（HOLD 以外は null）。
 //   disclosures は HOLD/REVIEW 両分岐共通で、可視化のみ（tier 判定に寄与しない）の開示
 //   文言 string[]（keywordAloneDisclosure / evalFailDisclosure / ciIncompleteDisclosure / finalTestFlakyDisclosure のうち
@@ -362,6 +387,9 @@ export function classifyMergeTier(s) {
   }
   if (s.evalVerdictFail != null && typeof s.evalVerdictFail !== 'boolean') {
     throw new Error('classifyMergeTier: invalid evalVerdictFail: ' + s.evalVerdictFail);
+  }
+  if (Object.prototype.hasOwnProperty.call(s, 'converged')) {
+    throw new Error('classifyMergeTier: converged は廃止 — partitionUncheckedBlocking の ledger_unconverged を ledgerUnconverged で渡す');
   }
   if (Object.prototype.hasOwnProperty.call(s, 'unsatisfiedAc')) {
     throw new Error('classifyMergeTier: unsatisfiedAc は廃止 — unsatisfiedAgentAc / unsatisfiedHumanAc を渡す');
@@ -414,11 +442,16 @@ export function classifyMergeTier(s) {
   if (s.changedTestRunners != null && !isStringArray(s.changedTestRunners)) {
     throw new Error('classifyMergeTier: invalid changedTestRunners');
   }
+  if (s.ledgerUnconverged != null && !isStringArray(s.ledgerUnconverged)) {
+    throw new Error('classifyMergeTier: invalid ledgerUnconverged');
+  }
   const ci =s.ciChecks != null ? classifyCiChecks(s.ciChecks) : null;
   // blocking 文言のみ（可視化行は含めない）。HOLD 判定・holdReasons/holdKind の入力に使う。
   const blockingReasons = [];
   const pushBlocking = (code, reason, kind) => blockingReasons.push({ code, reason, kind });
-  if (!s.converged) pushBlocking('ledger_unconverged', 'ledger 未収束（未 checked blocking 残）', 'human_judgment');
+  if (s.ledgerUnconverged?.length > 0) {
+    blockingReasons.push({ code: 'ledger_unconverged', reason: 'ledger 未収束（未 checked blocking 残）', kind: 'human_judgment', item_ids: [...s.ledgerUnconverged] });
+  }
   if (s.unresolvedDanger) pushBlocking('danger_unresolved', 'danger-grep hit 未解消（security 要確認）', 'human_judgment');
   if (s.breakingStructured) {
     pushBlocking('breaking_structured', 'breaking/migration 検出（analyze 構造化判定 breaking_change=true'

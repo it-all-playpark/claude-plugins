@@ -9,7 +9,7 @@ import {
   GATE_POLICIES, gateLane, isConvergedUnderPolicy, isLoopConvergedUnderPolicy,
   policyBlockingItems, policyAdvisoryItems,
 } from './gate-policy.mjs';
-import { classifyMergeTier } from './merge-tier.mjs';
+import { classifyMergeTier, partitionUncheckedBlocking } from './merge-tier.mjs';
 
 function buildLedger() {
   let { ledger } = appendItem(makeLedger(), {
@@ -76,7 +76,7 @@ test('AC3/AC5: llm-major-blocking では triaged にしても CONCERN-1(major) �
 
 function mergeTierInput(ledger) {
   return {
-    converged: isConvergedUnderPolicy(ledger, 'llm-major-advisory'),
+    ledgerUnconverged: partitionUncheckedBlocking(policyBlockingItems(ledger, 'llm-major-advisory'), { dangerFailClosed: false, riskValueDropped: false }).ledger_unconverged,
     unresolvedDanger: false,
     breakingStructured: false,
     breakingKeyword: false,
