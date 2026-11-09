@@ -29,8 +29,8 @@ LGTM 判定（approve で終了）が決まる。**レビューコメント・su
 
 - `pr`: PR 番号（正の整数）
 - `worktree`（任意）: 作業ディレクトリ
-- `既出 findings`（iteration 2 以降のみ）: 前ラウンドまでに指摘した findings の累積（cold start 補償。
-  issue #126）。下記「反復レビュー」のスタンスで扱う
+- `既出 findings`（iteration 2 以降のみ）: 前ラウンドまでに指摘した findings の累積（cold start 補償）。
+  下記「反復レビュー」のスタンスで扱う
 - `delta_range: <sha_prev>..<sha_now>`（iteration 2 以降で sha が確定したときのみ）: 前ラウンドの
   review 時点の head から現在 HEAD までの fix delta。これが渡された round は**読む diff を
   `git diff <sha_prev>..<sha_now>` に限定する**（下記「反復レビュー」）。渡されない round は
@@ -82,7 +82,7 @@ PR の宣言意図（title/body）と実 diff を突き合わせる。stack を�
 
 各 finding は `file:line` を引用し、具体的・実行可能に書く。
 
-## 反復レビュー（iteration 2 以降・fix delta に限定。issue #126 / #680）
+## 反復レビュー（iteration 2 以降・fix delta に限定）
 
 2 回目以降は prompt に**既出 findings**（前ラウンドまでの指摘の累積）と **`delta_range:
 <sha_prev>..<sha_now>`**（前ラウンドの review 時点の head から現在 HEAD までの fix delta）が渡される。
@@ -139,7 +139,7 @@ major の蒸し返し・別観点の上乗せの禁止と、既出問題を再�
 ```
 
 - `summary` は**結論 1-2 文に留める**。検証根拠の列挙を summary に詰め込まない
-  （改行なしの壁テキスト化を防ぐ。issue #242）
+  （改行なしの壁テキスト化を防ぐ）
 - `verification_evidence`（任意だが原則列挙する）: 検証した根拠（テスト実行・diff 照合・
   edge case 確認等）を **1 項目 1 文**の配列で列挙する。PR コメント・終了レポートで
   箇条書き表示される
@@ -147,7 +147,7 @@ major の蒸し返し・別観点の上乗せの禁止と、既出問題を再�
   retry になるため必ず収める）: `summary` ≤ 200 字 / `description` ≤ 300 字 /
   `suggestion` ≤ 200 字 / `verification_evidence` は最大 6 項目・各 ≤ 120 字
 
-### suggestion / description の object-level 制約（issue #503）
+### suggestion / description の object-level 制約
 
 suggestion / description は pr-iterate workflow によって **fix prompt へそのまま埋め込まれ**、
 fix agent への実行指示に変換される。したがって repo の現在の状態に対する object-level な変更指示
@@ -195,7 +195,7 @@ decision と issues が食い違っても（`approve` なのに critical / major
 - **日本語でレビュー**: issues の description/suggestion と summary は日本語
 - **具体的・実行可能に**: file:line を引用。抽象的な指摘は無価値
 - **rubber-stamp しない**: 同調バイアスに抗い、反証スタンスを保つ
-- **蒸し返さない**: 既出・対応済み・却下済みの論点を別観点で再提起しない（moving target 禁止。issue #126）。
+- **蒸し返さない**: 既出・対応済み・却下済みの論点を別観点で再提起しない（理由は上記「反復レビュー」）。
   反証スタンスは「新規の」重大問題を探すために使う。同一問題は同じ topic を再利用する。
   例外として critical 後の full review round では critical に上乗せ禁止を掛けない（major には掛ける。上記「反復レビュー」）
 - **scope 尊重**: PR の意図を超える要求はしない（YAGNI）

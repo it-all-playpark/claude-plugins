@@ -88,6 +88,27 @@ test('[pr-reviewer-delta] 反復レビュー節と「蒸し返さない」の項
     '反復レビュー節に、critical 後の full review round でも major の禁止と topic 再利用が残る旨が無い');
 });
 
+// ============================================================
+// 経緯（issue 番号）を書かず、moving target を断つ理由は反復レビュー節の 1 か所に置く
+// ============================================================
+
+const body = src.replace(/^---\n[\s\S]*?\n---\n/, '');
+
+test('[pr-reviewer-delta] frontmatter を除いた本文に issue 番号（#<数字>）が無い', () => {
+  assert.deepEqual(body.match(/#\d+/g) ?? [], []);
+});
+
+test('[pr-reviewer-delta] moving target の理由は反復レビュー節に 1 回だけ書き、「蒸し返さない」の項は反復レビュー節を参照する', () => {
+  const count = body.split('moving target').length - 1;
+  assert.equal(count, 1, `本文の moving target が ${count} 回ある（反復レビュー節の 1 回だけにする）`);
+  assert.ok(iterSection.includes('moving target'), '反復レビュー節に moving target を断つ理由が無い');
+  const itemStart = body.indexOf('- **蒸し返さない**');
+  assert.ok(itemStart >= 0, '「蒸し返さない」の項が無い');
+  const itemEnd = body.indexOf('\n- ', itemStart + 1);
+  const noRehashItem = itemEnd >= 0 ? body.slice(itemStart, itemEnd) : body.slice(itemStart);
+  assert.ok(noRehashItem.includes('「反復レビュー」'), '「蒸し返さない」の項が反復レビュー節を参照していない');
+});
+
 test('[pr-reviewer-delta] 入力節に delta_range が定義されている', () => {
   const inputSection = section(src, '## 入力');
   assert.ok(inputSection.includes('delta_range: <sha_prev>..<sha_now>'), '入力節に delta_range の定義が無い');
