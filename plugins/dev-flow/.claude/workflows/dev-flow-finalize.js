@@ -330,6 +330,16 @@ function newlyUncheckedSecClasses(before, after) {
 
 const FINAL_RECONCILE_VALUES = ['skipped', 'reverified', 'unavailable'];
 
+function changedTestRunnersOf(results) {
+  const out = [];
+  for (const r of results) {
+    for (const p of (r?.changed_runners ?? [])) {
+      if (!out.includes(p)) out.push(p);
+    }
+  }
+  return out;
+}
+
 function classifyCiChecks(ciChecks) {
   if (!ciChecks || ciChecks.ok !== true || !Array.isArray(ciChecks.checks)) {
     return { state: 'unavailable', failedNames: [], pendingNames: [], error: ciChecks?.error ?? null };
@@ -427,6 +437,9 @@ function classifyMergeTier(s) {
   if (s.setupDeps != null && (typeof s.setupDeps.ok !== 'boolean' || typeof s.setupDeps.note !== 'string')) {
     throw new Error('classifyMergeTier: invalid setupDeps');
   }
+  if (s.changedTestRunners != null && !isStringArray(s.changedTestRunners)) {
+    throw new Error('classifyMergeTier: invalid changedTestRunners');
+  }
   const ci =s.ciChecks != null ? classifyCiChecks(s.ciChecks) : null;
   const blockingReasons = [];
   const pushBlocking = (code, reason, kind) => blockingReasons.push({ code, reason, kind });
@@ -466,6 +479,9 @@ function classifyMergeTier(s) {
   }
   if (s.finalTestNoTests === true || (s.finalReconcile !== 'reverified' && s.validateResult?.tests === 'no_tests')) {
     pushBlocking('no_tests_run', `テストを 1 本も実行していない（${s.finalTestNoTests === true ? 'Final reconcile の test#final' : 'Validate'} が tests:no_tests = 実行対象のテストが 0 本）— テストが通ることを確かめないまま PR へ進行。人間確認必須（gate_policy に依らず不変）`, 'human_judgment');
+  }
+  if (s.changedTestRunners?.length > 0) {
+    pushBlocking('test_runner_changed', `テストランナーが base と違う（${s.changedTestRunners.join(', ')} — 中身が base と違う・base に無い tests/run-*.sh）— PR が書き換えた・足したランナーの green はテストが通った証拠にならない。人間確認必須（gate_policy に依らず不変）`, 'human_judgment');
   }
   if (s.finalAcReconcile === 'unavailable') pushBlocking('final_ac_unavailable', 'Final AC reconcile 判定不能（最終 PR tree に対する AC 再検証結果を取得できず — agent null / schema 不一致 / index 欠落・重複・範囲外 / evidence 不足）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   if (s.securityReviewUnresolved === true) pushBlocking('security_review_unresolved', '敵対的 security review が今の PR head で clear になっていない（信頼境界をまたぎうる変更を含む PR で、pr-iterate が critical/major 0 件の review を通さずに終端）— 指摘の本文は公開しない。merge 前に人が diff を確認する（gate_policy に依らず不変）', 'human_judgment');
@@ -2220,6 +2236,8 @@ function holdReasonDisplay(code, ctx) {
       return { current: 'テストが 1 件も実行されていない（ローカルは起動失敗）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
     case 'no_tests_run':
       return { current: 'テストを 1 本も実行していない（実行対象のテストが 0 本）', action: 'テストの要否と実行方法を確認する' };
+    case 'test_runner_changed':
+      return { current: 'PR が tests/run-*.sh を書き換えた・足した（そのランナーの green はテストが通った証拠にならない）', action: 'ランナーの変更を確認し、base のランナーでテストを実行する' };
     case 'final_ac_unavailable':
       return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
     case 'iterate_non_lgtm':
@@ -2534,8 +2552,8 @@ function runTestsPrompt(wt, base) {
   return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base}`);
 }
 
-function runTestFilesPrompt(wt, files) {
-  return runTestsCommandPrompt(wt, `run-tests start ${wt} --files ${files.join(' ')}`);
+function runTestFilesPrompt(wt, base, files) {
+  return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base} --files ${files.join(' ')}`);
 }
 
 function runTestsWaitPrompt(wt) {
@@ -2731,7 +2749,7 @@ async function failOpenAgent(prompt, opts) {
 const EPOCH_INSTRUCTION = '作業完了後、最後に Bash で `date +%s` を 1 回実行し、出力の整数を epoch フィールドとして返せ。取得に失敗した場合は epoch を省略してよい（本来の作業・判定には一切影響させるな）。\n'
 
 // test#final の応答（dev-flow.js の Validate と同じ形）。failed_files は落ちたファイルだけの再実行に使い、scripts[].log は
-// final-ac-reconcile に渡して実行済みのテストを evaluator に再実行させない。
+// final-ac-reconcile に渡して実行済みのテストを evaluator に再実行させない。changed_runners は Merge tier の test_runner_changed。
 const GREEN = {
   type: 'object', required: ['tests', 'green'],
   properties: {
@@ -2747,6 +2765,7 @@ const GREEN = {
       },
     },
     failed_files: { type: 'array', items: { type: 'string' } },
+    changed_runners: { type: 'array', items: { type: 'string' } },
     epoch: { type: 'number' },
   },
 }
@@ -3302,7 +3321,7 @@ async function rerunFailedTestFiles(first, label, holdCode) {
   }
   let result = null
   try {
-    result = await runTestsAgent(runTestFilesPrompt(WT, files), label, 'Final reconcile')
+    result = await runTestsAgent(runTestFilesPrompt(WT, `origin/${BASE}`, files), label, 'Final reconcile')
   } catch (e) {
     log(`⚠️ Final reconcile: ${label} が throw（${e && e.message ? e.message : e}）— flake 候補にしない（${holdCode}）`)
   }
@@ -3321,6 +3340,8 @@ let finalTestFlaky = null
 let finalTestEvidence = null
 // test#final が green / no_tests のときの結果。final-ac-reconcile に渡して実行済みのテストを再実行させない。それ以外は null。
 let finalTestForEval = null
+// test#final の応答（null = 未実行・throw）。changed_runners を Validate の分と合わせて merge tier の test_runner_changed に渡す
+let finalTestRun = null
 // changed-files-final の raw files（Merge tier が同一 tree の changed-files を再利用する）。null なら Merge tier が取る。
 let changedFilesFinal = null
 // final_end の給電候補。skip run は null のまま（未計測をキー欠落で表す）。
@@ -3352,6 +3373,7 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
     } catch (e) {
       log(`⚠️ Final reconcile: test#final が throw（${e && e.message ? e.message : e}）— null 扱い（fail-safe → unavailable。issue #359）`)
     }
+    finalTestRun = ft
     // ft が null なのは throw のときだけ（応答の null・schema 不一致・待機の上限は runTestsJob が tests:'error' にする）
     if (!ft) { finalReconcile = 'unavailable'; log('⚠️ Final reconcile: test#final が null — unavailable（fail-safe → merge tier HOLD）') }
     else if (ft.tests === 'error') {
@@ -3780,6 +3802,8 @@ const mergeTier = classifyMergeTier({
   validateResult: state.val,
   // validate_tests_not_run の文言に載せる deps の note
   setupDeps: PRERUN.deps,
+  // run-tests が base と違う・base に無いと報告した tests/run-*.sh（Validate と test#final の和）— test_runner_changed で HOLD
+  changedTestRunners: changedTestRunnersOf([state.val, finalTestRun]),
   iterateStatus: iterate?.status ?? null,
   securityReviewUnresolved,
   evalStaleness,

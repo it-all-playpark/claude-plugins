@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run-tests.sh - Validate（test#i）・post-eval・test#final のテスト実行 exec-proxy（issue #821）。
 # Usage:
-#   run-tests start <worktree> [--base <ref> | --files <test file>...]
+#   run-tests start <worktree> --base <ref> [--files <test file>...]
 #   run-tests wait  <worktree> [--wait-sec <n=480>]
 #   run-tests stop  <worktree> [--timeout-sec <n=60>]
 #   （内部）run-tests supervise --state-dir <dir> / run-tests run <worktree> [...]
@@ -17,18 +17,25 @@
 # 起動する内部の `run` の中身で、結果の JSON は state dir の tests-result.json に書く（stderr は logs/command.log）。
 # 止まらないまま残らないよう、切り離したテストは RUN_TESTS_TIMEOUT_SEC で打ち切る（tests "error"）。
 #
-# 変更ファイルの受け渡し（issue #835）: --base があり `git merge-base <ref> HEAD` が解決できたときだけ、
-# merge-base から working tree への差分（commit 済み・staged・未 stage）と untracked（--exclude-standard、
-# .devflow-tmp/ を除く）の <WT> 相対パスを重複なく 1 行 1 件で $LOG_DIR/changed-files.txt に書き、
-# tests/run-*.sh に DEVFLOW_CHANGED_FILES=<その絶対パス> と DEVFLOW_BASE=<merge-base の sha> を渡す。
+# ランナーの集合は base で決める（issue #1277）: --base は必須で、実行する tests/run-*.sh は `git merge-base <ref> HEAD` の
+# tree にある tests/run-*.sh（mode 100755）だけ — worktree を glob しない。PR がランナーを消す・実行ビットを外す・足すことで
+# 実行対象を減らして（全部消せば no_tests）Validate を通せないようにする。base のランナーが <WT> で欠けている・実行ビットが
+# 無いときもそのパスを実行し、exit 127 / 126 の起動失敗（status "error"）にする。中身が base と違う tests/run-*.sh と
+# base に無い tests/run-*.sh は <WT> 相対パスを changed_runners に載せる（実行はするが、merge tier が gate_policy に依らず HOLD
+# にする — PR が書き換えたランナーの green はランナー自身の出力）。merge-base を解決できない run は集合を決められないので
+# テストを 1 本も実行せず status "error"。
+#
+# 変更ファイルの受け渡し（issue #835）: --files でない run では、merge-base から working tree への差分（commit 済み・
+# staged・未 stage）と untracked（--exclude-standard、.devflow-tmp/ を除く）の <WT> 相対パスを重複なく 1 行 1 件で
+# $LOG_DIR/changed-files.txt に書き、tests/run-*.sh に DEVFLOW_CHANGED_FILES=<その絶対パス> と DEVFLOW_BASE=<merge-base の sha> を渡す。
 # 何を回すかは repo 側のランナーが決める — run-tests はテストの選択・skip をしない（repo 固有の知識を持たない）。
-# --base 無し・merge-base 解決失敗・git 失敗では両変数とも設定しない（未設定 = ランナーは全件実行）。
+# 一覧を取る git が失敗したときは両変数とも設定しない（未設定 = ランナーは全件実行）。
 # 失敗は stderr に 1 行出すだけで status / green には影響させない。フォールバック経路には渡さない。
 # 呼び出し元の環境に同名変数があっても継がない（入れ子の run-tests で外側の一覧を誤って使わない）。
 #
 # 落ちたファイルだけの再実行（issue #865。Final reconcile が test#final の red を flake と本物の red に分ける入口）:
-# --files <WT 相対のテストファイル>... は、そのパスを 1 行 1 件で $LOG_DIR/test-files.txt に書き、
-# tests/run-*.sh に DEVFLOW_TEST_FILES=<その絶対パス> を渡す（DEVFLOW_CHANGED_FILES / DEVFLOW_BASE は渡さない）。
+# --base <ref> --files <WT 相対のテストファイル>... は、そのパスを 1 行 1 件で $LOG_DIR/test-files.txt に書き、
+# tests/run-*.sh（集合は同じく base で決める）に DEVFLOW_TEST_FILES=<その絶対パス> を渡す（DEVFLOW_CHANGED_FILES / DEVFLOW_BASE は渡さない）。
 # ランナーは一覧のうち自分が扱うファイルだけを実行し、扱うファイルが無ければ何も実行せず exit 0 する。
 # 変数を読まないランナーは全件を実行する（遅くなるだけで green を緩めない）。どのファイルを誰が扱うかは repo 側が決める。
 # 一覧のパスが WT 内の通常ファイルでなければ引数不正（exit 2）。tests/run-*.sh が無い repo はフォールバックの
@@ -39,7 +46,7 @@
 # 契約: exit 非 0 で終わるランナーは、落ちたテストファイルを 1 行 1 件（<WT> 相対か <WT> 配下の絶対パス）でそこに書いてよい。
 # 書くなら落ちたテストファイルを漏れなく書くこと — 漏れがあると base との切り分け（base-failure-triage）が漏れた失敗を
 # 見落として green に倒しうる。全部を書けないランナーは書かない（書かない・空ならログからの抽出に戻る）。
-# 一覧を使うのは --base で merge-base が解決でき、changed-files にそのランナーのパスが無い（base の tree と同じランナー）
+# 一覧を使うのは --files でない run で、changed-files にそのランナーのパスが無い（base の tree と同じランナー）
 # ときだけ。PR が書き換えたランナーは一部だけを書いて他の失敗を残したまま green にできるので、その一覧は使わない。
 # 一覧に <WT> 内の通常ファイルでない行（.. を含む・<WT> の外・存在しない）が 1 件でもあれば結び付かない失敗とみなす。
 #
@@ -49,9 +56,9 @@
 #   1. workspace-prebuild.sh <WT>（pnpm ワークスペースのビルド成果物をテストの直前に作り直す）。
 #      status "failed" のときはテストを 1 本も実行せず status "failed"（reason を summary の先頭に置く）。
 #      それ以外（built / skipped / JSON でない）はビルドを再試行せずテストへ進む。
-#   2. <WT>/tests/run-*.sh のうち実行ビットを持つ通常ファイルを全本、名前順に絶対パスの bare 形で直列実行する
+#   2. base の tree の tests/run-*.sh を全本、名前順に <WT> の絶対パスの bare 形で直列実行する
 #      （1 本だけ選ぶと残りのランナーの回帰が CI まで検出されない。並列化しない — repo によっては共有資源を使う）。
-#   3. tests/run-*.sh が 1 本も無いときだけ、検出したフォールバック（pnpm / yarn / npm test・cargo test・
+#   3. base の tree に tests/run-*.sh が 1 本も無いときだけ、検出したフォールバック（pnpm / yarn / npm test・cargo test・
 #      go test・pytest・bundle exec rspec / bin/rails test・vendor/bin/pest / vendor/bin/phpunit）を <WT> で
 #      全部実行する。何も無ければ tests "no_tests"。
 #   リトライ・環境の自動修復はしない（起動失敗は環境要因で、同じ操作の繰り返しや store / ロックの操作では直らない）。
@@ -79,7 +86,9 @@
 # 出力（stdout, JSON 1 行。各 script の出力は $TMPDIR のログに残し stdout に混ぜない — Bash tool の出力上限で
 # JSON 行が切れないように、stderr にも 1 script 1 行の要約だけを出す）:
 #   {"status":"passed|failed|error","tests":"passed|failed|error|no_tests","green":bool,"summary":"...",
-#    "scripts":[{"path":"...","exit":N,"launch_failed":bool,"log":"..."}],"failed_files":[...],"epoch":N}
+#    "scripts":[{"path":"...","exit":N,"launch_failed":bool,"log":"..."}],"failed_files":[...],"epoch":N
+#    [,"changed_runners":["tests/run-x.sh",...]]}
+#   changed_runners は中身が base と違う・base に無い tests/run-*.sh があるときだけ載る（無ければキー自体を出さない）。
 #   scripts[].log はその script の stdout / stderr を書いたログの絶対パス（$TMPDIR 配下 = worktree の外。worktree 内に
 #   置くと diff-hash が untracked を含むため merge tier を壊す）。evaluator が同じ tree で実行済みのテストを再実行せず
 #   ログの行を根拠にするために渡す。どのテストファイルが走ったかはログの中身から読み手が判断する。
@@ -90,7 +99,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREBUILD="$SCRIPT_DIR/workspace-prebuild.sh"
 SUMMARY_MAX=4000
 LINES_MAX=30
-USAGE="usage: run-tests start <worktree> [--base <ref> | --files <test file>...] | wait <worktree> [--wait-sec <n>] | stop <worktree> [--timeout-sec <n>]"
+USAGE="usage: run-tests start <worktree> --base <ref> [--files <test file>...] | wait <worktree> [--wait-sec <n>] | stop <worktree> [--timeout-sec <n>]"
 # 切り離したテストの上限（秒）。workflow の待機上限（RUN_TESTS_MAX_WAIT_SEC）より長くして、普段は workflow の stop で止まる。
 # これは run が落ちて stop が呼ばれないときにテストを残さないための上限（bats が短くするための上書き口）
 RUN_TIMEOUT_SEC="${RUN_TESTS_TIMEOUT_SEC:-4200}"
@@ -100,11 +109,15 @@ source "$SCRIPT_DIR/../../_lib/scripts/bg-job.sh"
 BG_JOB_NAME=run-tests
 BG_JOB_SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 
+# base と違う・base に無い tests/run-*.sh（<WT> 相対パスの JSON 配列）。空でなければ emit が changed_runners に載せる
+CHANGED_RUNNERS_JSON='[]'
+
 emit() {
     # $1 status / $2 tests / $3 green / $4 summary / $5 scripts JSON / $6 failed_files JSON
     jq -nc --arg s "$1" --arg t "$2" --argjson g "$3" --arg m "${4:0:$SUMMARY_MAX}" \
-        --argjson sc "$5" --argjson ff "$6" --argjson e "$(date +%s)" \
-        '{status: $s, tests: $t, green: $g, summary: $m, scripts: $sc, failed_files: $ff, epoch: $e}'
+        --argjson sc "$5" --argjson ff "$6" --argjson e "$(date +%s)" --argjson cr "$CHANGED_RUNNERS_JSON" \
+        '{status: $s, tests: $t, green: $g, summary: $m, scripts: $sc, failed_files: $ff, epoch: $e}
+            + (if $cr == [] then {} else {changed_runners: $cr} end)'
 }
 
 usage_error() {
@@ -118,13 +131,12 @@ resolve_worktree() {
 
 # start / run の引数を検証する。start で弾くので、切り離した後に引数不正で落ちない
 parse_run_args() {
-    BASE_REF=""
     TEST_FILES=()
-    if [[ $# -eq 3 && "$2" == "--base" && -n "$3" ]]; then
-        BASE_REF="$3"
-    elif [[ $# -ge 3 && "$2" == "--files" ]]; then
-        TEST_FILES=("${@:3}")
-    elif [[ $# -ne 1 ]]; then
+    [[ $# -ge 3 && "$2" == "--base" && -n "$3" ]] || usage_error
+    BASE_REF="$3"
+    if [[ $# -ge 5 && "$4" == "--files" ]]; then
+        TEST_FILES=("${@:5}")
+    elif [[ $# -ne 3 ]]; then
         usage_error
     fi
     resolve_worktree "$1"
@@ -230,18 +242,53 @@ if [[ ${#TEST_FILES[@]} -gt 0 ]]; then
     printf '%s\n' "${TEST_FILES[@]}" > "$TEST_FILES_LIST"
 fi
 
-# 変更ファイルの一覧（--base があるときだけ。intent-to-add の前に取る — 載せた後は untracked に出ないが、
+# merge-base（ランナーの集合を決める tree。解決できなければテストを 1 本も実行せず error）
+if ! MERGE_BASE=$(git merge-base "$BASE_REF" HEAD 2>"$LOG_DIR/merge-base.log"); then
+    emit error error false "merge-base of $BASE_REF and HEAD not resolved — the set of tests/run-*.sh is taken from the base tree, so no test was run (log: $LOG_DIR/merge-base.log)" '[]' '[]'
+    exit 0
+fi
+
+# base の tree の tests/run-*.sh。ls-tree は名前のバイト順で出す（= LC_ALL=C の名前順）。
+# BASE_RUNNERS は実行する（mode 100755 の）WT 相対パス、base-runners.txt は「<blob> <path>」で全 mode の中身の比較用
+BASE_RUNNERS=()
+if ! git ls-tree -z "$MERGE_BASE" -- tests/ > "$LOG_DIR/base-tree.raw" 2>"$LOG_DIR/merge-base.log"; then
+    emit error error false "git ls-tree $MERGE_BASE failed — the set of tests/run-*.sh cannot be taken from the base tree, so no test was run (log: $LOG_DIR/merge-base.log)" '[]' '[]'
+    exit 0
+fi
+: > "$LOG_DIR/base-runners.txt"
+while IFS= read -r -d '' entry; do
+    meta="${entry%%$'\t'*}"
+    path="${entry#*$'\t'}"
+    [[ "$path" == tests/run-*.sh && "${meta#* }" == blob\ * ]] || continue
+    printf '%s %s\n' "${meta##* }" "$path" >> "$LOG_DIR/base-runners.txt"
+    [[ "${meta%% *}" == 100755 ]] && BASE_RUNNERS+=("$path")
+done < "$LOG_DIR/base-tree.raw"
+
+# 中身が base と違う・base に無い <WT> の tests/run-*.sh（git hash-object は書き込まない。失敗は違うものとして数える）
+shopt -s nullglob
+wt_runners=(tests/run-*.sh)
+shopt -u nullglob
+changed_runners=""
+for path in "${wt_runners[@]+"${wt_runners[@]}"}"; do
+    [[ -f "$path" ]] || continue
+    blob=$(git hash-object -- "$path" 2>/dev/null) || blob=""
+    [[ -n "$blob" ]] && grep -Fxq -- "$blob $path" "$LOG_DIR/base-runners.txt" && continue
+    changed_runners+="$path"$'\n'
+done
+if [[ -n "$changed_runners" ]]; then
+    CHANGED_RUNNERS_JSON=$(printf '%s' "$changed_runners" | jq -R . | jq -sc .)
+    echo "[run-tests] tests/run-*.sh differing from or absent in the base tree: $(printf '%s' "$changed_runners" | tr '\n' ' ')" >&2
+fi
+
+# 変更ファイルの一覧（--files でない run だけ。intent-to-add の前に取る — 載せた後は untracked に出ないが、
 # git diff <merge-base> には intent-to-add のファイルも出るので、再実行時も一覧は変わらない）。
 # rename は旧パス・新パスの両方を載せる（--no-renames）。-z で取り、パスを quote させない
 CHANGED_FILES=""
-MERGE_BASE=""
-if [[ -n "$BASE_REF" ]]; then
+if [[ -z "$TEST_FILES_LIST" ]]; then
     changed="$LOG_DIR/changed-files.txt"
-    if ! MERGE_BASE=$(git merge-base "$BASE_REF" HEAD 2>"$LOG_DIR/changed-files.log"); then
-        echo "[run-tests] warning: merge-base of $BASE_REF and HEAD not resolved — DEVFLOW_CHANGED_FILES / DEVFLOW_BASE not set (log: $LOG_DIR/changed-files.log)" >&2
-    elif ! { git diff -z --name-only --no-renames --relative "$MERGE_BASE" -- \
+    if ! { git diff -z --name-only --no-renames --relative "$MERGE_BASE" -- \
                 && git ls-files -z --others --exclude-standard -- . ':(exclude).devflow-tmp'; } \
-            > "$LOG_DIR/changed-files.raw" 2>>"$LOG_DIR/changed-files.log"; then
+            > "$LOG_DIR/changed-files.raw" 2>"$LOG_DIR/changed-files.log"; then
         echo "[run-tests] warning: git diff / ls-files failed — DEVFLOW_CHANGED_FILES / DEVFLOW_BASE not set (log: $LOG_DIR/changed-files.log)" >&2
     else
         tr '\0' '\n' < "$LOG_DIR/changed-files.raw" | LC_ALL=C awk 'length && !seen[$0]++' > "$changed"
@@ -278,19 +325,13 @@ if [[ "$(jq -r '.status? // empty' <<< "$PREBUILD_OUT" 2>/dev/null)" == "failed"
     exit 0
 fi
 
-# 2. 実行対象: tests/run-*.sh（実行ビットあり）、無ければフォールバック
+# 2. 実行対象: base の tree の tests/run-*.sh（<WT> に無い・実行ビットが無いものも実行して起動失敗にする）、無ければフォールバック
 TARGETS=()   # 表示・JSON 用の path
 COMMANDS=()  # 実行内容（run-*.sh は空 = path を bare 実行、フォールバックはコマンド文字列）
-shopt -s nullglob
-CANDIDATES=("$WT"/tests/run-*.sh)
-shopt -u nullglob
-if [[ ${#CANDIDATES[@]} -gt 0 ]]; then
-    while IFS= read -r f; do
-        [[ -f "$f" && -x "$f" ]] || continue
-        TARGETS+=("$f")
-        COMMANDS+=("")
-    done <<< "$(printf '%s\n' "${CANDIDATES[@]}" | LC_ALL=C sort)"
-fi
+for path in "${BASE_RUNNERS[@]+"${BASE_RUNNERS[@]}"}"; do
+    TARGETS+=("$WT/$path")
+    COMMANDS+=("")
+done
 
 if [[ ${#TARGETS[@]} -eq 0 && -n "$TEST_FILES_LIST" ]]; then
     emit error error false "--files needs tests/run-*.sh (fallback test runners have no file-list contract)" '[]' '[]'

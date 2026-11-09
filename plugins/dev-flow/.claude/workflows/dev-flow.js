@@ -2293,6 +2293,7 @@ const GREEN = {
       },
     },
     failed_files: { type: 'array', items: { type: 'string' } },
+    changed_runners: { type: 'array', items: { type: 'string' } },
     epoch: { type: 'number' },
   },
 }

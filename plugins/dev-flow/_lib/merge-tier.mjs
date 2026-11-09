@@ -128,8 +128,22 @@ export const HOLD_REASON_CODES = [
   'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
   'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
   'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
-  'security_review_unresolved', 'validate_test_red', 'validate_tests_not_run', 'no_tests_run',
+  'security_review_unresolved', 'validate_test_red', 'validate_tests_not_run', 'no_tests_run', 'test_runner_changed',
 ];
+
+// run-tests の結果（Validate の state.val・Final reconcile の test#final 等。null 可）の changed_runners（中身が base と違う・
+// base に無い tests/run-*.sh。issue #1277）を重複なく出現順に集める純関数。classifyMergeTier の changedTestRunners に渡す。
+// 和を取る — どれか 1 回でも PR が書き換えたランナーで走った run は、そのランナーの green を根拠にしない（fail-safe）。
+// キーが無い結果（base と同一のランナーだけの run・null）は空として扱う。
+export function changedTestRunnersOf(results) {
+  const out = [];
+  for (const r of results) {
+    for (const p of (r?.changed_runners ?? [])) {
+      if (!out.includes(p)) out.push(p);
+    }
+  }
+  return out;
+}
 
 // merge-tier-facts の checks サブ結果（parseChecks の返り値 {ok:true, checks} | {ok:false, error}）を
 // CI 状態へ写像する純関数（issue #834）。bucket の分類は check-ci.sh の compute_verdict と同じ:
@@ -238,6 +252,10 @@ export function classifyMergeableState(meta) {
 //   'no_tests_run'（human_judgment）で HOLD — テストを 1 本も実行していない PR を「Validate 通過」として人間に渡さない。
 //   green の値・gate_policy に依らない（no_tests を green に読み替える経路も HOLD を外す opt-out も持たない）。
 //   未指定 = reason 追加なし。object でない / tests が enum 外 / green が boolean でないものは明示 error。
+// s.changedTestRunners (optional string[]): run-tests が中身が base と違う・base に無いと報告した tests/run-*.sh
+//   （changedTestRunnersOf。issue #1277）。非空なら 'test_runner_changed'（human_judgment）で HOLD し、reason にパスを載せる —
+//   PR が書き換えた・足したランナーの green はランナー自身の出力で、テストが通った証拠にならない。gate_policy に依らず不変で、
+//   HOLD を外す opt-out は持たない。未指定・空 = reason 追加なし。string[] でないものは明示 error。
 // s.setupDeps (optional { ok: boolean, note: string }): Setup(deps) の結果（prerun の deps）。ok:false の run では
 //   'validate_tests_not_run' の文言に note を載せる（テスト未実行の原因の手がかり）。tier 判定には使わない。
 //   ok が boolean でない / note が string でないものは明示 error。
@@ -393,6 +411,9 @@ export function classifyMergeTier(s) {
   if (s.setupDeps != null && (typeof s.setupDeps.ok !== 'boolean' || typeof s.setupDeps.note !== 'string')) {
     throw new Error('classifyMergeTier: invalid setupDeps');
   }
+  if (s.changedTestRunners != null && !isStringArray(s.changedTestRunners)) {
+    throw new Error('classifyMergeTier: invalid changedTestRunners');
+  }
   const ci =s.ciChecks != null ? classifyCiChecks(s.ciChecks) : null;
   // blocking 文言のみ（可視化行は含めない）。HOLD 判定・holdReasons/holdKind の入力に使う。
   const blockingReasons = [];
@@ -433,6 +454,9 @@ export function classifyMergeTier(s) {
   }
   if (s.finalTestNoTests === true || (s.finalReconcile !== 'reverified' && s.validateResult?.tests === 'no_tests')) {
     pushBlocking('no_tests_run', `テストを 1 本も実行していない（${s.finalTestNoTests === true ? 'Final reconcile の test#final' : 'Validate'} が tests:no_tests = 実行対象のテストが 0 本）— テストが通ることを確かめないまま PR へ進行。人間確認必須（gate_policy に依らず不変）`, 'human_judgment');
+  }
+  if (s.changedTestRunners?.length > 0) {
+    pushBlocking('test_runner_changed', `テストランナーが base と違う（${s.changedTestRunners.join(', ')} — 中身が base と違う・base に無い tests/run-*.sh）— PR が書き換えた・足したランナーの green はテストが通った証拠にならない。人間確認必須（gate_policy に依らず不変）`, 'human_judgment');
   }
   if (s.finalAcReconcile === 'unavailable') pushBlocking('final_ac_unavailable', 'Final AC reconcile 判定不能（最終 PR tree に対する AC 再検証結果を取得できず — agent null / schema 不一致 / index 欠落・重複・範囲外 / evidence 不足）— 人間確認必須（gate_policy に依らず不変）', 'human_judgment');
   if (s.securityReviewUnresolved === true) pushBlocking('security_review_unresolved', '敵対的 security review が今の PR head で clear になっていない（信頼境界をまたぎうる変更を含む PR で、pr-iterate が critical/major 0 件の review を通さずに終端）— 指摘の本文は公開しない。merge 前に人が diff を確認する（gate_policy に依らず不変）', 'human_judgment');

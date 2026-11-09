@@ -407,11 +407,14 @@ test("[final-reconcile] (n) test#final red + failed_files の単体再実行 gre
   assertNoCrash(error, 'n');
   assert.equal(error, null, `(n) run は完走するはずだが ${error?.message}`);
 
-  // 再実行は落ちたファイルだけを渡す run-tests --files の 1 回（全件の再実行はしない）
+  // 再実行は落ちたファイルだけを渡す run-tests --files の 1 回（全件の再実行はしない）。ランナーの集合を base で決めるので
+  // test#final と同じ --base を渡す（issue #1277）
   const reruns = calls.filter((c) => c.label === 'test#final-rerun');
   assert.equal(reruns.length, 1, `(n) test#final-rerun は 1 回だけ呼ばれるはずだが ${reruns.length} 回`);
   assert.equal(reruns[0].agentType, 'dev-flow:dev-runner-haiku');
-  assert.equal(reruns[0].prompt.split('\n').at(-1), 'run-tests start /tmp/wt --files plugins/dev-flow/_shared/scripts/diff-risk-classify.bats');
+  assert.equal(reruns[0].prompt.split('\n').at(-1), 'run-tests start /tmp/wt --base origin/main --files plugins/dev-flow/_shared/scripts/diff-risk-classify.bats');
+  const finalRun = calls.find((c) => c.label === 'test#final');
+  assert.ok(finalRun.prompt.split('\n').at(-1).endsWith(' --base origin/main'), finalRun.prompt.split('\n').at(-1));
   assert.equal(calls.filter((c) => c.label === 'test#final').length, 1, '(n) test#final 自体は 1 回のまま');
 
   assert.equal(result?.final_reconcile, 'reverified');

@@ -89,6 +89,7 @@ export const IMPL = {
 }
 // failed_files: runValidateLoop が「base でも落ちる既存の失敗」を green 要件から外す材料（省略時は全失敗が green-fix 対象）。
 // scripts[].log は同じ tree を判定する eval#N / final-ac-reconcile に渡し、実行済みのテストを evaluator に再実行させない。
+// changed_runners（base と違う・base に無い tests/run-*.sh）は Merge tier が test_runner_changed の HOLD に使う。
 export const GREEN = {
   type: 'object', required: ['tests', 'green'],
   properties: {
@@ -104,6 +105,7 @@ export const GREEN = {
       },
     },
     failed_files: { type: 'array', items: { type: 'string' } },
+    changed_runners: { type: 'array', items: { type: 'string' } },
     epoch: { type: 'number' },
   },
 }

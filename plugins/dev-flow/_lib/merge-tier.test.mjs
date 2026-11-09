@@ -12,6 +12,7 @@ import {
   aggregateHoldKind,
   EVAL_STALENESS_VALUES,
   classifyCiChecks,
+  changedTestRunnersOf,
 } from './merge-tier.mjs';
 import { PR_CLOSES_STATUS_VALUES } from './pr-artifacts.mjs';
 import { parseMergeTierFacts } from './merge-tier-facts.mjs';
@@ -1072,13 +1073,13 @@ test('classifyMergeTier: evalStaleness:undefined/null → throw しない(従来
 
 // ---- issue #658: HOLD_REASON_CODES + holdReasons[].code + disclosures ----
 
-test('HOLD_REASON_CODES は 22 の閉じた enum と一致', () => {
+test('HOLD_REASON_CODES は 23 の閉じた enum と一致', () => {
   assert.deepEqual(HOLD_REASON_CODES, [
     'ledger_unconverged', 'danger_unresolved', 'breaking_structured', 'escalate',
     'ac_agent_unsatisfied', 'ac_human_pending', 'danger_fail_closed', 'final_reconcile_unavailable', 'final_test_red',
     'final_ac_unavailable', 'iterate_non_lgtm', 'hash_mismatch', 'testsurf_uncleared',
     'mergeable_conflicting', 'pr_closes_missing', 'merge_facts_dropped', 'ci_checks_failed', 'ac_ci_pending',
-    'security_review_unresolved', 'validate_test_red', 'validate_tests_not_run', 'no_tests_run',
+    'security_review_unresolved', 'validate_test_red', 'validate_tests_not_run', 'no_tests_run', 'test_runner_changed',
   ]);
 });
 
@@ -1522,6 +1523,37 @@ test('classifyMergeTier: Final reconcile の test#final が tests:no_tests（fin
   const reverifiedGreen = classifyMergeTier(baseCleanInput({ finalReconcile: 'reverified', finalTestGreen: true, finalTestNoTests: false, validateResult: VALIDATE_NO_TESTS }));
   assert.equal(reverifiedGreen.tier, 'REVIEW', JSON.stringify(reverifiedGreen));
   assert.throws(() => classifyMergeTier(baseCleanInput({ finalTestNoTests: 'yes' })), /invalid finalTestNoTests/);
+});
+
+// ---- test_runner_changed（run-tests の changed_runners = 中身が base と違う・base に無い tests/run-*.sh、issue #1277）----
+
+test('classifyMergeTier: changedTestRunners が非空なら、そのパスを含む blocking 理由 test_runner_changed（human_judgment）で HOLD', () => {
+  const runners = ['tests/run-new.sh', 'tests/run-all-bats.sh'];
+  // classifyMergeTier は gate_policy を受け取らず、policy が左右するのは converged / evalSkipped だけ — どちらの値でも積まれる
+  for (const extra of [{}, { evalSkipped: true }, { converged: false }, { finalReconcile: 'reverified', finalTestGreen: true }]) {
+    const r = classifyMergeTier(baseCleanInput({ changedTestRunners: runners, validateResult: { tests: 'passed', green: true }, ...extra }));
+    assert.equal(r.tier, 'HOLD', JSON.stringify(extra));
+    const held = r.holdReasons.filter((x) => x.code === 'test_runner_changed');
+    assert.deepEqual(held.map((x) => x.kind), ['human_judgment'], JSON.stringify(extra));
+    for (const p of runners) assert.ok(held[0].reason.includes(p), held[0].reason);
+  }
+  for (const changedTestRunners of [[], undefined, null]) {
+    const r = classifyMergeTier(baseCleanInput({ changedTestRunners, validateResult: { tests: 'passed', green: true } }));
+    assert.equal(r.tier, 'REVIEW', JSON.stringify(changedTestRunners));
+  }
+  for (const bad of ['tests/run-x.sh', [1], { 0: 'x' }]) {
+    assert.throws(() => classifyMergeTier(baseCleanInput({ changedTestRunners: bad })), /invalid changedTestRunners/, JSON.stringify(bad));
+  }
+});
+
+test('changedTestRunnersOf: 各結果の changed_runners を重複なく出現順に集め、キーの無い結果・null は空として扱う', () => {
+  assert.deepEqual(changedTestRunnersOf([
+    { tests: 'passed', changed_runners: ['tests/run-a.sh'] },
+    null,
+    { tests: 'passed' },
+    { tests: 'failed', changed_runners: ['tests/run-b.sh', 'tests/run-a.sh'] },
+  ]), ['tests/run-a.sh', 'tests/run-b.sh']);
+  assert.deepEqual(changedTestRunnersOf([null, { tests: 'passed', green: true }]), []);
 });
 
 test('classifyMergeTier: setupDeps の契約外形状は明示 error', () => {

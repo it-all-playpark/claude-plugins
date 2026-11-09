@@ -96,9 +96,9 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
 ## Validate
 
 - **判定**: test が green か。exec-proxy `run-tests start <WT> --base origin/<base>` → `run-tests wait <WT>` の繰り返し（`runTestsJob`）の stdout の
-  転写だけで、`tests/run-*.sh` を全本実行し、全本 exit 0 のときだけ green。直前に `workspace-prebuild <WT>` が pnpm ワークスペースの
-  成果物を作り直す
-  - ランナーの契約: merge-base を解決できたときだけ `DEVFLOW_CHANGED_FILES`（差分と untracked の WT 相対パスを 1 行 1 件で書いた
+  転写だけで、base の `tests/run-*.sh` 全本が exit 0 なら green（欠落は error、変更は `test_runner_changed`）。
+  直前に `workspace-prebuild <WT>` が pnpm ワークスペースの成果物を作り直す
+  - ランナーの契約: `DEVFLOW_CHANGED_FILES`（差分と untracked の WT 相対パスを 1 行 1 件で書いた
     ファイルの絶対パス）と `DEVFLOW_BASE`（merge-base の sha）を渡す（未設定は全件実行。選択はランナー側）。`DEVFLOW_FAILED_FILES`
     には exit 非 0 のランナーが落ちたテストファイルを同じ書式で漏れなく書く（漏れは base との切り分けで見落とされる）。
     全部を書けないなら書かない

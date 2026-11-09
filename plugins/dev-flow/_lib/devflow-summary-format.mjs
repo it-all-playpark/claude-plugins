@@ -1199,6 +1199,8 @@ function holdReasonDisplay(code, ctx) {
       return { current: 'テストが 1 件も実行されていない（ローカルは起動失敗）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
     case 'no_tests_run':
       return { current: 'テストを 1 本も実行していない（実行対象のテストが 0 本）', action: 'テストの要否と実行方法を確認する' };
+    case 'test_runner_changed':
+      return { current: 'PR が tests/run-*.sh を書き換えた・足した（そのランナーの green はテストが通った証拠にならない）', action: 'ランナーの変更を確認し、base のランナーでテストを実行する' };
     case 'final_ac_unavailable':
       return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
     case 'iterate_non_lgtm':
