@@ -137,15 +137,11 @@ feedback は `pass` でも返せる（escalate だけの報告など）。
 `description` 300 字・`suggestion` 200 字・各 `evidence` 200 字（超えると schema 検証で差し戻される）。
 「事実 → 影響 → 推奨対応」の順で、file:line・テスト名・推奨アクションは削らない。
 
-`confidence`（任意、0〜1）: この verdict の確からしさ。test で実証した AC の割合や確認できた範囲から付け、
-verdict とは独立に付ける。根拠の無い高い値や一律の値を乱発せず、根拠が無ければ省略する。記録専用でゲートには使われない。
-
 ## 出力 JSON
 
 ```json
 {
   "verdict": "pass",
-  "confidence": 0.8,
   "feedback": [
     {"severity": "major", "topic": "input-validation-missing::create-user",
      "description": "src/user.ts の create-user が email 形式を検証していない（計画に入力検証があるが実装で漏れ）",

@@ -1441,7 +1441,6 @@ const REVIEW = {
     summary: { type: 'string', maxLength: 200 },
     // 検証根拠の箇条書き（1 項目 1 文）。summary は結論 1-2 文に留める
     verification_evidence: { type: 'array', maxItems: 6, items: { type: 'string', maxLength: 120 } },
-    confidence: { type: 'number', minimum: 0, maximum: 1 },
   },
 }
 
