@@ -316,6 +316,20 @@ function reconcileDanger(ledger, risk) {
   return { ...ledger, items };
 }
 
+function partitionUncheckedBlocking(blockingItems, { dangerFailClosed, riskValueDropped }) {
+  const failClosedCode = riskValueDropped === true ? 'merge_facts_dropped' : 'danger_fail_closed';
+  const out = { [failClosedCode]: [], danger_unresolved: [], testsurf_uncleared: [], ledger_unconverged: [] };
+  for (const it of blockingItems) {
+    if (it.checked) continue;
+    const isSecSeed = it.source === 'seed' && it.dimension === 'security';
+    if (dangerFailClosed === true && isSecSeed && it.fail_closed === true) out[failClosedCode].push(it.id);
+    else if (isSecSeed && it.floor === true) out.danger_unresolved.push(it.id);
+    else if (it.source === 'seed' && it.dimension === 'test-integrity') out.testsurf_uncleared.push(it.id);
+    else out.ledger_unconverged.push(it.id);
+  }
+  return out;
+}
+
 function newlyUncheckedSecClasses(before, after) {
   const beforeById = new Map(
     (before?.items ?? [])
@@ -396,6 +410,9 @@ function classifyMergeTier(s) {
   if (s.evalVerdictFail != null && typeof s.evalVerdictFail !== 'boolean') {
     throw new Error('classifyMergeTier: invalid evalVerdictFail: ' + s.evalVerdictFail);
   }
+  if (Object.prototype.hasOwnProperty.call(s, 'converged')) {
+    throw new Error('classifyMergeTier: converged は廃止 — partitionUncheckedBlocking の ledger_unconverged を ledgerUnconverged で渡す');
+  }
   if (Object.prototype.hasOwnProperty.call(s, 'unsatisfiedAc')) {
     throw new Error('classifyMergeTier: unsatisfiedAc は廃止 — unsatisfiedAgentAc / unsatisfiedHumanAc を渡す');
   }
@@ -447,10 +464,15 @@ function classifyMergeTier(s) {
   if (s.changedTestRunners != null && !isStringArray(s.changedTestRunners)) {
     throw new Error('classifyMergeTier: invalid changedTestRunners');
   }
+  if (s.ledgerUnconverged != null && !isStringArray(s.ledgerUnconverged)) {
+    throw new Error('classifyMergeTier: invalid ledgerUnconverged');
+  }
   const ci =s.ciChecks != null ? classifyCiChecks(s.ciChecks) : null;
   const blockingReasons = [];
   const pushBlocking = (code, reason, kind) => blockingReasons.push({ code, reason, kind });
-  if (!s.converged) pushBlocking('ledger_unconverged', 'ledger 未収束（未 checked blocking 残）', 'human_judgment');
+  if (s.ledgerUnconverged?.length > 0) {
+    blockingReasons.push({ code: 'ledger_unconverged', reason: 'ledger 未収束（未 checked blocking 残）', kind: 'human_judgment', item_ids: [...s.ledgerUnconverged] });
+  }
   if (s.unresolvedDanger) pushBlocking('danger_unresolved', 'danger-grep hit 未解消（security 要確認）', 'human_judgment');
   if (s.breakingStructured) {
     pushBlocking('breaking_structured', 'breaking/migration 検出（analyze 構造化判定 breaking_change=true'
@@ -1828,8 +1850,10 @@ function buildDevflowSummaryBody({
     const holdAcGroups = acGroups
       .map((g) => ({ ...g, holdCodes: g.codes.filter((c) => holdCodeSet.has(c)) }))
       .filter((g) => g.holdCodes.length >= 2);
+    const ledgerUnconvergedIds = new Set(holdReasons.find((hr) => hr && hr.code === 'ledger_unconverged')?.item_ids ?? []);
+    const ledgerUnconvergedItems = uncheckedBlocking.filter((it) => ledgerUnconvergedIds.has(it.id));
     const codeAcIndexes = {
-      ledger_unconverged: uncheckedBlocking.map(itemAcIndex),
+      ledger_unconverged: ledgerUnconvergedItems.map(itemAcIndex),
       escalate: escalateAll.map(itemAcIndex),
       ac_agent_unsatisfied: acAgentGaps,
       ac_human_pending: acHumanGaps,
@@ -1864,7 +1888,7 @@ function buildDevflowSummaryBody({
       const { current, action } = holdReasonDisplay(hr && hr.code, {
         escalateTotal,
         escalateResolved,
-        uncheckedBlockingCount: uncheckedBlocking.length,
+        uncheckedBlockingCount: ledgerUnconvergedItems.length,
         unclearedCount: uncleared.length,
         iterateStatus,
         pr,
@@ -3778,8 +3802,9 @@ if (newlyUnchecked.length > 0) {
     }
   }
 }
-const unresolvedDanger = state.ledger.items.some(
-  (it) => it.dimension === 'security' && it.source === 'seed' && it.floor && !it.checked)
+// 未 checked blocking item を HOLD 理由の code ごとに 1 つへ振り分ける（同じ item から複数の HOLD 行を立てない）
+const holdItemIds = partitionUncheckedBlocking(policyBlockingItems(state.ledger, GATE_POLICY), {
+  dangerFailClosed: dangerFailClosedFinal, riskValueDropped: riskValueDroppedFinal })
 const breakingStructured = req.breaking_change === true
 const breakingKeyword = req.breaking_keyword_scan === true
 const escalateCount = policyAdvisoryItems(state.ledger, GATE_POLICY).filter((it) => it.escalate === true).length
@@ -3846,8 +3871,8 @@ const securityReviewFinal = {
 const securityReviewUnresolved = securityReviewFinal.target && securityReviewFinal.status !== 'cleared'
 if (securityReviewUnresolved) log(`⚠️ security review: 対象だが今の PR head で clear になっていない（iterate status=${iterate?.status ?? 'null'} / security status=${securityReviewFinal.status}）— HOLD`)
 const mergeTier = classifyMergeTier({
-  converged: isConvergedUnderPolicy(state.ledger, GATE_POLICY),
-  unresolvedDanger,
+  ledgerUnconverged: holdItemIds.ledger_unconverged,
+  unresolvedDanger: holdItemIds.danger_unresolved.length > 0,
   breakingStructured,
   breakingKeyword,
   escalateCount,
@@ -3877,7 +3902,7 @@ const mergeTier = classifyMergeTier({
   staleDiffFiles: state.staleDiffFiles,
   prHeadTreeOid: state.prHeadTreeOid,
   finalAcReconcile,
-  testsurfUncleared: state.ledger.items.filter((it) => it.source === 'seed' && it.dimension === 'test-integrity' && !it.checked).map((it) => it.id),
+  testsurfUncleared: holdItemIds.testsurf_uncleared,
   mergeableState,
   evalVerdictFail: state.evalResult?.verdict === 'fail',
   prClosesStatus,

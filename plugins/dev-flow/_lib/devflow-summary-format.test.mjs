@@ -2,7 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { mdCell } from './md-cell.mjs';
 import { buildDevflowSummaryBody } from './devflow-summary-format.mjs';
-import { classifyMergeTier, seedSecurityLedger, reconcileDanger } from './merge-tier.mjs';
+import { classifyMergeTier, seedSecurityLedger, reconcileDanger, partitionUncheckedBlocking } from './merge-tier.mjs';
 
 globalThis.mdCell = mdCell;
 
@@ -682,7 +682,7 @@ test('末尾マーカーが /<!-- dev-flow:REVIEW -->$/ で末尾一致', () => 
 
 test('issue #930: HOLD の末尾マーカーは merge tier の holdReasons の code を順に並べた <!-- dev-flow:HOLD codes=... -->', () => {
   const mt = classifyMergeTier({
-    converged: true, unresolvedDanger: false, breakingStructured: false, breakingKeyword: false,
+    ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false, breakingKeyword: false,
     escalateCount: 0, evalStaleness: 'none', unsatisfiedAgentAc: false,
     iterateStatus: 'stuck', unsatisfiedHumanAc: true, ciChecks: { ok: true, checks: [{ name: 'Bats Tests', bucket: 'fail' }] },
   });
@@ -2132,7 +2132,7 @@ test('issue #625: evalCell 反転後も iterate_fixed 注記行は残る（確�
 // 確定仕様5（理由欄は消さない）+ AC4（merge tier 不変・byte 一致）。
 test('issue #625 確定仕様5+AC4: merge tier は不変のまま at-a-glance 表示のみ最終状態を反映する', () => {
   const tierInput = {
-    converged: true, unresolvedDanger: false,
+    ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'iterate_fixed', evalVerdictFail: true,
@@ -2182,7 +2182,7 @@ test('issue #625 確定仕様5+AC4: merge tier は不変のまま at-a-glance �
 
 test('issue #625: 決定性 — 確定仕様5+AC4 と同一入力で 2 回呼んでも byte 一致', () => {
   const tierInput = {
-    converged: true, unresolvedDanger: false,
+    ledgerUnconverged: [], unresolvedDanger: false,
     breakingStructured: false, breakingKeyword: false,
     escalateCount: 0,
     iterateStatus: 'lgtm', evalStaleness: 'iterate_fixed', evalVerdictFail: true,
@@ -2899,7 +2899,7 @@ test('issue #738 AC5: 結論行・「あなたがやること」が指す「要�
 
 test('issue #747 AC4: HOLD 理由の表でエージェント AC 未達（取りこぼし）と人手 AC 待ちが別の現状・対応で出る', () => {
   const mt = classifyMergeTier({
-    iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false,
+    iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false,
     breakingKeyword: false, escalateCount: 0, evalStaleness: 'none',
     unsatisfiedAgentAc: true, unsatisfiedHumanAc: true,
   });
@@ -2970,7 +2970,8 @@ const UNLINKED_E_794 = { id: 'E1', text: 'naming', severity: 'major', checked: f
 
 function input794({ blockingItems = [AC4_FINAL_794], advisoryItems = [AC4_ESC_794], agent = [3], human = [] } = {}) {
   const mt = classifyMergeTier({
-    iterateStatus: 'lgtm', converged: false, unresolvedDanger: false, breakingStructured: false,
+    iterateStatus: 'lgtm', ledgerUnconverged: partitionUncheckedBlocking(blockingItems, { dangerFailClosed: false, riskValueDropped: false }).ledger_unconverged,
+    unresolvedDanger: false, breakingStructured: false,
     breakingKeyword: false, escalateCount: advisoryItems.filter((it) => it.escalate === true).length,
     evalStaleness: 'none', unsatisfiedAgentAc: agent.length > 0, unsatisfiedHumanAc: human.length > 0,
   });
@@ -3051,13 +3052,30 @@ test('issue #794 AC3: AC への紐付けが 1 系統だけ・どこにも紐づ�
   assert.ok(!body.includes('1 行にまとめた'));
 });
 
+// ─── issue #1291: ledger_unconverged 行は holdReasons の item_ids の item だけを数える ───
+
+test('issue #1291: fail-closed の SEC seed 7 件と未 checked の通常 blocking 1 件 → ledger_unconverged 行の現状は「未 checked blocking 1 件」', () => {
+  const secFailClosed = reconcileDanger({ items: seedSecurityLedger() }, { ok: false }).items;
+  const blockingItems = [...secFailClosed, UNLINKED_B_794];
+  const holdReasons = [
+    { code: 'ledger_unconverged', reason: 'ledger 未収束（未 checked blocking 残）', kind: 'human_judgment', item_ids: [UNLINKED_B_794.id] },
+    { code: 'danger_fail_closed', reason: 'danger-grep 実行不能（fail-closed）— security 未検証のため人間確認必須', kind: 'human_judgment' },
+  ];
+  const body = buildDevflowSummaryBody({
+    ...BASE_INPUT, mergeTier: 'HOLD', holdReasons, holdKind: 'human_judgment', mergeTierReasons: holdReasons.map((r) => r.reason),
+    blockingItems, ledgerConverged: false,
+  });
+  const ledgerRow = rows794(body, '### HOLD になった理由と現状').find((l) => l.startsWith('| ledger 未収束'));
+  assert.equal(ledgerRow, '| ledger 未収束（未 checked blocking 残） | 未 checked blocking 1 件 | 修正が必要（下表 ❌ 行） |');
+});
+
 // ─── issue #844: 観測型 AC の未達は対応欄を「実行して確かめる」にし、どの AC が観測型かを出す ───
 
 const OBS_ACTION_844 = '実行して AC の主張を確認する（例: merge 後の実 run・計測）';
 
 function input844({ human = [0], observational = [0] } = {}) {
   const mt = classifyMergeTier({
-    iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false,
+    iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false,
     breakingKeyword: false, escalateCount: 0, evalStaleness: 'none',
     unsatisfiedAgentAc: false, unsatisfiedHumanAc: human.length > 0,
   });
@@ -3173,7 +3191,7 @@ test('issue #1297: 同じ AC にまとめた行でも、AC 判定の現状に AC
 // そのまま渡す（workflow と同じ経路で作るので、既定文や clean の evidence が変わればここで落ちる）。
 
 const CLASSIFY_BASE_829 = {
-  iterateStatus: 'lgtm', converged: true, unresolvedDanger: false, breakingStructured: false,
+  iterateStatus: 'lgtm', ledgerUnconverged: [], unresolvedDanger: false, breakingStructured: false,
   breakingKeyword: false, escalateCount: 0, evalStaleness: 'none',
   unsatisfiedAgentAc: false, unsatisfiedHumanAc: false,
 };
@@ -3235,7 +3253,7 @@ const FIXTURES_829 = {
   // HOLD: auth が hit して evaluator が evidence で clear・blocking 未解消・ESCALATE 未判断・AC 未達・
   // fix 後の Final AC reconcile が判定不能（バナーは fix 前 tree 基準のまま）
   holdMixed: fixture829({
-    classify: { converged: false, escalateCount: 1, unsatisfiedAgentAc: true, evalStaleness: 'iterate_fixed', finalReconcile: 'reverified', finalTestGreen: true, finalAcReconcile: 'unavailable' },
+    classify: { ledgerUnconverged: [BLOCKING_OPEN_829.id], escalateCount: 1, unsatisfiedAgentAc: true, evalStaleness: 'iterate_fixed', finalReconcile: 'reverified', finalTestGreen: true, finalAcReconcile: 'unavailable' },
     blockingItems: [
       ...secItems829(['auth']).map((it) => (it.danger_class === 'auth' ? { ...it, checked: true, evidence: AUTH_CLEARANCE_829 } : it)),
       ...CHECKED_AC_ITEMS_829.slice(0, 1),

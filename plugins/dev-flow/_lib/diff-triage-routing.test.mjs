@@ -37,7 +37,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { parseDiffTriageFields } from './diff-triage.mjs';
-import { reconcileDanger, seedSecurityLedger, classifyMergeTier } from './merge-tier.mjs';
+import { reconcileDanger, seedSecurityLedger, classifyMergeTier, partitionUncheckedBlocking } from './merge-tier.mjs';
 import { policyBlockingItems, DEFAULT_GATE_POLICY } from './gate-policy.mjs';
 import { makeLedger, appendItem } from './goal-ledger.mjs';
 import { secHitsOf, reconcileTestsurf } from './testsurf.mjs';
@@ -125,7 +125,11 @@ function reconcileAndClassify(risk) {
   const secItems = ledger.items.filter((it) => it.source === 'seed' && it.dimension === 'security');
   const blocking = policyBlockingItems(ledger, DEFAULT_GATE_POLICY);
   const converged = blocking.every((it) => it.checked);
-  const { tier } = classifyMergeTier({ converged });
+  const dangerFailClosed = risk.ok !== true;
+  const held = partitionUncheckedBlocking(blocking, { dangerFailClosed, riskValueDropped: false });
+  const { tier } = classifyMergeTier({
+    ledgerUnconverged: held.ledger_unconverged, unresolvedDanger: held.danger_unresolved.length > 0, dangerFailClosed,
+  });
   return { secItems, converged, tier };
 }
 

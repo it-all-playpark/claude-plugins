@@ -184,8 +184,8 @@ function resolvedCell(v) {
  * @param {string|null|undefined} [opts.iterateStatus] - pr-iterate 終端 status（'lgtm'|'stuck'|'fix_failed'|'max_reached'|'ci_error'|'ci_pending'|'review_contract_error'。非 'lgtm' のときのみ未解消指摘セクションを描画する。issue #602）
  * @param {Array<{iteration:number,decision:string,summary:string,blocking:Array<{severity,topic,file,line,description,suggestion}>,minor:Array}>|null|undefined} [opts.iterateHistory] - pr-iterate の round 履歴（issue #602）
  * @param {number|null|undefined} [opts.iterateIterations] - pr-iterate 返り値 iterations。history 末尾 round の iteration と一致するときのみその round を終端 round とみなす（ci_error/ci_pending/review_contract_error は終端 round を history に push しないため）。null なら末尾 round を採用（issue #602）
- * @param {Array<{code:string, reason:string, kind:'deterministic_recheck'|'human_judgment'}>|null|undefined} [opts.holdReasons] - HOLD 判定に寄与した理由（HOLD 時のみ非空。merge-tier.mjs の
- *   閉じた code enum（HOLD_REASON_CODES）を持つ）。summary は code から「現状/対応」列を fail-safe に
+ * @param {Array<{code:string, reason:string, kind:'deterministic_recheck'|'human_judgment', item_ids?:string[]}>|null|undefined} [opts.holdReasons] - HOLD 判定に寄与した理由（HOLD 時のみ非空。merge-tier.mjs の
+ *   閉じた code enum（HOLD_REASON_CODES）を持つ。ledger_unconverged の item_ids がその行の件数・AC 紐付けの母集団）。summary は code から「現状/対応」列を fail-safe に
  *   写像する（out-of-enum/欠落は '—' / '人が確認する'。throw しない。表示専用。issue #658）
  * @param {'deterministic_recheck'|'human_judgment'|null|undefined} [opts.holdKind] - HOLD 理由の代表 kind（merge-tier.mjs の aggregateHoldKind の返り値。issue #658）
  * @param {string[]|null|undefined} [opts.disclosures] - 可視化のみで HOLD 判定に寄与しない理由行（breaking keyword hit 等）。
@@ -724,8 +724,11 @@ export function buildDevflowSummaryBody({
     const holdAcGroups = acGroups
       .map((g) => ({ ...g, holdCodes: g.codes.filter((c) => holdCodeSet.has(c)) }))
       .filter((g) => g.holdCodes.length >= 2);
+    // ledger_unconverged が数える item は merge tier が振り分けた item_ids だけ（専用 code に振り分けた seed は数えない）
+    const ledgerUnconvergedIds = new Set(holdReasons.find((hr) => hr && hr.code === 'ledger_unconverged')?.item_ids ?? []);
+    const ledgerUnconvergedItems = uncheckedBlocking.filter((it) => ledgerUnconvergedIds.has(it.id));
     const codeAcIndexes = {
-      ledger_unconverged: uncheckedBlocking.map(itemAcIndex),
+      ledger_unconverged: ledgerUnconvergedItems.map(itemAcIndex),
       escalate: escalateAll.map(itemAcIndex),
       ac_agent_unsatisfied: acAgentGaps,
       ac_human_pending: acHumanGaps,
@@ -760,7 +763,7 @@ export function buildDevflowSummaryBody({
       const { current, action } = holdReasonDisplay(hr && hr.code, {
         escalateTotal,
         escalateResolved,
-        uncheckedBlockingCount: uncheckedBlocking.length,
+        uncheckedBlockingCount: ledgerUnconvergedItems.length,
         unclearedCount: uncleared.length,
         iterateStatus,
         pr,
