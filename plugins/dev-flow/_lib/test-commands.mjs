@@ -76,7 +76,7 @@ export function testCommandResolverPrompt(bundleFile) {
     + `- CI 定義（.github/workflows 等）が実際に実行しているテストの起動方法を最優先の根拠にし、無ければ pyproject.toml / package.json / Cargo.toml 等の宣言から決める。\n`
     + `- full_command はテストを全件実行するコマンド。files_command は \`{files}\` を独立した語としてちょうど 1 回含み、そこに worktree の root からの相対パスのテストファイル（複数）を並べるとそれらのテストだけを実行するコマンド。どちらも worktree の root を cwd に実行される。\n`
     + `- どちらもテストランナーを直接起動する形にする（例: \`uv run pytest\` / \`uv run pytest {files}\`、\`pnpm exec vitest run\` / \`pnpm exec vitest run {files}\`、\`cargo test\`、\`go test ./...\`、\`bundle exec rspec {files}\`）。`
-    + `package.json の scripts（\`npm test\` / \`pnpm test\` / \`pnpm run <x>\` / \`yarn <x>\`）・Makefile / justfile / Taskfile / Rakefile のターゲット・tox / nox の環境など、repo 内の定義を経由する形は使わない — PR がその定義を書き換えると実行の中身を差し替えられるため。\n`
+    + `package.json の scripts（\`npm test\` / \`pnpm test\` / \`pnpm run <x>\` / \`yarn <x>\`）・Makefile / justfile / Taskfile / Rakefile のターゲット・tox / nox の環境・hatch / pdm の run・repo 内のスクリプト（\`bash scripts/test.sh\` / \`./scripts/test.sh\` / \`python scripts/x.py\`）など、repo 内の定義を経由する形は使わない — PR がその定義を書き換えると実行の中身を差し替えられるため。\n`
     + `- コマンドは shell を通さず空白で区切った argv で起動される。\`&&\` \`;\` \`|\`・リダイレクト・変数展開・引用符・環境変数代入の前置は使えない。\n`
     + `- 直接起動の形を決められない・テストが無いと判断したら status:"unresolved"（full_command / files_command は null）。推測で埋めない。\n`
     + `- sources には根拠にしたファイルのパス（束の「## ファイル: <path>」の path）を 1 件以上入れる。\n\n`
@@ -117,21 +117,50 @@ export function parsePreparedTestCommands(res) {
 
 // shell の記号・引用符（run-tests は shell を通さず空白で区切るので、使っても意図どおりに動かない）
 const TEST_COMMAND_UNSAFE_CHARS = ';&|<>$`\'"\\\n\r'
-// repo 内の定義を経由する起動: 先頭の語が常に経由するもの（null）と、2 語目が直接起動の subcommand のときだけ受けるもの
+// repo 内の定義を経由する起動: 先頭の語が常に経由するもの（null）と、2 語目が直接起動の subcommand のときだけ受けるもの。
+// shell は repo 内のスクリプトを実行する形にしかならないので常に経由扱い。hatch run / pdm run は名前を repo の scripts から先に引く
 const TEST_COMMAND_INDIRECT = {
-  make: null, gmake: null, just: null, task: null, rake: null, tox: null, nox: null,
+  make: null, gmake: null, just: null, task: null, rake: null, tox: null, nox: null, hatch: null, pdm: null,
+  sh: null, bash: null, zsh: null, dash: null, ksh: null, fish: null,
   npm: ['exec', 'x'], pnpm: ['exec', 'dlx'], yarn: ['exec', 'dlx'], bun: ['x', 'test'], deno: ['test'], composer: ['exec'],
+}
+// 後ろの語を起動するだけの前置（uv run pytest 等）。後ろの起動にも同じ検査をかける
+const TEST_COMMAND_WRAPPERS = {
+  uv: ['run'], poetry: ['run'], bundle: ['exec'], pnpm: ['exec', 'dlx'], npm: ['exec', 'x'], yarn: ['exec', 'dlx'],
+  bun: ['x'], composer: ['exec'],
+}
+// 最初の位置引数がファイルなら repo 内のスクリプトを実行するインタプリタ（python -m pytest は受ける）
+const TEST_COMMAND_INTERPRETERS = ['python', 'python3', 'node', 'ruby', 'perl', 'php']
+
+function testCommandInvocationError(words) {
+  let i = 0
+  for (;;) {
+    const head = words[i]
+    if (head == null) return '起動するコマンドが無い'
+    if (head.includes('/')) return `repo 内のパスを直接起動する（${head}）`
+    if (TEST_COMMAND_INTERPRETERS.includes(head)) {
+      const arg = words.slice(i + 1).find((w) => !w.startsWith('-'))
+      if (arg != null && arg !== '{files}' && (arg.includes('/') || /\.[A-Za-z0-9]+$/.test(arg))) return `repo 内のスクリプトを実行する（${head} ${arg}）`
+    }
+    const wrap = TEST_COMMAND_WRAPPERS[head]
+    if (wrap != null && wrap.includes(words[i + 1])) {
+      i += 2
+      while (words[i] != null && words[i].startsWith('-')) i += 1
+      continue
+    }
+    if (Object.prototype.hasOwnProperty.call(TEST_COMMAND_INDIRECT, head)) {
+      const allowed = TEST_COMMAND_INDIRECT[head]
+      if (allowed == null || !allowed.includes(words[i + 1])) return `repo 内の定義を経由する起動（${words.slice(i, i + 2).join(' ')}）`
+    }
+    return null
+  }
 }
 
 function testCommandShapeError(cmd, label) {
   if (typeof cmd !== 'string' || cmd.trim() === '') return `${label} が空`
   if ([...cmd].some((c) => TEST_COMMAND_UNSAFE_CHARS.includes(c))) return `${label} が shell の記号・引用符を含む`
-  const words = cmd.trim().split(/\s+/)
-  if (Object.prototype.hasOwnProperty.call(TEST_COMMAND_INDIRECT, words[0])) {
-    const allowed = TEST_COMMAND_INDIRECT[words[0]]
-    if (allowed == null || !allowed.includes(words[1])) return `${label} が repo 内の定義を経由する起動（${words.slice(0, 2).join(' ')}）`
-  }
-  return null
+  const err = testCommandInvocationError(cmd.trim().split(/\s+/))
+  return err == null ? null : `${label} が ${err}`
 }
 
 /**
