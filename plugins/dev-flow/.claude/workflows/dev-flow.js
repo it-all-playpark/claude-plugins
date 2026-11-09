@@ -2143,19 +2143,19 @@ function runTestsStartCommand(wt, base, commandsFile) {
 }
 
 function runTestsPrompt(wt, base, commandsFile) {
-  return runTestsCommandPrompt(wt, runTestsStartCommand(wt, base, commandsFile));
+  return runTestsCommandPrompt(runTestsStartCommand(wt, base, commandsFile));
 }
 
 function runTestsWaitPrompt(wt) {
-  return runTestsCommandPrompt(wt, `run-tests wait ${wt} --wait-sec ${RUN_TESTS_WAIT_SEC}`);
+  return runTestsCommandPrompt(`run-tests wait ${wt} --wait-sec ${RUN_TESTS_WAIT_SEC}`);
 }
 
 function runTestsStopPrompt(wt) {
-  return runTestsCommandPrompt(wt, `run-tests stop ${wt}`, '{"ok":false,"error":"run-tests did not return JSON"}');
+  return runTestsCommandPrompt(`run-tests stop ${wt}`, '{"ok":false,"error":"run-tests did not return JSON"}');
 }
 
-function runTestsCommandPrompt(wt, command, noJson = '{"tests":"error","green":false,"summary":"run-tests did not return JSON"}') {
-  return `cd ${wt} で作業。次のコマンドを **先頭トークンが run-tests の bare 単文** で 1 回だけ実行し、`
+function runTestsCommandPrompt(command, noJson = '{"tests":"error","green":false,"summary":"run-tests did not return JSON"}') {
+  return `次のコマンドを **先頭トークンが run-tests の bare 単文** で 1 回だけ実行し、`
     + `**stdout の JSON 1 行だけ** を verbatim で返せ（判定や脚色をしない。キーの追加・削除・値の書き換えをしない）。`
     + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止。`
     + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない（常駐化はコマンド自身が行う）。再実行しない（timeout に達した場合も含む）。`
@@ -2218,7 +2218,7 @@ const PRE_COMMIT_HOOK_SCHEMA = {
 };
 
 function preCommitHookPrompt(wt) {
-  return `cd ${wt} で作業。次のコマンドを **先頭トークンが pre-commit-hook の bare 単文** で 1 回だけ実行し、`
+  return `次のコマンドを **先頭トークンが pre-commit-hook の bare 単文** で 1 回だけ実行し、`
     + `exit code に関わらず **stdout の JSON 1 行だけ** を verbatim で返せ（判定や脚色をしない。キーの追加・削除・値の書き換えをしない）。`
     + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・引数の追加は禁止。`
     + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。再実行しない（timeout に達した場合も含む）。`
@@ -2394,7 +2394,7 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
 
   function implPrompt(t, { req, fixFeedback, blocked }) {
     const note = notes()
-    return `cd ${wt} で作業（Bash 呼び出しごとに必ず先頭で cd ${wt} すること。agent の cwd は毎回リセットされる）。`
+    return `cwd は worktree（${wt}）。cd を前置しない。`
       + `issue #${issue} を計画から実装まで仕上げよ。git add / commit はするな。\n`
       + `task_id: ${t.id}（返却 JSON の task_id にそのまま echo せよ）\n`
       + `repo: ${repo ?? '(unknown)'} / issue: #${issue} ${String(req?.issue_title ?? '')} / worktree: ${wt} / base: ${base}\n`
@@ -2458,7 +2458,7 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
   }
 
   function baseRerunPrompt(files) {
-    return `cd ${wt} で作業。Validate のテストで失敗した次のテストファイルが、base（origin/${base}）の tree でも同じように失敗するかを確かめよ。`
+    return `Validate のテストで失敗した次のテストファイルが、base（origin/${base}）の tree でも同じように失敗するかを確かめよ。`
       + `worktree のファイルは変更・stage・削除するな（修正もしない）。\n`
       + `対象（repo 相対パス）: ${JSON.stringify(files)}\n`
       + `手順:\n`
@@ -2572,7 +2572,7 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
       }
       const note = notes()
       const gfResult = await spawn(
-        `cd ${wt} で作業（Bash ごとに先頭で cd すること）。${testsToFix ? 'テスト' : 'pre-commit hook'}が失敗している。原因を分析して実装/テストを修正し`
+        `cwd は worktree（${wt}）。cd を前置しない。${testsToFix ? 'テスト' : 'pre-commit hook'}が失敗している。原因を分析して実装/テストを修正し`
         + `green を目指せ。共有 worktree のため無関係ファイルは触るな。git add / commit はするな。\n`
         + `**禁止**: テストの期待値・assert を弱めて green にすることは禁止（テスト弱体化）。`
         + `テスト側を修正してよいのはテスト自体の誤り（誤った期待値・環境依存・typo）に根拠を示せる場合のみで、その根拠を summary に明記せよ。\n`
@@ -2691,7 +2691,7 @@ const setup = PRERUN
 // clarifyPrompt: analyze ゲートが引いたときだけ sonnet を 1 spawn し、ゲート理由を人間が答えられる質問文に書き起こさせる。
 // issue の転写・要件抽出はさせない（LLM に要件を再構成させると転写事故への provenance 突合が再び要る）。
 // 失敗は fail-open でゲート理由をそのまま missing_context にする。
-const clarifyPrompt = (gateReasons) => `cd ${WT} で作業。issue #${ISSUE} は決定論の analyze（analyze-issue --contract + Jev 有界判定）で次の理由により実装に進めないと判定された。\n`
+const clarifyPrompt = (gateReasons) => `issue #${ISSUE} は決定論の analyze（analyze-issue --contract + Jev 有界判定）で次の理由により実装に進めないと判定された。\n`
   + `\`analyze-issue ${ISSUE}${REPO ? ' --repo ' + REPO : ''} --depth comprehensive --dump-body "\${TMPDIR:-/tmp}/issue-${ISSUE}-body.md"\` を実行して issue の本文・comments を読め。`
   + `出力 JSON の body_dump_path が null でなければ、そのファイルを Read して body 全文を読んでから質問文を起こせ。`
   + `各理由について**人間（issue 作成者）が issue body を直せば解消する具体的な質問文**を missing_context:string[] として返せ（理由 1 件につき 1〜2 文、日本語）。`
@@ -3021,7 +3021,7 @@ async function execValidatePhase(state) {
       // 証拠が揃ったときだけ graceful 終了。それ以外は fail-closed（差し戻し 1 回→再度空なら throw）。
       let crossRepoHandled = false
       const issueLabelsRes = await trackedAgent(
-        `cd ${WT} で作業。次を実行し stdout の JSON 配列を {"ok": true, "labels": <配列>} に包んで返せ`
+        `次を実行し stdout の JSON 配列を {"ok": true, "labels": <配列>} に包んで返せ`
         + `（exit 非0・stdout 空・JSON 不正・コマンド実行不能なら ok:false/error で返せ。失敗時に ok:true を生成してはならない）:\n`
         + `gh issue view ${ISSUE}${REPO ? ' --repo ' + REPO : ''} --json labels --jq '[.labels[].name]'`,
         { agentType: 'dev-runner-haiku-ro', schema: ISSUE_LABELS, label: 'issue-labels', phase: 'Validate' },
@@ -3031,7 +3031,7 @@ async function execValidatePhase(state) {
         const candidatePaths = crossRepoCandidatePaths(state.implResults, WT)
         if (candidatePaths.length > 0) {
           const artifactsRes = await trackedAgent(
-            `cd ${WT} で作業。次を実行し **stdout の JSON 1 行をそのまま** verbatim で返せ（判定や脚色をしない）:\n`
+            `次を実行し **stdout の JSON 1 行をそのまま** verbatim で返せ（判定や脚色をしない）:\n`
             + `cross-repo-artifacts ${WT} ${candidatePaths.map((p) => `'${p}'`).join(' ')}`,
             { agentType: 'dev-runner-haiku-ro', schema: CROSSREPO_ARTIFACTS, label: 'cross-repo-artifacts', phase: 'Validate' },
           )
@@ -3109,7 +3109,7 @@ async function execValidatePhase(state) {
 const LOCAL_VERIFY_LABELS = { start: (a) => `local-verify-start#${a}`, wait: (a, k) => `local-verify-wait#${a}.${k}`, stop: (a) => `local-verify-stop#${a}` }
 const AC_VERIFY_LABELS = { start: (a) => `ac-verify-start#${a}`, wait: (a, k) => `ac-verify-wait#${a}.${k}`, stop: (a) => `ac-verify-stop#${a}` }
 async function runLocalVerifyOnce(attempt, phaseName = 'Validate', { cfg = LOCAL_VERIFY, stateDir = `${WT}/${LOCAL_VERIFY_STATE_DIR}`, labels = LOCAL_VERIFY_LABELS } = {}) {
-  const proxy = (cmd) => `cd ${WT} で作業。次を Bash で **timeout 600000** を指定して 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ`
+  const proxy = (cmd) => `次を Bash で **timeout 600000** を指定して 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ`
     + `（判定や脚色をしない。失敗時に ok:true を生成してはならない。& や nohup を足さない — 常駐化はコマンド自身が行う）:\n${cmd}`
   let res = null
   try {

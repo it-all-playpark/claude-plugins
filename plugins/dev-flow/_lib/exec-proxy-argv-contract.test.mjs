@@ -66,11 +66,11 @@ for (const fileName of TARGETS) {
     );
   });
 
-  test(`[exec-proxy-argv-contract] ${fileName} defers to caller-instructed cd`, () => {
+  test(`[exec-proxy-argv-contract] ${fileName} never prefixes cd regardless of the prompt wording`, () => {
     const { source, path } = loadAgent(fileName);
     assert.ok(
-      source.includes('呼び出し側 prompt が cd を指示している場合はその指示に従う'),
-      `${path} must state that caller-instructed cd is followed (only agent-initiated prefixing is forbidden)`,
+      source.includes('cwd はすでに worktree なので、prompt の文言にかかわらず cd を前置しない'),
+      `${path} must state that cd is never prefixed because cwd is already the worktree`,
     );
   });
 

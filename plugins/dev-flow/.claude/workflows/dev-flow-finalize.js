@@ -2624,23 +2624,23 @@ function runTestsStartCommand(wt, base, commandsFile) {
 }
 
 function runTestsPrompt(wt, base, commandsFile) {
-  return runTestsCommandPrompt(wt, runTestsStartCommand(wt, base, commandsFile));
+  return runTestsCommandPrompt(runTestsStartCommand(wt, base, commandsFile));
 }
 
 function runTestFilesPrompt(wt, base, commandsFile, files) {
-  return runTestsCommandPrompt(wt, `${runTestsStartCommand(wt, base, commandsFile)} --files ${files.join(' ')}`);
+  return runTestsCommandPrompt(`${runTestsStartCommand(wt, base, commandsFile)} --files ${files.join(' ')}`);
 }
 
 function runTestsWaitPrompt(wt) {
-  return runTestsCommandPrompt(wt, `run-tests wait ${wt} --wait-sec ${RUN_TESTS_WAIT_SEC}`);
+  return runTestsCommandPrompt(`run-tests wait ${wt} --wait-sec ${RUN_TESTS_WAIT_SEC}`);
 }
 
 function runTestsStopPrompt(wt) {
-  return runTestsCommandPrompt(wt, `run-tests stop ${wt}`, '{"ok":false,"error":"run-tests did not return JSON"}');
+  return runTestsCommandPrompt(`run-tests stop ${wt}`, '{"ok":false,"error":"run-tests did not return JSON"}');
 }
 
-function runTestsCommandPrompt(wt, command, noJson = '{"tests":"error","green":false,"summary":"run-tests did not return JSON"}') {
-  return `cd ${wt} で作業。次のコマンドを **先頭トークンが run-tests の bare 単文** で 1 回だけ実行し、`
+function runTestsCommandPrompt(command, noJson = '{"tests":"error","green":false,"summary":"run-tests did not return JSON"}') {
+  return `次のコマンドを **先頭トークンが run-tests の bare 単文** で 1 回だけ実行し、`
     + `**stdout の JSON 1 行だけ** を verbatim で返せ（判定や脚色をしない。キーの追加・削除・値の書き換えをしない）。`
     + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止。`
     + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない（常駐化はコマンド自身が行う）。再実行しない（timeout に達した場合も含む）。`
@@ -2741,15 +2741,15 @@ function redgreenJobSettled(res, pairCount) {
   return redgreenResults(res).length === pairCount;
 }
 
-function redgreenProxyPrompt(wt, cmd, fallback) {
-  return `cd ${wt} で作業。次のコマンドを 1 回だけ実行して **stdout の JSON 1 行だけ** を verbatim で返せ(判定や脚色をしない)。`
+function redgreenProxyPrompt(cmd, fallback) {
+  return `次のコマンドを 1 回だけ実行して **stdout の JSON 1 行だけ** を verbatim で返せ(判定や脚色をしない)。`
     + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない（常駐化はコマンド自身が行う）。`
     + `コマンドを再発行しない（timeout・background 化した場合も含む）。`
     + `timeout に達した・stdout に JSON 1 行が無い場合だけは、${fallback} を一字一句そのまま返せ:\n${cmd}`;
 }
 
 function redgreenStateDirPrompt(wt) {
-  return redgreenProxyPrompt(wt, 'redgreen-verify state-dir', '{"state_dir":""}');
+  return redgreenProxyPrompt('redgreen-verify state-dir', '{"state_dir":""}');
 }
 
 function redgreenStateDirFrom(res) {
@@ -2758,18 +2758,18 @@ function redgreenStateDirFrom(res) {
 }
 
 function redgreenStartPrompt(wt, stateDir, pairs, base = null) {
-  return redgreenProxyPrompt(wt,
+  return redgreenProxyPrompt(
     `redgreen-verify start --state-dir ${stateDir} ${base ? `--base ${base} ` : ''}${wt} `
       + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' '),
     '{"results":[]}');
 }
 
 function redgreenWaitPrompt(wt, stateDir) {
-  return redgreenProxyPrompt(wt, `redgreen-verify wait --state-dir ${stateDir} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
+  return redgreenProxyPrompt(`redgreen-verify wait --state-dir ${stateDir} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
 }
 
 function redgreenStopPrompt(wt, stateDir) {
-  return redgreenProxyPrompt(wt, `redgreen-verify stop --state-dir ${stateDir}`, '{"ok":false}');
+  return redgreenProxyPrompt(`redgreen-verify stop --state-dir ${stateDir}`, '{"ok":false}');
 }
 // ==== END inline: _lib/redgreen-targets.mjs ====
 
@@ -3265,7 +3265,7 @@ async function runRedgreenVerify(pairs, { spawn, label, phase, base = null }) {
 const LOCAL_VERIFY_LABELS = { start: (a) => `local-verify-start#${a}`, wait: (a, k) => `local-verify-wait#${a}.${k}`, stop: (a) => `local-verify-stop#${a}` }
 const AC_VERIFY_LABELS = { start: (a) => `ac-verify-start#${a}`, wait: (a, k) => `ac-verify-wait#${a}.${k}`, stop: (a) => `ac-verify-stop#${a}` }
 async function runLocalVerifyOnce(attempt, phaseName = 'Validate', { cfg = LOCAL_VERIFY, stateDir = `${WT}/${LOCAL_VERIFY_STATE_DIR}`, labels = LOCAL_VERIFY_LABELS } = {}) {
-  const proxy = (cmd) => `cd ${WT} で作業。次を Bash で **timeout 600000** を指定して 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ`
+  const proxy = (cmd) => `次を Bash で **timeout 600000** を指定して 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ`
     + `（判定や脚色をしない。失敗時に ok:true を生成してはならない。& や nohup を足さない — 常駐化はコマンド自身が行う）:\n${cmd}`
   let res = null
   try {
@@ -3476,7 +3476,7 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
     finalEpochRes = maxEpochRes([sync, ft, ftRerun])
     // Step3〜4 は sync 成功だけに依存する（test#final の成否に依存しない）。Step3 最終 changed-files（fail-open）
     const changedFinal = await trackedAgent(
-      `cd ${WT} で作業。次を実行し **stdout の各行(ファイルパス)を** \`{"files": [...]}\` に包んで返せ:\n`
+      `次を実行し **stdout の各行(ファイルパス)を** \`{"files": [...]}\` に包んで返せ:\n`
       + `git -C ${WT} diff --name-only origin/${BASE}...HEAD`,
       { agentType: 'dev-runner-haiku-ro', schema: CHANGED, label: 'changed-files-final', phase: 'Final reconcile' })
     if (!changedFinal?.files) {

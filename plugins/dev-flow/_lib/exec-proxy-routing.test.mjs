@@ -244,6 +244,68 @@ test("[exec-proxy-routing] pr-iterate.js emits zero 'post-review#' calls across 
   assert.equal(calls.filter((c) => c.label === 'post-summary').length, 1, 'post-summary はちょうど 1 回');
 });
 
+// ---- (e) dev-runner* / dev-implementer の prompt は cd を指示しない (issue #1287) ----
+//
+// subagent の cwd は最初から worktree にあり、agent 定義は prompt の文言にかかわらず cd を前置しない。prompt 側に
+// 「cd <wt> で作業」「先頭で cd」「cd <wt> && …」が残ると、同じ prompt・定義の cd 前置禁止と食い違う。
+// dev-flow の全 scenario（nested の evaluate / finalize を含む）・pr-iterate の review⇄fix・HOLD 回収の run で
+// 捕まえた呼び出しを走査する。reviewer / evaluator 系の agentType は対象外。
+const NO_CD_AGENT_TYPES = new Set([RUNNER, RW, RO, WO, 'dev-flow:dev-implementer']);
+const CD_INSTRUCTIONS = [/cd \S+ で作業/, /先頭で cd/, /cd \S+ &&/];
+
+function assertNoCdInstruction(calls, where) {
+  const offending = calls
+    .filter((c) => NO_CD_AGENT_TYPES.has(c.agentType) && CD_INSTRUCTIONS.some((re) => re.test(String(c.prompt))))
+    .map((c) => `${c.label}: ${String(c.prompt).slice(0, 120)}`);
+  assert.deepEqual(offending, [], `${where}: prompt が cd を指示している`);
+}
+
+// Final reconcile で最終 tree が local-verify の exit 0 の tree と異なる → dev-flow-finalize.js が最終 tree で local-verify を再実行する
+async function runLocalVerifyFinal() {
+  const sc = DEV_FLOW_SCENARIOS['local-verify'];
+  const { ctx, calls } = makeDevFlowSandbox({
+    overrides: {
+      ...sc.overrides,
+      'reconcile-sync': { ok: true, head: 'a'.repeat(40) },
+      'diff-hash-local-verify-final': { hash: 'BBB', empty: false },
+      'local-verify-start#final': sc.overrides['local-verify-start#1'],
+      'local-verify-wait#final.1': sc.overrides['local-verify-wait#1.1'],
+      'local-verify-stop#final': sc.overrides['local-verify-stop#1'],
+    },
+    workflow: async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }),
+    extra: sc.extra,
+  });
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
+  assertNoCrash(error, 'local-verify-final');
+  assert.equal(error, null, `local-verify-final run が throw した: ${error?.message}`);
+  assert.ok(calls.some((c) => c.label === 'local-verify-start#final'), calls.map((c) => c.label).join(', '));
+  return calls;
+}
+
+// dev-flow が final_test_red で HOLD にした PR の単体回収（終端 head が HOLD 時の head と違う → hold-test-diff を起動する）
+async function runPrIterateHoldRecovery() {
+  const { ctx, calls } = makePrIterateSandbox({
+    args: {
+      pr: 5,
+      nested: { caller: 'standalone', cwd: '/repo-wt/pr-5', head_ref: 'feature/x', head_sha: 'b'.repeat(40), base_ref: 'main', repo: 'acme/skills', epoch: 4242 },
+      prior_devflow: { tier: 'HOLD', codes: ['final_test_red'], url: null, head_sha: 'a'.repeat(40) },
+    },
+  });
+  const { error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
+  assertNoCrash(error, 'pr-iterate-hold-recovery');
+  assert.equal(error, null, `pr-iterate HOLD 回収 run が throw した: ${error?.message}`);
+  return calls;
+}
+
+test('[exec-proxy-routing] dev-runner* / dev-implementer に渡す prompt は cd を指示しない（dev-flow 全 scenario・pr-iterate・HOLD 回収）', async () => {
+  for (const name of Object.keys(DEV_FLOW_SCENARIOS)) assertNoCdInstruction(await runDevFlowScenario(name), `dev-flow.js[${name}]`);
+  assertNoCdInstruction(await runLocalVerifyFinal(), 'dev-flow.js[local-verify-final]');
+  assertNoCdInstruction(await runPrIterate(), 'pr-iterate.js');
+  const hold = await runPrIterateHoldRecovery();
+  assert.ok(hold.some((c) => c.label === 'hold-test-diff'), `hold-test-diff が起動していない: ${hold.map((c) => c.label).join(', ')}`);
+  assertNoCdInstruction(hold, 'pr-iterate.js[hold-recovery]');
+});
+
 // ---- (f) verbatim-transcription guard (AC-2, issue #372) ----
 //
 // post-comment exec-proxy の prompt は workflow 側で確定した本文を bodySaveInstr の delimiter で
