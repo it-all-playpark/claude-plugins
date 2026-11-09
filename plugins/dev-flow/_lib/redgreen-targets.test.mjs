@@ -97,7 +97,6 @@ test('[redgreen-targets] state-dir / start / wait / stop の prompt は Bash tim
     [redgreenWaitPrompt('/tmp/wt', STATE_DIR), '{"results":[]}', `redgreen-verify wait --state-dir ${STATE_DIR} --wait-sec ${REDGREEN_WAIT_SEC}`],
     [redgreenStopPrompt('/tmp/wt', STATE_DIR), '{"ok":false}', `redgreen-verify stop --state-dir ${STATE_DIR}`],
   ]) {
-    assert.ok(p.startsWith('cd /tmp/wt で作業。'), p);
     assert.ok(p.includes('Bash tool の `timeout: 600000` を指定して実行し、`run_in_background` は使わない（禁止）。& や nohup を足さない'), p);
     assert.ok(p.includes('コマンドを再発行しない（timeout・background 化した場合も含む）。'), p);
     assert.ok(p.includes(`timeout に達した・stdout に JSON 1 行が無い場合だけは、${fallback} を一字一句そのまま返せ`), p);
@@ -105,7 +104,7 @@ test('[redgreen-targets] state-dir / start / wait / stop の prompt は Bash tim
     // 規約はコマンド行より前に置き、コマンドは最終行の bare 単文
     const lines = p.split('\n');
     assert.equal(lines.length, 2);
-    assert.equal(lines[1], command);
+    assert.equal(lines.at(-1), command);
     assert.ok(lines[0].includes('timeout: 600000'));
   }
 });

@@ -40,7 +40,7 @@ function runTestsStartCommand(wt, base, commandsFile) {
  * @returns {string}
  */
 export function runTestsPrompt(wt, base, commandsFile) {
-  return runTestsCommandPrompt(wt, runTestsStartCommand(wt, base, commandsFile));
+  return runTestsCommandPrompt(runTestsStartCommand(wt, base, commandsFile));
 }
 
 // Final reconcile の test#final-rerun / test#validate-rerun: 全件実行（test#final / skip の run の Validate）が落ちた
@@ -55,7 +55,7 @@ export function runTestsPrompt(wt, base, commandsFile) {
  * @returns {string}
  */
 export function runTestFilesPrompt(wt, base, commandsFile, files) {
-  return runTestsCommandPrompt(wt, `${runTestsStartCommand(wt, base, commandsFile)} --files ${files.join(' ')}`);
+  return runTestsCommandPrompt(`${runTestsStartCommand(wt, base, commandsFile)} --files ${files.join(' ')}`);
 }
 
 /**
@@ -63,7 +63,7 @@ export function runTestFilesPrompt(wt, base, commandsFile, files) {
  * @returns {string}
  */
 export function runTestsWaitPrompt(wt) {
-  return runTestsCommandPrompt(wt, `run-tests wait ${wt} --wait-sec ${RUN_TESTS_WAIT_SEC}`);
+  return runTestsCommandPrompt(`run-tests wait ${wt} --wait-sec ${RUN_TESTS_WAIT_SEC}`);
 }
 
 /**
@@ -71,11 +71,11 @@ export function runTestsWaitPrompt(wt) {
  * @returns {string}
  */
 export function runTestsStopPrompt(wt) {
-  return runTestsCommandPrompt(wt, `run-tests stop ${wt}`, '{"ok":false,"error":"run-tests did not return JSON"}');
+  return runTestsCommandPrompt(`run-tests stop ${wt}`, '{"ok":false,"error":"run-tests did not return JSON"}');
 }
 
-function runTestsCommandPrompt(wt, command, noJson = '{"tests":"error","green":false,"summary":"run-tests did not return JSON"}') {
-  return `cd ${wt} で作業。次のコマンドを **先頭トークンが run-tests の bare 単文** で 1 回だけ実行し、`
+function runTestsCommandPrompt(command, noJson = '{"tests":"error","green":false,"summary":"run-tests did not return JSON"}') {
+  return `次のコマンドを **先頭トークンが run-tests の bare 単文** で 1 回だけ実行し、`
     + `**stdout の JSON 1 行だけ** を verbatim で返せ（判定や脚色をしない。キーの追加・削除・値の書き換えをしない）。`
     + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止。`
     + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない（常駐化はコマンド自身が行う）。再実行しない（timeout に達した場合も含む）。`

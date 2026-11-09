@@ -1399,19 +1399,19 @@ function runTestsStartCommand(wt, base, commandsFile) {
 }
 
 function runTestsPrompt(wt, base, commandsFile) {
-  return runTestsCommandPrompt(wt, runTestsStartCommand(wt, base, commandsFile));
+  return runTestsCommandPrompt(runTestsStartCommand(wt, base, commandsFile));
 }
 
 function runTestsWaitPrompt(wt) {
-  return runTestsCommandPrompt(wt, `run-tests wait ${wt} --wait-sec ${RUN_TESTS_WAIT_SEC}`);
+  return runTestsCommandPrompt(`run-tests wait ${wt} --wait-sec ${RUN_TESTS_WAIT_SEC}`);
 }
 
 function runTestsStopPrompt(wt) {
-  return runTestsCommandPrompt(wt, `run-tests stop ${wt}`, '{"ok":false,"error":"run-tests did not return JSON"}');
+  return runTestsCommandPrompt(`run-tests stop ${wt}`, '{"ok":false,"error":"run-tests did not return JSON"}');
 }
 
-function runTestsCommandPrompt(wt, command, noJson = '{"tests":"error","green":false,"summary":"run-tests did not return JSON"}') {
-  return `cd ${wt} で作業。次のコマンドを **先頭トークンが run-tests の bare 単文** で 1 回だけ実行し、`
+function runTestsCommandPrompt(command, noJson = '{"tests":"error","green":false,"summary":"run-tests did not return JSON"}') {
+  return `次のコマンドを **先頭トークンが run-tests の bare 単文** で 1 回だけ実行し、`
     + `**stdout の JSON 1 行だけ** を verbatim で返せ（判定や脚色をしない。キーの追加・削除・値の書き換えをしない）。`
     + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止。`
     + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない（常駐化はコマンド自身が行う）。再実行しない（timeout に達した場合も含む）。`
@@ -1462,7 +1462,7 @@ const PRE_COMMIT_HOOK_SCHEMA = {
 };
 
 function preCommitHookPrompt(wt) {
-  return `cd ${wt} で作業。次のコマンドを **先頭トークンが pre-commit-hook の bare 単文** で 1 回だけ実行し、`
+  return `次のコマンドを **先頭トークンが pre-commit-hook の bare 単文** で 1 回だけ実行し、`
     + `exit code に関わらず **stdout の JSON 1 行だけ** を verbatim で返せ（判定や脚色をしない。キーの追加・削除・値の書き換えをしない）。`
     + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・引数の追加は禁止。`
     + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。再実行しない（timeout に達した場合も含む）。`
@@ -1534,15 +1534,15 @@ function redgreenJobSettled(res, pairCount) {
   return redgreenResults(res).length === pairCount;
 }
 
-function redgreenProxyPrompt(wt, cmd, fallback) {
-  return `cd ${wt} で作業。次のコマンドを 1 回だけ実行して **stdout の JSON 1 行だけ** を verbatim で返せ(判定や脚色をしない)。`
+function redgreenProxyPrompt(cmd, fallback) {
+  return `次のコマンドを 1 回だけ実行して **stdout の JSON 1 行だけ** を verbatim で返せ(判定や脚色をしない)。`
     + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない（常駐化はコマンド自身が行う）。`
     + `コマンドを再発行しない（timeout・background 化した場合も含む）。`
     + `timeout に達した・stdout に JSON 1 行が無い場合だけは、${fallback} を一字一句そのまま返せ:\n${cmd}`;
 }
 
 function redgreenStateDirPrompt(wt) {
-  return redgreenProxyPrompt(wt, 'redgreen-verify state-dir', '{"state_dir":""}');
+  return redgreenProxyPrompt('redgreen-verify state-dir', '{"state_dir":""}');
 }
 
 function redgreenStateDirFrom(res) {
@@ -1551,18 +1551,18 @@ function redgreenStateDirFrom(res) {
 }
 
 function redgreenStartPrompt(wt, stateDir, pairs, base = null) {
-  return redgreenProxyPrompt(wt,
+  return redgreenProxyPrompt(
     `redgreen-verify start --state-dir ${stateDir} ${base ? `--base ${base} ` : ''}${wt} `
       + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' '),
     '{"results":[]}');
 }
 
 function redgreenWaitPrompt(wt, stateDir) {
-  return redgreenProxyPrompt(wt, `redgreen-verify wait --state-dir ${stateDir} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
+  return redgreenProxyPrompt(`redgreen-verify wait --state-dir ${stateDir} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
 }
 
 function redgreenStopPrompt(wt, stateDir) {
-  return redgreenProxyPrompt(wt, `redgreen-verify stop --state-dir ${stateDir}`, '{"ok":false}');
+  return redgreenProxyPrompt(`redgreen-verify stop --state-dir ${stateDir}`, '{"ok":false}');
 }
 // ==== END inline: _lib/redgreen-targets.mjs ====
 // ==== BEGIN inline: _lib/security-scope.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
@@ -1733,7 +1733,7 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
 
   function implPrompt(t, { req, fixFeedback, blocked }) {
     const note = notes()
-    return `cd ${wt} で作業（Bash 呼び出しごとに必ず先頭で cd ${wt} すること。agent の cwd は毎回リセットされる）。`
+    return `cwd は worktree（${wt}）。cd を前置しない。`
       + `issue #${issue} を計画から実装まで仕上げよ。git add / commit はするな。\n`
       + `task_id: ${t.id}（返却 JSON の task_id にそのまま echo せよ）\n`
       + `repo: ${repo ?? '(unknown)'} / issue: #${issue} ${String(req?.issue_title ?? '')} / worktree: ${wt} / base: ${base}\n`
@@ -1797,7 +1797,7 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
   }
 
   function baseRerunPrompt(files) {
-    return `cd ${wt} で作業。Validate のテストで失敗した次のテストファイルが、base（origin/${base}）の tree でも同じように失敗するかを確かめよ。`
+    return `Validate のテストで失敗した次のテストファイルが、base（origin/${base}）の tree でも同じように失敗するかを確かめよ。`
       + `worktree のファイルは変更・stage・削除するな（修正もしない）。\n`
       + `対象（repo 相対パス）: ${JSON.stringify(files)}\n`
       + `手順:\n`
@@ -1911,7 +1911,7 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
       }
       const note = notes()
       const gfResult = await spawn(
-        `cd ${wt} で作業（Bash ごとに先頭で cd すること）。${testsToFix ? 'テスト' : 'pre-commit hook'}が失敗している。原因を分析して実装/テストを修正し`
+        `cwd は worktree（${wt}）。cd を前置しない。${testsToFix ? 'テスト' : 'pre-commit hook'}が失敗している。原因を分析して実装/テストを修正し`
         + `green を目指せ。共有 worktree のため無関係ファイルは触るな。git add / commit はするな。\n`
         + `**禁止**: テストの期待値・assert を弱めて green にすることは禁止（テスト弱体化）。`
         + `テスト側を修正してよいのはテスト自体の誤り（誤った期待値・環境依存・typo）に根拠を示せる場合のみで、その根拠を summary に明記せよ。\n`
@@ -2216,7 +2216,7 @@ async function runRedgreenVerify(pairs, { spawn, label, phase, base = null }) {
 // hit クラスは critical 据え置きで evaluator が evidence で解消し、hit があれば micro でも Evaluate を走らせる。
 // diffTriagePrompt は post-eval green-fix 再評価と共有する。
 function diffTriagePrompt() {
-  return `cd ${WT} で作業。次を実行し **stdout の JSON object をそのまま** 返せ`
+  return `次を実行し **stdout の JSON object をそのまま** 返せ`
     + `（判定や脚色をしない。exit 非0・stdout 空・JSON 不正なら `
     + `{"risk":{"ok":false,"hits":[],"error":"..."},"files":null,"diffhash":null,"lines":null} で返せ。`
     + `失敗時に risk.ok:true を生成してはならない）:\n`

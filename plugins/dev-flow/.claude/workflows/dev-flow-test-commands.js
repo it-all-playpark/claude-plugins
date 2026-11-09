@@ -98,7 +98,7 @@ const TEST_COMMANDS_WRITE = {
 }
 
 function testCommandsPreparePrompt(wt, base) {
-  return `cd ${wt} で作業。次のコマンドを **先頭トークンが test-commands-prepare の bare 単文** で 1 回だけ実行し、`
+  return `次のコマンドを **先頭トークンが test-commands-prepare の bare 単文** で 1 回だけ実行し、`
     + `**stdout の JSON 1 行だけ** を verbatim で返せ（判定や脚色をしない。キーの追加・削除・値の書き換えをしない）。`
     + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止。再実行しない。`
     + `stdout に JSON 1 行が無い場合だけは {"ok":false,"error":"test-commands-prepare did not return JSON"} を一字一句そのまま返せ:\n`

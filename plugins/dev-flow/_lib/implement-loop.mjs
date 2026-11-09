@@ -198,7 +198,7 @@ export function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, 
   // blocked（BLOCKED 再計画時）: blockSeen 累積の approach_mismatch findings（回帰禁止）と DONE 成果（再実装させない）を付ける。
   function implPrompt(t, { req, fixFeedback, blocked }) {
     const note = notes()
-    return `cd ${wt} で作業（Bash 呼び出しごとに必ず先頭で cd ${wt} すること。agent の cwd は毎回リセットされる）。`
+    return `cwd は worktree（${wt}）。cd を前置しない。`
       + `issue #${issue} を計画から実装まで仕上げよ。git add / commit はするな。\n`
       + `task_id: ${t.id}（返却 JSON の task_id にそのまま echo せよ）\n`
       + `repo: ${repo ?? '(unknown)'} / issue: #${issue} ${String(req?.issue_title ?? '')} / worktree: ${wt} / base: ${base}\n`
@@ -274,7 +274,7 @@ export function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, 
 
   // 失敗したテストファイルを base tree で同じように再実行させる prompt（worktree は変更させない）。
   function baseRerunPrompt(files) {
-    return `cd ${wt} で作業。Validate のテストで失敗した次のテストファイルが、base（origin/${base}）の tree でも同じように失敗するかを確かめよ。`
+    return `Validate のテストで失敗した次のテストファイルが、base（origin/${base}）の tree でも同じように失敗するかを確かめよ。`
       + `worktree のファイルは変更・stage・削除するな（修正もしない）。\n`
       + `対象（repo 相対パス）: ${JSON.stringify(files)}\n`
       + `手順:\n`
@@ -395,7 +395,7 @@ export function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, 
       }
       const note = notes()
       const gfResult = await spawn(
-        `cd ${wt} で作業（Bash ごとに先頭で cd すること）。${testsToFix ? 'テスト' : 'pre-commit hook'}が失敗している。原因を分析して実装/テストを修正し`
+        `cwd は worktree（${wt}）。cd を前置しない。${testsToFix ? 'テスト' : 'pre-commit hook'}が失敗している。原因を分析して実装/テストを修正し`
         + `green を目指せ。共有 worktree のため無関係ファイルは触るな。git add / commit はするな。\n`
         + `**禁止**: テストの期待値・assert を弱めて green にすることは禁止（テスト弱体化）。`
         + `テスト側を修正してよいのはテスト自体の誤り（誤った期待値・環境依存・typo）に根拠を示せる場合のみで、その根拠を summary に明記せよ。\n`

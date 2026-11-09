@@ -103,15 +103,15 @@ export function redgreenJobSettled(res, pairCount) {
   return redgreenResults(res).length === pairCount;
 }
 
-function redgreenProxyPrompt(wt, cmd, fallback) {
-  return `cd ${wt} で作業。次のコマンドを 1 回だけ実行して **stdout の JSON 1 行だけ** を verbatim で返せ(判定や脚色をしない)。`
+function redgreenProxyPrompt(cmd, fallback) {
+  return `次のコマンドを 1 回だけ実行して **stdout の JSON 1 行だけ** を verbatim で返せ(判定や脚色をしない)。`
     + `Bash tool の \`timeout: 600000\` を指定して実行し、\`run_in_background\` は使わない（禁止）。& や nohup を足さない（常駐化はコマンド自身が行う）。`
     + `コマンドを再発行しない（timeout・background 化した場合も含む）。`
     + `timeout に達した・stdout に JSON 1 行が無い場合だけは、${fallback} を一字一句そのまま返せ:\n${cmd}`;
 }
 
 export function redgreenStateDirPrompt(wt) {
-  return redgreenProxyPrompt(wt, 'redgreen-verify state-dir', '{"state_dir":""}');
+  return redgreenProxyPrompt('redgreen-verify state-dir', '{"state_dir":""}');
 }
 
 /**
@@ -136,16 +136,16 @@ export function redgreenStateDirFrom(res) {
  * @returns {string}
  */
 export function redgreenStartPrompt(wt, stateDir, pairs, base = null) {
-  return redgreenProxyPrompt(wt,
+  return redgreenProxyPrompt(
     `redgreen-verify start --state-dir ${stateDir} ${base ? `--base ${base} ` : ''}${wt} `
       + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' '),
     '{"results":[]}');
 }
 
 export function redgreenWaitPrompt(wt, stateDir) {
-  return redgreenProxyPrompt(wt, `redgreen-verify wait --state-dir ${stateDir} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
+  return redgreenProxyPrompt(`redgreen-verify wait --state-dir ${stateDir} --wait-sec ${REDGREEN_WAIT_SEC}`, '{"results":[]}');
 }
 
 export function redgreenStopPrompt(wt, stateDir) {
-  return redgreenProxyPrompt(wt, `redgreen-verify stop --state-dir ${stateDir}`, '{"ok":false}');
+  return redgreenProxyPrompt(`redgreen-verify stop --state-dir ${stateDir}`, '{"ok":false}');
 }
