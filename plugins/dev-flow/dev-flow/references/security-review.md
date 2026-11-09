@@ -2,7 +2,7 @@
 
 信頼境界をまたぎうる PR を既定で通す gate。pr-iterate が LGTM を確定する前に回し、Merge tier が結果を読む
 （各 phase の中での位置は `pipeline.md` の「Diff triage」「pr-iterate」「Merge tier」節）。正当化クラスは
-`.claude/rules/dev-flow.md`「正当化クラス（W7）」、reviewer の cwd の扱いは `capability-bound.md`。
+`.claude/rules/dev-flow.md`「正当化クラス（W7）」（機構の列挙は `justification-classes.md`）、reviewer の cwd の扱いは `capability-bound.md`。
 本文のパスは `plugins/dev-flow/` を root とする plugin 相対パス。
 
 ## 守る要件と境界
