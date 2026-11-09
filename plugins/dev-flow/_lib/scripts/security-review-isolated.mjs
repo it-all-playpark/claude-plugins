@@ -24,7 +24,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { SECURITY_REVIEW_SCHEMA, securityReviewPrompt, securityReviewVerdict } from '../security-review.mjs'
+import { headBoundSecurityReviewSchemas, securityReviewPrompt, securityReviewVerdict } from '../security-review.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const SCOPE_BIN = join(here, '..', '..', 'bin', 'security-review-scope')
@@ -165,10 +165,12 @@ if (inside(cwd, checkout) || inside(reviewDir, cwd) || inside(reviewDir, checkou
 // 読み取りは prompt の文と read-scope hook に加えて起動引数でも保存先の配下に限る: tool は Read / Grep だけ
 // （Glob は持たせない。diff_path は prompt で渡す）、許可は保存先の配下の Read（Grep も Read の rule に従う）だけ、それ以外は聞かずに拒否する（dontAsk）。
 // project / local の設定は読まない（user 設定は plugin の有効化に要る）
+// schema は reviewed_sha を PR head の 1 値に縛ったもの（応答の検査も同じ schema で行う）
 const prompt = securityReviewPrompt({ pr, reviewDir, diffPath: join(reviewDir, 'pr.diff'), headSha, base, worktree: checkout })
+const schema = headBoundSecurityReviewSchemas(headSha).claude
 out(`security-review-isolated: PR #${pr}（head ${headSha}）を ${AGENT} で review する`)
 const res = spawnSync('claude', [
-  '-p', '--agent', AGENT, '--output-format', 'json', '--json-schema', JSON.stringify(SECURITY_REVIEW_SCHEMA), '--add-dir', reviewDir,
+  '-p', '--agent', AGENT, '--output-format', 'json', '--json-schema', JSON.stringify(schema), '--add-dir', reviewDir,
   '--tools', 'Read,Grep', '--allowedTools', `Read(/${reviewDir}/**)`, '--permission-mode', 'dontAsk', '--setting-sources', 'user',
 ], { cwd, input: prompt, maxBuffer: 512 * 1024 * 1024, stdio: ['pipe', 'pipe', 'inherit'] })
 cleanup()
@@ -176,7 +178,7 @@ if (res.error || res.status !== 0) undetermined(`claude が失敗した（exit $
 
 const review = extractReview(res.stdout.toString('utf8'))
 if (review == null) undetermined('reviewer の応答から JSON を取り出せない')
-if (!conforms(review, SECURITY_REVIEW_SCHEMA)) undetermined('reviewer の応答が SECURITY_REVIEW_SCHEMA に合わない')
+if (!conforms(review, schema)) undetermined('reviewer の応答が SECURITY_REVIEW_SCHEMA に合わない')
 
 const verdict = securityReviewVerdict(review, headSha)
 const { critical, major, minor } = verdict.counts

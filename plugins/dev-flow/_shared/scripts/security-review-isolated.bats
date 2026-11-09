@@ -100,6 +100,8 @@ MAJOR_ISSUE='[{"severity":"major","topic":"hook-injection","file":"CLAUDE.md","l
     [ "$(grep -xF -A1 -- '--permission-mode' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)" = "dontAsk" ]
     [ "$(grep -xF -A1 -- '--setting-sources' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)" = "user" ]
     allowed="$(grep -xF -A1 -- '--allowedTools' "$CLAUDE_STUB_DIR/argv" | sed -n 2p)"
+    # argv: --json-schema の reviewed_sha は PR head の 1 値に縛る
+    grep -xF -A1 -- '--json-schema' "$CLAUDE_STUB_DIR/argv" | sed -n 2p | jq -e --arg h "$HEAD_SHA" '.properties.reviewed_sha == {type: "string", enum: [$h]}'
 
     # prompt は securityReviewPrompt（DATA 区間に head_sha と diff_path）
     grep -qxF '<<<SECURITY_REVIEW_DATA_BEGIN>>>' "$CLAUDE_STUB_DIR/prompt"
@@ -190,13 +192,12 @@ MAJOR_ISSUE='[{"severity":"major","topic":"hook-injection","file":"CLAUDE.md","l
     [[ "$output" == *"MINOR_BODY"* ]]
 }
 
-@test "reviewed_sha が渡した head_sha の写しでなければ exit 2 で clear と出さない（出力の整合違反）" {
+@test "reviewed_sha が渡した head_sha の写しでなければ exit 2 で clear と出さない（head を縛った schema に合わない）" {
     respond '[]' "0123456789012345678901234567890123456789"
     cd "$ROOT"
     run bash "$BIN" 5
     [ "$status" -eq 2 ]
-    [[ "$output" == *"判定: 判定できない（出力の reviewed_sha が渡した head_sha の写しでない — 出力の整合違反）"* ]]
-    [[ "$output" == *"review した head: 0123456789012345678901234567890123456789"* ]]
+    [[ "$output" == *"判定: 判定できない（reviewer の応答が SECURITY_REVIEW_SCHEMA に合わない）"* ]]
     [[ "$output" != *"clear"* ]]
 }
 

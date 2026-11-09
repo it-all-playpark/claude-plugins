@@ -241,6 +241,21 @@ test('[security-review][B] round ごとに新しい spawn で PR 全 diff を読
   assert.equal(result.fixes_applied, 1);
 });
 
+test('[security-review][B] security-reviewer に渡す schema は reviewed_sha をその round の head sha の 1 値に縛る（fix 後の round は新しい head）', async () => {
+  const { result, calls } = await run({
+    args: { pr: '5', nested: NESTED_A },
+    overrides: {
+      'security-review#1': reviewWith([finding('hardlink-write')]),
+      'commit-ensure#1': { dirty: false, committed: false, pushed: false, head_sha: SHA_B },
+      'security-review#2': reviewWith([]),
+    },
+  });
+  const reviews = calls.filter((c) => c.label.startsWith('security-review#'));
+  assert.deepEqual(reviews.map((c) => [c.label, c.agentType, plain(c.schema?.properties?.reviewed_sha?.enum)]),
+    [['security-review#1', 'dev-flow:security-reviewer', [SHA_A]], ['security-review#2', 'dev-flow:security-reviewer', [SHA_B]]]);
+  assert.equal(result.status, 'lgtm');
+});
+
 test('[security-review][B] critical/major 0 件でも reviewed_sha が渡した head_sha の写しでなければ（出力の整合違反）clear にしない', async () => {
   for (const reviewed of [SHA_B, '', 'abc']) {
     const { result } = await run({

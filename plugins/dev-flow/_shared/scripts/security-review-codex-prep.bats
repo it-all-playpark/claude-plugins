@@ -40,6 +40,14 @@ write_prev_result() {
     [ ! -e "$D/result.json" ]
 }
 
+@test "schema.json の reviewed_sha は渡した head sha の 1 値に縛る（写し間違いを codex の出力の段階で弾く）" {
+    head="a2bfab3bc96fa93cca5308cf1a5e2d9a262fa1dc"
+    run bash "$BIN" "$D" "$head" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true'
+    jq -e --arg h "$head" '.properties.reviewed_sha == {type: "string", enum: [$h]}' "$D/schema.json"
+}
+
 @test "--verify-from: 前回の保存先の result.json の critical/major だけを verify_items にする" {
     write_prev_result '[{"severity":"critical","topic":"cmd-injection","file":"run.sh","line":2,"description":"D1","suggestion":"S1"},{"severity":"minor","topic":"hardening","file":"run.sh","line":null,"description":"D2","suggestion":"S2"}]'
     run bash "$BIN" "$D" "$HEAD_SHA" 5 --verify-from "$PREV"

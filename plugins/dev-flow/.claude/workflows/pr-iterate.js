@@ -1656,6 +1656,37 @@ const SECURITY_CODEX_RELAY_FAILED = { ok: false, error: 'relay_failed' };
 const SECURITY_CODEX_VERDICT_RELAY_FAILED = { ok: false, cleared: false, error: 'relay_failed' };
 const SECURITY_CODEX_RUN_DONE = { done: true };
 
+const CODEX_SECURITY_REVIEW_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['reviewed_sha', 'issues', 'summary'],
+  properties: {
+    reviewed_sha: { type: 'string' },
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['severity', 'topic', 'file', 'line', 'description', 'suggestion'],
+        properties: {
+          severity: { type: 'string', enum: ['critical', 'major', 'minor'] },
+          topic: { type: 'string' },
+          file: { type: 'string' },
+          line: { type: ['integer', 'null'] },
+          description: { type: 'string' },
+          suggestion: { type: 'string' },
+        },
+      },
+    },
+    summary: { type: 'string' },
+  },
+};
+
+function headBoundSecurityReviewSchemas(headSha) {
+  const bind = (schema) => ({ ...schema, properties: { ...schema.properties, reviewed_sha: { type: 'string', enum: [headSha] } } });
+  return { claude: bind(SECURITY_REVIEW_SCHEMA), codex: bind(CODEX_SECURITY_REVIEW_SCHEMA) };
+}
+
 const CODEX_PATH_RE = /^(\/[A-Za-z0-9._-]+)+$/;
 const SECURITY_REVIEW_DIR_NAME_RE = /^dev-flow-security-review-[A-Za-z0-9]{6}$/;
 
@@ -2847,7 +2878,7 @@ async function securityRound(iteration) {
     try {
       review = await trackedAgent(
         securityReviewPrompt({ pr: PR, reviewDir, diffPath, headSha, base, worktree: isoWt, verifyItems: securityOpen }),
-        { agentType: 'security-reviewer', schema: SECURITY_REVIEW_SCHEMA, label: `security-review#${iteration}`, phase: 'Iterate' },
+        { agentType: 'security-reviewer', schema: headBoundSecurityReviewSchemas(headSha).claude, label: `security-review#${iteration}`, phase: 'Iterate' },
       )
     } catch (e) {
       log(`⚠️ security-review#${iteration} が例外を投げた（StructuredOutput 契約違反等）: ${e?.message ?? e}`)
