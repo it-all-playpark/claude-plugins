@@ -337,6 +337,15 @@ test('security-review.md: 守る要件と境界（R1〜R3）と経路を持ち�
     assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
   }
   for (const h of ['## 対象の判定', '## Claude 経路', '## Codex 経路']) assert.ok(md.includes(`${h}\n`), `security-review.md に ${h} が無い`);
+  // 対象の判定は security-review-scope.mjs と同じ範囲を書く: isReviewerContextPath を起点にした import の閉包と、たどれないときの fail-closed
+  const scope = sectionOf(md, '## 対象の判定');
+  for (const s of ['`reviewerImportClosure`', '`isReviewerContextPath`', '`imports_unavailable`']) {
+    assert.ok(scope.includes(s), `security-review.md の対象の判定に ${s} が無い`);
+  }
+  // Claude 経路で reviewer の session に自動で読み込まれる指示ファイルを定義する段落は、import の閉包も検出対象にする
+  const contextDef = sectionOf(md, '## Claude 経路').split(/\n(?=- )/).find((p) => p.includes('reviewer_context_changed') && p.includes('自動で読み込まれる'));
+  assert.ok(contextDef, 'security-review.md の Claude 経路に reviewer_context_changed の対象を定義する段落が無い');
+  assert.ok(contextDef.includes('`reviewerImportClosure`') || contextDef.includes('「対象の判定」'), `Claude 経路の reviewer_context_changed の段落が import の閉包に触れていない:\n${contextDef}`);
   // R1〜R3 を定義するのは security-review.md だけ
   const holders = readdirSync(refDir).filter((f) => f.endsWith('.md')).filter((f) => /^- R1 /m.test(readFileSync(join(refDir, f), 'utf8')));
   assert.deepEqual(holders, ['security-review.md'], `R1〜R3 の定義が security-review.md 以外にもある: ${holders.join(', ')}`);

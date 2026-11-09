@@ -45,12 +45,18 @@
 
 - 対象かどうかは `_lib/security-review-scope.mjs` の決定論の判定だけで決める（LLM は使わない。コードの diff を外部 API に
   送らない）。対象外は「ファイルが 1 件以上で、全ファイルが許可リスト（mode 100644 の `.md` / `.mdx` / `.rst` のうち指示
-  ファイルでないもの、テストコードの拡張子の `*.test.*` / `*.spec.*`、`.bats`。ドット始まりの要素の配下は除く）に当たる」
-  diff だけ。指示ファイルは大文字小文字を区別せず `CLAUDE.md`・`CLAUDE.local.md`・`AGENTS.md`・`SKILL.md` と
+  ファイルでないもの、テストコードの拡張子の `*.test.*` / `*.spec.*`、`.bats`。ドット始まりの要素の配下と、下の import の
+  閉包に当たるものは除く）に当たる」diff だけ。指示ファイルは大文字小文字を区別せず `CLAUDE.md`・`CLAUDE.local.md`・`AGENTS.md`・`SKILL.md` と
   `.claude/`・`references/`・`output-styles/`・`agents/`・`commands/` 配下。diff は
   `git -c core.quotePath=false diff --no-renames --no-color --no-ext-diff --no-textconv --text --src-prefix=a/ --dst-prefix=b/`
   で取り、`--name-only -z` の一覧と件数・集合を照合する。取得失敗・空・読めない diff・binary・mode 120000 / 160000・mode の
   変更・`.gitattributes` / `.gitmodules` は対象（fail-closed）
+- import の閉包: base と head の両方の tree で、reviewer の session に自動で読み込まれる指示ファイル（`isReviewerContextPath`）
+  を起点に `@<path>` import を再帰的にたどった先（`reviewerImportClosure`）は、agent が指示として読み込むので文書の拡張子でも
+  許可リストに当たらず対象になり、`reviewer_context_changed` も true にする（`CLAUDE.md` の `@README.md` で読み込まれる
+  README.md 等）。起点は `isReviewerContextPath` に当たるファイルだけ。symlink・ディレクトリを指す import 先は配下まで含める。
+  たどれない場合（repo の外を指す symlink・たどりの上限 `MAX_IMPORT_STEPS` の超過・import 一覧が読めない `imports_unavailable`）は
+  対象かつ `reviewer_context_changed` を true にする（fail-closed）。import の書き方の解釈は `_lib/security-review-scope.mjs` が持つ
 - 起動時の判定は Diff triage の security-scope（merge-base と作業ツリーの diff）、単体起動は `pr-iterate-prerun`
   （`<base>...<PR head>` の diff）。pr-iterate は run 中に PR head の diff で取り直し、起動時・run 中のどれか 1 回でも対象なら run の
   終わりまで対象（`args.security_review` が無い run も対象）
@@ -93,8 +99,8 @@ Merge tier      → 対象（Diff triage か pr-iterate のどちらか）かつ
   Read / Grep と Glob は PreToolUse hook（`hooks/pretool-security-reviewer-read-scope.sh`。入力の `agent_type` が
   `dev-flow:security-reviewer` のときだけ判定）が拒否する — 許可は対象パスの realpath が basename `dev-flow-security-review-[A-Za-z0-9]{6}`
   のディレクトリの配下で、そのディレクトリと対象パスが session の cwd の配下でないときだけ（R1）。PR が reviewer の session に
-  自動で読み込まれる指示ファイル（basename が `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`、または repo 直下の `.claude/` 配下）を
-  変える run は、security-scope#i の `reviewer_context_changed` で検出して review を spawn せず `security_unresolved`（人間が
+  自動で読み込まれる指示ファイル（basename が `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`、または repo 直下の `.claude/` 配下）と、
+  そこから import でたどれるファイル（「対象の判定」の import の閉包 `reviewerImportClosure`）を変える run は、security-scope#i の `reviewer_context_changed` で検出して review を spawn せず `security_unresolved`（人間が
   `security-review-isolated <PR>` で確かめる）。Codex 経路はこの停止をせずに Codex で review する（下の Codex 経路）
 - 公開の PR コメント（pr-iterate・dev-flow の終端サマリー）には指摘の件数だけを載せ、本文（攻撃経路）は fix の prompt にだけ渡す。
   security の指摘は `history` / `human_followups` に入れない。返り値 `security_review` は件数と状態だけを持つ（形は
