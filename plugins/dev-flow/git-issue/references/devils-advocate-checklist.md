@@ -18,16 +18,17 @@ Treat findings as `blocking` if any item below is true:
   外さずに開示だけにする）
 - 直し方が症状の条件の分岐・ガード・入力の追加だけで、同じ型の別の症状が残る、または削除・統合で済む案を検討していない
   （同じ仕組みに入力やガードを 1 つずつ足す issue が続く。直し方は同じ型の別の症状まで消えるもの（削除・統合・一般化を
-  含む）にする。広い範囲のリファクタにはせず、Phase 3 の分割基準（1 issue = 1 PR）で収める。SKILL.md の軽い経路では
-  この項目に当たった finding はその場で直さず重い経路に切り替える）
+  含む）にする。広い範囲のリファクタにはせず、Phase 3 の Issue Splitting（1 つの目的 = 1 本、1 issue = 1 PR）で収める。
+  SKILL.md の軽い経路ではこの項目に当たった issue はその場で直さず重い経路に切り替える）
 - データや形式を変える変更（保存済みデータ・設定・API の形式）なのに、移行の要件が AC か `## 制約・取らないこと` に無い
   （移行の要件は、既存データの変換の要否と、後方互換を保たない変更の範囲）
 - Dependency order is impossible or contradictory
 - agent issue に `executor: human` タスクが残存している（agent 実行の計画・実装 issue に人手作業が混入。
   human 判定基準は SKILL.md の Executor Classification。human issue に切り出し、実装 issue は Blocked by で紐付ける）
 - human タスクに完了確認方法が無い（human issue の `## 完了条件` が checkbox の観察可能な状態で書かれていない）
-- 1 本の agent issue が単独で merge できる成果物を 2 つ以上含む（dev-flow は 1 issue = 1 PR。SKILL.md Phase 3
-  の Issue Splitting の分割基準で分ける）
+- 1 本の agent issue が 2 つ以上の目的（別の原因・別の直し方）を含む、または 1 本では dev-flow 1 run で走りきれないか
+  1 PR でレビューできない大きさである（agent issue の単位は 1 つの目的 = 同じ原因を同じ直し方で直す変更のまとまりで、
+  複数の finding・箇所・文書にまたがってよい。SKILL.md Phase 3 の Issue Splitting）
 - agent issue に `## 変更対象パス` が無い（後続の並列起動判定の入力になる。書式は 1 行 1 エントリ
   `- <repo 相対パスまたは glob>`）
 - agent issue 間の依存が循環している / 先行 issue の成果物を使うのに Blocked by が無い（起票はトポロジカル順で、
