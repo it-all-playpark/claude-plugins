@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, shapeOverrides, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, shapeOverrides, mergeTierFacts, devFlowArgs } from './test-helpers/vm-sandbox.mjs';
 import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 
 import {
@@ -37,10 +37,11 @@ const FINAL_RECONCILE_DEFAULTS = {
   },
 };
 
-function makeSandbox({ overrides = {}, fixesApplied = 0 } = {}) {
+function makeSandbox({ overrides = {}, fixesApplied = 0, extra = {} } = {}) {
   return makeDevFlowSandbox({
     overrides: { ...FINAL_RECONCILE_DEFAULTS, ...overrides },
     workflow: async () => ({ status: 'lgtm', iterations: 2, fixes_applied: fixesApplied }),
+    extra,
   });
 }
 
@@ -299,6 +300,92 @@ test('[evaluator-contract] eval#1 prompt contains EVALUATOR_OPERATIONAL_CONTRACT
     eval1.prompt.includes(EVALUATOR_OPERATIONAL_CONTRACT.testsurf_clearance),
     'eval#1 の prompt に EVALUATOR_OPERATIONAL_CONTRACT.testsurf_clearance が verbatim 含まれていない',
   );
+});
+
+// ---- issue #1312: evaluator.md の「判定」節は Evaluate の実装（execEvaluatePhase）と同じことを言う ----
+// 差し戻しを決めるのは ac_results・critical・各 clearance（と llm-major-blocking の AC / CONCERN）で、verdict は表示専用。
+// 記述と同じ挙動を下の VM テストで固定し、記述が実装とずれたら落ちるようにする。
+
+const judgeSection = (() => {
+  const start = evaluatorMd.indexOf('\n## 判定\n');
+  assert.ok(start >= 0, 'evaluator.md に「## 判定」節が無い');
+  const end = evaluatorMd.indexOf('\n## ', start + 1);
+  return evaluatorMd.slice(start, end < 0 ? undefined : end);
+})();
+
+test('[evaluator-contract][#1312] 「判定」節は差し戻しを決める入力（ac_results・critical・clearance・llm-major-blocking の AC / CONCERN）を書く', () => {
+  for (const s of ['ac_results', 'AGENT_AC_REIMPL_MAX', 'critical_resolutions', 'security_clearance', 'TESTSURF', 'llm-major-blocking', 'concern_resolutions']) {
+    assert.ok(judgeSection.includes(s), `「判定」節に ${s} が無い: ${judgeSection}`);
+  }
+});
+
+test('[evaluator-contract][#1312] 「判定」節の escalate の行に llm-major-blocking で差し戻しが続く行がある', () => {
+  const escalateLines = judgeSection.split('\n').filter((l) => l.includes('escalate'));
+  assert.ok(escalateLines.some((l) => l.includes('llm-major-blocking')), `escalate と llm-major-blocking を同じ行に書いた記述が無い: ${escalateLines.join('\n')}`);
+});
+
+test('[evaluator-contract][#1312] verdict は表示専用と書き、冒頭の段落は ac_results を workflow が使うと書く', () => {
+  assert.ok(judgeSection.includes('verdict') && judgeSection.includes('表示専用'), judgeSection);
+  const afterHeading = evaluatorMd.slice(evaluatorMd.indexOf('\n# evaluator\n') + '\n# evaluator\n'.length).replace(/^\n+/, '');
+  const lead = afterHeading.slice(0, afterHeading.indexOf('\n\n'));
+  assert.ok(lead.includes('ac_results'), `冒頭の段落に ac_results が無い: ${lead}`);
+});
+
+test('[evaluator-contract][#1312] feedback_level の design は方針で定義し計画本文に依らず、分類の帰結（回数上限）を見せない', () => {
+  const lines = evaluatorMd.split('\n');
+  const design = lines.find((l) => l.startsWith('- `design`: '));
+  assert.ok(design, 'design の定義行が無い');
+  assert.ok(design.includes('方針') && !design.includes('計画'), design);
+  assert.ok(lines.some((l) => l.startsWith('- `implementation`: ')), 'implementation の定義行が無い');
+  assert.ok(lines.some((l) => l.includes('迷ったら')), '「迷ったら implementation」が無い');
+  assert.ok(!judgeSection.includes('回数上限'), `「判定」節に分類の帰結（回数上限）が残っている: ${judgeSection}`);
+});
+
+// complex shape（EVAL_PASSES=EVAL_MAX）で走らせる: standard は 1 pass で抜けるので、収束しないときに差し戻すかを見られない。
+const AC2_SATISFIED = [
+  { ac_index: 0, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
+  { ac_index: 1, satisfied: true, verified_by: 'inspection', evidence: 'ok' },
+];
+const MAJOR_TOPIC = 'naming-convention::public-api-endpoint';
+const majorEval = ({ verdict, escalate }) => ({
+  verdict, total: 5, threshold: 7, feedback_level: 'implementation',
+  feedback: [{
+    severity: 'major', topic: MAJOR_TOPIC, description: 'エンドポイント命名が issue に未指定', suggestion: '命名を決める',
+    ...(escalate ? { escalate: true, escalate_reason: 'preference' } : {}),
+  }],
+  ac_results: AC2_SATISFIED, security_clearance: [], concern_resolutions: [],
+});
+
+async function runJudge(evalResponse, gatePolicy) {
+  const { ctx, calls } = makeSandbox({
+    overrides: { ...shapeOverrides('complex'), 'eval#1': evalResponse },
+    extra: gatePolicy ? { args: { ...devFlowArgs(1), gate_policy: gatePolicy } } : {},
+  });
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
+  assertNoCrash(error, `judge-${gatePolicy ?? 'default'}`);
+  assert.equal(error, null, `run が throw した: ${error?.message}`);
+  return { result, calls, reimpl: calls.filter((c) => c.label.startsWith('reimpl#')) };
+}
+
+test('[evaluator-contract][#1312] (i) 既定 policy: 全 AC satisfied・verdict fail・escalate なし major → 差し戻さず PR へ進む', async () => {
+  const { calls, reimpl } = await runJudge(majorEval({ verdict: 'fail', escalate: false }));
+  assert.equal(reimpl.length, 0, `verdict fail・escalate なし major で差し戻した: ${calls.map((c) => c.label).join(', ')}`);
+  assert.ok(calls.some((c) => c.label === 'pr#1'), `PR phase に進まない: ${calls.map((c) => c.label).join(', ')}`);
+});
+
+test('[evaluator-contract][#1312] (ii) 既定 policy: escalate:true の major → 差し戻さず merge tier は HOLD', async () => {
+  const { result, calls, reimpl } = await runJudge(majorEval({ verdict: 'pass', escalate: true }));
+  assert.equal(reimpl.length, 0, `既定 policy の escalate major で差し戻した: ${calls.map((c) => c.label).join(', ')}`);
+  assert.equal(result?.merge_tier, 'HOLD', JSON.stringify(result?.merge_tier_reasons));
+  assert.ok((result?.merge_tier_reasons ?? []).some((r) => r.includes('ESCALATE-TO-HUMAN')), JSON.stringify(result?.merge_tier_reasons));
+});
+
+test('[evaluator-contract][#1312] (iii) llm-major-blocking: escalate:true の major → reimpl#1 が走り fix_feedback にその topic が載る', async () => {
+  const { calls, reimpl } = await runJudge(majorEval({ verdict: 'pass', escalate: true }), 'llm-major-blocking');
+  const first = reimpl.find((c) => c.label.startsWith('reimpl#1:'));
+  assert.ok(first, `llm-major-blocking の escalate major で差し戻さない: ${calls.map((c) => c.label).join(', ')}`);
+  const fb = first.prompt.slice(first.prompt.indexOf('fix_feedback'));
+  assert.ok(first.prompt.includes('fix_feedback') && fb.includes(MAJOR_TOPIC), `reimpl#1 の fix_feedback に ${MAJOR_TOPIC} が無い: ${fb.slice(0, 400)}`);
 });
 
 test('[evaluator-contract] evaluator.md output example does not include schema-less score field', () => {
