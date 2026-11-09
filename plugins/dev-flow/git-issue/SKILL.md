@@ -219,8 +219,9 @@ Phase 4 で判定させた本文ファイル（`/tmp/git-issue-body.md`、分け
 
 本文に含めるもの（agent issue。構成は `references/issue-template.md`）:
 - `## ゴール` — 何を満たせば完了か
+- `## 見取り図` — 構成・処理の流れ・データの変化の図。変更対象パスが 2 つ以上のファイルにまたがり、ファイル間の呼び出し・データの流れ・構成要素が増減または付け替わる変更では必須、それ以外は節ごと消してよい（図の種類は `references/issue-template.md`）
 - `## なぜ` — 短く（2〜4 行）
-- `## 受け入れ基準（Acceptance Criteria）`
+- `## 受け入れ基準（Acceptance Criteria）` — checkbox の直後に見出しを挟まず AC 早見表（`| AC | 一言で | 何で確かめるか |`）を置く。要旨は AC が正
 - `## 制約・取らないこと`
 - `## 変更対象パス` (agent issue only)
 - `## 未解決事項（Open Questions）`

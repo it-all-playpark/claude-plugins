@@ -110,6 +110,7 @@ extract_paths_block() {
 
 # 実装 issue の本文の節（この順で、これ以外の節を持たない）
 AGENT_BODY_SECTIONS="## ゴール
+## 見取り図
 ## なぜ
 ## 受け入れ基準（Acceptance Criteria）
 ## 制約・取らないこと
@@ -117,9 +118,19 @@ AGENT_BODY_SECTIONS="## ゴール
 ## 未解決事項（Open Questions）
 ## 完成イメージ"
 
-@test "(15) 実装 issue テンプレートの節は ゴール / なぜ / 受け入れ基準 / 制約・取らないこと / 変更対象パス / 未解決事項 / 完成イメージ だけ" {
+@test "(15) 実装 issue テンプレートの節は ゴール / 見取り図 / なぜ / 受け入れ基準 / 制約・取らないこと / 変更対象パス / 未解決事項 / 完成イメージ だけ" {
     headings="$(extract_fence "$TEMPLATE" "^# GitHub Issue Template" | grep -E '^#+ ')"
     [ "$headings" = "$AGENT_BODY_SECTIONS" ]
+}
+
+@test "(E) 実装 issue テンプレートの AC 早見表は AC 節の checkbox の後に見出しを挟まずに置く" {
+    # AC 見出しから次の見出しまで（AC 節）の行
+    ac_section="$(extract_fence "$TEMPLATE" "^# GitHub Issue Template" \
+        | awk '/^## 受け入れ基準/ { f = 1; next } f && /^#+ / { exit } f { print }')"
+    last_checkbox="$(grep -n '^- \[ \] ' <<<"$ac_section" | tail -1 | cut -d: -f1)"
+    table="$(grep -nF '| AC | 一言で | 何で確かめるか |' <<<"$ac_section" | cut -d: -f1)"
+    [ -n "$last_checkbox" ] && [ -n "$table" ]
+    [ "$last_checkbox" -lt "$table" ]
 }
 
 @test "(16) SKILL.md Phase 5 の本文に含めるものはテンプレートと同じ節" {
@@ -200,7 +211,12 @@ frontmatter_value() {
         "直し方が症状の条件の分岐・ガード・入力の追加だけ" \
         "コードフェンスに仕様の例" \
         '戻し方の要件が AC か `## 制約・取らないこと` に無い' \
-        '移行の要件が AC か `## 制約・取らないこと` に無い'; do
+        '移行の要件が AC か `## 制約・取らないこと` に無い' \
+        '見取り図か AC 早見表が AC または `## 変更対象パス` と食い違う' \
+        '図に AC に無い構成の変化がある・AC にある構成の変化が図に無い・' \
+        '早見表の行が AC と件数か内容で対応しない' \
+        '構成要素が増減または付け替わる変更なのに' \
+        '`## 見取り図` が無い'; do
         [[ "$section" == *"$item"* ]]
     done
 }

@@ -5,10 +5,10 @@ bats_require_minimum_version 1.5.0
 # Focus: the pre-flight AC lint gate (lint_ac()) invoked at the top of run(),
 # exercised only through the --dry-run path so `gh` is never required, plus the
 # --kind agent|human gate (incl. the agent `## 変更対象パス` gate, tests 20+, and the
-# 4000-char prose cap excluding the AC section and closed code fence contents, tests 27-31 and 42+, and the
+# 4000-char prose cap excluding the AC section and closed code fence contents, tests 27-31, 42-49 and 55+, and the
 # AC actor gate delegated to _lib/scripts/ac-actor-classify.mjs, tests 32-41) and
 # --blocked-by dependency wiring (tests 5+; the non-dry-run ones put a recording
-# gh stub first on PATH), and the title taken only via --title-file (tests 50+).
+# gh stub first on PATH), and the title taken only via --title-file (tests 50-54).
 #
 # verdict handling contract:
 #   t1            -> silent pass
@@ -1026,4 +1026,95 @@ write_trailing_fence_body() {
     [ "$status" -eq 2 ]
     [[ "$stderr" == *"unrecognized arguments: --title Test"* ]]
     [ ! -s "$GH_LOG" ]
+}
+
+# ---- --kind agent: issue-template.md の AC 早見表と ## 見取り図 は 4000 字に数えない ----
+
+# write_ac_table_body <file> <pad 字数>: AC の checkbox の直後に見出しを挟まず AC 早見表（各行 3000 字超）を置いた agent 本文。
+#   早見表は AC 節に入るので、字数は write_scope_body と同じ 31 + <pad 字数>
+write_ac_table_body() {
+    local cell
+    cell="$(repeat_char ん 3000)"
+    write_body "$1" \
+        "## 受け入れ基準（Acceptance Criteria）" \
+        "- [ ] AC-1 foo" \
+        "- [ ] AC-2 bar" \
+        "" \
+        "AC 早見表（要旨は上の AC が正）:" \
+        "" \
+        "| AC | 一言で | 何で確かめるか |" \
+        "|---|---|---|" \
+        "| 1 | $cell | create_issue.bats |" \
+        "| 2 | $cell | create_issue.bats |" \
+        "" \
+        "## 変更対象パス" \
+        "- src/foo.py" \
+        "" \
+        "## ゴール" \
+        "$(repeat_char あ "$2")"
+}
+
+@test "(55) AC の checkbox の直後の AC 早見表は ac-lint の t1 を変えず、表の文字は 4000 字に数えない" {
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_ac_table_body "$BODY" 3969
+
+    run "$SKILLS_REPO/_lib/scripts/ac-lint.sh" "$BODY"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"verdict":"t1"'*'"checkbox_count":2,"bullet_count":0'* ]]
+
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Dry run: issue will not be created."* ]]
+    [[ "$stderr" != *"Warning"* ]]
+
+    # 早見表の外の文章を 1 字増やすと 4001 字（表の 6000 字超は数に入っていない）
+    write_ac_table_body "$BODY" 3970
+
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"を除く）が 4001 字"* ]]
+}
+
+# write_overview_body <file> <pad 字数>: ## 見取り図 に閉じた ```mermaid フェンス（中身 5000 字超）を置いた agent 本文。
+#   字数は 31 + <pad 字数> + "\n\n## 見取り図\n\n```mermaid\n```" の 25 字
+write_overview_body() {
+    local label
+    label="$(repeat_char ん 2500)"
+    write_body "$1" \
+        "## 受け入れ基準（Acceptance Criteria）" \
+        "- [ ] AC-1 foo" \
+        "" \
+        "## 変更対象パス" \
+        "- src/foo.py" \
+        "" \
+        "## ゴール" \
+        "$(repeat_char あ "$2")" \
+        "" \
+        "## 見取り図" \
+        "" \
+        '```mermaid' \
+        "flowchart LR" \
+        "  subgraph before" \
+        "    A1[$label] --> B1[x]" \
+        "  end" \
+        "  subgraph after" \
+        "    A2[$label] --> B2[x]" \
+        "  end" \
+        '```'
+}
+
+@test "(56) ## 見取り図 の閉じた \`\`\`mermaid フェンスの中身は 4000 字に数えない" {
+    BODY="$BATS_TEST_TMPDIR/body.md"
+    write_overview_body "$BODY" 3944
+
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Dry run: issue will not be created."* ]]
+
+    # フェンスの外の文章を 1 字増やすと 4001 字（フェンスの中身の 5000 字超は数に入っていない）
+    write_overview_body "$BODY" 3945
+
+    run --separate-stderr python3 "$SCRIPT" --title-file "$TITLE_FILE" --body-file "$BODY" --dry-run
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"を除く）が 4001 字"* ]]
 }
