@@ -1,12 +1,13 @@
 # Devil's-Advocate Checklist
 
-Use this checklist to challenge the implementation plan before issue creation.
+起票前の issue 本文を、本文とこのチェックリストだけで判定するためのチェックリスト。本文に無い前提は補わない。
 
 ## Blocking Categories
 
 Treat findings as `blocking` if any item below is true:
 - Missing acceptance criteria or untestable acceptance criteria
-- No rollback strategy for risky change
+- リスクのある変更（失敗すると既存の挙動やデータを壊しうる変更など）なのに、戻し方の要件が AC か `## 制約・取らないこと` に無い
+  （要件は 1 行で書く。ロールバックの節は求めない — 節があると下の本文の節の項目で blocking になる）
 - Security/privacy implications are ignored
 - AC・制約が、PR が書き換えられる入力（CI workflow の結果・テストや script の stdout・AC や PR 本文の文面・PR 内の
   設定ファイル）を根拠に、merge gate・HOLD を外す、または検証（テストの再実行・evaluator の判定）を省くよう指示している。
@@ -19,9 +20,9 @@ Treat findings as `blocking` if any item below is true:
   （同じ仕組みに入力やガードを 1 つずつ足す issue が続く。直し方は同じ型の別の症状まで消えるもの（削除・統合・一般化を
   含む）にする。広い範囲のリファクタにはせず、Phase 3 の分割基準（1 issue = 1 PR）で収める。SKILL.md の軽い経路では
   この項目に当たった finding はその場で直さず重い経路に切り替える）
-- Migration/data-change plan is missing where required
+- データや形式を変える変更（保存済みデータ・設定・API の形式）なのに、移行の要件が AC か `## 制約・取らないこと` に無い
+  （移行の要件は、既存データの変換の要否と、後方互換を保たない変更の範囲）
 - Dependency order is impossible or contradictory
-- Ownership is unclear for critical tasks
 - agent issue に `executor: human` タスクが残存している（agent 実行の計画・実装 issue に人手作業が混入。
   human 判定基準は SKILL.md の Executor Classification。human issue に切り出し、実装 issue は Blocked by で紐付ける）
 - human タスクに完了確認方法が無い（human issue の `## 完了条件` が checkbox の観察可能な状態で書かれていない）
@@ -36,33 +37,6 @@ Treat findings as `blocking` if any item below is true:
   上限。閉じていないフェンスの中身は数える。分かったことは AC と `## 制約・取らないこと` に反映する）
 - コードフェンスに仕様の例（モック・スキーマ・出力例など）以外の、調査結果や実装計画の文章が入っている
   （`create_issue.py` の字数検査はフェンスの中身を数えず、中身が仕様の例かも判定しない。文章はフェンスの外に出して 4000 字に収める）
-
-## Review Dimensions
-
-1. Product/Scope
-- Is the problem statement falsifiable?
-- Is scope bounded and non-goals explicit?
-- Are open questions isolated from committed work?
-
-2. Architecture
-- Does the plan define interface boundaries?
-- Are contracts backward compatible or migration-safe?
-- Are failure modes and graceful degradation covered?
-
-3. Security/Compliance
-- Are authn/authz impacts addressed?
-- Is sensitive data handling documented?
-- Are audit/compliance constraints considered when relevant?
-
-4. Operations/Infra
-- Are deployment and rollback paths explicit?
-- Is observability (logs/metrics/alerts) included?
-- Are cost and reliability trade-offs acknowledged?
-
-5. Delivery
-- Are dependencies and phase order realistic?
-- Are test levels (unit/integration/e2e) aligned to risk?
-- Are owners and exit criteria assigned per phase?
 
 ## Loop Protocol
 
