@@ -100,10 +100,10 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
   直前に `workspace-prebuild <WT>` が pnpm ワークスペースの成果物を作り直す
   - ランナーの契約: `DEVFLOW_CHANGED_FILES`（差分と untracked の WT 相対パスを 1 行 1 件で書いた
     ファイルの絶対パス）と `DEVFLOW_BASE`（merge-base の sha）を渡す（未設定は全件実行。選択はランナー側）。`DEVFLOW_FAILED_FILES`
-    には exit 非 0 のランナーが落ちたテストファイルを同じ書式で漏れなく書く（漏れは base との切り分けで見落とされる）。
+    には exit 非 0 のランナーが落ちたテストファイルを同じ書式で漏れなく書く（漏れは base との切り分けで見落とされ、green に倒しうる）。
     全部を書けないなら書かない
   - 各回の test 前に `pre-commit-hook <WT>` が対象 repo の pre-commit hook を PR phase の commit と同じ stage で回し、exit 非 0 は
-    その回を green にせずログのパスだけ green-fix に渡す
+    その回を green にせずログのパスだけ green-fix に渡す。hook 無し・結果不明は green-fix に何も足さない
   - red なら green-fix（同じ `dev-implementer` を sonnet で）を `GREEN_MAX` まで回す。その前に失敗を分類し、diff と無関係で base でも
     落ちるテストは ENV 項目（advisory）として green 要件から外す（`_lib/base-failure-triage.mjs`）
   - empty-diff gate — working tree が base と同じ tree なら 1 回差し戻し、Validate をやり直す
@@ -113,11 +113,11 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
   - `tests:'error'`（起動失敗。待機の上限・start / wait の null・schema 不一致も stop して同じ）は green-fix せずに抜け、
     `GREEN_MAX` 到達の red はそのまま先へ進む（fail-safe。Final reconcile を skip した run は Merge tier の HOLD 理由になる）
   - `tests:'no_tests'`（実行対象 0 本）は通過扱いにせず green-fix もせずに抜ける（コード修正の問題ではない）。Merge tier が `no_tests_run` で HOLD
-  - base 失敗の分類材料（`failed_files`・diff の一覧・base 再実行）が欠けた失敗はすべて green-fix の対象（fail-safe）
+  - base 失敗の分類材料（`failed_files`・diff の一覧・base 再実行）が欠けた失敗はすべて green-fix の対象（fail-safe。green 要件を緩めない）
   - workspace-prebuild の失敗はテストを実行せず red（fail-safe）
   - 差し戻し後も空 diff なら throw（fail-closed）。例外は人間の cross-repo ラベル opt-in と、worktree 外の dirty な成果物の決定論の証拠が
-    揃ったときの graceful 終端
-  - local-verify が pg-broker に届かない・結果を取れない・Validate が red なら、pr-iterate の CI 待ちに戻す（fail-open。理由は終端サマリーの参考に出す）
+    揃ったときの graceful 終端（`_lib/cross-repo-gate.mjs`）
+  - Validate が red なら local-verify を走らせず pr-iterate の CI 待ちに戻す（fail-open）。proxy の失敗は `exec-proxy.md` の `local-verify` 行
 - **コード**: `execValidatePhase`・`execLocalVerify`・`execAcVerify`（`.claude/workflows/dev-flow.js`）、`_lib/implement-loop.mjs`、
   `_lib/run-tests-prompt.mjs`、`_lib/base-failure-triage.mjs`、`_lib/cross-repo-gate.mjs`、`_lib/local-verify.mjs`
 
@@ -261,11 +261,10 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
   - 終端サマリーを PR に投稿する。末尾の marker（`<!-- dev-flow:<tier> head=<sha> -->`、HOLD は code 付き）は単体 pr-iterate の
     `prior_devflow` が読む
 - **失敗の扱い**:
-  - `merge-tier-facts` の null・例外・契約外の形は per-field のフォールバックで続け、danger は fail-closed（HOLD を強制）。転記欠落と
-    実行不能は HOLD 理由を出し分ける。abort はしない（終端サマリーと journal を失う）
-  - diff hash の取得失敗は Diff triage の結果を再利用せず再判定する（fail-safe）
-  - mergeable が確定しないときは HOLD しない（fail-open。definitive な CONFLICTING / DIRTY だけ HOLD）
-  - Closes 行の取得失敗は未検証（fail-open）。欠落は入れ直し、入れ直せなければ HOLD（fail-closed）
-  - CI checks の取得失敗・終端サマリーの投稿失敗・journal handoff の失敗は fail-open（gate・tier に影響しない）
+  - danger は fail-closed（HOLD を強制。軸A）。他のサブ結果は per-field で続け abort しない: `exec-proxy.md` の `merge-tier-facts` 行
+  - 再判定・conflict・CI・Closes・投稿・journal は `exec-proxy.md` の `diff-hash-reuse（Merge tier の再判定 skip）` 行、
+    `exec-proxy.md` の `pr-meta（Merge tier の conflict 検出）` 行、`exec-proxy.md` の `ci-checks（ENV item の CI 判定）` 行、
+    `exec-proxy.md` の `closes` 行、`exec-proxy.md` の `closes-reinject` 行、`exec-proxy.md` の `post-comment` 行、
+    `exec-proxy.md` の `journal-handoff` 行
 - **コード**: `phase('Merge tier')`（`.claude/workflows/dev-flow-finalize.js`）、`classifyMergeTier`（`_lib/merge-tier.mjs`）、`_lib/merge-tier-facts.mjs`、
   `_lib/devflow-summary-format.mjs`、`_lib/journal-handoff.mjs`
