@@ -13,6 +13,8 @@ bats_require_minimum_version 1.5.0
 # （make_list_runner）を base に commit し、ランナーを書き換えずに一覧の中身だけを変えて各経路を見る。
 # テストは start → wait の公開の起動形だけで回す（切り離した supervisor が残るので start は fd 3 を閉じて呼ぶ）。
 # 切り離した実行の stderr は state dir の logs/command.log に残るので、run_tests はそれを $stderr に入れる。
+# ランナーの集合は base の tree で決まる（issue #1277）ので、run_tests は WT に commit が無ければその時点のファイルを
+# base として commit し、--base が無ければ --base HEAD を前置する（fixture のランナーが base と同一の run になる）。
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/run-tests.sh"
@@ -35,10 +37,29 @@ make_script() {
     chmod +x "$WT/tests/$1"
 }
 
-# start の引数を受け取り、start → wait で結果まで進める。各 stdout（stderr は分ける）が JSON 1 行であることを確かめ、
-# wait の行を $JSON に、切り離した実行の stderr を $stderr に入れる。start が引数不正で落ちたらその応答を $JSON に入れて返す。
-# 追加の環境変数（PATH の stub 差し替え等）は呼び出し側で export する
+# WT を git repo にし、その時点のファイル（tests/ を含む）を 1 commit にする
+init_repo() {
+    git -C "$WT" init -q
+    git -C "$WT" add -A
+    git -C "$WT" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m base
+}
+
+# WT に commit が無ければ（git repo でなければ init して）その時点のファイルを base として commit する
+ensure_base() {
+    git -C "$WT" rev-parse -q --verify HEAD >/dev/null 2>&1 || init_repo
+}
+
+# start の引数を受け取り、start → wait で結果まで進める（ensure_base の後、--base が無ければ --base HEAD を前置する）。
+# 各 stdout（stderr は分ける）が JSON 1 行であることを確かめ、wait の行を $JSON に、切り離した実行の stderr を $stderr に入れる。
+# start が引数不正で落ちたらその応答を $JSON に入れて返す。追加の環境変数（PATH の stub 差し替え等）は呼び出し側で export する
 run_tests() {
+    ensure_base
+    if [[ " $* " != *" --base "* ]]; then set -- --base HEAD "$@"; fi
+    run_tests_raw "$@"
+}
+
+# run_tests から base の用意と --base の前置を除いたもの（引数をそのまま start に渡す）
+run_tests_raw() {
     run --separate-stderr bash "$SCRIPT" start "$WT" "$@" 3>&-
     [ "${#lines[@]}" -eq 1 ]
     JSON="$output"
@@ -58,7 +79,104 @@ run_tests() {
     echo "$JSON" | jq -e --arg a "$WT/tests/run-a.sh" --arg b "$WT/tests/run-b.sh" \
         '[.scripts[] | del(.log)] == [{path: $a, exit: 0, launch_failed: false}, {path: $b, exit: 0, launch_failed: false}]'
     echo "$JSON" | jq -e '.failed_files == [] and (.epoch | type == "number")'
+    # base と同一のランナーだけの run は changed_runners を出さない（出力の形は issue #1277 の前と同じ）
+    echo "$JSON" | jq -e 'keys == (["status", "tests", "green", "summary", "scripts", "failed_files", "epoch"] | sort)'
     [ -f "$WT/tests/b.marker" ]
+}
+
+# --- ランナーの集合は base の tree で決める（issue #1277）---
+
+@test "base の集合: base に無い tests/run-new.sh を worktree に足しても実行せず、changed_runners に載せる" {
+    make_script run-a.sh 'exit 0'
+    init_repo
+    make_script run-new.sh 'touch "$(dirname "$0")/new.marker"; exit 0'
+    run_tests
+    echo "$JSON" | jq -e --arg a "$WT/tests/run-a.sh" '.status == "passed" and .green == true and ([.scripts[].path] == [$a])'
+    echo "$JSON" | jq -e '.changed_runners == ["tests/run-new.sh"]'
+    [ ! -f "$WT/tests/new.marker" ]
+    [[ "$stderr" == *"tests/run-new.sh"* ]]
+}
+
+@test "base の集合: base のランナーが worktree で欠けていれば起動失敗（exit 127）として error、残りは実行する" {
+    make_script run-a.sh 'echo a-ran > "$(dirname "$0")/a.marker"'
+    make_script run-b.sh 'exit 0'
+    init_repo
+    git -C "$WT" rm -q tests/run-b.sh
+    run_tests
+    echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false and .failed_files == []'
+    echo "$JSON" | jq -e --arg a "$WT/tests/run-a.sh" --arg b "$WT/tests/run-b.sh" \
+        '[.scripts[] | del(.log)] == [{path: $a, exit: 0, launch_failed: false}, {path: $b, exit: 127, launch_failed: true}]'
+    echo "$JSON" | jq -e '.summary | contains("launch failed") and contains("run-b.sh")'
+    echo "$JSON" | jq -e 'has("changed_runners") | not'
+    [ -f "$WT/tests/a.marker" ]
+}
+
+@test "base の集合: base のランナーの実行ビットが worktree で外れていれば起動失敗（exit 126）として error" {
+    make_script run-a.sh 'exit 0'
+    make_script run-b.sh 'touch "$(dirname "$0")/b.marker"; exit 0'
+    init_repo
+    chmod -x "$WT/tests/run-b.sh"
+    run_tests
+    echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false'
+    echo "$JSON" | jq -e --arg b "$WT/tests/run-b.sh" '[.scripts[] | select(.path == $b) | [.exit, .launch_failed]] == [[126, true]]'
+    [ ! -f "$WT/tests/b.marker" ]
+}
+
+@test "base の集合: 中身が base と違うランナーは実行し、base に無いランナーと合わせて changed_runners に載せる" {
+    make_script run-a.sh 'exit 0'
+    make_script run-b.sh 'exit 1'
+    init_repo
+    make_script run-b.sh 'exit 0'
+    make_script run-c.sh 'exit 0'
+    run_tests
+    echo "$JSON" | jq -e '.status == "passed" and .green == true and (.scripts | length == 2)'
+    echo "$JSON" | jq -e '(.changed_runners | sort) == ["tests/run-b.sh", "tests/run-c.sh"]'
+    # 中身が同じなら commit の有無（staged・未 stage）に依らず載せない
+    git -C "$WT" checkout -q -- tests/run-b.sh
+    run_tests
+    echo "$JSON" | jq -e '.status == "failed" and .changed_runners == ["tests/run-c.sh"]'
+}
+
+@test "base の集合: red の応答にも changed_runners を載せる" {
+    make_script run-a.sh 'exit 0'
+    init_repo
+    make_script run-a.sh 'exit 1'
+    run_tests
+    echo "$JSON" | jq -e '.status == "failed" and .changed_runners == ["tests/run-a.sh"]'
+}
+
+@test "base の集合: base の tree で実行ビットの無い run-*.sh は実行しない" {
+    make_script run-a.sh 'exit 0'
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$WT/tests/run-noexec.sh"
+    run_tests
+    echo "$JSON" | jq -e --arg a "$WT/tests/run-a.sh" '.status == "passed" and ([.scripts[].path] == [$a])'
+    echo "$JSON" | jq -e 'has("changed_runners") | not'
+}
+
+@test "base の集合: --files の再実行も base の集合で実行する（base に無いランナーは実行しない）" {
+    make_script run-a.sh "cp \"\$DEVFLOW_TEST_FILES\" \"$TMP_DIR/list.out\""
+    : > "$WT/a.bats"
+    init_repo
+    make_script run-new.sh 'touch "$(dirname "$0")/new.marker"'
+    run_tests --base HEAD --files a.bats
+    echo "$JSON" | jq -e --arg a "$WT/tests/run-a.sh" '.status == "passed" and ([.scripts[].path] == [$a])'
+    echo "$JSON" | jq -e '.changed_runners == ["tests/run-new.sh"]'
+    [ "$(cat "$TMP_DIR/list.out")" = "a.bats" ]
+    [ ! -f "$WT/tests/new.marker" ]
+}
+
+@test "base の集合: merge-base を解決できない（ref が無い・git の work tree でない）run はテストを 1 本も実行せず error（--files も）" {
+    make_script run-a.sh 'touch "$(dirname "$0")/a.marker"'
+    : > "$WT/a.bats"
+    run_tests_raw --base HEAD
+    echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false and .scripts == [] and (.summary | contains("merge-base"))'
+    init_repo
+    for args in "--base no-such-ref" "--base no-such-ref --files a.bats"; do
+        # shellcheck disable=SC2086
+        run_tests $args
+        echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false and .scripts == [] and (.summary | contains("merge-base"))'
+    done
+    [ ! -f "$WT/tests/a.marker" ]
 }
 
 @test "scripts[].log: 各 script の stdout / stderr を書いた worktree 外の実在ファイルの絶対パス" {
@@ -108,13 +226,6 @@ run_tests() {
     make_script run-a.sh 'exit 127'
     run_tests
     echo "$JSON" | jq -e '.status == "error" and .scripts[0].launch_failed == true'
-}
-
-@test "実行ビットの無い run-*.sh は実行しない" {
-    make_script run-a.sh 'exit 0'
-    printf '#!/usr/bin/env bash\nexit 1\n' > "$WT/tests/run-noexec.sh"
-    run_tests
-    echo "$JSON" | jq -e --arg a "$WT/tests/run-a.sh" '.status == "passed" and ([.scripts[].path] == [$a])'
 }
 
 @test "failed_files: bats の not ok 行（直後の in test file 診断行）から WT 相対パスを重複なく抽出する" {
@@ -331,13 +442,6 @@ make_runner_stub() {
     [ -f "$WT/tests/a.marker" ]
 }
 
-# WT を git repo にし、その時点のファイル（tests/ を含む）を 1 commit にする
-init_repo() {
-    git -C "$WT" init -q
-    git -C "$WT" add -A
-    git -C "$WT" -c user.name=t -c user.email=t@example.com commit -q -m base
-}
-
 # tests/ 以外に禁止文字列があれば exit 1 する git grep invariant（plugin-manifest.bats の移管済み skill 名検査と同型）。
 # 禁止文字列は分割して書き、script 自身が一致しないようにする
 make_grep_invariant() {
@@ -398,16 +502,12 @@ make_grep_invariant() {
     [ "$(git -C "$WT" write-tree)" = "$expected" ]
 }
 
-@test "intent-to-add: git の work tree でなければ何もせずテストへ進む" {
-    make_script run-a.sh 'exit 0'
-    run_tests
-    echo "$JSON" | jq -e '.status == "passed"'
-    [ ! -d "$WT/.git" ]
-}
-
-@test "引数不正は exit 2 で status error の JSON を出す（subcommand の無い起動形も）" {
+@test "引数不正は exit 2 で status error の JSON を出す（subcommand の無い起動形・--base の無い start も）" {
     make_script run-a.sh 'echo ran > "$(dirname "$0")/a.marker"'
-    for args in "" "$WT" "$WT --base origin/main" "wait" "stop" "wait $WT --wait-sec x" "stop $WT --wait-sec 1"; do
+    : > "$WT/a.bats"
+    init_repo
+    for args in "" "$WT" "$WT --base origin/main" "start $WT" "start $WT --files a.bats" "start $WT --base HEAD --files" \
+        "start $WT --base HEAD a.bats" "wait" "stop" "wait $WT --wait-sec x" "stop $WT --wait-sec 1"; do
         # shellcheck disable=SC2086
         run bash "$SCRIPT" $args
         [ "$status" -eq 2 ]
@@ -423,7 +523,8 @@ make_grep_invariant() {
 
 @test "start はテストを切り離してすぐ返し、wait は --wait-sec より長く sleep する間 running、終われば結果の JSON を返す" {
     make_script run-a.sh 'sleep 3; echo "ok 1 a"'
-    run --separate-stderr bash "$SCRIPT" start "$WT" 3>&-
+    ensure_base
+    run --separate-stderr bash "$SCRIPT" start "$WT" --base HEAD 3>&-
     [ "$status" -eq 0 ]
     [ "${#lines[@]}" -eq 1 ]
     echo "$output" | jq -e '.status == "running" and .tests == "running" and .green == false'
@@ -451,7 +552,9 @@ make_grep_invariant() {
 
 @test "stop: 走っているテストを止め、その後の wait は tests error（テストが通ったとみなさない）" {
     make_script run-a.sh 'sleep 30; touch "$(dirname "$0")/a.marker"'
-    run bash "$SCRIPT" start "$WT" 3>&-
+    ensure_base
+    run bash "$SCRIPT" start "$WT" --base HEAD 3>&-
+    echo "$output" | jq -e '.status == "running"'
     run bash "$SCRIPT" stop "$WT" --timeout-sec 15
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .was_running == true'
@@ -473,7 +576,8 @@ make_grep_invariant() {
 @test "切り離したテストの上限を超えると止めて tests error" {
     make_script run-a.sh 'sleep 30'
     export RUN_TESTS_TIMEOUT_SEC=1
-    run bash "$SCRIPT" start "$WT" 3>&-
+    ensure_base
+    run bash "$SCRIPT" start "$WT" --base HEAD 3>&-
     run bash "$SCRIPT" wait "$WT" --wait-sec 20
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.status == "error" and .tests == "error" and .green == false and (.summary | contains("did not finish"))'
@@ -481,7 +585,9 @@ make_grep_invariant() {
 
 @test "start を繰り返すと前の実行を止めて新しい引数で走らせ直す" {
     make_script run-a.sh 'sleep 30; touch "$(dirname "$0")/first.marker"'
-    run bash "$SCRIPT" start "$WT" 3>&-
+    ensure_base
+    run bash "$SCRIPT" start "$WT" --base HEAD 3>&-
+    echo "$output" | jq -e '.status == "running"'
     make_script run-a.sh 'exit 0'
     run_tests
     echo "$JSON" | jq -e '.status == "passed" and .green == true'
@@ -561,33 +667,6 @@ git_commit() {
     [ "$(cat "$TMP_DIR/list.out")" = "added.txt" ]
 }
 
-@test "--base 無し: 両変数とも未設定（呼び出し元の環境にあっても継がない）" {
-    make_env_probe
-    init_repo
-    echo new > "$WT/added.txt"
-    export DEVFLOW_CHANGED_FILES="$TMP_DIR/outer.txt" DEVFLOW_BASE=outer
-    run_tests
-    echo "$JSON" | jq -e '.status == "passed" and .green == true'
-    [ "$(cat "$TMP_DIR/env.out")" = "$(printf 'unset\nunset')" ]
-}
-
-@test "--base 解決失敗: 両変数とも未設定、stderr に 1 行だけ出して status / green は変えない" {
-    make_env_probe
-    init_repo
-    run_tests_base no-such-ref
-    echo "$JSON" | jq -e '.status == "passed" and .tests == "passed" and .green == true'
-    [ "$(cat "$TMP_DIR/env.out")" = "$(printf 'unset\nunset')" ]
-    [ "$(grep -c 'DEVFLOW_CHANGED_FILES / DEVFLOW_BASE not set' <<< "$stderr")" -eq 1 ]
-}
-
-@test "--base で git が失敗（git の work tree でない）: 両変数とも未設定、status は変えない" {
-    make_env_probe
-    run_tests_base HEAD
-    echo "$JSON" | jq -e '.status == "passed" and .green == true'
-    [ "$(cat "$TMP_DIR/env.out")" = "$(printf 'unset\nunset')" ]
-    [ "$(grep -c 'not set' <<< "$stderr")" -eq 1 ]
-}
-
 @test "--base: フォールバック経路（npm test）には変数を渡さない（DEVFLOW_FAILED_FILES も）" {
     echo '{"name":"x","scripts":{"test":"node t.js"}}' > "$WT/package.json"
     rmdir "$WT/tests"
@@ -599,20 +678,6 @@ git_commit() {
     run_tests_base HEAD
     echo "$JSON" | jq -e '.status == "passed" and [.scripts[] | del(.log)] == [{path: "npm test", exit: 0, launch_failed: false}]'
     [ "$(cat "$TMP_DIR/env.out")" = "$(printf 'unset\nunset\nunset')" ]
-}
-
-@test "--base: 変数を読まないランナーでは status と出力 JSON が --base 無しと同一（epoch・log パスを除く）" {
-    make_script run-a.sh 'echo "ok 1 a"'
-    make_script run-b.sh 'echo "not ok 1 b"; echo "# (in test file '"$WT"'/plugins/b.bats, line 2)"; exit 1'
-    init_repo
-    echo new > "$WT/added.txt"
-    normalize='del(.epoch) | .summary |= gsub("log: [^)]*"; "log: X") | .scripts[].log = "X"'
-    run_tests
-    without=$(jq -c "$normalize" <<< "$JSON")
-    run_tests_base HEAD
-    with=$(jq -c "$normalize" <<< "$JSON")
-    echo "$with" | jq -e '.status == "failed" and .failed_files == ["plugins/b.bats"]'
-    [ "$with" = "$without" ]
 }
 
 # --- 落ちたファイルだけの再実行（issue #865）---
@@ -693,7 +758,7 @@ EOF
     make_script run-b.sh "printf '%s\n' \"\${DEVFLOW_FAILED_FILES-unset}\" > \"$TMP_DIR/env-b.out\""
     : > "$WT/a.bats"
     export DEVFLOW_FAILED_FILES="$TMP_DIR/outer-failed.txt"
-    for args in "" "--base no-such-ref" "--files a.bats"; do
+    for args in "" "--files a.bats"; do
         rm -f "$TMP_DIR/env-a.out" "$TMP_DIR/env-b.out"
         # shellcheck disable=SC2086
         run_tests $args
@@ -758,23 +823,14 @@ init_list_repo() {
     echo "# changed" >> "$WT/tests/run-py.sh"
     run_tests_base HEAD
     echo "$JSON" | jq -e '.status == "failed" and .failed_files == ["b.bats"]'
-
-    # untracked の新規ランナーも diff に入る
-    git -C "$WT" checkout -q -- tests/run-py.sh
-    mv "$WT/tests/run-py.sh" "$WT/tests/run-qy.sh"
-    run_tests_base HEAD
-    echo "$JSON" | jq -e '.status == "failed" and .failed_files == ["b.bats"]'
 }
 
-@test "DEVFLOW_FAILED_FILES: merge-base を解決できない（--base 無し・解決失敗・--files）ときは一覧を使わずログからの抽出に戻る" {
+@test "DEVFLOW_FAILED_FILES: --files の再実行では一覧を使わずログからの抽出に戻る" {
     make_list_runner_with_bats
     init_list_repo
     printf '%s\n' tests/test_a.py > "$TMP_DIR/list.in"
-    for args in "" "--base no-such-ref" "--files tests/test_a.py"; do
-        # shellcheck disable=SC2086
-        run_tests $args
-        echo "$JSON" | jq -e '.status == "failed" and .failed_files == ["b.bats"]'
-    done
+    run_tests --files tests/test_a.py
+    echo "$JSON" | jq -e '.status == "failed" and .failed_files == ["b.bats"]'
 }
 
 @test "DEVFLOW_FAILED_FILES: 一覧に WT 内の通常ファイルでない行（..・WT の外・不在）が 1 件でもあれば failed_files は空" {

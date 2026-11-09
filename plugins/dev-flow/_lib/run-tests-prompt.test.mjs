@@ -51,7 +51,7 @@ async function job(responses) {
 
 test('[run-tests-prompt] prompt は start / wait / stop の bare 単文で、wait は 1 回の Bash に収まる秒数だけ待つ', () => {
   assert.equal(runTestsPrompt('/wt', 'origin/main').split('\n').at(-1), 'run-tests start /wt --base origin/main');
-  assert.equal(runTestFilesPrompt('/wt', ['a.bats', 'b.bats']).split('\n').at(-1), 'run-tests start /wt --files a.bats b.bats');
+  assert.equal(runTestFilesPrompt('/wt', 'origin/main', ['a.bats', 'b.bats']).split('\n').at(-1), 'run-tests start /wt --base origin/main --files a.bats b.bats');
   assert.equal(runTestsWaitPrompt('/wt').split('\n').at(-1), `run-tests wait /wt --wait-sec ${RUN_TESTS_WAIT_SEC}`);
   assert.equal(runTestsStopPrompt('/wt').split('\n').at(-1), 'run-tests stop /wt');
   assert.ok(RUN_TESTS_WAIT_SEC < 600, '1 回の wait は Bash の上限 600 秒より短い');

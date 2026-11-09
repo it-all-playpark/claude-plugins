@@ -19,6 +19,8 @@
 //
 // --base: run-tests は merge-base からの変更ファイル一覧を DEVFLOW_CHANGED_FILES / DEVFLOW_BASE で tests/run-*.sh に渡す
 // （issue #835）。何を回すかは repo 側のランナーが決める。全 test spawn・全 shape・全 gate_policy で同じ ref を渡す。
+// 実行する tests/run-*.sh の集合も merge-base の tree で決まる（issue #1277）ので、--base は --files の再実行を含む全起動で必須
+// （無い・解決できない run は run-tests が status "error" を返す）。
 
 // wait 1 回の待機秒数（1 回の Bash に収まる値）と、wait の待機の累計の上限（秒）。上限まで待っても終わらないテストは
 // 止めて tests:"error" にする（HOLD に流れる）。run-tests 側の打ち切りはこれより長い（上限で止めるのは workflow）。
@@ -40,11 +42,12 @@ export function runTestsPrompt(wt, base) {
 // シェルで分割・展開されない文字だけのパスに絞ってから渡す。転写の契約は runTestsPrompt と同じ。
 /**
  * @param {string} wt worktree の絶対パス
+ * @param {string} base ランナーの集合を決める ref（runTestsPrompt と同じ `origin/<base branch>`）
  * @param {string[]} files 再実行するテストファイル（WT 相対）
  * @returns {string}
  */
-export function runTestFilesPrompt(wt, files) {
-  return runTestsCommandPrompt(wt, `run-tests start ${wt} --files ${files.join(' ')}`);
+export function runTestFilesPrompt(wt, base, files) {
+  return runTestsCommandPrompt(wt, `run-tests start ${wt} --base ${base} --files ${files.join(' ')}`);
 }
 
 /**

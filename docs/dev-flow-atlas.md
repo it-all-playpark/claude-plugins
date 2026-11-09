@@ -443,6 +443,7 @@ flowchart TD
 | `validate_test_red` | Validate test red のまま PR へ進行し、pr-iterate の fix が 0 件で Final reconcile が skip された | PR tree のテスト状態は Validate の結果のまま。gate_policy に依らず人間確認。落ちたファイルだけの 1 回の再実行で green なら flake 候補として開示する |
 | `validate_tests_not_run` | Validate が `tests:'error'`（テストが 1 件も実行されていない）で Final reconcile が skip された | PR の CI の success では解除しない。Setup(deps) が `ok:false` なら note を理由に載せる |
 | `no_tests_run` | Validate か Final reconcile の test#final が `tests:'no_tests'`（実行対象のテストが 0 本） | gate_policy に依らず人間確認。green に読み替えず、opt-out も持たない |
+| `test_runner_changed` | Validate か Final reconcile の test#final の `run-tests` が `changed_runners`（中身が base と違う・base に無い `tests/run-*.sh`）を返した | gate_policy に依らず人間確認。reason にパスを載せる。opt-out を持たない |
 | `final_ac_unavailable` | Final AC reconcile 判定不能 | |
 | `iterate_non_lgtm` | pr-iterate が `lgtm` 以外で終端 | |
 | `hash_mismatch` | `eval_staleness = hash_mismatch` | 評価済み tree と merge 対象 tree の乖離 |
