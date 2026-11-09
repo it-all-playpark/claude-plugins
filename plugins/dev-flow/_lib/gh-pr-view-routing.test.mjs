@@ -9,9 +9,9 @@
 // label/agentType で stub）で以下を pin する:
 //
 //   (1) dispatch pin: label==='merge-tier-facts' の呼び出しが agentType:'dev-runner-haiku-ro'・
-//       phase:'Merge tier'・schema（MERGE_FACTS: required ['risk'], properties.pr は required [ok, value]）・prompt に
-//       `gh pr view <pr番号> --json mergeable,mergeStateStatus,headRefOid` を含むことを検証する
-//       （headRefOid は hash_reconverged 判定の証人、issue #631）。
+//       phase:'Merge tier'・schema（MERGE_FACTS: required ['risk'], properties.pr は required [ok, value]）・prompt が
+//       `merge-tier-facts ... --pr <pr番号> --issue <N>` の bare 単文で gh の単文を持たないことを検証する
+//       （PR の読み取りはスクリプトが gh pr view を 1 回実行して取る。issue #1311）。
 //   (2) conflicting(mergeable=CONFLICTING) → merge_tier HOLD、reasons に conflict 文言。
 //   (3) conflicting(mergeStateStatus=DIRTY, mergeable 未設定) → merge_tier HOLD。
 //   (4) clean(mergeable=MERGEABLE) → merge_tier は conflict 起因で HOLD にならない（no-op）。
@@ -86,7 +86,7 @@ function makeSandbox(prMetaResponse) {
 // (1) dispatch pin
 // ============================================================
 
-test('[gh-pr-view][1] dispatch: merge-tier-facts が agentType=dev-runner-haiku-ro, phase=Merge tier, schema(MERGE_FACTS), prompt に gh pr view コマンドを含む', async () => {
+test('[gh-pr-view][1] dispatch: merge-tier-facts が agentType=dev-runner-haiku-ro, phase=Merge tier, schema(MERGE_FACTS), prompt は --pr / --issue の bare 単文で gh の単文を含まない', async () => {
   const { ctx, calls } = makeSandbox({ ok: true, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' });
   const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, '1');
@@ -108,11 +108,15 @@ test('[gh-pr-view][1] dispatch: merge-tier-facts が agentType=dev-runner-haiku-
   );
   // value 欠落を契約違反にする（issue #746）。
   assert.equal(JSON.stringify(c.schema.properties.pr.required), JSON.stringify(['ok', 'value']), 'pr サブ結果 schema の required は [ok, value]');
+  // PR の読み取り（mergeable・mergeStateStatus・headRefOid 等）はスクリプトが gh pr view を 1 回実行して取る。
+  // subagent に渡すのは --pr / --issue 付きの bare 単文だけで、gh の stdout を argv に写す段を持たない（issue #1311）。
   assert.ok(
-    c.prompt.includes('gh pr view 405 --json mergeable,mergeStateStatus,headRefOid'),
-    `merge-tier-facts の prompt に headRefOid を含む gh pr view コマンドが含まれていない（issue #631）:\n${c.prompt}`,
+    c.prompt.includes('`merge-tier-facts --worktree /tmp/wt --base origin/main --pr 405 --issue 405`'),
+    `merge-tier-facts の prompt に --pr / --issue の bare 単文が含まれていない:\n${c.prompt}`,
   );
-  assert.ok(c.prompt.includes('--pr-view-data'), 'gh pr view の stdout を --pr-view-data で merge-tier-facts へ転写する指示が無い');
+  for (const banned of ['gh pr view', '--pr-view-data', '--jq']) {
+    assert.ok(!c.prompt.includes(banned), `merge-tier-facts の prompt に ${banned} が残っている:\n${c.prompt}`);
+  }
 });
 
 // ============================================================

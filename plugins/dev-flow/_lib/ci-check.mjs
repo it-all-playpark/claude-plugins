@@ -109,19 +109,6 @@ function checkNameArgs(flag, names) {
   return (Array.isArray(names) ? names : []).map((name) => ` ${flag} '${String(name).split("'").join("'\\''")}'`).join('');
 }
 
-// Merge tier（mergeTierFactsPrompt）が merge-tier-facts の CI 入力を取るコマンド。gh pr checks --json は
-// conclusion を返さず、status が COMPLETED でない check の結果を bucket に落とすので使わない。rollup は null になりうるので
-// [] に直す。--jq で判定に要らないキーを落とし、haiku が argv に転写する量を抑える。
-// stdout は単一引用符で囲んだ argv に転写されるので、--jq の最後で JSON 文字列中の単一引用符をバックスラッシュ + u0027 の
-// エスケープに置き換え、stdout に単一引用符を出さない（check 名は PR の workflow が決められ、引用を閉じてコマンド置換を走らせうる。
-// このエスケープは JSON として同じ文字に読まれるので merge-tier-facts の判定は変わらない）。
-// 単一引用符とバックスラッシュは filter に書かずコードポイント（[39] / [92]）から作る: proxy が filter を転写するとき
-// エスケープ表記を戻して書き、単一引用符の引用を閉じて worktree 隔離ガードに拒否された。
-export function ciRollupCommand({ pr, repo, withLink = false }) {
-  const drop = withLink ? '.__typename,.completedAt' : '.__typename,.completedAt,.detailsUrl,.targetUrl';
-  return `gh pr view ${pr}${repo ? ' --repo ' + repo : ''} --json statusCheckRollup --jq '.statusCheckRollup // [] | map(del(${drop})) | ([39]|implode) as $q | tojson | split($q) | join(([92]|implode) + "u0027")'`;
-}
-
 // CI gate の proxy（ci-check / ci-wait-check / ci-verify）が実行する check-ci の bare 単文。
 // exclude: check-ci に --exclude で渡す check 名（ci_verify.checks。review ⇄ fix の round の CI 判定から外す）。
 // only: check-ci に --only で渡す check 名（LGTM 後の ci-verify 待ち。check-ci は check run の URL を link で返す）。

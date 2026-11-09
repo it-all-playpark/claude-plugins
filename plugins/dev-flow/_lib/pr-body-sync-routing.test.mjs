@@ -1,6 +1,6 @@
 // pr-body-sync-routing.test.mjs — PR body の Closes 行検証 / 再投入 / merge tier HOLD と
 // Final AC reconcile 後の AC checkbox 同期を dev-flow.js を VM 実行して観測する（issue #661 F3）。
-// Closes 有無は Merge tier の merge-tier-facts の closes サブ結果（gh pr view --json body --jq の true / false）で
+// Closes 有無は Merge tier の merge-tier-facts の closes サブ結果（スクリプトが本文を true / false に畳んだ値）で
 // 判定し、PR phase の closes-check / closes-recheck spawn は持たない（issue #824）。
 //
 // pr-artifacts.test.mjs 末尾の routing test（PR body verbatim 転写）と同型: dev-flow.js を strip して
@@ -24,7 +24,8 @@ async function run(overrides = {}, workflow) {
   return { result, calls };
 }
 
-const CLOSES_JQ = `gh pr view 1 --json body --jq '.body | test("Closes #1(\\\\D|$)")'`;
+const FACTS_CMD = '`merge-tier-facts --worktree /tmp/wt --base origin/main --pr 1 --issue 1`';
+const CLOSES_CHECK = '`pr-closes-check --pr 1 --issue 1`';
 const closesMissing = { 'merge-tier-facts': mergeTierFacts({ closes: false }) };
 
 // ---- 1. 既定 run: closes サブ結果 present → 'verified'、Closes 専用 spawn なし ----
@@ -43,8 +44,11 @@ test('[pr-body-sync-routing] 既定 run: closes-check / closes-recheck / closes-
   const facts = calls.filter((c) => c.label === 'merge-tier-facts');
   assert.equal(facts.length, 1);
   assert.equal(facts[0].opts.phase, 'Merge tier');
-  assert.ok(facts[0].prompt.includes(`\`${CLOSES_JQ}\``), `merge-tier-facts prompt に Closes の jq 判定が無い:\n${facts[0].prompt}`);
-  assert.ok(facts[0].prompt.includes("--closes-data '<手順3の stdout（true または false）をそのまま>'"), 'merge-tier-facts へ true / false を渡す指示が無い');
+  // Closes の判定に要る issue 番号は --issue で渡し、本文の読み取りと判定はスクリプトが行う（issue #1311）
+  assert.ok(facts[0].prompt.includes(FACTS_CMD), `merge-tier-facts prompt に --pr / --issue の bare 単文が無い:\n${facts[0].prompt}`);
+  for (const banned of ['--jq', '--closes-data', '--json body']) {
+    assert.ok(!facts[0].prompt.includes(banned), `merge-tier-facts prompt に ${banned} が残っている`);
+  }
 
   assert.equal(result?.pr_closes_status, 'verified');
   assert.notEqual(result?.merge_tier, 'HOLD');
@@ -64,7 +68,8 @@ test('[pr-body-sync-routing] Closes 欠落 → Merge tier の closes-reinject 1 
   assert.ok(reinject[0].prompt.includes('--body-file /tmp/wt/.devflow-tmp/pr-body-reinject.md'), 'closes-reinject prompt に --body-file 指示が無い');
   assert.ok(reinject[0].prompt.includes('<<<PR_BODY_BEGIN>>>'), 'closes-reinject prompt に PR_BODY delimiter が無い');
   assert.ok(reinject[0].prompt.includes('Closes #1\n<<<PR_BODY_END>>>'), 'closes-reinject prompt の本文が Closes #1 で終わらない');
-  assert.ok(reinject[0].prompt.includes(`\`${CLOSES_JQ}\``), '再投入後の Closes 再取得が同じ spawn に無い');
+  assert.ok(reinject[0].prompt.includes(CLOSES_CHECK), `再投入後の Closes 再確認（pr-closes-check）が同じ spawn に無い:\n${reinject[0].prompt}`);
+  assert.ok(!reinject[0].prompt.includes('--jq'), 'closes-reinject prompt に --jq が残っている');
 
   assert.equal(calls.filter((c) => c.label === 'closes-recheck').length, 0, 'closes-recheck は呼ばれないはず');
   assert.equal(result?.pr_closes_status, 'reinjected');

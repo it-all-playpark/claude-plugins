@@ -113,7 +113,7 @@ test('[merge-facts-value][AC-1] スクリプトが出す正常形・ok:false 形
   const degraded = {};
   for (const key of ['diffhash', 'risk', 'changed', 'pr', 'head_tree', 'checks']) degraded[key] = { ok: false, value: null, error: 'jq_not_installed' };
   assert.equal(checkSchema(schema, { ...degraded, epoch: 1 }).ok, true);
-  // mergeTierFactsPrompt の手順 3 失敗時 fallback
+  // mergeTierFactsPrompt の手順 1 失敗時 fallback
   assert.equal(checkSchema(schema, { risk: { ok: false, value: null, error: 'x' } }).ok, true);
   // pr の値欠落は null で出る（スクリプトの `// null`）
   assert.equal(checkSchema(schema, mergeTierFacts({ pr: { mergeable: null, mergeStateStatus: null, headRefOid: null } })).ok, true);

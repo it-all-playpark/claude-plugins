@@ -21,10 +21,9 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { CI_POLL_SECONDS, CI_WAIT_CEILING_SECONDS, ciWaitCeiling, ciMaxPolls, CI_TURN_MARGIN, CI_STATUS, CI_WAIT_CHECK, ciCheckPrompt, ciWaitCheckPrompt, checkCiCommand, ciRollupCommand, ciHeadRejectReason, isFullCommitSha, ciStatusFromCounts, ciEffectiveStatus, CI_VERIFY_POLL_SECONDS, CI_VERIFY_CHECK, ciVerifyPrompt, ciVerifyVerdict } from './ci-check.mjs';
+import { CI_POLL_SECONDS, CI_WAIT_CEILING_SECONDS, ciWaitCeiling, ciMaxPolls, CI_TURN_MARGIN, CI_STATUS, CI_WAIT_CHECK, ciCheckPrompt, ciWaitCheckPrompt, checkCiCommand, ciHeadRejectReason, isFullCommitSha, ciStatusFromCounts, ciEffectiveStatus, CI_VERIFY_POLL_SECONDS, CI_VERIFY_CHECK, ciVerifyPrompt, ciVerifyVerdict } from './ci-check.mjs';
 
 // ============================================================
 // 定数
@@ -249,55 +248,6 @@ test('[ci-check] ci-check / ci-wait-check / ci-verify の prompt は check-ci --
   assert.ok(prompts[1].includes(`\`${checkCiCommand({ pr: 7, repo: 'o/n', exclude: ['e2e'] })}\``), prompts[1]);
   assert.ok(prompts[3].includes("`check-ci --pr 7 --repo o/n --exclude 'e2e'`"), prompts[3]);
   assert.ok(prompts[5].includes("`check-ci --pr 7 --repo o/n --only 'e2e'`"), prompts[5]);
-});
-
-// Merge tier（mergeTierFactsPrompt）が merge-tier-facts の CI 入力に使う ciRollupCommand。
-// gh のエクスポート形（cli/cli api/export_pr.go の statusCheckRollup）。jq は gh の --jq と同じ構文で畳む。
-const RAW_ROLLUP = {
-  statusCheckRollup: [
-    { __typename: 'CheckRun', name: 'lint', workflowName: 'CI', status: 'IN_PROGRESS', conclusion: 'SUCCESS', startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:01:00Z', detailsUrl: 'https://x/1' },
-    { __typename: 'StatusContext', context: 'vercel', state: 'SUCCESS', startedAt: '2026-01-01T00:00:00Z', targetUrl: 'https://x/2' },
-  ],
-};
-// gh の --jq は文字列の結果を引用符なしで出すので jq -r で同じ stdout を作る。
-const foldStdout = (command, input) => {
-  const filter = command.match(/--jq '(.+)'$/)[1];
-  return execFileSync('jq', ['-r', filter], { input: JSON.stringify(input), encoding: 'utf8' });
-};
-const foldWith = (command, input) => JSON.parse(foldStdout(command, input));
-
-test('[ci-check] ciRollupCommand: check 名の単一引用符は stdout に出ず、JSON としては同じ名前に読まれる', () => {
-  const name = "x'$(touch /tmp/pwned)'y";
-  const input = { statusCheckRollup: [{ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion: 'SUCCESS' }] };
-  for (const withLink of [false, true]) {
-    const out = foldStdout(ciRollupCommand({ pr: 1, repo: null, withLink }), input);
-    assert.ok(!out.includes("'"), out);
-    assert.equal(JSON.parse(out)[0].name, name);
-  }
-});
-
-test('[ci-check] ciRollupCommand: --jq は判定に要るキーだけを残し、URL は withLink のときだけ残す', () => {
-  const folded = foldWith(ciRollupCommand({ pr: 1, repo: null }), RAW_ROLLUP);
-  assert.deepEqual(Object.keys(folded[0]).sort(), ['conclusion', 'name', 'startedAt', 'status', 'workflowName']);
-  assert.deepEqual(Object.keys(folded[1]).sort(), ['context', 'startedAt', 'state']);
-  const linked = foldWith(ciRollupCommand({ pr: 1, repo: null, withLink: true }), RAW_ROLLUP);
-  assert.equal(linked[0].detailsUrl, 'https://x/1');
-  assert.equal(linked[1].targetUrl, 'https://x/2');
-});
-
-// proxy が --jq を単一引用符ごと転写するとき、エスケープ表記を戻して書くと引用が閉じ、worktree 隔離ガードに拒否される
-// （CI 全 pass でも ci_error）。filter には転写で形が変わりうるバックスラッシュと単一引用符を書かない。
-test('[ci-check] ciRollupCommand: --jq の filter はバックスラッシュも単一引用符も含まない', () => {
-  for (const withLink of [false, true]) {
-    const command = ciRollupCommand({ pr: 1, repo: 'o/n', withLink });
-    const filter = command.match(/--jq '(.+)'$/)[1];
-    assert.ok(!filter.includes('\\'), `withLink=${withLink}: ${filter}`);
-    assert.ok(!filter.includes("'"), `withLink=${withLink}: ${filter}`);
-  }
-});
-
-test('[ci-check] ciRollupCommand: rollup が null の PR でも --jq は失敗せず空配列を返す', () => {
-  assert.deepEqual(foldWith(ciRollupCommand({ pr: 1, repo: null }), { statusCheckRollup: null }), []);
 });
 
 test('[ci-check] pr が文字列でも同じ prompt になる（dev-flow は number, pr-iterate は string 由来）', () => {

@@ -8,20 +8,20 @@
 # 既存スクリプト (worktree-diff-hash.sh / diff-risk-classify.sh) とローカル read-only git を順に
 # 呼び出して集約するのみで、各スクリプトの判定ロジックは複製しない。
 #
-# 認証付き network I/O (gh) は本スクリプト内に持たない (.claude/rules/dev-flow.md の exec-proxy 制約。
-# check-ci と同じ precedent): `gh pr view` は呼び出し側 subagent が gh を先頭
-# トークンとする bare 単文で実行し、その stdout を --pr-view-data / --checks-data / --closes-data の
-# argv で verbatim 転写する。本スクリプトはその argv 入力とローカル git の純変換に留まる。
-# PR body は subagent 側が `gh pr view --json body --jq` で true / false に畳んでから渡す — 本文そのものを
-# argv や prompt に載せない (本文の転写ゆれで Closes 行を見落とす偽 HOLD を防ぐ。issue #713 / #824)。
-# 書き込み系コマンド (fetch / pull / comment / commit) は一切発行しない。
+# 認証付き network I/O は読み取り専用の gh を 1 回だけ持つ (.claude/rules/dev-flow.md の exec-proxy 節。
+# check-ci と同じ形): argv 配列で
 #
-# Usage: merge-tier-facts.sh --worktree <abs-path> --base <ref> \
-#          [--pr-view-data '<gh pr view --json mergeable,mergeStateStatus,headRefOid の stdout>'] \
-#          [--checks-data '<gh pr view --json statusCheckRollup --jq (判定に要るキーへの畳み込み) の stdout>'] \
-#          [--closes-data '<gh pr view --json body --jq '.body | test("Closes #<issue>(\\D|$)")' の stdout>']
-#   --base は完全修飾 ref (例: origin/main)。呼び出し側 (dev-flow.js) が origin/ を付けて渡す。
-#   --pr-view-data / --checks-data / --closes-data は gh の stdout が空だった場合に省略してよい (省略は ok:false)。
+#   gh pr view <N> [--repo <owner/repo>] --json mergeable,mergeStateStatus,headRefOid,statusCheckRollup,body
+#
+# を実行し、pr / head_tree / checks / closes を同じ応答から作る。呼び出し側 subagent は本スクリプトを
+# bare 単文で 1 回実行して stdout を返すだけで、gh の stdout を argv に転写しない (入力側の転写の破損で
+# 判定が変わらない)。PR body は pr-closes.jq で true / false に畳み、本文そのものは stdout に出さない。
+# 書き込み系コマンド (fetch / pull / comment / commit / gh pr edit) は一切発行しない。
+#
+# Usage: merge-tier-facts.sh --worktree <abs-path> --base <ref> --pr <N> [--repo <owner/repo>] --issue <N>
+#   --base は完全修飾 ref (例: origin/main)。呼び出し側 (dev-flow-finalize.js) が origin/ を付けて渡す。
+#   --pr / --issue は正の整数、--repo (省略時は gh が cwd の repo を使う) は owner/repo 形。
+#   形式が不正なら gh を実行せずに usage error にする。
 #
 # Output (stdout, JSON 1 行)。サブ結果は全て {ok, value, error?} で、1 つの失敗は他へ波及しない:
 #   diffhash  - worktree-diff-hash.sh <wt> <base> の出力 ({hash, empty, epoch})
@@ -30,15 +30,16 @@
 #               stdout が空 / JSON 不正のときのみ ok:false
 #               diffhash / risk の error には子スクリプトの stderr 先頭 300 byte を添える (空なら付けない)
 #   changed   - `git diff --name-only <base>...HEAD` の各行 ({files: [...]})
-#   pr        - --pr-view-data の JSON object から抽出 ({mergeable, mergeStateStatus, headRefOid})。
-#               省略 / JSON object でないときは ok:false
+#   pr        - gh 応答から抽出 ({mergeable, mergeStateStatus, headRefOid})
 #   head_tree - `git rev-parse <pr.headRefOid>^{tree}` ({tree})。pr が取得できないか headRefOid が
 #               40hex でないときは ok:false (skipped)
-#   checks    - --checks-data の rollup を ci-rollup.jq (check-ci.sh と同じ分類の定義) で写した
-#               ({checks: [{name, bucket}, ...]})。null は空配列と同じ。省略 / ci-rollup.jq が受理しないときは ok:false
-#   closes    - --closes-data が `true` / `false` (前後の空白は除く) のとき ({present: <bool>})。
-#               省略 / それ以外の値は ok:false (取得失敗。Closes 欠落 = present:false とは区別する)
+#   checks    - gh 応答の statusCheckRollup を ci-rollup.jq (check-ci.sh と同じ分類の定義) で写した
+#               ({checks: [{name, bucket}, ...]})。null は空配列と同じ。キーが無い / ci-rollup.jq が受理しないときは ok:false
+#   closes    - gh 応答の body を pr-closes.jq で判定した ({present: <bool>})。body が文字列でないときは
+#               ok:false (取得失敗。Closes 欠落 = present:false とは区別する)
 #   epoch     - `date +%s` (clock mark 給電用。取得失敗は null)
+#   gh が非 0 exit / stdout が JSON object でないときは pr / head_tree / checks / closes が ok:false になり、
+#   pr / checks / closes の error に gh の stderr 先頭 300 byte を添える。diffhash / risk / changed には波及しない。
 #
 # 呼び出し側 (dev-flow.js の parseMergeTierFacts) がサブ結果ごとに fail-closed (risk) /
 # fail-open (それ以外) を判定する。本スクリプトは判定しない。
@@ -80,29 +81,33 @@ usage_error() {
 
 WT=""
 BASE=""
-PR_VIEW_DATA=""
-HAVE_PR_VIEW_DATA=false
-CHECKS_DATA=""
-HAVE_CHECKS_DATA=false
-CLOSES_DATA=""
-HAVE_CLOSES_DATA=false
+PR=""
+REPO=""
+HAVE_REPO=false
+ISSUE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --worktree)     [[ $# -ge 2 ]] || usage_error "--worktree requires a value"; WT="$2"; shift 2 ;;
-        --base)         [[ $# -ge 2 ]] || usage_error "--base requires a value"; BASE="$2"; shift 2 ;;
-        --pr-view-data) [[ $# -ge 2 ]] || usage_error "--pr-view-data requires a value"; PR_VIEW_DATA="$2"; HAVE_PR_VIEW_DATA=true; shift 2 ;;
-        --checks-data)  [[ $# -ge 2 ]] || usage_error "--checks-data requires a value"; CHECKS_DATA="$2"; HAVE_CHECKS_DATA=true; shift 2 ;;
-        --closes-data)  [[ $# -ge 2 ]] || usage_error "--closes-data requires a value"; CLOSES_DATA="$2"; HAVE_CLOSES_DATA=true; shift 2 ;;
+        --worktree) [[ $# -ge 2 ]] || usage_error "--worktree requires a value"; WT="$2"; shift 2 ;;
+        --base)     [[ $# -ge 2 ]] || usage_error "--base requires a value"; BASE="$2"; shift 2 ;;
+        --pr)       [[ $# -ge 2 ]] || usage_error "--pr requires a value"; PR="$2"; shift 2 ;;
+        --repo)     [[ $# -ge 2 ]] || usage_error "--repo requires a value"; REPO="$2"; HAVE_REPO=true; shift 2 ;;
+        --issue)    [[ $# -ge 2 ]] || usage_error "--issue requires a value"; ISSUE="$2"; shift 2 ;;
         *) usage_error "unknown option: $1" ;;
     esac
 done
 
-[[ -n "$WT" ]] || usage_error "usage: merge-tier-facts.sh --worktree <abs-path> --base <ref> [--pr-view-data <json>] [--checks-data <json>] [--closes-data <true|false>]"
+[[ -n "$WT" ]] || usage_error "usage: merge-tier-facts.sh --worktree <abs-path> --base <ref> --pr <N> [--repo <owner/repo>] --issue <N>"
 [[ "$WT" == /* ]] || usage_error "--worktree must be an absolute path"
 [[ -d "$WT" ]] || usage_error "worktree path does not exist: $WT"
 [[ -n "$BASE" ]] || usage_error "--base is required"
 [[ "$BASE" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || usage_error "--base contains invalid characters"
+# gh の argv に入る値は形式を検証してから配列で渡す（シェル文字列を組み立てない）
+[[ "$PR" =~ ^[1-9][0-9]*$ ]] || usage_error "--pr must be a positive integer"
+[[ "$ISSUE" =~ ^[1-9][0-9]*$ ]] || usage_error "--issue must be a positive integer"
+if [[ "$HAVE_REPO" == true ]]; then
+    [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ ]] || usage_error "--repo must be owner/repo"
+fi
 
 # ============================================================================
 # jq availability (サブ出力の妥当性検証と最終 JSON 組み立ての両方に必須)
@@ -181,22 +186,42 @@ else
 fi
 
 # ============================================================================
-# 4. pr = --pr-view-data (gh pr view --json mergeable,mergeStateStatus,headRefOid の stdout 転写) の純変換
+# 4. gh pr view を 1 回 (読み取り専用・argv 配列)。pr / head_tree / checks / closes は全てこの応答から作る
 # ============================================================================
 
-head_ref_oid=""
-if [[ "$HAVE_PR_VIEW_DATA" != true ]]; then
-    pr_json="$(err_result "pr view data not provided (--pr-view-data omitted: gh pr view stdout was empty or the command failed)")"
-elif is_json_object "$PR_VIEW_DATA"; then
-    pr_value="$(printf '%s' "$PR_VIEW_DATA" | jq -c '{mergeable: (.mergeable // null), mergeStateStatus: (.mergeStateStatus // null), headRefOid: (.headRefOid // null)}')"
-    pr_json="$(ok_result "$pr_value")"
-    head_ref_oid="$(printf '%s' "$pr_value" | jq -r '.headRefOid // ""')"
-else
-    pr_json="$(err_result "pr view data is not a JSON object: $(printf '%s' "$PR_VIEW_DATA" | head -c 300)")"
+GH_ARGS=(pr view "$PR")
+if [[ "$HAVE_REPO" == true ]]; then
+    GH_ARGS+=(--repo "$REPO")
+fi
+GH_ARGS+=(--json mergeable,mergeStateStatus,headRefOid,statusCheckRollup,body)
+
+set +e
+gh_out="$(gh "${GH_ARGS[@]}" 2>"$stderr_tmp")"
+gh_rc=$?
+set -e
+# gh_error が空でなければ gh 由来の 3 サブ結果 (pr / checks / closes) を同じ error で ok:false にする
+gh_error=""
+if [[ $gh_rc -ne 0 ]]; then
+    gh_error="$(with_stderr "gh pr view failed (exit ${gh_rc})")"
+elif ! is_json_object "$gh_out"; then
+    gh_error="$(with_stderr "gh pr view stdout is not a JSON object")"
 fi
 
 # ============================================================================
-# 5. head_tree = git rev-parse <headRefOid>^{tree} (pr 取得成功時のみ。fetch はしない)
+# 5. pr = gh 応答の {mergeable, mergeStateStatus, headRefOid}
+# ============================================================================
+
+head_ref_oid=""
+if [[ -n "$gh_error" ]]; then
+    pr_json="$(err_result "$gh_error")"
+else
+    pr_value="$(printf '%s' "$gh_out" | jq -c '{mergeable: (.mergeable // null), mergeStateStatus: (.mergeStateStatus // null), headRefOid: (.headRefOid // null)}')"
+    pr_json="$(ok_result "$pr_value")"
+    head_ref_oid="$(printf '%s' "$pr_value" | jq -r '.headRefOid // ""')"
+fi
+
+# ============================================================================
+# 6. head_tree = git rev-parse <headRefOid>^{tree} (pr 取得成功時のみ。fetch はしない)
 # ============================================================================
 
 if [[ "$head_ref_oid" =~ ^[0-9a-fA-F]{40}$ ]]; then
@@ -214,30 +239,29 @@ else
 fi
 
 # ============================================================================
-# 6. checks = --checks-data (gh pr view --json statusCheckRollup の stdout 転写) の純変換
+# 7. checks = gh 応答の statusCheckRollup を ci-rollup.jq で写す
 # ============================================================================
 
-if [[ "$HAVE_CHECKS_DATA" != true ]]; then
-    checks_json="$(err_result "checks data not provided (--checks-data omitted: gh pr view --json statusCheckRollup stdout was empty or the command failed)")"
-elif checks_rollup="$(printf '%s' "$CHECKS_DATA" | jq -ce -f "$SCRIPT_DIR/ci-rollup.jq" 2>/dev/null)"; then
+if [[ -n "$gh_error" ]]; then
+    checks_json="$(err_result "$gh_error")"
+elif checks_rollup="$(printf '%s' "$gh_out" | jq -c 'if has("statusCheckRollup") then .statusCheckRollup else error("no statusCheckRollup") end' 2>/dev/null \
+        | jq -ce -f "$SCRIPT_DIR/ci-rollup.jq" 2>/dev/null)"; then
     checks_json="$(ok_result "$(jq -nc --argjson c "$checks_rollup" '{checks: ($c | map({name, bucket}))}')")"
 else
-    checks_json="$(err_result "checks data is not a JSON array: $(printf '%s' "$CHECKS_DATA" | head -c 300)")"
+    checks_json="$(err_result "gh pr view statusCheckRollup is not an array of checks or null")"
 fi
 
 # ============================================================================
-# 7. closes = --closes-data (gh pr view --json body --jq '.body | test("Closes #<issue>(\\D|$)")' の stdout 転写)
+# 8. closes = gh 応答の body に Closes #<issue> があるか (pr-closes.jq。本文そのものは出さない)
 # ============================================================================
 
-if [[ "$HAVE_CLOSES_DATA" != true ]]; then
-    closes_json="$(err_result "closes data not provided (--closes-data omitted: gh pr view --json body stdout was empty or the command failed)")"
+if [[ -n "$gh_error" ]]; then
+    closes_json="$(err_result "$gh_error")"
+elif closes_present="$(printf '%s' "$gh_out" | jq -c --arg issue "$ISSUE" -f "$SCRIPT_DIR/pr-closes.jq" 2>/dev/null)" \
+    && [[ "$closes_present" == "true" || "$closes_present" == "false" ]]; then
+    closes_json="$(ok_result "$(jq -nc --argjson p "$closes_present" '{present: $p}')")"
 else
-    closes_trimmed="$(printf '%s' "$CLOSES_DATA" | tr -d '[:space:]')"
-    if [[ "$closes_trimmed" == "true" || "$closes_trimmed" == "false" ]]; then
-        closes_json="$(ok_result "$(jq -nc --argjson p "$closes_trimmed" '{present: $p}')")"
-    else
-        closes_json="$(err_result "closes data is not true/false: $(printf '%s' "$CLOSES_DATA" | head -c 300)")"
-    fi
+    closes_json="$(err_result "gh pr view body is not a string")"
 fi
 
 # ============================================================================

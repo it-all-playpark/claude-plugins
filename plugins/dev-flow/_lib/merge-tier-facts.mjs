@@ -37,25 +37,13 @@
 // INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
 // 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
-// closesCheckCommand({ pr, repo, issue }): PR body に `Closes #<issue>` があるかを gh 側の jq で true / false に
-// 畳むコマンド。本文そのものは stdout に出さない — 本文を haiku に転写させると転写のゆれで Closes 行を見落とし
-// 偽の pr_closes_missing HOLD を出す（issue #713）。`(\D|$)` は `#8240` を `#824` と数えないための境界。
-// 行全体一致ではなく部分一致なのは、GitHub の closing keyword が本文中のどこでも効くのに合わせるため。
-export function closesCheckCommand({ pr, repo, issue }) {
-  const repoArg = repo ? ' --repo ' + repo : '';
-  return `gh pr view ${pr}${repoArg} --json body --jq '.body | test("Closes #${Number(issue)}(\\\\D|$)")'`;
-}
-
-// mergeTierFactsPrompt({ wt, base, pr, repo, issue, rollupCommand }): 統合 exec-proxy の prompt。
-// gh の 3 コマンドは subagent が bare 単文で実行し、stdout を argv で merge-tier-facts へ verbatim 転写する
-// （exec-proxy スクリプトは認証付き network I/O を内部に持たない契約。check-ci と同型）。
-// PR body は closesCheckCommand で true / false に畳んだ結果だけを渡し、本文を argv にも prompt にも載せない。
+// mergeTierFactsPrompt({ wt, base, pr, repo, issue }): 統合 exec-proxy の prompt。
+// subagent は merge-tier-facts を bare 単文で 1 回実行して stdout を返すだけ。PR の読み取り（mergeable・
+// mergeStateStatus・headRefOid・statusCheckRollup・本文の Closes 有無）はスクリプトが自分で gh pr view を 1 回
+// 実行して取る（check-ci と同じ形）。gh の stdout を argv に写す段を持たないので、入力側の転写の破損で判定が変わらない。
 // base は origin/ 無しの branch 名を受け、prompt 側で origin/ を付ける（既存 call site と同じ）。
-// rollupCommand は ci-check.mjs の ciRollupCommand の戻り値（CI gate と同じ入力を取る。canonical は import を持てないので
-// 呼び出し側が渡す）。
-export function mergeTierFactsPrompt({ wt, base, pr, repo, issue, rollupCommand }) {
+export function mergeTierFactsPrompt({ wt, base, pr, repo, issue }) {
   const repoArg = repo ? ' --repo ' + repo : '';
-  const bare = '（cd 前置・`bash` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止）';
   return `## Objective\nPR #${pr} の Merge tier 判定に使う事実を取得し、merge-tier-facts の stdout JSON をそのまま返せ。\n\n`
     + `## Tools\n`
     + `- 使用可: Bash のみ\n`
@@ -63,22 +51,12 @@ export function mergeTierFactsPrompt({ wt, base, pr, repo, issue, rollupCommand 
     + `## Boundary\n`
     + `- 読み取り専用。git mutation（commit/push/reset/fetch/pull 等）禁止。ファイルを変更しない\n\n`
     + `## Steps\n`
-    + `1. \`gh pr view ${pr}${repoArg} --json mergeable,mergeStateStatus,headRefOid\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。stdout を <PR_VIEW> とする。\n`
-    + `2. \`${rollupCommand}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
-    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。`
-    + `stdout を <CHECKS> とする。\n`
-    + `3. \`${closesCheckCommand({ pr, repo, issue })}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
-    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。`
-    + `stdout（\`true\` または \`false\`）を <CLOSES> とする。\n`
-    + `4. \`merge-tier-facts --worktree ${wt} --base origin/${base} --pr-view-data '<手順1の stdout を一字一句そのまま。要約・整形・省略禁止>' `
-    + `--checks-data '<手順2の stdout を一字一句そのまま。要約・整形・省略禁止>' `
-    + `--closes-data '<手順3の stdout（true または false）をそのまま>'\` を先頭トークンが merge-tier-facts の bare 単文で 1 回だけ実行せよ。`
-    + `手順 1 / 2 / 3 の stdout が空、またはコマンドが実行できなかった場合は当該オプション自体を省略せよ（値を捏造してはならない）。`
-    + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止`
+    + `1. \`merge-tier-facts --worktree ${wt} --base origin/${base} --pr ${pr}${repoArg} --issue ${Number(issue)}\` を先頭トークンが merge-tier-facts の bare 単文で 1 回だけ実行せよ。`
+    + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止`
     + `（--worktree で worktree 絶対パスを渡しているため cd は不要）。\n`
-    + `5. 手順 4 の stdout の JSON 1 行を **そのまま** 返せ（判定・要約・整形・省略禁止）。`
+    + `2. 手順 1 の stdout の JSON 1 行を **そのまま** 返せ（判定・要約・整形・省略禁止）。`
     + `各サブ結果の \`value\`（中身の object を含む。ok:false のときは null）を省略・空 object 化してはならない。`
-    + `手順 4 自体が実行できなかった、または stdout が JSON でない場合のみ \`{"risk":{"ok":false,"value":null,"error":"<stderr の要約>"}}\` を返せ。`
+    + `手順 1 自体が実行できなかった、または stdout が JSON でない場合のみ \`{"risk":{"ok":false,"value":null,"error":"<stderr の要約>"}}\` を返せ。`
     + `失敗時に ok:true を生成してはならない。原因調査はするな。再試行禁止。\n\n`
     + `## Output format\n`
     + `merge-tier-facts の stdout JSON（{diffhash, risk, changed, pr, head_tree, checks, closes, epoch}。各サブ結果は {ok, value, error?}）\n`
@@ -184,7 +162,7 @@ export function prClosesStatusOf(closes) {
 }
 
 // Closes 欠落を検出したときの再投入 exec-proxy（label 'closes-reinject'）の応答 schema。
-// closes は再投入後に closesCheckCommand を実行した stdout（'true' / 'false'。実行できなければ省略）。
+// closes は再投入後に pr-closes-check を実行した stdout（'true' / 'false'。実行できなければ省略）。
 export const CLOSES_REINJECT = {
   type: 'object',
   required: ['edited'],
@@ -195,9 +173,11 @@ export const CLOSES_REINJECT = {
   },
 };
 
-// PR #<pr> の本文を run が決定論で組んだ prBody で上書きし、同じ spawn の中で closesCheckCommand を
+// PR #<pr> の本文を run が決定論で組んだ prBody で上書きし、同じ spawn の中で pr-closes-check を
 // 実行して再投入後の Closes 有無を返させる（再確認のための別 spawn を持たない）。本文は Write で
 // `.devflow-tmp/pr-body-reinject.md` へ verbatim 保存し、bare 単文の gh pr edit --body-file で渡す。
+// pr-closes-check は gh pr view を 1 回実行して本文を true / false に畳み、本文そのものは stdout に出さない
+// （本文を haiku に転写させると転写のゆれで Closes 行を見落とし偽の pr_closes_missing HOLD を出す。issue #713）。
 export function closesReinjectPrompt({ wt, pr, repo, issue, prBody }) {
   const bodyFile = `${wt}/.devflow-tmp/pr-body-reinject.md`;
   const repoArg = repo ? ` --repo ${repo}` : '';
@@ -211,8 +191,7 @@ export function closesReinjectPrompt({ wt, pr, repo, issue, prBody }) {
     + `## Steps\n`
     + `1. \`gh pr edit ${pr}${repoArg} --body-file ${bodyFile}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
     + `失敗したら手順 2 へ進まず \`{"edited": false, "error": "<stderr の要約>"}\` を返せ。\n`
-    + `2. \`${closesCheckCommand({ pr, repo, issue })}\` を先頭トークンが gh の bare 単文で 1 回だけ実行せよ${bare}。`
-    + `--jq の引数は単一引用符ごと一字一句そのまま渡す（単一引用符内の \`|\` は jq の構文でありシェルのパイプではない）。\n`
+    + `2. \`pr-closes-check --pr ${pr}${repoArg} --issue ${Number(issue)}\` を先頭トークンが pr-closes-check の bare 単文で 1 回だけ実行せよ${bare}。\n`
     + `3. \`{"edited": true, "closes": "<手順2の stdout（true または false）をそのまま>"}\` を返せ。`
     + `手順 2 の stdout が空、またはコマンドが実行できなかった場合は closes を省略せよ（値を捏造してはならない）。原因調査はするな。再試行禁止。\n\n`
     + `## Output format\n{"edited": boolean, "closes"?: "true" | "false", "error"?: string}\nprose 禁止。JSON のみ 1 行で返せ。\n\n`
