@@ -158,8 +158,14 @@ report と比べて読む。
 ### agent 指示の capability-bound な部分
 
 - **何をするか**: `agents/` の指示のうち、現行モデルの取りこぼしを防ぐための手順の分解・禁止表現の列挙・書き直し例・
-  判定基準の細かな具体化。指示ごとに contract / incentive-structural / capability-bound を宣言する（rules）
+  判定基準の細かな具体化。指示ごとに contract / incentive-structural / blast-radius / capability-bound を宣言する（rules）。
+  evaluator・pr-reviewer・dev-implementer は各 `## ` 節に `正当化クラス: <class>` を書き（`_lib/devflow-rules-hygiene.test.mjs`
+  が検査する）、capability-bound を宣言した節は `agents/evaluator.md` の「進め方」「書き方」、
+  `agents/pr-reviewer.md` の「ワークフロー」「Step 1-2: 情報・context 収集」「Step 3: 系統的レビュー（dimension）」
+  「文体ルール（日本語主体）」「原則」、`agents/dev-implementer.md` の「守ること」「Bash の書き方（worktree 隔離ガード）」
+  「進め方の目安」。対象は節のうち capability-bound と宣言した段落・項目だけで、同じ節にある他のクラスの宣言は外さない
 - **なぜ**: frontier モデルなら指示なしでも同じ品質が出る指示は、残すほど prompt が膨らむ
 - **sunset トリガ**: major モデルリリースごとの dry-run
 - **次のモデル世代での測り直し方**: 品質ゲート agent の frontmatter model が世代交代したら、当該指示を外した agent で過去 run
-  を replay し、verdict と major 指摘の再現が劣化しないことを確かめてから削る。contract / incentive-structural の指示は外さない
+  を replay し、verdict と major 指摘の再現が劣化しないことを確かめてから削る。contract / incentive-structural / blast-radius の
+  指示は外さない

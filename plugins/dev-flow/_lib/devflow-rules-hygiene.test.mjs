@@ -1,7 +1,7 @@
 // devflow-rules-hygiene.test.mjs
 // `.claude/rules/dev-flow.md` の hygiene（サイズ上限・経緯記述ゼロ・references 一覧と実体の一致・
 // 不変条件アンカー存在・paths frontmatter 不変）と、references/capability-bound.md の項目構成
-// （4 欄・sunset トリガ・挙げた機構の実在）を pin する静的テスト（issue #635）。
+// （4 欄・sunset トリガ・挙げた機構の実在）と、agents/ の節ごとの正当化クラス宣言を pin する静的テスト（issue #635）。
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
@@ -321,6 +321,133 @@ test('(s) 敵対的 security review の incentive-structural は head 照合で 
   assert.ok(line, 'rules に「敵対的 security review」の行が無い');
   assert.ok(line.includes('head 照合'), `敵対的 security review の行に head 照合が無い: ${line}`);
   assert.ok(!line.includes('`reviewed_sha` 一致で clear'), `敵対的 security review の行が reviewed_sha 一致を clear の根拠に挙げている: ${line}`);
+});
+
+// agent 指示の正当化クラス: evaluator・pr-reviewer・dev-implementer は各 `## ` 節（frontmatter と最初の `## ` より前を除く）に
+// `正当化クラス: <class>` を書く。宣言が無い指示は sunset トリガが発火しても外してよいかを決められない
+const AGENTS_ABS = join(PLUGIN_ROOT, 'agents');
+const DECLARED_AGENT_FILES = ['evaluator.md', 'pr-reviewer.md', 'dev-implementer.md'];
+const JUSTIFICATION_CLASSES = new Set(['contract', 'incentive-structural', 'blast-radius', 'capability-bound']);
+const CLASS_DECL = /正当化クラス: ([^\s（()。、,）:]*)/g;
+const agentSrc = Object.fromEntries(DECLARED_AGENT_FILES.map((f) => [f, readFileSync(join(AGENTS_ABS, f), 'utf8')]));
+
+function agentSections(src) {
+  const body = src.replace(/^---\n[\s\S]*?\n---\n/, '');
+  return body.split(/^## /m).slice(1).map((block) => {
+    const [heading, ...rest] = block.split('\n');
+    return { heading: heading.trim(), body: rest.join('\n') };
+  });
+}
+
+// 宣言の無い節と未知の class を返す（どちらも無ければ []）
+function classDeclarationErrors(name, src) {
+  const errors = [];
+  for (const { heading, body } of agentSections(src)) {
+    const classes = [...body.matchAll(CLASS_DECL)].map((m) => m[1]);
+    if (classes.length === 0) errors.push(`${name}「${heading}」に正当化クラスの宣言が無い`);
+    for (const c of classes) if (!JUSTIFICATION_CLASSES.has(c)) errors.push(`${name}「${heading}」の正当化クラス "${c}" は未知`);
+  }
+  return errors;
+}
+
+test('(t) evaluator・pr-reviewer・dev-implementer の各 ## 節が既知の正当化クラスを 1 つ以上宣言する', () => {
+  for (const [name, src] of Object.entries(agentSrc)) {
+    assert.ok(agentSections(src).length > 0, `${name} に ## 節が無い`);
+    assert.deepEqual(classDeclarationErrors(name, src), []);
+  }
+  const fixture = '---\nname: x\n---\n\n# x\n\n冒頭は対象外\n\n## A\n\n本文（正当化クラス: contract）\n\n## B\n\n手順（正当化クラス: capability-bound）\n';
+  assert.deepEqual(classDeclarationErrors('fixture', fixture), []);
+  assert.deepEqual(classDeclarationErrors('fixture', fixture.replace('（正当化クラス: contract）', '')), ['fixture「A」に正当化クラスの宣言が無い']);
+  assert.deepEqual(classDeclarationErrors('fixture', fixture.replace('contract', 'model-bound')), ['fixture「A」の正当化クラス "model-bound" は未知']);
+});
+
+// 信頼境界の文（moving target・self-judge・guard 迂回を断つ指示）は sunset で外さない。capability-bound と宣言すると
+// モデル更新で撤去されうるので、その段落・リスト項目は incentive-structural か blast-radius だけを宣言する
+const TRUST_BOUNDARY_ANCHORS = [
+  { file: 'evaluator.md', section: '2 回目以降', phrase: '新規の critical/major のみ報告', required: true },
+  { file: 'dev-implementer.md', phrase: '迂回手段', listItem: true, required: true },
+  { file: 'evaluator.md', phrase: 'ログの行だけを AC 達成の根拠にしない', required: false },
+];
+const LIST_MARKER = /^\s*(?:[-*]|\d+\.) /;
+
+// 段落かリスト項目を 1 ブロックとして返す（空行・見出し・リストの印で区切る）
+function textBlocks(src) {
+  const blocks = [];
+  let cur = null;
+  for (const line of src.split('\n')) {
+    if (line.trim() === '' || /^#/.test(line)) {
+      cur = null;
+      continue;
+    }
+    if (!cur || LIST_MARKER.test(line)) {
+      cur = { listItem: LIST_MARKER.test(line), lines: [] };
+      blocks.push(cur);
+    }
+    cur.lines.push(line);
+  }
+  return blocks.map((b) => ({ listItem: b.listItem, text: b.lines.join('\n') }));
+}
+
+const squash = (s) => s.replace(/\s+/g, '');
+
+function trustBoundaryErrors(srcByFile, anchors) {
+  const errors = [];
+  for (const { file, section, phrase, listItem, required } of anchors) {
+    const src = srcByFile[file] ?? '';
+    const scope = section ? (agentSections(src).find((s) => s.heading === section)?.body ?? '') : src;
+    const hits = textBlocks(scope).filter((b) => (!listItem || b.listItem) && squash(b.text).includes(squash(phrase)));
+    if (hits.length === 0 && required) errors.push(`${file}${section ? `「${section}」` : ''}に「${phrase}」を含む${listItem ? 'リスト項目' : '段落・リスト項目'}が無い`);
+    for (const { text } of hits) {
+      if (!/正当化クラス: (incentive-structural|blast-radius)/.test(text) || text.includes('capability-bound')) {
+        errors.push(`${file}「${phrase}」の段落・項目が incentive-structural / blast-radius 以外を宣言している: ${text}`);
+      }
+    }
+  }
+  return errors;
+}
+
+test('(u) 信頼境界の文を含む段落・リスト項目は incentive-structural か blast-radius を宣言し、capability-bound を持たない', () => {
+  assert.deepEqual(trustBoundaryErrors(agentSrc, TRUST_BOUNDARY_ANCHORS), []);
+  const fixture = {
+    'evaluator.md': '## 2 回目以降\n\n新規の critical/major のみ報告する（正当化クラス: incentive-structural）。\n\n## 進め方\n\n1. ログの行だけを AC 達成の\n   根拠にしない（正当化クラス: incentive-structural）\n',
+    'dev-implementer.md': '## 返す JSON\n\n- **guard_blocked**: 拒否された\n  - 迂回手段を探索しない。正当化クラス: blast-radius\n',
+  };
+  assert.deepEqual(trustBoundaryErrors(fixture, TRUST_BOUNDARY_ANCHORS), []);
+  const withoutOptional = { ...fixture, 'evaluator.md': fixture['evaluator.md'].split('## 進め方')[0] };
+  assert.deepEqual(trustBoundaryErrors(withoutOptional, TRUST_BOUNDARY_ANCHORS), []);
+  for (const [file, from] of [['evaluator.md', '報告する（正当化クラス: incentive-structural）'], ['dev-implementer.md', 'blast-radius'], ['evaluator.md', '根拠にしない（正当化クラス: incentive-structural）']]) {
+    const bad = { ...fixture, [file]: fixture[file].replace(from, from.replace(/incentive-structural|blast-radius/, 'capability-bound')) };
+    assert.equal(trustBoundaryErrors(bad, TRUST_BOUNDARY_ANCHORS).length, 1, `${file} の capability-bound が通った: ${from}`);
+  }
+  const missing = { ...fixture, 'evaluator.md': fixture['evaluator.md'].replace('新規の critical/major のみ報告', '新規の指摘だけ報告') };
+  assert.deepEqual(trustBoundaryErrors(missing, TRUST_BOUNDARY_ANCHORS), ['evaluator.md「2 回目以降」に「新規の critical/major のみ報告」を含む段落・リスト項目が無い']);
+  const notListItem = { ...fixture, 'dev-implementer.md': '## 返す JSON\n\n迂回手段を探索しない。正当化クラス: blast-radius\n' };
+  assert.equal(trustBoundaryErrors(notListItem, TRUST_BOUNDARY_ANCHORS).length, 1);
+});
+
+// capability-bound と宣言した節は capability-bound.md の「agent 指示の capability-bound な部分」の「何をするか」に
+// `agents/<file>` の「<見出し>」で挙げる（sunset で外す指示をここから特定する）。挙げた節は宣言と一致させる
+const AGENT_CAP_ITEM = 'agent 指示の capability-bound な部分';
+
+function declaredCapabilitySections(srcByFile) {
+  return Object.entries(srcByFile).flatMap(([file, src]) => agentSections(src)
+    .filter(({ body }) => body.includes('正当化クラス: capability-bound'))
+    .map(({ heading }) => `${file}「${heading.replace(/\s+/g, ' ')}」`)).sort();
+}
+
+function listedCapabilitySections(items) {
+  const what = items.find(({ title }) => title === AGENT_CAP_ITEM)?.fields['何をするか'] ?? '';
+  return [...what.matchAll(/`agents\/([\w-]+\.md)` の((?:\s*「[^」]+」)+)/g)]
+    .flatMap(([, file, headings]) => [...headings.matchAll(/「([^」]+)」/g)].map(([, h]) => `${file}「${h}」`)).sort();
+}
+
+test('(v) capability-bound と宣言した節は capability-bound.md の agent 指示の項目に「何をするか」で全件挙がる', () => {
+  assert.ok(capItems.some(({ title }) => title === AGENT_CAP_ITEM), `capability-bound.md に「${AGENT_CAP_ITEM}」の項目が無い`);
+  const declared = declaredCapabilitySections(agentSrc);
+  assert.ok(declared.length > 0, 'capability-bound と宣言した節が 1 つも無い');
+  assert.deepEqual(listedCapabilitySections(capItems), declared, 'capability-bound.md の一覧と agents/ の capability-bound 宣言が食い違う');
+  const added = { ...agentSrc, 'dev-implementer.md': `${agentSrc['dev-implementer.md']}\n## 追加の手順\n\n細部（正当化クラス: capability-bound）\n` };
+  assert.notDeepEqual(listedCapabilitySections(capItems), declaredCapabilitySections(added));
 });
 
 const EXPECTED_PATHS = [
