@@ -157,6 +157,20 @@ bash ${CLAUDE_PLUGIN_ROOT}/dev-flow-health/scripts/install-schedule.sh --install
 4. 分類ごとの signature 数、起票した issue 番号、重複で見送った signature と model の変化、
    `candidates.error` で原因を絞れなかった signature、`model_scan.error`（あれば）と、git-issue が返した `## Launch Order` を報告し、
    最後に 3.7 の振り分けブロックを置く（new / regressed の signature がある実行だけ）。
+   new / regressed の signature がある実行では、振り分けブロックより前に、3.2 で分類した signature ごとに 1 行の表を出す
+   （人間が分類と起票の妥当性を、diff や HOLD の要約を読む前に表で確かめるため）:
+
+   | signature | 分類 | 根拠（run・候補 commit） | issue |
+   |---|---|---|---|
+
+   - signature: レポートの値。中の `|` は `\|` にして列を崩さない
+   - 分類: 3.2 の分類（`dev_flow` / `target_repo` / `environment` / `transient`）
+   - 根拠（run・候補 commit）: 3.2 の理由 1 文と、判断に使った run（`recent_runs[]` の PR 番号か journal の entry）と、原因と推定した
+     候補 commit の sha（`dev_flow` 以外・`candidates.error` のときは「なし」）
+   - issue: 3.7 の `issue` と同じ番号。`null` のものは `-`
+
+   表は分類の marker（`dev-flow-health-classifications:begin` / `end`）の外に置き、marker の間に表を置かない
+   （間は `record-classification.sh` が JSON 配列として検証し、表が混ざると 1 行も記録されない）。
 
 ## 守ること
 
