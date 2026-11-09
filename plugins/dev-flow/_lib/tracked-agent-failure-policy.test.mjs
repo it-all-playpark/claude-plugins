@@ -15,7 +15,8 @@ import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
  *
  * dev-flow.js / pr-iterate.js の trackedAgent( call site は必ず以下いずれかに属する:
  *   1. need() 内                — throw は中断（run abort）。null も中断（既存 need() 契約）。
- *   2. failOpenAgent wrapper 内 — throw を吸収し null へ倒す（fail-open、continue）。
+ *   2. failOpenAgent wrapper 内 — throw を吸収し null へ倒す（fail-open、continue）。dev-flow-finalize.js の
+ *      failOpenAgent 呼び出しは子が吸収して計算済みの merge tier を返し、親は HOLD にしない（stage_continue）。
  *   3. ローカル try{}/pipeline() 包囲 — throw を吸収し継続する bare 呼び出し（fail-safe、continue）。
  *   4. 上記いずれでもない bare 呼び出し — throw は吸収されず run 全体の安全網 try まで伝播し abort する
  *      （fail-closed「据え置き」）。工程の workflow（dev-flow-finalize.js）の bare 呼び出しは子の throw として
@@ -191,7 +192,15 @@ const EXPECTED_DEV_FLOW = {
       assert.equal(result?.danger_fail_closed, true, 'merge-tier-facts throw は danger_fail_closed:true になるべき');
     },
   },
-  'post-summary': { config: DF_B1, policy: 'stage_hold', reason: 'dev-flow-finalize.jsのbare呼び出し。子のthrowは親がHOLD・終端サマリー未投稿で返す' },
+  'post-summary': {
+    config: DF_B1,
+    policy: 'stage_continue',
+    reason: 'dev-flow-finalize.jsのfailOpenAgent経由。投稿失敗は子がsummary_posted:falseと注記で開示し計算済みのmerge tierを返す',
+    extra: async ({ result }) => {
+      assert.equal(result?.summary_posted, false, 'post-summary throw 後の summary_posted は false になるべき');
+      assert.match(result?.note ?? '', /終端サマリ未投稿/, `子の fail-open の開示が note に無い: ${result?.note}`);
+    },
+  },
   'journal-log': {
     config: DF_B1,
     policy: 'continue',
@@ -202,7 +211,15 @@ const EXPECTED_DEV_FLOW = {
   },
   'reconcile-sync': { config: DF_B2, policy: 'stage_hold', reason: 'dev-flow-finalize.jsのbare呼び出し。worktree同期不能のままFinal reconcileを進めず、親がHOLDで返す' },
   'test#final': { config: DF_B2, policy: 'continue', reason: 'try/catchで吸収しunavailable扱い（merge tier HOLD）へ倒すfail-safe経路' },
-  'changed-files-final': { config: DF_B2, policy: 'stage_hold', reason: 'dev-flow-finalize.jsのbare呼び出し。最終changed-files取得失敗は子のthrowとして親がHOLDで返す' },
+  'changed-files-final': {
+    config: DF_B2,
+    policy: 'stage_continue',
+    reason: 'dev-flow-finalize.jsのfailOpenAgent経由。最終changed-files取得失敗は宣言外再監査をskipし、Merge tierはmerge-tier-factsのchanged filesで確定する',
+    extra: async ({ result }) => {
+      for (const r of result?.merge_tier_reasons ?? []) assert.ok(!r.includes('dev-flow-finalize が throw'), `finalize_failed 由来の reason がある: ${r}`);
+      assert.ok(!(result?.note ?? '').includes('dev-flow-finalize が throw'), `finalize_failed 由来の note になっている: ${result?.note}`);
+    },
+  },
   'final-ac-reconcile': { config: DF_B2, policy: 'stage_hold', reason: 'dev-flow-finalize.jsのbare呼び出し。最終AC再検証不能のままmerge tierを確定せず、親がHOLDで返す' },
   'security-clearance-final': { config: DF_B5, policy: 'stage_hold', reason: 'dev-flow-finalize.jsのbare呼び出し。security clearance不能をclearと同一視せず、親がHOLDで返す' },
   'closes-reinject': {
@@ -382,6 +399,14 @@ for (const [label, spec] of Object.entries(EXPECTED_DEV_FLOW)) {
       assert.equal(result?.summary_posted, false);
       assert.match(result?.note ?? '', /終端サマリー未投稿/);
       assert.match(result?.finalize_error ?? '', /injected/);
+      assert.deepEqual(calls.filter((c) => c.label.startsWith('journal-')).map((c) => c.label), ['journal-log']);
+    } else if (spec.policy === 'stage_continue') {
+      // 工程の workflow（dev-flow-finalize.js）の failOpenAgent 呼び出し: 子が throw を吸収して計算済みの merge tier を返し、
+      // 親は finalize_failed の HOLD にしない（merge tier は throw を注入しない同じ config の run と同じ）
+      assert.equal(error, null, `label '${label}' の throw は子が fail-open で吸収するべきだが run が abort した: ${error?.message}`);
+      assert.equal(result?.finalize_error, undefined, `label '${label}' の throw が子の throw として親に届いた: ${result?.finalize_error}`);
+      const { result: baseline } = await runDevFlowBaseline(spec.config);
+      assert.equal(result?.merge_tier, baseline?.merge_tier, `label '${label}' throw 後の merge_tier が throw を注入しない run と違う`);
       assert.deepEqual(calls.filter((c) => c.label.startsWith('journal-')).map((c) => c.label), ['journal-log']);
     } else if (spec.policy === 'evaluate_hold') {
       // 工程の workflow（dev-flow-evaluate.js）の bare / need() 呼び出し: 子の throw は abort にせず、評価を通ったものとして
