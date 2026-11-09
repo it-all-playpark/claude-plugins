@@ -17,8 +17,8 @@
 // usage error だけ exit 2、それ以外は exit 0（git status の失敗は exit_code に載せる）。
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { closeSync, constants, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { baselineContent, parseBaselineContent, porcelainLines, porcelainVerdict, PORCELAIN_BASELINE_DIR } from '../../_lib/porcelain-verdict.mjs'
 
 const STATUS_ARGS = ['status', '--porcelain', '--untracked-files=all']
@@ -29,6 +29,23 @@ const emit = (obj, code = 0) => {
   process.exit(code)
 }
 const sha256 = (s) => createHash('sha256').update(s).digest('hex')
+
+// 基準線のパスは PR が追跡ファイル（symlink）として持ち込める。symlink を辿ると PR が指した worktree の外のファイルを
+// 切り詰め・読まされるので辿らない: 親ディレクトリは実ディレクトリだけを受け付け（symlink なら失敗＝基準線 null）、
+// ファイルは O_EXCL で一時名に作ってから rename で置き換える（rename は symlink 自体を置き換え、指す先に書かない）。
+const ensureRealDir = (dir) => {
+  if (dir === '.') return
+  ensureRealDir(dirname(dir))
+  let st = null
+  try { st = lstatSync(dir) } catch (e) { if (e.code !== 'ENOENT') throw e }
+  if (st == null) mkdirSync(dir)
+  else if (!st.isDirectory()) throw new Error(`${dir} is not a directory`)
+}
+const readNoFollow = (path) => {
+  ensureRealDir(dirname(path))
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try { return readFileSync(fd, 'utf8') } finally { closeSync(fd) }
+}
 
 const [mode, ...rest] = process.argv.slice(2)
 if (!((mode === 'baseline' && rest.length === 0) || (mode === 'check' && rest.length <= 1))) {
@@ -47,8 +64,11 @@ if (mode === 'baseline') {
   const content = baselineContent(porcelainLines(output))
   const digest = sha256(content)
   try {
-    mkdirSync(PORCELAIN_BASELINE_DIR, { recursive: true })
-    writeFileSync(join(PORCELAIN_BASELINE_DIR, digest), content)
+    ensureRealDir(PORCELAIN_BASELINE_DIR)
+    const file = join(PORCELAIN_BASELINE_DIR, digest)
+    const tmp = `${file}.${process.pid}.tmp`
+    writeFileSync(tmp, content, { flag: 'wx' })
+    renameSync(tmp, file)
   } catch {
     emit({ exit_code: exitCode, baseline_digest: null })
   }
@@ -61,7 +81,7 @@ let mismatch = false
 if (digest != null) {
   let content = null
   if (DIGEST_RE.test(digest)) {
-    try { content = readFileSync(join(PORCELAIN_BASELINE_DIR, digest), 'utf8') } catch { content = null }
+    try { content = readNoFollow(join(PORCELAIN_BASELINE_DIR, digest)) } catch { content = null }
   }
   if (content != null && sha256(content) === digest) baseline = parseBaselineContent(content)
   else mismatch = true

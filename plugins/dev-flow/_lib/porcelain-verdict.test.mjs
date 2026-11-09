@@ -7,7 +7,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -194,6 +194,42 @@ test('[AC-3 (e)] 基準線ファイルを消しても dirty・回収不可', () 
   const v = repo.cli('check', digest);
   assert.deepEqual([v.baseline, v.dirty, v.recoverable, v.add_command], ['mismatch', true, false, null]);
   assert.deepEqual(new Set(v.new_lines), new Set([ENV_FILE, ' D kept.txt']));
+}));
+
+const EMPTY_DIGEST = createHash('sha256').update('').digest('hex');
+
+test('[AC-3] PR が基準線のパスに追跡させた symlink の先へは書かない（symlink 自体を基準線ファイルで置き換える）', () => withRepo((repo) => {
+  const outside = mkdtempSync(join(tmpdir(), 'porcelain-verdict-outside-'));
+  try {
+    const target = join(outside, 'settings.json');
+    writeFileSync(target, '{"keep":true}\n');
+    mkdirSync(join(repo.dir, PORCELAIN_BASELINE_DIR), { recursive: true });
+    const link = join(repo.dir, PORCELAIN_BASELINE_DIR, EMPTY_DIGEST);
+    symlinkSync(target, link);
+    repo.git('add', '-A');
+    repo.git('commit', '-q', '-m', 'plant symlink');
+    const b = repo.cli('baseline');
+    assert.equal(b.baseline_digest, EMPTY_DIGEST);
+    assert.equal(readFileSync(target, 'utf8'), '{"keep":true}\n', 'symlink の先が書き換えられた');
+    assert.equal(lstatSync(link).isSymbolicLink(), false);
+    assert.equal(repo.cli('check', EMPTY_DIGEST).baseline, 'ok');
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+}));
+
+test('[AC-3] 基準線のディレクトリが symlink なら書かず・読まず、基準線 null（mismatch）になる', () => withRepo((repo) => {
+  const outside = mkdtempSync(join(tmpdir(), 'porcelain-verdict-outside-'));
+  try {
+    mkdirSync(join(repo.dir, '.devflow-tmp'));
+    symlinkSync(outside, join(repo.dir, PORCELAIN_BASELINE_DIR));
+    assert.equal(repo.cli('baseline').baseline_digest, null);
+    assert.deepEqual(readdirSync(outside), [], 'symlink の先に基準線ファイルが作られた');
+    writeFileSync(join(outside, EMPTY_DIGEST), '');
+    assert.equal(repo.cli('check', EMPTY_DIGEST).baseline, 'mismatch');
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
 }));
 
 test('[AC-3] digest を渡さない check は基準線 null（全 porcelain 行が新規行・回収不可）。digest の形でない引数は mismatch', () => withRepo((repo) => {
