@@ -51,9 +51,12 @@ merge tier が補償する（意図的な設計判断）。
 
 ## 判定できないときの fail-closed
 
-判定できない入力を「問題なし」と同一視しない。analyze ゲートは AC 空・`comment_conflicts` 非空・
+判定できない入力を「問題なし」と同一視しない。analyze ゲートは AC 空・AC が上限超え・`comment_conflicts` 非空・
 `uncertain` 非空のどれかで needs_clarification に倒し、人間に返す。
 
+- AC の件数が上限（`_lib/analyze-contract.mjs` の `ACCEPTANCE_CRITERIA_MAX`）を超える issue は、AC を切らずに止めて
+  AC を減らすか issue を分けるよう返す。REQ の `acceptance_criteria` は採点軸の唯一の根拠なので、切ると落ちた AC を
+  誰も確かめないまま進む。判定は件数の比較だけで、LLM に AC の要不要や統合を決めさせない
 - prerun の analyze 段の失敗（issue を取得できない・JSON 不正・本文ファイルを書けない・blocker を読めない）は `ok:false` で返り、
   ゲートは spawn せず needs_clarification で終える
 - Jev が応答しない・低確信・無効（未導入・`DEVFLOW_JEV_DISABLE=1`）の互換性と comment の判定は

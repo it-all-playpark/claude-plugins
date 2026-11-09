@@ -6,7 +6,7 @@
 //   (a) 通常経路（AC 抽出成功・conflict 無し・uncertain 空）: analyze ゲートの agent spawn が 0 件、
 //       旧 label（contract-probe# / analyze# / issue-meta / analyze-retrunc# / analyze-retry#）が 0 件、run は完走。
 //       dev-runner はゲート通過後の観測型の分類 agent（ac-observational#1）だけ
-//   (b) ゲート（AC 空 / comment_conflicts 非空 / uncertain 非空）: needs_clarification が isolation-probe より前に
+//   (b) ゲート（AC 空 / AC が上限超え / comment_conflicts 非空 / uncertain 非空）: needs_clarification が isolation-probe より前に
 //       確定し、isolation-probe / dev-implementer / pr の spawn が 0 件、ゲート後の sonnet spawn
 //       （analyze-clarify#1, dev-runner）はちょうど 1 回
 //   (c) analyze.ok:false（gh 到達不能 / JSON 不正）: needs_clarification（source=analyze_prerun）で sonnet も
@@ -83,9 +83,10 @@ test('[analyze-routing] (a2) jev 経路（comment_overrides のみ / breaking_ch
   assert.ok(logs.some((l) => l.includes('breaking_change=true')), 'breaking_change の log が無い');
 });
 
-// ---- (b) ゲート 3 条件 → needs_clarification（probe / dev-implementer より前・sonnet 1 回）----
+// ---- (b) ゲート 4 条件 → needs_clarification（probe / dev-implementer より前・sonnet 1 回）----
 for (const [name, analyze] of [
   ['AC 空', { acceptance_criteria: [] }],
+  ['AC が上限超え（21 件）', { acceptance_criteria: Array.from({ length: 21 }, (_, i) => `AC-${i + 1} 項目 ${i + 1} を満たす`) }],
   ['comment_conflicts 非空', { analyze_path: 'jev', jev_reasons: ['comments present (1)'], comment_count: 1, comment_conflicts: ['conflict: comment #1 by alice（OWNER, t）: hmm'] }],
   ['uncertain 非空', { analyze_path: 'jev', jev_reasons: ['breaking_keyword_scan true'], uncertain: ['breaking_keyword_scan: Jev 応答なし'] }],
 ]) {

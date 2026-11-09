@@ -50,7 +50,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
   （install は repo の任意コードを走らせるので prerun の子にしない）。`EnterWorktree` → `Workflow({ args: { issue, setup } })` の順で起動し、
   Setup は `args.setup` を検証して REQ を組み、次のゲートを順に判定する（通過後の spawn は分類 agent と isolation probe 各 1 回）:
   - blocked_by ゲート — `args.setup.analyze.blockers` に open な issue が 1 つでもあれば止める
-  - analyze ゲート — AC 空 / comment_conflicts 非空 / uncertain 非空 / repo 内外が混ざった AC。引いたときだけ missing_context を書く
+  - analyze ゲート — AC 空 / AC が上限超え / comment_conflicts 非空 / uncertain 非空 / repo 内外が混ざった AC。引いたときだけ missing_context を書く
     agent を 1 spawn する。repo 内外の混在は `classifyAcScope` が決定論で判定し、
     `mixed` で、repo 外の作業を `human-task` ラベルの別 issue に切り出し、実装 issue の AC を repo 内で検証できるものだけにするよう求める
     （1 issue = 1 PR・単一 worktree では repo 外を満たせず、Evaluate 後に agent AC の取りこぼしと誤分類されるため）。`Blocked by` の
