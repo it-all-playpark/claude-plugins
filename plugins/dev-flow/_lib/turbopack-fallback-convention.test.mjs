@@ -66,7 +66,7 @@ const EVAL_FIX = {
 };
 
 async function run(overrides, frameworks, name) {
-  const { ctx, calls } = makeDevFlowSandbox({ overrides, extra: { args: devFlowArgs(1, { stack: { frameworks, test_runners: [] } }) } });
+  const { ctx, calls } = makeDevFlowSandbox({ overrides, extra: { args: devFlowArgs(1, { stack: { frameworks } }) } });
   const { error } = await runWorkflowCapture(src, ctx);
   assertNoCrash(error, name);
   return calls;

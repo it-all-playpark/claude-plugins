@@ -14,10 +14,6 @@ import {
   testDiscoveryNote,
 } from './prerun-setup.mjs';
 
-// detect-test-runner.sh の runners 要素と同形
-const PYTEST_RUNNER = { runner: 'pytest', accept: ['test_*.py', '*_test.py'], exclude: [], command: 'uv run pytest <files>' };
-const BATS_RUNNER = { runner: 'bats', accept: ['*.bats'], exclude: [], command: 'bats <files>' };
-
 function validRaw(overrides = {}) {
   return {
     ok: true,
@@ -31,7 +27,7 @@ function validRaw(overrides = {}) {
     worktree_status: 'ok',
     clean: { ok: true },
     deps: { ok: true, note: 'npm:installed' },
-    stack: { frameworks: ['next', 'react'], test_runners: [PYTEST_RUNNER, BATS_RUNNER] },
+    stack: { frameworks: ['next', 'react'] },
     analyze: validAnalyze(),
     epoch: 1787000000,
     epoch_end: 1787000060,
@@ -57,7 +53,7 @@ function validAnalyze(overrides = {}) {
 // ── validatePrerunSetup: 正常系 ──────────────────────────────────────────────
 
 test('validatePrerunSetup: 正常な setup は各値をそのまま返し frameworks は string のみに絞る', () => {
-  const raw = validRaw({ stack: { frameworks: ['next', 42, 'react', null], test_runners: [PYTEST_RUNNER, BATS_RUNNER] } });
+  const raw = validRaw({ stack: { frameworks: ['next', 42, 'react', null] } });
   const result = validatePrerunSetup(raw, 641);
   assert.equal(result.base, 'main');
   assert.equal(result.worktree, '/repo/.claude/worktrees/df-641');
@@ -66,7 +62,6 @@ test('validatePrerunSetup: 正常な setup は各値をそのまま返し framew
   assert.equal(result.repo, 'it-all-playpark/skills');
   assert.deepEqual(result.deps, { ok: true, note: 'npm:installed' });
   assert.deepEqual(result.frameworks, ['next', 'react']);
-  assert.deepEqual(result.testRunners, [PYTEST_RUNNER, BATS_RUNNER]);
   assert.equal(result.epoch, 1787000000);
   assert.equal(result.epoch_end, 1787000060);
   assert.equal(result.ci_wait_ceiling_seconds, 515);
@@ -174,9 +169,6 @@ const REQUIRED_KEY_CASES = [
   ['deps.ok が非 boolean', { deps: { ok: 'true', note: 'x' } }, 'deps.ok'],
   ['deps.note が非 string', { deps: { ok: true, note: 123 } }, 'deps.note'],
   ['stack.frameworks が非配列', { stack: { frameworks: 'next' } }, 'stack.frameworks'],
-  ['stack.test_runners 欠落', { stack: { frameworks: [] } }, 'stack.test_runners'],
-  ['stack.test_runners の要素に accept が無い', { stack: { frameworks: [], test_runners: [{ runner: 'pytest', exclude: [], command: 'pytest <files>' }] } }, 'stack.test_runners[0]'],
-  ['stack.test_runners の要素の runner が空', { stack: { frameworks: [], test_runners: [BATS_RUNNER, { ...PYTEST_RUNNER, runner: '' }] } }, 'stack.test_runners[1]'],
   ['epoch が 0', { epoch: 0 }, 'epoch'],
   ['epoch が非整数(12.5)', { epoch: 12.5 }, 'epoch'],
   ['epoch が文字列("1000")', { epoch: '1000' }, 'epoch'],
@@ -387,19 +379,49 @@ test.each([
 
 // ── testDiscoveryNote ────────────────────────────────────────────────────────
 
-test('testDiscoveryNote: 判定した runners を verbatim で載せ、accept / exclude に限る受理条件の文にする', () => {
-  const note = testDiscoveryNote([PYTEST_RUNNER, BATS_RUNNER]);
+// dev-flow-test-commands の返り値（_lib/test-commands.mjs の testCommandsResult）と同形
+const COMMANDS_FILE = '/tmp/test-commands-x/commands.json';
+const RESOLVER_COMMANDS = {
+  source: 'resolver', status: 'resolved', full_command: 'uv run pytest', files_command: 'uv run pytest {files}',
+  sources: ['.github/workflows/ci.yml', 'pyproject.toml'], commands_file: COMMANDS_FILE, error: null,
+};
+// 言語別の受理パターン（撤去した判定表が渡していた glob）
+const LANGUAGE_GLOBS = ['test_*.py', '*_test.py', '*.test.', '*.spec.', '*.bats', '*_test.go', '*_spec.rb', '*Test.php', 'accept', 'exclude'];
+
+test('testDiscoveryNote: resolver が解決したコマンドは files_command と解決元（根拠のファイル）を載せ、言語別の受理パターンを載せない', () => {
+  const note = testDiscoveryNote(RESOLVER_COMMANDS);
   assert.ok(note.startsWith('test_discovery（'));
-  assert.ok(note.includes('accept に一致し exclude に一致しないファイルに限れ'));
-  assert.ok(note.includes(JSON.stringify([PYTEST_RUNNER, BATS_RUNNER])));
+  assert.ok(note.includes('`uv run pytest {files}` の {files} に test_files を入れて実行する'), note);
+  assert.ok(note.includes('解決元は resolver（根拠: .github/workflows/ci.yml, pyproject.toml）'), note);
+  for (const g of LANGUAGE_GLOBS) assert.ok(!note.includes(g), `言語別の受理パターン ${g} が載っている: ${note}`);
   assert.ok(note.endsWith('\n'));
 });
 
-test('testDiscoveryNote: runners が空なら test_files を挙げず inspection にさせる', () => {
-  const note = testDiscoveryNote([]);
-  assert.ok(note.includes('ランナー検出なし'));
+test('testDiscoveryNote: user 設定のコマンドは解決元を user 設定と書く', () => {
+  const note = testDiscoveryNote({ ...RESOLVER_COMMANDS, source: 'user_config', files_command: 'pnpm exec vitest run {files}', sources: [] });
+  assert.ok(note.includes('解決元は user 設定。`pnpm exec vitest run {files}` の {files} に test_files を入れて実行する'), note);
+});
+
+test('testDiscoveryNote: 解決元が tests/run-*.sh なら script のパスと DEVFLOW_TEST_FILES での受け渡しを載せる', () => {
+  const note = testDiscoveryNote({
+    source: 'runners', status: 'resolved', full_command: null, files_command: null,
+    sources: ['tests/run-all-bats.sh', 'tests/run-node-tests.sh'], commands_file: COMMANDS_FILE, error: null,
+  });
+  assert.ok(note.includes('解決元は base の tests/run-*.sh（tests/run-all-bats.sh, tests/run-node-tests.sh）'), note);
+  assert.ok(note.includes('DEVFLOW_TEST_FILES'), note);
+  for (const g of LANGUAGE_GLOBS) assert.ok(!note.includes(g), `言語別の受理パターン ${g} が載っている: ${note}`);
+});
+
+test.each([
+  ['unresolved', { source: 'resolver', status: 'unresolved', full_command: null, files_command: null, sources: [], commands_file: COMMANDS_FILE, error: null }],
+  ['工程の失敗（source / commands_file が null）', { source: null, status: 'unresolved', full_command: null, files_command: null, sources: [], commands_file: null, error: 'x' }],
+  ['resolved でもコマンドファイルが無い', { ...RESOLVER_COMMANDS, commands_file: null }],
+  ['null', null],
+])('testDiscoveryNote: %s は test_files を挙げず inspection にさせる', (_name, tc) => {
+  const note = testDiscoveryNote(tc);
+  assert.ok(note.includes('テストコマンド未解決'), note);
   assert.ok(note.includes('"inspection"'));
-  assert.ok(!note.includes('accept'));
+  assert.ok(!note.includes('{files}'));
 });
 
 // ── 静的検査: inline 制約（ESM import / require / Date.now / Math.random を含まない） ──

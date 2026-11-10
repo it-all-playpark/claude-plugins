@@ -14,7 +14,7 @@ import {
   REDGREEN_WAIT_SEC, REDGREEN_WAIT_CAP_SEC, REDGREEN_WAIT_POLLS,
 } from './redgreen-targets.mjs';
 import {
-  makeRecordingSandbox, runDevFlowInSandbox, devFlowResponder, analyzeArgs, assertNoCrash,
+  makeRecordingSandbox, runDevFlowInSandbox, devFlowResponder, analyzeArgs, assertNoCrash, TEST_COMMANDS_FILE,
 } from './test-helpers/vm-sandbox.mjs';
 import { isRedgreenCall, parseRedgreenPairs } from './test-helpers/redgreen-batch.mjs';
 
@@ -113,6 +113,16 @@ test('[redgreen-targets] base を渡すとコマンド行に --base <base> を w
   const pairs = [{ test_files: ['t.test.mjs'], impl_files: ['src/x.ts'] }];
   const p = redgreenStartPrompt('/tmp/wt', STATE_DIR, pairs, 'origin/main');
   assert.equal(p.split('\n')[1], "redgreen-verify start --state-dir /tmp/rg-state --base origin/main /tmp/wt 't.test.mjs' 'src/x.ts'");
+  assert.deepEqual(parseRedgreenPairs(p), [{ test_csv: 't.test.mjs', impl_csv: 'src/x.ts' }]);
+});
+
+test('[redgreen-targets] commandsFile を渡すとコマンド行に --commands <file> を worktree の前に付け、ペアの解釈は変わらない', () => {
+  const pairs = [{ test_files: ['t.test.mjs'], impl_files: ['src/x.ts'] }];
+  const file = '/tmp/test-commands-x/commands.json';
+  assert.equal(redgreenStartPrompt('/tmp/wt', STATE_DIR, pairs, null, file).split('\n')[1],
+    `redgreen-verify start --state-dir /tmp/rg-state --commands ${file} /tmp/wt 't.test.mjs' 'src/x.ts'`);
+  const p = redgreenStartPrompt('/tmp/wt', STATE_DIR, pairs, 'origin/main', file);
+  assert.equal(p.split('\n')[1], `redgreen-verify start --state-dir /tmp/rg-state --base origin/main --commands ${file} /tmp/wt 't.test.mjs' 'src/x.ts'`);
   assert.deepEqual(parseRedgreenPairs(p), [{ test_csv: 't.test.mjs', impl_csv: 'src/x.ts' }]);
 });
 
@@ -258,10 +268,10 @@ test('[redgreen-targets] dev-flow: results の欠落ペア（script 側の入力
   );
 });
 
-test('[redgreen-targets] dev-flow: redgreen の prompt は redgreenStartPrompt と同一 byte 列', async () => {
+test('[redgreen-targets] dev-flow: redgreen の prompt は Setup で解決したコマンドファイルを渡した redgreenStartPrompt と同一 byte 列', async () => {
   const acResults = [sameAc(0), sameAc(1)];
   const { redgreenPrompts } = await runWith(acResults, () => ({ index: 0, red: true, green: true }));
-  assert.equal(redgreenPrompts[0], redgreenStartPrompt('/tmp/wt', STATE_DIR, [{ test_files: ['sample_case.bats'], impl_files: ['sample_case.py'] }]));
+  assert.equal(redgreenPrompts[0], redgreenStartPrompt('/tmp/wt', STATE_DIR, [{ test_files: ['sample_case.bats'], impl_files: ['sample_case.py'] }], null, TEST_COMMANDS_FILE));
 });
 
 // ---- start → wait（issue #1226） ----

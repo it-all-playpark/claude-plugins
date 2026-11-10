@@ -3,7 +3,7 @@
 # untracked(新規)・tracked-modified いずれの impl ファイルにも対応する。
 # 使い方:
 #   redgreen-verify state-dir → {"state_dir":"<abs>"}(worktree の外に mktemp -d で作る。失敗は {"state_dir":""} で exit 2)
-#   redgreen-verify start --state-dir <abs> [--wait-sec <n=300>] [--base <ref>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]
+#   redgreen-verify start --state-dir <abs> [--wait-sec <n=300>] [--base <ref>] [--commands <file>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]
 #   redgreen-verify wait  --state-dir <abs> [--wait-sec <n=480>]
 #   redgreen-verify stop  --state-dir <abs> [--timeout-sec <n=60>]
 #   （内部）redgreen-verify supervise --state-dir <abs> / redgreen-verify run --state-dir <abs>
@@ -23,12 +23,25 @@
 #   ペア間の並列化は不可で、Evaluate の全 AC を 1 呼び出しにまとめるのは spawn 数削減のため(issue #683)。
 # テストは repo の任意コードなので sandbox 内で走らせる(bin/redgreen-verify を excludedCommands に登録しない。
 # .claude/rules/dev-flow.md)。そのため index を書く git は使わない(write_head_blob)。
-# test_files の受理判定と実行コマンドは detect-test-runner.sh(repo に既にある設定ファイルからランナーを判定)が決める。
-# ランナーが判定できないファイルを含むペアは reason "non-test file declared (ランナー未検出): <file>" の入力エラー(昇格しない)。
-# vdelta 経路: package.json の dependencies / devDependencies に vdelta があり、ランナーが vitest のときだけ、
-# vitest の単体実行コマンドを `<PM の exec> vdelta run --report json -- <vitest のコマンド>` で包み、green 後に
-# `<PM の exec> vdelta compare --report json` の出力を verdict として載せる(PM の exec は vitest コマンドの
-# vitest より前の部分 = detect-test-runner.sh が lockfile から決めた prefix)。それ以外は素のランナーで実行する。
+# テストの実行の形(起動するコマンド・実行する script・vdelta で包むか)は、Setup が base の tree から解決したコマンドファイル
+# (--commands。中身の形は test-commands-prepare.sh)と base($BASE)の tree だけで決める。worktree 側で欠けた・変わったものは
+# 入力エラーにして昇格させず、PR 側の形では実行しない(PR が自分のテストの起動の形を選べると、red→green を作れる)。
+# テストファイル自体とランナーの設定ファイルは worktree(PR)の内容のまま実行する。言語別に決め打ちした判定は持たない。
+#   - status "resolved" で files_command がある(user 設定・resolver): files_command を空白で区切り、{files} の語を
+#     ペアの test_files に置き換えた argv を shell を通さず 1 本実行する。起動内容を worktree のファイルへ委譲する形
+#     (npm / pnpm / yarn / bun の script → 全 package.json の scripts、make / just / task → Makefile 等、語が名指す repo の
+#     ファイル)は委譲先が $BASE と違うペアを reason "test command script changed vs base: <path> (scripts)" /
+#     "test command file changed vs base: <path>" の入力エラーにする
+#   - source "runners": $BASE の tree の tests/run-*.sh(mode 100755)を全本、DEVFLOW_TEST_FILES=<test_files を 1 行 1 件で
+#     書いたファイル>(run-tests の --files と同じ契約)を渡して実行する。実行する script が worktree で $BASE と違う・欠けている、
+#     または $BASE に無い tests/run-*.sh が worktree にあるペアは reason "test runner script changed vs base: <path>" /
+#     "test runner script not in base: <path>" の入力エラー(script 自身の出力を red→green の根拠にしない)
+#   - --commands 無し・ファイルが無い・JSON として読めない・status "unresolved"・{files} の語がちょうど 1 つ無い:
+#     全ペアが reason "test command unresolved (<理由>)" の入力エラー
+# vdelta 経路: $BASE の tree の package.json の dependencies / devDependencies に vdelta があり(worktree の package.json は
+# 読まない)、files_command に vitest の語があるときだけ、コマンドを `<PM の exec> vdelta run --report json -- <コマンド>` で包み、
+# green 後に `<PM の exec> vdelta compare --report json` の出力を verdict として載せる(PM の exec は files_command の
+# vitest より前の語)。それ以外は解決したコマンドのまま実行する。
 # 出力(stdout, JSON 1行。results は引数順の配列。root を object にするのは workflow の agent() schema が
 # root object を要求するため — haiku proxy に配列を包み直させず verbatim 転写で済ませる):
 #   {"results":[{"index":N,"red":bool,"green":bool,"reason":"...","testcmd_ran":bool[,"headdiff":{new,modified,unchanged,total}][,"verdict":{...}]}, ...]}
@@ -49,7 +62,6 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREBUILD="$SCRIPT_DIR/workspace-prebuild.sh"
-DETECT="$SCRIPT_DIR/detect-test-runner.sh"
 
 # shellcheck source=../../_lib/scripts/bg-job.sh
 source "$SCRIPT_DIR/../../_lib/scripts/bg-job.sh"
@@ -65,20 +77,28 @@ paths() {
   RG_RESULTS="$BG_JOB_STATE_DIR/results.json"
   # 退避した impl の置き場(相対パス保持)。run が消えても supervisor が戻せるよう state dir に置く
   IMPL_BACKUP="$BG_JOB_STATE_DIR/impl-backup"
+  TEST_FILES_LIST="$BG_JOB_STATE_DIR/test-files.txt"
 }
 
 # impl の退避・headdiff の比較先(commit)。--base 無しは HEAD(run が決める)
 BASE_REF=""
 BASE="HEAD"
-# vdelta 経路の有効化は repo の package.json の依存だけで決める(dev-flow 専用の設定ファイルは読まない。run が決める)
+# vdelta 経路の有効化は $BASE の tree の package.json の依存だけで決める(dev-flow 専用の設定ファイルは読まない。run が決める)
 VDELTA=false
+# テストの起動の形(run が load_test_command で決める)。RUN_MODE は "command"(FILES_WORDS を実行)・"runners"(BASE_RUNNERS を
+# 実行)・""(RUN_ERROR を reason にした入力エラー)
+RUN_MODE=""
+RUN_ERROR=""
+# files_command を空白で区切った語({files} の語をちょうど 1 つ含む)
+FILES_WORDS=()
+# $BASE の tree の tests/run-*.sh(mode 100755)の worktree 相対パス
+BASE_RUNNERS=()
+# source "runners" で DEVFLOW_TEST_FILES に渡す一覧(state dir = worktree の外。paths が決める)
+TEST_FILES_LIST=""
 
 # --- ペア単位の状態(verify_pair の冒頭で毎回リセットする) ---
 TESTS=()
 IMPLS=()
-# detect-test-runner.sh が当該ペアの test_files について返した実行コマンド
-# (1 要素 = argv を 1 行 1 要素で連結した文字列。先頭行は runner 名)
-RUN_CMDS=()
 # vdelta compare は当該ペアで vdelta run 経路が実際に実行された
 # 場合のみ起動する。bats-only 等 vdelta run 未実行のペアでは RunStore に
 # 当該 red/green の run pair が存在せず、無条件実行すると spurious な
@@ -102,31 +122,123 @@ PAIR_JSON=""
 BUILD_FAILURE=""
 
 run_tests() {
-  local rc=0 pb_out c runner argv a prefix
+  local rc=0 pb_out a w path argv prefix
   BUILD_FAILURE=""
   if ! pb_out="$(bash "$PREBUILD" "$PWD" 2>/dev/null)"; then
     BUILD_FAILURE="$(jq -r '.reason // empty' <<< "$pb_out" 2>/dev/null)"
     [ -n "$BUILD_FAILURE" ] || BUILD_FAILURE="workspace build failed"
     return 1
   fi
-  if [ "${#RUN_CMDS[@]}" -gt 0 ]; then
-    for c in "${RUN_CMDS[@]}"; do
-      runner="${c%%$'\n'*}"
-      argv=()
-      while IFS= read -r a; do argv+=("$a"); done <<< "${c#*$'\n'}"
-      if [ "$runner" = vitest ] && [ "$VDELTA" = true ]; then
-        prefix=()
-        for a in "${argv[@]}"; do [ "$a" = vitest ] && break; prefix+=("$a"); done
-        VDELTA_PREFIX=(${prefix[@]+"${prefix[@]}"})
-        argv=(${prefix[@]+"${prefix[@]}"} vdelta run --report json -- "${argv[@]}")
-        # vdelta run 経路を実行した事実を記録する(rc とは独立。
-        # red phase の失敗は期待値であり vdelta run 未実行を意味しない)。
-        VDELTA_TESTCMD_RAN=true
-      fi
-      "${argv[@]}" >/dev/null 2>&1 || rc=1
+  if [ "$RUN_MODE" = runners ]; then
+    printf '%s\n' "${TESTS[@]}" > "$TEST_FILES_LIST" || return 1
+    for path in "${BASE_RUNNERS[@]}"; do
+      DEVFLOW_TEST_FILES="$TEST_FILES_LIST" "$PWD/$path" >/dev/null 2>&1 < /dev/null || rc=1
     done
+    return $rc
   fi
+  argv=()
+  for w in "${FILES_WORDS[@]}"; do
+    if [ "$w" = "{files}" ]; then argv+=("${TESTS[@]}"); else argv+=("$w"); fi
+  done
+  if [ "$VDELTA" = true ] && [[ " ${FILES_WORDS[*]} " == *" vitest "* ]]; then
+    prefix=()
+    for a in "${FILES_WORDS[@]}"; do [ "$a" = vitest ] && break; prefix+=("$a"); done
+    VDELTA_PREFIX=(${prefix[@]+"${prefix[@]}"})
+    argv=(${prefix[@]+"${prefix[@]}"} vdelta run --report json -- "${argv[@]}")
+    # vdelta run 経路を実行した事実を記録する(rc とは独立。
+    # red phase の失敗は期待値であり vdelta run 未実行を意味しない)。
+    VDELTA_TESTCMD_RAN=true
+  fi
+  "${argv[@]}" >/dev/null 2>&1 < /dev/null || rc=1
   return $rc
+}
+
+# source "runners" のとき、実行する tests/run-*.sh が $BASE の tree と同じかを確かめる。違う・欠けている・$BASE に無い
+# script があれば、その理由を stdout に出して 1 を返す(git hash-object は書き込まない。失敗は違うものとして数える)
+check_base_runners() {
+  local path blob
+  for path in "${BASE_RUNNERS[@]}"; do
+    blob=""
+    [ -f "$path" ] && blob="$(git hash-object -- "$path" 2>/dev/null)"
+    if [ -z "$blob" ] || [ "$blob" != "$(git rev-parse -q --verify "$BASE:$path" 2>/dev/null)" ]; then
+      echo "test runner script changed vs base: $path"; return 1
+    fi
+  done
+  for path in tests/run-*.sh; do
+    [ -f "$path" ] || continue
+    if ! git cat-file -e "$BASE:$path" 2>/dev/null; then
+      echo "test runner script not in base: $path"; return 1
+    fi
+    if [ "$(git hash-object -- "$path" 2>/dev/null)" != "$(git rev-parse -q --verify "$BASE:$path" 2>/dev/null)" ]; then
+      echo "test runner script changed vs base: $path"; return 1
+    fi
+  done
+  return 0
+}
+
+# files_command は base から解決しても、起動内容を worktree のファイルへ委譲する形(PM の script・make / just / task・
+# repo の script を名指す語)だと PR が中身を差し替えて red→green を作れる。委譲先が $BASE の tree と同じかを確かめ、
+# 違えばその理由を stdout に出して 1 を返す(runners の check_base_runners と同じ扱い。コマンドが名指さないランナーの設定ファイルは対象外)
+same_as_base() {
+  local path="$1" blob=""
+  [ -f "$path" ] && blob="$(git hash-object -- "$path" 2>/dev/null)"
+  [ -n "$blob" ] && [ "$blob" = "$(git rev-parse -q --verify "$BASE:$path" 2>/dev/null)" ]
+}
+
+# 照合するのは $BASE にあるか git が追跡しているパスだけ。PR が持ち込めるのは追跡されたファイルで、未追跡のもの
+# (.venv/bin/pytest・node_modules/.bin/* 等の環境側の実行ファイル)まで照合すると全ペアが入力エラーになり実証が成立しない
+in_command_scope() {
+  [ "$(git cat-file -t "$BASE:$1" 2>/dev/null)" = blob ] || git ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+}
+
+# package.json の scripts(pre / post を含む)を $BASE と worktree で比べる。workspace の各 package も対象にする
+# (--filter 等で別の package の script に委譲できる)
+check_package_scripts() {
+  local list path b w
+  list="$( { git ls-tree -r --name-only "$BASE" 2>/dev/null; git ls-files -co --exclude-standard 2>/dev/null; } \
+    | grep -E '(^|/)package\.json$' | sort -u)"
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    b='{}'
+    if git cat-file -e "$BASE:$path" 2>/dev/null; then
+      b="$(git cat-file --filters "$BASE:$path" 2>/dev/null | jq -cS '.scripts // {}' 2>/dev/null)" || b=invalid
+    fi
+    w='{}'
+    [ -f "$path" ] && { w="$(jq -cS '.scripts // {}' "$path" 2>/dev/null)" || w=invalid; }
+    if [ "$b" != "$w" ]; then
+      echo "test command script changed vs base: $path (scripts)"; return 1
+    fi
+  done <<< "$list"
+  return 0
+}
+
+check_base_command() {
+  local w path f
+  case "${FILES_WORDS[0]}" in
+    npm|pnpm|yarn|bun)
+      case "${FILES_WORDS[1]:-}" in
+        exec|dlx|x) ;;
+        *) check_package_scripts || return 1 ;;
+      esac ;;
+    make|gmake|just|task)
+      for f in GNUmakefile makefile Makefile justfile Justfile .justfile Taskfile.yml Taskfile.yaml; do
+        if in_command_scope "$f"; then
+          same_as_base "$f" || { echo "test command file changed vs base: $f"; return 1; }
+        fi
+      done ;;
+  esac
+  # コマンドが名指す repo のファイル(語そのもの・--opt=<path> の値)
+  for w in "${FILES_WORDS[@]}"; do
+    [ "$w" = "{files}" ] && continue
+    for path in "$w" "${w#*=}"; do
+      path="${path#./}"
+      [ -n "$path" ] && [[ "$path" != /* ]] || continue
+      if in_command_scope "$path"; then
+        same_as_base "$path" || { echo "test command file changed vs base: $path"; return 1; }
+      fi
+    done
+  done
+  return 0
 }
 
 # 退避済み impl を $IMPL_BACKUP から相対パス保持で書き戻す(cp -p で mode も戻す)。
@@ -171,7 +283,7 @@ restore_impl() {
 # 退避した impl の復元は呼び出し側の restore_impl が担う(return 経路を問わず必ず呼ぶ)。
 verify_pair() {
   local test_csv="$1" impl_csv="$2" t i f
-  TESTS=(); IMPLS=(); RUN_CMDS=()
+  TESTS=(); IMPLS=()
   UNTRACKED_IMPLS=(); TRACKED_IMPLS=(); UNCHANGED_IMPLS=()
   UNTRACKED_SAVED=false; TRACKED_SAVED=false
   VDELTA_TESTCMD_RAN=false; VDELTA_PREFIX=()
@@ -180,20 +292,25 @@ verify_pair() {
   IFS=',' read -r -a TESTS <<< "$test_csv"
   IFS=',' read -r -a IMPLS <<< "$impl_csv"
 
-  # 層2: test_files ごとのランナーを repo の既存設定から判定する(detect-test-runner.sh)。ランナー未検出の
-  # ファイル(playwright repo の *.spec.* を含む)が 1 件でもあれば拒否する
-  local det unknown c
-  if ! det="$(bash "$DETECT" "$PWD" "${TESTS[@]}" 2>/dev/null)" || ! jq -e '.files and .commands' >/dev/null 2>&1 <<< "$det"; then
-    PAIR_JSON="\"red\":false,\"green\":false,\"reason\":\"test runner detection failed\""; return 2
+  # テストの起動の形が決まらない(コマンドファイルが無い・unresolved 等)ペアは判定しない
+  if [ -z "$RUN_MODE" ]; then
+    PAIR_JSON="$(jq -nc --arg r "$RUN_ERROR" '{red: false, green: false, reason: $r}')"
+    PAIR_JSON="${PAIR_JSON#\{}"; PAIR_JSON="${PAIR_JSON%\}}"
+    return 2
   fi
-  if jq -e 'any(.files[]; .runner == null)' >/dev/null <<< "$det"; then
-    unknown="$(jq -r 'first(.files[] | select(.runner == null) | .file)' <<< "$det")"
-    PAIR_JSON="\"red\":false,\"green\":false,\"reason\":\"non-test file declared (ランナー未検出): $unknown\""; return 2
+  # 実行する tests/run-*.sh が base と違うペアは判定しない(impl を退避する前の worktree で確かめる)
+  local runner_problem
+  if [ "$RUN_MODE" = runners ] && ! runner_problem="$(check_base_runners)"; then
+    PAIR_JSON="$(jq -nc --arg r "$runner_problem" '{red: false, green: false, reason: $r}')"
+    PAIR_JSON="${PAIR_JSON#\{}"; PAIR_JSON="${PAIR_JSON%\}}"
+    return 2
   fi
-  # 1 行 1 要素の出力を here-string で読む(process substitution は sandbox で /dev/fd が塞がれる)
-  while IFS= read -r c; do
-    [ -n "$c" ] && RUN_CMDS+=("$(jq -r '.runner, .argv[]' <<< "$c")")
-  done <<< "$(jq -c '.commands[]' <<< "$det")"
+  # files_command の委譲先(package の script・Makefile 等・名指す repo のファイル)が base と違うペアも判定しない
+  if [ "$RUN_MODE" = command ] && ! runner_problem="$(check_base_command)"; then
+    PAIR_JSON="$(jq -nc --arg r "$runner_problem" '{red: false, green: false, reason: $r}')"
+    PAIR_JSON="${PAIR_JSON#\{}"; PAIR_JSON="${PAIR_JSON%\}}"
+    return 2
+  fi
   # 層4: test と impl の混在(同一ファイル)は曖昧 → 昇格しない
   for t in "${TESTS[@]}"; do
     for i in "${IMPLS[@]}"; do
@@ -298,7 +415,7 @@ verify_pair() {
 
   # post-green verdict(fail-open): red/green 判定が確定した後にのみ走る。
   # 非ゼロ exit・空出力・不正 JSON・jq 不在のいずれでも PAIR_JSON をそのまま返す。
-  # 当該ペアで vdelta run 経路が実行されていない場合(bats-only AC・vitest 以外のランナー等)は
+  # 当該ペアで vdelta run 経路が実行されていない場合(vitest 以外のコマンド・tests/run-*.sh 等)は
   # RunStore に run pair が存在しないため起動しない(VDELTA_TESTCMD_RAN guard)。
   if [ "$VDELTA_TESTCMD_RAN" = true ] && command -v jq >/dev/null 2>&1; then
     local hook_json hook_rc merged
@@ -323,6 +440,42 @@ write_results() {
 # run(supervisor が worktree を cwd に起こす command。引数は start が spec に書く)
 # ---------------------------------------------------------------------------
 
+# コマンドファイル(spec の commands)と $BASE の tree からテストの起動の形を決める(RUN_MODE / RUN_ERROR)
+load_test_command() {
+  local file mode entry meta path n=0 w
+  file="$(bg_job_read_field "$BG_JOB_SPEC" .commands)"
+  if [ -z "$file" ] || [ ! -f "$file" ]; then
+    RUN_ERROR="test command unresolved (コマンドファイルが無い)"; return
+  fi
+  mode="$(jq -r 'if type != "object" then "invalid"
+    elif .status == "unresolved" then "unresolved"
+    elif .status == "resolved" and .source == "runners" then "runners"
+    elif .status == "resolved" and (.files_command | type == "string") then "command"
+    else "invalid" end' "$file" 2>/dev/null)" || mode=invalid
+  case "$mode" in
+    command)
+      read -r -a FILES_WORDS <<< "$(jq -r '.files_command' "$file")"
+      for w in ${FILES_WORDS[@]+"${FILES_WORDS[@]}"}; do [ "$w" = "{files}" ] && n=$((n+1)); done
+      if [ "$n" -ne 1 ]; then
+        RUN_ERROR="test command unresolved (files_command に {files} の語がちょうど 1 つ無い)"; return
+      fi
+      RUN_MODE=command ;;
+    runners)
+      # 1 行 1 エントリの出力を here-string で読む(process substitution は sandbox で /dev/fd が塞がれる)
+      while IFS= read -r entry; do
+        meta="${entry%%$'\t'*}"
+        path="${entry#*$'\t'}"
+        [[ "$path" == tests/run-*.sh && "$meta" == 100755\ blob\ * ]] && BASE_RUNNERS+=("$path")
+      done <<< "$(git ls-tree "$BASE" -- tests/ 2>/dev/null)"
+      if [ "${#BASE_RUNNERS[@]}" -eq 0 ]; then
+        RUN_ERROR="test command unresolved (base の tree に tests/run-*.sh が無い)"; return
+      fi
+      RUN_MODE=runners ;;
+    unresolved) RUN_ERROR="test command unresolved (status unresolved)" ;;
+    *) RUN_ERROR="test command unresolved (コマンドファイルを読めない)" ;;
+  esac
+}
+
 cmd_run() {
   BASE_REF="$(bg_job_read_field "$BG_JOB_SPEC" .base)"
   if [ -n "$BASE_REF" ]; then
@@ -333,9 +486,13 @@ cmd_run() {
       exit 2
     fi
   fi
-  if [ -f package.json ] && jq -e '((.dependencies // {}) + (.devDependencies // {})) | has("vdelta")' package.json >/dev/null 2>&1; then
+  if git cat-file --filters "$BASE:package.json" 2>/dev/null \
+      | jq -e '((.dependencies // {}) + (.devDependencies // {})) | has("vdelta")' >/dev/null 2>&1; then
     VDELTA=true
   fi
+  load_test_command
+  # 呼び出し元の環境の同名変数は継がない(入れ子の run-tests の一覧を tests/run-*.sh に渡さない)
+  unset DEVFLOW_CHANGED_FILES DEVFLOW_BASE DEVFLOW_TEST_FILES DEVFLOW_FAILED_FILES
 
   local args=() a
   while IFS= read -r a; do args+=("$a"); done <<< "$(jq -r '.pairs[]' "$BG_JOB_SPEC")"
@@ -420,8 +577,8 @@ cmd_state_dir() {
 }
 
 cmd_start() {
-  local wait_sec="$1" base="$2" worktree="$3" problem
-  shift 3
+  local wait_sec="$1" base="$2" commands="$3" worktree="$4" problem
+  shift 4
   case "$BG_JOB_STATE_DIR/" in
     "$worktree"/*)
       echo "redgreen-verify: --state-dir ($BG_JOB_STATE_DIR) が worktree の中にある(テストが結果を書ける)" >&2
@@ -436,9 +593,9 @@ cmd_start() {
   fi
   bg_job_write_json "$BG_JOB_SPEC" --arg cwd "$worktree" \
     --arg command "bash $(printf '%q' "$BG_JOB_SELF") run --state-dir $(printf '%q' "$BG_JOB_STATE_DIR")" \
-    --argjson timeout_seconds "$RG_TIMEOUT_SEC" --arg base "$base" \
+    --argjson timeout_seconds "$RG_TIMEOUT_SEC" --arg base "$base" --arg commands "$commands" \
     --argjson pairs "$(printf '%s\n' "$@" | jq -R . | jq -sc .)" \
-    '{cwd: $cwd, command: $command, timeout_seconds: $timeout_seconds, base: $base, pairs: $pairs}'
+    '{cwd: $cwd, command: $command, timeout_seconds: $timeout_seconds, base: $base, commands: $commands, pairs: $pairs}'
   emit_outcome "$(bg_job_start "$wait_sec")"
 }
 
@@ -449,7 +606,7 @@ cmd_start() {
 usage() {
   [ -z "${1:-}" ] || echo "redgreen-verify: $1" >&2
   echo "usage: redgreen-verify.sh state-dir" >&2
-  echo "       redgreen-verify.sh start --state-dir <abs> [--wait-sec <n>] [--base <ref>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]" >&2
+  echo "       redgreen-verify.sh start --state-dir <abs> [--wait-sec <n>] [--base <ref>] [--commands <file>] <worktree> <test_files_csv> <impl_files_csv> [<test_files_csv> <impl_files_csv> ...]" >&2
   echo "       redgreen-verify.sh wait --state-dir <abs> [--wait-sec <n>]" >&2
   echo "       redgreen-verify.sh stop --state-dir <abs> [--timeout-sec <n>]" >&2
   echo '{"results":[]}'
@@ -457,7 +614,7 @@ usage() {
 }
 
 main() {
-  local sub="${1:-}" state_dir='' wait_sec='' timeout_sec='' base=''
+  local sub="${1:-}" state_dir='' wait_sec='' timeout_sec='' base='' commands=''
   case "$sub" in
     state-dir) cmd_state_dir; return ;;
     start|wait|stop|supervise|run) shift ;;
@@ -465,13 +622,14 @@ main() {
   esac
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --state-dir|--wait-sec|--timeout-sec|--base)
+      --state-dir|--wait-sec|--timeout-sec|--base|--commands)
         [ -n "${2:-}" ] || usage "$1 requires a value"
         case "$1" in
           --state-dir) state_dir="$2" ;;
           --wait-sec) wait_sec="$2" ;;
           --timeout-sec) timeout_sec="$2" ;;
           --base) base="$2" ;;
+          --commands) commands="$2" ;;
         esac
         shift 2 ;;
       --*) usage "Unknown option: $1" ;;
@@ -496,7 +654,7 @@ main() {
       local worktree
       worktree="$(cd "$1" 2>/dev/null && pwd)" || { echo "cd failed: $1" >&2; echo '{"results":[]}'; exit 2; }
       shift
-      cmd_start "$wait_sec" "$base" "$worktree" "$@" ;;
+      cmd_start "$wait_sec" "$base" "$commands" "$worktree" "$@" ;;
     wait) emit_outcome "$(bg_job_wait "$wait_sec")" ;;
     stop) bg_job_stop "$timeout_sec" ;;
   esac

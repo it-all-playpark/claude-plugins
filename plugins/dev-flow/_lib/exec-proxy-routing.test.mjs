@@ -236,7 +236,7 @@ test('[exec-proxy-routing] dev-flow.js: redgreen-verify は bare 名 `redgreen-v
   const stateDir = '/tmp/rg-state';
   const forms = [
     '\nredgreen-verify state-dir',
-    `\nredgreen-verify start --state-dir ${stateDir} /tmp/wt 't.test.mjs' 'src/x.ts'`,
+    `\nredgreen-verify start --state-dir ${stateDir} --commands /tmp/test-commands-Stub01/commands.json /tmp/wt 't.test.mjs' 'src/x.ts'`,
     `\nredgreen-verify wait --state-dir ${stateDir} --wait-sec 450`,
     `\nredgreen-verify stop --state-dir ${stateDir}`,
   ];

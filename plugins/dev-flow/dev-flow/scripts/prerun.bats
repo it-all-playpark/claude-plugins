@@ -606,23 +606,6 @@ JSON
     echo "$output" | jq -e '.stack.frameworks | index("next") != null'
 }
 
-# ---- (10b) テストランナー判定 -> stack.test_runners（evaluator prompt の受理パターンの元） ----
-
-@test "(10b) vitest の package.json + pytest.ini -> stack.test_runners に detect-test-runner の判定が載る" {
-    git -C "$SEED" checkout -q dev
-    echo '{"devDependencies":{"vitest":"^3.0.0"}}' > "$SEED/package.json"
-    printf '[pytest]\n' > "$SEED/pytest.ini"
-    git -C "$SEED" add package.json pytest.ini
-    git -C "$SEED" commit -q -m "add runners"
-    git -C "$SEED" push -q origin dev
-
-    cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '[.stack.test_runners[].runner] == ["vitest","pytest","bats"]'
-    echo "$output" | jq -e '.stack.test_runners[1] == {runner: "pytest", accept: ["test_*.py","*_test.py"], exclude: [], command: "pytest <files>"}'
-}
-
 # ---- (10c) ci_verify / local_verify / pr_title_format: origin/<base> の skill-config の "dev-flow".<key> を verbatim で渡す (issue #861 / #863 / #1214) ----
 # 読む場所と優先順の細部は _shared/scripts/devflow-config.bats が見る。ここは配線だけ。
 

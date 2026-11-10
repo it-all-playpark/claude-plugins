@@ -14,8 +14,8 @@
 // summarizePrerunDeps: prerun の deps 結果（advisory）を implementer prompt 注入用の警告文と
 //   ログ行に要約する純関数。deps.ok:false でも top-level ok には影響しない（fail-open）。
 // hasNextJs: stack.frameworks に 'next' が含まれるかを判定する純関数。Turbopack 規約注入の判定に使う。
-// testDiscoveryNote: stack.test_runners（prerun が detect-test-runner.sh で repo の既存設定から判定したテストランナーと
-//   受理パターン。redgreen-verify と同じ判定元）を evaluator prompt に注入する test_files の受理条件の文に整形する純関数。
+// testDiscoveryNote: Setup が解決したテストコマンド（dev-flow-test-commands の返り値。redgreen-verify が --commands で読む
+//   のと同じもの）を evaluator prompt に注入する test_files の受理条件の文に整形する純関数。
 // normalizeCiVerify: prerun の ci_verify（repo の CI 判定の宣言。null は未設定）を検証・正規化する純関数。
 // normalizeLocalVerify: prerun の local_verify（ci の AC をローカル実行で判定する宣言。null は未設定）を検証・正規化する純関数。
 // normalizePrTitleFormat: prerun の pr_title_format（commit subject = PR タイトルのテンプレート。null は未設定）を検証する純関数。
@@ -89,15 +89,7 @@ export function validatePrerunSetup(raw, issue) {
   if (typeof raw.deps.note !== 'string') fail('deps.note', raw.deps.note);
   if (!isPlainObject(raw.stack)) fail('stack', raw.stack);
   if (!Array.isArray(raw.stack.frameworks)) fail('stack.frameworks', raw.stack.frameworks);
-  // test_runners は redgreen-verify が受理するテストファイルの唯一の判定元（detect-test-runner.sh）の出力。evaluator の
-  // test_files の受理条件に注入するので、形が崩れていたら黙って捨てず fail-closed にする
-  if (!Array.isArray(raw.stack.test_runners)) fail('stack.test_runners', raw.stack.test_runners);
   const isStringList = (v) => Array.isArray(v) && v.every(isNonEmptyString);
-  raw.stack.test_runners.forEach((r, i) => {
-    if (!isPlainObject(r) || !isNonEmptyString(r.runner) || !isStringList(r.accept) || !isStringList(r.exclude) || typeof r.command !== 'string') {
-      fail(`stack.test_runners[${i}]`, r);
-    }
-  });
   // analyze（issue #690）: prerun の analyze 段（analyze-issue --contract + Jev）の結果。ok:false は
   // Setup 末尾の analyze ゲートが needs_clarification（source=analyze_prerun）に倒すため throw しない（reason 必須）。
   if (!isPlainObject(raw.analyze)) fail('analyze', raw.analyze);
@@ -128,7 +120,6 @@ export function validatePrerunSetup(raw, issue) {
   if (!isNonEmptyString(raw.branch) && raw.branch_format != null) fail('branch', raw.branch);
   const branch = isNonEmptyString(raw.branch) ? raw.branch : `feature/issue-${issue}`;
   const frameworks = raw.stack.frameworks.filter((f) => typeof f === 'string');
-  const testRunners = raw.stack.test_runners.map((r) => ({ runner: r.runner, accept: [...r.accept], exclude: [...r.exclude], command: r.command }));
   const ciVerify = normalizeCiVerify(raw.ci_verify);
   const localVerify = normalizeLocalVerify(raw.local_verify);
   const prTitleFormat = normalizePrTitleFormat(raw.pr_title_format);
@@ -141,7 +132,6 @@ export function validatePrerunSetup(raw, issue) {
     repo,
     deps: { ok: raw.deps.ok, note: raw.deps.note },
     frameworks,
-    testRunners,
     analyze: raw.analyze,
     epoch: raw.epoch,
     epoch_end: raw.epoch_end,
@@ -251,12 +241,23 @@ export function hasNextJs(frameworks) {
   return Array.isArray(frameworks) && frameworks.includes('next');
 }
 
-export function testDiscoveryNote(testRunners) {
-  const head = 'test_discovery（repo の既存設定から決定論で判定したテストランナー。redgreen-verify は同じ判定で各ファイルのランナーを選んで red→green を実行し、'
-    + 'どの runner にも当たらないファイルはランナー未検出として拒否する）: ';
-  if (!Array.isArray(testRunners) || testRunners.length === 0) {
-    return head + 'ランナー検出なし — test_files を挙げず verified_by は "inspection" にせよ。\n';
+// redgreen-verify は test_files を、Setup が base の tree から解決したテストコマンド（コマンドファイル）の形でだけ実行する。
+// evaluator にはその解決結果（解決元と起動の形）を渡す — 言語別の受理パターンの一覧は持たない（解決したコマンドで実行できない
+// test_files を申告させると red→green が成立せず、解決できていない run で申告させると全ペアが入力エラーになる）。
+export function testDiscoveryNote(testCommands) {
+  const head = 'test_discovery（Setup が base ブランチの tree から解決したテストコマンド。redgreen-verify は test_files をこの形でだけ実行して red→green を測る）: ';
+  const tc = testCommands;
+  const tail = '（テストと実装の混在ファイルも挙げない）。\n';
+  const resolved = tc != null && tc.status === 'resolved' && isNonEmptyString(tc.commands_file);
+  const sources = resolved && Array.isArray(tc.sources) ? tc.sources.join(', ') : '';
+  if (resolved && tc.source === 'runners') {
+    return head + `解決元は base の tests/run-*.sh（${sources}）。各 script に test_files の一覧を DEVFLOW_TEST_FILES で渡して実行する — `
+      + 'test_files はこれらの script が扱うテストファイルに限れ' + tail;
   }
-  return head + 'test_files は次のいずれかの runner の accept に一致し exclude に一致しないファイルに限れ（テストと実装の混在ファイルも挙げない）:\n'
-    + JSON.stringify(testRunners) + '\n';
+  if (resolved && isNonEmptyString(tc.files_command)) {
+    const from = tc.source === 'user_config' ? 'user 設定' : `resolver（根拠: ${sources}）`;
+    return head + `解決元は ${from}。\`${tc.files_command}\` の {files} に test_files を入れて実行する — `
+      + 'test_files はこのコマンドで実行できるテストファイルに限れ' + tail;
+  }
+  return head + 'テストコマンド未解決 — test_files を挙げず verified_by は "inspection" にせよ。\n';
 }

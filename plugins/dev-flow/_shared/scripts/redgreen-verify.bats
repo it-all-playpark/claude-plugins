@@ -5,15 +5,19 @@
 # 判定のテストは $RGV(start → 終わるまで wait。stdout と exit は結果を返した呼び出しのもの)で 1 ショットに回し、
 # start / wait / stop そのものは N が見る。supervisor はバックグラウンドで残るので、start は fd 3 を閉じて呼ぶ
 # (bats が子の終了を待って止まらないように)。
+# テストの起動の形は Setup が解決したコマンドファイル(--commands)で渡す。$RGV は $COMMANDS_FILE が空でなければ
+# --commands に付ける(既定は files_command が node --test {files}。use_commands / use_runners で差し替える)。
 
 setup() {
   SCRIPT="$BATS_TEST_DIRNAME/redgreen-verify.sh"
   STATE_DIR="$BATS_TEST_TMPDIR/state"
   export REDGREEN_VERIFY_POLL_SEC=0.1
+  export COMMANDS_FILE="$BATS_TEST_TMPDIR/commands.json"
+  use_commands 'node --test {files}'
   RGV="$BATS_TEST_TMPDIR/rgv.sh"
   cat > "$RGV" <<EOF
 #!/usr/bin/env bash
-out="\$(bash '$SCRIPT' start --state-dir '$STATE_DIR' "\$@" 3>&-)"; rc=\$?
+out="\$(bash '$SCRIPT' start --state-dir '$STATE_DIR' \${COMMANDS_FILE:+--commands "\$COMMANDS_FILE"} "\$@" 3>&-)"; rc=\$?
 while [ "\$(jq -r '.status // empty' <<< "\$out" 2>/dev/null)" = running ]; do
   out="\$(bash '$SCRIPT' wait --state-dir '$STATE_DIR' --wait-sec 60)"; rc=\$?
 done
@@ -23,14 +27,18 @@ EOF
   REPO="$(mktemp -d)"
   cd "$REPO"
   git init -q && git config user.email t@t && git config user.name t
-  # base commit(G1/G2 の事前 stash 素材にも使う .gitkeep を含める)。ランナーは repo の設定から判定されるので、
-  # 既定の fixture は scripts.test が node --test の JS repo にする(*.test.mjs → node --test)
+  # base commit(G1/G2 の事前 stash 素材にも使う .gitkeep を含める)
   echo "# placeholder" > .gitkeep
   echo '{"scripts":{"test":"node --test"}}' > package.json
   git add .gitkeep package.json && git commit -q -m base
 }
 
-# fixture の package.json を差し替えて commit する(JS ランナーの判定元)
+# コマンドファイルを files_command <$1>(user 設定で解決した形)にする
+use_commands() {
+  jq -nc --arg f "$1" '{source: "user_config", status: "resolved", full_command: ($f | sub(" *\\{files\\}"; "")), files_command: $f, sources: []}' > "$COMMANDS_FILE"
+}
+
+# fixture の package.json を差し替えて commit する(vdelta で包むかの判定元は base の tree の package.json)
 use_package_json() {
   echo "$1" > "$REPO/package.json"
   git -C "$REPO" add package.json && git -C "$REPO" commit -q -m "package.json"
@@ -105,13 +113,6 @@ EOF
 # -----------------------------------------------------------------------
 # 既存バリデーション
 # -----------------------------------------------------------------------
-@test "非 test ファイル申告は exit 2(昇格拒否)" {
-  echo "export const ok = true;" > "$REPO/impl.mjs"
-  run bash "$RGV" "$REPO" "impl.mjs" "impl.mjs"
-  [ "$status" -eq 2 ]
-  [[ "$output" == *'non-test file'* ]]
-}
-
 @test "test と impl が同一ファイル(混在)は exit 2" {
   make_test
   run bash "$RGV" "$REPO" "feature.test.mjs" "feature.test.mjs"
@@ -168,8 +169,8 @@ EOF
 }
 
 # -----------------------------------------------------------------------
-# F: vdelta 経路(issue #881)。package.json の dependencies / devDependencies に vdelta があり、ランナーが
-# vitest のときだけ vitest コマンドを `<PM の exec> vdelta run --report json --` で包み、green 後の
+# F: vdelta 経路(issue #881 / #1279)。base の tree の package.json の dependencies / devDependencies に vdelta があり、
+# files_command に vitest の語があるときだけコマンドを `<PM の exec> vdelta run --report json --` で包み、green 後の
 # `<PM の exec> vdelta compare --report json` を verdict に載せる。.claude/redgreen.conf は読まない。
 # -----------------------------------------------------------------------
 
@@ -189,9 +190,10 @@ EOF
   chmod +x "$REPO/mockbin/$1"
 }
 
-# vdelta と vitest を devDependencies に持つ repo + impl.ts / feature.test.ts
+# vdelta と vitest を devDependencies に持つ repo(files_command は npx vitest run {files})+ impl.ts / feature.test.ts
 use_vdelta_vitest() {
   use_package_json '{"devDependencies":{"vitest":"^3.0.0","vdelta":"^0.10.0"}}'
+  use_commands 'npx vitest run {files}'
   echo "export const ok = true;" > "$REPO/impl.ts"
   echo "// feature test" > "$REPO/feature.test.ts"
 }
@@ -212,10 +214,10 @@ use_vdelta_vitest() {
     'npx vdelta run --report json -- npx vitest run feature.test.ts' \
     'npx vdelta compare --report json')" ]
 
-  # pnpm-lock.yaml のある repo(vdelta は dependencies)では pnpm exec で包み、compare も pnpm exec で起動する
+  # files_command が pnpm exec vitest の repo(vdelta は dependencies)では pnpm exec で包み、compare も pnpm exec で起動する
   rm "$REPO/calls.log"
   use_package_json '{"dependencies":{"vdelta":"^0.10.0"},"devDependencies":{"vitest":"^3.0.0"}}'
-  : > "$REPO/pnpm-lock.yaml"
+  use_commands 'pnpm exec vitest run {files}'
   make_mock_pm pnpm '{"comparability":"exact"}'
   run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
@@ -244,6 +246,7 @@ use_vdelta_vitest() {
 
 @test "F3: vdelta が依存に無い vitest の repo は素の vitest で実行し vdelta を呼ばず verdict を載せない" {
   use_package_json '{"devDependencies":{"vitest":"^3.0.0"}}'
+  use_commands 'npx vitest run {files}'
   echo "export const ok = true;" > "$REPO/impl.ts"
   echo "// feature test" > "$REPO/feature.test.ts"
   make_mock_pm npx '{"comparability":"exact"}'
@@ -256,8 +259,9 @@ use_vdelta_vitest() {
   [ "$(cat "$REPO/calls.log")" = "$(printf '%s\n' 'npx vitest run feature.test.ts' 'npx vitest run feature.test.ts')" ]
 }
 
-@test "F4: vdelta が依存にあっても vitest 以外のランナー(jest)は素のランナーで実行し vdelta を呼ばず verdict を載せない" {
+@test "F4: vdelta が依存にあっても vitest 以外のコマンド(jest)はそのまま実行し vdelta を呼ばず verdict を載せない" {
   use_package_json '{"devDependencies":{"jest":"^29.0.0","vdelta":"^0.10.0"}}'
+  use_commands 'npx jest {files}'
   echo "export const ok = true;" > "$REPO/impl.ts"
   echo "// feature test" > "$REPO/feature.test.ts"
   make_mock_pm npx '{"comparability":"exact"}'
@@ -270,8 +274,9 @@ use_vdelta_vitest() {
   [ "$(cat "$REPO/calls.log")" = "$(printf '%s\n' 'npx jest feature.test.ts' 'npx jest feature.test.ts')" ]
 }
 
-@test "F5: vdelta + vitest の repo でも bats だけのペアは vdelta を呼ばず verdict を載せない" {
+@test "F5: vdelta が依存にあっても files_command が bats の repo は vdelta を呼ばず verdict を載せない" {
   use_vdelta_vitest
+  use_commands 'bats {files}'
   # NOTE: heredoc でこの .bats ファイルのソース行頭に "@test" を直書きすると、
   # このファイル(redgreen-verify.bats)自身を静的スキャンする bats のテスト発見
   # ロジックが nested な行まで誤って test 宣言として拾ってしまう
@@ -315,6 +320,21 @@ use_vdelta_vitest() {
   [ ! -e "$REPO/conf-called" ]
 }
 
+@test "F7: base の package.json に vdelta があれば、worktree の package.json から vdelta を外しても vdelta で包む" {
+  use_vdelta_vitest
+  echo '{"devDependencies":{"vitest":"^3.0.0"}}' > "$REPO/package.json"
+  make_mock_pm npx '{"comparability":"exact"}'
+
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0].verdict')" = '{"comparability":"exact"}' ]
+  [ "$(cat "$REPO/calls.log")" = "$(printf '%s\n' \
+    'npx vdelta run --report json -- npx vitest run feature.test.ts' \
+    'npx vdelta run --report json -- npx vitest run feature.test.ts' \
+    'npx vdelta compare --report json')" ]
+}
+
 # -----------------------------------------------------------------------
 # G1〜G6: issue #630 AC1〜AC6 の pin。共有 stash スタックへの読み書きを
 # 撤廃する実装変更(F2)を先取りして red/green を固定する回帰・仕様テスト。
@@ -349,6 +369,7 @@ use_vdelta_vitest() {
   rm "$REPO/.gitkeep"
   git -C "$REPO" stash push -q -m "other-session" -- .gitkeep
   make_test
+  use_commands 'npx vitest run {files}'
   make_mock_pm npx '' impl.mjs
   before_status="$(git -C "$REPO" status --porcelain)"
   before_n="$(git -C "$REPO" stash list | wc -l | tr -d ' ')"
@@ -406,6 +427,7 @@ use_vdelta_vitest() {
   git -C "$REPO" add impl.mjs && git -C "$REPO" commit -q -m "add impl"
   rm "$REPO/impl.mjs"
   make_test
+  use_commands 'npx vitest run {files}'
   make_mock_pm npx '' impl.mjs
 
   run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
@@ -464,101 +486,6 @@ EOF
 }
 
 # -----------------------------------------------------------------------
-# H: JS の runner は repo の設定(package.json / vitest.config.* / jest.config.* / playwright.config.*)から
-# 判定する(issue #656 / #880)。判定した runner を lockfile の PM 経由(lockfile 無しは npx)で起動する。
-# playwright.config.* がある repo の *.spec.ts はランナー未検出として exit 2。
-# -----------------------------------------------------------------------
-
-# npx の呼び出し argv を npx-calls.log に記録し、impl があるときだけ pass する stub
-make_mock_npx() {
-  local impl_name="${1:-impl.ts}"
-  mkdir -p "$REPO/mockbin"
-  cat > "$REPO/mockbin/npx" <<EOF
-#!/usr/bin/env bash
-echo "\$@" >> "$REPO/npx-calls.log"
-[ -f "$REPO/$impl_name" ]
-EOF
-  chmod +x "$REPO/mockbin/npx"
-}
-
-@test "H1: vitest の repo の *.test.ts / *.test.tsx は vitest run で red→green 判定される" {
-  use_package_json '{"devDependencies":{"vitest":"^3.0.0"}}'
-  echo "export const ok = true;" > "$REPO/impl.ts"
-  echo "// feature test" > "$REPO/feature.test.ts"
-  echo "// component test" > "$REPO/Component.test.tsx"
-  make_mock_npx
-
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts,Component.test.tsx" "impl.ts"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *'"red":true'* ]]
-  [[ "$output" == *'"green":true'* ]]
-  [ -f "$REPO/npx-calls.log" ]
-  [ "$(wc -l < "$REPO/npx-calls.log" | tr -d ' ')" -eq 2 ]
-  [ "$(grep -c '^vitest run feature.test.ts Component.test.tsx$' "$REPO/npx-calls.log")" -eq 2 ]
-  [ -f "$REPO/impl.ts" ]
-  grep -q "true" "$REPO/impl.ts"
-}
-
-@test "H2: vitest の repo で .test.mjs / .test.ts は vitest 1 回、.bats は bats に振り分けられる" {
-  use_package_json '{"devDependencies":{"vitest":"^3.0.0"}}'
-  echo "export const ok = true;" > "$REPO/impl.mjs"
-  make_test
-  {
-    printf '%s\n' '#!/usr/bin/env bats'
-    printf '%s\n' '@test "impl exists" {'
-    printf '  [ -f "%s/impl.mjs" ]\n' "$REPO"
-    printf '%s\n' '}'
-  } > "$REPO/feature.bats"
-  echo "// feature test" > "$REPO/feature.test.ts"
-  make_mock_npx impl.mjs
-
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs,feature.bats,feature.test.ts" "impl.mjs"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *'"red":true'* ]]
-  [[ "$output" == *'"green":true'* ]]
-  [ "$(wc -l < "$REPO/npx-calls.log" | tr -d ' ')" -eq 2 ]
-  [ "$(grep -c '^vitest run feature.test.mjs feature.test.ts$' "$REPO/npx-calls.log")" -eq 2 ]
-  ! grep -q ".bats" "$REPO/npx-calls.log"
-}
-
-@test "H3: playwright.config.* がある repo の *.spec.ts はランナー未検出で exit 2・runner 未実行" {
-  use_package_json '{"devDependencies":{"vitest":"^3.0.0","@playwright/test":"^1.0.0"}}'
-  echo "export default {};" > "$REPO/playwright.config.ts"
-  git -C "$REPO" add playwright.config.ts && git -C "$REPO" commit -q -m playwright
-  echo "export const ok = true;" > "$REPO/impl.ts"
-  echo "// spec test" > "$REPO/feature.spec.ts"
-  make_mock_npx
-
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.spec.ts" "impl.ts"
-  [ "$status" -eq 2 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "non-test file declared (ランナー未検出): feature.spec.ts" ]
-  [ ! -f "$REPO/npx-calls.log" ]
-}
-
-@test "H7: jest の repo の *.test.ts は vitest ではなく jest で red→green 判定される(lockfile の PM で起動)" {
-  use_package_json '{"devDependencies":{"jest":"^29.0.0"}}'
-  echo "export const ok = true;" > "$REPO/impl.ts"
-  echo "// feature test" > "$REPO/feature.test.ts"
-  make_mock_npx
-
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
-  [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(cat "$REPO/npx-calls.log")" = "$(printf 'jest feature.test.ts\njest feature.test.ts')" ]
-
-  # pnpm-lock.yaml のある jest repo では pnpm exec jest で起動する
-  rm "$REPO/npx-calls.log"
-  : > "$REPO/pnpm-lock.yaml"
-  printf '#!/usr/bin/env bash\necho "pnpm $*" >> "%s/pnpm-calls.log"\n[ -f "%s/impl.ts" ]\n' "$REPO" "$REPO" > "$REPO/mockbin/pnpm"
-  chmod +x "$REPO/mockbin/pnpm"
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
-  [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(grep -c '^pnpm exec jest feature.test.ts$' "$REPO/pnpm-calls.log")" -eq 2 ]
-  [ ! -f "$REPO/npx-calls.log" ]
-}
-
-# -----------------------------------------------------------------------
 # I: testcmd_ran / headdiff (issue #654 AC-1/AC-2)
 # vdelta run 経路が走らなかった invocation で testcmd_ran:false と headdiff が
 # 常時出力されること、vdelta run 経路が走った invocation では headdiff が
@@ -572,6 +499,7 @@ make_feature_bats() {
     printf '  [ -f "%s/impl.mjs" ]\n' "$REPO"
     printf '%s\n' '}'
   } > "$REPO/feature.bats"
+  use_commands 'bats {files}'
 }
 
 @test "I1: bats-only, untracked feature.bats は testcmd_ran:false と headdiff new:1 を出力する" {
@@ -608,19 +536,6 @@ make_feature_bats() {
 }
 
 # vdelta run 経路が走った 1 ペアの testcmd_ran:true / headdiff なしは F1 が同じ実行で見る
-@test "I5: vdelta run 経路に乗る test_files が bats と混在しても testcmd_ran:true で headdiff を出力しない" {
-  use_package_json '{"devDependencies":{"vitest":"^3.0.0","vdelta":"^0.10.0"}}'
-  echo "export const ok = true;" > "$REPO/impl.mjs"
-  make_test
-  make_feature_bats
-  make_mock_pm npx '' impl.mjs
-
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs,feature.bats" "impl.mjs"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *'"testcmd_ran":true'* ]]
-  [[ "$output" != *'"headdiff"'* ]]
-}
-
 @test "I6: node --test 直接経路も testcmd_ran:false と headdiff を出力する(拡張子非依存)" {
   echo "export const ok = true;" > "$REPO/impl.mjs"
   make_test
@@ -649,11 +564,11 @@ make_feature_bats() {
 # reason に載せて続行し、exit 2 は全ペアが入力エラーのときだけ。
 # -----------------------------------------------------------------------
 
-# vitest の repo にし、impl1 / impl2 が worktree 版の内容(a = 1 / b = 2)で存在するかを呼び出しごとに記録する
-# npx stub を mockbin に置く(`npx vitest run <test>` の末尾引数で振り分ける。ペア間の退避分離を検証する。
-# tracked-modified の base 化はファイルが残るので内容で判定する)
+# files_command を npx vitest run {files} にし、impl1 / impl2 が worktree 版の内容(a = 1 / b = 2)で存在するかを
+# 呼び出しごとに記録する npx stub を mockbin に置く(`npx vitest run <test>` の末尾引数で振り分ける。ペア間の退避分離を
+# 検証する。tracked-modified の base 化はファイルが残るので内容で判定する)
 make_mock_runner_pairs() {
-  use_package_json '{"devDependencies":{"vitest":"^3.0.0"}}'
+  use_commands 'npx vitest run {files}'
   mkdir -p "$REPO/mockbin"
   cat > "$REPO/mockbin/npx" <<EOF
 #!/usr/bin/env bash
@@ -711,12 +626,12 @@ EOF
   echo "// t2" > "$REPO/t2.test.mjs"
   make_mock_runner_pairs
 
-  # pair0 は non-test glob(impl1.mjs を test として申告)、pair1 は正常
+  # pair0 は test と impl が同一ファイル、pair1 は正常
   run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "impl1.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | jq -r '.results | length')" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red or .results[0].green')" = "false" ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "non-test file declared (ランナー未検出): impl1.mjs" ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "file is both test and impl: impl1.mjs" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0] | has("testcmd_ran")')" = "false" ]
   [ "$(printf '%s' "$output" | jq -r '.results[1].red and .results[1].green')" = "true" ]
   # pair0 の入力エラーで pair1 の判定が走っている(退避・復元も完了)
@@ -731,7 +646,7 @@ EOF
   run bash "$RGV" "$REPO" "impl1.mjs" "impl1.mjs" "t2.test.mjs" "nonexistent.mjs"
   [ "$status" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -r '.results | length')" -eq 2 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "non-test file declared (ランナー未検出): impl1.mjs" ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "file is both test and impl: impl1.mjs" ]
   [ "$(printf '%s' "$output" | jq -r '.results[1].reason')" = "impl file not found: nonexistent.mjs" ]
 }
 
@@ -810,6 +725,7 @@ EOF
   use_package_json '{"devDependencies":{"vitest":"^3.0.0"}}'
   echo "export const ok = true;" > "$REPO/impl.mjs"
   make_test
+  use_commands 'npx vitest run {files}'
   make_mock_pm npx '' impl.mjs
 
   run env PATH="$REPO/mockbin:$PATH" bash "$RGV" --base no-such-ref "$REPO" "feature.test.mjs" "impl.mjs"
@@ -824,10 +740,10 @@ EOF
 # 止めたときは impl が worktree に戻っていることを、止まり方(TERM・KILL・supervisor の消失)ごとに見る。
 # -----------------------------------------------------------------------
 
-# vitest の repo にし、tracked-modified の impl.ts + untracked の new.ts を置く。npx stub は started に印を残してから
-# <本文> を実行し、new.ts があるときだけ pass する
+# files_command を npx vitest run {files} にし、tracked-modified の impl.ts + untracked の new.ts を置く。npx stub は
+# started に印を残してから <本文> を実行し、new.ts があるときだけ pass する
 make_slow_runner() {
-  use_package_json '{"devDependencies":{"vitest":"^3.0.0"}}'
+  use_commands 'npx vitest run {files}'
   echo "export const ok = false;" > "$REPO/impl.ts"
   git -C "$REPO" add impl.ts && git -C "$REPO" commit -q -m "add impl"
   echo "export const ok = true;" > "$REPO/impl.ts"
@@ -840,7 +756,7 @@ make_slow_runner() {
 }
 
 start_slow() {
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" start --state-dir "$STATE_DIR" "$REPO" "feature.test.ts" "impl.ts,new.ts" 3>&-
+  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" start --state-dir "$STATE_DIR" --commands "$COMMANDS_FILE" "$REPO" "feature.test.ts" "impl.ts,new.ts" 3>&-
 }
 
 # stub が red の実行に入るまで待つ(この時点で impl は退避済み)
@@ -969,7 +885,7 @@ assert_impl_restored() {
 
 @test "N10: start は worktree の中の state dir を拒否し、テストを実行しない" {
   make_slow_runner ':'
-  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" start --state-dir "$REPO/.devflow-tmp/redgreen-verify" "$REPO" "feature.test.ts" "impl.ts,new.ts" 3>&-
+  run env PATH="$REPO/mockbin:$PATH" bash "$SCRIPT" start --state-dir "$REPO/.devflow-tmp/redgreen-verify" --commands "$COMMANDS_FILE" "$REPO" "feature.test.ts" "impl.ts,new.ts" 3>&-
   [ "$status" -eq 2 ]
   [ "${lines[${#lines[@]}-1]}" = '{"results":[]}' ]
   [ ! -e "$REPO/started" ]
@@ -978,10 +894,11 @@ assert_impl_restored() {
 # -----------------------------------------------------------------------
 # K: pnpm ワークスペースのビルド成果物(issue #754)
 # packages/shared の exports は git 管理外の ./dist を指し、packages/backend が workspace:* で依存する。
-# impl は shared のソース(base: v1 → worktree: v2)。テストランナー(root は vitest・lockfile 無しなので npx の stub)は
+# impl は shared のソース(base: v1 → worktree: v2)。テストランナー(files_command は npx vitest run {files}。npx の stub)は
 # dist の中身を calls.log に残し、dist が v2 のときだけ pass する。pnpm は stub(scripts.build を実行し呼び出し時点のソースを記録)。
 # -----------------------------------------------------------------------
 make_pnpm_workspace_pair() {
+  use_commands 'npx vitest run {files}'
   mkdir -p "$REPO/packages/shared/src" "$REPO/packages/backend"
   echo '{"name":"root","private":true,"devDependencies":{"vitest":"^3.0.0"}}' > "$REPO/package.json"
   printf 'packages:\n  - packages/*\n' > "$REPO/pnpm-workspace.yaml"
@@ -1058,135 +975,195 @@ EOF
 }
 
 # -----------------------------------------------------------------------
-# L: JS / bats 以外のランナー(issue #880 / #883)。repo の既存設定(pytest 設定 / go.mod / Cargo.toml /
-# Gemfile.lock・bin/rails / composer.json)から detect-test-runner.sh が判定したコマンドで red→green を実行する。
-# runner は PATH 上・repo 内(bin/rails / vendor/bin)の stub で、呼び出し argv を calls.log に記録し、
-# impl があるときだけ pass する。
+# L: テストの起動の形は Setup が解決したコマンドファイルと base の tree で決まる(issue #1279)。言語・framework ごとの
+# 判定は持たない。runner は PATH 上の stub か base に commit した tests/run-*.sh で、impl があるときだけ pass する。
 # -----------------------------------------------------------------------
 
-# make_stub_at <stub の REPO 相対パス> <calls.log に残す名前> <impl の REPO 相対パス>
-make_stub_at() {
-  mkdir -p "$(dirname "$REPO/$1")"
-  printf '#!/usr/bin/env bash\necho "%s $*" >> "%s/calls.log"\n[ -f "%s/%s" ]\n' "$2" "$REPO" "$REPO" "$3" > "$REPO/$1"
-  chmod +x "$REPO/$1"
+# make_stub_runner <name> <impl の REPO 相対パス>: PATH 上(mockbin/)のランナー。argv を "<name> <argv>" で calls.log に残す
+make_stub_runner() {
+  mkdir -p "$REPO/mockbin"
+  printf '#!/usr/bin/env bash\necho "%s $*" >> "%s/calls.log"\n[ -f "%s/%s" ]\n' "$1" "$REPO" "$REPO" "$2" > "$REPO/mockbin/$1"
+  chmod +x "$REPO/mockbin/$1"
 }
 
-# make_stub_runner <name> <impl の REPO 相対パス>: PATH 上(mockbin/)のランナー
-make_stub_runner() { make_stub_at "mockbin/$1" "$1" "$2"; }
+# use_runners <impl の REPO 相対パス>: tests/run-unit.sh を base に commit し、コマンドファイルを source "runners" にする。
+# script は DEVFLOW_TEST_FILES の一覧の中身を calls.log に残し、impl があるときだけ pass する
+use_runners() {
+  mkdir -p "$REPO/tests"
+  printf '#!/usr/bin/env bash\necho "run-unit $(tr "\\n" " " < "$DEVFLOW_TEST_FILES")" >> "%s/calls.log"\n[ -f "%s/%s" ]\n' "$REPO" "$REPO" "$1" > "$REPO/tests/run-unit.sh"
+  chmod +x "$REPO/tests/run-unit.sh"
+  git -C "$REPO" add tests/run-unit.sh && git -C "$REPO" commit -q -m "add runner"
+  jq -nc '{source: "runners", status: "resolved", full_command: null, files_command: null, sources: ["tests/run-unit.sh"]}' > "$COMMANDS_FILE"
+}
 
-@test "L1: pytest 設定のある repo の test_foo.py を pytest で red→green 判定する" {
-  printf '[pytest]\n' > "$REPO/pytest.ini"
-  git -C "$REPO" add pytest.ini && git -C "$REPO" commit -q -m pytest
-  echo "OK = True" > "$REPO/foo.py"
-  echo "from foo import OK" > "$REPO/test_foo.py"
-  make_stub_runner pytest foo.py
+@test "L1: 言語別の判定に当たらない repo(pytest 設定の無い tests/test_demo.py)でも files_command で red→green 判定する" {
+  use_commands 'uv run pytest {files}'
+  mkdir -p "$REPO/tests"
+  echo "OK = True" > "$REPO/demo.py"
+  echo "from demo import OK" > "$REPO/tests/test_demo.py"
+  echo "from demo import OK" > "$REPO/tests/test_more.py"
+  make_stub_runner uv demo.py
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "test_foo.py" "foo.py"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "tests/test_demo.py,tests/test_more.py" "demo.py"
   [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(cat "$REPO/calls.log")" = "$(printf 'pytest test_foo.py\npytest test_foo.py')" ]
-  grep -q "OK = True" "$REPO/foo.py"
+  [ "$(printf '%s' "$output" | jq -c '.results[0] | {red, green, reason}')" = '{"red":true,"green":true,"reason":"ok"}' ]
+  # {files} の語がペアの test_files に置き換わり、red(impl 退避中)と green(復元後)の 2 回実行される
+  [ "$(cat "$REPO/calls.log")" = "$(printf 'uv run pytest tests/test_demo.py tests/test_more.py\nuv run pytest tests/test_demo.py tests/test_more.py')" ]
+  grep -q "OK = True" "$REPO/demo.py"
 }
 
-@test "L2: go.mod のある repo の foo_test.go をパッケージ単位の go test で red→green 判定する" {
-  printf 'module example.com/fx\n' > "$REPO/go.mod"
-  git -C "$REPO" add go.mod && git -C "$REPO" commit -q -m go
-  mkdir -p "$REPO/pkg"
-  echo "package pkg" > "$REPO/pkg/foo.go"
-  echo "package pkg" > "$REPO/pkg/foo_test.go"
-  make_stub_runner go pkg/foo.go
+@test "L2: 何も実行せず常に exit 0 を返す files_command は red:false で実証が成立しない" {
+  use_commands 'true {files}'
+  echo "export const ok = true;" > "$REPO/impl.mjs"
+  make_test
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "pkg/foo_test.go" "pkg/foo.go"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(cat "$REPO/calls.log")" = "$(printf 'go test ./pkg\ngo test ./pkg')" ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0] | {red, green}')" = '{"red":false,"green":true}' ]
+  grep -q "true" "$REPO/impl.mjs"
 }
 
-@test "L3: Cargo.toml のある repo の tests/foo.rs を cargo test --test foo で red→green 判定する" {
-  printf '[package]\nname = "fx"\n' > "$REPO/Cargo.toml"
-  git -C "$REPO" add Cargo.toml && git -C "$REPO" commit -q -m cargo
-  mkdir -p "$REPO/src" "$REPO/tests"
-  echo "pub fn ok() -> bool { true }" > "$REPO/src/lib.rs"
-  echo "#[test] fn t() { assert!(fx::ok()); }" > "$REPO/tests/foo.rs"
-  make_stub_runner cargo src/lib.rs
+@test "L3: 解決元が tests/run-*.sh のときは base の script に DEVFLOW_TEST_FILES を渡して red→green 判定する" {
+  use_runners impl.mjs
+  echo "export const ok = true;" > "$REPO/impl.mjs"
+  make_test
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "tests/foo.rs" "src/lib.rs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(cat "$REPO/calls.log")" = "$(printf 'cargo test --test foo\ncargo test --test foo')" ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0] | {red, green, reason, testcmd_ran}')" = '{"red":true,"green":true,"reason":"ok","testcmd_ran":false}' ]
+  [ "$(cat "$REPO/calls.log")" = "$(printf 'run-unit feature.test.mjs \nrun-unit feature.test.mjs ')" ]
 }
 
-@test "L4: ランナー未検出のファイル(pytest 設定の無い repo の test_foo.py / Cargo の src/ 内)は拒否され runner を実行しない" {
-  printf '[package]\nname = "fx"\n' > "$REPO/Cargo.toml"
-  git -C "$REPO" add Cargo.toml && git -C "$REPO" commit -q -m cargo
-  mkdir -p "$REPO/src"
-  echo "pub fn ok() -> bool { true }" > "$REPO/src/lib.rs"
-  echo "OK = True" > "$REPO/foo.py"
-  echo "from foo import OK" > "$REPO/test_foo.py"
-  make_stub_runner pytest foo.py
-  make_stub_runner cargo src/lib.rs
+@test "L4: 実行する tests/run-*.sh が base から変更されていれば入力エラー(reason に script のパス)で実行しない" {
+  use_runners impl.mjs
+  echo "export const ok = true;" > "$REPO/impl.mjs"
+  make_test
+  printf '#!/usr/bin/env bash\necho forged >> "%s/calls.log"\n[ -f "%s/impl.mjs" ]\n' "$REPO" "$REPO" > "$REPO/tests/run-unit.sh"
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "test_foo.py" "foo.py" "src/lib.rs" "src/lib.rs"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 2 ]
-  [ "$(printf '%s' "$output" | jq -r '[.results[] | .red or .green] | any')" = "false" ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "non-test file declared (ランナー未検出): test_foo.py" ]
-  [ "$(printf '%s' "$output" | jq -r '.results[1].reason')" = "non-test file declared (ランナー未検出): src/lib.rs" ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0]')" = '{"index":0,"red":false,"green":false,"reason":"test runner script changed vs base: tests/run-unit.sh"}' ]
   [ ! -f "$REPO/calls.log" ]
-  grep -q "OK = True" "$REPO/foo.py"
+  [ -f "$REPO/impl.mjs" ]
+
+  # --base の merge-base から変更された(commit 済みの)script も同じ
+  git -C "$REPO" branch base-ref
+  git -C "$REPO" add -A && git -C "$REPO" commit -q -m "pr commit"
+  run bash "$RGV" --base base-ref "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "test runner script changed vs base: tests/run-unit.sh" ]
+  [ ! -f "$REPO/calls.log" ]
 }
 
-@test "L5: Gemfile.lock に rspec-core のある repo の spec/foo_spec.rb を bundle exec rspec で red→green 判定する" {
-  printf 'GEM\n  specs:\n    rspec-core (3.13.0)\n' > "$REPO/Gemfile.lock"
-  git -C "$REPO" add Gemfile.lock && git -C "$REPO" commit -q -m rspec
-  mkdir -p "$REPO/lib" "$REPO/spec"
-  echo "OK = true" > "$REPO/lib/foo.rb"
-  echo "require 'foo'" > "$REPO/spec/foo_spec.rb"
-  make_stub_runner bundle lib/foo.rb
+@test "L5: base に無い tests/run-*.sh を PR が足していれば入力エラー(reason に script のパス)で実行しない" {
+  use_runners impl.mjs
+  echo "export const ok = true;" > "$REPO/impl.mjs"
+  make_test
+  printf '#!/usr/bin/env bash\n[ -f "%s/impl.mjs" ]\n' "$REPO" > "$REPO/tests/run-added.sh"
+  chmod +x "$REPO/tests/run-added.sh"
 
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "spec/foo_spec.rb" "lib/foo.rb"
-  [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(cat "$REPO/calls.log")" = "$(printf 'bundle exec rspec spec/foo_spec.rb\nbundle exec rspec spec/foo_spec.rb')" ]
-  grep -q "OK = true" "$REPO/lib/foo.rb"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0]')" = '{"index":0,"red":false,"green":false,"reason":"test runner script not in base: tests/run-added.sh"}' ]
+  [ ! -f "$REPO/calls.log" ]
+  [ -f "$REPO/impl.mjs" ]
 }
 
-@test "L6: bin/rails のある repo の test/foo_test.rb を bin/rails test で red→green 判定する" {
-  make_stub_at bin/rails bin/rails app/models/foo.rb
-  git -C "$REPO" add bin/rails && git -C "$REPO" commit -q -m rails
-  mkdir -p "$REPO/app/models" "$REPO/test"
-  echo "class Foo; end" > "$REPO/app/models/foo.rb"
-  echo "require 'test_helper'" > "$REPO/test/foo_test.rb"
+@test "L5b: files_command が委譲する package.json の scripts・名指す script が base から変われば入力エラーで実行しない" {
+  use_commands 'npm test -- {files}'
+  echo "export const ok = true;" > "$REPO/impl.mjs"
+  make_test
+  make_stub_runner npm impl.mjs
 
-  run bash "$RGV" "$REPO" "test/foo_test.rb" "app/models/foo.rb"
+  # scripts が base と同じなら実行する(依存だけの変更は委譲先を変えない)
+  echo '{"scripts":{"test":"node --test"},"devDependencies":{"x":"1"}}' > "$REPO/package.json"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(cat "$REPO/calls.log")" = "$(printf 'bin/rails test test/foo_test.rb\nbin/rails test test/foo_test.rb')" ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0] | {red, green, reason}')" = '{"red":true,"green":true,"reason":"ok"}' ]
+  rm "$REPO/calls.log"
+
+  # PR が test の script を差し替える(impl の有無だけで終了コードを決める)
+  echo '{"scripts":{"test":"node -e \"process.exit(require(\"fs\").existsSync(\"impl.mjs\")?0:1)\""}}' > "$REPO/package.json"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0]')" = '{"index":0,"red":false,"green":false,"reason":"test command script changed vs base: package.json (scripts)"}' ]
+  [ ! -f "$REPO/calls.log" ]
+
+  # workspace の package に script を足す(--filter で委譲できる)
+  git -C "$REPO" checkout -q -- package.json
+  mkdir -p "$REPO/packages/a"
+  echo '{"scripts":{"test":"true"}}' > "$REPO/packages/a/package.json"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "test command script changed vs base: packages/a/package.json (scripts)" ]
+  [ ! -f "$REPO/calls.log" ]
+  rm -r "$REPO/packages"
+
+  # コマンドが名指す repo の script
+  mkdir -p "$REPO/scripts"
+  printf '#!/usr/bin/env bash\n[ -f "%s/impl.mjs" ]\n' "$REPO" > "$REPO/scripts/test.sh"
+  git -C "$REPO" add scripts/test.sh && git -C "$REPO" commit -q -m "test script"
+  use_commands 'bash scripts/test.sh {files}'
+  echo 'exit 0' >> "$REPO/scripts/test.sh"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "test command file changed vs base: scripts/test.sh" ]
+  [ -f "$REPO/impl.mjs" ]
 }
 
-@test "L7: composer.json に pestphp/pest のある repo の tests/Unit/FooTest.php を vendor/bin/pest で red→green 判定する" {
-  echo '{"require-dev":{"pestphp/pest":"^3.0"}}' > "$REPO/composer.json"
-  git -C "$REPO" add composer.json && git -C "$REPO" commit -q -m pest
-  mkdir -p "$REPO/src" "$REPO/tests/Unit"
-  echo "<?php class Foo {}" > "$REPO/src/Foo.php"
-  echo "<?php test('foo', fn () => expect(new Foo)->toBeObject());" > "$REPO/tests/Unit/FooTest.php"
-  make_stub_at vendor/bin/pest vendor/bin/pest src/Foo.php
+@test "L5c: files_command が名指す未追跡のローカル実行ファイル(.venv/bin 等)は照合せずに実行する" {
+  echo "export const ok = true;" > "$REPO/impl.mjs"
+  make_test
+  mkdir -p "$REPO/.venv/bin"
+  printf '#!/usr/bin/env bash\necho "pytest $*" >> "%s/calls.log"\n[ -f "%s/impl.mjs" ]\n' "$REPO" "$REPO" > "$REPO/.venv/bin/pytest"
+  chmod +x "$REPO/.venv/bin/pytest"
+  use_commands '.venv/bin/pytest {files}'
 
-  run bash "$RGV" "$REPO" "tests/Unit/FooTest.php" "src/Foo.php"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(cat "$REPO/calls.log")" = "$(printf 'vendor/bin/pest tests/Unit/FooTest.php\nvendor/bin/pest tests/Unit/FooTest.php')" ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0] | {red, green, reason}')" = '{"red":true,"green":true,"reason":"ok"}' ]
+  [ -f "$REPO/calls.log" ]
+
+  # 同じパスでも PR が追跡に足したものは照合して入力エラー
+  rm "$REPO/calls.log"
+  git -C "$REPO" add -f .venv/bin/pytest
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "test command file changed vs base: .venv/bin/pytest" ]
+  [ ! -f "$REPO/calls.log" ]
 }
 
-@test "L8: composer.json に phpunit/phpunit のある repo の tests/Unit/FooTest.php を vendor/bin/phpunit で red→green 判定する" {
-  echo '{"require-dev":{"phpunit/phpunit":"^11.0"}}' > "$REPO/composer.json"
-  git -C "$REPO" add composer.json && git -C "$REPO" commit -q -m phpunit
-  mkdir -p "$REPO/src" "$REPO/tests/Unit"
-  echo "<?php class Foo {}" > "$REPO/src/Foo.php"
-  echo "<?php class FooTest extends PHPUnit\\Framework\\TestCase {}" > "$REPO/tests/Unit/FooTest.php"
-  make_stub_at vendor/bin/phpunit vendor/bin/phpunit src/Foo.php
+@test "L6: コマンドファイルが無い・unresolved のときは全ペアが入力エラーで exit 2、テストを実行しない" {
+  echo "export const a = 1;" > "$REPO/impl1.mjs"
+  echo "export const b = 2;" > "$REPO/impl2.mjs"
+  echo "// t1" > "$REPO/t1.test.mjs"
+  echo "// t2" > "$REPO/t2.test.mjs"
+  make_stub_runner node impl1.mjs
+  local want='["test command unresolved (コマンドファイルが無い)","test command unresolved (コマンドファイルが無い)"]'
 
-  run bash "$RGV" "$REPO" "tests/Unit/FooTest.php" "src/Foo.php"
-  [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(cat "$REPO/calls.log")" = "$(printf 'vendor/bin/phpunit tests/Unit/FooTest.php\nvendor/bin/phpunit tests/Unit/FooTest.php')" ]
+  # --commands を渡さない
+  run env COMMANDS_FILE= PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -c '[.results[] | select(.red == false and .green == false) | .reason]')" = "$want" ]
+
+  # --commands のパスにファイルが無い(resolver が解決できずコマンドファイルを書かなかった run)
+  run env COMMANDS_FILE="$BATS_TEST_TMPDIR/missing.json" PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -c '[.results[] | select(.red == false and .green == false) | .reason]')" = "$want" ]
+
+  # status "unresolved"
+  jq -nc '{source: "resolver", status: "unresolved", full_command: null, files_command: null, sources: []}' > "$COMMANDS_FILE"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -c '[.results[] | select(.red == false and .green == false) | .reason]')" \
+    = '["test command unresolved (status unresolved)","test command unresolved (status unresolved)"]' ]
+
+  # {files} の語が無い files_command は、テストファイルを渡せないので実行しない
+  use_commands 'node --test'
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "t1.test.mjs" "impl1.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "test command unresolved (files_command に {files} の語がちょうど 1 つ無い)" ]
+
+  [ ! -f "$REPO/calls.log" ]
+  [ -f "$REPO/impl1.mjs" ] && [ -f "$REPO/impl2.mjs" ]
 }

@@ -166,13 +166,7 @@ function validatePrerunSetup(raw, issue) {
   if (typeof raw.deps.note !== 'string') fail('deps.note', raw.deps.note);
   if (!isPlainObject(raw.stack)) fail('stack', raw.stack);
   if (!Array.isArray(raw.stack.frameworks)) fail('stack.frameworks', raw.stack.frameworks);
-  if (!Array.isArray(raw.stack.test_runners)) fail('stack.test_runners', raw.stack.test_runners);
   const isStringList = (v) => Array.isArray(v) && v.every(isNonEmptyString);
-  raw.stack.test_runners.forEach((r, i) => {
-    if (!isPlainObject(r) || !isNonEmptyString(r.runner) || !isStringList(r.accept) || !isStringList(r.exclude) || typeof r.command !== 'string') {
-      fail(`stack.test_runners[${i}]`, r);
-    }
-  });
   if (!isPlainObject(raw.analyze)) fail('analyze', raw.analyze);
   if (typeof raw.analyze.ok !== 'boolean') fail('analyze.ok', raw.analyze.ok);
   if (raw.analyze.ok === false && !isNonEmptyString(raw.analyze.reason)) fail('analyze.reason', raw.analyze.reason);
@@ -188,7 +182,6 @@ function validatePrerunSetup(raw, issue) {
   if (!isNonEmptyString(raw.branch) && raw.branch_format != null) fail('branch', raw.branch);
   const branch = isNonEmptyString(raw.branch) ? raw.branch : `feature/issue-${issue}`;
   const frameworks = raw.stack.frameworks.filter((f) => typeof f === 'string');
-  const testRunners = raw.stack.test_runners.map((r) => ({ runner: r.runner, accept: [...r.accept], exclude: [...r.exclude], command: r.command }));
   const ciVerify = normalizeCiVerify(raw.ci_verify);
   const localVerify = normalizeLocalVerify(raw.local_verify);
   const prTitleFormat = normalizePrTitleFormat(raw.pr_title_format);
@@ -201,7 +194,6 @@ function validatePrerunSetup(raw, issue) {
     repo,
     deps: { ok: raw.deps.ok, note: raw.deps.note },
     frameworks,
-    testRunners,
     analyze: raw.analyze,
     epoch: raw.epoch,
     epoch_end: raw.epoch_end,
@@ -288,14 +280,22 @@ function hasNextJs(frameworks) {
   return Array.isArray(frameworks) && frameworks.includes('next');
 }
 
-function testDiscoveryNote(testRunners) {
-  const head = 'test_discovery（repo の既存設定から決定論で判定したテストランナー。redgreen-verify は同じ判定で各ファイルのランナーを選んで red→green を実行し、'
-    + 'どの runner にも当たらないファイルはランナー未検出として拒否する）: ';
-  if (!Array.isArray(testRunners) || testRunners.length === 0) {
-    return head + 'ランナー検出なし — test_files を挙げず verified_by は "inspection" にせよ。\n';
+function testDiscoveryNote(testCommands) {
+  const head = 'test_discovery（Setup が base ブランチの tree から解決したテストコマンド。redgreen-verify は test_files をこの形でだけ実行して red→green を測る）: ';
+  const tc = testCommands;
+  const tail = '（テストと実装の混在ファイルも挙げない）。\n';
+  const resolved = tc != null && tc.status === 'resolved' && isNonEmptyString(tc.commands_file);
+  const sources = resolved && Array.isArray(tc.sources) ? tc.sources.join(', ') : '';
+  if (resolved && tc.source === 'runners') {
+    return head + `解決元は base の tests/run-*.sh（${sources}）。各 script に test_files の一覧を DEVFLOW_TEST_FILES で渡して実行する — `
+      + 'test_files はこれらの script が扱うテストファイルに限れ' + tail;
   }
-  return head + 'test_files は次のいずれかの runner の accept に一致し exclude に一致しないファイルに限れ（テストと実装の混在ファイルも挙げない）:\n'
-    + JSON.stringify(testRunners) + '\n';
+  if (resolved && isNonEmptyString(tc.files_command)) {
+    const from = tc.source === 'user_config' ? 'user 設定' : `resolver（根拠: ${sources}）`;
+    return head + `解決元は ${from}。\`${tc.files_command}\` の {files} に test_files を入れて実行する — `
+      + 'test_files はこのコマンドで実行できるテストファイルに限れ' + tail;
+  }
+  return head + 'テストコマンド未解決 — test_files を挙げず verified_by は "inspection" にせよ。\n';
 }
 // ==== END inline: _lib/prerun-setup.mjs ====
 
@@ -2675,7 +2675,7 @@ async function failOpenAgent(prompt, opts) {
 let WT // Setup で確定
 let DEPS_NOTE = '' // Setup(deps) で確定。install 失敗/未確認時のみ非空（fail-open）
 let TURBOPACK_NOTE = '' // Setup(stack) で確定。対象 repo が Next.js のときのみ Turbopack fallback 規約の本文、それ以外は空文字
-let TEST_DISCOVERY_NOTE = '' // Setup(stack) で確定。evaluator の test_files 受理条件（args.setup.stack.test_runners = detect-test-runner の判定）
+let TEST_DISCOVERY_NOTE = '' // Setup（テストコマンドの解決後）で確定。evaluator の test_files 受理条件（解決したテストコマンドと解決元）
 let DELETION_HINT_NOTE = '' // Implement で確定。ファイル削除を理由に guard_blocked で止まった run のみ GIT_RM_DELETION_HINT、それ以外は空文字
 
 // sandbox 内の `next build`（Turbopack）は TurbopackInternalError (os error 1) で決定的に落ちるので、`next build --webpack`
@@ -2724,10 +2724,6 @@ TURBOPACK_NOTE = hasNextJs(PRERUN.frameworks) ? TURBOPACK_FALLBACK_CONVENTION : 
 log(hasNextJs(PRERUN.frameworks)
   ? 'Setup(stack): Next.js 検出 — Turbopack fallback 規約を implementer / evaluator prompt へ注入'
   : `Setup(stack): Next.js 非検出（frameworks=${JSON.stringify(PRERUN.frameworks)}）— Turbopack fallback 規約は注入しない`)
-// redgreen-verify と同じ判定元（detect-test-runner）の受理パターンを渡す — 固定 glob だと受理されない test_files を申告して
-// red→green が成立しない。
-TEST_DISCOVERY_NOTE = testDiscoveryNote(PRERUN.testRunners)
-log(`Setup(stack): test runners=${JSON.stringify(PRERUN.testRunners.map((r) => r.runner))}`)
 const branch = PRERUN.branch
 const setup = PRERUN
 // isolation probe は analyze ゲート判定の後に spawn する（人間へ返す run に spawn を使わない）。
@@ -2872,6 +2868,8 @@ try {
   TEST_COMMANDS = unresolvedTestCommands(null, null, `dev-flow-test-commands が throw（${e && e.message ? e.message : e}）`)
 }
 if (TEST_COMMANDS.source == null) log(`⚠️ テストコマンドを解決できなかった（${TEST_COMMANDS.error}）— run-tests は base の tests/run-*.sh だけを見る`)
+// redgreen-verify は解決したテストコマンドの形でだけ test_files を実行するので、evaluator にも同じ解決結果を渡す
+TEST_DISCOVERY_NOTE = testDiscoveryNote(TEST_COMMANDS)
 
 // 実装 spawn と test ⇄ green-fix ループ（Implement・Validate・empty-diff retry・local-verify / AC コマンドの差し戻し）は
 // Evaluate と共有する（_lib/implement-loop.mjs。dev-flow-evaluate.js も同じ canonical を inline する）。注記は spawn ごとに

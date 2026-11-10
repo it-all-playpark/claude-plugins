@@ -144,7 +144,7 @@ test('[observational-ac] (H) fix 後の final evaluator が test で確かめた
   const rg = rgFinalCalls(calls);
   assert.equal(rg.length, 1, `redgreen-final が 1 回走らない: ${calls.map((c) => c.label).join(', ')}`);
   assert.equal(rg[0].agentType, 'dev-flow:dev-runner-haiku');
-  assert.equal(rg[0].prompt.split('\n')[1], "redgreen-verify start --state-dir /tmp/rg-state --base origin/main /tmp/wt 'src/x.test.ts' 'src/x.ts'");
+  assert.equal(rg[0].prompt.split('\n')[1], "redgreen-verify start --state-dir /tmp/rg-state --base origin/main --commands /tmp/test-commands-Stub01/commands.json /tmp/wt 'src/x.test.ts' 'src/x.ts'");
   // Evaluate と Final reconcile で同じ state dir を使う（同じ dir の start が前の実行の残りを止める）
   assert.equal(calls.filter((c) => c.label === 'rg-state-dir').length, 1);
   // final evaluator に観測型 AC の扱いと test_files の受理条件を渡す
