@@ -108,9 +108,11 @@ test('[ac-actor] ci の AC: CI の結果で ac_results を置き換え、success
   assert.equal(pending[1].satisfied, false);
   assert.equal(pending[1].ci, true);
   assert.equal(pending[1].verified_by, 'ci');
+  assert.equal(pending[1].ci_pending, true);
   assert.deepEqual(unsatisfiedAcByActor(pending, actors), { agent: [], human: [], ci: [1] });
   const passed = applyCiAcResults(evalResults, actors, { status: 'passed', checks: ['e2e'], urls: ['https://github.com/o/r/actions/runs/2/job/22'] });
   assert.equal(passed[1].satisfied, true);
+  assert.equal(passed[1].ci_pending, undefined);
   assert.match(passed[1].evidence, /e2e.*success.*runs\/2\/job\/22/);
   assert.deepEqual(unsatisfiedCiAcIndexes(actors, { status: 'passed' }), []);
   for (const status of ['pending', 'failed', 'error', 'not_run']) assert.deepEqual(unsatisfiedCiAcIndexes(actors, { status }), [1], status);

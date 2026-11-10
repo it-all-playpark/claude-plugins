@@ -740,7 +740,8 @@ function applyCiAcResults(acResults, actors, ciVerify) {
   const satisfied = ciVerify?.status === 'passed'
   const kept = acResults.filter((r) => !(r && Number.isInteger(r.ac_index) && ci.includes(r.ac_index)))
   const verifiedBy = ciVerify?.source === 'local' ? 'local' : 'ci'
-  const ciResults = ci.map((i) => ({ ac_index: i, satisfied, verified_by: verifiedBy, ci: true, evidence }))
+  const pending = ciVerify == null ? { ci_pending: true } : {}
+  const ciResults = ci.map((i) => ({ ac_index: i, satisfied, verified_by: verifiedBy, ci: true, ...pending, evidence }))
   return [...kept, ...ciResults].sort((a, b) => (Number.isInteger(a?.ac_index) ? a.ac_index : Infinity) - (Number.isInteger(b?.ac_index) ? b.ac_index : Infinity))
 }
 
@@ -2530,7 +2531,9 @@ function acRows(req, acResults, acStale) {
     return {
       text: str(ac).trim(),
       gist: r ? str(r.gist) : '',
-      result: acStale === true ? PR_BODY_AC_STALE : !r ? PR_BODY_AC_UNVERIFIED : r.satisfied === true ? '✅' : '❌',
+      result: acStale === true ? PR_BODY_AC_STALE
+        : !r || r.ci_pending === true ? PR_BODY_AC_UNVERIFIED
+        : r.satisfied === true ? '✅' : '❌',
       evidence: !judged ? '' : tests.length ? tests.map((f) => `\`${f}\``).join(', ') : str(r.evidence),
       checked: judged && r.satisfied === true,
     };

@@ -1626,7 +1626,9 @@ function acRows(req, acResults, acStale) {
     return {
       text: str(ac).trim(),
       gist: r ? str(r.gist) : '',
-      result: acStale === true ? PR_BODY_AC_STALE : !r ? PR_BODY_AC_UNVERIFIED : r.satisfied === true ? '✅' : '❌',
+      result: acStale === true ? PR_BODY_AC_STALE
+        : !r || r.ci_pending === true ? PR_BODY_AC_UNVERIFIED
+        : r.satisfied === true ? '✅' : '❌',
       evidence: !judged ? '' : tests.length ? tests.map((f) => `\`${f}\``).join(', ') : str(r.evidence),
       checked: judged && r.satisfied === true,
     };

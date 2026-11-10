@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { applyCiAcResults } from './ac-actor.mjs';
 import {
   buildCommitMessage,
   buildPrBody,
@@ -616,6 +617,25 @@ test('[pr-artifacts] PR body: satisfied:false の AC は ❌ で checkbox は [ 
   });
   assert.deepEqual(acTableRows(body), [['AC-1', 'g1', '❌', 'e1'], ['AC-2', 'g2', '✅', 'e2']]);
   assert.equal(detailsOf(body, '受入条件'), '- [ ] AC one\n- [x] AC two');
+});
+
+test('[pr-artifacts] PR body: CI 判定前（Evaluate 時点の applyCiAcResults(…, null)）の ci AC は ❌ ではなく ⚠️ 未検証で checkbox は [ ]', () => {
+  const actors = ['agent', 'ci'];
+  const evalResults = [{ ac_index: 0, gist: 'g1', satisfied: true, evidence: 'e1' }, { ac_index: 1, gist: 'g2', satisfied: true, evidence: 'e2' }];
+  const build = (ciVerify) => buildPrBody({
+    ...INPUT,
+    ledger: ledger(),
+    acResults: applyCiAcResults(evalResults, actors, ciVerify),
+    testsurfHits: [],
+    dangerHits: [],
+  });
+  const before = build(null);
+  assert.equal(acTableRows(before)[0][2], '✅');
+  assert.equal(acTableRows(before)[1][2], PR_BODY_AC_UNVERIFIED);
+  assert.equal(detailsOf(before, '受入条件'), '- [x] AC one\n- [ ] AC two');
+  // CI の判定後は未達なら ❌、success なら ✅
+  assert.equal(acTableRows(build({ status: 'failed', checks: ['e2e'] }))[1][2], '❌');
+  assert.equal(acTableRows(build({ status: 'passed', checks: ['e2e'] }))[1][2], '✅');
 });
 
 test('[pr-artifacts] PR body: acStale は全 AC の結果を ⚠️ 修正後に未再評価 にし、修正前の ✅ / ❌ と根拠を残さず checkbox はすべて [ ]', () => {

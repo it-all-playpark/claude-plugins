@@ -126,7 +126,8 @@ export const PR_BODY_AC_STALE = '⚠️ 修正後に未再評価';
 const PR_BODY_AC_EMPTY_CELL = '—';
 
 // AC ごとの表示状態（表と `<details>` の checkbox が同じ値を使う）。acStale の run は判定を持ち越さず、要旨（AC の言い換えで
-// 修正に依らない）だけを残す。
+// 修正に依らない）だけを残す。ci_pending の結果（ci AC の CI 判定前。applyCiAcResults が付ける）は未達ではないので
+// ❌ にせず未検証にする — fixes_applied=0 の run は本文を作り直さず、CI が通っても ❌ が残るため。
 function acRows(req, acResults, acStale) {
   const results = arr(acResults);
   return arr(req?.acceptance_criteria).map((ac, i) => {
@@ -136,7 +137,9 @@ function acRows(req, acResults, acStale) {
     return {
       text: str(ac).trim(),
       gist: r ? str(r.gist) : '',
-      result: acStale === true ? PR_BODY_AC_STALE : !r ? PR_BODY_AC_UNVERIFIED : r.satisfied === true ? '✅' : '❌',
+      result: acStale === true ? PR_BODY_AC_STALE
+        : !r || r.ci_pending === true ? PR_BODY_AC_UNVERIFIED
+        : r.satisfied === true ? '✅' : '❌',
       evidence: !judged ? '' : tests.length ? tests.map((f) => `\`${f}\``).join(', ') : str(r.evidence),
       checked: judged && r.satisfied === true,
     };
