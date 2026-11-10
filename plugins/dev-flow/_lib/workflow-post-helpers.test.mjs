@@ -9,7 +9,7 @@
 // (削除) L104 'shell（echo/printf/heredoc 等）へ' — 唯一の assert だった test ごと削除
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { bodySaveInstr, ghBareStepInstr, POST_RESULT, JOURNAL_RESULT } from './workflow-post-helpers.mjs';
+import { bodySaveInstr, ghBareStepInstr, POST_RESULT } from './workflow-post-helpers.mjs';
 
 const SAMPLE_BODY = '## PR サマリー\n\nこれはサンプル本文です。\n```js\nconst x = 1;\n```';
 const BODY_FILE = '/wt/.devflow-tmp/dev-flow-summary.md';
@@ -114,24 +114,4 @@ test('POST_RESULT — properties に method がある', () => {
 
 test('POST_RESULT — properties に url がある', () => {
   assert.ok('url' in POST_RESULT.properties, 'POST_RESULT.properties.url が存在しない');
-});
-
-// -----------------------------------------------------------------------
-// JOURNAL_RESULT schema
-// -----------------------------------------------------------------------
-
-test('JOURNAL_RESULT — type は "object"', () => {
-  assert.equal(JOURNAL_RESULT.type, 'object');
-});
-
-test('JOURNAL_RESULT — required は ["logged"] のみ', () => {
-  assert.deepEqual(JOURNAL_RESULT.required, ['logged']);
-});
-
-test('JOURNAL_RESULT — properties に logged がある', () => {
-  assert.ok('logged' in JOURNAL_RESULT.properties, 'JOURNAL_RESULT.properties.logged が存在しない');
-});
-
-test('JOURNAL_RESULT — properties に summary がある', () => {
-  assert.ok('summary' in JOURNAL_RESULT.properties, 'JOURNAL_RESULT.properties.summary が存在しない');
 });

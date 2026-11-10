@@ -7,7 +7,6 @@ import {
   classifyMergeTier,
   newlyUncheckedSecClasses,
   classifyMergeableState,
-  HOLD_REASON_KINDS,
   HOLD_REASON_CODES,
   aggregateHoldKind,
   EVAL_STALENESS_VALUES,
@@ -999,10 +998,6 @@ function baseCleanInput(overrides) {
     ...overrides,
   };
 }
-
-test('HOLD_REASON_KINDS は [\'deterministic_recheck\', \'human_judgment\'] と一致', () => {
-  assert.deepEqual(HOLD_REASON_KINDS, ['deterministic_recheck', 'human_judgment']);
-});
 
 test('aggregateHoldKind: 空配列/非配列 → null', () => {
   assert.equal(aggregateHoldKind([]), null);

@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
-  PRERUN_SETUP_REQUIRED,
   PRERUN_MISSING_MSG,
   rejectLegacyBaseArg,
   validatePrerunSetup,
@@ -241,12 +240,6 @@ test('validatePrerunSetup: branch_format を設定した setup は prerun の br
 test('validatePrerunSetup: 未知キーがあっても throw しない', () => {
   const raw = validRaw({ unknown_extra_key: 'anything' });
   assert.doesNotThrow(() => validatePrerunSetup(raw, 641));
-});
-
-// ── PRERUN_SETUP_REQUIRED ───────────────────────────────────────────────────
-
-test('PRERUN_SETUP_REQUIRED: 必須キー一覧を定義する', () => {
-  assert.deepEqual(PRERUN_SETUP_REQUIRED, ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer', 'hooks_not_running']);
 });
 
 // ── rejectLegacyBaseArg ──────────────────────────────────────────────────────

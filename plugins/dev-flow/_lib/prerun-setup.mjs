@@ -27,8 +27,6 @@
 // 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 // 制約: ESM import / require / Date.now / Math.random を含めない。export function / export const のみ。
 
-export const PRERUN_SETUP_REQUIRED = ['ok', 'issue', 'base', 'worktree', 'head', 'deps', 'stack', 'analyze', 'epoch', 'epoch_end', 'ci_wait_ceiling_seconds', 'security_reviewer', 'hooks_not_running'];
-
 // security_reviewer の閉じた enum（pr-iterate の args.security_reviewer と同じ値）
 export const SECURITY_REVIEWERS = ['claude', 'codex'];
 

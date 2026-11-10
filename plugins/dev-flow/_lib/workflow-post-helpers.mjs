@@ -14,15 +14,6 @@ export const POST_RESULT = {
   },
 }
 
-export const JOURNAL_RESULT = {
-  type: 'object',
-  required: ['logged'],
-  properties: {
-    logged: { type: 'boolean' },
-    summary: { type: 'string' },
-  },
-}
-
 /**
  * PR/Issue コメント本文保存の agent 向け instruction を生成する。
  * 本文は事前に作られていない固定パスへ Write tool で新規作成させる。一時ファイルを shell で先に

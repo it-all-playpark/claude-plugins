@@ -134,6 +134,75 @@ skills_target_for() {
     esac
 }
 
+# 逆参照の検査: <plugins_root>/<plugin>/bin の各 entry について、bare 名が plugins_root 配下の
+# 非テストファイル（*.bats・*.test.mjs・*.test.sh・test-helpers/ と tests/ 配下を除く）のうち、
+# その plugin の bin/ と wrapper の実行対象ファイル以外のどれかに語として現れるかを調べ、
+# 現れない wrapper を `<plugin>/bin/<name>` の形で 1 行ずつ出す（1 本でもあれば exit 1）。
+# 最後の呼び出し元を消した変更を落とすためのもので、README・docs・tests/ は plugins_root の外なので数えない。
+# 語の境界は英数字・`_`・`-` 以外（`ci-wait` が `priterate-ci-wait-loop` に一致しないようにする）。
+unreferenced_wrappers() {
+    local root="$1"; shift
+    local list plugin name file target found=0
+    list="$(mktemp "${TMPDIR:-/tmp}/binwrap-files-XXXXXX")"
+    # root からの相対パスで絞る（root より上のディレクトリ名が tests でも巻き込まない）
+    (cd "$root" && find . -type f \
+        ! -name '*.bats' ! -name '*.test.mjs' ! -name '*.test.sh' \
+        ! -path '*/test-helpers/*' ! -path '*/tests/*' ! -path '*/node_modules/*') > "$list"
+    for plugin in "$@"; do
+        for file in "$root/$plugin/bin"/*; do
+            [ -f "$file" ] || continue
+            name="$(basename "$file")"
+            # exec 行の `$(dirname "$0")/../<target>` から実行対象を取る
+            target="$(sed -n 's|.*\$(dirname "\$0")/\.\./\([^"]*\)".*|\1|p' "$file" | head -n 1)"
+            if ! grep -v -F -e "./$plugin/bin/" "$list" \
+                | grep -v -x -F -e "./$plugin/$target" \
+                | tr '\n' '\0' \
+                | (cd "$root" && xargs -0 grep -l -I -E -e "(^|[^A-Za-z0-9_-])${name}(\$|[^A-Za-z0-9_-])" 2>/dev/null) \
+                | grep -q .; then
+                echo "$plugin/bin/$name"
+                found=1
+            fi
+        done
+    done
+    rm -f "$list"
+    [ "$found" -eq 0 ]
+}
+
+@test "全wrapperの bare 名が plugins/ 配下の実行経路（非テスト・自 plugin の bin/ と実行対象以外）から参照されている" {
+    run unreferenced_wrappers "$REPO_ROOT/plugins" playpark-core dev-flow playpark-skills
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "逆参照の検査は、どこからも参照されない wrapper の名前を出して失敗し、参照を 1 つ足すと成功する" {
+    d="$(mktemp -d "${TMPDIR:-/tmp}/binwrap-ref-XXXXXX")"
+    TEST_TMP_DIRS+=("$d")
+    mkdir -p "$d/p/bin" "$d/p/scripts" "$d/p/tests" "$d/p/test-helpers" "$d/q/skill"
+    printf '%s\n' '#!/usr/bin/env bash' '# used' 'exec bash "$(dirname "$0")/../scripts/used.sh" "$@"' > "$d/p/bin/used-tool"
+    printf '%s\n' '#!/usr/bin/env bash' '# orphan-tool' 'exec bash "$(dirname "$0")/../scripts/orphan.sh" "$@"' > "$d/p/bin/orphan-tool"
+    printf '%s\n' '# used-tool の本体' > "$d/p/scripts/used.sh"
+    printf '%s\n' '# orphan-tool の本体' > "$d/p/scripts/orphan.sh"
+    printf '%s\n' 'used-tool --flag' > "$d/q/skill/SKILL.md"
+    # 参照に数えないもの: 自 plugin の bin/（他の wrapper）・実行対象・テスト・名前を含むだけの別の語
+    printf '%s\n' '# see orphan-tool' >> "$d/p/bin/used-tool"
+    printf '%s\n' 'orphan-tool' > "$d/p/scripts/orphan.bats"
+    printf '%s\n' 'orphan-tool' > "$d/p/scripts/orphan.test.sh"
+    printf '%s\n' 'orphan-tool' > "$d/p/scripts/orphan.test.mjs"
+    printf '%s\n' 'orphan-tool' > "$d/p/tests/run.sh"
+    printf '%s\n' 'orphan-tool' > "$d/p/test-helpers/stub.sh"
+    printf '%s\n' 'my-orphan-tool orphan-tool-2 orphan-tool_x' > "$d/q/skill/notes.md"
+
+    run unreferenced_wrappers "$d" p
+    [ "$status" -eq 1 ]
+    [ "$output" = "p/bin/orphan-tool" ]
+
+    printf '%s\n' 'run `orphan-tool` first' >> "$d/q/skill/SKILL.md"
+    run unreferenced_wrappers "$d" p
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
 @test "plugins/playpark-core/bin の entry は journal 1本と完全一致する" {
     expected="$(core_expected_names)"
     actual="$(/bin/ls -1 "$REPO_ROOT/plugins/playpark-core/bin" | sort)"

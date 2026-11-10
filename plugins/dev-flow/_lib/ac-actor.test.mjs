@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AC_ACTORS, AC_SCOPES, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, deterministicAcIndexes, demoteUnprovenObservationalAc, isReimplUnfixableGap, proofMissingAgentAcIndexes, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap, freezeAcVerify, acVerifyCandidateIndexes, testRunAcDisclosures } from './ac-actor.mjs';
+import { AC_ACTORS, AGENT_AC_REIMPL_MAX, classifyAcActor, acActorsOf, unsatisfiedAcByActor, agentAcFeedback, matchesCiVerify, ciAcIndexes, applyCiAcResults, unsatisfiedCiAcIndexes, dropCiAcFeedback, classifyAcScope, mixedScopeAcReasons, deterministicAcIndexes, demoteUnprovenObservationalAc, isReimplUnfixableGap, proofMissingAgentAcIndexes, resolveAcObservational, acObservationalPrompt, hasJudgedHumanAcGap, freezeAcVerify, acVerifyCandidateIndexes, testRunAcDisclosures } from './ac-actor.mjs';
 import { KNOWN_OBSERVATIONAL_ACS } from './test-helpers/observational-ac-controls.mjs';
 
 // repo 内外が混ざった AC（テスト・README・rules の削除と dotfiles の excludedCommands の変更を 1 つに書いたもの）
@@ -213,7 +213,6 @@ test('[ac-actor] agentAcFeedback: evaluator feedback と同じ形で AC 番号�
 });
 
 test('[ac-scope] repo 外の目印と repo 内の目印が 1 つの AC にあれば mixed、repo 外だけなら external、どちらも無ければ repo', () => {
-  assert.deepEqual(AC_SCOPES, ['repo', 'external', 'mixed']);
   assert.equal(classifyAcScope(MIXED_AC), 'mixed');
   assert.equal(classifyAcScope(EXTERNAL_AC), 'external');
   assert.equal(classifyAcScope('worker 数の上限を設定で変えられる'), 'repo');

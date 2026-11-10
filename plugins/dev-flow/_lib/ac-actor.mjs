@@ -94,8 +94,6 @@ const HUMAN_AC_PATTERNS = [
 // 解釈せず、生のバッククォートを template literal の開始と読むため）。
 const INLINE_CODE_RE = /\x60[^\x60]*\x60/g
 
-export const AC_SCOPES = ['repo', 'external', 'mixed']
-
 // repo 外を指す目印。g 付きで持ち、判定にも除去にも replace / match だけを使う（test() は lastIndex を持ち越すため使わない）。
 // ownedBy: 対象 repo の名前（owner/name の name）がこれと一致するときは repo 内のものとして数えない。
 const EXTERNAL_AC_PATTERNS = [

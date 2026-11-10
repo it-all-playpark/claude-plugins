@@ -2,7 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   isTestFilePath, classifyGreenFixDiff, isRecheckCandidate, recheckTargets, planRecheck, greenFixRecheckItems,
-  GREEN_FIX_RECHECK_MODES, RECHECK_RESOLUTIONS,
+  RECHECK_RESOLUTIONS,
 } from './post-eval-recheck.mjs';
 import { GATE_POLICIES, gateLane } from './gate-policy.mjs';
 
@@ -20,7 +20,6 @@ test('isTestFilePath: テストファイルとそれ以外', () => {
 test('classifyGreenFixDiff: hit 0 かつテストファイルだけなら assert_only', () => {
   const r = classifyGreenFixDiff({ files: ['tests/a.test.ts', 'tests/b.bats'], truncated: false, risk: { ok: true, hits: [{ class: 'auth', file: 'src/other.ts' }] } });
   assert.deepEqual(r, { mode: 'assert_only', reason: 'test_only_clean', hits: [] });
-  assert.ok(GREEN_FIX_RECHECK_MODES.includes(r.mode));
 });
 
 test('classifyGreenFixDiff: 差分ファイルに hit（test-weakening / danger）があれば full', () => {
