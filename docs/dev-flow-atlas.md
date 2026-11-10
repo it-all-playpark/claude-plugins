@@ -137,7 +137,7 @@ Setup 末尾の analyze ゲート直後に issue から単一 task の plan を�
 shape はこの時点では決まっていない — Diff triage で realized diff から決める）。
 合成 task の `file_changes` は空で始まり、Implement の返却 `files` を宣言として取り込む。
 
-`dev-implementer`（plan+impl 統合、frontmatter opus）を単一 worktree に 1 spawn する。parallel fan-out・
+`dev-implementer`（plan+impl 統合、frontmatter fable）を単一 worktree に 1 spawn する。parallel fan-out・
 issue 分割・integration branch は使わない。
 
 ```mermaid

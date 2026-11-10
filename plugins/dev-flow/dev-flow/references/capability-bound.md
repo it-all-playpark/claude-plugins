@@ -138,7 +138,7 @@ report と比べて読む。
 
 - **何をするか**: 各 subagent の model・effort・`maxTurns` は `agents/` の frontmatter で決める（値は `_lib/agent-frontmatter.test.mjs` が
   pin）。call site は effort を opts で渡さず、品質ゲート agent（evaluator・pr-reviewer・security-reviewer）には `opts.model` も渡さない
-  （rules）。override は Validate の green-fix だけで、`dev-implementer` を sonnet で起動する（`_lib/impl-model-opus.test.mjs` が pin）。
+  （rules）。override は Validate の green-fix だけで、`dev-implementer` を sonnet で起動する（`_lib/impl-model-default.test.mjs` が pin）。
   pr-iterate の fix は専用の `pr-fixer` の frontmatter で起動する
 - **なぜ**: 判定の精度・完走率と所要・コストの釣り合いは、モデル世代ごとに変わる。green-fix は環境起因の blocker 報告か小さな
   test script の修正が中心で implementer と同じ推論を要さず、green-fix が入った run は Evaluate のテスト弱体化監査が強制される。

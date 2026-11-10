@@ -185,7 +185,7 @@ whitelist 検証してゲート（AC 空 / comment_conflicts 非空 / uncertain 
 needs_clarification で終端する）。ゲートを通過したら、全 AC を AC の文面と issue タイトルだけを読む分類 agent
 （`ac-observational#N`）に 1 回で渡し、観測型の判定と AC が指定した検証コマンドを受け取る（判定できない AC・agent の
 失敗は観測型として扱う）。ゲート直後に issue から単一 task の plan を合成するだけ（Plan phase は
-持たず、planner 系 agent は起動しない）で、Implement で `dev-implementer`（plan+impl 統合、opus / high）を
+持たず、planner 系 agent は起動しない）で、Implement で `dev-implementer`（plan+impl 統合、fable / medium）を
 1 spawn する。BLOCKED 再実装（`reimpl-blocked#b`）・Validate の green-fix・Evaluate の差し戻し（`reimpl#i`）も
 同じ agent への再 spawn。shape（micro / standard / complex）は analyze ゲートでは決めず、Diff triage で
 realized diff の file 数 + AC 数 / issue_type / 構造化 breaking_change から決定論に決める

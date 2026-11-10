@@ -1,13 +1,13 @@
-// dev-implementer の既定 model が frontmatter の opus であることを dev-flow.js 全体の VM 実行で pin する（issue #705）。
+// dev-implementer の既定 model が frontmatter（fable）であることを dev-flow.js 全体の VM 実行で pin する（issue #705）。
 //
 //   (b) call site: Implement（impl）・BLOCKED 再実装（reimpl-blocked#b）・Evaluate 差し戻し（reimpl#i）・
 //       empty-diff 差し戻し（reimpl-empty-diff）の dev-implementer call は opts に model キーを持たない
 //       （frontmatter 既定で起動）。model を渡すのは green-fix#i / green-fix#retry-i の 'sonnet' だけ
 //   (c) implementer の null は再試行されず 1 回で drop に計上される
 //   (d) micro / standard / complex の spawn 数・Evaluate 回数が fallback 撤去前から journal handoff の 1 spawn 化分だけ減った値と一致する
-//   (e) telemetry: impl_model_config は成功 / failure / abort の 3 経路で 'opus'
+//   (e) telemetry: impl_model_config は成功 / failure / abort の 3 経路で 'fable'
 //
-// frontmatter 値（model: opus / effort: high）と impl_model_config リテラルの一致は review-model-frontmatter.test.mjs (d)。
+// frontmatter 値（model: fable / effort: medium）と impl_model_config リテラルの一致は review-model-frontmatter.test.mjs (d)。
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -44,7 +44,7 @@ async function runFlow(overrides = {}, extra = {}) {
     extra,
   });
   const { result, error } = await runWorkflowCapture(src, ctx);
-  assertNoCrash(error, 'impl-model-opus');
+  assertNoCrash(error, 'impl-model-default');
   return { calls, logs, result, error, journalPrompts };
 }
 
@@ -70,7 +70,7 @@ const IMPL_ROUTES = {
 };
 
 for (const [label, route] of Object.entries(IMPL_ROUTES)) {
-  test(`[impl-model-opus] (b) ${label} は dev-implementer を model 指定なし（frontmatter 既定 opus）で spawn する`, async () => {
+  test(`[impl-model-default] (b) ${label} は dev-implementer を model 指定なし（frontmatter 既定 fable）で spawn する`, async () => {
     const { calls, error } = await runFlow(route.overrides, route.extra ?? {});
     assert.equal(error, null, `run が throw した: ${error?.message}`);
     const hit = byLabel(calls, label);
@@ -82,7 +82,7 @@ for (const [label, route] of Object.entries(IMPL_ROUTES)) {
   });
 }
 
-test('[impl-model-opus] (b) green-fix#1 / green-fix#retry-1 だけが model:sonnet を明示する', async () => {
+test('[impl-model-default] (b) green-fix#1 / green-fix#retry-1 だけが model:sonnet を明示する', async () => {
   const red = { tests: 'failed', green: false, summary: 'assert mismatch' };
   const first = await runFlow({ 'test#1': red, 'green-fix#1': IMPL_DONE() });
   assert.equal(first.error, null, `run が throw した: ${first.error?.message}`);
@@ -99,7 +99,7 @@ test('[impl-model-opus] (b) green-fix#1 / green-fix#retry-1 だけが model:sonn
   }
 });
 
-test('[impl-model-opus] (c) impl:serial:issue-1 の null は再試行されず 1 回で drop に計上される', async () => {
+test('[impl-model-default] (c) impl:serial:issue-1 の null は再試行されず 1 回で drop に計上される', async () => {
   const { calls, logs, error } = await runFlow({ 'impl:serial:issue-1': null });
   assert.equal(error, null, `run が throw した: ${error?.message}`);
   const impl = byLabel(calls, 'impl:serial:issue-1');
@@ -149,7 +149,7 @@ const SHAPES = {
 };
 
 for (const [shape, exp] of Object.entries(SHAPES)) {
-  test(`[impl-model-opus] (d) ${shape}: spawn 数 ${exp.total}・Evaluate ${exp.evals} 回`, async () => {
+  test(`[impl-model-default] (d) ${shape}: spawn 数 ${exp.total}・Evaluate ${exp.evals} 回`, async () => {
     const { ctx, calls } = makeDevFlowSandbox({ overrides: exp.overrides, extra: { args: exp.args } });
     const { result, error } = await runWorkflowCapture(src, ctx);
     assert.equal(error, null, `run が throw した: ${error?.message}`);
@@ -180,12 +180,12 @@ const TELEMETRY_ROUTES = {
 };
 
 for (const [route, cfg] of Object.entries(TELEMETRY_ROUTES)) {
-  test(`[impl-model-opus] (e) ${route} run の telemetry: impl_model_config は opus`, async () => {
+  test(`[impl-model-default] (e) ${route} run の telemetry: impl_model_config は fable`, async () => {
     const { journalPrompts, error } = await runFlow(cfg.overrides);
     assert.equal(error != null, cfg.throws, `throw の有無が想定と違う: ${error?.message}`);
     const payload = lastTelemetry(journalPrompts);
     if (route === 'failure') assert.equal(payload.outcome, 'failure');
     if (route === 'abort') assert.equal(payload.error_category, 'abort');
-    assert.equal(payload.telemetry.impl_model_config, 'opus');
+    assert.equal(payload.telemetry.impl_model_config, 'fable');
   });
 }
