@@ -1365,7 +1365,7 @@ async function writeFailureTelemetry({ error_category, error_msg, phase, outcome
     telemetry: {
       eval_model_config: 'opus',
       review_model_config: 'opus',
-      impl_model_config: 'opus',
+      impl_model_config: 'fable',
       plugin_version: PLUGIN_VERSION,
       plugin_commit: PLUGIN_COMMIT,
     },
@@ -2582,7 +2582,8 @@ const ABORT_CTX = { phase: null, label: null, shape: null, failure_recorded: fal
 // `opts.retryOnContractViolation === true` の読み取り専用 probe に限る — 副作用のある call site を再実行すると
 // 二重 push・journal 二重追記・重複コメントを起こす。
 // dev-flow の call site は `opts.model` を渡さず agent frontmatter の既定 model で spawn する
-// （evaluator は opus / medium、pr-reviewer / dev-implementer は opus / high。model を変えるなら agents/*.md の frontmatter を変える）。
+// （evaluator は opus / medium、pr-reviewer は opus / high。dev-implementer は agents/dev-implementer.md の frontmatter。
+// model を変えるなら agents/*.md の frontmatter を変える）。
 // 例外は Validate green-fix の `model: 'sonnet'`（GREEN_FIX_MODEL）だけ。
 async function trackedAgent(prompt, opts) {
   ABORT_CTX.phase = opts?.phase ?? ABORT_CTX.phase; ABORT_CTX.label = opts?.label ?? null;
@@ -3298,7 +3299,7 @@ if (evaluateError) {
       merge_tier: 'HOLD',
       eval_model_config: 'opus',
       review_model_config: 'opus',
-      impl_model_config: 'opus',
+      impl_model_config: 'fable',
       plugin_version: PLUGIN_VERSION,
       plugin_commit: PLUGIN_COMMIT,
       ...(evalFailDurations.duration_seconds != null ? { duration_seconds: evalFailDurations.duration_seconds } : {}),
@@ -3424,7 +3425,7 @@ if (prFailure) {
       ...(prFailVerdict ? { eval_verdict: prFailVerdict } : {}),
       eval_model_config: 'opus',
       review_model_config: 'opus',
-      impl_model_config: 'opus',
+      impl_model_config: 'fable',
       plugin_version: PLUGIN_VERSION,
       plugin_commit: PLUGIN_COMMIT,
       ...(prFailDurations.duration_seconds != null ? { duration_seconds: prFailDurations.duration_seconds } : {}),
@@ -3632,7 +3633,7 @@ const telemetryHandoff = buildJournalHandoffPayload({
     route,  // PR phase 経路識別子（'lite'|'full'）。常時出力
     eval_model_config: 'opus',  // evaluator 系 3 call site（eval#i / final-ac-reconcile / security-clearance-final）の model。override を渡さないので agents/evaluator.md frontmatter の値（一致は review-model-frontmatter.test.mjs が pin）
     review_model_config: 'opus',  // pr-reviewer（pr-review-lite / nested pr-iterate の review#i）の model。override を渡さないので agents/pr-reviewer.md frontmatter の値（一致は review-model-frontmatter.test.mjs が pin）
-    impl_model_config: 'opus',  // dev-implementer の既定 model（agents/dev-implementer.md frontmatter の値、一致は review-model-frontmatter.test.mjs が pin）。green-fix の sonnet override は固定値なのでキーを持たない（世代は plugin_version）
+    impl_model_config: 'fable',  // dev-implementer の既定 model（agents/dev-implementer.md frontmatter の値、一致は review-model-frontmatter.test.mjs が pin）。green-fix の sonnet override は固定値なのでキーを持たない（世代は plugin_version）
     plugin_version: PLUGIN_VERSION,  // _lib/plugin-version.mjs 定数。plugin.json との一致は plugin-version.sync.test.mjs が pin
     plugin_commit: PLUGIN_COMMIT,  // dev-flow-prerun が決めた plugin の commit（12 桁 hex / null）。記録専用
     ...(durations.duration_seconds != null ? { duration_seconds: durations.duration_seconds } : {}),
@@ -3694,7 +3695,7 @@ return { ...finalizeResult, journal_log_status: journalLogStatus, note: finalize
           ...(ABORT_CTX.shape ? { shape: ABORT_CTX.shape } : {}),
           eval_model_config: 'opus',
           review_model_config: 'opus',
-          impl_model_config: 'opus',
+          impl_model_config: 'fable',
           plugin_version: PLUGIN_VERSION,
           plugin_commit: PLUGIN_COMMIT,
         },

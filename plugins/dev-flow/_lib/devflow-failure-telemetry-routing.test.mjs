@@ -216,7 +216,7 @@ const EMPTY_DIFF_REQUIRED_KEYS = [
   '"repo":"acme/skills"',
   '"skill":"dev-flow"',
   '"eval_model_config":"opus"',
-  '"impl_model_config":"opus"',
+  '"impl_model_config":"fable"',
   '"review_model_config":"opus"',
   `"plugin_version":"${PLUGIN_VERSION}"`,
   `"plugin_commit":"${EMPTY_DIFF_COMMIT}"`,

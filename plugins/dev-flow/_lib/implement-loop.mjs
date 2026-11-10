@@ -10,8 +10,8 @@
 // inline 先の workflow で同じ名前に解決する（import できないため。単体テストは globalThis に置く）。
 
 export const IMPL_AGENT = 'dev-implementer'
-// 既定 model は agents/dev-implementer.md の frontmatter（opus。impl_model_config はそのリテラル、review-model-frontmatter.test.mjs が pin）。
-// GREEN_FIX_MODEL: green-fix は opus 級の推論を要さず、green-fix > 0 の run は Evaluate のテスト弱体化監査が強制される。
+// 既定 model は agents/dev-implementer.md の frontmatter（impl_model_config はそのリテラル、review-model-frontmatter.test.mjs が pin）。
+// GREEN_FIX_MODEL: green-fix は implementer と同じ推論を要さず、green-fix > 0 の run は Evaluate のテスト弱体化監査が強制される。
 export const GREEN_FIX_MODEL = 'sonnet'
 export const GREEN_MAX = 3   // test green までの実装差し戻し上限
 

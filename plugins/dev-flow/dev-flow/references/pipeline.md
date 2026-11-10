@@ -38,7 +38,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
 - 起動名は namespaced（`dev-flow:` + 各 workflow の `meta.name`）。telemetry handoff の `skill` は `'dev-flow'` / `'pr-iterate'` のまま
 - `agent()` の agentType は `nsAgentOpts()`（`_lib/agent-namespace.mjs`）でだけ namespace を付ける。判断系 leaf は `agents/` の subagent
 - model・effort は subagent の frontmatter で決め、call site は opts で渡さない。例外は Validate の green-fix の sonnet だけ
-  （`_lib/impl-model-opus.test.mjs`・`_lib/agent-frontmatter.test.mjs` が pin）。割り当ての判断は `capability-bound.md`
+  （`_lib/impl-model-default.test.mjs`・`_lib/agent-frontmatter.test.mjs` が pin）。割り当ての判断は `capability-bound.md`
 - 決定論処理は `bin/` の bare 名の script を dev-runner 系 subagent に実行させる（exec-proxy。`exec-proxy.md`）
 - worktree の後片付けは `_shared/scripts/worktree-teardown.sh`。merge は常に人間
 

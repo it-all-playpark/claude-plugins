@@ -34,15 +34,15 @@ function frontmatter(md, label) {
   return { name: field('name'), model: field('model'), effort: field('effort') };
 }
 
-// ---- (a) agent 定義: dev-implementer.md（model / effort は opus / high のまま）----
+// ---- (a) agent 定義: dev-implementer.md（model / effort は fable / medium）----
 
-test('[implementer-naming] (a) agents/dev-implementer.md の name・見出しが dev-implementer で、model opus / effort high', () => {
+test('[implementer-naming] (a) agents/dev-implementer.md の name・見出しが dev-implementer で、model fable / effort medium', () => {
   assert.ok(!existsSync(join(pluginRoot, 'agents', `${OLD_AGENT}.md`)), `agents/${OLD_AGENT}.md が残っている`);
   const md = readFileSync(join(pluginRoot, 'agents', 'dev-implementer.md'), 'utf8');
   const fm = frontmatter(md, 'dev-implementer.md');
   assert.equal(fm.name, 'dev-implementer');
-  assert.equal(fm.model, 'opus');
-  assert.equal(fm.effort, 'high');
+  assert.equal(fm.model, 'fable');
+  assert.equal(fm.effort, 'medium');
   assert.ok(/^# dev-implementer$/m.test(md), 'dev-implementer.md の見出しが # dev-implementer でない');
 });
 
@@ -76,7 +76,10 @@ test('[implementer-naming] (c) dev-flow.js の実装経路の識別子がモデ�
   ]) {
     assert.ok(runSrc.includes(decl), `dev-flow.js / dev-flow-evaluate.js に ${decl} が無い`);
   }
-  const fableWords = runSrc.match(/fable/gi) ?? [];
+  // telemetry の `*_model_config: '<model>'` は frontmatter の model の転記（一致は review-model-frontmatter.test.mjs (d)）で
+  // 識別子・コメントではないので除く
+  const namingSrc = runSrc.split('\n').map((l) => l.replace(/_model_config: '[^']*'/g, '')).join('\n');
+  const fableWords = namingSrc.match(/fable/gi) ?? [];
   assert.deepEqual(fableWords, [], 'dev-flow.js / dev-flow-evaluate.js に fable の語が残っている');
 });
 
@@ -108,6 +111,7 @@ test('[implementer-naming] (e) Implement 経路の routing test は devflow-impl
 test('[implementer-naming] (f) dev-flow.js の model / effort コメントが frontmatter と一致する', () => {
   const evaluator = frontmatter(readFileSync(join(pluginRoot, 'agents', 'evaluator.md'), 'utf8'), 'evaluator.md');
   const reviewer = frontmatter(readFileSync(join(pluginRoot, 'agents', 'pr-reviewer.md'), 'utf8'), 'pr-reviewer.md');
-  const implDesc = `（evaluator は ${evaluator.model} / ${evaluator.effort}、pr-reviewer / dev-implementer は ${reviewer.model} / ${reviewer.effort}。`;
+  // dev-implementer の値は (c) によりコメントに書かず frontmatter を指す
+  const implDesc = `（evaluator は ${evaluator.model} / ${evaluator.effort}、pr-reviewer は ${reviewer.model} / ${reviewer.effort}。dev-implementer は agents/dev-implementer.md の frontmatter。`;
   assert.ok(devFlowSrc.includes(implDesc), `dev-flow.js の trackedAgent コメントが frontmatter と一致しない（期待: ${implDesc}）`);
 });

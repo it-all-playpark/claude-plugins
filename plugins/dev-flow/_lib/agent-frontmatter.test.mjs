@@ -107,7 +107,7 @@ const AGENTS = [
     name: 'stdout-relay', model: 'haiku', effort: ADOPTED_EFFORT, maxTurns: 'finite',
     tools: { exact: ['Bash'], exclude: ['Read', 'Write', 'Edit', 'Skill', 'TodoWrite', 'Glob', 'Grep'] },
   },
-  { name: 'dev-implementer', effort: 'high' },
+  { name: 'dev-implementer', effort: 'medium' },
   // test-command-resolver は Setup のテストコマンドの解決（issue #1278）。束のファイルを読むだけ（コマンド実行・書き込み・
   // 検索の tool を持たせない — 実行と判定は run-tests、コマンドファイルの書き込みは workflow が検証した後に dev-runner-haiku が行う）
   {

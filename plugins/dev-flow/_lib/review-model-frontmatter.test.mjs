@@ -2,15 +2,15 @@
 // dev-flow / pr-iterate の品質ゲート agent（pr-reviewer / evaluator）は model override を渡さず
 // agents/*.md の frontmatter 既定（evaluator は opus / medium、pr-reviewer は opus / high）で spawn する — これを VM 挙動と静的検査で pin する。
 // model を変える正規経路は frontmatter であり、workflow 側に定数・fallback 機構を持たない。
-// dev-implementer も frontmatter 既定（opus / high）で spawn し、override は green-fix の `model: 'sonnet'`
-// だけ（call site 別の挙動は impl-model-opus.test.mjs が pin）。本ファイルの静的検査は品質ゲート agent の call 行に限定する。
+// dev-implementer も frontmatter 既定（fable / medium）で spawn し、override は green-fix の `model: 'sonnet'`
+// だけ（call site 別の挙動は impl-model-default.test.mjs が pin）。本ファイルの静的検査は品質ゲート agent の call 行に限定する。
 //
 //   (a) DEV_FLOW_SCENARIOS 全 scenario + baseline で観測される pr-reviewer call は opts に `model` キーを持たない
 //   (b) 同じ観測範囲で evaluator call（eval#i / eval-green-fix / final-ac-reconcile / security-clearance-final）も `model` キーを持たない
 //   (c) pr-iterate.js の pr-reviewer call（review#i / schema-retry）も `model` キーを持たない
 //   (d) telemetry の review_model_config / eval_model_config / impl_model_config リテラルは各 agent の frontmatter の
 //       model と一致し、journal 経路（dev-flow: 失敗 / 成功 / abort / PR phase 失敗 / 評価できなかった、pr-iterate: 終端 / abort）全てに載る。
-//       3 agent とも frontmatter は `model: opus`。effort は evaluator のみ `medium`、pr-reviewer / dev-implementer は `high`
+//       frontmatter は pr-reviewer / evaluator が `model: opus`、dev-implementer が `model: fable`。effort は pr-reviewer のみ `high`、evaluator / dev-implementer は `medium`
 //   (e) 各 workflow（dev-flow.js / dev-flow-evaluate.js / dev-flow-finalize.js / pr-iterate.js）の evaluator / pr-reviewer の call site に `model:` が無い（静的）
 
 import { test } from 'vitest';
@@ -103,8 +103,8 @@ test('[review-model] (d) review_model_config / eval_model_config / impl_model_co
   const implFm = frontmatterModel(implementerMd, 'dev-implementer.md');
   assert.equal(reviewerFm, 'opus', 'pr-reviewer.md frontmatter の model は opus のはず');
   assert.equal(evaluatorFm, 'opus', 'evaluator.md frontmatter の model は opus のはず');
-  assert.equal(implFm, 'opus', 'dev-implementer.md frontmatter の model は opus のはず');
-  for (const [md, name, effort] of [[prReviewerMd, 'pr-reviewer.md', 'high'], [evaluatorMd, 'evaluator.md', 'medium'], [implementerMd, 'dev-implementer.md', 'high']]) {
+  assert.equal(implFm, 'fable', 'dev-implementer.md frontmatter の model は fable のはず');
+  for (const [md, name, effort] of [[prReviewerMd, 'pr-reviewer.md', 'high'], [evaluatorMd, 'evaluator.md', 'medium'], [implementerMd, 'dev-implementer.md', 'medium']]) {
     assert.equal(frontmatterField(md, name, 'effort'), effort, `${name} frontmatter の effort は ${effort} のはず`);
   }
   const lines = (src, key) => src.split('\n').filter((l) => l.includes(`${key}:`));
