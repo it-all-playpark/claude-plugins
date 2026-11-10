@@ -128,16 +128,19 @@ export function redgreenStateDirFrom(res) {
 /**
  * base を渡すと `--base <base>` を付け、HEAD と base の merge-base まで impl を戻して red を測らせる
  * （Final reconcile の commit 済み tree 用。Evaluate は未 commit の変更なので省略 = HEAD 基準）。
+ * commandsFile は Setup で解決したテストコマンドのファイル（dev-flow-test-commands の commands_file。run-tests の --commands と
+ * 同じもの）で、redgreen-verify はその形でだけテストを実行する。null なら --commands を付けない（全ペアが入力エラーになる）。
  *
  * @param {string} wt worktree の絶対パス
  * @param {string} stateDir redgreen-verify state-dir が作ったパス
  * @param {Array<{test_files: string[], impl_files: string[]}>} pairs buildRedgreenPairs の pairs
  * @param {string|null} [base] 比較先の ref（例 `origin/main`）
+ * @param {string|null} [commandsFile] 解決したテストコマンドのファイル
  * @returns {string}
  */
-export function redgreenStartPrompt(wt, stateDir, pairs, base = null) {
+export function redgreenStartPrompt(wt, stateDir, pairs, base = null, commandsFile = null) {
   return redgreenProxyPrompt(
-    `redgreen-verify start --state-dir ${stateDir} ${base ? `--base ${base} ` : ''}${wt} `
+    `redgreen-verify start --state-dir ${stateDir} ${base ? `--base ${base} ` : ''}${commandsFile ? `--commands ${commandsFile} ` : ''}${wt} `
       + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' '),
     '{"results":[]}');
 }

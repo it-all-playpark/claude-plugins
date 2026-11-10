@@ -127,8 +127,8 @@ feedback は `pass` でも返せる（escalate だけの報告など）。
 - `verified_by`: テストで実証できるなら `"test"`、コードを読んでしか判断できないなら `"inspection"`
 - `test_files` / `impl_files`（`"test"` のときのみ）: その AC を守るテストと対象実装を worktree 相対パスで。
   red→green の証明は呼び出し側が別途行うので、申告だけでよい。
-  test_files は prompt の test_discovery（repo の設定から判定したランナーごとの受理パターン。red→green の証明も同じ判定でランナーを選ぶ）に一致するものに限り、混在ファイルは挙げない。
-  一致しないファイルはランナー未検出として拒否され、red→green は証明されない
+  test_files は prompt の test_discovery（Setup が base の tree から解決したテストコマンドと解決元。red→green の証明は test_files をその形でだけ実行する）で実行できるものに限り、混在ファイルは挙げない。
+  その形で実行できないファイルは red→green が証明されず、テストコマンド未解決の run では申告しても入力エラーになる
 - `unreachable_env`（任意、`satisfied:false` のときだけ）: 未達の理由が実装ではなく実行環境にあるとき `true`
   （DB コンテナ・ブラウザ・外部サービス等が sandbox 内で動かず、AC が求める実行をここでは確かめられない。
   コード上に未達の根拠が無い）。`true` の AC は実装へ差し戻されず、人間が実行して確かめる。コードの欠落・バグ・

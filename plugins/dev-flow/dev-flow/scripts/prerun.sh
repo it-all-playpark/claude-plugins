@@ -10,7 +10,7 @@
 # 起点(base)一致検証 + 独自コミット無しの再利用 worktree を base へ fast-forward + 書き込み probe →.devflow-tmp を info/exclude に足す
 # （対象 repo が ignore していなければ）→ .devflow-tmp の git clean -fdx → analyze
 # （issue 取得 + 本文全文を .devflow-tmp/issue-body.md へ書く + contract parse + Jev 有界判定。prerun-analyze.sh。detect-stack と並列）‖
-# detect-stack（+ detect-test-runner の受理パターンを stack.test_runners に載せる）。各段は独立に ok/error を報告し、後続段を巻き込まない。
+# detect-stack。各段は独立に ok/error を報告し、後続段を巻き込まない。
 # worktree 作成で取り出せないパスには skip-worktree を付け（出力の skip_worktree）、未ステージの削除が残る再利用 worktree は
 # ok:false で止める（_shared/scripts/worktree-checkout.sh）。repo が追跡している hook のうち worktree で動かない event を
 # 出力の hooks_not_running に載せる（終端サマリーへの開示だけで、run を止めず gate の入力にもしない。deps 段が install 後の状態で上書きする）。
@@ -479,14 +479,8 @@ if [[ "$SEG2_OK" == true ]]; then
         stack_json="$(jq -n --arg e "${STACK_ERR_CONTENT:-detect-stack failed}" '{frameworks: [], error: $e}')"
     fi
     rm -f "$STACK_ERR_FILE"
-    # テストランナー判定（redgreen-verify と同じ detect-test-runner.sh）。evaluator prompt の test_files 受理パターンに使う。
-    # 判定失敗は test_runners [] — evaluator は test_files を挙げず inspection に倒れる（deterministic 昇格しない側）
-    TEST_RUNNERS_JSON="$(bash "$PLUGIN_ROOT/_shared/scripts/detect-test-runner.sh" "$WT" 2>/dev/null \
-        | jq -c '[.runners[] | {runner, accept, exclude, command}]' 2>/dev/null)" || TEST_RUNNERS_JSON='[]'
-    [[ -n "$TEST_RUNNERS_JSON" ]] || TEST_RUNNERS_JSON='[]'
-    stack_json="$(printf '%s' "$stack_json" | jq -c --argjson t "$TEST_RUNNERS_JSON" '. + {test_runners: $t}')"
 else
-    stack_json='{"frameworks":[],"test_runners":[],"error":"skipped: worktree unavailable"}'
+    stack_json='{"frameworks":[],"error":"skipped: worktree unavailable"}'
 fi
 
 # ============================================================================

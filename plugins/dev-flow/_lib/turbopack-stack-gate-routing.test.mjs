@@ -64,7 +64,7 @@ function createResponder() {
 }
 
 async function run(frameworks) {
-  const { ctx, calls } = makeRecordingSandbox(createResponder(), { args: devFlowArgs(1, { stack: { frameworks, test_runners: [] } }) });
+  const { ctx, calls } = makeRecordingSandbox(createResponder(), { args: devFlowArgs(1, { stack: { frameworks } }) });
   const error = await runDevFlowInSandbox(src, ctx);
   return { error, calls };
 }

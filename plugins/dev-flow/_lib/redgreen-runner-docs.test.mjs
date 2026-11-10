@@ -1,6 +1,6 @@
 // _lib/redgreen-runner-docs.test.mjs
-// redgreen-verify が受理するテストファイルの判定元は detect-test-runner.sh だけ（issue #880）。evaluator.md と
-// exec-proxy.md の redgreen 行に固定の受理 glob を書き戻して判定と drift させない。
+// redgreen-verify のテストの実行の形は Setup が解決したテストコマンドだけが決める（issue #1279）。evaluator.md と
+// exec-proxy.md の redgreen 行に固定の受理 glob を書き戻して実行の形と drift させない。
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -20,12 +20,12 @@ test('evaluator.md: test_files の受理条件は prompt の test_discovery を�
   for (const g of FIXED_GLOBS) assert.ok(!evaluatorMd.includes(g), `evaluator.md に固定 glob ${g} が残っている`);
 });
 
-test('exec-proxy.md: redgreen 行が受理判定の元に detect-test-runner.sh を挙げ、固定の受理 glob を持たない', () => {
+test('exec-proxy.md: redgreen 行が入力エラーにテストコマンド未解決と base と違う tests/run-*.sh を挙げ、固定の受理 glob を持たない', () => {
   const match = execProxyMd.match(/^\| redgreen.*$/m);
   assert.ok(match, 'redgreen 行が見つからない');
   const line = match[0];
-  assert.ok(line.includes('detect-test-runner.sh'));
-  assert.ok(line.includes('ランナー未検出'));
+  assert.ok(line.includes('テストコマンド未解決'));
+  assert.ok(line.includes('`tests/run-*.sh` が base と違う'));
   assert.ok(!line.includes('受理 glob'));
   assert.ok(line.split('|')[3].trim().startsWith('fail-safe'), 'redgreen 行のポリシーが fail-safe でない');
 });

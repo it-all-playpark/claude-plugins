@@ -2751,9 +2751,9 @@ function redgreenStateDirFrom(res) {
   return typeof dir === 'string' && /^\/[\w./-]+$/.test(dir) ? dir : null;
 }
 
-function redgreenStartPrompt(wt, stateDir, pairs, base = null) {
+function redgreenStartPrompt(wt, stateDir, pairs, base = null, commandsFile = null) {
   return redgreenProxyPrompt(
-    `redgreen-verify start --state-dir ${stateDir} ${base ? `--base ${base} ` : ''}${wt} `
+    `redgreen-verify start --state-dir ${stateDir} ${base ? `--base ${base} ` : ''}${commandsFile ? `--commands ${commandsFile} ` : ''}${wt} `
       + pairs.map((p) => `'${p.test_files.join(',')}' '${p.impl_files.join(',')}'`).join(' '),
     '{"results":[]}');
 }
@@ -3222,7 +3222,7 @@ async function runRedgreenVerify(pairs, { spawn, label, phase, base = null }) {
   }
   let res = null
   try {
-    const start = await spawn(redgreenStartPrompt(WT, stateDir, pairs, base), { agentType: 'dev-runner-haiku', schema: RG, label, phase })
+    const start = await spawn(redgreenStartPrompt(WT, stateDir, pairs, base, TEST_COMMANDS.commands_file), { agentType: 'dev-runner-haiku', schema: RG, label, phase })
     res = await waitBgJob({
       start,
       wait: (k) => spawn(redgreenWaitPrompt(WT, stateDir), { agentType: 'dev-runner-haiku', schema: RG, label: `${label}-wait#${k}`, phase }),
