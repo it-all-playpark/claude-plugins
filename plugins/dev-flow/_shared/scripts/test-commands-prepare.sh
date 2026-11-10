@@ -7,16 +7,22 @@
 #       → source "user_config"。形が不正なら status "unresolved"（黙って次の解決元に倒さない — 誤記に気付けない）
 #   (2) origin/<base> の tree に tests/run-*.sh（mode 100755 の blob）がある → source "runners"（run-tests が今どおり実行する）
 #   (3) どちらも無い → source "resolver"。origin/<base> の tree から CI 定義・Makefile・package.json 等を git show で集めた
-#       束（bundle_file）を書き、workflow が resolver agent（test-command-resolver）に渡す
+#       束（bundle_file）を書き、workflow が resolver agent（test-command-resolver）に渡す。CI 定義は root の決まった場所だけ、
+#       manifest・ランナー設定は root 直下に加えてサブディレクトリのものも入れる（テストの定義がサブディレクトリにしか無い
+#       monorepo・workspace でも、どのディレクトリで起動するかを resolver が決められるように。resolver が返せる dir は
+#       束に入れたファイルのあるディレクトリだけ）。並びは CI 定義と root 直下を先にして浅い順で、BUNDLE_FILES_MAX を超えた分は
+#       入れず、切った件数を束に書く
 # 判定と束の中身は refs/remotes/origin/<base> の tree だけから読み、worktree の作業ツリーは読まない — PR（worktree）が
 # tests/run-*.sh・CI 定義を足す・書き換えることで、自分のテストの実行の形を選べないようにする。
 #
 # コマンドファイル（commands_file）は $TMPDIR 配下に mktemp -d で作る run ごとの推測できないディレクトリに置く
 # （worktree の中・既知のパスに置くと、テストが書き換えて実行の中身を差し替えられる。redgreen-verify の state dir と同じ理由）。
 # (1)(2) はここで書き、(3) は workflow が resolver の返り値を検証してから書く（resolved のときだけ。無ければ run-tests は no_tests）。
-# 中身: {"source":..., "status":"resolved"|"unresolved", "full_command":string|null, "files_command":string|null, "sources":[...]}
+# 中身: {"source":..., "status":"resolved"|"unresolved", "sources":[...]}。source が user_config / resolver で status が
+#   resolved のものだけ "commands":[{"dir":..., "full_command":..., "files_command":...}, ...]（1 件以上）を持つ。
+#   dir は起動する cwd（"." か worktree 相対のディレクトリ）。user 設定は dir "." の 1 entry になる（user 設定に dir の指定は無い）。
 #   full_command / files_command は shell を通さず空白で区切って argv にする（run-tests）。files_command は {files} を独立した
-#   語としてちょうど 1 回含み、run-tests がそこを再実行するテストファイルに置き換える。
+#   語としてちょうど 1 回含み、run-tests がそこを再実行するテストファイル（dir からの相対パス）に置き換える。
 #
 # 出力（stdout, JSON 1 行）: コマンドファイルの中身 + {ok:true, commands_file, run_dir}（(3) は bundle_file / bundle_files も、
 # (1) の形が不正なら error も）。base の ref を解決できない・一時ディレクトリを作れないときは {ok:false, error}。
@@ -27,8 +33,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=devflow-config.sh
 source "$SCRIPT_DIR/devflow-config.sh"
 
-# 束に入れるファイル（origin/<base> の tree のパスに対する ERE）。CI 定義と、テストの起動方法を宣言するビルド・パッケージの定義
-BUNDLE_PATH_RE='^(\.github/workflows/[^/]+\.ya?ml|\.gitlab-ci\.yml|\.circleci/config\.ya?ml|azure-pipelines\.ya?ml|bitbucket-pipelines\.ya?ml|\.travis\.yml|Jenkinsfile|\.buildkite/[^/]+\.ya?ml|GNUmakefile|[Mm]akefile|[Jj]ustfile|Taskfile\.ya?ml|package\.json|pnpm-workspace\.yaml|pyproject\.toml|setup\.cfg|tox\.ini|pytest\.ini|noxfile\.py|Cargo\.toml|go\.mod|Gemfile|composer\.json|deno\.jsonc?|build\.gradle(\.kts)?|pom\.xml|mix\.exs|(vitest|jest)\.config\.[cm]?[jt]s)$'
+# 束に入れるファイル（origin/<base> の tree のパスに対する ERE）。CI 定義は場所で意味が決まるので root の決まったパスだけ、
+# テストの起動方法を宣言するビルド・パッケージの定義はファイル名で決まるのでどの深さのディレクトリのものも受ける
+BUNDLE_CI_PATH_RE='^(\.github/workflows/[^/]+\.ya?ml|\.gitlab-ci\.yml|\.circleci/config\.ya?ml|azure-pipelines\.ya?ml|bitbucket-pipelines\.ya?ml|\.travis\.yml|Jenkinsfile|\.buildkite/[^/]+\.ya?ml)$'
+BUNDLE_PATH_RE="$BUNDLE_CI_PATH_RE"'|^(.*/)?(GNUmakefile|[Mm]akefile|[Jj]ustfile|Taskfile\.ya?ml|package\.json|pnpm-workspace\.yaml|pyproject\.toml|setup\.cfg|tox\.ini|pytest\.ini|noxfile\.py|Cargo\.toml|go\.mod|Gemfile|composer\.json|deno\.jsonc?|build\.gradle(\.kts)?|pom\.xml|mix\.exs|(vitest|jest)\.config\.[cm]?[jt]s)$'
 BUNDLE_FILES_MAX=40
 BUNDLE_FILE_BYTES_MAX=20000
 
@@ -70,9 +78,9 @@ emit_record() {
 tc=$(devflow_config "$WT" "$BASE" test_commands)
 if [[ "$tc" != "null" ]]; then
     if jq -e "$JQ_CMD_DEFS"' type == "object" and (.full_command | cmd_ok) and (.files_command | files_ok)' >/dev/null 2>&1 <<<"$tc"; then
-        emit_record "$(jq -c '{source: "user_config", status: "resolved", full_command: (.full_command | gsub("^\\s+|\\s+$"; "")), files_command: (.files_command | gsub("^\\s+|\\s+$"; "")), sources: []}' <<<"$tc")"
+        emit_record "$(jq -c '{source: "user_config", status: "resolved", commands: [{dir: ".", full_command: (.full_command | gsub("^\\s+|\\s+$"; "")), files_command: (.files_command | gsub("^\\s+|\\s+$"; ""))}], sources: []}' <<<"$tc")"
     fi
-    record=$(jq -nc '{source: "user_config", status: "unresolved", full_command: null, files_command: null, sources: []}')
+    record=$(jq -nc '{source: "user_config", status: "unresolved", sources: []}')
     printf '%s\n' "$record" > "$COMMANDS_FILE" || fail "cannot write $COMMANDS_FILE"
     jq -c --arg f "$COMMANDS_FILE" --arg d "$RUN_DIR" --arg raw "$tc" \
         '{ok: true} + . + {commands_file: $f, run_dir: $d, error: ("user 設定の \"dev-flow\".test_commands が不正（{full_command, files_command} の object で、どちらも shell の記号・引用符を含まない 1 行、files_command は {files} を独立した語としてちょうど 1 回含む。受信: " + $raw + "）")}' <<<"$record"
@@ -88,19 +96,36 @@ while IFS= read -r -d '' entry; do
     [[ "$path" == tests/run-*.sh && "${meta#* }" == blob\ * && "${meta%% *}" == 100755 ]] && runners+=("$path")
 done < "$RUN_DIR/base-tests.raw"
 if [[ ${#runners[@]} -gt 0 ]]; then
-    emit_record "$(printf '%s\n' "${runners[@]}" | jq -R . | jq -sc '{source: "runners", status: "resolved", full_command: null, files_command: null, sources: .}')"
+    emit_record "$(printf '%s\n' "${runners[@]}" | jq -R . | jq -sc '{source: "runners", status: "resolved", sources: .}')"
 fi
 
 # (3) resolver に渡す束（origin/<base> の tree から git ls-tree / git show で読む）
 BUNDLE_FILE="$RUN_DIR/bundle.md"
 git -C "$WT" ls-tree -r --name-only "$TREE" > "$RUN_DIR/base-tree.txt" 2>/dev/null || fail "git ls-tree origin/$BASE failed"
-picked=()
+# 浅い順（同じ深さは tree の並び順）に並べる。CI 定義は root の定義なので root 直下と同じ深さ 0 に数える — 上限で切るときに
+# root の根拠（CI が実際に実行している起動方法）を先に残す
+n=0
 while IFS= read -r path; do
-    [[ ${#picked[@]} -lt $BUNDLE_FILES_MAX ]] || break
-    [[ "$path" =~ $BUNDLE_PATH_RE ]] && picked+=("$path")
-done < "$RUN_DIR/base-tree.txt"
+    [[ "$path" =~ $BUNDLE_PATH_RE ]] || continue
+    depth=0
+    if [[ ! "$path" =~ $BUNDLE_CI_PATH_RE ]]; then
+        slashes="${path//[^\/]/}"
+        depth=${#slashes}
+    fi
+    n=$((n + 1))
+    printf '%s\t%s\t%s\n' "$depth" "$n" "$path"
+done < "$RUN_DIR/base-tree.txt" | LC_ALL=C sort -t $'\t' -k1,1n -k2,2n | cut -f3- > "$RUN_DIR/bundle-candidates.txt" \
+    || fail "cannot write $RUN_DIR/bundle-candidates.txt"
+picked=()
+dropped=0
+while IFS= read -r path; do
+    if [[ ${#picked[@]} -lt $BUNDLE_FILES_MAX ]]; then picked+=("$path"); else dropped=$((dropped + 1)); fi
+done < "$RUN_DIR/bundle-candidates.txt"
 {
     printf '# origin/%s の tree（%s）から集めたファイル\n\n' "$BASE" "$TREE"
+    if [[ $dropped -gt 0 ]]; then
+        printf '上限 %s 件を超えたので、浅い順に並べた残りの %s 件は束に入れていない（切った件数: %s）。\n\n' "$BUNDLE_FILES_MAX" "$dropped" "$dropped"
+    fi
     printf '## トップレベルのエントリ\n\n'
     git -C "$WT" ls-tree --name-only "$TREE" 2>/dev/null
     for path in "${picked[@]+"${picked[@]}"}"; do
@@ -111,5 +136,5 @@ done < "$RUN_DIR/base-tree.txt"
 } > "$BUNDLE_FILE" || fail "cannot write $BUNDLE_FILE"
 
 jq -nc --arg f "$COMMANDS_FILE" --arg d "$RUN_DIR" --arg b "$BUNDLE_FILE" --args \
-    '{ok: true, source: "resolver", status: "unresolved", full_command: null, files_command: null, sources: [],
+    '{ok: true, source: "resolver", status: "unresolved", sources: [],
       commands_file: $f, run_dir: $d, bundle_file: $b, bundle_files: $ARGS.positional}' "${picked[@]+"${picked[@]}"}"

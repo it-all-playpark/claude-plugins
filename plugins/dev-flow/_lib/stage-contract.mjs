@@ -16,7 +16,7 @@
 // dev-flow は Setup で 1 回だけ起動し、返り値を test_commands として evaluate / pr-iterate / finalize へ渡す。
 export const TEST_COMMANDS_ARGS_SPEC = { worktree: 'string', base: 'string' }
 export const TEST_COMMANDS_RESULT_SPEC = {
-  source: 'string|null', status: 'string', full_command: 'string|null', files_command: 'string|null',
+  source: 'string|null', status: 'string', commands: 'array|null',
   sources: 'array', commands_file: 'string|null', error: 'string|null',
 }
 

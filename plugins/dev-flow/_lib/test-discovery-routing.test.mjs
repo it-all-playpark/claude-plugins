@@ -23,7 +23,7 @@ async function evalPrompt(prepare, name) {
 
 test('[test-discovery] eval#1 prompt に解決した files_command と解決元が注入され、言語別の受理 glob は載らない', async () => {
   const prompt = await evalPrompt(
-    testCommandsPrepareResponse({ source: 'user_config', full_command: 'uv run pytest', files_command: 'uv run pytest {files}', sources: [] }),
+    testCommandsPrepareResponse({ source: 'user_config', commands: [{ dir: '.', full_command: 'uv run pytest', files_command: 'uv run pytest {files}' }], sources: [] }),
     'user-config');
   assert.ok(prompt.includes('test_discovery（'));
   assert.ok(prompt.includes('解決元は user 設定。`uv run pytest {files}` の {files} に test_files を入れて実行する'), prompt);

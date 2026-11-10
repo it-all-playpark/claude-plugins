@@ -27,8 +27,11 @@
 # (--commands。中身の形は test-commands-prepare.sh)と base($BASE)の tree だけで決める。worktree 側で欠けた・変わったものは
 # 入力エラーにして昇格させず、PR 側の形では実行しない(PR が自分のテストの起動の形を選べると、red→green を作れる)。
 # テストファイル自体とランナーの設定ファイルは worktree(PR)の内容のまま実行する。言語別に決め打ちした判定は持たない。
-#   - status "resolved" で files_command がある(user 設定・resolver): files_command を空白で区切り、{files} の語を
-#     ペアの test_files に置き換えた argv を shell を通さず 1 本実行する。起動内容を worktree のファイルへ委譲する形
+#   - status "resolved" で commands({dir, full_command, files_command} の配列)がある(user 設定・resolver): ペアの test_files を
+#     含む最も深い entry を 1 つ選び(run-tests の --files と同じ振り分け)、その files_command を空白で区切り、{files} の語を
+#     test_files(dir からの相対パス)に置き換えた argv を、dir を cwd に shell を通さず 1 本実行する。test_files がどの entry の
+#     dir にも含まれない・複数の entry に分かれる・dir が worktree 内の実ディレクトリでない(無い・symlink)ペアは
+#     reason "test command dir ..." の入力エラー。起動内容を worktree のファイルへ委譲する形
 #     (npm / pnpm / yarn / bun の script → 全 package.json の scripts、make / just / task → Makefile 等、語が名指す repo の
 #     ファイル)は委譲先が $BASE と違うペアを reason "test command script changed vs base: <path> (scripts)" /
 #     "test command file changed vs base: <path>" の入力エラーにする
@@ -39,7 +42,7 @@
 #   - --commands 無し・ファイルが無い・JSON として読めない・status "unresolved"・{files} の語がちょうど 1 つ無い:
 #     全ペアが reason "test command unresolved (<理由>)" の入力エラー
 # vdelta 経路: $BASE の tree の package.json の dependencies / devDependencies に vdelta があり(worktree の package.json は
-# 読まない)、files_command に vitest の語があるときだけ、コマンドを `<PM の exec> vdelta run --report json -- <コマンド>` で包み、
+# 読まない)、選んだ entry の dir が "." で files_command に vitest の語があるときだけ、コマンドを `<PM の exec> vdelta run --report json -- <コマンド>` で包み、
 # green 後に `<PM の exec> vdelta compare --report json` の出力を verdict として載せる(PM の exec は files_command の
 # vitest より前の語)。それ以外は解決したコマンドのまま実行する。
 # 出力(stdout, JSON 1行。results は引数順の配列。root を object にするのは workflow の agent() schema が
@@ -89,8 +92,14 @@ VDELTA=false
 # 実行)・""(RUN_ERROR を reason にした入力エラー)
 RUN_MODE=""
 RUN_ERROR=""
-# files_command を空白で区切った語({files} の語をちょうど 1 つ含む)
+# コマンドファイルの commands の dir と files_command(同じ添字で対応。load_test_command が読む)
+CMD_DIRS=()
+CMD_FILES_COMMANDS=()
+# ペアが使う entry(select_pair_command が決める): files_command を空白で区切った語({files} の語をちょうど 1 つ含む)・
+# 起動する cwd("." か worktree 相対の dir)・dir からの相対パスにした test_files
 FILES_WORDS=()
+PAIR_DIR="."
+PAIR_TESTS=()
 # $BASE の tree の tests/run-*.sh(mode 100755)の worktree 相対パス
 BASE_RUNNERS=()
 # source "runners" で DEVFLOW_TEST_FILES に渡す一覧(state dir = worktree の外。paths が決める)
@@ -138,9 +147,9 @@ run_tests() {
   fi
   argv=()
   for w in "${FILES_WORDS[@]}"; do
-    if [ "$w" = "{files}" ]; then argv+=("${TESTS[@]}"); else argv+=("$w"); fi
+    if [ "$w" = "{files}" ]; then argv+=("${PAIR_TESTS[@]}"); else argv+=("$w"); fi
   done
-  if [ "$VDELTA" = true ] && [[ " ${FILES_WORDS[*]} " == *" vitest "* ]]; then
+  if [ "$VDELTA" = true ] && [ "$PAIR_DIR" = "." ] && [[ " ${FILES_WORDS[*]} " == *" vitest "* ]]; then
     prefix=()
     for a in "${FILES_WORDS[@]}"; do [ "$a" = vitest ] && break; prefix+=("$a"); done
     VDELTA_PREFIX=(${prefix[@]+"${prefix[@]}"})
@@ -149,8 +158,45 @@ run_tests() {
     # red phase の失敗は期待値であり vdelta run 未実行を意味しない)。
     VDELTA_TESTCMD_RAN=true
   fi
-  "${argv[@]}" >/dev/null 2>&1 < /dev/null || rc=1
+  ( cd "$PAIR_DIR" || exit 1; "${argv[@]}" ) >/dev/null 2>&1 < /dev/null || rc=1
   return $rc
+}
+
+# ペアの test_files(TESTS)が使う commands の entry を決める(FILES_WORDS / PAIR_DIR / PAIR_TESTS)。各ファイルを含む最も深い
+# entry("." は全ファイルを含む)が全ファイルで同じ 1 つのときだけ決まる。決まらない・dir が worktree 内の実ディレクトリでない
+# (pwd -P が <worktree の実体>/<dir> と一致しない = 無い・symlink を経由する)ときは理由を stdout に出して 1 を返す
+select_pair_command() {
+  local t k dir len best best_len chosen=-1
+  for t in "${TESTS[@]}"; do
+    best=-1; best_len=-1
+    for k in "${!CMD_DIRS[@]}"; do
+      dir="${CMD_DIRS[$k]}"
+      if [ "$dir" = "." ]; then len=0; elif [[ "$t" == "$dir"/* ]]; then len=${#dir}; else continue; fi
+      if [ "$len" -gt "$best_len" ]; then best=$k; best_len=$len; fi
+    done
+    if [ "$best" -lt 0 ]; then echo "test command dir: test file is not under any commands dir: $t"; return 1; fi
+    if [ "$chosen" -ge 0 ] && [ "$chosen" -ne "$best" ]; then
+      echo "test command dir: test files belong to more than one commands dir: ${CMD_DIRS[$chosen]}, ${CMD_DIRS[$best]}"; return 1
+    fi
+    chosen=$best
+  done
+  dir="${CMD_DIRS[$chosen]}"
+  if [ "$dir" != "." ]; then
+    if [[ -z "$dir" || "$dir" == /* || "/$dir/" == *//* || "/$dir/" == */./* || "/$dir/" == */../* ]] \
+        || [ ! -d "$dir" ] || [ "$(cd "$dir" 2>/dev/null && pwd -P)" != "$(pwd -P)/$dir" ]; then
+      echo "test command dir is not a real directory inside the worktree: $dir"; return 1
+    fi
+  fi
+  PAIR_DIR="$dir"
+  PAIR_TESTS=()
+  for t in "${TESTS[@]}"; do
+    [ "$dir" = "." ] || t="${t#"$dir"/}"
+    # `-` で始まるパスは ./ を付けて渡す(PR が足した `-x` 名のファイルをランナーが option として読み、
+    # テストを実行しないまま exit 0 で green にしないように)
+    case "$t" in -*) t="./$t" ;; esac
+    PAIR_TESTS+=("$t")
+  done
+  read -r -a FILES_WORDS <<< "${CMD_FILES_COMMANDS[$chosen]}"
 }
 
 # source "runners" のとき、実行する tests/run-*.sh が $BASE の tree と同じかを確かめる。違う・欠けている・$BASE に無い
@@ -213,7 +259,8 @@ check_package_scripts() {
 }
 
 check_base_command() {
-  local w path f
+  local w path f prefix=""
+  [ "$PAIR_DIR" = "." ] || prefix="$PAIR_DIR/"
   case "${FILES_WORDS[0]}" in
     npm|pnpm|yarn|bun)
       case "${FILES_WORDS[1]:-}" in
@@ -222,8 +269,8 @@ check_base_command() {
       esac ;;
     make|gmake|just|task)
       for f in GNUmakefile makefile Makefile justfile Justfile .justfile Taskfile.yml Taskfile.yaml; do
-        if in_command_scope "$f"; then
-          same_as_base "$f" || { echo "test command file changed vs base: $f"; return 1; }
+        if in_command_scope "$prefix$f"; then
+          same_as_base "$prefix$f" || { echo "test command file changed vs base: $prefix$f"; return 1; }
         fi
       done ;;
   esac
@@ -233,8 +280,8 @@ check_base_command() {
     for path in "$w" "${w#*=}"; do
       path="${path#./}"
       [ -n "$path" ] && [[ "$path" != /* ]] || continue
-      if in_command_scope "$path"; then
-        same_as_base "$path" || { echo "test command file changed vs base: $path"; return 1; }
+      if in_command_scope "$prefix$path"; then
+        same_as_base "$prefix$path" || { echo "test command file changed vs base: $prefix$path"; return 1; }
       fi
     done
   done
@@ -287,6 +334,7 @@ verify_pair() {
   UNTRACKED_IMPLS=(); TRACKED_IMPLS=(); UNCHANGED_IMPLS=()
   UNTRACKED_SAVED=false; TRACKED_SAVED=false
   VDELTA_TESTCMD_RAN=false; VDELTA_PREFIX=()
+  FILES_WORDS=(); PAIR_DIR="."; PAIR_TESTS=()
   PAIR_JSON=""
 
   IFS=',' read -r -a TESTS <<< "$test_csv"
@@ -304,6 +352,15 @@ verify_pair() {
     PAIR_JSON="$(jq -nc --arg r "$runner_problem" '{red: false, green: false, reason: $r}')"
     PAIR_JSON="${PAIR_JSON#\{}"; PAIR_JSON="${PAIR_JSON%\}}"
     return 2
+  fi
+  # test_files を実行する entry(dir と files_command)が 1 つに決まらないペアは判定しない
+  if [ "$RUN_MODE" = command ]; then
+    # $(...) の中では配列を残せないので、理由はファイルで受ける
+    if ! select_pair_command > "$BG_JOB_STATE_DIR/pair-command.reason"; then
+      PAIR_JSON="$(jq -nc --arg r "$(cat "$BG_JOB_STATE_DIR/pair-command.reason")" '{red: false, green: false, reason: $r}')"
+      PAIR_JSON="${PAIR_JSON#\{}"; PAIR_JSON="${PAIR_JSON%\}}"
+      return 2
+    fi
   fi
   # files_command の委譲先(package の script・Makefile 等・名指す repo のファイル)が base と違うペアも判定しない
   if [ "$RUN_MODE" = command ] && ! runner_problem="$(check_base_command)"; then
@@ -442,7 +499,7 @@ write_results() {
 
 # コマンドファイル(spec の commands)と $BASE の tree からテストの起動の形を決める(RUN_MODE / RUN_ERROR)
 load_test_command() {
-  local file mode entry meta path n=0 w
+  local file mode entry meta path n=0 w k count words
   file="$(bg_job_read_field "$BG_JOB_SPEC" .commands)"
   if [ -z "$file" ] || [ ! -f "$file" ]; then
     RUN_ERROR="test command unresolved (コマンドファイルが無い)"; return
@@ -450,15 +507,22 @@ load_test_command() {
   mode="$(jq -r 'if type != "object" then "invalid"
     elif .status == "unresolved" then "unresolved"
     elif .status == "resolved" and .source == "runners" then "runners"
-    elif .status == "resolved" and (.files_command | type == "string") then "command"
+    elif .status == "resolved" and (.commands | type == "array" and length > 0
+        and all(.[]; type == "object" and (.dir | type == "string") and (.files_command | type == "string"))) then "command"
     else "invalid" end' "$file" 2>/dev/null)" || mode=invalid
   case "$mode" in
     command)
-      read -r -a FILES_WORDS <<< "$(jq -r '.files_command' "$file")"
-      for w in ${FILES_WORDS[@]+"${FILES_WORDS[@]}"}; do [ "$w" = "{files}" ] && n=$((n+1)); done
-      if [ "$n" -ne 1 ]; then
-        RUN_ERROR="test command unresolved (files_command に {files} の語がちょうど 1 つ無い)"; return
-      fi
+      count="$(jq -r '.commands | length' "$file")"
+      for ((k = 0; k < count; k++)); do
+        CMD_DIRS+=("$(jq -r --argjson k "$k" '.commands[$k].dir' "$file")")
+        CMD_FILES_COMMANDS+=("$(jq -r --argjson k "$k" '.commands[$k].files_command' "$file")")
+        read -r -a words <<< "${CMD_FILES_COMMANDS[$k]}"
+        n=0
+        for w in ${words[@]+"${words[@]}"}; do [ "$w" = "{files}" ] && n=$((n+1)); done
+        if [ "$n" -ne 1 ]; then
+          RUN_ERROR="test command unresolved (files_command に {files} の語がちょうど 1 つ無い)"; return
+        fi
+      done
       RUN_MODE=command ;;
     runners)
       # 1 行 1 エントリの出力を here-string で読む(process substitution は sandbox で /dev/fd が塞がれる)

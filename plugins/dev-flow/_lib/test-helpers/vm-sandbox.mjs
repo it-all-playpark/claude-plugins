@@ -422,7 +422,7 @@ export const TEST_COMMANDS_FILE = '/tmp/test-commands-Stub01/commands.json';
  */
 export function testCommandsPrepareResponse(overrides = {}) {
   return {
-    ok: true, source: 'runners', status: 'resolved', full_command: null, files_command: null, sources: ['tests/run-unit.sh'],
+    ok: true, source: 'runners', status: 'resolved', sources: ['tests/run-unit.sh'],
     commands_file: TEST_COMMANDS_FILE, run_dir: '/tmp/test-commands-Stub01',
     ...overrides,
   };

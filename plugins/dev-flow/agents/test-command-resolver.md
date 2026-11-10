@@ -29,6 +29,10 @@ dev-flow の Setup（実装より前）に 1 回だけ spawn され、対象 rep
   incentive-structural）。package.json の scripts・Makefile / justfile / Taskfile のターゲット等、repo 内の定義を経由する
   形は PR がその定義を書き換えて実行の中身を差し替えられるので返さない。workflow は返り値を決まった形の組と照合し、
   一致しなければ unresolved として扱う
+- コマンドは起動するディレクトリ（`dir`）ごとの `commands` で返し、`dir` は `.`（repo の root）か束のファイルがある
+  ディレクトリから選ぶ（正当化クラス: incentive-structural）。テストの定義がサブディレクトリにある repo（monorepo・
+  workspace）は、workspace の filter や scripts を経由させず、そのディレクトリで直接起動する形で表す。束は base の tree
+  だけから作られるので、束に無いディレクトリを cwd にすると PR が足した場所で起動させられる
 - 決められないときは `status: "unresolved"` を返す（推測で埋めない。unresolved の run はテストを実行せず HOLD になり、
   人が user 設定 `"dev-flow".repos["<owner>/<repo>"].test_commands` で固定できる）
 

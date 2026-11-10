@@ -49,9 +49,9 @@ prepare() {
     prepare
     [ "$status" -eq 0 ]
     echo "$JSON" | jq -e '.ok == true and .source == "user_config" and .status == "resolved"'
-    echo "$JSON" | jq -e '.full_command == "uv run pytest" and .files_command == "uv run pytest {files}" and .sources == [] and (has("bundle_file") | not)'
+    echo "$JSON" | jq -e '.commands == [{dir: ".", full_command: "uv run pytest", files_command: "uv run pytest {files}"}] and .sources == [] and (has("bundle_file") | not)'
     file="$(echo "$JSON" | jq -r .commands_file)"
-    jq -e '. == {source: "user_config", status: "resolved", full_command: "uv run pytest", files_command: "uv run pytest {files}", sources: []}' "$file"
+    jq -e '. == {source: "user_config", status: "resolved", commands: [{dir: ".", full_command: "uv run pytest", files_command: "uv run pytest {files}"}], sources: []}' "$file"
 }
 
 @test "(1) user 設定の test_commands の形が不正なら status unresolved と error（次の解決元に倒さない）" {
@@ -64,7 +64,7 @@ prepare() {
               '"pytest"'; do
         echo "{\"dev-flow\":{\"repos\":{\"acme/demo\":{\"test_commands\":$tc}}}}" > "$SKILL_CONFIG_PATH"
         prepare
-        echo "$JSON" | jq -e '.ok == true and .source == "user_config" and .status == "unresolved" and .full_command == null'
+        echo "$JSON" | jq -e '.ok == true and .source == "user_config" and .status == "unresolved" and (has("commands") | not)'
         echo "$JSON" | jq -e '.error | contains("test_commands が不正")'
         jq -e '.status == "unresolved"' "$(echo "$JSON" | jq -r .commands_file)"
     done
@@ -77,9 +77,9 @@ prepare() {
     chmod +x "$WT/tests/run-a.sh" "$WT/tests/run-b.sh"
     commit_base
     prepare
-    echo "$JSON" | jq -e '.ok == true and .source == "runners" and .status == "resolved" and .full_command == null'
+    echo "$JSON" | jq -e '.ok == true and .source == "runners" and .status == "resolved" and (has("commands") | not)'
     echo "$JSON" | jq -e '.sources == ["tests/run-a.sh", "tests/run-b.sh"]'
-    jq -e '.source == "runners" and .sources == ["tests/run-a.sh", "tests/run-b.sh"]' "$(echo "$JSON" | jq -r .commands_file)"
+    jq -e '. == {source: "runners", status: "resolved", sources: ["tests/run-a.sh", "tests/run-b.sh"]}' "$(echo "$JSON" | jq -r .commands_file)"
 }
 
 @test "(3) worktree（PR）だけにある tests/run-*.sh では runners にならず resolver（commit 済み・未 commit とも）" {
@@ -123,6 +123,47 @@ dev = ["pytest>=8"]'
     bundle="$(echo "$JSON" | jq -r .bundle_file)"
     grep -Fq 'run: uv run pytest -q' "$bundle"
     run ! grep -Fq 'make evil' "$bundle"
+}
+
+@test "(3) 束は root にランナー設定が無くてもサブディレクトリの manifest・ランナー設定を入れる（CI 定義の形のパスは root だけ。worktree 側の追加は入れない）" {
+    put packages/a/vitest.config.ts 'export default {test: {include: ["src/**/*.test.ts"]}}'
+    put packages/a/package.json '{"name":"a","devDependencies":{"vitest":"^3"}}'
+    put services/api/pyproject.toml '[dependency-groups]
+dev = ["pytest>=8"]'
+    put packages/a/.github/workflows/ci.yml 'run: nested-ci'
+    put packages/a/src/a.test.ts 'test()'
+    put README.md 'x'
+    commit_base
+    put packages/b/package.json '{"name":"pr-only"}'
+    prepare
+    echo "$JSON" | jq -e '.source == "resolver" and .bundle_files == ["packages/a/package.json", "packages/a/vitest.config.ts", "services/api/pyproject.toml"]'
+    bundle="$(echo "$JSON" | jq -r .bundle_file)"
+    grep -Fq '<<<FILE packages/a/vitest.config.ts>>>' "$bundle"
+    grep -Fq 'include: ["src/**/*.test.ts"]' "$bundle"
+    grep -Fq '"devDependencies":{"vitest":"^3"}' "$bundle"
+    grep -Fq 'dev = ["pytest>=8"]' "$bundle"
+    run ! grep -Fq 'nested-ci' "$bundle"
+    run ! grep -Fq 'pr-only' "$bundle"
+    run ! grep -Fq '切った件数' "$bundle"
+}
+
+@test "(3) 束の並びは CI 定義と root 直下を先にして浅い順で、上限を超えた分は入れず切った件数を束に書く" {
+    put a/b/c/package.json '{"name":"deep"}'
+    for i in $(seq 1 45); do put "pkgs/p$i/package.json" "{\"name\":\"p$i\"}"; done
+    put apps/package.json '{"name":"apps"}'
+    put pyproject.toml '[project]
+name = "root-project"'
+    put .github/workflows/ci.yml 'run: uv run pytest -q'
+    commit_base
+    prepare
+    # 候補は 49 件（CI 1 + root 1 + 深さ 1 が 1 + 深さ 2 が 45 + 深さ 3 が 1）。上限 40 件で 9 件を切る
+    echo "$JSON" | jq -e '(.bundle_files | length) == 40 and .bundle_files[0:3] == [".github/workflows/ci.yml", "pyproject.toml", "apps/package.json"]'
+    echo "$JSON" | jq -e '(.bundle_files | index("a/b/c/package.json")) == null and (.bundle_files[3:] | all(startswith("pkgs/")))'
+    bundle="$(echo "$JSON" | jq -r .bundle_file)"
+    grep -Fq 'name = "root-project"' "$bundle"
+    grep -Fq 'run: uv run pytest -q' "$bundle"
+    grep -Fq '切った件数: 9' "$bundle"
+    run ! grep -Fq '"name":"deep"' "$bundle"
 }
 
 @test "コマンドファイルと束は worktree の外の run ごとに別の一時ディレクトリに置く" {

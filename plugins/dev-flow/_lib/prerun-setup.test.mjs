@@ -382,7 +382,7 @@ test.each([
 // dev-flow-test-commands の返り値（_lib/test-commands.mjs の testCommandsResult）と同形
 const COMMANDS_FILE = '/tmp/test-commands-x/commands.json';
 const RESOLVER_COMMANDS = {
-  source: 'resolver', status: 'resolved', full_command: 'uv run pytest', files_command: 'uv run pytest {files}',
+  source: 'resolver', status: 'resolved', commands: [{ dir: '.', full_command: 'uv run pytest', files_command: 'uv run pytest {files}' }],
   sources: ['.github/workflows/ci.yml', 'pyproject.toml'], commands_file: COMMANDS_FILE, error: null,
 };
 // 言語別の受理パターン（撤去した判定表が渡していた glob）
@@ -398,13 +398,26 @@ test('testDiscoveryNote: resolver が解決したコマンドは files_command �
 });
 
 test('testDiscoveryNote: user 設定のコマンドは解決元を user 設定と書く', () => {
-  const note = testDiscoveryNote({ ...RESOLVER_COMMANDS, source: 'user_config', files_command: 'pnpm exec vitest run {files}', sources: [] });
+  const note = testDiscoveryNote({ ...RESOLVER_COMMANDS, source: 'user_config', commands: [{ dir: '.', full_command: 'pnpm exec vitest run', files_command: 'pnpm exec vitest run {files}' }], sources: [] });
   assert.ok(note.includes('解決元は user 設定。`pnpm exec vitest run {files}` の {files} に test_files を入れて実行する'), note);
+});
+
+test('testDiscoveryNote: サブディレクトリで起動するコマンドは dir ごとの files_command と、dir からの相対パスで実行することを載せる', () => {
+  const note = testDiscoveryNote({
+    ...RESOLVER_COMMANDS,
+    commands: [
+      { dir: 'packages/a', full_command: 'pnpm exec vitest run', files_command: 'pnpm exec vitest run {files}' },
+      { dir: '.', full_command: 'uv run pytest', files_command: 'uv run pytest {files}' },
+    ],
+  });
+  assert.ok(note.includes('packages/a → `pnpm exec vitest run {files}` / . → `uv run pytest {files}`'), note);
+  assert.ok(note.includes('ディレクトリからの相対パス'), note);
+  assert.ok(note.includes('解決元は resolver（根拠: .github/workflows/ci.yml, pyproject.toml）'), note);
 });
 
 test('testDiscoveryNote: 解決元が tests/run-*.sh なら script のパスと DEVFLOW_TEST_FILES での受け渡しを載せる', () => {
   const note = testDiscoveryNote({
-    source: 'runners', status: 'resolved', full_command: null, files_command: null,
+    source: 'runners', status: 'resolved', commands: null,
     sources: ['tests/run-all-bats.sh', 'tests/run-node-tests.sh'], commands_file: COMMANDS_FILE, error: null,
   });
   assert.ok(note.includes('解決元は base の tests/run-*.sh（tests/run-all-bats.sh, tests/run-node-tests.sh）'), note);
@@ -413,8 +426,8 @@ test('testDiscoveryNote: 解決元が tests/run-*.sh なら script のパスと 
 });
 
 test.each([
-  ['unresolved', { source: 'resolver', status: 'unresolved', full_command: null, files_command: null, sources: [], commands_file: COMMANDS_FILE, error: null }],
-  ['工程の失敗（source / commands_file が null）', { source: null, status: 'unresolved', full_command: null, files_command: null, sources: [], commands_file: null, error: 'x' }],
+  ['unresolved', { source: 'resolver', status: 'unresolved', commands: null, sources: [], commands_file: COMMANDS_FILE, error: null }],
+  ['工程の失敗（source / commands_file が null）', { source: null, status: 'unresolved', commands: null, sources: [], commands_file: null, error: 'x' }],
   ['resolved でもコマンドファイルが無い', { ...RESOLVER_COMMANDS, commands_file: null }],
   ['null', null],
 ])('testDiscoveryNote: %s は test_files を挙げず inspection にさせる', (_name, tc) => {
