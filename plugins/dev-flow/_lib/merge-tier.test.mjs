@@ -308,29 +308,12 @@ test('classifyMergeTier: unsatisfiedAgentAc / unsatisfiedHumanAc が boolean 以
   assert.throws(() => classifyMergeTier({ ...standardBase(), iterateStatus: 'lgtm', unsatisfiedHumanAc: 'yes' }), /invalid unsatisfiedHumanAc/);
 });
 
-// ---- evalSkipped フラグ（issue #233）----
-
-test('classifyMergeTier: evalSkipped:true + HOLD 理由なし → REVIEW の reasons の既定文の次に AC 未検証の開示行、disclosures には入れない', () => {
-  const r = classifyMergeTier({ ...standardBase(), iterateStatus: 'lgtm', evalSkipped: true });
-  assert.equal(r.tier, 'REVIEW');
-  assert.equal(r.reasons.length, 2, JSON.stringify(r.reasons));
-  assert.equal(r.reasons[0], '標準 — 人間が LGTM して merge');
-  assert.ok(r.reasons[1].includes('AC は未検証（micro eval skip）'), `reasons に AC未検証文言を含むべきだが: ${JSON.stringify(r.reasons)}`);
-  assert.deepEqual(r.disclosures, [], 'disclosures は「参考」へ回るので入れない');
-});
-
-test('classifyMergeTier: evalSkipped:false / 未指定 → REVIEW の reasons は既定文 1 件だけ', () => {
-  for (const extra of [{ evalSkipped: false }, {}]) {
+test('classifyMergeTier: HOLD 理由なし → REVIEW の reasons は既定文 1 件だけ（evalSkipped は入力ではなく、渡しても AC 未検証の行を足さない）', () => {
+  for (const extra of [{}, { evalSkipped: true }]) {
     const r = classifyMergeTier({ ...standardBase(), iterateStatus: 'lgtm', ...extra });
     assert.equal(r.tier, 'REVIEW');
     assert.deepEqual(r.reasons, ['標準 — 人間が LGTM して merge'], JSON.stringify(extra));
   }
-});
-
-test('classifyMergeTier: evalSkipped:true + HOLD 条件(unsatisfiedAgentAc:true) → HOLD かつ AC未検証文言なし（HOLD の reasons は不変）', () => {
-  const r = classifyMergeTier({ ...standardBase(), iterateStatus: 'lgtm', unsatisfiedAgentAc: true, evalSkipped: true });
-  assert.equal(r.tier, 'HOLD');
-  assert.ok(!r.reasons.some((x) => x.includes('AC は未検証（micro eval skip）')), `HOLD tier では AC未検証文言なし: ${JSON.stringify(r.reasons)}`);
 });
 
 // ---- fail_closed フラグ + dangerFailClosed HOLD reason（issue #271）----
@@ -1616,7 +1599,7 @@ const VALIDATE_NO_TESTS = { tests: 'no_tests', green: false };
 const NO_TESTS_REASON_HEAD = 'テストを 1 本も実行していない';
 
 test('classifyMergeTier: Validate tests:no_tests は blocking 理由 no_tests_run（human_judgment）を 1 件積んで HOLD。passed / green では積まない', () => {
-  // classifyMergeTier は gate_policy を受け取らず、policy が左右するのは ledgerUnconverged / evalSkipped だけ — どちらの値でも積まれる
+  // classifyMergeTier は gate_policy を受け取らず、policy が左右するのは ledgerUnconverged だけ — どちらの値でも積まれる
   for (const fr of [{ finalReconcile: 'skipped' }, {}]) {
     const r = classifyMergeTier(baseCleanInput({ ...fr, validateResult: VALIDATE_NO_TESTS }));
     assert.equal(r.tier, 'HOLD', `${JSON.stringify(fr)}: ${JSON.stringify(r)}`);
@@ -1625,7 +1608,7 @@ test('classifyMergeTier: Validate tests:no_tests は blocking 理由 no_tests_ru
     assert.ok(r.holdReasons[0].reason.includes('Validate'), r.holdReasons[0].reason);
     assert.equal(r.holdKind, 'human_judgment');
   }
-  for (const extra of [{ evalSkipped: true }, { ledgerUnconverged: ['EVAL-1'] }]) {
+  for (const extra of [{ ledgerUnconverged: ['EVAL-1'] }]) {
     const r = classifyMergeTier(baseCleanInput({ finalReconcile: 'skipped', validateResult: VALIDATE_NO_TESTS, ...extra }));
     assert.equal(r.tier, 'HOLD', JSON.stringify(extra));
     assert.equal(codesOf(r).filter((c) => c === 'no_tests_run').length, 1, JSON.stringify(extra));
@@ -1657,8 +1640,8 @@ test('classifyMergeTier: Final reconcile の test#final が tests:no_tests（fin
 
 test('classifyMergeTier: changedTestRunners が非空なら、そのパスを含む blocking 理由 test_runner_changed（human_judgment）で HOLD', () => {
   const runners = ['tests/run-new.sh', 'tests/run-all-bats.sh'];
-  // classifyMergeTier は gate_policy を受け取らず、policy が左右するのは ledgerUnconverged / evalSkipped だけ — どちらの値でも積まれる
-  for (const extra of [{}, { evalSkipped: true }, { ledgerUnconverged: ['EVAL-1'] }, { finalReconcile: 'reverified', finalTestGreen: true }]) {
+  // classifyMergeTier は gate_policy を受け取らず、policy が左右するのは ledgerUnconverged だけ — どちらの値でも積まれる
+  for (const extra of [{}, { ledgerUnconverged: ['EVAL-1'] }, { finalReconcile: 'reverified', finalTestGreen: true }]) {
     const r = classifyMergeTier(baseCleanInput({ changedTestRunners: runners, validateResult: { tests: 'passed', green: true }, ...extra }));
     assert.equal(r.tier, 'HOLD', JSON.stringify(extra));
     const held = r.holdReasons.filter((x) => x.code === 'test_runner_changed');

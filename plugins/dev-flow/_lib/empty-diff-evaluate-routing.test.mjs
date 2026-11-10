@@ -5,7 +5,7 @@
 // テストごとに可変の {hash, empty} を返す。
 //
 // 実効 shape は realized diff の file 数で決まる（issue #676）: 既定の realized 3 件（REALIZED_FILES）+
-// AC 2 件 + issue_type:'fix' で standard になり runEval が成立する。micro ケースは realizedFiles を 1 件にする。
+// AC 2 件 + issue_type:'fix' で standard になる。micro ケースは realizedFiles を 1 件にする。
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -30,6 +30,7 @@ function makeCountingSandbox(diffHashConfig) {
     prHash = 'H',
     iterateResult = { status: 'lgtm', iterations: 1, fixes_applied: 0 },
     realizedFiles = REALIZED_FILES,
+    reconcileSync = null,
   } = diffHashConfig || {};
 
   const agentStub = async (prompt, opts) => {
@@ -45,6 +46,7 @@ function makeCountingSandbox(diffHashConfig) {
     if (label === 'security-scope') return { ok: true, target: false, reasons: [] };
     // label 'danger-grep'（issue #544 統合呼び出し）: risk/files を 1 応答で返す。
     if (label === 'danger-grep') return { risk: { ok: true, hits: [] }, files: [...realizedFiles], diffhash: null };
+    if (label === 'reconcile-sync' && reconcileSync) return reconcileSync;
     if (label.startsWith('test')) return { tests: 'passed', green: true, summary: '' };
     if (agentType === 'dev-flow:evaluator') return { verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation', ac_results: [], security_clearance: [] };
     if (agentType === 'dev-flow:dev-implementer') return { status: 'DONE', task_id: 'issue-1', files: [...realizedFiles], summary: '', concerns: [] };
@@ -243,21 +245,24 @@ test('[empty-diff] (L) hash 不一致 + iterate fix 同時発生 → eval_stalen
   assert.ok(calls.some((c) => c.label === 'post-summary'), '(L) post-summary の agent 呼び出しが存在すべき');
 });
 
-// (M) micro path（runEval=false）で iterate fix があっても stale 関連の行が一切出ない（AC-4）
-test('[empty-diff] (M) micro path（runEval=false）+ iterate fix あり → eval_staleness===none・stale 行なし', async () => {
-  // realized 1 件 → micro（runEval=false）
-  const { ctx } = makeCountingSandbox({
+// (M) micro でも Evaluate は走るので、iterate fix があれば eval staleness を判定し Final AC reconcile を起動する
+test('[empty-diff] (M) micro + iterate fix あり → eval_staleness===iterate_fixed・final-ac-reconcile が走る', async () => {
+  // realized 1 件 → micro
+  const { ctx, calls } = makeCountingSandbox({
     gateEmpty: false,
     evalHash: 'AAA',
     prHash: 'AAA',
     iterateResult: { status: 'lgtm', iterations: 2, fixes_applied: 2 },
     realizedFiles: ['docs/a.md'],
+    reconcileSync: { ok: true, head: 'a'.repeat(40) },
   });
   const { error, result: returned } = await runWorkflowCapture(src, ctx);
   if (error && (error.name === 'ReferenceError' || error.name === 'SyntaxError')) assert.fail(`dev-flow.js crash: ${error.name}: ${error.message}`);
   if (error) assert.fail(`(M) 想定外エラー: ${error.message}`);
   assert.ok(returned !== null, '(M) return object を返すべき');
-  assert.strictEqual(returned?.eval_staleness, 'none', `(M) runEval=false なら iterate fix があっても eval_staleness==='none' のはずだが ${JSON.stringify(returned?.eval_staleness)}`);
+  assert.strictEqual(returned?.shape, 'micro');
+  assert.strictEqual(returned?.eval_staleness, 'iterate_fixed', `(M) micro でも iterate fix があれば eval_staleness==='iterate_fixed' のはずだが ${JSON.stringify(returned?.eval_staleness)}`);
+  assert.strictEqual(calls.filter((c) => c.label === 'final-ac-reconcile').length, 1, '(M) micro でも fix 適用時は Final AC reconcile が 1 回走る');
 });
 
 // (P) iterate_status ごとの merge_tier routing（reviewer 指摘の代替ケース）

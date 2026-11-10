@@ -129,11 +129,11 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
   - 実効 shape — `classifyShape` が realized diff の file 数・行数と issue 由来の決定論特徴量（AC 数・`issue_type`・構造化 `breaking_change`）で
     1 回で決める。数える file は ephemeral・宣言外を除いたもの。安全 floor（count 欠損・AC 欠落・out-of-enum の
     `issue_type`・`breaking_change === true` → complex）を通った run だけ、行数で下げ方向にだけ補正する。LLM の事前見積もりは使わない
-  - Evaluate を走らせるか（`runEval`）— micro 以外、または danger-grep / testsurf の hit・green-fix・drop・宣言外変更がある run
+  - Evaluate の強制条件（`evalForced`）— danger-grep / testsurf の hit・green-fix・drop・宣言外変更。micro の Evaluate の深さと lite route を決める
   - 宣言外変更 — implementer が申告しなかった変更を concern に積み、evaluator の重点監査に回す
   - security review 対象か: lite の入口。pr-iterate は引数で受けず reviewer 不問で hook が縛る `security-codex-relay` が取る
-- shape は Evaluate の深さを決める: micro は evaluator を回さない（`runEval` で強制されたときだけ回す）、standard は
-  差し戻さない（例外は agent AC の未達）、complex は差し戻しループを回す
+- Evaluate は micro を含む全 shape で走り、shape は深さを決める: standard と `evalForced` の無い micro は差し戻さない
+  （例外は agent AC の未達）、complex と `evalForced` のある micro は差し戻しループを回す
 - **失敗の扱い**:
   - danger-grep の失敗・契約外の形は全 SEC seed を unchecked にして HOLD へ（fail-closed。軸A）。proxy の null・例外は abort せず
     per-field のフォールバックに倒す（abort は終端サマリーと journal を失う）
@@ -176,7 +176,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
   commit・push・`gh pr create` させる。PR 本文の見える部分は人間向けの要約（`behavior_changes` / `review_points` / `out_of_scope` と
   `Closes #N`）に限り、受入条件・設計判断・検証・`pr_sections` は `<details>` に畳む。ci AC がある run は PR に `ci_verify.label` を付ける。
   - push は `pr-push start <log>` → `wait <log> --wait-sec <n>`（lock 上限 1800 秒）
-  - **micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target`
+  - **micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.evalForced && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target`
     の run は、フル pr-iterate の代わりに `pr-review-lite`（pr-reviewer の 1-pass review）→ `ci-check-lite`（CI の 1 回判定）の 2 spawn で
     終える。review が null・blocking（critical/major）なら CI を読まずに、CI が passed / no_checks でなければフル pr-iterate へ昇格する
   - それ以外の run は nested の `workflow('dev-flow:pr-iterate-run')`（`prIterateArgs()`。`nested.caller: 'dev-flow'`）
@@ -254,7 +254,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
 ## Merge tier
 
 - **判定**: fix 後の最終 tree に対して `merge-tier-facts`（danger-grep の再実行・changed-files・PR の mergeable・CI checks・Closes 行）を 1 回で
-  読み、danger を reconcile し直して `classifyMergeTier` が tier を決める。2 値で、blocking が残れば HOLD、それ以外は REVIEW（`runEval` が false の run は AC 未検証を理由に開示）。
+  読み、danger を reconcile し直して `classifyMergeTier` が tier を決める。2 値で、blocking が残れば HOLD、それ以外は REVIEW（micro でも AC は evaluator が判定済み）。
   HOLD 理由の code は `_lib/merge-tier.mjs` の `pushBlocking` が持つ（一覧は `docs/dev-flow-atlas.md` の HOLD 理由表）。どの tier でも merge は人間
   - 敵対的 security review の対象の run（Diff triage か pr-iterate のどちらかで対象）は、pr-iterate が lgtm かつ security review が
     今の head で cleared でなければ HOLD（`security_review_unresolved`。gate_policy に依らない）

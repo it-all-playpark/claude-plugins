@@ -22,7 +22,6 @@ test('shouldRunFinalAcReconcile: fixesApplied=0 → no_fixes', () => {
     fixesApplied: 0,
     finalReconcile: 'reverified',
     finalTestGreen: true,
-    runEval: true,
     acCount: 2,
   });
   assert.deepEqual(result, { run: false, reason: 'no_fixes' });
@@ -33,7 +32,6 @@ test('shouldRunFinalAcReconcile: fixesApplied が数値でない → no_fixes', 
     fixesApplied: null,
     finalReconcile: 'reverified',
     finalTestGreen: true,
-    runEval: true,
     acCount: 2,
   });
   assert.deepEqual(result, { run: false, reason: 'no_fixes' });
@@ -44,13 +42,12 @@ test('shouldRunFinalAcReconcile: fixesApplied が負数 → no_fixes', () => {
     fixesApplied: -1,
     finalReconcile: 'reverified',
     finalTestGreen: true,
-    runEval: true,
     acCount: 2,
   });
   assert.deepEqual(result, { run: false, reason: 'no_fixes' });
 });
 
-test('shouldRunFinalAcReconcile: runEval !== true → eval_skipped (micro path)', () => {
+test('shouldRunFinalAcReconcile: 入力に shape・Evaluate の有無は無く、runEval:false を渡しても fix 適用時は run:true（micro でも走る）', () => {
   const result = shouldRunFinalAcReconcile({
     fixesApplied: 3,
     finalReconcile: 'reverified',
@@ -58,7 +55,7 @@ test('shouldRunFinalAcReconcile: runEval !== true → eval_skipped (micro path)'
     runEval: false,
     acCount: 2,
   });
-  assert.deepEqual(result, { run: false, reason: 'eval_skipped' });
+  assert.deepEqual(result, { run: true, reason: 'ok' });
 });
 
 test('shouldRunFinalAcReconcile: acCount=0 → no_ac', () => {
@@ -66,7 +63,6 @@ test('shouldRunFinalAcReconcile: acCount=0 → no_ac', () => {
     fixesApplied: 3,
     finalReconcile: 'reverified',
     finalTestGreen: true,
-    runEval: true,
     acCount: 0,
   });
   assert.deepEqual(result, { run: false, reason: 'no_ac' });
@@ -77,7 +73,6 @@ test('shouldRunFinalAcReconcile: acCount が非整数 → no_ac', () => {
     fixesApplied: 3,
     finalReconcile: 'reverified',
     finalTestGreen: true,
-    runEval: true,
     acCount: 1.5,
   });
   assert.deepEqual(result, { run: false, reason: 'no_ac' });
@@ -88,7 +83,6 @@ test('shouldRunFinalAcReconcile: acCount が負数 → no_ac', () => {
     fixesApplied: 3,
     finalReconcile: 'reverified',
     finalTestGreen: true,
-    runEval: true,
     acCount: -2,
   });
   assert.deepEqual(result, { run: false, reason: 'no_ac' });
@@ -99,7 +93,6 @@ test('shouldRunFinalAcReconcile: acCount=2 + finalReconcile=unavailable → fina
     fixesApplied: 3,
     finalReconcile: 'unavailable',
     finalTestGreen: null,
-    runEval: true,
     acCount: 2,
   });
   assert.deepEqual(result, { run: false, reason: 'final_test_unavailable' });
@@ -110,7 +103,6 @@ test('shouldRunFinalAcReconcile: finalReconcile=skipped → final_test_unavailab
     fixesApplied: 3,
     finalReconcile: 'skipped',
     finalTestGreen: null,
-    runEval: true,
     acCount: 2,
   });
   assert.deepEqual(result, { run: false, reason: 'final_test_unavailable' });
@@ -121,7 +113,6 @@ test('shouldRunFinalAcReconcile: finalTestGreen=false → final_test_red', () =>
     fixesApplied: 3,
     finalReconcile: 'reverified',
     finalTestGreen: false,
-    runEval: true,
     acCount: 2,
   });
   assert.deepEqual(result, { run: false, reason: 'final_test_red' });
@@ -132,7 +123,6 @@ test('shouldRunFinalAcReconcile: finalTestGreen=null(no_tests) + reverified → 
     fixesApplied: 3,
     finalReconcile: 'reverified',
     finalTestGreen: null,
-    runEval: true,
     acCount: 2,
   });
   assert.deepEqual(result, { run: true, reason: 'ok' });
@@ -143,7 +133,6 @@ test('shouldRunFinalAcReconcile: finalTestGreen=true → run:true', () => {
     fixesApplied: 1,
     finalReconcile: 'reverified',
     finalTestGreen: true,
-    runEval: true,
     acCount: 5,
   });
   assert.deepEqual(result, { run: true, reason: 'ok' });
@@ -156,7 +145,7 @@ test('shouldRunFinalAcReconcile: finalTestGreen=true → run:true', () => {
 test('shouldRunFinalAcReconcile: finalReconcile が reverified 以外（ci_verified / unavailable / skipped / null）→ finalTestGreen に依らず final_test_unavailable', () => {
   for (const finalReconcile of ['ci_verified', 'unavailable', 'skipped', null, undefined]) {
     for (const finalTestGreen of [true, null]) {
-      const result = shouldRunFinalAcReconcile({ fixesApplied: 1, finalReconcile, finalTestGreen, runEval: true, acCount: 2 });
+      const result = shouldRunFinalAcReconcile({ fixesApplied: 1, finalReconcile, finalTestGreen, acCount: 2 });
       assert.deepEqual(result, { run: false, reason: 'final_test_unavailable' }, `${finalReconcile} / ${finalTestGreen}`);
     }
   }

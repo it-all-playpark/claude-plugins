@@ -13,17 +13,13 @@ export const FINAL_AC_RECONCILE_VALUES = ['skipped', 'reverified', 'unavailable'
 //
 // 判定順（最初に該当した reason を返す）:
 //   1. fixesApplied が数値でない/<=0        → no_fixes
-//   2. runEval !== true                      → eval_skipped（micro path は Evaluate 0 回）
-//   3. acCount が正整数でない                → no_ac（AC 0 件で agent を起動しない）
-//   4. finalReconcile が 'reverified' でない → final_test_unavailable
-//   5. finalTestGreen === false              → final_test_red
-//   6. それ以外（true または null=no_tests） → run:true
-export function shouldRunFinalAcReconcile({ fixesApplied, finalReconcile, finalTestGreen, runEval, acCount }) {
+//   2. acCount が正整数でない                → no_ac（AC 0 件で agent を起動しない）
+//   3. finalReconcile が 'reverified' でない → final_test_unavailable
+//   4. finalTestGreen === false              → final_test_red
+//   5. それ以外（true または null=no_tests） → run:true
+export function shouldRunFinalAcReconcile({ fixesApplied, finalReconcile, finalTestGreen, acCount }) {
   if (typeof fixesApplied !== 'number' || !Number.isFinite(fixesApplied) || fixesApplied <= 0) {
     return { run: false, reason: 'no_fixes' };
-  }
-  if (runEval !== true) {
-    return { run: false, reason: 'eval_skipped' };
   }
   if (!(Number.isInteger(acCount) && acCount > 0)) {
     return { run: false, reason: 'no_ac' };

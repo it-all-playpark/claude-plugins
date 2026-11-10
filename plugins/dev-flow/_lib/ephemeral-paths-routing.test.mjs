@@ -7,7 +7,7 @@
 // 監査経路で扱う（宣言外は size 信号ではなく監査信号）。
 //
 // Tests:
-//   (A) realized-diff が ephemeral 込みファイル一覧を返す → shape===micro かつ evaluator 0 回
+//   (A) realized-diff が ephemeral 込みファイル一覧を返す → shape===micro かつ evaluator 1 回
 //       (ephemeral を除外した non-ephemeral 2 件を dev-implementer stub の files に申告させ、宣言外 0 件にする
 //        → classifyShape(req, 2) → micro → ephemeral による誤判定なし・undeclared=0 で Evaluate 強制もかからない)
 //   (B) realized-diff が ephemeral 込み 8 件（non-ephemeral 6 件）→ shape==='complex'
@@ -104,10 +104,10 @@ function makeCountingSandbox(analyzeReq, realizedFiles, declaredFiles = []) {
 
 // ============================================================
 // (A) realized-diff が ephemeral 込みファイル一覧を返す
-//     → shape===micro かつ evaluator 0 回（ephemeral による shape 誤判定が再現しない — AC 2）
+//     → shape===micro かつ evaluator 1 回（ephemeral による shape 誤判定が再現しない — AC 2）
 // ============================================================
 
-test('[ephemeral-paths-routing] (A) realized ephemeral 3 件 non-ephemeral 2 件 → shape===micro evaluator 0 回', async () => {
+test('[ephemeral-paths-routing] (A) realized ephemeral 3 件 non-ephemeral 2 件 → shape===micro evaluator 1 回', async () => {
   const microReq = {
     summary: 's',
     acceptance_criteria: ['a', 'b'],
@@ -126,8 +126,7 @@ test('[ephemeral-paths-routing] (A) realized ephemeral 3 件 non-ephemeral 2 件
   ];
 
   // non-ephemeral 2 件（a.md, b.md）を plan file_changes に宣言する。
-  // 宣言しないと宣言外（size 信号ではなく Evaluate 強制）で undeclared.length>0 になり
-  // evaluator 0 回の assert が壊れる。
+  // 宣言しないと宣言外（size 信号ではなく Evaluate の強制条件）で undeclared.length>0 になる。
   const declaredFiles = ['a.md', 'b.md'];
 
   const { ctx, calls } = makeCountingSandbox(microReq, realizedFiles, declaredFiles);
@@ -140,9 +139,9 @@ test('[ephemeral-paths-routing] (A) realized ephemeral 3 件 non-ephemeral 2 件
   const evaluatorCalls = calls.filter((c) => c.agentType === 'dev-flow:evaluator');
   assert.equal(
     evaluatorCalls.length,
-    0,
-    '(A) micro + ephemeral 3 件 + 宣言済み non-ephemeral 2 件: evaluator は 0 回のはずだが ' + evaluatorCalls.length + ' 回'
-      + ' (ephemeral filter 後 non-ephemeral=2・宣言済みで undeclared=0 → classifyShape(req,2) → micro → runEval=false)',
+    1,
+    '(A) micro + ephemeral 3 件 + 宣言済み non-ephemeral 2 件: evaluator は 1 回のはずだが ' + evaluatorCalls.length + ' 回'
+      + ' (ephemeral filter 後 non-ephemeral=2・宣言済みで undeclared=0 → classifyShape(req,2) → micro → evalForced=false)',
   );
 
   assert.ok(returned !== null, '(A) workflow は return object を返すべきだが null だった');
@@ -195,7 +194,7 @@ test('[ephemeral-paths-routing] (B) realized ephemeral 2 件 non-ephemeral 6 件
   assert.ok(
     evaluatorCalls.length >= 1,
     '(B) micro + 宣言済み non-ephemeral 6 件: evaluator は >= 1 回のはずだが ' + evaluatorCalls.length + ' 回'
-      + ' (ephemeral filter 後・宣言済みで undeclared=0 → declared count=6 → classifyShape(req,6) → complex → runEval=true)',
+      + ' (ephemeral filter 後・宣言済みで undeclared=0 → declared count=6 → classifyShape(req,6) → complex)',
   );
 
   assert.ok(returned !== null, '(B) workflow は return object を返すべきだが null だった');
@@ -387,7 +386,7 @@ test('[ephemeral-paths-routing] (F) non-ephemeral 宣言外 1 件 → shape===mi
   assert.ok(
     evaluatorCalls.length >= 1,
     '(F) micro + 宣言外 non-ephemeral 1 件: evaluator は >= 1 回のはずだが ' + evaluatorCalls.length + ' 回'
-      + ' (undeclared.length>0 → runEval=true で micro でも Evaluate を強制)',
+      + ' (undeclared.length>0 → evalForced=true)',
   );
 
   // 宣言外は size 信号ではなく監査信号 — shape には混ぜず Evaluate 強制 + concern 注入で扱う

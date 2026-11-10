@@ -2359,35 +2359,33 @@ async function execDiffTriagePhase(state) {
   const triage = classifyShape(req, realizedCount, lineStats)
   const EFFECTIVE_SHAPE = triage.shape
   const TRIVIAL = EFFECTIVE_SHAPE === 'micro'
-  const EVAL_PASSES = EFFECTIVE_SHAPE === 'standard' ? 1 : EVAL_MAX
+  // Evaluate の強制条件（軸A invariant 由来）。Evaluate は全 shape で走り、micro はこれが 1 つでもあると差し戻しループ
+  // （EVAL_MAX）を回し lite route に入らない。強制条件の無い micro は standard と同じ 1 pass。
+  const evalForced = dangerHits.length > 0 || testsurfPatterns.length > 0 || state.greenFixCount > 0 || state.implDroppedCount > 0 || undeclared.length > 0
+  const EVAL_PASSES = EFFECTIVE_SHAPE === 'standard' || (TRIVIAL && !evalForced) ? 1 : EVAL_MAX
   log(`shape: ${EFFECTIVE_SHAPE} — ${triage.reason}`)
-  const runEval = EFFECTIVE_SHAPE !== 'micro' || dangerHits.length > 0 || testsurfPatterns.length > 0 || state.greenFixCount > 0 || state.implDroppedCount > 0 || undeclared.length > 0
   if (TRIVIAL && dangerHits.length > 0) {
-    log(`⚠️ micro だが danger hit(${dangerHits.join(',')}) → Evaluate を実行（security path 強制）`)
+    log(`⚠️ micro だが danger hit(${dangerHits.join(',')}) → Evaluate の差し戻しループを実行（security path 強制）`)
   }
   if (TRIVIAL && testsurfPatterns.length > 0) {
-    log(`⚠️ micro だが testsurf hit(${testsurfPatterns.join(',')}) → Evaluate を実行（test-weakening 監査 強制）`)
+    log(`⚠️ micro だが testsurf hit(${testsurfPatterns.join(',')}) → Evaluate の差し戻しループを実行（test-weakening 監査 強制）`)
   }
 
   if (TRIVIAL && state.greenFixCount > 0) {
-    log(`⚠️ micro だが green-fix ${state.greenFixCount} 回 → Evaluate を実行（テスト弱体化監査 強制）`)
+    log(`⚠️ micro だが green-fix ${state.greenFixCount} 回 → Evaluate の差し戻しループを実行（テスト弱体化監査 強制）`)
   }
   if (TRIVIAL && state.implDroppedCount > 0) {
-    log(`⚠️ micro だが implement drop ${state.implDroppedCount} 件 → Evaluate を実行（未実装範囲の AC 検証 強制）`)
+    log(`⚠️ micro だが implement drop ${state.implDroppedCount} 件 → Evaluate の差し戻しループを実行（未実装範囲の AC 検証 強制）`)
   }
   if (TRIVIAL && undeclared.length > 0) {
-    log(`⚠️ micro だが宣言外変更 ${undeclared.length} 件 → Evaluate を実行（宣言外監査 強制）`)
+    log(`⚠️ micro だが宣言外変更 ${undeclared.length} 件 → Evaluate の差し戻しループを実行（宣言外監査 強制）`)
   }
   // DeclaredPath check: 宣言外変更を concerns へ注入する（evaluator focus_areas で重点監査）。
   {
     // Diff triage で算出済みの undeclared を再利用する。
     if (undeclared.length > 0) {
-      if (runEval) {
-        state.concerns.push(`宣言外変更 ${undeclared.length} 件が plan の file_changes に無い。意図的か確認: ${undeclared.join(', ')}`)
-        log(`declared-path-check: 宣言外 ${undeclared.length} 件 → 1 item に集約して concerns へ注入: ${undeclared.join(', ')}`)
-      } else {
-        log(`declared-path-check(warn): 宣言外 ${undeclared.length} 件だが Evaluate=skip: ${undeclared.join(', ')}`)
-      }
+      state.concerns.push(`宣言外変更 ${undeclared.length} 件が plan の file_changes に無い。意図的か確認: ${undeclared.join(', ')}`)
+      log(`declared-path-check: 宣言外 ${undeclared.length} 件 → 1 item に集約して concerns へ注入: ${undeclared.join(', ')}`)
     } else {
       log('declared-path-check: 宣言外変更なし（全変更が plan file_changes 内）')
     }
@@ -2416,7 +2414,7 @@ async function execDiffTriagePhase(state) {
   state.triage = triage
   state.EFFECTIVE_SHAPE = EFFECTIVE_SHAPE
   state.EVAL_PASSES = EVAL_PASSES
-  state.runEval = runEval
+  state.evalForced = evalForced
   state.undeclared = undeclared
   // diff-hash reuse: risk 成功かつ files 取得時だけ hash を捕捉し、Merge tier で tree OID が一致すれば再判定を skip させる。
   // それ以外は null のまま Merge tier で必ず再実行する。
@@ -2884,12 +2882,8 @@ async function recheckPostEvalGreenFix(state, newIters) {
 phase('Diff triage')
 state = await execDiffTriagePhase(state)
 
-if (state.runEval) {
 phase('Evaluate')
 state = await execEvaluatePhase(state)
 state = await execPostEvalValidate(state)
-} else {
-  log('micro path: Evaluate phase を skip(evaluator 0 回起動。danger-grep clean。reason: ' + state.triage.reason + ')')
-}
 
 return { state, redgreen_state_dir: redgreenStateDir }

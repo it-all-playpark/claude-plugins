@@ -53,7 +53,7 @@ const EVALUATE_RESULT_SPEC = {
   state: {
     plan: 'object', ledger: 'object', risk: 'object', dangerHits: 'array', testsurfHits: 'array', testsurfPatterns: 'array',
     securityReview: { target: 'boolean', reasons: 'array', reviewer_context_changed: 'boolean' },
-    triage: 'object', EFFECTIVE_SHAPE: 'string', runEval: 'boolean',
+    triage: 'object', EFFECTIVE_SHAPE: 'string', evalForced: 'boolean',
     evalResult: 'object|null', evalDiffHash: 'string|null', secDiffHash: 'string|null',
     unsatisfiedAcByActor: 'object', val: 'object|null', greenFixCount: 'number', concerns: 'array',
   },
@@ -2934,7 +2934,7 @@ let state = {
   val: null, greenFixCount: 0, greenFixIterations: [],
   ledger: null, risk: null, dangerHits: [], realized: null,
   realizedCount: NaN, triage: null,
-  EFFECTIVE_SHAPE: null, EVAL_PASSES: null, runEval: null,
+  EFFECTIVE_SHAPE: null, EVAL_PASSES: null, evalForced: null,
   dhPrompt: null, evalResult: null, designReplanCount: 0, reimplCount: 0,
   postEvalVal: null, postEvalRecheck: null,
   // Validate が green 要件から外した「base でも失敗する既存の失敗」（env）と、base 再実行済みで ENV でなかったファイル（ran）
@@ -3452,9 +3452,9 @@ state = evaluated.state
 // Evaluate の redgreen が作った state dir。Final reconcile の redgreen-final が使い回す。
 const redgreenStateDir = evaluated.redgreen_state_dir
 ABORT_CTX.shape = state.EFFECTIVE_SHAPE
-if (state.runEval) feedClockMark('evaluate_end', maxEpochRes([state.evalResult, state.postEvalVal, state.postEvalRecheck]))
+feedClockMark('evaluate_end', maxEpochRes([state.evalResult, state.postEvalVal, state.postEvalRecheck]))
 
-// Phase PR: PR 直前の diff hash を Evaluate 時点と完全一致で突合する（micro は evalDiffHash が null で skip）。
+// Phase PR: PR 直前の diff hash を Evaluate 時点と完全一致で突合する。
 // hash_reconverged への置換は Merge tier の merge-tier-facts 取得後に行う。
 let evalStaleness = 'none'
 if (state.evalDiffHash != null) {
@@ -3610,11 +3610,11 @@ const prIterateArgs = () => ({
 })
 
 // PR phase 経路分岐: LITE（実効 shape micro・Evaluate 非強制・danger hit なし）は pr-reviewer 1-pass + CI gate で完結し、
-// pr-iterate を起動しない。runEval を強制する条件（軸A invariant 由来）が 1 つでもあればフル経路。
+// pr-iterate を起動しない。Evaluate の強制条件（state.evalForced。軸A invariant 由来）が 1 つでもあればフル経路。
 // workflow('pr-iterate-run') はネスト 1 段で合法 — nested の pr-iterate.js から workflow() を起動すると 2 段になり throw する
 // （pr-iterate.js がテストコマンドの解決の工程を起動するのは test_commands を受け取らない単体起動だけ）。
 // ci の AC がある run・security review の対象の run も lite に入れない（どちらも pr-iterate だけが持つ）。
-const LITE = state.EFFECTIVE_SHAPE === 'micro' && !state.runEval && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target
+const LITE = state.EFFECTIVE_SHAPE === 'micro' && !state.evalForced && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target
 let iterate
 // route: PR phase の経路識別子（'lite'|'full'）。返り値と telemetry に載る。
 let route
@@ -3668,9 +3668,9 @@ if (LITE) {
 }
 feedClockMark('iterate_end', iterateEpochRes)
 
-// fix 適用 / lgtm 以外の終端は PR tree が変わった可能性がある。runEval=false は stale の概念が無いので skip。
+// fix 適用 / lgtm 以外の終端は PR tree が変わった可能性がある。
 // 'none' からのみ昇格させて hash_mismatch を優先する。
-if (state.runEval && evalStaleness === 'none') {
+if (evalStaleness === 'none') {
   if (iterate?.status != null && iterate.status !== 'lgtm') {
     evalStaleness = 'iterate_incomplete'
     log(`⚠️ pr-iterate が lgtm 以外で終端（status=${iterate?.status ?? 'null'}）— 終端サマリーに stale-eval 警告を付記する（issue #288 iterate_incomplete）`)

@@ -4,7 +4,7 @@
 // 検証 / __earlyReturn 配線を VM sandbox で検証する。
 //
 // analyze は acceptance_criteria あり・issue_type:'fix'（実効 shape は realized diff から決まる、
-// issue_type:'fix'）で runEval を成立させる。
+// issue_type:'fix'）にする。
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';

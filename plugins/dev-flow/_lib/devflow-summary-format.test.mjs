@@ -3395,11 +3395,11 @@ test('issue #829 AC5: REVIEW で理由が既定文だけなら理由の節を出
     assert.ok(!conclusion.includes('してください') && !conclusion.includes('diff') && !conclusion.includes('マージして'), `${name}: 結論行に行動指示が無い: ${conclusion}`);
     assert.ok(body.includes(`\`gh pr ready ${input.pr}\``), `${name}: 行動指示は「あなたがやること」にある`);
   }
-  // 既定文以外の理由（evaluator を回していない run の AC 未検証開示）があれば理由の節は残る
-  const mt = classifyMergeTier({ ...CLASSIFY_BASE_829, evalSkipped: true });
-  const body = buildDevflowSummaryBody({ ...FIXTURES_829.reviewMicro, mergeTierReasons: mt.reasons, disclosures: mt.disclosures });
+  // 既定文以外の理由（disclosures に無いもの）があれば理由の節は残る
+  const extraReason = 'formatter に渡した既定文以外の理由';
+  const body = buildDevflowSummaryBody({ ...FIXTURES_829.reviewMicro, mergeTierReasons: [...FIXTURES_829.reviewMicro.mergeTierReasons, extraReason] });
   assert.ok(body.includes('**Merge tier 理由**:'), '既定文以外があれば理由の節を出す');
-  assert.ok(body.includes('- AC は未検証（micro eval skip）'), '既定文以外の理由を出す');
+  assert.ok(body.includes(`- ${extraReason}`), '既定文以外の理由を出す');
 });
 
 test('issue #829 AC5: HOLD の結論行も行動指示を「あなたがやること」と重ねない', () => {
@@ -3457,11 +3457,11 @@ function card1359(body) {
 // danger-grep が clean と判定した SEC seed（evidence 'danger-grep clean' で checked）
 const cleanSec1359 = () => reconcileDanger({ items: seedSecurityLedger() }, { ok: true, hits: [] }).items;
 
-test('issue #1359 AC-1: PR #1354 型（REVIEW・micro・eval skip・AC 判定なし・テスト green・danger-grep clean）は評価と AC を ⚠️ に数え、AC の行を出して「✅ 要対応事項なし」を出さない', () => {
+test('issue #1359 AC-1: evaluator の判定が無い run（REVIEW・micro・AC 判定なし・テスト green・danger-grep clean）は評価と AC を ⚠️ に数え、AC の行を出して「✅ 要対応事項なし」を出さない', () => {
   const body = buildDevflowSummaryBody({
     ...BASE_INPUT,
     mergeTier: 'REVIEW',
-    mergeTierReasons: ['標準 — 人間が LGTM して merge', 'AC は未検証（micro eval skip）— evaluator 0 回のため acceptance_criteria の充足は判定していない'],
+    mergeTierReasons: ['標準 — 人間が LGTM して merge'],
     shape: 'micro',
     evalVerdict: null,
     acResults: null,

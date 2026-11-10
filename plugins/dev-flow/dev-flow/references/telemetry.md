@@ -31,7 +31,7 @@ object literal（成功・失敗・abort）と VM 実行の handoff の両方で
 | `shape` | dev-flow | dev-flow-health の手読みだけ | Diff triage で `classifyShape` が realized diff から決めた実効 shape。判定前に終わった run には無い |
 | `route` | dev-flow | dev-flow-health の手読みだけ | PR phase が通った経路（`.claude/workflows/dev-flow.js` の `route`） |
 | `iterate_status` | dev-flow / pr-iterate | `health-report.sh` が読む | pr-iterate の終端 status。LGTM に届かなかった run を signature にする値は `HOLD_SIGNATURE_ITERATE_STATUSES` |
-| `eval_verdict` | dev-flow | dev-flow-health の手読みだけ | evaluator の最終 verdict。Evaluate を走らせない run には無い |
+| `eval_verdict` | dev-flow | dev-flow-health の手読みだけ | evaluator の最終 verdict。Evaluate は micro でも走るので、無いのは Evaluate の前に終端した run と evaluator が失敗した run だけ |
 | `duration_seconds` | dev-flow | dev-flow-health の手読みだけ | run 全体の wall-clock 秒。clock は下の「所要時間」 |
 | `phase_durations` | dev-flow | dev-flow-health の手読みだけ | phase 別の秒数（phase は `CLOCK_PHASE_ENDS`）。clock は下の「所要時間」 |
 | `eval_model_config` | dev-flow | dev-flow-health の手読みだけ | evaluator の model。frontmatter の値と workflow のリテラルの一致は `_lib/review-model-frontmatter.test.mjs` |

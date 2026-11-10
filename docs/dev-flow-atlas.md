@@ -180,9 +180,9 @@ flowchart TD
     IN["test green"] --> C1["diff-triage.sh<br/>統合 exec-proxy・1 呼び出し"]
     C1 --> C2["ephemeral・宣言外を count から除外"]
     C2 --> C3["classifyShape(req, realizedCount, lineStats)<br/>EFFECTIVE_SHAPE 確定"]
-    C3 --> C5{"runEval ?"}
-    C5 -->|true| OUT["Evaluate へ"]
-    C5 -->|false| SKIP["micro path<br/>evaluator 0 回"]
+    C3 --> C5{"micro かつ<br/>evalForced=false ?"}
+    C5 -->|no| OUT["Evaluate へ<br/>standard=1 パス / complex・強制条件のある micro=EVAL_MAX"]
+    C5 -->|yes| ONE["Evaluate へ<br/>1 パス（lite route の候補）"]
 
     C1 -.->|"risk 欠落・実行不能"| FC["fail-closed<br/>SEC 全 unchecked → HOLD"]
 ```
@@ -191,9 +191,9 @@ flowchart TD
 diffhash / lines（ファイルごとの追加・削除行数。untracked は `wc -l`）を 1 回で返す。フィールドごとに失敗セマンティクスが分かれており、**risk の欠落だけは
 fail-closed** で SEC seed を全 unchecked にして merge tier を HOLD へ倒す（軸A invariant）。
 
-`runEval` が true になる条件は次のいずれか。
+Evaluate は全 shape で走る。`evalForced`（Evaluate の強制条件）が true になる条件は次のいずれか。micro は
+`evalForced` が true だと差し戻しループを回し、lite route に入らない。
 
-- `EFFECTIVE_SHAPE` が micro 以外
 - danger-grep hit / test-weakening 検出 / plan 宣言外の変更
 - green-fix が発生した / dev-implementer が null を返して task を落とした
 
@@ -201,7 +201,7 @@ fail-closed** で SEC seed を全 unchecked にして merge tier を HOLD へ倒
 
 ```mermaid
 flowchart TD
-    IN["runEval=true"] --> E1["evaluator<br/>standard=1 パス / complex=EVAL_MAX"]
+    IN["Diff triage 完了"] --> E1["evaluator<br/>standard・強制条件の無い micro=1 パス / それ以外=EVAL_MAX"]
     E1 --> E2{"verdict"}
     E2 -->|"fail: design"| E3["dev-implementer へ fix_feedback 付きで再 spawn（reimpl#i）<br/>DESIGN_REPLAN_MAX で cap"]
     E3 --> E1
@@ -231,9 +231,9 @@ Evaluate 時点から tree が変わったことによる `eval_staleness=hash_m
 
 ```mermaid
 flowchart TD
-    IN["Evaluate 完了 / micro path"] --> R1["diff-hash 比較<br/>不一致なら stale-eval"]
+    IN["Evaluate 完了"] --> R1["diff-hash 比較<br/>不一致なら stale-eval"]
     R1 --> R2["pr-artifacts で commit message / PR body 確定<br/>haiku が verbatim 転写 + git commit / push / gh pr create"]
-    R2 --> R4{"LITE ?<br/>micro かつ runEval=false<br/>かつ danger clean<br/>かつ ci の AC なし<br/>かつ security review 対象外"}
+    R2 --> R4{"LITE ?<br/>micro かつ evalForced=false<br/>かつ danger clean<br/>かつ ci の AC なし<br/>かつ security review 対象外"}
     R4 -->|yes| LITE["lite route<br/>pr-reviewer 1-pass → ci-check"]
     R4 -->|no| FULL["workflow: pr-iterate"]
     LITE -->|"clean かつ CI green"| OUT["Final reconcile へ"]
@@ -293,7 +293,7 @@ realized diff のファイル数（ephemeral・宣言外を除外した数）・
 した場合は例外なく complex へ落ちる安全弁が効く。floor を通過した run だけ、行数が全ファイル分取れていれば
 差分の中身で下げ方向に補正する（docs と対応本番ありのテストを数えない / 削除主体なら 1 段下げ / complex は
 追加 100 行超のときだけ。テストだけの run は補正しない）。micro の LITE 経路に対する意味的リスクの安全網は
-runEval 強制条件（danger-grep / testsurf / green-fix / dropped task / 宣言外変更 / UI 接触）が担う。
+Evaluate の強制条件（danger-grep / testsurf / green-fix / dropped task / 宣言外変更 / UI 接触）が担う。
 
 ```mermaid
 flowchart TD
@@ -323,11 +323,11 @@ flowchart TD
 
 | shape | Implement | Evaluate | merge tier |
 | --- | --- | --- | --- |
-| `micro` | Setup 末尾の analyze ゲート直後に issue から単一 task の plan を合成（`implement#synth-plan`）→ Implement で `dev-implementer` を 1 spawn | skip（evaluator 0 回）。danger-grep hit 時は security path で強制実行 | `REVIEW` / `HOLD`（evaluator 0 回の `REVIEW` は AC 未検証を開示） |
+| `micro` | Setup 末尾の analyze ゲート直後に issue から単一 task の plan を合成（`implement#synth-plan`）→ Implement で `dev-implementer` を 1 spawn | 1 パスのみ（standard と同じ）。強制条件（danger-grep hit 等。`evalForced`）があれば差し戻し loop（`EVAL_MAX` 上限） | `REVIEW` / `HOLD` |
 | `standard` | 同上 | 1 パスのみ。差し戻しなし。未解消 critical は merge tier HOLD で担保。agent AC の未達だけは `AGENT_AC_REIMPL_MAX` 回まで延長して差し戻す | `REVIEW` / `HOLD` |
 | `complex` | 同上 | 差し戻し loop（`EVAL_MAX` 上限、design 差し戻しは `DESIGN_REPLAN_MAX` まで。差し戻し先は同じ `dev-implementer`） | `REVIEW` / `HOLD` |
 
-micro のうち `runEval=false` かつ danger clean かつ ci の AC（`ci_verify` の check で判定する AC。
+micro のうち `evalForced=false` かつ danger clean かつ ci の AC（`ci_verify` の check で判定する AC。
 `CI_AC_INDEXES`）を持たず、敵対的 security review の対象外（merge-base 基準の diff が許可リストだけ）のものだけが
 PR phase で **lite route** に入り、
 pr-reviewer 1-pass と CI green だけで終端する。blocking finding か CI 非 green を検出した時点で
@@ -414,7 +414,7 @@ flowchart TD
     IN["classifyMergeTier の入力<br/>ledger / danger / AC / iterate status / mergeable ほか"] --> H{"HOLD 理由が<br/>1 つでも成立 ?<br/>（下表）"}
 
     H -->|"1 つでも成立"| HOLD["HOLD<br/>人間 review 必須"]
-    H -->|"すべて不成立"| REVIEW["REVIEW<br/>標準 — 人間が LGTM<br/>micro eval skip なら AC 未検証を開示"]
+    H -->|"すべて不成立"| REVIEW["REVIEW<br/>標準 — 人間が LGTM"]
 
     HOLD --> D["開示行を reasons に追記<br/>tier 判定値は不変"]
     REVIEW --> D
