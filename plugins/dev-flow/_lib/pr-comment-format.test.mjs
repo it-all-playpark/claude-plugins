@@ -821,10 +821,32 @@ test('buildTerminalSummaryBody: ci_pending / ci_error の終了レポートは H
   for (const status of ['lgtm', 'stuck', 'fix_failed', 'max_reached', 'review_contract_error', 'security_unresolved']) {
     assert.ok(!buildTerminalSummaryBody({ ...opts, status }).includes('/pr-iterate 77'), status);
   }
-  // blocking 付きの round で security review が終端した run（lastDecision が approve でない）
-  const unreviewed = buildTerminalSummaryBody({ ...opts, status: 'security_unresolved', lastDecision: 'request-changes' });
+  // blocking 付きの round で security review が終端した run
+  const unreviewed = buildTerminalSummaryBody({
+    ...opts, status: 'security_unresolved', lastDecision: 'request-changes',
+    history: [{ iteration: 1, decision: 'request-changes', summary: 'r1', blocking: [{ severity: 'major', file: 'a.js', line: 1, description: 'd' }], minor: [] }],
+  });
   assert.ok(!unreviewed.includes('/pr-iterate 77'), unreviewed);
-  assert.ok(card1359(unreviewed).checks.includes('- ⚠️ 最終レビュー: blocking の指摘を fix に回したが再レビューしていない（security review で終了）— 最後の反復の指摘と修正の diff を確かめる'), unreviewed);
+});
+
+test('issue #1359: security_unresolved の最終レビューは最後の反復の blocking 件数で決まり、blocking がある反復はカードと反復履歴が同じ扱いを出す', () => {
+  const opts = { pr: 9, status: 'security_unresolved', iterations: 2, lastSummary: 'x', ciLastStatus: 'passed', ...ON_HEAD,
+    securityReview: { target: true, status: 'unresolved', stop_reason: null, rounds: 2, critical: 0, major: 1, minor: 0 } };
+  const f = { severity: 'major', file: 'a.js', line: 1, description: 'd' };
+  const r1 = { iteration: 1, decision: 'request-changes', summary: 'r1', blocking: [f], minor: [] };
+
+  // request-changes の round で fix が security の指摘を人に返して終えた run
+  const withBlocking = buildTerminalSummaryBody({ ...opts, lastDecision: 'request-changes',
+    history: [r1, { iteration: 2, decision: 'request-changes', summary: 'r2', blocking: [f, f], minor: [] }] });
+  assert.ok(card1359(withBlocking).checks.includes('- ⚠️ 最終レビュー: 最後の反復の blocking 2 件は修正に回したが再レビューなし（security review で終了）— 最後の反復の指摘と修正の diff を確かめる'), withBlocking);
+  assert.deepEqual(historyRows1359(withBlocking).map((l) => l.split(' | ')[5]), ['修正に回した', '修正に回したが再レビューなし']);
+  assert.ok(!withBlocking.includes('未修正で終了'), withBlocking);
+
+  // blocking 0 件の comment の round で securityGate が止めた run（直す指摘が無い）
+  const noBlocking = buildTerminalSummaryBody({ ...opts, lastDecision: 'comment',
+    history: [r1, { iteration: 2, decision: 'comment', summary: 'r2', blocking: [], minor: [] }] });
+  assert.deepEqual(card1359(noBlocking).checks.map((l) => l.split(':')[0]), ['- ❌ security review']);
+  assert.deepEqual(historyRows1359(noBlocking).map((l) => l.split(' | ')[5]), ['修正に回した', 'なし']);
 });
 
 test('buildTerminalSummaryBody: 「pr-iterate は判定しない」の文言はこの run が判定しない code の行にだけ出る', () => {

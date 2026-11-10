@@ -954,14 +954,16 @@ function priorHoldCounts({ unresolved, unconfirmed }) {
   return [unresolved > 0 ? `${unresolved} 件が未解消` : null, unconfirmed > 0 ? `${unconfirmed} 件が未確認` : null].filter((s) => s != null).join('・');
 }
 
-function terminalDecisionCard({ pr, status, lastDecision, ciLastStatus, ciLastFailedChecks, ciLastHead, endHead, securityReview, priorHold, priorHoldOpen }) {
+function terminalDecisionCard({ pr, status, history, ciLastStatus, ciLastFailedChecks, ciLastHead, endHead, securityReview, priorHold, priorHoldOpen }) {
   const checks = `\`gh pr checks ${pr}\``;
+  const lastRound = (history ?? []).at(-1);
+  const lastBlocking = (lastRound?.blocking ?? []).length;
   let review;
-  if (status === 'lgtm' || (status === 'security_unresolved' && lastDecision === 'approve')) review = { state: 'ok' };
+  if (status === 'lgtm' || (status === 'security_unresolved' && lastRound != null && lastBlocking === 0)) review = { state: 'ok' };
   else if (status === 'stuck' || status === 'fix_failed') review = { state: 'failed', note: `blocking の指摘が残ったまま終了（status: ${status}）— 下の「反復履歴」と指摘の詳細を確かめる` };
   else if (status === 'max_reached') review = { state: 'unverified', note: '最後の修正を再レビューしていない（反復上限）— 最後の反復の指摘と修正の diff を確かめる' };
   else if (status === 'review_contract_error') review = { state: 'unverified', note: 'reviewer が結果を返さなかった — diff を自分で review する' };
-  else if (status === 'security_unresolved') review = { state: 'unverified', note: 'blocking の指摘を fix に回したが再レビューしていない（security review で終了）— 最後の反復の指摘と修正の diff を確かめる' };
+  else if (status === 'security_unresolved' && lastBlocking > 0) review = { state: 'unverified', note: `最後の反復の blocking ${lastBlocking} 件は${SECURITY_UNRESOLVED_TREATMENT}（security review で終了）— 最後の反復の指摘と修正の diff を確かめる` };
   else if (status === 'ci_pending' || status === 'ci_error') review = { state: 'unverified', note: `LGTM に届くか確かめていない（status: ${status}）— CI の確定後に \`/pr-iterate ${pr}\` を再実行する` };
   else review = { state: 'unverified', note: `LGTM に届くか確かめていない（status: ${mdCell(status)}）— 最後の反復の指摘と diff を確かめる` };
 
@@ -1008,11 +1010,14 @@ function terminalDecisionCard({ pr, status, lastDecision, ciLastStatus, ciLastFa
   ];
 }
 
+const SECURITY_UNRESOLVED_TREATMENT = '修正に回したが再レビューなし';
+
 function blockingTreatment(round, isLastRound, status, iterations) {
   if ((round.blocking ?? []).length === 0) return 'なし';
   const terminal = isLastRound && (typeof iterations !== 'number' || round.iteration === iterations);
   if (!terminal) return '修正に回した';
-  return status === 'max_reached' ? '修正したが再レビューなし' : '未修正で終了';
+  if (status === 'max_reached') return '修正したが再レビューなし';
+  return status === 'security_unresolved' ? SECURITY_UNRESOLVED_TREATMENT : '未修正で終了';
 }
 
 function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], ciLastHead = null, ciVerifyStatus = null, ciVerifyHead = null, mergeableLast = null, humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, finalTestCheck = null, securityReview = null, securityReviewHead = null, headSha = null, endHead = headSha, fixDirectionUsed = false }) {
@@ -1041,7 +1046,7 @@ function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSu
   }
   lines.push(`### ${headline}`);
   lines.push('');
-  lines.push(...terminalDecisionCard({ pr, status, lastDecision, ciLastStatus, ciLastFailedChecks, ciLastHead, endHead, securityReview, priorHold, priorHoldOpen }));
+  lines.push(...terminalDecisionCard({ pr, status, history, ciLastStatus, ciLastFailedChecks, ciLastHead, endHead, securityReview, priorHold, priorHoldOpen }));
 
   lines.push('| 終了状態 | 反復回数 | 最終判定 |');
   lines.push('|---|---|---|');
