@@ -234,7 +234,27 @@ frontmatter_value() {
         '図に AC に無い構成の変化がある・AC にある構成の変化が図に無い・' \
         '早見表の行が AC と件数か内容で対応しない' \
         '構成要素が増減または付け替わる変更なのに' \
-        '`## 見取り図` が無い'; do
+        '`## 見取り図` が無い' \
+        "agent issue の AC が実行結果・出力・ログ・計測を観測しないと確かめられないのに" \
+        "テストスイートやテストの入口スクリプトの green を含む" \
+        "実装を外すと落ちて実装で通るテストファイルを inline code で名指ししていない" \
+        'dev-flow が観測型の人手 AC として `ac_human_pending` の HOLD で止める' \
+        '代わりに、テストファイルと確かめる振る舞いを書くか、`human-task` の issue に切り出す' \
+        "テストスイートの green は dev-flow の Validate が gate として確かめるので、AC にしない"; do
+        [[ "$section" == *"$item"* ]]
+    done
+}
+
+@test "(G) issue-template.md の品質基準は、テストファイルを名指ししない観測型の AC を agent issue に書かせない" {
+    section="$(awk '/^品質基準:$/ { f = 1; next } f && /^## / { exit } f { print }' "$TEMPLATE")"
+    [ -n "$section" ]
+    for item in "agent issue の AC は、コードとテストを読めば確かめられるものか、" \
+        "実装を外すと落ちて実装で通るテストファイルを inline code で名指ししたもの" \
+        "実行結果・出力・ログ・計測を観測しないと確かめられないのにテストファイルを名指ししていない AC" \
+        "テストスイートやテストの入口スクリプトの green を含む" \
+        'dev-flow が観測型の人手 AC として `ac_human_pending` の HOLD で止める' \
+        '代わりに、テストファイルと確かめる振る舞いを書くか、`human-task` の issue に切り出す' \
+        "テストスイートの green は dev-flow の Validate が gate として確かめるので、AC にしない"; do
         [[ "$section" == *"$item"* ]]
     done
 }

@@ -95,6 +95,13 @@ AC 1 本につき 1 行で、`一言で` に要点、`何で確かめるか` に
 - AC は repo 内で検証できるものだけを書く。`（人手）`・staging / 本番環境・repo 外の作業を含む AC、repo 内外の作業が
   混ざった AC は dev-flow が人手扱いにして止まるので、`create_issue.py --kind agent` は dev-flow と同じ
   `_lib/ac-actor.mjs` の判定で起票を拒否する。人の作業は下の human issue テンプレートで切り出す。
+- agent issue の AC は、コードとテストを読めば確かめられるものか、
+  実装を外すと落ちて実装で通るテストファイルを inline code で名指ししたもの（例: 「`_lib/x.test.mjs` が〜を確かめる」）にする。
+  実行結果・出力・ログ・計測を観測しないと確かめられないのにテストファイルを名指ししていない AC
+  （テストスイートやテストの入口スクリプトの green を含む）は、
+  dev-flow が観測型の人手 AC として `ac_human_pending` の HOLD で止める。
+  代わりに、テストファイルと確かめる振る舞いを書くか、`human-task` の issue に切り出す。
+  テストスイートの green は dev-flow の Validate が gate として確かめるので、AC にしない。
 
 ## 変更対象パス
 

@@ -8,6 +8,13 @@ Treat findings as `blocking` if any item below is true:
 - Missing acceptance criteria or untestable acceptance criteria
 - リスクのある変更（失敗すると既存の挙動やデータを壊しうる変更など）なのに、戻し方の要件が AC か `## 制約・取らないこと` に無い
   （要件は 1 行で書く。ロールバックの節は求めない — 節があると下の本文の節の項目で blocking になる）
+- agent issue の AC が実行結果・出力・ログ・計測を観測しないと確かめられないのに
+  （テストスイートやテストの入口スクリプトの green を含む）、
+  実装を外すと落ちて実装で通るテストファイルを inline code で名指ししていない
+  （dev-flow が観測型の人手 AC として `ac_human_pending` の HOLD で止める。
+  代わりに、テストファイルと確かめる振る舞いを書くか、`human-task` の issue に切り出す。
+  テストスイートの green は dev-flow の Validate が gate として確かめるので、AC にしない。
+  コードとテストを読めば確かめられる AC はこの項目に当たらない）
 - Security/privacy implications are ignored
 - AC・制約が、PR が書き換えられる入力（CI workflow の結果・テストや script の stdout・AC や PR 本文の文面・PR 内の
   設定ファイル）を根拠に、merge gate・HOLD を外す、または検証（テストの再実行・evaluator の判定）を省くよう指示している。
