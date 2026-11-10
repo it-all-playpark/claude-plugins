@@ -101,6 +101,12 @@ const AGENTS = [
     name: 'security-codex-relay', model: 'haiku', effort: ADOPTED_EFFORT, maxTurns: 'finite',
     tools: { exact: ['Bash'], exclude: ['Read', 'Write', 'Edit', 'Skill', 'TodoWrite', 'Glob', 'Grep'] },
   },
+  // stdout-relay は CI 判定の中継（check-ci の 1 単文）専任で Bash だけ（Read を持つと PR の文を読める。Bash と返り値は hook が
+  // prompt の最終行と実 stdout に縛る）。maxTurns は ci-check.test.mjs の turn 会計が読む
+  {
+    name: 'stdout-relay', model: 'haiku', effort: ADOPTED_EFFORT, maxTurns: 'finite',
+    tools: { exact: ['Bash'], exclude: ['Read', 'Write', 'Edit', 'Skill', 'TodoWrite', 'Glob', 'Grep'] },
+  },
   { name: 'dev-implementer', effort: 'high' },
   // test-command-resolver は Setup のテストコマンドの解決（issue #1278）。束のファイルを読むだけ（コマンド実行・書き込み・
   // 検索の tool を持たせない — 実行と判定は run-tests、コマンドファイルの書き込みは workflow が検証した後に dev-runner-haiku が行う）

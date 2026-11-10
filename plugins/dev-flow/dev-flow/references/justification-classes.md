@@ -16,6 +16,9 @@ capability-bound へ移さず、`capability-bound.md` に載せない（capabili
 - guard_blocked の replan 除外
 - blocking_reason 決定論スクラバー（`scrubBlockingDetail`）
 - review-finding 決定論スクラバー（`scrubReviewFindingText`。finding の文を fix prompt へ verbatim に流さない）
+- CI 判定の中継（`stdout-relay`）の縛り: hook（`hooks/pretool-stdout-relay-guard.sh`）と bind（`_lib/scripts/stdout-relay-bind.mjs`）が
+  Bash を prompt の最終行の check-ci 1 単文に、返り値をその実 stdout の JSON か prompt が定める失敗時の JSON に限る（中継が PR の文を
+  読める限り誘導を否定できない）
 
 ## 指示の incentive-structural
 

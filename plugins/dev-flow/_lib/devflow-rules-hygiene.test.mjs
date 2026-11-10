@@ -151,7 +151,9 @@ test('(h) rules と references（capability-bound.md / pipeline.md / security-re
 // justification-classes.md: rules の正当化クラス節から移した機構の列挙。機構はクラスの節から動かさない
 // （capability-bound に移すと sunset で撤去されうる）。rules と security-review.md 冒頭は列挙先としてここを指す
 const JUSTIFICATION_MECHANISMS = {
-  'incentive-structural': ['`evalSeen`', '`blockSeen`', '`reviewSeen`', '`EVAL_STUCK`', '`REVIEW_STUCK`', '`EVAL_MAX`', '`GREEN_MAX`', '`BLOCK_MAX`', '`DESIGN_REPLAN_MAX`', '`AGENT_AC_REIMPL_MAX`', 'guard_blocked の replan 除外', '`scrubBlockingDetail`', '`scrubReviewFindingText`'],
+  'incentive-structural': ['`evalSeen`', '`blockSeen`', '`reviewSeen`', '`EVAL_STUCK`', '`REVIEW_STUCK`', '`EVAL_MAX`', '`GREEN_MAX`', '`BLOCK_MAX`', '`DESIGN_REPLAN_MAX`', '`AGENT_AC_REIMPL_MAX`', 'guard_blocked の replan 除外', '`scrubBlockingDetail`', '`scrubReviewFindingText`',
+    // CI 判定の中継の縛り。hook と bind のパスは (h) が実在を確かめる
+    '`stdout-relay`', '`hooks/pretool-stdout-relay-guard.sh`', '`_lib/scripts/stdout-relay-bind.mjs`'],
   '指示の incentive-structural': ['self-judge 禁止', 'feedback 全件対応', 'self-contained 記述', 'topic 反復でアプローチ変更'],
   'blast-radius': ['human merge', 'critical/major-always-blocks', 'Final reconcile', 'TESTSURF seeding', '`health-report.sh`'],
 };

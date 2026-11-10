@@ -608,6 +608,79 @@ assert_rejected() {
 }
 
 # ---------------------------------------------------------------------------
+# --wait: one ci-wait style wait, then the one gh call
+# ---------------------------------------------------------------------------
+
+# stub_sleep <exit>: PATH 先頭の sleep スタブ。実際には待たず、秒数と「gh より前か」を記録して <exit> で終わる
+stub_sleep() {
+    export SLEEP_STUB_LOG="$BATS_TEST_TMPDIR/sleep.log"
+    : >"$SLEEP_STUB_LOG"
+    cat >"$STUB_DIR/sleep" <<STUB
+#!/usr/bin/env bash
+if [[ -s "\$GH_STUB_LOG" ]]; then order=after-gh; else order=before-gh; fi
+printf '%s %s\n' "\$1" "\$order" >>"\$SLEEP_STUB_LOG"
+exit $1
+STUB
+    chmod +x "$STUB_DIR/sleep"
+}
+
+# slept_seconds: sleep スタブに渡った秒数の合計
+slept_seconds() {
+    awk '{ s += $1 } END { print s + 0 }' "$SLEEP_STUB_LOG"
+}
+
+@test "wait: --wait sleeps the requested seconds in ci-wait's short chunks before gh, fetches once and adds slept:true" {
+    stub_sleep 0
+    ci "[$SUCCESS_LINT]" --wait 45
+    [ "$status" -eq 0 ]
+    [ "$(slept_seconds)" = "45" ]
+    [ "$(wc -l <"$SLEEP_STUB_LOG" | tr -d ' ')" = "9" ]
+    [ -z "$(grep after-gh "$SLEEP_STUB_LOG" || true)" ]
+    [ "$(gh_calls)" = "1" ]
+    [ "$(echo "$output" | jq -r '.slept')" = "true" ]
+    [ "$(echo "$output" | jq -r '.status')" = "passed" ]
+    [ "$(echo "$output" | jq -r '.head_sha')" = "$HEAD_SHA" ]
+}
+
+@test "wait: without --wait there is no sleep and no slept key" {
+    stub_sleep 0
+    ci "[$SUCCESS_LINT]"
+    [ "$status" -eq 0 ]
+    [ ! -s "$SLEEP_STUB_LOG" ]
+    [ "$(echo "$output" | jq -r 'has("slept")')" = "false" ]
+}
+
+@test "wait: a wait that does not complete runs no gh and prints the fixed slept:false object" {
+    stub_sleep 1
+    ci "[$SUCCESS_LINT]" --wait 45
+    [ "$status" -eq 0 ]
+    [ "$output" = '{"slept":false,"status":"pending","passed":0,"failed":0,"pending":0,"skipped":0}' ]
+    [ "$(gh_calls)" = "0" ]
+}
+
+@test "wait: a failed fetch after the wait is still an error (exit 1) and carries slept:true" {
+    stub_sleep 0
+    gh_returns 'not json'
+    run bash "$SCRIPT" --pr 7 --repo acme/skills --wait 10
+    [ "$status" -eq 1 ]
+    [ "$(gh_calls)" = "1" ]
+    [ "$(echo "$output" | jq -r '.status')" = "error" ]
+    [ "$(echo "$output" | jq -r '.slept')" = "true" ]
+}
+
+@test "wait: --wait that does not fit the Bash tool's 120s timeout is rejected before sleeping or calling gh" {
+    stub_sleep 0
+    for w in 101 120 900 0 -5 abc 1.5 '' 045; do
+        run bash "$SCRIPT" --pr 7 --repo acme/skills --wait "$w"
+        assert_rejected 'Invalid --wait'
+        [ ! -s "$SLEEP_STUB_LOG" ]
+    done
+    ci "[$SUCCESS_LINT]" --wait 100
+    [ "$status" -eq 0 ]
+    [ "$(slept_seconds)" = "100" ]
+}
+
+# ---------------------------------------------------------------------------
 # architectural invariant: the only GitHub I/O is one read-only `gh pr view`
 # ---------------------------------------------------------------------------
 
@@ -661,7 +734,7 @@ github_io_violations() {
     [ -z "$output" ]
 }
 
-@test "invariant: the script does not sleep (the caller owns wall-clock waiting)" {
+@test "invariant: the script does not call sleep itself (a --wait goes through ci-wait.sh)" {
     run bash -c "grep -vE '^[[:space:]]*#' '$SCRIPT' | grep -nE '(^|[;&|(])[[:space:]]*sleep[[:space:]]'"
     [ "$status" -ne 0 ]
 }

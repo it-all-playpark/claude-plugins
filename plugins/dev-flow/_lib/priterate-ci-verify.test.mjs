@@ -52,8 +52,8 @@ test('[ci-verify] success: round の CI 判定から e2e を外し、LGTM 後の
   assert.deepEqual(v.map((c) => c.label), ['ci-verify#1.1', 'ci-verify#1.2']);
   assert.equal(v[0].prompt, ciVerifyPrompt({ pr: 5, repo: 'acme/skills', checks: ['e2e'], seconds: 0 }));
   assert.equal(v[1].prompt, ciVerifyPrompt({ pr: 5, repo: 'acme/skills', checks: ['e2e'], seconds: CI_VERIFY_POLL_SECONDS }));
-  assert.ok(v[1].prompt.includes(`\`ci-wait ${CI_VERIFY_POLL_SECONDS}\``) && v[1].prompt.includes(`\`${checkCiCommand({ pr: 5, repo: 'acme/skills', only: ['e2e'] })}\``), v[1].prompt);
-  assert.ok(!v[0].prompt.includes('`ci-wait '), '1 回目の poll は待たない');
+  assert.ok(v[1].prompt.endsWith(`\n${checkCiCommand({ pr: 5, repo: 'acme/skills', only: ['e2e'], wait: CI_VERIFY_POLL_SECONDS })}`), v[1].prompt);
+  assert.ok(v[0].prompt.endsWith(`\n${checkCiCommand({ pr: 5, repo: 'acme/skills', only: ['e2e'] })}`), '1 回目の poll は待たない');
   assert.equal(JSON.stringify(v[0].schema), JSON.stringify(CI_VERIFY_CHECK));
   assert.equal(calls.filter((c) => c.label.startsWith('fix#')).length, 0);
 });

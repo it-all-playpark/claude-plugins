@@ -38,3 +38,9 @@
   echo "$output"
   [ "$status" -eq 0 ]
 }
+
+@test "pretool-stdout-relay-guard.test.sh は exit 0 で完走する" {
+  run bash "$BATS_TEST_DIRNAME/pretool-stdout-relay-guard.test.sh"
+  echo "$output"
+  [ "$status" -eq 0 ]
+}

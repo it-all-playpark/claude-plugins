@@ -360,9 +360,8 @@ export function assertNoCrash(error, name) {
 // ============================================================
 
 /**
- * status と整合する check-ci の件数（passed / failed / pending / skipped）を返す。workflow は proxy の status を
- * 件数から導き直した値と照合し、食い違い・件数欠落を error にする（ciEffectiveStatus。issue #834）ため、
- * status を採らせたい stub はこの件数を一緒に返す。'error' は check-ci が件数を出さないので 0 件。
+ * status と整合する check-ci の件数（passed / failed / pending / skipped）を返す。CI_STATUS は件数を required に持つので、
+ * stub は check-ci の stdout と同じ形（status と整合する件数）で返す。'error' は 0 件。
  *
  * @param {'passed'|'failed'|'pending'|'no_checks'|'error'} status
  */
@@ -706,7 +705,7 @@ export function prIterateRounds({ reviewer, fix, ci, commitEnsure } = {}) {
   return ({ label, agentType, prompt }) => {
     if (reviewer && agentType === 'dev-flow:pr-reviewer') return reviewer(++reviews);
     if (fix && label.startsWith('fix#')) return pick(fix, fixes++);
-    if (ci && agentType === 'dev-flow:dev-runner-haiku-ro' && String(prompt).includes('check-ci --pr ')) return pick(ci, cis++);
+    if (ci && agentType === 'dev-flow:stdout-relay' && String(prompt).includes('check-ci --pr ')) return pick(ci, cis++);
     if (commitEnsure !== undefined && label.startsWith('commit-ensure#')) return commitEnsure;
     return undefined;
   };

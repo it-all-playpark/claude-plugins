@@ -116,7 +116,8 @@ test('[impl-model-opus] (c) impl:serial:issue-1 の null は再試行されず 1
 // 対象判定 security-scope（issue #1063）で dev-runner-haiku-ro が 1 増え、Validate の各回の pre-commit hook
 // 実行 commit-hook#<iter>（issue #1188）で dev-runner-haiku が 1 増え、analyze ゲート通過後に全 AC を渡す観測型の
 // 分類 agent ac-observational#<issue>（issue #1259）で dev-runner が 1 増え、Setup のテストコマンドの解決 resolve-test-commands
-// （issue #1278。既定は base に tests/run-*.sh がある repo で resolver を起動しない）で dev-runner-haiku が 1 増えた値）
+// （issue #1278。既定は base に tests/run-*.sh がある repo で resolver を起動しない）で dev-runner-haiku が 1 増え、
+// micro の ci-check-lite が dev-runner-haiku-ro から stdout-relay に移った値）
 // ============================================================
 
 const SHAPES = {
@@ -129,7 +130,7 @@ const SHAPES = {
     },
     total: 15,
     evals: 0,
-    byType: { 'dev-flow:dev-runner': 1, 'dev-flow:dev-runner-haiku-wo': 1, 'dev-flow:dev-implementer': 1, 'dev-flow:dev-runner-haiku': 6, 'dev-flow:dev-runner-haiku-ro': 5, 'dev-flow:pr-reviewer': 1 },
+    byType: { 'dev-flow:dev-runner': 1, 'dev-flow:dev-runner-haiku-wo': 1, 'dev-flow:dev-implementer': 1, 'dev-flow:dev-runner-haiku': 6, 'dev-flow:dev-runner-haiku-ro': 4, 'dev-flow:stdout-relay': 1, 'dev-flow:pr-reviewer': 1 },
   },
   standard: {
     args: analyzeArgs(1, { acceptance_criteria: ['a', 'b', 'c', 'd'], issue_type: 'feat' }),

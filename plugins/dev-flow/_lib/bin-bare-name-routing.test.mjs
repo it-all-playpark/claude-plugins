@@ -166,13 +166,13 @@ test("[bin-bare-name-routing][AC2] dev-flow.js の journal handoff payload は j
   }
 });
 
-test("[bin-bare-name-routing][AC2] pr-iterate.js の ci-check prompt が bare 名 '`check-ci --pr' を含む", async () => {
+test("[bin-bare-name-routing][AC2] pr-iterate.js の ci-check prompt の最終行が bare 名 'check-ci --pr' の単文", async () => {
   const { ctx, calls } = makePrIterateSandbox();
   const { error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
   assertNoCrash(error, 'pr-iterate');
   const ci = calls.find((c) => c.label.startsWith('ci-check'));
   assert.ok(ci, 'pr-iterate.js で ci-check が観測されない');
-  assert.ok(ci.prompt.includes('`check-ci --pr '),`ci-check prompt に bare 名 call site が無い:\n${ci.prompt.slice(0, 600)}`);
+  assert.ok(ci.prompt.includes('\ncheck-ci --pr '),`ci-check prompt に bare 名 call site が無い:\n${ci.prompt.slice(-600)}`);
 });
 
 // ---- [first-token] bash 前置・.sh 拡張子残存が無い ----

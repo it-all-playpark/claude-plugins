@@ -73,7 +73,7 @@ test('[AC-1a] review blocking + ci-check#1 failed → fix#1 prompt に review �
   assert.ok(ciIdx >= 0, 'blocking round で ci-check#1 が dispatch されるべき');
   assert.ok(ciIdx < fixIdx, `ci-check#1（${ciIdx}）は fix#1（${fixIdx}）より前に呼ばれるべき`);
   const ci1 = calls[ciIdx];
-  assert.equal(ci1.agentType, 'dev-flow:dev-runner-haiku-ro', `ci-check#1 の agentType が想定と異なる: ${ci1.agentType}`);
+  assert.equal(ci1.agentType, 'dev-flow:stdout-relay', `ci-check#1 の agentType が想定と異なる: ${ci1.agentType}`);
   assert.ok(ci1.prompt.includes('check-ci --pr '), 'ci-check#1 は既存の ci-check exec-proxy prompt であるべき');
   const round1Ci = calls.filter((c) => c.label.startsWith('ci-check#1'));
   assert.equal(round1Ci.length, 1, `blocking round の ci-check は 1 回だけであるべきだが ${round1Ci.length} 回だった`);
