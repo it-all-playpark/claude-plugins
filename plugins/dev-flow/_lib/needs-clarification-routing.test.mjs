@@ -13,6 +13,10 @@
 //   T7: uncertain 非空 → needs_clarification + missing_context に uncertain 文言 + dev-implementer 0 回
 //   T8: comment_overrides のみ（ゲート非該当）→ PR まで完走
 //   T9: 全 needs_clarification 経路で prompt に 'worktree remove' を含まない（worktree は保持）
+//   T10: analyze-clarify が解釈の候補を返す → clarify_questions に載る（missing_context は変わらない）
+//   T11: analyze-clarify が失敗 → clarify_questions は空・missing_context はゲート理由そのまま。analyze 以外の source も空
+//   T12: 候補が 2〜4 件・上限内でない質問は interpretations を空にして文章の質問に倒す
+//   T13: CLARIFY schema と analyze-clarify の prompt が解釈の候補を求める
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -162,5 +166,74 @@ test("[needs-clarification] T9: 全 needs_clarification 経路で prompt に 'wo
     const { calls, result } = await run(opts);
     assert.equal(result?.status, 'needs_clarification');
     assert.equal(calls.filter((c) => c.prompt.includes('worktree remove')).length, 0);
+  }
+});
+
+// ============================================================
+// T10〜T13: 解釈の候補（clarify_questions。issue #1362）
+// ============================================================
+const CLARIFY_LABEL = 'analyze-clarify#1';
+const INTERP = (label, extra = {}) => ({ label, description: `${label} として読む`, preview: 'in  -> out\n[a] -> [b]', ...extra });
+const plain = (v) => JSON.parse(JSON.stringify(v));
+
+test('[needs-clarification] T10: analyze-clarify が解釈の候補を返す → clarify_questions に載り missing_context は変わらない', async () => {
+  const questions = [
+    { question: '上限は件数か文字数か', interpretations: [INTERP('件数'), INTERP('文字数')] },
+    { question: '受け入れ基準をどの見出しで書くか', interpretations: [] },
+  ];
+  const { result } = await run({ analyze: { acceptance_criteria: [] }, overrides: { [CLARIFY_LABEL]: { missing_context: ['上限は件数か文字数か'], questions } } });
+  assert.equal(result?.status, 'needs_clarification');
+  assert.equal(result?.source, 'analyze');
+  assert.deepEqual(plain(result.clarify_questions), questions);
+  assert.equal(result.missing_context[0], '上限は件数か文字数か');
+  assert.ok(result.missing_context.some((m) => m.includes('acceptance_criteria が空')), 'missing_context の末尾にゲート理由が残っていない');
+});
+
+test('[needs-clarification] T11: analyze-clarify が失敗 → clarify_questions は空・missing_context はゲート理由そのまま。analyze 以外の source も空配列', async () => {
+  const ok = await run({ analyze: { acceptance_criteria: [] } });
+  const failed = await run({ analyze: { acceptance_criteria: [] }, overrides: { [CLARIFY_LABEL]: null } });
+  assert.equal(failed.result?.status, 'needs_clarification');
+  assert.equal(failed.result?.source, 'analyze');
+  assert.deepEqual(plain(failed.result.clarify_questions), []);
+  // 成功時の missing_context は [質問文, ...ゲート理由]。失敗時はゲート理由だけが今までどおり返る
+  assert.deepEqual(plain(failed.result.missing_context), plain(ok.result.missing_context).slice(1));
+  assert.ok(failed.result.missing_context.length > 0);
+
+  const implement = await run({ impl: NEEDS_CONTEXT });
+  assert.equal(implement.result?.source, 'implement');
+  assert.deepEqual(plain(implement.result.clarify_questions), []);
+});
+
+test('[needs-clarification] T12: 候補が 2〜4 件・上限内でない質問は interpretations を空にして文章の質問に倒す', async () => {
+  const five = ['a', 'b', 'c', 'd', 'e'].map((l) => INTERP(l));
+  const questions = [
+    { question: '候補 1 件', interpretations: [INTERP('A')] },
+    { question: '候補 5 件', interpretations: five },
+    { question: 'label 超過', interpretations: [INTERP('A'), INTERP('あ'.repeat(21))] },
+    { question: 'description 超過', interpretations: [INTERP('A'), INTERP('B', { description: 'd'.repeat(81) })] },
+    { question: 'preview 13 行', interpretations: [INTERP('A'), INTERP('B', { preview: Array(13).fill('x').join('\n') })] },
+    { question: '上限ちょうど', interpretations: [INTERP('あ'.repeat(20), { description: 'd'.repeat(80), preview: Array(12).fill('x').join('\n') }), INTERP('B'), INTERP('C'), INTERP('D')] },
+  ];
+  const { result } = await run({ analyze: { acceptance_criteria: [] }, overrides: { [CLARIFY_LABEL]: { missing_context: ['q'], questions } } });
+  const got = plain(result.clarify_questions);
+  assert.deepEqual(got.map((q) => q.question), questions.map((q) => q.question));
+  assert.deepEqual(got.map((q) => q.interpretations.length), [0, 0, 0, 0, 0, 4]);
+});
+
+test('[needs-clarification] T13: CLARIFY schema に questions があり、analyze-clarify の prompt が解釈の候補を求める', async () => {
+  const { calls } = await run({ analyze: { acceptance_criteria: [] } });
+  const call = calls.find((c) => c.label === CLARIFY_LABEL);
+  assert.ok(call, 'analyze-clarify が spawn されていない');
+  const schema = plain(call.opts.schema);
+  assert.deepEqual(schema.properties.missing_context, { type: 'array', items: { type: 'string' } });
+  const q = schema.properties.questions.items;
+  assert.deepEqual(q.required, ['question', 'interpretations']);
+  assert.equal(q.properties.interpretations.maxItems, 4);
+  const i = q.properties.interpretations.items;
+  assert.deepEqual(i.required, ['label', 'description', 'preview']);
+  assert.equal(i.properties.label.maxLength, 20);
+  assert.equal(i.properties.description.maxLength, 80);
+  for (const s of ['具体的な読み方の違い', '2〜4 件', '20 字以内', '80 字以内', '12 行以内の ASCII', 'interpretations を空配列']) {
+    assert.ok(call.prompt.includes(s), `analyze-clarify の prompt に「${s}」が無い`);
   }
 });

@@ -1395,13 +1395,54 @@ const ISOLATION_PROBE = {
 }
 // analyze ゲートが引いたときだけ spawn する clarify agent の出力（人間向け missing_context）。REQ は agent が返さず、
 // args.setup.analyze から buildReqFromContract が決定論で組む。
+// questions は人間に選ばせる解釈の候補（AskUserQuestion の options になる）。候補は見せるだけで、どれも dev-flow は採用しない。
+const CLARIFY_LABEL_MAX = 20
+const CLARIFY_DESCRIPTION_MAX = 80
+const CLARIFY_PREVIEW_MAX_LINES = 12
 const CLARIFY = {
   type: 'object',
   required: ['missing_context'],
   properties: {
     missing_context: { type: 'array', items: { type: 'string' } },
+    questions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['question', 'interpretations'],
+        properties: {
+          question: { type: 'string' },
+          interpretations: {
+            type: 'array',
+            maxItems: 4,
+            items: {
+              type: 'object',
+              required: ['label', 'description', 'preview'],
+              properties: {
+                label: { type: 'string', maxLength: CLARIFY_LABEL_MAX },
+                description: { type: 'string', maxLength: CLARIFY_DESCRIPTION_MAX },
+                preview: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
     epoch: { type: 'number' },
   },
+}
+// analyze-clarify の questions を needs_clarification の clarify_questions に整える。候補が 2〜4 件で全件が上限内のときだけ
+// interpretations を残し、それ以外は空にして文章の質問として聞かせる（1 件だけ・欠けた候補を選択肢に出すと、
+// 人間が選べない問いになる）。
+const clarifyQuestions = (v) => {
+  const nonEmpty = (s) => typeof s === 'string' && s.trim().length > 0
+  const validInterpretation = (i) => i && nonEmpty(i.label) && [...i.label].length <= CLARIFY_LABEL_MAX
+    && nonEmpty(i.description) && [...i.description].length <= CLARIFY_DESCRIPTION_MAX
+    && nonEmpty(i.preview) && i.preview.split('\n').length <= CLARIFY_PREVIEW_MAX_LINES
+  return (Array.isArray(v) ? v : []).filter((q) => q && nonEmpty(q.question)).map((q) => {
+    const list = Array.isArray(q.interpretations) ? q.interpretations : []
+    const ok = list.length >= 2 && list.length <= 4 && list.every(validInterpretation)
+    return { question: q.question, interpretations: ok ? list.map((i) => ({ label: i.label, description: i.description, preview: i.preview })) : [] }
+  })
 }
 // acObservationalPrompt の出力（全 AC を渡す）。observational:null は判定できない AC で true として扱う。
 // verify_command_index / expect_path_indexes は prompt に載せた AC の inline code 候補の番号で、freezeAcVerify が
@@ -2676,6 +2717,11 @@ const clarifyPrompt = (gateReasons) => `issue #${ISSUE} は決定論の analyze�
   + `各理由について**人間（issue 作成者）が issue body を直せば解消する具体的な質問文**を missing_context:string[] として返せ（理由 1 件につき 1〜2 文、日本語）。`
   + `質問には「body のどの記述と comment のどの記述が食い違うか」「後方互換を保たない API / 形式の変更の有無と既存データの変換の要否をどこに明記すべきか」「受け入れ基準をどの見出し形式で書くか」「repo 内外が混ざった AC の repo 外の作業をどの \`human-task\` ラベルの issue に切り出し、どちら向きの \`Blocked by\` で繋ぐか（merge 前に人がやる作業なら実装 issue に \`Blocked by #<human issue>\`、merge 後に確認する作業なら human issue に \`Blocked by #<実装 issue>\`）」を含めよ。`
   + `質問文にも記入例にも breaking / incompatible / migration / 破壊的 / 非互換 の語を使うな（人間が body にその語を書くと analyze-issue のキーワード判定が再び Jev 判定を要求する）。`
+  + `あわせて questions:[{question, interpretations:[{label, description, preview}]}] を返せ（missing_context の質問 1 件につき 1 要素、question は同じ質問文）。`
+  + `曖昧さが**具体的な読み方の違い**（issue の記述が A とも B とも読める）のときは、その読み方を interpretations に 2〜4 件の解釈の候補として並べよ: `
+  + `label は ${CLARIFY_LABEL_MAX} 字以内の候補名、description は ${CLARIFY_DESCRIPTION_MAX} 字以内でその読み方を採ると何が変わるか、preview は ${CLARIFY_PREVIEW_MAX_LINES} 行以内の ASCII 図か例（その読み方での入出力・処理の流れ・body の記入例。Mermaid は描画されないので書くな）。`
+  + `それ以外（受け入れ基準が無い、情報そのものが欠けている等、読み方を並べられない曖昧さ）は interpretations を空配列にせよ。候補を 1 件だけ返すな。`
+  + `候補は人間に見せる選択肢で、どれが正しいかを自分で決めるな。`
   + `要件・受け入れ基準を自分で推測して埋めるな。issue の取得は analyze-issue の 1 回のみ。\n`
   + `ゲート理由（決定論。verbatim で参照し、削除・要約するな）:\n${JSON.stringify(gateReasons)}\n`
   + EPOCH_INSTRUCTION
@@ -2690,7 +2736,7 @@ if (ANALYZE.ok !== true) {
   // prerun の analyze 段の失敗。REQ を推測で組まず人間へ返す（spawn 0）。
   log(`⚠️ analyze: prerun の analyze 段が失敗（${ANALYZE.reason}）— needs_clarification で中断（source=analyze_prerun）`)
   const journalLogStatus = await writeFailureTelemetry({ error_category: 'needs_clarification', error_msg: `analyze: prerun analyze 段の失敗で中断（source=analyze_prerun: ${ANALYZE.reason}）`, phase: 'Setup' })
-  return { status: 'needs_clarification', source: 'analyze_prerun', issue: ISSUE, worktree: WT, branch: setup.branch, missing_context: [`issue #${ISSUE} の取得・決定論 parse が prerun で失敗した: ${ANALYZE.reason}`], journal_log_status: journalLogStatus, note: 'dev-flow-prerun の analyze 段（analyze-issue --contract）が失敗したため中断。GitHub CLI の到達性・認証と issue 番号を確認し /dev-flow を再起動すること（prerun は再実行される）。worktree は保持済みで再利用される' }
+  return { status: 'needs_clarification', source: 'analyze_prerun', issue: ISSUE, worktree: WT, branch: setup.branch, missing_context: [`issue #${ISSUE} の取得・決定論 parse が prerun で失敗した: ${ANALYZE.reason}`], clarify_questions: [], journal_log_status: journalLogStatus, note: 'dev-flow-prerun の analyze 段（analyze-issue --contract）が失敗したため中断。GitHub CLI の到達性・認証と issue 番号を確認し /dev-flow を再起動すること（prerun は再実行される）。worktree は保持済みで再利用される' }
 }
 const req = buildReqFromContract(ANALYZE, ISSUE)
 if (!req) {
@@ -2719,6 +2765,7 @@ if (blockedReasons.length) {
     worktree: WT,
     branch: setup.branch,
     missing_context: blockedReasons,
+    clarify_questions: [],
     journal_log_status: journalLogStatus,
     note: '前提 issue（人手作業など）が未完了のため実装前に中断。呼び出し元セッションは missing_context の未完了 issue を人間に提示し、完了・close 後に /dev-flow を再起動するよう案内すること。worktree は保持済みで再利用される',
   }
@@ -2744,8 +2791,9 @@ if (gateReasons.length) {
     worktree: WT,
     branch: setup.branch,
     missing_context: missingContext,
+    clarify_questions: clarifyQuestions(clarify?.questions),
     journal_log_status: journalLogStatus,
-    note: '要件を決定論で確定できないため中断。呼び出し元セッションが missing_context を AskUserQuestion で人間に確認し、issue body を更新してから /dev-flow を再起動すること（comment の訂正は body に反映する。黙って片方を採用しない。issue #573 / #690）。worktree は保持済みで再利用される',
+    note: '要件を決定論で確定できないため中断。呼び出し元セッションが missing_context を AskUserQuestion で人間に確認し（clarify_questions に解釈の候補がある質問は options で選ばせる）、issue body を更新してから /dev-flow を再起動すること（comment の訂正は body に反映する。黙って片方を採用しない。issue #573 / #690）。worktree は保持済みで再利用される',
   }
 }
 
@@ -2927,6 +2975,7 @@ async function execImplementPhase(state) {
         worktree: WT,
         branch: state.setup.branch,
         missing_context: stillNeeds.map((r) => r.missing_context ?? `task ${r.task_id}: 情報不足（詳細未申告）`),
+        clarify_questions: [],
         journal_log_status: journalLogStatus,
         note: '要件が曖昧なため中断。呼び出し元セッションが missing_context を AskUserQuestion で人間に確認し、issue を更新して /dev-flow を再起動すること。worktree は保持済みで再利用される',
       }
