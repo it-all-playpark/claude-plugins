@@ -269,6 +269,17 @@ local branch・worktree → in_flight / それ以外 → ready。作業ブラン
 **同じ worktree を保持したまま手順2 から**やり直す（`dev-flow-prerun` を同じ `--worktree` で
 再実行 → 手順2b の `ensure-worktree-deps --setup` を再実行 → その新しい stdout JSON を `setup` として
 手順4 を起動。手順3 は既に入っているので不要）。
+
+`source: "analyze"` の返り値には `missing_context` と並んで `clarify_questions`
+（`[{question, interpretations: [{label, description, preview}]}]`）が入る。質問ごとに聞き方を決める:
+
+- **interpretations が 2 件以上**の質問は、AskUserQuestion の options に各候補の label・description・preview を
+  載せて選ばせる。preview は ASCII のまま渡す（AskUserQuestion の preview は Mermaid を描画しないので、
+  図に描き直すときも ASCII で書く）。候補は見せるだけの選択肢で、人間が選ぶまでどの候補も採用しない
+  （選ばれた読み方を issue body に反映してから再起動する）
+- **interpretations が 0 件**の質問と、`clarify_questions` が空のとき（analyze-clarify の失敗時・
+  `source` が analyze 以外）は、今までどおり `missing_context` の文章で聞く
+
 前回の `setup` object を使い回してはならない: isolation probe の token は `setup.epoch` 固定で、
 run 内に前回 probe ファイルの cleanup が無いため、同じ epoch で再起動すると Write-only agent が
 既存の `.devflow-tmp/.isolation-probe-<epoch>` へ上書きを試みて `written:false` → fail-closed

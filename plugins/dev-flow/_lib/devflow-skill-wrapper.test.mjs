@@ -122,6 +122,16 @@ test('[devflow-skill-wrapper] needs_clarification 再起動で setup を再利�
   );
 });
 
+// (o) issue #1362: clarify_questions の解釈の候補は AskUserQuestion の options（label / description / preview）で選ばせ、
+//     候補が無い質問は文章のまま聞く。preview は Mermaid を描画しないので ASCII で書く。
+test('[devflow-skill-wrapper] needs_clarification 節に clarify_questions の候補を options と preview で聞く規則がある', () => {
+  const section = src.slice(src.indexOf('## needs_clarification'));
+  for (const s of ['clarify_questions', 'interpretations が 2 件以上', 'AskUserQuestion の options', 'label・description・preview', 'interpretations が 0 件', '今までどおり']) {
+    assert.ok(section.includes(s), `dev-flow/SKILL.md needs_clarification 節に「${s}」が無い`);
+  }
+  assert.ok(/preview は ASCII/.test(section) && section.includes('Mermaid を描画しない'), 'needs_clarification 節に preview を ASCII で書く規則（Mermaid は描画されない）が無い');
+});
+
 // (m) issue #868: deps install は prerun（repo の任意コードを実行しない）の子ではなく、wrapper が別の Bash 呼び出しで
 //     `ensure-worktree-deps --setup <worktree>/.devflow-tmp/prerun-setup.json` として回し、その stdout を setup に渡す。
 //     needs_clarification の再起動でも同じ段を通す（prerun 出力は deps / epoch_end を持たない）。
