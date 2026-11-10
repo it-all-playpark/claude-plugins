@@ -337,6 +337,11 @@ test('security-review.md: 守る要件と境界（R1〜R3）と経路を持ち�
   for (const s of ['- R1 ', '- R2 ', '- R3 ', '**境界の外（塞がない。issue にもしない）**', '`SECURITY_REVIEW_BOUNDARY`', '`SECURITY_FIX_GUIDANCE`']) {
     assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
   }
+  // テストの中身による偽装は境界の外（理由つき）、テストの起動経路は境界の内側
+  for (const s of ['PR が書いたテストの中身', 'テストの中身は PR の主張そのもの', '委譲の層を追う検査が積み上がる', '品質の review と人間の merge が守る',
+    'テストの起動経路（`tests/run-*.sh`・`package.json` の scripts・Makefile 等、テストを起動するコマンドが名指す追跡ファイル）は\n  境界の内側に残り']) {
+    assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
+  }
   // R2 の根拠は workflow / script の head 照合。reviewed_sha は渡した head_sha の写しかを見る出力の整合で、根拠にしない
   const r2 = boundary.slice(boundary.indexOf('- R2 '), boundary.indexOf('- R3 '));
   assert.ok(r2.includes('`shaNow`'), `security-review.md の R2 が今の PR head（shaNow）との照合を根拠にしていない:\n${r2}`);
