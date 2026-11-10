@@ -76,7 +76,7 @@ const DF_DANGER = { overrides: { 'merge-tier-facts': mergeTierFacts({ risk: { ok
 const DF_RESOLVER = {
   overrides: {
     'resolve-test-commands': testCommandsPrepareResponse({ source: 'resolver', status: 'unresolved', sources: [], bundle_file: '/tmp/test-commands-Stub01/bundle.md', bundle_files: ['pyproject.toml'] }),
-    'resolve-test-commands-agent': { status: 'resolved', full_command: 'uv run pytest', files_command: 'uv run pytest {files}', sources: ['pyproject.toml'] },
+    'resolve-test-commands-agent': { status: 'resolved', commands: [{ dir: '.', full_command: 'uv run pytest', files_command: 'uv run pytest {files}' }], sources: ['pyproject.toml'] },
     'resolve-test-commands-write': { written: true },
   },
 };

@@ -9,7 +9,7 @@ export const meta = {
 
 // ==== BEGIN inline: _lib/stage-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 const TEST_COMMANDS_RESULT_SPEC = {
-  source: 'string|null', status: 'string', full_command: 'string|null', files_command: 'string|null',
+  source: 'string|null', status: 'string', commands: 'array|null',
   sources: 'array', commands_file: 'string|null', error: 'string|null',
 }
 
@@ -1407,8 +1407,12 @@ function testCommandsLine(tc) {
       : tc.source === 'resolver' ? `resolver（根拠: ${sources.length ? sources.map(code).join(', ') : 'なし'}）`
         : '解決の工程が失敗';
   if (tc.status === 'resolved' && tc.source === 'runners') return `${sources.map(code).join(', ')}（解決元: ${from}）`;
-  if (tc.status === 'resolved' && typeof tc.full_command === 'string') {
-    return `${code(tc.full_command)}（落ちたファイルの再実行: ${typeof tc.files_command === 'string' ? code(tc.files_command) : 'なし'}。解決元: ${from}）`;
+  const entries = Array.isArray(tc.commands) ? tc.commands.filter((e) => e != null && typeof e.full_command === 'string') : [];
+  if (tc.status === 'resolved' && entries.length > 0) {
+    const at = (e) => (typeof e.dir === 'string' && e.dir !== '.' ? `${code(e.dir)} で ` : '');
+    const full = entries.map((e) => `${at(e)}${code(e.full_command)}`).join('、');
+    const files = entries.map((e) => (typeof e.files_command === 'string' ? `${at(e)}${code(e.files_command)}` : 'なし')).join('、');
+    return `${full}（落ちたファイルの再実行: ${files}。解決元: ${from}）`;
   }
   const why = typeof tc.error === 'string' && tc.error.length > 0 ? ` — ${mdCell(tc.error)}` : '';
   return tc.source == null

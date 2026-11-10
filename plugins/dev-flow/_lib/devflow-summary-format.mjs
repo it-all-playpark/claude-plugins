@@ -65,7 +65,8 @@ function localVerifyLine(lv) {
 }
 
 // テストコマンドと解決元の 1 行（「参考」節。issue #1278）。tc は dev-flow-test-commands の返り値（Setup で 1 回解決したもの）。
-// tests/run-*.sh のときは base の tree のランナーのパス、user 設定・resolver のときは full_command と files_command を出す
+// tests/run-*.sh のときは base の tree のランナーのパス、user 設定・resolver のときは commands の各 entry の full_command と
+// files_command を出す（dir が "." でない entry は起動するディレクトリを前に付ける）
 function testCommandsLine(tc) {
   const code = (s) => `\`${mdCell(s)}\``;
   const sources = Array.isArray(tc.sources) ? tc.sources.filter((s) => typeof s === 'string' && s.length > 0) : [];
@@ -74,8 +75,12 @@ function testCommandsLine(tc) {
       : tc.source === 'resolver' ? `resolver（根拠: ${sources.length ? sources.map(code).join(', ') : 'なし'}）`
         : '解決の工程が失敗';
   if (tc.status === 'resolved' && tc.source === 'runners') return `${sources.map(code).join(', ')}（解決元: ${from}）`;
-  if (tc.status === 'resolved' && typeof tc.full_command === 'string') {
-    return `${code(tc.full_command)}（落ちたファイルの再実行: ${typeof tc.files_command === 'string' ? code(tc.files_command) : 'なし'}。解決元: ${from}）`;
+  const entries = Array.isArray(tc.commands) ? tc.commands.filter((e) => e != null && typeof e.full_command === 'string') : [];
+  if (tc.status === 'resolved' && entries.length > 0) {
+    const at = (e) => (typeof e.dir === 'string' && e.dir !== '.' ? `${code(e.dir)} で ` : '');
+    const full = entries.map((e) => `${at(e)}${code(e.full_command)}`).join('、');
+    const files = entries.map((e) => (typeof e.files_command === 'string' ? `${at(e)}${code(e.files_command)}` : 'なし')).join('、');
+    return `${full}（落ちたファイルの再実行: ${files}。解決元: ${from}）`;
   }
   const why = typeof tc.error === 'string' && tc.error.length > 0 ? ` — ${mdCell(tc.error)}` : '';
   return tc.source == null
@@ -240,7 +245,7 @@ function resolvedCell(v) {
  *   40 桁 hex のときだけ末尾 marker に `head=<sha>` で載せる（issue #1065）
  * @param {string[]|null|undefined} [opts.hooksNotRunning] - repo が追跡している git hook のうち worktree で動かない event 名
  *   （prerun の hooks_not_running）。非空なら「参考」に event 名と直し方を出す（表示専用。merge tier の入力にしない）
- * @param {{source:string|null, status:string, full_command:string|null, files_command:string|null, sources:string[], error?:string|null}|null|undefined} [opts.testCommands] -
+ * @param {{source:string|null, status:string, commands:Array<{dir:string, full_command:string, files_command:string}>|null, sources:string[], error?:string|null}|null|undefined} [opts.testCommands] -
  *   Setup で解決したテストコマンドと解決元（dev-flow-test-commands の返り値。issue #1278）。「参考」に実行したコマンドと
  *   解決元（user 設定 / tests/run-*.sh / resolver と根拠のファイル）を 1 行出す（表示専用）
  * @param {boolean|null|undefined} [opts.prBodySynced] - pr-iterate の修正後に PR 本文を作り直した `gh pr edit` の成否

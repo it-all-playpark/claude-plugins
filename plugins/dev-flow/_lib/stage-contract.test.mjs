@@ -42,7 +42,7 @@ const EVALUATE_ARGS = {
   ci_ac_indexes: [],
   notes: { deletion: '', deps: '', turbopack: '', test_discovery: '' },
   test_commands: {
-    source: 'runners', status: 'resolved', full_command: null, files_command: null, sources: ['tests/run-unit.sh'],
+    source: 'runners', status: 'resolved', commands: null, sources: ['tests/run-unit.sh'],
     commands_file: '/tmp/test-commands-x/commands.json', error: null,
   },
 };

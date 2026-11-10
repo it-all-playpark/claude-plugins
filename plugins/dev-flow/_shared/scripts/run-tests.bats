@@ -304,10 +304,16 @@ make_commands() {
     printf '%s\n' "$1" > "$CMDS"
 }
 
-# resolver が解決した形のコマンドファイルを書く（$1 = full_command、$2 = files_command（省略時は null））
+# resolver が解決した形のコマンドファイルを書く（dir "." の 1 entry。$1 = full_command、$2 = files_command（省略時は null））
 resolved_commands() {
     make_commands "$(jq -nc --arg f "$1" --arg g "${2-}" \
-        '{source: "resolver", status: "resolved", full_command: $f, files_command: (if $g == "" then null else $g end), sources: ["pyproject.toml"]}')"
+        '{source: "resolver", status: "resolved", commands: [{dir: ".", full_command: $f, files_command: (if $g == "" then null else $g end)}], sources: ["pyproject.toml"]}')"
+}
+
+# 複数 entry のコマンドファイルを書く（引数は dir の並び。各 entry は fakerunner all / fakerunner {files}）
+entry_commands() {
+    make_commands "$(printf '%s\n' "$@" | jq -R '{dir: ., full_command: "fakerunner all", files_command: "fakerunner {files}"}' \
+        | jq -sc '{source: "resolver", status: "resolved", commands: ., sources: ["packages/a/package.json"]}')"
 }
 
 # $1 = stub の絶対パス、$2 = calls.log に残す名前、$3 = exit code。"$PWD <名前> $*" を $TMP_DIR/calls.log に追記する
@@ -356,14 +362,14 @@ make_runner_stub() {
     rmdir "$WT/tests"
     run_tests --commands "$TMP_DIR/absent.json"
     echo "$JSON" | jq -e '.status == "passed" and .tests == "no_tests" and .green == false and .scripts == [] and .failed_files == []'
-    make_commands '{"source":"resolver","status":"unresolved","full_command":null,"files_command":null,"sources":[]}'
+    make_commands '{"source":"resolver","status":"unresolved","sources":[]}'
     run_tests --commands "$CMDS"
     echo "$JSON" | jq -e '.status == "passed" and .tests == "no_tests" and .green == false and .scripts == []'
 }
 
 @test "コマンドファイル: unresolved は base に tests/run-*.sh があっても実行しない（no_tests）" {
     make_script run-a.sh 'touch "$(dirname "$0")/a.marker"'
-    make_commands '{"source":"user_config","status":"unresolved","full_command":null,"files_command":null,"sources":[]}'
+    make_commands '{"source":"user_config","status":"unresolved","sources":[]}'
     run_tests --commands "$CMDS"
     echo "$JSON" | jq -e '.tests == "no_tests" and .green == false'
     [ ! -f "$WT/tests/a.marker" ]
@@ -373,23 +379,108 @@ make_runner_stub() {
     make_script run-a.sh 'touch "$(dirname "$0")/a.marker"'
     make_runner_stub "$STUB_DIR/fakerunner" fakerunner 0
     export PATH="$STUB_DIR:$PATH"
-    make_commands '{"source":"user_config","status":"resolved","full_command":"fakerunner all","files_command":"fakerunner {files}","sources":[]}'
+    make_commands '{"source":"user_config","status":"resolved","commands":[{"dir":".","full_command":"fakerunner all","files_command":"fakerunner {files}"}],"sources":[]}'
     run_tests --commands "$CMDS"
     echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "fakerunner all", exit: 0, launch_failed: false}]'
     [ ! -f "$WT/tests/a.marker" ]
 
-    make_commands '{"source":"runners","status":"resolved","full_command":null,"files_command":null,"sources":["tests/run-a.sh"]}'
+    make_commands '{"source":"runners","status":"resolved","sources":["tests/run-a.sh"]}'
     run_tests --commands "$CMDS"
     echo "$JSON" | jq -e --arg a "$WT/tests/run-a.sh" '[.scripts[] | del(.log)] == [{path: $a, exit: 0, launch_failed: false}]'
     [ -f "$WT/tests/a.marker" ]
 }
 
-@test "コマンドファイル: JSON として読めなければテストを実行せず error" {
+@test "コマンドファイル: JSON として読めない・resolved なのに commands が無い（最上位の full_command）ならテストを実行せず error" {
     make_script run-a.sh 'touch "$(dirname "$0")/a.marker"'
-    make_commands 'not json'
-    run_tests --commands "$CMDS"
-    echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false and (.summary | contains("not readable"))'
+    make_runner_stub "$STUB_DIR/fakerunner" fakerunner 0
+    export PATH="$STUB_DIR:$PATH"
+    for body in 'not json' '{"source":"user_config","status":"resolved","full_command":"fakerunner all","files_command":"fakerunner {files}","sources":[]}'; do
+        make_commands "$body"
+        run_tests --commands "$CMDS"
+        echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false and (.summary | contains("not readable"))'
+    done
     [ ! -f "$WT/tests/a.marker" ]
+    [ ! -f "$TMP_DIR/calls.log" ]
+}
+
+@test "commands: 全件実行は各 entry を <WT>/<dir> を cwd に並び順で実行し、全部 exit 0 なら passed" {
+    rmdir "$WT/tests"
+    mkdir -p "$WT/packages/a" "$WT/services/api"
+    : > "$WT/packages/a/.keep"
+    : > "$WT/services/api/.keep"
+    make_runner_stub "$STUB_DIR/fakerunner" fakerunner 0
+    export PATH="$STUB_DIR:$PATH"
+    entry_commands packages/a services/api
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "passed" and .tests == "passed" and .green == true'
+    echo "$JSON" | jq -e '[.scripts[] | del(.log)] == [{path: "packages/a: fakerunner all", exit: 0, launch_failed: false}, {path: "services/api: fakerunner all", exit: 0, launch_failed: false}]'
+    [ "$(cat "$TMP_DIR/calls.log")" = "$(printf '%s\n' "$WT/packages/a fakerunner all" "$WT/services/api fakerunner all")" ]
+}
+
+# cwd が $WT/packages/a のときだけ FAIL 行を出して exit 1 する fakerunner（それ以外の cwd は exit 0）。呼び出しは calls.log に残す
+make_failing_in_a_stub() {
+    printf '#!/usr/bin/env bash\necho "$PWD fakerunner" "$@" >> "%s/calls.log"\nif [ "$PWD" = "%s/packages/a" ]; then echo " FAIL  src/x.test.ts > t"; exit 1; fi\nexit 0\n' \
+        "$TMP_DIR" "$WT" > "$STUB_DIR/fakerunner"
+    chmod +x "$STUB_DIR/fakerunner"
+}
+
+@test "commands: 1 つの entry が red なら failed で残りの entry も実行し、failed_files は WT root からの相対パス" {
+    rmdir "$WT/tests"
+    mkdir -p "$WT/packages/a/src" "$WT/services/api"
+    : > "$WT/packages/a/src/x.test.ts"
+    : > "$WT/services/api/.keep"
+    make_failing_in_a_stub
+    export PATH="$STUB_DIR:$PATH"
+    entry_commands packages/a services/api
+    run_tests --commands "$CMDS"
+    echo "$JSON" | jq -e '.status == "failed" and .tests == "failed" and .green == false'
+    echo "$JSON" | jq -e '[.scripts[].exit] == [1, 0] and .failed_files == ["packages/a/src/x.test.ts"]'
+    [ "$(wc -l < "$TMP_DIR/calls.log" | tr -d ' ')" = 2 ]
+}
+
+@test "commands --files: 各ファイルを含む最も深い entry に振り分け、dir からの相対パスで {files} に渡す（ファイルの無い entry は実行しない）" {
+    rmdir "$WT/tests"
+    mkdir -p "$WT/packages/a/src" "$WT/packages/b" "$WT/top"
+    : > "$WT/packages/a/src/x.test.ts"
+    : > "$WT/packages/a/y.test.ts"
+    : > "$WT/top/z.test.ts"
+    : > "$WT/packages/b/.keep"
+    make_failing_in_a_stub
+    export PATH="$STUB_DIR:$PATH"
+    entry_commands . packages/a packages/b
+    run_tests --commands "$CMDS" --files packages/a/src/x.test.ts top/z.test.ts packages/a/y.test.ts
+    [ "$(cat "$TMP_DIR/calls.log")" = "$(printf '%s\n' "$WT fakerunner top/z.test.ts" "$WT/packages/a fakerunner src/x.test.ts y.test.ts")" ]
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[].path] == ["fakerunner top/z.test.ts", "packages/a: fakerunner src/x.test.ts y.test.ts"]'
+    echo "$JSON" | jq -e '.failed_files == ["packages/a/src/x.test.ts"]'
+}
+
+@test "commands --files: どの entry の dir にも含まれないファイルがあれば何も実行せず error" {
+    rmdir "$WT/tests"
+    mkdir -p "$WT/packages/a" "$WT/packages/ab"
+    : > "$WT/packages/a/x.test.ts"
+    : > "$WT/packages/ab/y.test.ts"
+    make_runner_stub "$STUB_DIR/fakerunner" fakerunner 0
+    export PATH="$STUB_DIR:$PATH"
+    entry_commands packages/a
+    run_tests --commands "$CMDS" --files packages/a/x.test.ts packages/ab/y.test.ts
+    echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false and (.summary | contains("packages/ab/y.test.ts"))'
+    [ ! -f "$TMP_DIR/calls.log" ]
+}
+
+@test "commands: <WT>/<dir> が WT 内の実ディレクトリでない entry（無い・symlink・.. ・絶対パス）があれば何も実行せず error" {
+    rmdir "$WT/tests"
+    mkdir -p "$WT/packages/a" "$TMP_DIR/outside"
+    : > "$WT/packages/a/.keep"
+    ln -s "$TMP_DIR/outside" "$WT/packages/link"
+    ln -s a "$WT/packages/inner"
+    make_runner_stub "$STUB_DIR/fakerunner" fakerunner 0
+    export PATH="$STUB_DIR:$PATH"
+    for bad in packages/missing packages/link packages/inner packages/a/../a "$WT/packages/a" ""; do
+        entry_commands packages/a "$bad"
+        run_tests --commands "$CMDS"
+        echo "$JSON" | jq -e '.status == "error" and .tests == "error" and .green == false and .scripts == [] and (.summary | contains("commands[1].dir"))'
+    done
+    [ ! -f "$TMP_DIR/calls.log" ]
 }
 
 @test "言語別の決め打ちは無い: package.json の scripts.test だけで tests/run-*.sh もコマンドファイルも無い repo は no_tests" {

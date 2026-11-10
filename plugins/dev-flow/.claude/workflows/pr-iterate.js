@@ -39,7 +39,7 @@ function isStructuredOutputFailure(e) {
 // ==== END inline: _lib/structured-output-failure.mjs ====
 // ==== BEGIN inline: _lib/stage-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 const TEST_COMMANDS_RESULT_SPEC = {
-  source: 'string|null', status: 'string', full_command: 'string|null', files_command: 'string|null',
+  source: 'string|null', status: 'string', commands: 'array|null',
   sources: 'array', commands_file: 'string|null', error: 'string|null',
 }
 
@@ -2051,13 +2051,13 @@ async function runTestsJob({ wt, startPrompt, label, schema, waitJob, spawn, spa
 // ==== BEGIN inline: _lib/test-commands.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 function testCommandsResult(record, commandsFile, error = null) {
   return {
-    source: record.source, status: record.status, full_command: record.full_command, files_command: record.files_command,
+    source: record.source, status: record.status, commands: record.commands ?? null,
     sources: record.sources, commands_file: commandsFile, error,
   }
 }
 
 function unresolvedTestCommands(source, commandsFile, error) {
-  return testCommandsResult({ source, status: 'unresolved', full_command: null, files_command: null, sources: [] }, commandsFile, error)
+  return testCommandsResult({ source, status: 'unresolved', sources: [] }, commandsFile, error)
 }
 // ==== END inline: _lib/test-commands.mjs ====
 

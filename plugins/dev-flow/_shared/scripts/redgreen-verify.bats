@@ -35,7 +35,7 @@ EOF
 
 # コマンドファイルを files_command <$1>(user 設定で解決した形)にする
 use_commands() {
-  jq -nc --arg f "$1" '{source: "user_config", status: "resolved", full_command: ($f | sub(" *\\{files\\}"; "")), files_command: $f, sources: []}' > "$COMMANDS_FILE"
+  jq -nc --arg f "$1" '{source: "user_config", status: "resolved", commands: [{dir: ".", full_command: ($f | sub(" *\\{files\\}"; "")), files_command: $f}], sources: []}' > "$COMMANDS_FILE"
 }
 
 # fixture の package.json を差し替えて commit する(vdelta で包むかの判定元は base の tree の package.json)
@@ -993,7 +993,7 @@ use_runners() {
   printf '#!/usr/bin/env bash\necho "run-unit $(tr "\\n" " " < "$DEVFLOW_TEST_FILES")" >> "%s/calls.log"\n[ -f "%s/%s" ]\n' "$REPO" "$REPO" "$1" > "$REPO/tests/run-unit.sh"
   chmod +x "$REPO/tests/run-unit.sh"
   git -C "$REPO" add tests/run-unit.sh && git -C "$REPO" commit -q -m "add runner"
-  jq -nc '{source: "runners", status: "resolved", full_command: null, files_command: null, sources: ["tests/run-unit.sh"]}' > "$COMMANDS_FILE"
+  jq -nc '{source: "runners", status: "resolved", sources: ["tests/run-unit.sh"]}' > "$COMMANDS_FILE"
 }
 
 @test "L1: 言語別の判定に当たらない repo(pytest 設定の無い tests/test_demo.py)でも files_command で red→green 判定する" {
@@ -1133,6 +1133,48 @@ use_runners() {
   [ ! -f "$REPO/calls.log" ]
 }
 
+@test "L5d: commands の entry が複数あれば、test_files を含む最も深い dir を cwd に dir からの相対パスで実行する(決まらないペア・symlink の dir は入力エラー)" {
+  jq -nc '{source: "resolver", status: "resolved", sources: ["packages/a/package.json"], commands: [
+    {dir: ".", full_command: "uv run pytest", files_command: "uv run pytest {files}"},
+    {dir: "packages/a", full_command: "pnpm exec vitest run", files_command: "pnpm exec vitest run {files}"}]}' > "$COMMANDS_FILE"
+  mkdir -p "$REPO/packages/a/src" "$REPO/tests" "$REPO/mockbin"
+  echo "export const ok = true;" > "$REPO/packages/a/src/impl.ts"
+  echo "// t" > "$REPO/packages/a/src/x.test.ts"
+  echo "# t" > "$REPO/tests/test_root.py"
+  # cwd と引数を calls.log に残し、impl があるときだけ pass する pnpm
+  printf '#!/usr/bin/env bash\necho "$PWD pnpm $*" >> "%s/calls.log"\n[ -f "%s/packages/a/src/impl.ts" ]\n' "$REPO" "$REPO" > "$REPO/mockbin/pnpm"
+  chmod +x "$REPO/mockbin/pnpm"
+  local phys; phys="$(cd "$REPO" && pwd -P)"
+
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "packages/a/src/x.test.ts" "packages/a/src/impl.ts"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0] | {red, green, reason}')" = '{"red":true,"green":true,"reason":"ok"}' ]
+  [ "$(sed "s|^$phys/|REPO/|; s|^$REPO/|REPO/|" "$REPO/calls.log")" = "$(printf 'REPO/packages/a pnpm exec vitest run src/x.test.ts\nREPO/packages/a pnpm exec vitest run src/x.test.ts')" ]
+  rm "$REPO/calls.log"
+
+  # 1 ペアの test_files が複数の entry に分かれる
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "packages/a/src/x.test.ts,tests/test_root.py" "packages/a/src/impl.ts"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "test command dir: test files belong to more than one commands dir: packages/a, ." ]
+
+  # dir が symlink(worktree の外で起動させない)
+  mkdir -p "$BATS_TEST_TMPDIR/outside/src"
+  echo "// t" > "$BATS_TEST_TMPDIR/outside/src/y.test.ts"
+  ln -s "$BATS_TEST_TMPDIR/outside" "$REPO/packages/link"
+  jq -c '.commands[1].dir = "packages/link"' "$COMMANDS_FILE" > "$COMMANDS_FILE.tmp" && mv "$COMMANDS_FILE.tmp" "$COMMANDS_FILE"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "packages/link/src/y.test.ts" "packages/a/src/impl.ts"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "test command dir is not a real directory inside the worktree: packages/link" ]
+
+  # どの entry の dir にも含まれない
+  jq -c '.commands |= [.[1] | .dir = "packages/a"]' "$COMMANDS_FILE" > "$COMMANDS_FILE.tmp" && mv "$COMMANDS_FILE.tmp" "$COMMANDS_FILE"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "tests/test_root.py" "packages/a/src/impl.ts"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "test command dir: test file is not under any commands dir: tests/test_root.py" ]
+  [ ! -f "$REPO/calls.log" ]
+  [ -f "$REPO/packages/a/src/impl.ts" ]
+}
+
 @test "L6: コマンドファイルが無い・unresolved のときは全ペアが入力エラーで exit 2、テストを実行しない" {
   echo "export const a = 1;" > "$REPO/impl1.mjs"
   echo "export const b = 2;" > "$REPO/impl2.mjs"
@@ -1152,7 +1194,7 @@ use_runners() {
   [ "$(printf '%s' "$output" | jq -c '[.results[] | select(.red == false and .green == false) | .reason]')" = "$want" ]
 
   # status "unresolved"
-  jq -nc '{source: "resolver", status: "unresolved", full_command: null, files_command: null, sources: []}' > "$COMMANDS_FILE"
+  jq -nc '{source: "resolver", status: "unresolved", sources: []}' > "$COMMANDS_FILE"
   run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "t1.test.mjs" "impl1.mjs" "t2.test.mjs" "impl2.mjs"
   [ "$status" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -c '[.results[] | select(.red == false and .green == false) | .reason]')" \

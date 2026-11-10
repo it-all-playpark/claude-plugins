@@ -17,6 +17,9 @@ import { dirname, join } from 'node:path';
 import {
   makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, testCommandsPrepareResponse, TEST_COMMANDS_FILE,
 } from './test-helpers/vm-sandbox.mjs';
+import {
+  testCommandResolverPrompt, validateResolvedTestCommands, TEST_COMMAND_PREFIXES, TEST_COMMAND_RUNNERS,
+} from './test-commands.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workflowDir = join(here, '..', '.claude', 'workflows');
@@ -28,9 +31,12 @@ const FINALIZE = 'dev-flow:dev-flow-finalize-run';
 const RESOLVER = 'dev-flow:test-command-resolver';
 const BUNDLE = '/tmp/test-commands-Stub01/bundle.md';
 
-const PREPARE_USER_CONFIG = testCommandsPrepareResponse({ source: 'user_config', full_command: 'uv run pytest', files_command: 'uv run pytest {files}', sources: [] });
+const ROOT_ENTRY = { dir: '.', full_command: 'uv run pytest', files_command: 'uv run pytest {files}' };
+const PREPARE_USER_CONFIG = testCommandsPrepareResponse({ source: 'user_config', commands: [ROOT_ENTRY], sources: [] });
 const PREPARE_RESOLVER = testCommandsPrepareResponse({ source: 'resolver', status: 'unresolved', sources: [], bundle_file: BUNDLE, bundle_files: ['.github/workflows/ci.yml', 'pyproject.toml'] });
-const RESOLVED = { status: 'resolved', full_command: 'uv run pytest', files_command: 'uv run pytest {files}', sources: ['.github/workflows/ci.yml', 'pyproject.toml'] };
+const RESOLVED = { status: 'resolved', commands: [ROOT_ENTRY], sources: ['.github/workflows/ci.yml', 'pyproject.toml'] };
+// RESOLVED の entry の一部を差し替えた返り値
+const withEntry = (patch) => ({ ...RESOLVED, commands: [{ ...ROOT_ENTRY, ...patch }] });
 
 // dev-flow を 1 run 動かし、工程の workflow の起動（名前と引数）を記録する
 async function runDevFlow(overrides = {}) {
@@ -80,7 +86,8 @@ test('[test-commands] 解決元が resolver なら、dev-implementer と別の a
   assert.ok(labels.indexOf('resolve-test-commands-agent') < labels.indexOf('impl:serial:issue-1'), labels.join(', '));
   assert.ok(resolver[0].prompt.includes(`\`${BUNDLE}\` を Read tool で読め`), resolver[0].prompt);
   assert.ok(!resolver[0].prompt.includes('/tmp/wt'), 'resolver の prompt に worktree のパスがある');
-  assert.deepEqual([...resolver[0].opts.schema.required], ['status', 'full_command', 'files_command', 'sources']);
+  assert.deepEqual([...resolver[0].opts.schema.required], ['status', 'commands', 'sources']);
+  assert.deepEqual([...resolver[0].opts.schema.properties.commands.items.required], ['dir', 'full_command', 'files_command']);
 
   const write = calls.find((c) => c.label === 'resolve-test-commands-write');
   assert.ok(write, labels.join(', '));
@@ -91,13 +98,12 @@ test('[test-commands] 解決元が resolver なら、dev-implementer と別の a
 });
 
 test('[test-commands] resolver の返り値の区切りが空白類（改行等）でも、コマンドファイルには照合した許可リストの語を半角空白で join した値を書く', async () => {
-  const ret = { ...RESOLVED, full_command: 'node\n--test', files_command: 'node\t--test\n{files}' };
+  const ret = withEntry({ dir: './', full_command: 'node\n--test', files_command: 'node\t--test\n{files}' });
   const { calls, labels } = await runDevFlow({ 'resolve-test-commands': PREPARE_RESOLVER, 'resolve-test-commands-agent': ret });
   const write = calls.find((c) => c.label === 'resolve-test-commands-write');
   assert.ok(write, labels.join(', '));
   const body = JSON.parse(write.prompt.match(/<<<TEST_COMMANDS_BEGIN>>>\n(.*)\n<<<TEST_COMMANDS_END>>>/)[1]);
-  assert.equal(body.full_command, 'node --test');
-  assert.equal(body.files_command, 'node --test {files}');
+  assert.deepEqual(body.commands, [{ dir: '.', full_command: 'node --test', files_command: 'node --test {files}' }]);
 });
 
 // 形が不正な返り値（どれも unresolved に倒し、コマンドファイルを書かない。ファイルが無いので run-tests は no_tests）
@@ -105,28 +111,39 @@ const INVALID_RETURNS = {
   null: null,
   throw: () => { throw new Error('injected'); },
   'status が enum 外': { ...RESOLVED, status: 'ok' },
-  '{files} が無い': { ...RESOLVED, files_command: 'uv run pytest' },
-  '{files} が 2 回': { ...RESOLVED, files_command: 'uv run pytest {files} {files}' },
-  '{files} が独立した語でない': { ...RESOLVED, files_command: 'uv run pytest --x={files}' },
-  'package.json の scripts 経由（npm test）': { ...RESOLVED, full_command: 'npm test' },
-  'package.json の scripts 経由（pnpm run）': { ...RESOLVED, files_command: 'pnpm run test {files}' },
-  'Makefile のターゲット経由': { ...RESOLVED, full_command: 'make test' },
-  'shell でスクリプト起動（bash scripts/test.sh）': { ...RESOLVED, full_command: 'bash scripts/test.sh' },
-  'repo 内のパスを直接起動（./scripts/test.sh）': { ...RESOLVED, full_command: './scripts/test.sh' },
-  'インタプリタでスクリプト起動（python scripts/run_tests.py）': { ...RESOLVED, full_command: 'python scripts/run_tests.py' },
-  'uv run の後の Makefile 経由（uv run make test）': { ...RESOLVED, full_command: 'uv run make test' },
-  'bundle exec の後の Rakefile 経由（bundle exec rake test）': { ...RESOLVED, full_command: 'bundle exec rake test' },
-  'poetry run の後の Taskfile 経由（poetry run task test）': { ...RESOLVED, full_command: 'poetry run task test' },
-  'pnpm exec の後の repo 内のパス（pnpm exec ./scripts/test.sh）': { ...RESOLVED, full_command: 'pnpm exec ./scripts/test.sh' },
-  'hatch の scripts 経由（hatch run test）': { ...RESOLVED, full_command: 'hatch run test' },
-  'pdm の scripts 経由（pdm run test）': { ...RESOLVED, full_command: 'pdm run test' },
-  'npm exec が option を飲み込む（npm exec node --test）': { ...RESOLVED, full_command: 'npm exec node --test', files_command: 'npm exec node --test {files}' },
-  '前置と別エコシステムのランナー（bun x rspec）': { ...RESOLVED, full_command: 'bun x rspec', files_command: 'bun x rspec {files}' },
-  '前置と別エコシステムのランナー（uv run jest）': { ...RESOLVED, full_command: 'uv run jest', files_command: 'uv run jest {files}' },
-  'shell の記号':{ ...RESOLVED, full_command: 'uv sync && uv run pytest' },
-  'テストを実行しないコマンド（true）': { ...RESOLVED, full_command: 'true', files_command: 'true {files}' },
-  'ランナーに option を足す（--collect-only）': { ...RESOLVED, full_command: 'uv run pytest --collect-only' },
-  'full_command と files_command で前置が違う': { ...RESOLVED, files_command: 'poetry run pytest {files}' },
+  '{files} が無い': withEntry({ files_command: 'uv run pytest' }),
+  '{files} が 2 回': withEntry({ files_command: 'uv run pytest {files} {files}' }),
+  '{files} が独立した語でない': withEntry({ files_command: 'uv run pytest --x={files}' }),
+  'package.json の scripts 経由（npm test）': withEntry({ full_command: 'npm test' }),
+  'package.json の scripts 経由（pnpm run）': withEntry({ files_command: 'pnpm run test {files}' }),
+  'Makefile のターゲット経由': withEntry({ full_command: 'make test' }),
+  'shell でスクリプト起動（bash scripts/test.sh）': withEntry({ full_command: 'bash scripts/test.sh' }),
+  'repo 内のパスを直接起動（./scripts/test.sh）': withEntry({ full_command: './scripts/test.sh' }),
+  'インタプリタでスクリプト起動（python scripts/run_tests.py）': withEntry({ full_command: 'python scripts/run_tests.py' }),
+  'uv run の後の Makefile 経由（uv run make test）': withEntry({ full_command: 'uv run make test' }),
+  'bundle exec の後の Rakefile 経由（bundle exec rake test）': withEntry({ full_command: 'bundle exec rake test' }),
+  'poetry run の後の Taskfile 経由（poetry run task test）': withEntry({ full_command: 'poetry run task test' }),
+  'pnpm exec の後の repo 内のパス（pnpm exec ./scripts/test.sh）': withEntry({ full_command: 'pnpm exec ./scripts/test.sh' }),
+  'hatch の scripts 経由（hatch run test）': withEntry({ full_command: 'hatch run test' }),
+  'pdm の scripts 経由（pdm run test）': withEntry({ full_command: 'pdm run test' }),
+  'npm exec が option を飲み込む（npm exec node --test）': withEntry({ full_command: 'npm exec node --test', files_command: 'npm exec node --test {files}' }),
+  '前置と別エコシステムのランナー（bun x rspec）': withEntry({ full_command: 'bun x rspec', files_command: 'bun x rspec {files}' }),
+  '前置と別エコシステムのランナー（uv run jest）': withEntry({ full_command: 'uv run jest', files_command: 'uv run jest {files}' }),
+  'shell の記号': withEntry({ full_command: 'uv sync && uv run pytest' }),
+  'テストを実行しないコマンド（true）': withEntry({ full_command: 'true', files_command: 'true {files}' }),
+  'ランナーに option を足す（--collect-only）': withEntry({ full_command: 'uv run pytest --collect-only' }),
+  'full_command と files_command で前置が違う': withEntry({ files_command: 'poetry run pytest {files}' }),
+  'package.json の scripts 経由（pnpm test）': withEntry({ full_command: 'pnpm test', files_command: 'pnpm test {files}' }),
+  'workspace の filter 経由（pnpm --filter x test）': withEntry({ full_command: 'pnpm --filter x test', files_command: 'pnpm --filter x test {files}' }),
+  '束にファイルの無いディレクトリ': withEntry({ dir: 'packages/a' }),
+  '束のファイルの祖先でしかないディレクトリ（.github）': withEntry({ dir: '.github' }),
+  '.. を含む dir': withEntry({ dir: '.github/workflows/../..' }),
+  '/ 始まりの dir': withEntry({ dir: '/tmp/wt' }),
+  'dir が無い': { ...RESOLVED, commands: [{ full_command: ROOT_ENTRY.full_command, files_command: ROOT_ENTRY.files_command }] },
+  '同じ dir が 2 回': { ...RESOLVED, commands: [ROOT_ENTRY, ROOT_ENTRY] },
+  'commands が空': { ...RESOLVED, commands: [] },
+  '最上位に full_command を持つ旧形式': { status: 'resolved', full_command: 'uv run pytest', files_command: 'uv run pytest {files}', sources: RESOLVED.sources },
+  'commands に加えて最上位にも full_command': { ...RESOLVED, full_command: 'uv run pytest', files_command: 'uv run pytest {files}' },
   'sources が束の外': { ...RESOLVED, sources: ['/tmp/wt/pyproject.toml'] },
   'resolved なのに sources が空': { ...RESOLVED, sources: [] },
 };
@@ -139,7 +156,7 @@ for (const [name, ret] of Object.entries(INVALID_RETURNS)) {
     assert.ok(logs.some((l) => l.includes('テストコマンド: resolver の返り値が不正')), logs.filter((l) => l.includes('テストコマンド')).join(' | '));
     const finalize = stages.find((s) => s.name === FINALIZE);
     assert.equal(finalize.wargs.test_commands.status, 'unresolved');
-    assert.equal(finalize.wargs.test_commands.full_command, null);
+    assert.equal(finalize.wargs.test_commands.commands, null);
     assert.equal(prIterateArgs[0].test_commands.status, 'unresolved');
   });
 }
@@ -147,7 +164,7 @@ for (const [name, ret] of Object.entries(INVALID_RETURNS)) {
 test('[test-commands] resolver が unresolved を返したら、コマンドファイルを書かずに終端サマリーに解決できなかったことを出す', async () => {
   const { labels, summary } = await runDevFlow({
     'resolve-test-commands': PREPARE_RESOLVER,
-    'resolve-test-commands-agent': { status: 'unresolved', full_command: null, files_command: null, sources: ['pyproject.toml'] },
+    'resolve-test-commands-agent': { status: 'unresolved', commands: [], sources: ['pyproject.toml'] },
   });
   assert.ok(!labels.includes('resolve-test-commands-write'), labels.join(', '));
   assert.ok(summary.includes('- テストコマンド: 解決できなかった（解決元: resolver（根拠: `pyproject.toml`）'), summary);
@@ -191,6 +208,70 @@ test('[test-commands] 終端サマリーに実行したテストコマンドと�
   assert.ok(resolver.summary.includes('- テストコマンド: `uv run pytest`（落ちたファイルの再実行: `uv run pytest {files}`。解決元: resolver（根拠: `.github/workflows/ci.yml`, `pyproject.toml`））'), resolver.summary);
 });
 
+// ---- dir 付きの commands（サブディレクトリで起動する repo）----
+
+const MONOREPO_BUNDLE = ['packages/a/package.json', 'packages/a/vitest.config.ts', 'services/api/pyproject.toml'];
+const MONOREPO_COMMANDS = [
+  { dir: 'packages/a', full_command: 'pnpm exec vitest run', files_command: 'pnpm exec vitest run {files}' },
+  { dir: 'services/api', full_command: 'uv run pytest', files_command: 'uv run pytest {files}' },
+];
+
+test('[test-commands] validateResolvedTestCommands: 束のファイルがあるディレクトリの entry は resolved になり、record は commands だけを持つ', () => {
+  const res = validateResolvedTestCommands({
+    status: 'resolved',
+    commands: [{ ...MONOREPO_COMMANDS[0], dir: './packages/a/' }, MONOREPO_COMMANDS[1]],
+    sources: ['packages/a/vitest.config.ts', 'services/api/pyproject.toml'],
+  }, MONOREPO_BUNDLE);
+  assert.deepEqual(res, {
+    ok: true,
+    record: { source: 'resolver', status: 'resolved', commands: MONOREPO_COMMANDS, sources: ['packages/a/vitest.config.ts', 'services/api/pyproject.toml'] },
+  });
+});
+
+test('[test-commands] validateResolvedTestCommands: 束に無いディレクトリ・.. を含む dir・scripts 経由・旧形式は ok:false', () => {
+  const sources = ['packages/a/package.json'];
+  const entry = MONOREPO_COMMANDS[0];
+  const cases = {
+    '束に無いディレクトリ': { status: 'resolved', commands: [{ ...entry, dir: 'packages/b' }], sources },
+    '束のファイルの祖先でしかないディレクトリ': { status: 'resolved', commands: [{ ...entry, dir: 'packages' }], sources },
+    '.. を含む dir': { status: 'resolved', commands: [{ ...entry, dir: 'packages/a/../a' }], sources },
+    '.. で worktree の外': { status: 'resolved', commands: [{ ...entry, dir: '../outside' }], sources },
+    '/ 始まり': { status: 'resolved', commands: [{ ...entry, dir: '/packages/a' }], sources },
+    'pnpm test': { status: 'resolved', commands: [{ dir: 'packages/a', full_command: 'pnpm test', files_command: 'pnpm test {files}' }], sources },
+    'pnpm --filter x test': { status: 'resolved', commands: [{ dir: '.', full_command: 'pnpm --filter x test', files_command: 'pnpm --filter x test {files}' }], sources },
+    '最上位に full_command を持つ旧形式': { status: 'resolved', full_command: entry.full_command, files_command: entry.files_command, sources },
+  };
+  for (const [name, ret] of Object.entries(cases)) {
+    assert.equal(validateResolvedTestCommands(ret, MONOREPO_BUNDLE).ok, false, name);
+  }
+});
+
+test('[test-commands] resolver が dir 付きの commands を返したら、その形のままコマンドファイルと工程の返り値・終端サマリーに載る', async () => {
+  const prepare = testCommandsPrepareResponse({ source: 'resolver', status: 'unresolved', sources: [], bundle_file: BUNDLE, bundle_files: MONOREPO_BUNDLE });
+  const ret = { status: 'resolved', commands: MONOREPO_COMMANDS, sources: ['packages/a/vitest.config.ts'] };
+  const { calls, stages, summary } = await runDevFlow({ 'resolve-test-commands': prepare, 'resolve-test-commands-agent': ret });
+  const body = JSON.parse(calls.find((c) => c.label === 'resolve-test-commands-write').prompt.match(/<<<TEST_COMMANDS_BEGIN>>>\n(.*)\n<<<TEST_COMMANDS_END>>>/)[1]);
+  assert.deepEqual(body, { source: 'resolver', ...ret });
+  assert.deepEqual(stages.find((s) => s.name === FINALIZE).wargs.test_commands.commands, MONOREPO_COMMANDS);
+  assert.ok(summary.includes('- テストコマンド: `packages/a` で `pnpm exec vitest run`、`services/api` で `uv run pytest`（落ちたファイルの再実行: `packages/a` で `pnpm exec vitest run {files}`、`services/api` で `uv run pytest {files}`。解決元: resolver（根拠: `packages/a/vitest.config.ts`））'), summary);
+});
+
+test('[test-commands] testCommandResolverPrompt は dir 付きの commands の形と dir の決め方を示し、書ける「前置 + ランナー」を許可表から並べる', () => {
+  const prompt = testCommandResolverPrompt(BUNDLE);
+  assert.ok(prompt.includes('{status: "resolved"|"unresolved", commands: [{dir, full_command, files_command}], sources}'), prompt);
+  assert.ok(prompt.includes('dir に選べるのは `.` か、束の「## ファイル: <path>」の path があるディレクトリ'), prompt);
+  assert.ok(prompt.includes('dir からの相対パス'), prompt);
+  let forms = 0;
+  for (const p of TEST_COMMAND_PREFIXES) {
+    for (const r of TEST_COMMAND_RUNNERS.filter((x) => p.runners.includes(x.name))) {
+      forms += 1;
+      assert.ok(prompt.includes(`\`${[...p.words, ...r.full].join(' ')}\``), `${p.words.join(' ')} + ${r.name} が prompt に無い`);
+    }
+  }
+  assert.ok(forms > TEST_COMMAND_RUNNERS.length, '前置付きの形を数えていない');
+  for (const r of TEST_COMMAND_RUNNERS) assert.ok(prompt.includes(`\`${r.files.join(' ')}\``), r.name);
+});
+
 // ---- pr-iterate ----
 
 const HOLD_HEAD = 'a'.repeat(40);
@@ -225,7 +306,7 @@ test('[test-commands] 単体起動の pr-iterate はテストを実行すると�
 });
 
 test('[test-commands] pr-iterate は test_commands を受け取ったら解決し直さず、テストを実行しない run では解決の工程を起動しない', async () => {
-  const given = { source: 'user_config', status: 'resolved', full_command: 'cargo test', files_command: 'cargo test {files}', sources: [], commands_file: '/tmp/test-commands-Given/commands.json', error: null };
+  const given = { source: 'user_config', status: 'resolved', commands: [{ dir: '.', full_command: 'cargo test', files_command: 'cargo test {files}' }], sources: [], commands_file: '/tmp/test-commands-Given/commands.json', error: null };
   const withArg = await runPrIterate({ nested: { caller: 'standalone', ...NESTED }, prior_devflow: PRIOR_FINAL_RED, test_commands: given });
   assert.deepEqual(withArg.stages.filter((s) => s.name === TEST_COMMANDS), []);
   assert.ok(!withArg.calls.some((c) => c.label.startsWith('resolve-test-commands')));

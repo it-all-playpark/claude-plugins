@@ -254,10 +254,19 @@ export function testDiscoveryNote(testCommands) {
     return head + `解決元は base の tests/run-*.sh（${sources}）。各 script に test_files の一覧を DEVFLOW_TEST_FILES で渡して実行する — `
       + 'test_files はこれらの script が扱うテストファイルに限れ' + tail;
   }
-  if (resolved && isNonEmptyString(tc.files_command)) {
-    const from = tc.source === 'user_config' ? 'user 設定' : `resolver（根拠: ${sources}）`;
-    return head + `解決元は ${from}。\`${tc.files_command}\` の {files} に test_files を入れて実行する — `
+  const entries = resolved && Array.isArray(tc.commands)
+    ? tc.commands.filter((e) => e != null && isNonEmptyString(e.dir) && isNonEmptyString(e.files_command)) : [];
+  const from = tc != null && tc.source === 'user_config' ? 'user 設定' : `resolver（根拠: ${sources}）`;
+  if (entries.length === 1 && entries[0].dir === '.') {
+    return head + `解決元は ${from}。\`${entries[0].files_command}\` の {files} に test_files を入れて実行する — `
       + 'test_files はこのコマンドで実行できるテストファイルに限れ' + tail;
+  }
+  if (entries.length > 0) {
+    // コマンドは起動するディレクトリ（dir）ごと。redgreen-verify は 1 ペアの test_files を 1 つの dir のコマンドで実行する
+    const list = entries.map((e) => `${e.dir} → \`${e.files_command}\``).join(' / ');
+    return head + `解決元は ${from}。コマンドは起動するディレクトリごと（${list}。"." は repo の root）。test_files（repo の root からの相対パス）を含む最も深いディレクトリのコマンドを、`
+      + 'そのディレクトリを cwd に {files} へディレクトリからの相対パスを入れて実行する — test_files はこれらのディレクトリ配下でそのコマンドが実行できるテストファイルに限り、'
+      + '1 つの AC の test_files は同じディレクトリのコマンドに振り分けられるものにせよ' + tail;
   }
   return head + 'テストコマンド未解決 — test_files を挙げず verified_by は "inspection" にせよ。\n';
 }

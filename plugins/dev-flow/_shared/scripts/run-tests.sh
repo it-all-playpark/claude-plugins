@@ -28,12 +28,16 @@
 # 解決したテストコマンド（issue #1278）: --commands <file> は Setup の test-commands-prepare / resolver が worktree の外の
 # run ごとの場所に置いたコマンドファイル（中身の形は test-commands-prepare.sh）。コマンドを argv で受けない — 転写の
 # 経路で中身が変わらず、PR が既知のパスで書き換えられないようにする。読み方:
-#   - status "resolved" で full_command が空でない（user 設定・resolver）: base の tests/run-*.sh に代えて full_command を
-#     <WT> を cwd に 1 本だけ実行する（--files は files_command の {files} の語を一覧のパスに置き換えて実行する）。
-#     コマンドは shell を通さず空白で区切った argv で起動する
+#   - status "resolved" で commands（{dir, full_command, files_command} の 1 件以上の配列。user 設定・resolver）: base の
+#     tests/run-*.sh に代えて、各 entry の full_command を <WT>/<dir> を cwd に並び順で 1 本ずつ実行する（1 つでも red なら red）。
+#     --files は各ファイルを、そのファイルを含む最も深い entry の dir に振り分け、その entry の files_command の {files} の語を
+#     dir からの相対パスに置き換えて実行する（ファイルの無い entry は実行しない）。コマンドは shell を通さず空白で区切った argv で起動する。
+#     dir は "." か <WT> 相対のパスで、<WT>/<dir> が <WT> 内の実ディレクトリでない（無い・symlink を経由する・.. を含む）entry が
+#     1 つでもあれば、テストを 1 本も実行せず status "error"（PR が dir を symlink に差し替えて <WT> の外で起動させない）。
+#     --files のファイルがどの entry の dir にも含まれないときも status "error"（実行しないまま passed にしない）
 #   - status "unresolved": テストを実行せず tests "no_tests"（base に tests/run-*.sh があっても実行しない）
-#   - それ以外（--commands 無し・ファイルが無い・source "runners"）: base の tree の tests/run-*.sh を実行し、無ければ no_tests
-#   - JSON として読めない: テストを実行せず status "error"
+#   - --commands 無し・ファイルが無い・source "runners": base の tree の tests/run-*.sh を実行し、無ければ no_tests
+#   - JSON として読めない・上のどの形でもない: テストを実行せず status "error"
 # 言語別に決め打ちしたコマンドで実行する経路は持たない（解決は repo の CI 定義等を読む resolver か user 設定が行う）。
 #
 # 変更ファイルの受け渡し（issue #835）: --files でない run では、merge-base から working tree への差分（commit 済み・
@@ -49,8 +53,8 @@
 # tests/run-*.sh（集合は同じく base で決める）に DEVFLOW_TEST_FILES=<その絶対パス> を渡す（DEVFLOW_CHANGED_FILES / DEVFLOW_BASE は渡さない）。
 # ランナーは一覧のうち自分が扱うファイルだけを実行し、扱うファイルが無ければ何も実行せず exit 0 する。
 # 変数を読まないランナーは全件を実行する（遅くなるだけで green を緩めない）。どのファイルを誰が扱うかは repo 側が決める。
-# 一覧のパスが WT 内の通常ファイルでなければ引数不正（exit 2）。解決したテストコマンドで実行する run は files_command の
-# {files} の語を一覧のパスに置き換えて実行する。どちらも無い・files_command に {files} の語がちょうど 1 つ無いときは
+# 一覧のパスが WT 内の通常ファイルでなければ引数不正（exit 2）。解決したテストコマンドで実行する run は上の振り分けで
+# 実行する。どちらも無い・実行する entry の files_command に {files} の語がちょうど 1 つ無いときは
 # status "error" を返す（呼び出し側は flake と判定しない）。
 #
 # 落ちたテストファイルの受け取り（issue #1249）: tests/run-*.sh には毎回 DEVFLOW_FAILED_FILES=<$LOG_DIR 内のまだ存在しない
@@ -70,7 +74,7 @@
 #      それ以外（built / skipped / JSON でない）はビルドを再試行せずテストへ進む。
 #   2. base の tree の tests/run-*.sh を全本、名前順に <WT> の絶対パスの bare 形で直列実行する
 #      （1 本だけ選ぶと残りのランナーの回帰が CI まで検出されない。並列化しない — repo によっては共有資源を使う）。
-#      コマンドファイルに解決したテストコマンドがあれば、tests/run-*.sh に代えてそれを 1 本実行する。
+#      コマンドファイルに解決したテストコマンドがあれば、tests/run-*.sh に代えて commands の各 entry を直列実行する。
 #      どちらも無ければ tests "no_tests"。
 #   リトライ・環境の自動修復はしない（起動失敗は環境要因で、同じ操作の繰り返しや store / ロックの操作では直らない）。
 #
@@ -90,7 +94,7 @@
 # failed_files（status "failed" のときだけ非空になりうる）: exit 非 0 の script ごとに、上の DEVFLOW_FAILED_FILES の
 # 一覧を使えるときはそれを、使えないときは出力から bats の `not ok` 行
 # （直後の診断行 `# (in test file <path>, line N)` のパス）と vitest / jest の `FAIL <path>` 行を抽出したものを取り、
-# <WT> 相対にして重複なく並べる。exit 非 0 の script から 1 件も抽出できない・ファイルに結び付かない
+# <WT> 相対にして重複なく並べる（解決したテストコマンドの出力の相対パスは entry の dir からの相対なので dir を前置する）。exit 非 0 の script から 1 件も抽出できない・ファイルに結び付かない
 # `not ok` がある・ビルド失敗のときは空配列にする — 一部だけ列挙すると、base でも落ちる既存の失敗の
 # 切り分け（base-failure-triage）が結び付かない失敗を見落として green に倒しうるため。
 #
@@ -100,6 +104,7 @@
 #    "scripts":[{"path":"...","exit":N,"launch_failed":bool,"log":"..."}],"failed_files":[...],"epoch":N
 #    [,"changed_runners":["tests/run-x.sh",...]]}
 #   changed_runners は中身が base と違う・base に無い tests/run-*.sh があるときだけ載る（無ければキー自体を出さない）。
+#   解決したテストコマンドの scripts[].path は実行した argv を空白で繋いだもの（dir が "." でなければ "<dir>: " を前置する）。
 #   scripts[].log はその script の stdout / stderr を書いたログの絶対パス（$TMPDIR 配下 = worktree の外。worktree 内に
 #   置くと diff-hash が untracked を含むため merge tier を壊す）。evaluator が同じ tree で実行済みのテストを再実行せず
 #   ログの行を根拠にするために渡す。どのテストファイルが走ったかはログの中身から読み手が判断する。
@@ -259,35 +264,81 @@ if [[ ${#TEST_FILES[@]} -gt 0 ]]; then
     printf '%s\n' "${TEST_FILES[@]}" > "$TEST_FILES_LIST"
 fi
 
-# 解決したテストコマンド（--commands）。COMMAND_MODE は "command"（full_command / files_command を実行）・"unresolved"
-# （実行しない）・""（base の tests/run-*.sh）。CMD_ARGV は実行する argv（shell を通さず空白で区切る）
+# 解決したテストコマンド（--commands）。COMMAND_MODE は "command"（commands の各 entry を実行）・"unresolved"
+# （実行しない）・""（base の tests/run-*.sh）。実行する entry ごとに ENTRY_DIRS（"." か <WT> 相対の dir）と
+# ENTRY_ARGVS（argv を 1 行 1 語で書いたファイル。shell を通さず空白で区切る）を並べる
 COMMAND_MODE=""
-CMD_ARGV=()
+ENTRY_DIRS=()
+ENTRY_ARGVS=()
 if [[ -n "$COMMANDS_FILE" && -e "$COMMANDS_FILE" ]]; then
     if ! COMMAND_MODE=$(jq -r 'if type != "object" then error("not an object")
-        elif .status == "resolved" and (.full_command | type == "string" and test("\\S")) then "command"
-        elif .status == "unresolved" then "unresolved" else "" end' "$COMMANDS_FILE" 2>"$LOG_DIR/commands.log"); then
-        emit error error false "test commands file is not readable as JSON — no test was run: $COMMANDS_FILE (log: $LOG_DIR/commands.log)" '[]' '[]'
+        elif .status == "unresolved" then "unresolved"
+        elif .status == "resolved" and .source == "runners" then ""
+        elif .status == "resolved" and (.commands | type == "array" and length > 0
+            and all(.[]; type == "object" and (.dir | type == "string") and (.full_command | type == "string" and test("\\S"))))
+            then "command"
+        else error("no commands") end' "$COMMANDS_FILE" 2>"$LOG_DIR/commands.log"); then
+        emit error error false "test commands file is not readable as JSON with commands [{dir, full_command, files_command}] — no test was run: $COMMANDS_FILE (log: $LOG_DIR/commands.log)" '[]' '[]'
         exit 0
     fi
-    if [[ "$COMMAND_MODE" == command && -n "$TEST_FILES_LIST" ]]; then
-        read -r -a words <<< "$(jq -r '.files_command // "" | tostring' "$COMMANDS_FILE")"
-        n=0
-        for w in "${words[@]+"${words[@]}"}"; do
-            if [[ "$w" == "{files}" ]]; then
-                CMD_ARGV+=("${TEST_FILES[@]}")
-                n=$((n + 1))
-            else
-                CMD_ARGV+=("$w")
-            fi
-        done
-        if [[ $n -ne 1 ]]; then
-            emit error error false "--files needs files_command with exactly one {files} word in the test commands file: $COMMANDS_FILE" '[]' '[]'
+fi
+if [[ "$COMMAND_MODE" == command ]]; then
+    # <WT>/<dir> は <WT> 内の実ディレクトリ（pwd -P が <WT の実体>/<dir> と一致 = どの要素も symlink でない）だけを受ける
+    entry_dirs=()
+    n_entries=$(jq -r '.commands | length' "$COMMANDS_FILE")
+    for ((k = 0; k < n_entries; k++)); do
+        dir=$(jq -r --argjson k "$k" '.commands[$k].dir' "$COMMANDS_FILE")
+        if [[ "$dir" != "." ]] && { [[ -z "$dir" || "$dir" == /* || "/$dir/" == *//* || "/$dir/" == */./* || "/$dir/" == */../* ]] \
+                || [[ ! -d "$WT/$dir" || "$(cd "$WT/$dir" 2>/dev/null && pwd -P)" != "$WT_PHYS/$dir" ]]; }; then
+            emit error error false "commands[$k].dir is not a real directory inside the worktree (missing, symlink or not a relative path) — no test was run: $dir" '[]' '[]'
             exit 0
         fi
-    elif [[ "$COMMAND_MODE" == command ]]; then
-        read -r -a CMD_ARGV <<< "$(jq -r '.full_command' "$COMMANDS_FILE")"
+        entry_dirs+=("$dir")
+    done
+    if [[ -n "$TEST_FILES_LIST" ]]; then
+        # 各ファイルを、そのファイルを含む最も深い entry に振り分ける（"." は全ファイルを含む）
+        for p in "${TEST_FILES[@]}"; do
+            best=-1
+            best_len=-1
+            for k in "${!entry_dirs[@]}"; do
+                dir="${entry_dirs[$k]}"
+                if [[ "$dir" == "." ]]; then len=0; elif [[ "$p" == "$dir"/* ]]; then len=${#dir}; else continue; fi
+                if [[ $len -gt $best_len ]]; then best=$k; best_len=$len; fi
+            done
+            if [[ $best -lt 0 ]]; then
+                emit error error false "--files: not under any commands[].dir of the test commands file — no test was run: $p" '[]' '[]'
+                exit 0
+            fi
+            dir="${entry_dirs[$best]}"
+            [[ "$dir" == "." ]] || p="${p#"$dir"/}"
+            printf '%s\n' "$p" >> "$LOG_DIR/entry-$best.files"
+        done
     fi
+    for k in "${!entry_dirs[@]}"; do
+        argv_file="$LOG_DIR/entry-$k.argv"
+        if [[ -n "$TEST_FILES_LIST" ]]; then
+            [[ -f "$LOG_DIR/entry-$k.files" ]] || continue
+            read -r -a words <<< "$(jq -r --argjson k "$k" '.commands[$k].files_command // "" | tostring' "$COMMANDS_FILE")"
+            n=0
+            for w in "${words[@]+"${words[@]}"}"; do
+                if [[ "$w" == "{files}" ]]; then
+                    cat "$LOG_DIR/entry-$k.files"
+                    n=$((n + 1))
+                else
+                    printf '%s\n' "$w"
+                fi
+            done > "$argv_file"
+            if [[ $n -ne 1 ]]; then
+                emit error error false "--files needs files_command with exactly one {files} word in commands[$k] of the test commands file: $COMMANDS_FILE" '[]' '[]'
+                exit 0
+            fi
+        else
+            read -r -a words <<< "$(jq -r --argjson k "$k" '.commands[$k].full_command' "$COMMANDS_FILE")"
+            printf '%s\n' "${words[@]}" > "$argv_file"
+        fi
+        ENTRY_DIRS+=("${entry_dirs[$k]}")
+        ENTRY_ARGVS+=("$argv_file")
+    done
 fi
 
 # merge-base（ランナーの集合を決める tree。解決できなければテストを 1 本も実行せず error）
@@ -375,18 +426,26 @@ fi
 
 # 2. 実行対象: 解決したテストコマンド、無ければ base の tree の tests/run-*.sh（<WT> に無い・実行ビットが無いものも実行して
 #    起動失敗にする）
-TARGETS=()   # 表示・JSON 用の path
-COMMANDS=()  # 実行内容（run-*.sh は空 = path を bare 実行、解決したテストコマンドは CMD_ARGV を空白で繋いだ文字列）
+TARGETS=()      # 表示・JSON 用の path
+TARGET_DIRS=()  # 解決したテストコマンドの cwd（"." か <WT> 相対の dir）。run-*.sh は空 = path を bare 実行
+TARGET_ARGVS=() # 解決したテストコマンドの argv のファイル（run-*.sh は空）
 if [[ "$COMMAND_MODE" == unresolved ]]; then
     emit passed no_tests false "the test commands file says unresolved — no test was run: $COMMANDS_FILE" '[]' '[]'
     exit 0
 elif [[ "$COMMAND_MODE" == command ]]; then
-    TARGETS+=("${CMD_ARGV[*]}")
-    COMMANDS+=("${CMD_ARGV[*]}")
+    for k in "${!ENTRY_DIRS[@]}"; do
+        label=$(tr '\n' ' ' < "${ENTRY_ARGVS[$k]}")
+        label="${label% }"
+        [[ "${ENTRY_DIRS[$k]}" == "." ]] || label="${ENTRY_DIRS[$k]}: $label"
+        TARGETS+=("$label")
+        TARGET_DIRS+=("${ENTRY_DIRS[$k]}")
+        TARGET_ARGVS+=("${ENTRY_ARGVS[$k]}")
+    done
 else
     for path in "${BASE_RUNNERS[@]+"${BASE_RUNNERS[@]}"}"; do
         TARGETS+=("$WT/$path")
-        COMMANDS+=("")
+        TARGET_DIRS+=("")
+        TARGET_ARGVS+=("")
     done
 fi
 
@@ -470,22 +529,25 @@ for i in "${!TARGETS[@]}"; do
     target="${TARGETS[$i]}"
     log="$LOG_DIR/$i.log"
     failed_out=""
-    [[ -n "${COMMANDS[$i]}" ]] || failed_out="$LOG_DIR/$i.failed-files"
-    if [[ -z "${COMMANDS[$i]}" && -n "$TEST_FILES_LIST" ]]; then
+    tdir="${TARGET_DIRS[$i]}"
+    [[ -n "$tdir" ]] || failed_out="$LOG_DIR/$i.failed-files"
+    CMD_ARGV=()
+    if [[ -z "$tdir" && -n "$TEST_FILES_LIST" ]]; then
         DEVFLOW_FAILED_FILES="$failed_out" DEVFLOW_TEST_FILES="$TEST_FILES_LIST" "$target" > "$log" 2>&1 < /dev/null
         rc=$?
-    elif [[ -z "${COMMANDS[$i]}" && -n "$CHANGED_FILES" ]]; then
+    elif [[ -z "$tdir" && -n "$CHANGED_FILES" ]]; then
         DEVFLOW_FAILED_FILES="$failed_out" DEVFLOW_CHANGED_FILES="$CHANGED_FILES" DEVFLOW_BASE="$MERGE_BASE" "$target" > "$log" 2>&1 < /dev/null
         rc=$?
-    elif [[ -z "${COMMANDS[$i]}" ]]; then
+    elif [[ -z "$tdir" ]]; then
         DEVFLOW_FAILED_FILES="$failed_out" "$target" > "$log" 2>&1 < /dev/null
         rc=$?
     else
-        "${CMD_ARGV[@]}" > "$log" 2>&1 < /dev/null
+        while IFS= read -r w; do CMD_ARGV+=("$w"); done < "${TARGET_ARGVS[$i]}"
+        (cd "$WT/$tdir" || exit 126; exec "${CMD_ARGV[@]}") > "$log" 2>&1 < /dev/null
         rc=$?
     fi
     pnpm_cmd=false
-    [[ -n "${COMMANDS[$i]}" && "${CMD_ARGV[0]}" == pnpm ]] && pnpm_cmd=true
+    [[ -n "$tdir" && "${CMD_ARGV[0]}" == pnpm ]] && pnpm_cmd=true
     launch=false
     if [[ $rc -eq 126 || $rc -eq 127 ]]; then
         launch=true
@@ -514,7 +576,10 @@ for i in "${!TARGETS[@]}"; do
     fi
     while IFS= read -r p; do
         [[ -n "$p" && "$p" != $'\t' ]] || continue
-        FAILED_LIST+="$(to_rel "$p")"$'\n'
+        rel=$(to_rel "$p")
+        # 解決したテストコマンドの出力の相対パスは entry の dir からの相対
+        [[ -n "$tdir" && "$tdir" != "." && "$p" != /* ]] && rel="$tdir/$rel"
+        FAILED_LIST+="$rel"$'\n'
     done <<< "$found"
     # 件数は最後まで読む awk で絞る（head へ pipe すると先に終わり、上流が SIGPIPE で pipefail が非 0 になる）
     fail_lines=$(LC_ALL=C sed $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$log" | LC_ALL=C grep -E '^(not ok |[[:space:]]*FAIL[[:space:]])' | awk -v max="$LINES_MAX" 'NR <= max')

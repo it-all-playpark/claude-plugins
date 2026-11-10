@@ -34,7 +34,7 @@ function isStructuredOutputFailure(e) {
 // ==== END inline: _lib/structured-output-failure.mjs ====
 // ==== BEGIN inline: _lib/stage-contract.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 const TEST_COMMANDS_RESULT_SPEC = {
-  source: 'string|null', status: 'string', full_command: 'string|null', files_command: 'string|null',
+  source: 'string|null', status: 'string', commands: 'array|null',
   sources: 'array', commands_file: 'string|null', error: 'string|null',
 }
 
