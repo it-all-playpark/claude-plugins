@@ -172,6 +172,13 @@ const EVALUATOR_OPERATIONAL_CONTRACT = {
     '- critical 以外の finding は返しても使われない（評価 round 以降の台帳は critical 以外を受け付けない）。差分に無い既存コードへの指摘は禁止。',
     '- コード修正・ファイル変更は禁止。',
   ].join('\n'),
+  diagram_check: [
+    'diagram_check 契約:',
+    '- diagram が渡された場合、図の構成要素（ノード・参加者・エンティティ）と矢印（呼び出し・データの流れ・関連）を realized diff と照合し、diagram_check:{consistent, mismatches} を必ず返す（before は base の構成、after は working tree の構成）。',
+    '- mismatches には、diff に無い要素・矢印と、diff にあって図に無い構成の変化を 1 件 1 行で書く（日本語。識別子・パスは原文のまま）。',
+    '- consistent は mismatches が 0 件のときだけ true。照合できなかったときは false にし、理由を mismatches に書く。',
+    '- diagram_check は PR 本文の「構成の変化」の出し分けにだけ使われる（一致した図だけが載り、食い違った図は載らず mismatches が載る）。図の食い違いだけを理由に verdict を fail にせず、feedback も足さない。',
+  ].join('\n'),
 }
 
 const EVAL_EVIDENCE_MAX = 200
@@ -1378,6 +1385,7 @@ const DEFAULT_TIER_REASON = '標準 — 人間が LGTM して merge';
 const RESOLVED_ROWS_MAX = 30;
 const RESOLVED_CELL_MAX = 200;
 const PR_BODY_STALE_NOTE = '⚠️ PR 本文: 「受入条件の結果」の表と checkbox が修正前のまま（本文の更新に失敗）— AC の結果は本文ではなくこのコメントで確かめる';
+const PR_BODY_STALE_NOTE_WITH_DIAGRAM = '⚠️ PR 本文: 「受入条件の結果」の表と checkbox、「構成の変化」の図が修正前のまま（本文の更新に失敗）— AC の結果は本文ではなくこのコメントで、構成は diff で確かめる';
 
 const OBSERVATIONAL_AC_ACTION = '実行して AC の主張を確認する（例: merge 後の実 run・計測）';
 const UNREACHABLE_ENV_AC_ACTION = '実行して確認する';
@@ -1522,6 +1530,7 @@ function buildDevflowSummaryBody({
   hooksNotRunning,
   testCommands,
   prBodySynced,
+  prBodyHasDiagram,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -1833,7 +1842,7 @@ function buildDevflowSummaryBody({
   const prBodyStale = prBodySynced === false;
   if (cardOpen.length === 0 && !prBodyStale) lines.push('なし');
   for (const it of cardOpen) lines.push(`- ${it.state === 'failed' ? '❌' : '⚠️'} ${it.name}: ${it.note}`);
-  if (prBodyStale) lines.push(`- ${PR_BODY_STALE_NOTE}`);
+  if (prBodyStale) lines.push(`- ${prBodyHasDiagram === true ? PR_BODY_STALE_NOTE_WITH_DIAGRAM : PR_BODY_STALE_NOTE}`);
   lines.push('');
 
   lines.push('| Merge tier | shape | テスト | 評価 | 台帳 (Ledger) | AC | 危険検出 |');
@@ -2521,6 +2530,10 @@ const PR_BODY_NOTES_MAX = 5;
 const PR_BODY_OUT_OF_SCOPE_MAX = 5;
 const PR_BODY_CHANGES_HEADING = '## 何が変わるか';
 const PR_BODY_REVIEW_POINTS_HEADING = '## 人間に見てほしい点';
+const PR_BODY_DIAGRAM_HEADING = '## 構成の変化';
+const PR_BODY_DIAGRAM_UNVERIFIED = '⚠️ 図は diff と未照合';
+const PR_BODY_DIAGRAM_MISMATCH = '⚠️ 図は diff と食い違ったため載せていない';
+const PR_DIAGRAM_KINDS = ['flowchart', 'sequence', 'er'];
 const PR_BODY_DETAILS = { acceptance: '受入条件', decisions: '設計判断', verification: '検証' };
 const PR_BODY_AC_RESULTS_HEADING = '## 受入条件の結果';
 const PR_BODY_AC_UNVERIFIED = '⚠️ 未検証';
@@ -2573,6 +2586,13 @@ function decisionsSection(plan) {
 
 const PR_NOTE_SECTIONS = ['verification', 'measurement'];
 const PR_NOTE_LABELS = { verification: '検証', measurement: '計測' };
+
+function diagramOf(d) {
+  if (d == null || typeof d !== 'object' || !PR_DIAGRAM_KINDS.includes(d.kind)) return null;
+  const before = sectionMarkdown(d.before);
+  const after = sectionMarkdown(d.after);
+  return before && after ? { kind: d.kind, before, after } : null;
+}
 
 function textItems(v) {
   return arr(v).map(collapseWhitespace).filter(Boolean);
@@ -2635,6 +2655,35 @@ function outOfScopeSection(plan) {
   return excess > 0 ? `${bulletList(shown)}\n（他 ${excess} 件）` : bulletList(shown);
 }
 
+function mermaidBlock(src) {
+  const text = neutralizeStructure(src);
+  const fence = fenceFor(text);
+  return `${fence}mermaid\n${text}\n${fence}`;
+}
+
+function mismatchLine(v) {
+  return neutralizeStructure(collapseWhitespace(v)).replace(/^(?=`{3,}|~{3,})/, ZWSP);
+}
+
+function diagramSection(plan, diagramCheck) {
+  const d = diagramOf(plan?.diagram);
+  if (!d) return null;
+  if (diagramCheck?.consistent === false) {
+    const mismatches = arr(diagramCheck.mismatches).map(mismatchLine).filter(Boolean);
+    return mismatches.length ? `${PR_BODY_DIAGRAM_MISMATCH}\n${bulletList(mismatches)}` : PR_BODY_DIAGRAM_MISMATCH;
+  }
+  const figures = `**before**\n\n${mermaidBlock(d.before)}\n\n**after**\n\n${mermaidBlock(d.after)}`;
+  return diagramCheck?.consistent === true ? figures : `${PR_BODY_DIAGRAM_UNVERIFIED}\n\n${figures}`;
+}
+
+function prBodyShowsDiagram(plan, diagramCheck) {
+  return diagramOf(plan?.diagram) != null && diagramCheck?.consistent !== false;
+}
+
+function diagramCheckAfterFixes(diagramCheck) {
+  return diagramCheck?.consistent === false ? diagramCheck : null;
+}
+
 function noteLines(plan) {
   const all = arr(plan?.pr_notes)
     .filter((n) => PR_NOTE_SECTIONS.includes(n?.section) && collapseWhitespace(n?.text))
@@ -2662,12 +2711,13 @@ function hitLine(label, hits, keyOf) {
   return `- ${label}: ${list.length} 件（${items.join('、')}）`;
 }
 
-function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false }) {
+function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false, diagramCheck = null }) {
   let conclusionText = collapseWhitespace(plan?.summary);
   if (!conclusionText) conclusionText = collapseWhitespace(req?.issue_title);
   if (!conclusionText) conclusionText = `issue #${issue} の変更`;
   const changes = textItems(plan?.behavior_changes);
   const reviewPoints = textItems(plan?.review_points);
+  const diagram = diagramSection(plan, diagramCheck);
   const outOfScope = outOfScopeSection(plan);
   const rows = acRows(req, acResults, acStale);
   const acTable = acResultsSection(rows);
@@ -2679,6 +2729,7 @@ function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, ac
   const sections = [
     `**${conclusionText}**`,
     ...(changes.length ? [`${PR_BODY_CHANGES_HEADING}\n${bulletList(changes)}`] : []),
+    ...(diagram ? [`${PR_BODY_DIAGRAM_HEADING}\n${diagram}`] : []),
     ...(reviewPoints.length ? [`${PR_BODY_REVIEW_POINTS_HEADING}\n${bulletList(reviewPoints)}`] : []),
     ...(outOfScope ? [`${PR_BODY_OUT_OF_SCOPE_HEADING}\n${outOfScope}`] : []),
     ...(acTable ? [`${PR_BODY_AC_RESULTS_HEADING}\n${acTable}`] : []),
@@ -2728,6 +2779,12 @@ function prBodyEditPrompt({ wt, pr, repo, prBody, fileName }) {
     + `## Tools\n使用可: Bash, Write\n\n`
     + `## Boundary\n${bodyFile} 以外を書かない。git 操作禁止。本文の書き換え禁止。\n\n`
     + `## Token cap\nJSON のみ。1 行以内。`;
+}
+
+function fenceFor(text) {
+  const runs = str(text).match(/`+/g) ?? [];
+  const longest = runs.reduce((m, r) => Math.max(m, r.length), 0);
+  return '`'.repeat(Math.max(3, longest + 1));
 }
 // ==== END inline: _lib/pr-artifacts.mjs ====
 // ==== BEGIN inline: _lib/run-tests-prompt.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
@@ -3795,6 +3852,7 @@ if (finalRecheckTargets.length) {
 // PR 本文の作り直し: pr-iterate が fix を適用した run は終了状態（lgtm / max_reached / stuck 等）に依らず PR body を
 // 再生成して gh pr edit する — PR 作成時の「受入条件の結果」は修正前の tree の判定で、残すと最終 tree の結果に見える。
 // Final AC reconcile が reverified なら最終 AC 結果で、それ以外は全 AC を「修正後に未再評価」にする（要旨だけ Evaluate から残す）。
+// 構成の変化の図は修正後の tree と照合していないので、Evaluate で一致した図も未照合として出し、食い違った図は出さないままにする。
 // 表示専用のため失敗は fail-open（終端サマリーの「あなたが確かめること」に本文が修正前のままである旨を出す）。
 let prBodySynced = null
 if ((iterate?.fixes_applied ?? 0) > 0) {
@@ -3802,6 +3860,7 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
   const prBodyFinal = buildPrBody({
     issue: ISSUE, req, plan: state.plan, testsurfHits: state.testsurfHits, dangerHits: secHitsOf(state.risk),
     acResults: acReverified ? state.finalAcResults : (state.evalResult?.ac_results ?? null), acStale: !acReverified,
+    diagramCheck: diagramCheckAfterFixes(state.evalResult?.diagram_check),
   })
   prBodyLatest = prBodyFinal
   const sync = await failOpenAgent(prBodyEditPrompt({ wt: WT, pr: pr.pr_number, repo: REPO, prBody: prBodyFinal, fileName: 'pr-body-final.md' }), { agentType: 'dev-runner-haiku', schema: PR_BODY_EDIT, label: 'ac-checkbox-sync', phase: 'Final reconcile' })
@@ -4102,6 +4161,8 @@ const summaryBody = buildDevflowSummaryBody({
   hooksNotRunning: PRERUN.hooks_not_running,
   testCommands: TEST_COMMANDS,
   prBodySynced,
+  // 作り直しに失敗した run の PR 本文は PR 作成時のまま（図は Evaluate の照合で食い違っていなければ載っている）
+  prBodyHasDiagram: prBodyShowsDiagram(state.plan, state.evalResult?.diagram_check),
 })
 // 投稿失敗は fail-open だが summary_posted として返り値・終端 note に出す（log 1 行では人間が気づけない）。
 const summaryBodyFile = `${WT}/.devflow-tmp/dev-flow-summary.md`

@@ -1618,6 +1618,10 @@ const PR_BODY_NOTES_MAX = 5;
 const PR_BODY_OUT_OF_SCOPE_MAX = 5;
 const PR_BODY_CHANGES_HEADING = '## 何が変わるか';
 const PR_BODY_REVIEW_POINTS_HEADING = '## 人間に見てほしい点';
+const PR_BODY_DIAGRAM_HEADING = '## 構成の変化';
+const PR_BODY_DIAGRAM_UNVERIFIED = '⚠️ 図は diff と未照合';
+const PR_BODY_DIAGRAM_MISMATCH = '⚠️ 図は diff と食い違ったため載せていない';
+const PR_DIAGRAM_KINDS = ['flowchart', 'sequence', 'er'];
 const PR_BODY_DETAILS = { acceptance: '受入条件', decisions: '設計判断', verification: '検証' };
 const PR_SECTIONS_MAX_CHARS = 3000;
 const PR_BODY_AC_RESULTS_HEADING = '## 受入条件の結果';
@@ -1679,7 +1683,9 @@ function adoptImplPrNotes(plan, results) {
   const sections = [];
   const changes = [];
   const reviewPoints = [];
+  let diagram = null;
   for (const r of arr(results)) {
+    diagram = diagramOf(r?.diagram) ?? diagram;
     changes.push(...textItems(r?.behavior_changes));
     reviewPoints.push(...textItems(r?.review_points));
     for (const s of arr(r?.pr_sections)) {
@@ -1708,7 +1714,15 @@ function adoptImplPrNotes(plan, results) {
     ...(sections.length ? { pr_sections: sections } : {}),
     ...(changes.length ? { behavior_changes: changes } : {}),
     ...(reviewPoints.length ? { review_points: reviewPoints } : {}),
+    ...(diagram ? { diagram } : {}),
   };
+}
+
+function diagramOf(d) {
+  if (d == null || typeof d !== 'object' || !PR_DIAGRAM_KINDS.includes(d.kind)) return null;
+  const before = sectionMarkdown(d.before);
+  const after = sectionMarkdown(d.after);
+  return before && after ? { kind: d.kind, before, after } : null;
 }
 
 function textItems(v) {
@@ -1770,6 +1784,27 @@ function outOfScopeSection(plan) {
   const shown = all.slice(0, PR_BODY_OUT_OF_SCOPE_MAX);
   const excess = all.length - shown.length;
   return excess > 0 ? `${bulletList(shown)}\n（他 ${excess} 件）` : bulletList(shown);
+}
+
+function mermaidBlock(src) {
+  const text = neutralizeStructure(src);
+  const fence = fenceFor(text);
+  return `${fence}mermaid\n${text}\n${fence}`;
+}
+
+function mismatchLine(v) {
+  return neutralizeStructure(collapseWhitespace(v)).replace(/^(?=`{3,}|~{3,})/, ZWSP);
+}
+
+function diagramSection(plan, diagramCheck) {
+  const d = diagramOf(plan?.diagram);
+  if (!d) return null;
+  if (diagramCheck?.consistent === false) {
+    const mismatches = arr(diagramCheck.mismatches).map(mismatchLine).filter(Boolean);
+    return mismatches.length ? `${PR_BODY_DIAGRAM_MISMATCH}\n${bulletList(mismatches)}` : PR_BODY_DIAGRAM_MISMATCH;
+  }
+  const figures = `**before**\n\n${mermaidBlock(d.before)}\n\n**after**\n\n${mermaidBlock(d.after)}`;
+  return diagramCheck?.consistent === true ? figures : `${PR_BODY_DIAGRAM_UNVERIFIED}\n\n${figures}`;
 }
 
 function noteLines(plan) {
@@ -1838,12 +1873,13 @@ function hitLine(label, hits, keyOf) {
   return `- ${label}: ${list.length} 件（${items.join('、')}）`;
 }
 
-function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false }) {
+function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false, diagramCheck = null }) {
   let conclusionText = collapseWhitespace(plan?.summary);
   if (!conclusionText) conclusionText = collapseWhitespace(req?.issue_title);
   if (!conclusionText) conclusionText = `issue #${issue} の変更`;
   const changes = textItems(plan?.behavior_changes);
   const reviewPoints = textItems(plan?.review_points);
+  const diagram = diagramSection(plan, diagramCheck);
   const outOfScope = outOfScopeSection(plan);
   const rows = acRows(req, acResults, acStale);
   const acTable = acResultsSection(rows);
@@ -1855,6 +1891,7 @@ function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, ac
   const sections = [
     `**${conclusionText}**`,
     ...(changes.length ? [`${PR_BODY_CHANGES_HEADING}\n${bulletList(changes)}`] : []),
+    ...(diagram ? [`${PR_BODY_DIAGRAM_HEADING}\n${diagram}`] : []),
     ...(reviewPoints.length ? [`${PR_BODY_REVIEW_POINTS_HEADING}\n${bulletList(reviewPoints)}`] : []),
     ...(outOfScope ? [`${PR_BODY_OUT_OF_SCOPE_HEADING}\n${outOfScope}`] : []),
     ...(acTable ? [`${PR_BODY_AC_RESULTS_HEADING}\n${acTable}`] : []),
@@ -2394,6 +2431,15 @@ const IMPL = {
       },
     },
     out_of_scope: { type: 'array', items: { type: 'string', maxLength: 198 } },
+    diagram: {
+      type: ['object', 'null'],
+      required: ['kind', 'before', 'after'],
+      properties: {
+        kind: { type: 'string', enum: ['flowchart', 'sequence', 'er'] },
+        before: { type: 'string', maxLength: 1500 },
+        after: { type: 'string', maxLength: 1500 },
+      },
+    },
     epoch: { type: 'number' },
   },
 }
@@ -3488,10 +3534,12 @@ const prCommitMessage = buildCommitMessage({ issue: ISSUE, req, plan: state.plan
 // PR body の danger-grep 行は {class, file} の hit 単位で出す。state.dangerHits はクラス名 string[]
 // （security_focus / telemetry 用）なので渡さない。
 // 受入条件の結果の表と checkbox は Evaluate の ac_results から付ける（Evaluate を通らない run は全 AC が未検証）。
+// 構成の変化の図は Evaluate の diagram_check で出し分ける（食い違った図は載せない。Evaluate を通らない run は未照合）。
 const prBody = buildPrBody({
   issue: ISSUE, req, plan: state.plan,
   testsurfHits: state.testsurfHits, dangerHits: secHitsOf(state.risk),
   acResults: state.evalResult?.ac_results ?? null,
+  diagramCheck: state.evalResult?.diagram_check ?? null,
 })
 // ci の AC がある run だけ PR に ci_verify.label を付ける（CI がこのラベルで ci_verify.checks の job を回す）。
 const PR_LABEL = CI_AC_INDEXES.length ? CI_VERIFY.label : null

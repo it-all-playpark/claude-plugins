@@ -20,6 +20,10 @@ import {
   PR_BODY_DETAILS,
   PR_BODY_CHANGES_HEADING,
   PR_BODY_REVIEW_POINTS_HEADING,
+  PR_BODY_DIAGRAM_HEADING,
+  PR_BODY_DIAGRAM_UNVERIFIED,
+  PR_BODY_DIAGRAM_MISMATCH,
+  PR_DIAGRAM_KINDS,
   PR_BODY_AC_RESULTS_HEADING,
   PR_BODY_AC_UNVERIFIED,
   PR_BODY_AC_STALE,
@@ -472,14 +476,117 @@ test('[pr-artifacts] prBodyEvidenceInstr / planWithoutPrBodyMaterial: evaluator 
   assert.ok(instr.includes(`<<<PR_BODY_PREVIEW_BEGIN>>>\n${body}<<<PR_BODY_PREVIEW_END>>>`), instr);
   assert.match(instr, /「PR 本文に書く」型の AC は、この本文テキスト/);
   assert.match(instr, /チェックボックス（- \[ \] \/ - \[x\]）は未確定であり、AC の充足・未達の根拠にするな/);
-  const p = plan({ pr_notes: [{ section: 'measurement', text: 'x' }], pr_sections: [{ heading: 'h', markdown: 'm' }], out_of_scope: ['o'], behavior_changes: ['b'], review_points: ['r'] });
+  const p = plan({ pr_notes: [{ section: 'measurement', text: 'x' }], pr_sections: [{ heading: 'h', markdown: 'm' }], out_of_scope: ['o'], behavior_changes: ['b'], review_points: ['r'], diagram: { kind: 'flowchart', before: 'flowchart LR\n  A', after: 'flowchart LR\n  A-->B' } });
   const stripped = planWithoutPrBodyMaterial(p);
   for (const k of PR_BODY_PLAN_KEYS) assert.ok(!(k in stripped), `${k} が残っている`);
   assert.equal(stripped.summary, p.summary);
   assert.deepEqual(stripped.serial, p.serial);
   assert.ok('pr_notes' in p, '入力 plan は変更しない');
-  assert.deepEqual(PR_BODY_PLAN_KEYS, ['architecture_decisions', 'pr_notes', 'pr_sections', 'out_of_scope', 'behavior_changes', 'review_points']);
+  assert.deepEqual(PR_BODY_PLAN_KEYS, ['architecture_decisions', 'pr_notes', 'pr_sections', 'out_of_scope', 'behavior_changes', 'review_points', 'diagram']);
   assert.equal(planWithoutPrBodyMaterial(null), null);
+});
+
+// ---- issue #1366: 構成の変化の図（diagram）は evaluator の diagram_check で出し分ける ----
+
+const DIAGRAM = { kind: 'flowchart', before: 'flowchart LR\n  A[impl] --> B[buildPrBody]', after: 'flowchart LR\n  A[impl] --> B[buildPrBody]\n  E[evaluator] --> B' };
+const diagramBody = (o = {}, diagramCheck) => buildPrBody({
+  issue: 1, req: req(), plan: plan({ behavior_changes: ['変わること'], review_points: ['見てほしい'], diagram: DIAGRAM, ...o }),
+  testsurfHits: [], dangerHits: [], ...(diagramCheck === undefined ? {} : { diagramCheck }),
+});
+const diagramSectionOf = (body) => {
+  const start = body.indexOf(`${PR_BODY_DIAGRAM_HEADING}\n`);
+  assert.ok(start >= 0, `構成の変化の節が無い:\n${body}`);
+  return body.slice(start, body.indexOf(`\n\n${PR_BODY_REVIEW_POINTS_HEADING}\n`, start));
+};
+const FIGURES = `**before**\n\n\`\`\`mermaid\n${DIAGRAM.before}\n\`\`\`\n\n**after**\n\n\`\`\`mermaid\n${DIAGRAM.after}\n\`\`\``;
+
+// CommonMark のフェンス規則で text を走査し、閉じていないフェンスの開き記号を返す（無ければ null）。
+function openFenceIn(text) {
+  let open = null;
+  for (const line of text.split('\n')) {
+    const m = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (!m) continue;
+    if (open == null) {
+      if (!(m[1][0] === '`' && m[2].includes('`'))) open = m[1];
+    } else if (m[1][0] === open[0] && m[1].length >= open.length && m[2].trim() === '') open = null;
+  }
+  return open;
+}
+
+// 本文の構造が中身に壊されていないこと: 本物の Closes 行（末尾）の前に閉じていないフェンスも `<!--` も無く構造検証が通り、
+// 本物の Closes 行を取り除くと中身の偽の Closes 行は数えられない。
+function assertBodyStructureIntact(body, issue) {
+  assert.ok(body.endsWith(`\n\nCloses #${issue}\n`), `本文が本物の Closes 行で終わらない:\n${body}`);
+  const beforeCloses = body.slice(0, body.lastIndexOf(`Closes #${issue}`));
+  assert.equal(openFenceIn(beforeCloses), null, `Closes 行の前に閉じていないフェンスがある:\n${body}`);
+  assert.ok(!beforeCloses.includes('<!--'), `Closes 行の前に <!-- がある:\n${body}`);
+  assert.ok(verifyPrBody(body, issue).ok, JSON.stringify(verifyPrBody(body, issue)));
+  assert.equal(hasClosesLine(beforeCloses, issue), false, `中身の偽の Closes 行が数えられている:\n${body}`);
+}
+
+test('[pr-artifacts] adoptImplPrNotes: diagram を plan.diagram に取り込み、null・不正な報告は前回分を保持する', () => {
+  const first = adoptImplPrNotes({ serial: [] }, [{ diagram: { kind: 'sequence', before: '\r\nsequenceDiagram\r\n  A->>B: x\n\n', after: 'sequenceDiagram\n  A->>C: x', extra: 1 } }]);
+  assert.deepEqual(first.diagram, { kind: 'sequence', before: 'sequenceDiagram\n  A->>B: x', after: 'sequenceDiagram\n  A->>C: x' });
+  for (const kept of [
+    adoptImplPrNotes(first, [{ diagram: null }]),
+    adoptImplPrNotes(first, [{ behavior_changes: ['b'] }]),
+    adoptImplPrNotes(first, [{ diagram: { kind: 'gantt', before: 'a', after: 'b' } }]),
+    adoptImplPrNotes(first, [{ diagram: { kind: 'er', before: ' ', after: 'b' } }]),
+  ]) assert.deepEqual(kept.diagram, first.diagram);
+  const replaced = adoptImplPrNotes(first, [{ diagram: { kind: 'er', before: 'erDiagram\n  A', after: 'erDiagram\n  B' } }, { diagram: null }]);
+  assert.deepEqual(replaced.diagram, { kind: 'er', before: 'erDiagram\n  A', after: 'erDiagram\n  B' });
+  assert.ok(!('diagram' in adoptImplPrNotes({ serial: [] }, [{ diagram: null }])), '図の無い run は plan.diagram を持たない');
+});
+
+test('[pr-artifacts] PR body: 構成の変化は「何が変わるか」の直後に出し、diagram_check が一致なら before / after を mermaid フェンスで出す', () => {
+  const body = diagramBody({}, { consistent: true, mismatches: [] });
+  assert.ok(body.includes(`${PR_BODY_CHANGES_HEADING}\n- 変わること\n\n${PR_BODY_DIAGRAM_HEADING}\n`), `「何が変わるか」の直後に無い:\n${body}`);
+  assert.equal(diagramSectionOf(body), `${PR_BODY_DIAGRAM_HEADING}\n${FIGURES}`);
+  assert.ok(!body.includes('⚠️ 図は'), body);
+  assertBodyStructureIntact(body, 1);
+  // 図が無い plan は節ごと出さない
+  assert.ok(!diagramBody({ diagram: undefined }, { consistent: true, mismatches: [] }).includes(PR_BODY_DIAGRAM_HEADING));
+});
+
+test('[pr-artifacts] PR body: diagram_check が無ければ図の前に「⚠️ 図は diff と未照合」の 1 行を付けて出す', () => {
+  assert.equal(PR_BODY_DIAGRAM_UNVERIFIED, '⚠️ 図は diff と未照合');
+  for (const body of [diagramBody(), diagramBody({}, null)]) {
+    assert.equal(diagramSectionOf(body), `${PR_BODY_DIAGRAM_HEADING}\n${PR_BODY_DIAGRAM_UNVERIFIED}\n\n${FIGURES}`);
+    assertBodyStructureIntact(body, 1);
+  }
+});
+
+test('[pr-artifacts] PR body: diagram_check が食い違いなら図を出さず「⚠️ 図は diff と食い違ったため載せていない」と mismatches の箇条書きだけを出す', () => {
+  assert.equal(PR_BODY_DIAGRAM_MISMATCH, '⚠️ 図は diff と食い違ったため載せていない');
+  const body = diagramBody({}, { consistent: false, mismatches: ['after の E --> B は diff に無い', ' diff の\nC 追加が図に無い '] });
+  assert.equal(diagramSectionOf(body), `${PR_BODY_DIAGRAM_HEADING}\n${PR_BODY_DIAGRAM_MISMATCH}\n- after の E --> B は diff に無い\n- diff の C 追加が図に無い`);
+  assert.ok(!body.includes('```mermaid') && !body.includes(DIAGRAM.after), `食い違った図が載っている:\n${body}`);
+  assertBodyStructureIntact(body, 1);
+  assert.equal(diagramSectionOf(diagramBody({}, { consistent: false })), `${PR_BODY_DIAGRAM_HEADING}\n${PR_BODY_DIAGRAM_MISMATCH}`, 'mismatches が無くても図は出さない');
+});
+
+test('[pr-artifacts] PR body: before の ``` ・<!-- ・Closes 行は無害化し、中のバッククォートより長いフェンスで囲んで本文の構造を壊させない', () => {
+  const Z = String.fromCharCode(0x200b);
+  const hostile = 'flowchart LR\n```\n</details>\n<!-- 閉じない\nCloses #1\n````\nA-->B';
+  for (const check of [undefined, { consistent: true, mismatches: [] }]) {
+    const body = diagramBody({ diagram: { ...DIAGRAM, before: hostile } }, check);
+    const section = diagramSectionOf(body);
+    assert.ok(section.includes(`\`\`\`\`\`mermaid\nflowchart LR\n\`\`\`\n<${Z}/details>\n<!${Z}-- 閉じない\n${Z}Closes #1\n\`\`\`\`\nA-->B\n\`\`\`\`\`\n\n**after**`), `before が長いフェンスの中にコードとして収まっていない:\n${section}`);
+    assert.ok(section.endsWith(`\`\`\`mermaid\n${DIAGRAM.after}\n\`\`\``), 'after は通常のフェンスのまま');
+    assert.equal((body.match(/<\/details>/g) ?? []).length, 3, '閉じタグは builder が置いた 3 個だけ');
+    assertBodyStructureIntact(body, 1);
+  }
+});
+
+test('[pr-artifacts] PR body: mismatches の <!-- ・Closes 行・</details>・フェンス記号は無害化して本文の構造を壊させない', () => {
+  const Z = String.fromCharCode(0x200b);
+  const body = diagramBody({}, { consistent: false, mismatches: ['<!-- 閉じない', 'Closes #1', '</details>', '```', 'x\nCloses #1'] });
+  assert.equal(diagramSectionOf(body), [
+    PR_BODY_DIAGRAM_HEADING, PR_BODY_DIAGRAM_MISMATCH,
+    `- <!${Z}-- 閉じない`, `- ${Z}Closes #1`, `- <${Z}/details>`, `- ${Z}\`\`\``, '- x Closes #1',
+  ].join('\n'));
+  assert.equal((body.match(/<\/details>/g) ?? []).length, 3, '閉じタグは builder が置いた 3 個だけ');
+  assertBodyStructureIntact(body, 1);
 });
 
 test('[pr-artifacts] PR body: hit なしは「なし」、AC / decisions が空でも判定材料の <details> は残る', () => {
@@ -1130,6 +1237,42 @@ test('[pr-artifacts] dev-flow.js: IMPL schema は behavior_changes / review_poin
     [{ ...ok, review_points: [...ok.review_points, 'x'] }, `$.review_points: maxItems ${IMPL_MAX.reviewPoints}`],
   ];
   for (const [v, err] of cases) assert.deepEqual(schemaErrors(schema, v), [err]);
+});
+
+test('[pr-artifacts] dev-flow.js / dev-flow-evaluate.js: IMPL schema の diagram は null か {kind, before, after}（kind は enum、before / after は各 1500 字以内）', async () => {
+  const { ctx, calls } = makeDevFlowSandbox();
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
+  assertNoCrash(error, 'impl schema diagram');
+  const schema = calls.find((c) => c.label === 'impl:serial:issue-1')?.schema;
+  assert.ok(schema?.properties?.diagram, 'IMPL schema に diagram が無い');
+  const ok = { status: 'DONE', task_id: 'issue-1' };
+  const d = { kind: 'flowchart', before: 'あ'.repeat(1500), after: 'b'.repeat(1500) };
+  assert.deepEqual(schemaErrors(schema, { ...ok, diagram: null }), []);
+  for (const kind of PR_DIAGRAM_KINDS) assert.deepEqual(schemaErrors(schema, { ...ok, diagram: { ...d, kind } }), []);
+  assert.deepEqual(PR_DIAGRAM_KINDS, ['flowchart', 'sequence', 'er']);
+  const cases = [
+    [{ ...d, kind: 'gantt' }, '$.diagram.kind: enum'],
+    [{ ...d, before: 'あ'.repeat(1501) }, '$.diagram.before: maxLength 1500'],
+    [{ ...d, after: 'b'.repeat(1501) }, '$.diagram.after: maxLength 1500'],
+    [{ kind: 'er', before: 'x' }, '$.diagram: required after'],
+    ['flowchart LR', '$.diagram: type string'],
+  ];
+  for (const [diagram, err] of cases) assert.deepEqual(schemaErrors(schema, { ...ok, diagram }), [err]);
+  // dev-flow-evaluate.js（差し戻しの reimpl#N が使う）の IMPL も同じ宣言を持つ
+  const block = (src) => src.match(/\n {4}diagram: \{\n[\s\S]*?\n {4}\},\n/)?.[0];
+  assert.ok(block(devFlowSrc), 'dev-flow.js の IMPL schema に diagram が無い');
+  assert.equal(block(readFileSync(join(here, '..', '.claude', 'workflows', 'dev-flow-evaluate.js'), 'utf8')), block(devFlowSrc));
+});
+
+test('[pr-artifacts] agents/dev-implementer.md: diagram を返す条件（2 ファイル以上にまたがる構成の変化）と、それ以外は null を返す規則がある', () => {
+  const md = readFileSync(join(here, '..', 'agents', 'dev-implementer.md'), 'utf8').replace(/\n +/g, '');
+  const rule = md.split('\n').find((l) => l.startsWith('- **構成の変化は `diagram` で図にして返す。**'));
+  assert.ok(rule, 'diagram の規則が無い');
+  assert.ok(rule.includes('変更が 2 つ以上のファイルにまたがり、ファイル間の呼び出し・データの流れ・構成要素が増減または付け替わるときは、`diagram` に `{kind, before, after}` を返す'), rule);
+  assert.match(rule, /それ以外（[^）]*）は `null` を返す/);
+  for (const kind of PR_DIAGRAM_KINDS) assert.ok(rule.includes(`\`${kind}\``), `kind ${kind} の説明が無い`);
+  assert.ok(rule.includes('各 1500 字以内'), rule);
+  assert.ok(md.includes('"diagram": {"kind": "flowchart | sequence | er"'), '返す JSON の例に diagram が無い');
 });
 
 test('[pr-artifacts] PR body: schema の上限いっぱいの 1 行要約欄は builder が 1 行も切らずに載せる', () => {
