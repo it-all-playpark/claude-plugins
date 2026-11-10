@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PreToolUse(Bash|StructuredOutput) hook: CI 判定の中継（dev-flow:stdout-relay）の Bash を prompt の最終行の `check-ci` 1 単文に、
-# 返り値をその実 stdout の JSON か prompt が定める失敗時の JSON に縛る
+# 返り値を {"stdout": <その実 stdout の 1 行目と一字一句同じ文字列>} か {"stdout": ""} に縛る
 #
 # 分類: incentive-structural（中継が PR の文を読める限り誘導を否定できない。sunset しない）。
 #
@@ -17,7 +17,7 @@
 #      → 無出力 exit 0
 #   3. Bash は command が改行・`|` `;` `&` `<` `>` `` ` `` `$` を含む、または先頭トークンが check-ci でないなら deny
 #   4. Bash（3 を通ったもの）と StructuredOutput は node の stdout-relay-bind.mjs が通すときだけ通す（Bash は prompt の最終行との
-#      完全一致と dangerouslyDisableSandbox の拒否、返り値は実 stdout の JSON か prompt の失敗時の JSON との一致）。
+#      完全一致と dangerouslyDisableSandbox の拒否、返り値はキーが stdout だけで、値が実 stdout の 1 行目との一字一句の一致か空文字）。
 #      node が無い・判定が読めない → deny
 #
 # fail-closed: exit 2 以外の非 0 終了は tool を通すので、判定中に想定外で終わったら EXIT trap が deny を出して exit 0 にする。

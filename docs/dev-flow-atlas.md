@@ -367,7 +367,7 @@ flowchart TD
     STK3 -->|yes| STUCK
     STK3 -->|no| FIX
     SEC -->|"worktree の外を指す /<br/>diff・結果・head が揃わない"| SECU["status: security_unresolved"]
-    CS -->|error| ERR["status: ci_error<br/>CI 状態を確定できない<br/>（proxy が結果を返さない / gh 取得失敗 /<br/>中継の失敗時の JSON）"]
+    CS -->|error| ERR["status: ci_error<br/>CI 状態を確定できない<br/>（proxy が結果を返さない / gh 取得失敗 /<br/>中継が stdout を返せない）"]
     CS -->|pending| PEND["status: ci_pending<br/>ceiling 到達・never auto-approve"]
     CS -->|failed| CIF["CI failure を findings 化"]
 
@@ -397,7 +397,7 @@ flowchart TD
 | `stuck` | 同一 topic が反復（review / CI failure） | merge tier `HOLD` |
 | `fix_failed` | fix 未適用、または commit / push の保証に失敗 | merge tier `HOLD` |
 | `max_reached` | `MAX` iteration で収束せず | merge tier `HOLD` |
-| `ci_error` | CI 状態を確定できない（ci-check の proxy が結果を返さない / check-ci の gh 取得失敗 / 中継が hook に拒否され失敗時の JSON を返した）。`gh pr checks` で実状態を確認する | merge tier `HOLD` |
+| `ci_error` | CI 状態を確定できない（ci-check の proxy が結果を返さない / check-ci の gh 取得失敗 / 中継が stdout を返せず `{"stdout": ""}` を返した・返した stdout が check-ci の形でない）。`gh pr checks` で実状態を確認する | merge tier `HOLD` |
 | `ci_pending` | checks 未完了。自動承認しない | merge tier `HOLD` |
 | `review_contract_error` | pr-reviewer が schema-retry 後も結果を返さない（StructuredOutput 契約違反） | merge tier `HOLD` |
 | `security_unresolved` | 敵対的 security review を今の head で clear にできない（worktree の外を指す critical / major・diff を取れない・review が結果を返さない・review した head が今の head と違う） | merge tier `HOLD`（`security_review_unresolved`） |
@@ -510,7 +510,7 @@ pr-iterate の `MAX`（review ⇄ fix 反復、既定 10）は `args.max_iterati
 | `dev-runner` | Setup 末尾の analyze ゲート後の `analyze-clarify#N`（missing_context 生成。ゲートが引いたときだけ）と `ac-observational#N`（全 AC の観測型の分類。ゲート通過後に毎 run 1 回） | sonnet / high |
 | `dev-runner-haiku` | 書き込み・Skill 呼び出しを伴う exec-proxy | haiku / low |
 | `dev-runner-haiku-ro` | read-only exec-proxy | haiku / low |
-| `stdout-relay` | CI 判定の中継（`ci-check#i` / `ci-wait-check#i.k` / `ci-verify#i.k` / `ci-check-lite`）。hook が Bash を prompt の最終行の check-ci 1 単文に、返り値をその実 stdout か失敗時の JSON に縛る | haiku / low |
+| `stdout-relay` | CI 判定の中継（`ci-check#i` / `ci-wait-check#i.k` / `ci-verify#i.k` / `ci-check-lite`）。hook が Bash を prompt の最終行の check-ci 1 単文に、返り値を `stdout` の 1 フィールド（その実 stdout の 1 行目と同じ文字列か空文字）に縛る | haiku / low |
 | `dev-runner-haiku-wo` | isolation probe 専任（Write のみ） | haiku / low |
 
 model は subagent の frontmatter で決める。品質ゲート agent の call site は `opts.model` を渡さない

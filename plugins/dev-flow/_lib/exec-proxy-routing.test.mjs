@@ -27,6 +27,7 @@ import { dirname, join } from 'node:path';
 import { makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 import { localVerifyConfigArg } from './local-verify.mjs';
+import { CI_RELAY_STDOUT } from './ci-check.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workflowDir = join(here, '..', '.claude', 'workflows');
@@ -255,6 +256,42 @@ test('[exec-proxy-routing] pr-iterate.js: 観測される exec-proxy label が E
   ]);
   const unreached = Object.keys(EXPECTED_PR_ITERATE).filter((k) => !observed.has(k));
   assert.deepEqual(unreached, [], `pr-iterate.js: EXPECTED の label が観測されなかった: ${unreached.join(', ')}`);
+});
+
+// ---- (c2) CI 判定の中継 5 箇所の返り値 schema ----
+//
+// 中継に check-ci の stdout を object に組み立て直させると、転写の揺れ（キーの追加・欠落・型の違い）で hook に拒否され、
+// CI が通っていても ci_pending / ci_error で終わる。5 箇所すべてが stdout の文字列 1 フィールドの schema を渡す。
+// pr-iterate の 4 箇所: review#i と並列の ci-check#i・review の後の直列（firstCiCheck。label 末尾 -serial）・
+// ci-wait-check#i.k・ci-verify#i.k。review 開始時の head が 40 桁 sha の run で、並列分が head_sha を持たないと直列に起動し直す。
+test('[exec-proxy-routing] stdout-relay の 5 つの起動箇所（pr-iterate の並列 ci-check / 直列 ci-check / ci-wait-check / ci-verify、dev-flow の ci-check-lite）はすべて CI_RELAY_STDOUT を schema に渡す', async () => {
+  const head = 'a'.repeat(40);
+  const pending = { status: 'pending', passed: 0, failed: 0, pending: 1, skipped: 0, failed_checks: [] };
+  const passed = { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [] };
+  const { ctx, calls } = makePrIterateSandbox({
+    args: { pr: 5, ci_verify: { label: 'full-ci', checks: ['e2e'], wait_ceiling_seconds: 1500 } },
+    overrides: {
+      'pr-meta': { url: 'https://github.com/acme/skills/pull/5', head_ref: 'feature/x', base_ref: 'main', cwd: '/tmp/wt', epoch: 999, head_sha: head },
+      'ci-check#1': pending,
+      'ci-check#1-serial': { ...pending, head_sha: head },
+      'ci-wait-check#1.2': { slept: true, ...passed },
+      'ci-verify#1.1': { ...pending, passed_checks: [] },
+      'ci-verify#1.2': { slept: true, ...passed, passed_checks: [] },
+    },
+  });
+  const { result, error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
+  assertNoCrash(error, 'pr-iterate-relay-schema');
+  assert.equal(error, null, `pr-iterate run が throw した: ${error?.message}`);
+  assert.equal(result?.status, 'lgtm');
+  const prIterateRelays = calls.filter((c) => c.agentType === STDOUT_RELAY);
+  assert.deepEqual(prIterateRelays.map((c) => c.label), ['ci-check#1', 'ci-check#1-serial', 'ci-wait-check#1.2', 'ci-verify#1.1', 'ci-verify#1.2']);
+
+  const lite = (await runDevFlowScenario('lite')).filter((c) => c.agentType === STDOUT_RELAY);
+  assert.deepEqual(lite.map((c) => c.label), ['ci-check-lite']);
+
+  for (const c of [...prIterateRelays, ...lite]) {
+    assert.equal(JSON.stringify(c.schema), JSON.stringify(CI_RELAY_STDOUT), `${c.label} の schema が CI_RELAY_STDOUT でない: ${JSON.stringify(c.schema)}`);
+  }
 });
 
 // ---- (d) pr-iterate.js: no more mid-loop post-review#${i} call sites (issue #392) ----

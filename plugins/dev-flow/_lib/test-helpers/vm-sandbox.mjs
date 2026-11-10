@@ -233,7 +233,13 @@ export function makeRecordingSandbox(responder, extraSandbox = {}, { calls = [] 
     // model: opts.model（dev-flow / pr-iterate の call site は override を渡さないので常に null。残存検知用）
     calls.push({ label, agentType, prompt: p, opts: opts ?? {}, schema: opts?.schema ?? null, model: opts?.model ?? null });
     const result = responder({ label, agentType, prompt: p, opts: opts ?? {} });
-    return result === undefined ? null : result;
+    if (result === undefined) return null;
+    // CI 判定の中継（stdout-relay）は check-ci の stdout の 1 行目を {stdout: <文字列>} で返す。stub が check-ci の stdout を
+    // object で書いたら、ここで中継の返り値の形に包む。{stdout} をそのまま書いた stub（空文字・JSON でない文字列）と null は包まない
+    if (agentType === 'dev-flow:stdout-relay' && result !== null && typeof result === 'object' && typeof result.stdout !== 'string') {
+      return { stdout: JSON.stringify(result) };
+    }
+    return result;
   };
 
   // parallel() / pipeline() は sandbox に置かない — dev-flow.js の Implement は
@@ -360,7 +366,7 @@ export function assertNoCrash(error, name) {
 // ============================================================
 
 /**
- * status と整合する check-ci の件数（passed / failed / pending / skipped）を返す。CI_STATUS は件数を required に持つので、
+ * status と整合する check-ci の件数（passed / failed / pending / skipped）を返す。ciRelayResult は件数が非負整数の stdout だけを採るので、
  * stub は check-ci の stdout と同じ形（status と整合する件数）で返す。'error' は 0 件。
  *
  * @param {'passed'|'failed'|'pending'|'no_checks'|'error'} status
