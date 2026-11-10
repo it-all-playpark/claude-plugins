@@ -33,6 +33,8 @@ const DEFAULT_TIER_REASON = '標準 — 人間が LGTM して merge';
 // （evaluator-contract.test.mjs が pin）。
 const RESOLVED_ROWS_MAX = 30;
 export const RESOLVED_CELL_MAX = 200;
+// pr-iterate の修正後に PR 本文を作り直す `gh pr edit` が失敗した run で「あなたが確かめること」に出す 1 行。
+export const PR_BODY_STALE_NOTE = '⚠️ PR 本文: 「受入条件の結果」の表と checkbox が修正前のまま（本文の更新に失敗）— AC の結果は本文ではなくこのコメントで確かめる';
 
 // 観測型 AC（実行して出力・記録を観測しないと確かめられない AC）が未達のときの対応欄（issue #844）。
 const OBSERVATIONAL_AC_ACTION = '実行して AC の主張を確認する（例: merge 後の実 run・計測）';
@@ -241,6 +243,8 @@ function resolvedCell(v) {
  * @param {{source:string|null, status:string, full_command:string|null, files_command:string|null, sources:string[], error?:string|null}|null|undefined} [opts.testCommands] -
  *   Setup で解決したテストコマンドと解決元（dev-flow-test-commands の返り値。issue #1278）。「参考」に実行したコマンドと
  *   解決元（user 設定 / tests/run-*.sh / resolver と根拠のファイル）を 1 行出す（表示専用）
+ * @param {boolean|null|undefined} [opts.prBodySynced] - pr-iterate の修正後に PR 本文を作り直した `gh pr edit` の成否
+ *   （作り直さない run は null）。false のときだけ「あなたが確かめること」に、PR 本文の受入条件の結果が修正前のままである旨を 1 行出す（表示専用）
  * @returns {string}
  */
 export function buildDevflowSummaryBody({
@@ -291,6 +295,7 @@ export function buildDevflowSummaryBody({
   headSha,
   hooksNotRunning,
   testCommands,
+  prBodySynced,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -674,8 +679,11 @@ export function buildDevflowSummaryBody({
   lines.push('');
   lines.push('### あなたが確かめること');
   lines.push('');
-  if (cardOpen.length === 0) lines.push('なし');
+  // PR 本文の作り直しに失敗した run: 本文の表は修正前の tree の判定のまま残っている。機械の確認 5 項目とは別の行で出す
+  const prBodyStale = prBodySynced === false;
+  if (cardOpen.length === 0 && !prBodyStale) lines.push('なし');
   for (const it of cardOpen) lines.push(`- ${it.state === 'failed' ? '❌' : '⚠️'} ${it.name}: ${it.note}`);
+  if (prBodyStale) lines.push(`- ${PR_BODY_STALE_NOTE}`);
   lines.push('');
 
   lines.push('| Merge tier | shape | テスト | 評価 | 台帳 (Ledger) | AC | 危険検出 |');

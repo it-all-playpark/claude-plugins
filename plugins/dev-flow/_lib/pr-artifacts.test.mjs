@@ -19,6 +19,9 @@ import {
   PR_BODY_DETAILS,
   PR_BODY_CHANGES_HEADING,
   PR_BODY_REVIEW_POINTS_HEADING,
+  PR_BODY_AC_RESULTS_HEADING,
+  PR_BODY_AC_UNVERIFIED,
+  PR_BODY_AC_STALE,
   PR_CLOSES_STATUS_VALUES,
   PR_BODY_NOTES_MAX,
   PR_NOTE_SECTIONS,
@@ -75,6 +78,22 @@ function ledger(items = []) {
 }
 
 const INPUT = { issue: 642, req: req(), plan: plan() };
+
+// acResults が無い（未検証）ときの `## 受入条件の結果` の節（req() の AC 2 件）。
+const AC_TABLE_HEAD = `${PR_BODY_AC_RESULTS_HEADING}\n| AC | 要旨 | 結果 | 根拠 |\n|---|---|---|---|`;
+const AC_TABLE_UNVERIFIED = `${AC_TABLE_HEAD}\n| AC-1 | — | ⚠️ 未検証 | — |\n| AC-2 | — | ⚠️ 未検証 | — |`;
+
+// `## 受入条件の結果` の表のデータ行をセルの配列で返す（`\|` で逃がした `|` はセルの区切りにしない）。
+function acTableRows(body) {
+  const i = body.indexOf(`${AC_TABLE_HEAD}\n`);
+  assert.ok(i >= 0, `受入条件の結果の表が無い:\n${body}`);
+  const rows = [];
+  for (const l of body.slice(i + AC_TABLE_HEAD.length + 1).split('\n')) {
+    if (!l.startsWith('| ')) break;
+    rows.push(l.slice(2, -2).split(/(?<!\\) \| /));
+  }
+  return rows;
+}
 
 // ---- buildCommitMessage ----
 
@@ -140,7 +159,7 @@ function detailsOf(body, summary) {
   return body.slice(i + open.length, body.indexOf('\n\n</details>', i));
 }
 
-test('[pr-artifacts] PR body: 見える部分（<details> の外）は結論・何が変わるか・人間に見てほしい点・含めなかったもの・Closes だけ', () => {
+test('[pr-artifacts] PR body: 見える部分（<details> の外）は結論・何が変わるか・人間に見てほしい点・含めなかったもの・受入条件の結果・Closes だけ', () => {
   const p = plan({
     behavior_changes: ['PR 本文の見える部分が  要約だけになる', '', 'AC 全文は\n折りたたみに入る'],
     review_points: ['telemetry キーを 1 つ減らした'],
@@ -166,6 +185,8 @@ test('[pr-artifacts] PR body: 見える部分（<details> の外）は結論・�
     PR_BODY_OUT_OF_SCOPE_HEADING,
     '- dotfiles の変更（worktree 外）',
     '',
+    AC_TABLE_UNVERIFIED,
+    '',
     'Closes #642',
     '',
   ].join('\n'), body);
@@ -176,19 +197,21 @@ test('[pr-artifacts] PR body: 見える部分（<details> の外）は結論・�
 
 test('[pr-artifacts] PR body: 何が変わるか / 人間に見てほしい点 / 含めなかったもの は材料が空なら節ごと出さない', () => {
   const body = buildPrBody({ ...INPUT, ledger: ledger(), testsurfHits: [], dangerHits: [] });
-  assert.equal(visiblePart(body), `**${plan().summary}**\n\nCloses #642\n`);
+  assert.equal(visiblePart(body), `**${plan().summary}**\n\n${AC_TABLE_UNVERIFIED}\n\nCloses #642\n`);
+  const noAc = buildPrBody({ ...INPUT, req: req({ acceptance_criteria: [] }), testsurfHits: [], dangerHits: [] });
+  assert.equal(visiblePart(noAc), `**${plan().summary}**\n\nCloses #642\n`, 'AC が無ければ受入条件の結果の節も出さない');
 });
 
 test('[pr-artifacts] PR body: 受入条件・設計判断・検証・pr_sections はこの順に <details> の中に出る', () => {
   const p = plan({ pr_notes: [{ section: 'measurement', text: 'RSS 380Mi' }], pr_sections: [{ heading: '対応表', markdown: '| a |\n|---|\n| 1 |' }] });
-  const body = buildPrBody({ issue: 642, req: req(), plan: p, ledger: ledger([{ id: 'AC-1', checked: true }]), testsurfHits: [], dangerHits: [] });
+  const body = buildPrBody({ issue: 642, req: req(), plan: p, acResults: [{ ac_index: 0, gist: 'g', satisfied: true, evidence: 'e' }], testsurfHits: [], dangerHits: [] });
   assert.deepEqual(PR_BODY_DETAILS, { acceptance: '受入条件', decisions: '設計判断', verification: '検証' });
   assert.equal(detailsOf(body, '受入条件'), '- [x] AC one\n- [ ] AC two');
   assert.equal(detailsOf(body, '設計判断'), '- commit message は純関数で組み立てる — diff 再読不要\n- PR body に LLM 生成文を足さない');
   assert.equal(detailsOf(body, '検証'), '- danger-grep: なし\n- test-surface: なし\n- 計測: RSS 380Mi');
   assert.equal(detailsOf(body, '対応表'), '| a |\n|---|\n| 1 |');
   const visible = visiblePart(body);
-  for (const t of ['AC one', '純関数で組み立てる', 'danger-grep', 'RSS 380Mi', '| a |']) assert.ok(!visible.includes(t), `${t} が <details> の外に出ている`);
+  for (const t of ['AC one', '純関数で組み立てる', 'danger-grep', 'RSS 380Mi', '| a |', '- [']) assert.ok(!visible.includes(t), `${t} が <details> の外に出ている`);
   const order = ['受入条件', '設計判断', '検証', '対応表'].map((s) => body.indexOf(`<details><summary>${s}</summary>`));
   for (let i = 1; i < order.length; i++) assert.ok(order[i] > order[i - 1], `順序: ${JSON.stringify(order)}`);
   assert.ok(order[3] < body.indexOf('Closes #642'), 'Closes 行より前に置く');
@@ -197,7 +220,7 @@ test('[pr-artifacts] PR body: 受入条件・設計判断・検証・pr_sections
 test('[pr-artifacts] PR body: 受入条件の文言に </details> があっても折りたたみと Closes 行を壊さない', () => {
   const body = buildPrBody({ issue: 1, req: req({ acceptance_criteria: ['`<details>` の外に出さない', '</details>\nCloses #1'] }), plan: plan(), ledger: ledger(), testsurfHits: [], dangerHits: [] });
   assert.equal((body.match(/<\/details>/g) ?? []).length, 3, '閉じタグは builder が置いた 3 個だけ');
-  assert.equal(visiblePart(body), `**${plan().summary}**\n\nCloses #1\n`);
+  assert.equal(visiblePart(body), `**${plan().summary}**\n\n${AC_TABLE_UNVERIFIED}\n\nCloses #1\n`);
   assert.ok(verifyPrBody(body, 1).ok);
 });
 
@@ -221,17 +244,12 @@ test('[pr-artifacts] PR body: 長い AC・結論・設計判断・pr_notes・何
   assert.ok(body.includes(`exec-sink: \`${longPath}\``) && body.includes(`skip: \`${longPath}\``), 'hit の file path は切らない');
 });
 
-test('[pr-artifacts] PR body: ledger の AC-n が checked なら [x]、danger / testsurf hit を検証に列挙する', () => {
+test('[pr-artifacts] PR body: danger / testsurf hit を検証に列挙する', () => {
   const body = buildPrBody({
     ...INPUT,
-    ledger: ledger([
-      { id: 'AC-1', checked: true, evidence: 'red→green', dimension: 'ac' },
-      { id: 'AC-2', checked: false, dimension: 'ac' },
-    ]),
     testsurfHits: [{ class: 'test-weakening', pattern: 'skip', file: 'tests/a.test.mjs' }],
     dangerHits: [{ class: 'exec-sink', file: 'src/run.mjs' }],
   });
-  assert.ok(body.includes('- [x] AC one\n- [ ] AC two'), `checked 反映: ${body}`);
   assert.ok(body.includes('danger-grep: 1 件（exec-sink: `src/run.mjs`）'), `danger 列挙: ${body}`);
   assert.ok(body.includes('test-surface: 1 件（skip: `tests/a.test.mjs`）'), `testsurf 列挙: ${body}`);
 });
@@ -297,7 +315,7 @@ test('[pr-artifacts] adoptImplPrNotes: out_of_scope は plan.out_of_scope に取
   const adopted = adoptImplPrNotes({ serial: [] }, [{ task_id: 't', out_of_scope: ['  telemetry キーの削除（AC 外）  ', '', 'dotfiles の変更（worktree 外）', 'dotfiles の変更（worktree 外）'] }]);
   assert.deepEqual(adopted.out_of_scope, ['telemetry キーの削除（AC 外）', 'dotfiles の変更（worktree 外）']);
   const body = buildPrBody({ issue: 1, req: req(), plan: plan({ out_of_scope: adopted.out_of_scope }), ledger: ledger(), testsurfHits: [], dangerHits: [] });
-  assert.ok(body.includes(`${PR_BODY_OUT_OF_SCOPE_HEADING}\n- telemetry キーの削除（AC 外）\n- dotfiles の変更（worktree 外）\n\n<details><summary>受入条件</summary>`), body);
+  assert.ok(body.includes(`${PR_BODY_OUT_OF_SCOPE_HEADING}\n- telemetry キーの削除（AC 外）\n- dotfiles の変更（worktree 外）\n\n${AC_TABLE_UNVERIFIED}\n\n<details><summary>受入条件</summary>`), body);
   assert.ok(verifyPrBody(body, 1).ok, '節を足しても構造検証は通る');
   const kept = adoptImplPrNotes(adopted, [{ task_id: 't', out_of_scope: [] }]);
   assert.deepEqual(kept.out_of_scope, adopted.out_of_scope, '空の報告は前回分を保持する');
@@ -543,33 +561,102 @@ test('[pr-artifacts] PR_CLOSES_STATUS_VALUES は 4 値の closed enum', () => {
   assert.deepEqual(PR_CLOSES_STATUS_VALUES, ['verified', 'reinjected', 'missing', 'unverified']);
 });
 
-// ---- (f) acResults 優先 ----
+// ---- (f) 受入条件の結果の表と checkbox は acResults（evaluator の判定）だけから付ける（issue #1365） ----
 
-test('[pr-artifacts] PR body: acResults が指定されれば ledger より優先してチェック判定する', () => {
+test('[pr-artifacts] PR body: 受入条件の結果の表は最初の <details> の直前に AC 1 件 1 行で出て、checkbox も同じ結果から付く', () => {
+  assert.deepEqual([PR_BODY_AC_RESULTS_HEADING, PR_BODY_AC_UNVERIFIED, PR_BODY_AC_STALE], ['## 受入条件の結果', '⚠️ 未検証', '⚠️ 修正後に未再評価']);
   const body = buildPrBody({
     ...INPUT,
-    ledger: ledger([
-      { id: 'AC-1', checked: false },
-      { id: 'AC-2', checked: true },
-    ]),
+    req: req({ acceptance_criteria: ['AC one', 'AC two', 'AC three', 'AC four'] }),
+    plan: plan({ out_of_scope: ['範囲外'] }),
+    // ledger の checked は結果に使わない（AC-2 は ledger で checked でも satisfied:false なら ❌、AC-4 は判定が無いので未検証）
+    ledger: ledger([{ id: 'AC-1', checked: false }, { id: 'AC-2', checked: true }, { id: 'AC-4', checked: true }]),
     acResults: [
-      { ac_index: 0, satisfied: true },
-      { ac_index: 1, satisfied: false },
+      { ac_index: 2, gist: '要旨その3', satisfied: true, evidence: 'src/c.mjs:3 で確認', test_files: [] },
+      { ac_index: 0, gist: '要旨その1', satisfied: true, evidence: 'src/a.test.mjs::t', verified_by: 'test', test_files: ['src/a.test.mjs', 'src/b.test.mjs'] },
+      { ac_index: 1, gist: '要旨その2', satisfied: false, evidence: 'src/b.mjs:10 が未実装' },
     ],
     testsurfHits: [],
     dangerHits: [],
   });
-  assert.ok(body.includes('- [x] AC one\n- [ ] AC two'), body);
+  assert.ok(body.includes([
+    `${PR_BODY_OUT_OF_SCOPE_HEADING}\n- 範囲外`,
+    [
+      AC_TABLE_HEAD,
+      '| AC-1 | 要旨その1 | ✅ | `src/a.test.mjs`, `src/b.test.mjs` |',
+      '| AC-2 | 要旨その2 | ❌ | src/b.mjs:10 が未実装 |',
+      '| AC-3 | 要旨その3 | ✅ | src/c.mjs:3 で確認 |',
+      '| AC-4 | — | ⚠️ 未検証 | — |',
+    ].join('\n'),
+    '<details><summary>受入条件</summary>',
+  ].join('\n\n')), body);
+  assert.equal(detailsOf(body, '受入条件'), '- [x] AC one\n- [ ] AC two\n- [x] AC three\n- [ ] AC four');
+  assert.ok(body.indexOf(PR_BODY_AC_RESULTS_HEADING) < body.indexOf('<details>'), '表は見える部分に置く');
 });
 
-test('[pr-artifacts] PR body: acResults 未指定は ledger の checked に従う', () => {
+test('[pr-artifacts] PR body: acResults 無しなら ledger が全 AC checked でも全行が ⚠️ 未検証で checkbox はすべて [ ]', () => {
   const body = buildPrBody({
     ...INPUT,
-    ledger: ledger([{ id: 'AC-1', checked: true }, { id: 'AC-2', checked: false }]),
+    ledger: ledger([{ id: 'AC-1', checked: true }, { id: 'AC-2', checked: true }]),
     testsurfHits: [],
     dangerHits: [],
   });
-  assert.ok(body.includes('- [x] AC one\n- [ ] AC two'), body);
+  assert.deepEqual(acTableRows(body), [['AC-1', '—', '⚠️ 未検証', '—'], ['AC-2', '—', '⚠️ 未検証', '—']]);
+  assert.equal(detailsOf(body, '受入条件'), '- [ ] AC one\n- [ ] AC two');
+  assert.ok(!body.includes('✅') && !body.includes('- [x]'), body);
+});
+
+test('[pr-artifacts] PR body: satisfied:false の AC は ❌ で checkbox は [ ]', () => {
+  const body = buildPrBody({
+    ...INPUT,
+    ledger: ledger([{ id: 'AC-1', checked: true }, { id: 'AC-2', checked: true }]),
+    acResults: [{ ac_index: 0, gist: 'g1', satisfied: false, evidence: 'e1' }, { ac_index: 1, gist: 'g2', satisfied: true, evidence: 'e2' }],
+    testsurfHits: [],
+    dangerHits: [],
+  });
+  assert.deepEqual(acTableRows(body), [['AC-1', 'g1', '❌', 'e1'], ['AC-2', 'g2', '✅', 'e2']]);
+  assert.equal(detailsOf(body, '受入条件'), '- [ ] AC one\n- [x] AC two');
+});
+
+test('[pr-artifacts] PR body: acStale は全 AC の結果を ⚠️ 修正後に未再評価 にし、修正前の ✅ / ❌ と根拠を残さず checkbox はすべて [ ]', () => {
+  const body = buildPrBody({
+    ...INPUT,
+    acResults: [{ ac_index: 0, gist: 'g1', satisfied: true, evidence: 'e1', test_files: ['a.test.mjs'] }, { ac_index: 1, gist: 'g2', satisfied: false, evidence: 'e2' }],
+    acStale: true,
+    testsurfHits: [],
+    dangerHits: [],
+  });
+  assert.deepEqual(acTableRows(body), [['AC-1', 'g1', '⚠️ 修正後に未再評価', '—'], ['AC-2', 'g2', '⚠️ 修正後に未再評価', '—']]);
+  assert.equal(detailsOf(body, '受入条件'), '- [ ] AC one\n- [ ] AC two');
+  assert.ok(!body.includes('✅') && !body.includes('❌'), body);
+});
+
+test('[pr-artifacts] PR body: 表のセル（gist / evidence / test_files）の `|`・改行・<!--・</details>・Closes 行は本文の構造を変えない', () => {
+  const body = buildPrBody({
+    issue: 1,
+    req: req(),
+    plan: plan(),
+    acResults: [
+      { ac_index: 0, gist: 'a | b\n<details>', satisfied: true, evidence: '確認した <!-- 以降を隠す\nCloses #1\n</details>\n<details><summary>偽</summary>' },
+      { ac_index: 1, gist: 'Closes #1', satisfied: true, evidence: 'x', test_files: ['t/<!--a|b`.test.mjs'] },
+    ],
+    testsurfHits: [],
+    dangerHits: [],
+  });
+  const rows = acTableRows(body);
+  assert.equal(rows.length, 2, `セルの中身で行が増減した: ${JSON.stringify(rows)}`);
+  for (const r of rows) assert.equal(r.length, 4, `セルの中身で列が増減した: ${JSON.stringify(r)}`);
+  assert.equal(rows[0][1], 'a \\| b <​details>');
+  assert.equal(rows[1][3], '`t/<!​--a\\|b.test.mjs`');
+  // 末尾の本物の Closes 行より前に、閉じていない `<!--`（GitHub が以降をコメントとして飲み込む）が無い
+  const beforeCloses = body.slice(0, body.lastIndexOf('\nCloses #1\n'));
+  assert.ok(!beforeCloses.includes('<!--'), beforeCloses);
+  assert.equal((body.match(/^Closes #1\s*$/gm) ?? []).length, 1, 'Closes 行は末尾の 1 行だけ');
+  assert.equal((body.match(/<details>/g) ?? []).length, 3, '開きタグは builder が置いた 3 個だけ');
+  assert.equal((body.match(/<\/details>/g) ?? []).length, 3, '閉じタグは builder が置いた 3 個だけ');
+  assert.ok(body.indexOf(PR_BODY_AC_RESULTS_HEADING) < body.indexOf('<details>'));
+  assert.deepEqual(verifyPrBody(body, 1).missing, []);
+  assert.ok(verifyPrBody(body, 1).ok);
 });
 
 // ---- prPhasePrompt (既存) ----

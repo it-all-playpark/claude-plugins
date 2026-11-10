@@ -137,7 +137,8 @@ const EVALUATOR_OPERATIONAL_CONTRACT = {
   ].join('\n'),
   final_ac_reconcile: [
     'final_ac_reconcile 契約:',
-    '- prompt で「final AC 再検証」が指示された場合、渡された既存 acceptance_criteria のみを最終 PR tree に対して one-shot で再検証し、ac_results:[{ac_index, satisfied, evidence, verified_by}] を全 AC 分ちょうど 1 回ずつ返す。',
+    '- prompt で「final AC 再検証」が指示された場合、渡された既存 acceptance_criteria のみを最終 PR tree に対して one-shot で再検証し、ac_results:[{ac_index, gist, satisfied, evidence, verified_by}] を全 AC 分ちょうど 1 回ずつ返す。',
+    '- gist は AC の要旨（その AC が何を求めているか）を日本語 40 字以内で書く。判定結果・根拠は書かない（PR 本文の受入条件の結果の表に AC の要旨として載る）。',
     '- ac_index は渡された AC の index をそのまま返す。AC の追加・分割・言い換え・index の欠落や重複は禁止。',
     '- 新規 finding の報告・feedback の付与・コード修正・追加検証 loop の要求は禁止（出力は ac_results のみが使われる）。',
     '- satisfied:true / false のいずれでも非空 evidence 必須（file:line / テスト名 / 実行結果）。index 不完全・evidence 欠落は出力全体が unavailable 扱いとなり merge tier が HOLD になる。',
@@ -171,6 +172,7 @@ const EVALUATOR_OPERATIONAL_CONTRACT = {
 const EVAL_DESCRIPTION_MAX = 300
 const EVAL_SUGGESTION_MAX = 200
 const EVAL_EVIDENCE_MAX = 200
+const AC_GIST_MAX = 40
 
 const EVAL_FULL_SUITE = '全件スイート（tests/run-*.sh・run-all-bats・vitest のディレクトリ全体実行）'
 
@@ -1180,17 +1182,43 @@ const PR_BODY_CHANGES_HEADING = '## 何が変わるか';
 const PR_BODY_REVIEW_POINTS_HEADING = '## 人間に見てほしい点';
 const PR_BODY_DETAILS = { acceptance: '受入条件', decisions: '設計判断', verification: '検証' };
 const PR_SECTIONS_MAX_CHARS = 3000;
-function acceptanceSection(req, ledger, acResults) {
-  const acs = arr(req?.acceptance_criteria);
-  if (acs.length === 0) return '（なし）';
-  const items = arr(ledger?.items);
+const PR_BODY_AC_RESULTS_HEADING = '## 受入条件の結果';
+const PR_BODY_AC_UNVERIFIED = '⚠️ 未検証';
+const PR_BODY_AC_STALE = '⚠️ 修正後に未再評価';
+const PR_BODY_AC_EMPTY_CELL = '—';
+
+function acRows(req, acResults, acStale) {
   const results = arr(acResults);
-  const lines = acs.map((ac, i) => {
-    const fromResults = results.find((r) => r?.ac_index === i);
-    const checked = fromResults ? fromResults.satisfied === true : items.find((x) => x?.id === `AC-${i + 1}`)?.checked === true;
-    return `- [${checked ? 'x' : ' '}] ${str(ac).trim()}`;
+  return arr(req?.acceptance_criteria).map((ac, i) => {
+    const r = results.find((x) => x?.ac_index === i) ?? null;
+    const judged = r != null && acStale !== true;
+    const tests = arr(r?.test_files).map((f) => str(f).replace(/`/g, '').trim()).filter(Boolean);
+    return {
+      text: str(ac).trim(),
+      gist: r ? str(r.gist) : '',
+      result: acStale === true ? PR_BODY_AC_STALE : !r ? PR_BODY_AC_UNVERIFIED : r.satisfied === true ? '✅' : '❌',
+      evidence: !judged ? '' : tests.length ? tests.map((f) => `\`${f}\``).join(', ') : str(r.evidence),
+      checked: judged && r.satisfied === true,
+    };
   });
-  return lines.join('\n');
+}
+
+function acTableCell(v) {
+  return cell(neutralizeStructure(str(v))) || PR_BODY_AC_EMPTY_CELL;
+}
+
+function acResultsSection(rows) {
+  if (rows.length === 0) return null;
+  return [
+    '| AC | 要旨 | 結果 | 根拠 |',
+    '|---|---|---|---|',
+    ...rows.map((r, i) => `| AC-${i + 1} | ${acTableCell(r.gist)} | ${r.result} | ${acTableCell(r.evidence)} |`),
+  ].join('\n');
+}
+
+function acceptanceSection(rows) {
+  if (rows.length === 0) return '（なし）';
+  return rows.map((r) => `- [${r.checked ? 'x' : ' '}] ${r.text}`).join('\n');
 }
 
 function decisionsSection(plan) {
@@ -1273,11 +1301,14 @@ function closeOpenFence(md) {
   }
   return open == null ? md : `${md}\n${open}`;
 }
-function neutralizeSectionMarkdown(md) {
-  return closeOpenFence(md)
+function neutralizeStructure(md) {
+  return md
     .replace(/<(\/?details\b)/gi, `<${ZWSP}$1`)
     .replace(/<!--/g, `<!${ZWSP}--`)
     .replace(/^(?=Closes #\d+\s*$)/gm, ZWSP);
+}
+function neutralizeSectionMarkdown(md) {
+  return neutralizeStructure(closeOpenFence(md));
 }
 
 function detailsBlock(summary, markdown) {
@@ -1367,13 +1398,15 @@ function hitLine(label, hits, keyOf) {
   return `- ${label}: ${list.length} 件（${items.join('、')}）`;
 }
 
-function buildPrBody({ issue, req, plan, ledger, testsurfHits, dangerHits, acResults }) {
+function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false }) {
   let conclusionText = collapseWhitespace(plan?.summary);
   if (!conclusionText) conclusionText = collapseWhitespace(req?.issue_title);
   if (!conclusionText) conclusionText = `issue #${issue} の変更`;
   const changes = textItems(plan?.behavior_changes);
   const reviewPoints = textItems(plan?.review_points);
   const outOfScope = outOfScopeSection(plan);
+  const rows = acRows(req, acResults, acStale);
+  const acTable = acResultsSection(rows);
   const verify = [
     hitLine('danger-grep', arr(dangerHits), (h) => h?.class),
     hitLine('test-surface', arr(testsurfHits), (h) => h?.pattern),
@@ -1384,7 +1417,8 @@ function buildPrBody({ issue, req, plan, ledger, testsurfHits, dangerHits, acRes
     ...(changes.length ? [`${PR_BODY_CHANGES_HEADING}\n${bulletList(changes)}`] : []),
     ...(reviewPoints.length ? [`${PR_BODY_REVIEW_POINTS_HEADING}\n${bulletList(reviewPoints)}`] : []),
     ...(outOfScope ? [`${PR_BODY_OUT_OF_SCOPE_HEADING}\n${outOfScope}`] : []),
-    detailsBlock(PR_BODY_DETAILS.acceptance, acceptanceSection(req, ledger, acResults)),
+    ...(acTable ? [`${PR_BODY_AC_RESULTS_HEADING}\n${acTable}`] : []),
+    detailsBlock(PR_BODY_DETAILS.acceptance, acceptanceSection(rows)),
     detailsBlock(PR_BODY_DETAILS.decisions, decisionsSection(plan)),
     detailsBlock(PR_BODY_DETAILS.verification, verify),
     ...sectionBlocks(plan),
@@ -1398,7 +1432,8 @@ function prBodyEvidenceInstr(prBody) {
     + `<<<PR_BODY_PREVIEW_BEGIN>>>\n${str(prBody)}<<<PR_BODY_PREVIEW_END>>>\n`
     + `「PR 本文に書く」型の AC は、この本文テキストに該当内容があるかで判定せよ（<details> の中も本文に含む。`
     + `本文に無い内容は、コードのコメントや実装エージェントの報告にあっても未達）。\n`
-    + `本文の「受入条件」のチェックボックス（- [ ] / - [x]）は未確定であり、AC の充足・未達の根拠にするな。\n`;
+    + `本文の「受入条件」のチェックボックス（- [ ] / - [x]）は未確定であり、AC の充足・未達の根拠にするな。\n`
+    + `本文の「受入条件の結果」の表は未確定であり、AC の充足・未達の根拠にするな。\n`;
 }
 
 const PR_BODY_PLAN_KEYS = ['architecture_decisions', 'pr_notes', 'pr_sections', 'out_of_scope', 'behavior_changes', 'review_points'];
@@ -2047,9 +2082,11 @@ const EVAL = {
       type: 'array',
       items: {
         type: 'object',
-        required: ['ac_index', 'satisfied'],
+        required: ['ac_index', 'satisfied', 'gist'],
         properties: {
           ac_index: { type: 'number' },
+          // AC の要旨（日本語）。PR 本文の「受入条件の結果」の表に載る
+          gist: { type: 'string', maxLength: AC_GIST_MAX },
           satisfied: { type: 'boolean' },
           evidence: { type: 'string', maxLength: EVAL_EVIDENCE_MAX },
           verified_by: { type: 'string', enum: ['test', 'inspection'] },
@@ -2470,7 +2507,7 @@ async function execEvaluatePhase(state) {
       + `requirements.ac_observational が true の AC（観測型: 実行して出力・記録を観測しないと確かめられない）は、test で red→green を実証した場合（verified_by:test + test_files / impl_files）だけ達成扱いになる。\n`
       + TEST_DISCOVERY_NOTE
       // PR 作成前なので、PR phase と同じ材料（plan / ledger / risk hits）で組んだ本文プレビューを渡す（AC checkbox は未確定）。
-      + prBodyEvidenceInstr(buildPrBody({ issue: ISSUE, req, plan, ledger, testsurfHits, dangerHits: secHitsOf(state.risk) }))
+      + prBodyEvidenceInstr(buildPrBody({ issue: ISSUE, req, plan, testsurfHits, dangerHits: secHitsOf(state.risk) }))
       + (sameTreeAsValidate ? validateResultPromptBlock(state.val, state.realized?.files) : '')
       + ((i === 1 && cls.concerns.length) ? `focus_areas（重点監査せよ。implementer の自己申告した弱点/未解消BLOCKED）:\n${JSON.stringify(cls.concerns)}\n` : '')
       + (dangerHits.length

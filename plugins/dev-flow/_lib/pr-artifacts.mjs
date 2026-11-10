@@ -8,8 +8,8 @@
 // （agent 側の要約・判断を挟まない転写契約。pr-iterate の commit-ensure と同型）。
 // 同一入力 → 同一出力（決定論）。I/O なし。
 //
-// PR body は見える部分を人間向けの短い要約（結論 → 何が変わるか → 人間に見てほしい点 → 含めなかったもの → Closes）に
-// 限り、判定材料（受入条件・設計判断・検証・pr_sections）は `<details>` に畳む（issue #928）。evaluator は `<details>` の
+// PR body は見える部分を人間向けの短い要約（結論 → 何が変わるか → 人間に見てほしい点 → 含めなかったもの →
+// 受入条件の結果の表 → Closes）に限り、判定材料（受入条件・設計判断・検証・pr_sections）は `<details>` に畳む（issue #928）。evaluator は `<details>` の
 // 中も本文として読むので、畳んでも判定材料は減らない。builder は本文を切らない — 長さは IMPL schema の maxLength で
 // 書き手（dev-implementer）に要約させ、pr_sections の合計だけは prSectionsTrimFeedback で差し戻す。
 // 日本語で書かれていない 1 行要約欄も builder は訳さず、prBodyLanguageFeedback で書き手に差し戻す。
@@ -117,19 +117,52 @@ export const PR_BODY_DETAILS = { acceptance: '受入条件', decisions: '設計�
 export const PR_SECTIONS_MAX_CHARS = 3000;
 export const PR_SECTION_HEADING_MAX = 80;
 
-// 受入条件 details の本文: index 順に `- [x]`/`- [ ]` + AC 全文。checked 判定は acResults 優先、無ければ
-// ledger.items の `AC-<i+1>`。
-function acceptanceSection(req, ledger, acResults) {
-  const acs = arr(req?.acceptance_criteria);
-  if (acs.length === 0) return '（なし）';
-  const items = arr(ledger?.items);
+// 見える部分の最後の節: AC 1 件 1 行の表（AC / 要旨 / 結果 / 根拠）。結果と要旨は evaluator の判定（acResults）だけから取る —
+// ledger の checked は evaluator が確かめていない AC にも付きうるので ✅ の根拠にしない。
+export const PR_BODY_AC_RESULTS_HEADING = '## 受入条件の結果';
+export const PR_BODY_AC_UNVERIFIED = '⚠️ 未検証';
+// pr-iterate の修正後に AC を再検証していない run の結果。修正前の ✅ / ❌ は最終 tree の判定ではないので残さない。
+export const PR_BODY_AC_STALE = '⚠️ 修正後に未再評価';
+const PR_BODY_AC_EMPTY_CELL = '—';
+
+// AC ごとの表示状態（表と `<details>` の checkbox が同じ値を使う）。acStale の run は判定を持ち越さず、要旨（AC の言い換えで
+// 修正に依らない）だけを残す。
+function acRows(req, acResults, acStale) {
   const results = arr(acResults);
-  const lines = acs.map((ac, i) => {
-    const fromResults = results.find((r) => r?.ac_index === i);
-    const checked = fromResults ? fromResults.satisfied === true : items.find((x) => x?.id === `AC-${i + 1}`)?.checked === true;
-    return `- [${checked ? 'x' : ' '}] ${str(ac).trim()}`;
+  return arr(req?.acceptance_criteria).map((ac, i) => {
+    const r = results.find((x) => x?.ac_index === i) ?? null;
+    const judged = r != null && acStale !== true;
+    const tests = arr(r?.test_files).map((f) => str(f).replace(/`/g, '').trim()).filter(Boolean);
+    return {
+      text: str(ac).trim(),
+      gist: r ? str(r.gist) : '',
+      result: acStale === true ? PR_BODY_AC_STALE : !r ? PR_BODY_AC_UNVERIFIED : r.satisfied === true ? '✅' : '❌',
+      evidence: !judged ? '' : tests.length ? tests.map((f) => `\`${f}\``).join(', ') : str(r.evidence),
+      checked: judged && r.satisfied === true,
+    };
   });
-  return lines.join('\n');
+}
+
+// 表のセル。gist・evidence・test_files は evaluator と PR（evaluator が読むコード・テスト名）が書ける文字列なので、
+// `<details>` の中と同じ無害化を掛けてから `|`・改行を逃がす — 見える部分のセルで折りたたみ・コメント・Closes 行を作らせない。
+function acTableCell(v) {
+  return cell(neutralizeStructure(str(v))) || PR_BODY_AC_EMPTY_CELL;
+}
+
+// `## 受入条件の結果` の節本文（AC が無ければ null = 節ごと出さない）。
+function acResultsSection(rows) {
+  if (rows.length === 0) return null;
+  return [
+    '| AC | 要旨 | 結果 | 根拠 |',
+    '|---|---|---|---|',
+    ...rows.map((r, i) => `| AC-${i + 1} | ${acTableCell(r.gist)} | ${r.result} | ${acTableCell(r.evidence)} |`),
+  ].join('\n');
+}
+
+// 受入条件 details の本文: index 順に `- [x]`/`- [ ]` + AC 全文。`- [x]` は表で ✅ の AC（satisfied:true）だけ。
+function acceptanceSection(rows) {
+  if (rows.length === 0) return '（なし）';
+  return rows.map((r) => `- [${r.checked ? 'x' : ' '}] ${r.text}`).join('\n');
 }
 
 // 設計判断 details の本文: 先頭 PR_BODY_DECISIONS_MAX 件を `- <decisionLine>`、超過分は `（他 N 件は plan 参照）` 1 行。
@@ -234,11 +267,14 @@ function closeOpenFence(md) {
   }
   return open == null ? md : `${md}\n${open}`;
 }
-function neutralizeSectionMarkdown(md) {
-  return closeOpenFence(md)
+function neutralizeStructure(md) {
+  return md
     .replace(/<(\/?details\b)/gi, `<${ZWSP}$1`)
     .replace(/<!--/g, `<!${ZWSP}--`)
     .replace(/^(?=Closes #\d+\s*$)/gm, ZWSP);
+}
+function neutralizeSectionMarkdown(md) {
+  return neutralizeStructure(closeOpenFence(md));
 }
 
 // 判定材料を 1 件 1 つの `<details>` にする。markdown は改行を保ったまま切らず（GitHub が表を描画するよう
@@ -348,18 +384,22 @@ function hitLine(label, hits, keyOf) {
 
 // PR body（issue #928）。見える部分は人間向けの短い要約で、次の順に並ぶ:
 //   結論 1 行（plan.summary > issue title > `issue #<n> の変更`）→ `## 何が変わるか`（plan.behavior_changes）→
-//   `## 人間に見てほしい点`（plan.review_points）→ `## この PR に含めなかったもの`（plan.out_of_scope）
-// 見出し付きの 3 節は材料が空なら節ごと出さない。判定材料はその後ろに `<details>` で畳む:
+//   `## 人間に見てほしい点`（plan.review_points）→ `## この PR に含めなかったもの`（plan.out_of_scope）→
+//   `## 受入条件の結果`（AC 1 件 1 行の表。acRows）
+// 見出し付きの節は材料が空なら節ごと出さない。判定材料はその後ろに `<details>` で畳む:
 //   受入条件（AC 全文の checkbox）→ 設計判断 → 検証（danger-grep / test-surface hit + pr_notes）→ pr_sections（1 件 1 つ）
 // 最後の行は `Closes #<issue>`。builder はどの欄も字数で切らない（1 行要約欄の長さは IMPL schema の maxLength が持つ）。
-// acResults（[{ac_index, satisfied}]）が指定されればチェック判定に優先利用する。
-export function buildPrBody({ issue, req, plan, ledger, testsurfHits, dangerHits, acResults }) {
+// acResults（[{ac_index, gist, satisfied, evidence, test_files}]）は evaluator の AC 判定。無い AC は「未検証」になる。
+// acStale:true は pr-iterate の修正後に AC を再検証していない run で、全 AC の結果を「修正後に未再評価」にする。
+export function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false }) {
   let conclusionText = collapseWhitespace(plan?.summary);
   if (!conclusionText) conclusionText = collapseWhitespace(req?.issue_title);
   if (!conclusionText) conclusionText = `issue #${issue} の変更`;
   const changes = textItems(plan?.behavior_changes);
   const reviewPoints = textItems(plan?.review_points);
   const outOfScope = outOfScopeSection(plan);
+  const rows = acRows(req, acResults, acStale);
+  const acTable = acResultsSection(rows);
   const verify = [
     hitLine('danger-grep', arr(dangerHits), (h) => h?.class),
     hitLine('test-surface', arr(testsurfHits), (h) => h?.pattern),
@@ -370,7 +410,8 @@ export function buildPrBody({ issue, req, plan, ledger, testsurfHits, dangerHits
     ...(changes.length ? [`${PR_BODY_CHANGES_HEADING}\n${bulletList(changes)}`] : []),
     ...(reviewPoints.length ? [`${PR_BODY_REVIEW_POINTS_HEADING}\n${bulletList(reviewPoints)}`] : []),
     ...(outOfScope ? [`${PR_BODY_OUT_OF_SCOPE_HEADING}\n${outOfScope}`] : []),
-    detailsBlock(PR_BODY_DETAILS.acceptance, acceptanceSection(req, ledger, acResults)),
+    ...(acTable ? [`${PR_BODY_AC_RESULTS_HEADING}\n${acTable}`] : []),
+    detailsBlock(PR_BODY_DETAILS.acceptance, acceptanceSection(rows)),
     detailsBlock(PR_BODY_DETAILS.decisions, decisionsSection(plan)),
     detailsBlock(PR_BODY_DETAILS.verification, verify),
     ...sectionBlocks(plan),
@@ -387,7 +428,8 @@ export function prBodyEvidenceInstr(prBody) {
     + `<<<PR_BODY_PREVIEW_BEGIN>>>\n${str(prBody)}<<<PR_BODY_PREVIEW_END>>>\n`
     + `「PR 本文に書く」型の AC は、この本文テキストに該当内容があるかで判定せよ（<details> の中も本文に含む。`
     + `本文に無い内容は、コードのコメントや実装エージェントの報告にあっても未達）。\n`
-    + `本文の「受入条件」のチェックボックス（- [ ] / - [x]）は未確定であり、AC の充足・未達の根拠にするな。\n`;
+    + `本文の「受入条件」のチェックボックス（- [ ] / - [x]）は未確定であり、AC の充足・未達の根拠にするな。\n`
+    + `本文の「受入条件の結果」の表は未確定であり、AC の充足・未達の根拠にするな。\n`;
 }
 
 // evaluator に渡す plan から PR 本文の材料（本文へ組み立て済みのもの）を外す。生データを並べると evaluator が
