@@ -1069,6 +1069,48 @@ use_runners() {
   [ -f "$REPO/impl.mjs" ]
 }
 
+@test "L5b: files_command が委譲する package.json の scripts・名指す script が base から変われば入力エラーで実行しない" {
+  use_commands 'npm test -- {files}'
+  echo "export const ok = true;" > "$REPO/impl.mjs"
+  make_test
+  make_stub_runner npm impl.mjs
+
+  # scripts が base と同じなら実行する(依存だけの変更は委譲先を変えない)
+  echo '{"scripts":{"test":"node --test"},"devDependencies":{"x":"1"}}' > "$REPO/package.json"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0] | {red, green, reason}')" = '{"red":true,"green":true,"reason":"ok"}' ]
+  rm "$REPO/calls.log"
+
+  # PR が test の script を差し替える(impl の有無だけで終了コードを決める)
+  echo '{"scripts":{"test":"node -e \"process.exit(require(\"fs\").existsSync(\"impl.mjs\")?0:1)\""}}' > "$REPO/package.json"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0]')" = '{"index":0,"red":false,"green":false,"reason":"test command script changed vs base: package.json (scripts)"}' ]
+  [ ! -f "$REPO/calls.log" ]
+
+  # workspace の package に script を足す(--filter で委譲できる)
+  git -C "$REPO" checkout -q -- package.json
+  mkdir -p "$REPO/packages/a"
+  echo '{"scripts":{"test":"true"}}' > "$REPO/packages/a/package.json"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "test command script changed vs base: packages/a/package.json (scripts)" ]
+  [ ! -f "$REPO/calls.log" ]
+  rm -r "$REPO/packages"
+
+  # コマンドが名指す repo の script
+  mkdir -p "$REPO/scripts"
+  printf '#!/usr/bin/env bash\n[ -f "%s/impl.mjs" ]\n' "$REPO" > "$REPO/scripts/test.sh"
+  git -C "$REPO" add scripts/test.sh && git -C "$REPO" commit -q -m "test script"
+  use_commands 'bash scripts/test.sh {files}'
+  echo 'exit 0' >> "$REPO/scripts/test.sh"
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "test command file changed vs base: scripts/test.sh" ]
+  [ -f "$REPO/impl.mjs" ]
+}
+
 @test "L6: コマンドファイルが無い・unresolved のときは全ペアが入力エラーで exit 2、テストを実行しない" {
   echo "export const a = 1;" > "$REPO/impl1.mjs"
   echo "export const b = 2;" > "$REPO/impl2.mjs"

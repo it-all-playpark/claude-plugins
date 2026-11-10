@@ -28,7 +28,10 @@
 # 入力エラーにして昇格させず、PR 側の形では実行しない(PR が自分のテストの起動の形を選べると、red→green を作れる)。
 # テストファイル自体とランナーの設定ファイルは worktree(PR)の内容のまま実行する。言語別に決め打ちした判定は持たない。
 #   - status "resolved" で files_command がある(user 設定・resolver): files_command を空白で区切り、{files} の語を
-#     ペアの test_files に置き換えた argv を shell を通さず 1 本実行する
+#     ペアの test_files に置き換えた argv を shell を通さず 1 本実行する。起動内容を worktree のファイルへ委譲する形
+#     (npm / pnpm / yarn / bun の script → 全 package.json の scripts、make / just / task → Makefile 等、語が名指す repo の
+#     ファイル)は委譲先が $BASE と違うペアを reason "test command script changed vs base: <path> (scripts)" /
+#     "test command file changed vs base: <path>" の入力エラーにする
 #   - source "runners": $BASE の tree の tests/run-*.sh(mode 100755)を全本、DEVFLOW_TEST_FILES=<test_files を 1 行 1 件で
 #     書いたファイル>(run-tests の --files と同じ契約)を渡して実行する。実行する script が worktree で $BASE と違う・欠けている、
 #     または $BASE に無い tests/run-*.sh が worktree にあるペアは reason "test runner script changed vs base: <path>" /
@@ -173,6 +176,65 @@ check_base_runners() {
   return 0
 }
 
+# files_command は base から解決しても、起動内容を worktree のファイルへ委譲する形(PM の script・make / just / task・
+# repo の script を名指す語)だと PR が中身を差し替えて red→green を作れる。委譲先が $BASE の tree と同じかを確かめ、
+# 違えばその理由を stdout に出して 1 を返す(runners の check_base_runners と同じ扱い。コマンドが名指さないランナーの設定ファイルは対象外)
+same_as_base() {
+  local path="$1" blob=""
+  [ -f "$path" ] && blob="$(git hash-object -- "$path" 2>/dev/null)"
+  [ -n "$blob" ] && [ "$blob" = "$(git rev-parse -q --verify "$BASE:$path" 2>/dev/null)" ]
+}
+
+# package.json の scripts(pre / post を含む)を $BASE と worktree で比べる。workspace の各 package も対象にする
+# (--filter 等で別の package の script に委譲できる)
+check_package_scripts() {
+  local list path b w
+  list="$( { git ls-tree -r --name-only "$BASE" 2>/dev/null; git ls-files -co --exclude-standard 2>/dev/null; } \
+    | grep -E '(^|/)package\.json$' | sort -u)"
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    b='{}'
+    if git cat-file -e "$BASE:$path" 2>/dev/null; then
+      b="$(git cat-file --filters "$BASE:$path" 2>/dev/null | jq -cS '.scripts // {}' 2>/dev/null)" || b=invalid
+    fi
+    w='{}'
+    [ -f "$path" ] && { w="$(jq -cS '.scripts // {}' "$path" 2>/dev/null)" || w=invalid; }
+    if [ "$b" != "$w" ]; then
+      echo "test command script changed vs base: $path (scripts)"; return 1
+    fi
+  done <<< "$list"
+  return 0
+}
+
+check_base_command() {
+  local w path f
+  case "${FILES_WORDS[0]}" in
+    npm|pnpm|yarn|bun)
+      case "${FILES_WORDS[1]:-}" in
+        exec|dlx|x) ;;
+        *) check_package_scripts || return 1 ;;
+      esac ;;
+    make|gmake|just|task)
+      for f in GNUmakefile makefile Makefile justfile Justfile .justfile Taskfile.yml Taskfile.yaml; do
+        if [ -f "$f" ] || git cat-file -e "$BASE:$f" 2>/dev/null; then
+          same_as_base "$f" || { echo "test command file changed vs base: $f"; return 1; }
+        fi
+      done ;;
+  esac
+  # コマンドが名指す repo のファイル(語そのもの・--opt=<path> の値)
+  for w in "${FILES_WORDS[@]}"; do
+    [ "$w" = "{files}" ] && continue
+    for path in "$w" "${w#*=}"; do
+      path="${path#./}"
+      [ -n "$path" ] && [[ "$path" != /* ]] || continue
+      if [ -f "$path" ] || [ "$(git cat-file -t "$BASE:$path" 2>/dev/null)" = blob ]; then
+        same_as_base "$path" || { echo "test command file changed vs base: $path"; return 1; }
+      fi
+    done
+  done
+  return 0
+}
+
 # 退避済み impl を $IMPL_BACKUP から相対パス保持で書き戻す(cp -p で mode も戻す)。
 # 配列展開は set -u のため必ず件数 guard 下で行う。
 restore_saved() {
@@ -233,6 +295,12 @@ verify_pair() {
   # 実行する tests/run-*.sh が base と違うペアは判定しない(impl を退避する前の worktree で確かめる)
   local runner_problem
   if [ "$RUN_MODE" = runners ] && ! runner_problem="$(check_base_runners)"; then
+    PAIR_JSON="$(jq -nc --arg r "$runner_problem" '{red: false, green: false, reason: $r}')"
+    PAIR_JSON="${PAIR_JSON#\{}"; PAIR_JSON="${PAIR_JSON%\}}"
+    return 2
+  fi
+  # files_command の委譲先(package の script・Makefile 等・名指す repo のファイル)が base と違うペアも判定しない
+  if [ "$RUN_MODE" = command ] && ! runner_problem="$(check_base_command)"; then
     PAIR_JSON="$(jq -nc --arg r "$runner_problem" '{red: false, green: false, reason: $r}')"
     PAIR_JSON="${PAIR_JSON#\{}"; PAIR_JSON="${PAIR_JSON%\}}"
     return 2
