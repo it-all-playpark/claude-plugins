@@ -179,9 +179,9 @@ test('[ci-check] ciEffectiveStatus: null 以外は件数と status が食い違�
   }
 });
 
-test('[ci-check] CI_STATUS の failed_checks 要素は {name, bucket, state}', () => {
-  const props = CI_STATUS.properties.failed_checks.items.properties;
-  assert.deepEqual(Object.keys(props).sort(), ['bucket', 'name', 'state']);
+test('[ci-check] CI_STATUS の failed_checks 要素は {name, bucket, state, link}、pending_checks 要素は {name, state, link}', () => {
+  assert.deepEqual(Object.keys(CI_STATUS.properties.failed_checks.items.properties).sort(), ['bucket', 'link', 'name', 'state']);
+  assert.deepEqual(Object.keys(CI_STATUS.properties.pending_checks.items.properties).sort(), ['link', 'name', 'state']);
 });
 
 test('[ci-check] CI_STATUS は並列 ci-check の照合用に optional head_sha（string）を持つ', () => {
@@ -189,8 +189,8 @@ test('[ci-check] CI_STATUS は並列 ci-check の照合用に optional head_sha�
   assert.ok(!CI_STATUS.required.includes('head_sha'), 'head_sha は optional でなければならない（取得失敗は省略 → 不採用で直列に倒す）');
 });
 
-test('[ci-check] CI_STATUS は clock telemetry 給電用の optional epoch を持つ', () => {
-  assert.equal(CI_STATUS.properties.epoch.type, 'number');
+test('[ci-check] CI_STATUS は clock telemetry 給電用の optional epoch を持つ（check-ci は date の失敗で null を出す）', () => {
+  assert.deepEqual(CI_STATUS.properties.epoch.type, ['number', 'null']);
   assert.ok(!CI_STATUS.required.includes('epoch'), 'epoch は optional でなければならない');
 });
 

@@ -285,6 +285,11 @@ export const SECURITY_CODEX_RUN_SCHEMA = {
   properties: { done: { type: 'boolean' } },
 };
 
+// 下の 2 つの schema は security-review-codex-result の stdout に出る全キー（入れ子のキーを含む）を、出る値の型で宣言する。
+// hook は返り値を実 stdout との完全一致に縛るので、宣言の無いキーを中継が落とす・別の型で渡すと返り値が拒否される
+// （_lib/relay-schema-coverage.test.mjs が実出力を照らす）。node が無いときの wrapper
+// （_shared/scripts/security-review-codex-result.sh）は --issues の有無に関わらず判定と issues:[] の両方を持つ 1 つの形を出すので、
+// どちらの schema もそのキーを宣言する。
 export const SECURITY_CODEX_RESULT_SCHEMA = {
   type: 'object', required: ['ok', 'cleared'],
   properties: {
@@ -292,7 +297,16 @@ export const SECURITY_CODEX_RESULT_SCHEMA = {
     cleared: { type: 'boolean' },
     reason: { type: ['string', 'null'] },
     reviewed_sha: { type: ['string', 'null'] },
-    counts: { type: 'object' },
+    counts: {
+      type: 'object',
+      properties: {
+        critical: { type: 'integer', minimum: 0 },
+        major: { type: 'integer', minimum: 0 },
+        minor: { type: 'integer', minimum: 0 },
+      },
+    },
+    // 判定の出力に指摘の本文は出ない（node が無いときの wrapper の空配列だけ）
+    issues: { type: 'array', maxItems: 0 },
     error: { type: 'string' },
   },
 };
@@ -301,7 +315,24 @@ export const SECURITY_CODEX_ISSUES_SCHEMA = {
   type: 'object', required: ['ok'],
   properties: {
     ok: { type: 'boolean' },
-    issues: { type: 'array', items: { type: 'object' } },
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: ['critical', 'major', 'minor'] },
+          topic: { type: 'string' },
+          file: { type: 'string' },
+          line: { type: 'integer' },
+          description: { type: 'string' },
+          suggestion: { type: 'string' },
+        },
+      },
+    },
+    cleared: SECURITY_CODEX_RESULT_SCHEMA.properties.cleared,
+    reason: SECURITY_CODEX_RESULT_SCHEMA.properties.reason,
+    reviewed_sha: SECURITY_CODEX_RESULT_SCHEMA.properties.reviewed_sha,
+    counts: SECURITY_CODEX_RESULT_SCHEMA.properties.counts,
     error: { type: 'string' },
   },
 };

@@ -1265,13 +1265,27 @@ const CI_STATUS = {
           name: { type: 'string' },
           bucket: { type: 'string' },
           state: { type: 'string' },
+          link: { type: 'string' },
+        },
+      },
+    },
+    pending_checks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          state: { type: 'string' },
+          link: { type: 'string' },
         },
       },
     },
     waited_seconds: { type: 'number' },
     poll_attempts: { type: 'number' },
     head_sha: { type: 'string' },
-    epoch: { type: 'number' },
+    epoch: { type: ['number', 'null'] },
+    next_action: { type: 'string', enum: ['poll', 'done'] },
+    message: { type: 'string' },
   },
 };
 

@@ -60,7 +60,9 @@ export const CI_TURN_MARGIN = 3;
 // stdout-relay が bare `check-ci --pr <N> --repo <R>` を実行し、その stdout JSON を verbatim で返す。
 // check-ci（pr-iterate/scripts/check-ci.sh）は内部で読み取り専用の `gh pr view --json headRefOid,statusCheckRollup` を
 // 1 回実行して分類する。agent は rollup を argv に転写しないので、入力側の転写の破損で判定が変わらない。
-// failed_checks の要素は script 出力と一致する {name, bucket, state}。
+// schema は check-ci の stdout に出る全キー（配列の要素のキーを含む）を、出る値の型で宣言する。hook は返り値を実 stdout との
+// 完全一致に縛るので、宣言の無いキーを中継が落とす・別の型で渡すと、CI が通っていても返り値が拒否されて ci_error になる。
+// check-ci の出力にキーを足す・型を変えるときは、ここも同時に直す（_lib/relay-schema-coverage.test.mjs が実出力を照らす）。
 // status:'error' は check-ci が gh fetch 失敗を分類した値か、中継が stdout を返せないときの CI_RELAY_FAILED。
 // workflow 側は proxy の空応答（turn 上限到達等）も同じ 'error' に合成するため、受け手は原因を 1 つに断定できない。
 // 即座に人間へエスカレーションする。
@@ -74,6 +76,7 @@ export const CI_STATUS = {
     failed: { type: 'integer', minimum: 0 },
     pending: { type: 'integer', minimum: 0 },
     skipped: { type: 'integer', minimum: 0 },
+    // link は rollup が check run の URL（detailsUrl / targetUrl）を持つ check にだけ出る。
     failed_checks: {
       type: 'array',
       items: {
@@ -82,6 +85,18 @@ export const CI_STATUS = {
           name: { type: 'string' },
           bucket: { type: 'string' },
           state: { type: 'string' },
+          link: { type: 'string' },
+        },
+      },
+    },
+    pending_checks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          state: { type: 'string' },
+          link: { type: 'string' },
         },
       },
     },
@@ -93,8 +108,12 @@ export const CI_STATUS = {
     // 起動した ci-check#i の結果を、この値が review 開始時の head と一致するときだけ採る（ciHeadRejectReason）。
     head_sha: { type: 'string' },
     // dev-flow の clock telemetry（issue #443）が iterate_end の給電元として読む optional epoch。
-    // 旧版 check-ci.sh（epoch 非対応）や失敗時は省略され、返り値の end_epoch も省略される（fail-open）。
-    epoch: { type: 'number' },
+    // check-ci は `date +%s` に失敗すると null を出し、返り値の end_epoch は省略される（fail-open）。
+    epoch: { type: ['number', 'null'] },
+    // check-ci が全分岐で出す poll の指示。workflow は読まない（poll の継続は script 側が status で決める）。
+    next_action: { type: 'string', enum: ['poll', 'done'] },
+    // status:'error' のときの取得失敗の理由（gh の stderr の先頭を含む）。workflow は読まない。
+    message: { type: 'string' },
   },
 };
 
