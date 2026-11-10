@@ -23,14 +23,30 @@ export function porcelainLines(output) {
     .filter((l) => PORCELAIN_LINE_RE.test(l) && !l.slice(3).startsWith(`${PORCELAIN_BASELINE_DIR}/`))
 }
 
-/** 基準線ファイルの内容（1 行 1 porcelain 行）。digest はこの文字列の sha256。 */
-export function baselineContent(lines) {
-  return lines.map((l) => `${l}\n`).join('')
+// 基準線ファイルの 1 行目は fix の前の HEAD の sha。fix が追跡をやめたファイル（`git rm --cached` で worktree に残り
+// `??` で出る）を、fix の commit し忘れの新規ファイルと区別するのに使う。digest の対象に含めるので、fix agent が
+// 書き換えれば mismatch になる。
+const BASELINE_HEAD_RE = /^HEAD ([0-9a-f]{40,64})$/
+
+/** 基準線ファイルの内容（1 行目が `HEAD <sha>`、以降 1 行 1 porcelain 行）。digest はこの文字列の sha256。 */
+export function baselineContent(head, lines) {
+  return [`HEAD ${head}`, ...lines].map((l) => `${l}\n`).join('')
 }
 
-/** 基準線ファイルの内容を porcelain 行の配列に戻す。 */
+/** 基準線ファイルの内容を `{ head, lines }` に戻す（1 行目が `HEAD <sha>` でなければ null = 基準線として読まない）。 */
 export function parseBaselineContent(content) {
-  return String(content).split('\n').filter((l) => l !== '')
+  const [first, ...rest] = String(content).split('\n')
+  const m = BASELINE_HEAD_RE.exec(first)
+  return m == null ? null : { head: m[1], lines: rest.filter((l) => l !== '') }
+}
+
+/** 基準線に無い `??` 行のパス（C 形式の引用を戻したもの。戻せない行は含めない）。 */
+export function newUntrackedPaths(output, baseline) {
+  const known = new Set(baseline)
+  return porcelainLines(output)
+    .filter((l) => l.startsWith('?? ') && !known.has(l))
+    .map(untrackedPath)
+    .filter((p) => p != null)
 }
 
 // 回収の stage コマンドの組み立て。パスは PR が名付けたファイル名（外部入力）なので、agent に
@@ -66,11 +82,13 @@ export function unquotePorcelainPath(p) {
   return decodeURIComponent(bytes.map((b) => `%${b.toString(16).padStart(2, '0')}`).join(''))
 }
 
+const untrackedPath = (line) => { try { return unquotePorcelainPath(line.slice(3)) } catch { return null } }
+
 /** 新規行から回収の add コマンドを組み立てる（並べるパスが無ければ null = add しない）。 */
 export function leftoverAddCommand(newLines) {
   const paths = newLines
     .filter((l) => l[1] !== ' ' && !/[RC]/.test(l.slice(0, 2)))
-    .map((l) => { try { return unquotePorcelainPath(l.slice(3)) } catch { return null } })
+    .map(untrackedPath)
     .filter((p) => p != null && p !== '' && !p.endsWith('/') && !/[\x00-\x1f\x7f\x60]/.test(p))
   if (paths.length === 0) return null
   return `git --literal-pathspecs add --ignore-removal -- ${paths.map(shellQuote).join(' ')}`
@@ -84,14 +102,20 @@ export function leftoverAddCommand(newLines) {
  * 回収（add・commit・push）は基準線があり、基準線に stage 済みの行（1 文字目が空白・`?`・`!` 以外）が無いときだけ:
  * 基準線が無ければ add は fix の前からある未追跡ファイルも新規行として stage し、stage 済みの行があれば commit が index ごと
  * fix の前からある変更を PR に入れる。
+ * untrackedByFix: `??` 行のうち fix の前の HEAD で追跡されていたパス（引用を戻したもの）の集合。fix が追跡をやめて worktree に
+ *   残したファイルで、新規行・dirty に数えない（add すると fix の追跡解除を打ち消して PR に再び commit する）。追跡解除が
+ *   未 commit なら `D  p` が新規行に残り、回収の commit が削除を記録する。基準線が無い・mismatch のときは外さない。
  *
  * @returns {{exit_code: number, baseline: 'ok'|'none'|'mismatch', dirty: boolean, new_lines: string[], recoverable: boolean, add_command: string|null}}
  */
-export function porcelainVerdict({ output, exitCode, baseline = null, mismatch = false }) {
+export function porcelainVerdict({ output, exitCode, baseline = null, mismatch = false, untrackedByFix = [] }) {
   const lines = porcelainLines(output)
   const base = mismatch ? null : baseline
   const known = base == null ? null : new Set(base)
-  const newLines = known == null ? lines : lines.filter((l) => !known.has(l))
+  const dropped = new Set(untrackedByFix)
+  const newLines = known == null
+    ? lines
+    : lines.filter((l) => !known.has(l) && !(l.startsWith('?? ') && dropped.has(untrackedPath(l))))
   const ok = exitCode === 0
   const recoverable = ok && base != null && base.every((l) => l[0] === ' ' || l[0] === '?' || l[0] === '!')
   return {
