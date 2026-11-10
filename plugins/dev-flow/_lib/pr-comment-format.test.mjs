@@ -821,6 +821,10 @@ test('buildTerminalSummaryBody: ci_pending / ci_error の終了レポートは H
   for (const status of ['lgtm', 'stuck', 'fix_failed', 'max_reached', 'review_contract_error', 'security_unresolved']) {
     assert.ok(!buildTerminalSummaryBody({ ...opts, status }).includes('/pr-iterate 77'), status);
   }
+  // blocking 付きの round で security review が終端した run（lastDecision が approve でない）
+  const unreviewed = buildTerminalSummaryBody({ ...opts, status: 'security_unresolved', lastDecision: 'request-changes' });
+  assert.ok(!unreviewed.includes('/pr-iterate 77'), unreviewed);
+  assert.ok(card1359(unreviewed).checks.includes('- ⚠️ 最終レビュー: blocking の指摘を fix に回したが再レビューしていない（security review で終了）— 最後の反復の指摘と修正の diff を確かめる'), unreviewed);
 });
 
 test('buildTerminalSummaryBody: 「pr-iterate は判定しない」の文言はこの run が判定しない code の行にだけ出る', () => {

@@ -318,7 +318,10 @@ function terminalDecisionCard({ pr, status, lastDecision, ciLastStatus, ciLastFa
   else if (status === 'stuck' || status === 'fix_failed') review = { state: 'failed', note: `blocking の指摘が残ったまま終了（status: ${status}）— 下の「反復履歴」と指摘の詳細を確かめる` };
   else if (status === 'max_reached') review = { state: 'unverified', note: '最後の修正を再レビューしていない（反復上限）— 最後の反復の指摘と修正の diff を確かめる' };
   else if (status === 'review_contract_error') review = { state: 'unverified', note: 'reviewer が結果を返さなかった — diff を自分で review する' };
-  else review = { state: 'unverified', note: `LGTM に届くか確かめていない（status: ${mdCell(status)}）— CI の確定後に \`/pr-iterate ${pr}\` を再実行する` };
+  else if (status === 'security_unresolved') review = { state: 'unverified', note: 'blocking の指摘を fix に回したが再レビューしていない（security review で終了）— 最後の反復の指摘と修正の diff を確かめる' };
+  // 再実行の案内は CI の確定待ちで終わった status だけ（STATUS_QUESTION と同じ方針）
+  else if (status === 'ci_pending' || status === 'ci_error') review = { state: 'unverified', note: `LGTM に届くか確かめていない（status: ${status}）— CI の確定後に \`/pr-iterate ${pr}\` を再実行する` };
+  else review = { state: 'unverified', note: `LGTM に届くか確かめていない（status: ${mdCell(status)}）— 最後の反復の指摘と diff を確かめる` };
 
   let ci;
   if (ciLastStatus == null) ci = { state: 'unverified', note: `未観測 — ${checks} で確かめる` };
