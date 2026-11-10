@@ -168,6 +168,11 @@ report と比べて読む。
   「進め方の目安」。対象は節のうち capability-bound と宣言した段落・項目だけで、同じ節にある他のクラスの宣言は外さない
 - **なぜ**: frontier モデルなら指示なしでも同じ品質が出る指示は、残すほど prompt が膨らむ
 - **sunset トリガ**: major モデルリリースごとの dry-run
-- **次のモデル世代での測り直し方**: dev-flow-health の `model_changes` で品質ゲート agent の model ID の変化が起票されたら、
-  当該指示を外した agent で過去 run を replay し、verdict と major 指摘の再現が劣化しないことを確かめてから削る。
-  contract / incentive-structural / blast-radius の指示は外さない
+- **次のモデル世代での測り直し方**: dev-flow-health の `model_changes` で下のどれかの agent の model ID の変化が起票されたら、
+  その agent の節だけを測り直す。その agent の capability-bound と宣言した段落・項目を外した agent と外す前の agent を
+  同じ入力で回し、下の指標が劣化しないことを確かめてから削る。contract / incentive-structural / blast-radius の指示は外さない
+  - `agents/evaluator.md`: merge 済みの過去 run の Evaluate を replay し、verdict と critical/major 指摘の再現が劣化しないこと
+  - `agents/pr-reviewer.md`: 過去 PR の review を replay し、review の判定と critical/major 指摘の再現が劣化しないこと
+  - `agents/dev-implementer.md`: merge 済みの過去 issue を同じ base commit から Implement 〜 Evaluate まで回し直し、実装を
+    受け取る側の結果が劣化しないこと — evaluator の verdict、Evaluate の差し戻しの回数、Validate が green-fix なしで green に
+    なるか（evaluator の指示は変えずに回す。implementer 自身の報告は指標にしない）
