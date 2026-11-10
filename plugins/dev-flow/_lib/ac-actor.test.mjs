@@ -116,7 +116,25 @@ test('[ac-actor] ci の AC: CI の結果で ac_results を置き換え、success
   assert.match(passed[1].evidence, /e2e.*success.*runs\/2\/job\/22/);
   assert.deepEqual(unsatisfiedCiAcIndexes(actors, { status: 'passed' }), []);
   for (const status of ['pending', 'failed', 'error', 'not_run']) assert.deepEqual(unsatisfiedCiAcIndexes(actors, { status }), [1], status);
+  // check が完了していない（pending）・待っていない（not_run）は判定前なので ci_pending、決着した failed / error は付けない
+  for (const status of ['pending', 'not_run']) assert.equal(applyCiAcResults(evalResults, actors, { status })[1].ci_pending, true, status);
+  for (const status of ['passed', 'failed', 'error']) assert.equal(applyCiAcResults(evalResults, actors, { status })[1].ci_pending, undefined, status);
   assert.equal(applyCiAcResults(null, actors, null), null);
+});
+
+test('[ac-actor] ci の AC: evaluator の gist だけを引き継ぎ、test_files・evidence は CI のものに置き換える', () => {
+  const actors = ['agent', 'ci'];
+  const evalResults = [
+    { ac_index: 0, gist: 'g1', satisfied: true, evidence: 'ok' },
+    { ac_index: 1, gist: 'g2', satisfied: true, evidence: 'evaluator の根拠', test_files: ['x.test.mjs'] },
+  ];
+  for (const ciVerify of [null, { status: 'passed', checks: ['e2e'] }, { status: 'failed', checks: ['e2e'] }]) {
+    const r = applyCiAcResults(evalResults, actors, ciVerify)[1];
+    assert.equal(r.gist, 'g2');
+    assert.equal(r.test_files, undefined);
+    assert.notEqual(r.evidence, 'evaluator の根拠');
+  }
+  assert.equal('gist' in applyCiAcResults([evalResults[0]], actors, null)[1], false);
 });
 
 test('[ac-actor] ci の AC: local-verify の結果（source:local）なら verified_by:local、根拠は log_path と exit code', () => {
