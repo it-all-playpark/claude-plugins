@@ -47,7 +47,7 @@ export const EVALUATE_RESULT_SPEC = {
   state: {
     plan: 'object', ledger: 'object', risk: 'object', dangerHits: 'array', testsurfHits: 'array', testsurfPatterns: 'array',
     securityReview: { target: 'boolean', reasons: 'array', reviewer_context_changed: 'boolean' },
-    triage: 'object', EFFECTIVE_SHAPE: 'string', runEval: 'boolean',
+    triage: 'object', EFFECTIVE_SHAPE: 'string', evalForced: 'boolean',
     evalResult: 'object|null', evalDiffHash: 'string|null', secDiffHash: 'string|null',
     unsatisfiedAcByActor: 'object', val: 'object|null', greenFixCount: 'number', concerns: 'array',
   },
@@ -64,7 +64,7 @@ export const FINALIZE_ARGS_SPEC = {
   gate_policy: 'string',
   state: {
     req: 'object', plan: 'object', setup: { branch: 'string' }, ledger: 'object',
-    val: 'object|null', risk: 'object|null', evalResult: 'object|null', runEval: 'boolean',
+    val: 'object|null', risk: 'object|null', evalResult: 'object|null',
     acVerify: 'array', baseFailing: 'object', unsatisfiedAcByActor: 'object', guardBlockedResults: 'array',
   },
   pr: { pr_url: 'string', pr_number: 'string|number' },

@@ -239,9 +239,6 @@ export function classifyMergeableState(meta) {
 //   載せる（終端サマリーの件数・AC への紐付けの母集団）。未指定・空 = reason 追加なし。string[] でないものは明示 error。
 //   旧キー converged（boolean）は専用 code と重複して立つので受理しない（明示 error）。
 // s.unresolvedDanger (optional boolean): partitionUncheckedBlocking の danger_unresolved が非空か。
-// s.evalSkipped (optional boolean): true の場合、REVIEW の reasons に AC 未検証開示を追記する。
-//   micro path は evaluator 0 回で AC を判定していないため、レビューする人間にその事実を開示する（issue #233）。
-//   danger-grep hit / green-fix で security path により eval が強制実行された場合は false にして虚偽開示を避ける。
 // s.unsatisfiedAgentAc / s.unsatisfiedHumanAc (optional boolean): 最終の AC 判定で satisfied:false の AC が
 //   actor（_lib/ac-actor.mjs）別に 1 件以上あるか（issue #747）。どちらも gate_policy に依らず HOLD だが、
 //   code を分ける — 'ac_agent_unsatisfied' は worktree 内で満たせる AC を Evaluate 差し戻しで拾えなかった
@@ -543,9 +540,6 @@ export function classifyMergeTier(s) {
   // REVIEW の既定文は終端サマリーが「理由の節を出さない」判定に使う（devflow-summary-format.mjs の
   // DEFAULT_TIER_REASON）。文言を変えるときは両方を揃える（不一致は summary 側のテストが落とす）。
   const reviewReasons = ['標準 — 人間が LGTM して merge'];
-  // micro path は evaluator 0 回で AC を判定していない — レビューする人間にその事実を開示する（issue #233）。
-  // 注: evalSkipped 開示行は disclosures には含めない（「参考」へ回さず理由の節に出す）。
-  if (s.evalSkipped === true) reviewReasons.push('AC は未検証（micro eval skip）— evaluator 0 回のため acceptance_criteria の充足は判定していない');
   if (keywordAloneDisclosure) reviewReasons.push(keywordAloneDisclosure);
   if (evalFailDisclosure) reviewReasons.push(evalFailDisclosure);
   if (ciIncompleteDisclosure) reviewReasons.push(ciIncompleteDisclosure);

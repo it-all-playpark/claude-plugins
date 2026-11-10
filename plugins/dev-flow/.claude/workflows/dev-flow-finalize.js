@@ -21,7 +21,7 @@ const FINALIZE_ARGS_SPEC = {
   gate_policy: 'string',
   state: {
     req: 'object', plan: 'object', setup: { branch: 'string' }, ledger: 'object',
-    val: 'object|null', risk: 'object|null', evalResult: 'object|null', runEval: 'boolean',
+    val: 'object|null', risk: 'object|null', evalResult: 'object|null',
     acVerify: 'array', baseFailing: 'object', unsatisfiedAcByActor: 'object', guardBlockedResults: 'array',
   },
   pr: { pr_url: 'string', pr_number: 'string|number' },
@@ -570,7 +570,6 @@ function classifyMergeTier(s) {
     return { tier: 'HOLD', reasons, holdReasons: blockingReasons, holdKind: aggregateHoldKind(blockingReasons), disclosures };
   }
   const reviewReasons = ['標準 — 人間が LGTM して merge'];
-  if (s.evalSkipped === true) reviewReasons.push('AC は未検証（micro eval skip）— evaluator 0 回のため acceptance_criteria の充足は判定していない');
   if (keywordAloneDisclosure) reviewReasons.push(keywordAloneDisclosure);
   if (evalFailDisclosure) reviewReasons.push(evalFailDisclosure);
   if (ciIncompleteDisclosure) reviewReasons.push(ciIncompleteDisclosure);
@@ -909,12 +908,9 @@ async function waitBgJob({ start, wait, maxPolls, schema }) {
 }
 // ==== END inline: _lib/bg-job-wait.mjs ====
 // ==== BEGIN inline: _lib/final-ac-reconcile.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
-function shouldRunFinalAcReconcile({ fixesApplied, finalReconcile, finalTestGreen, runEval, acCount }) {
+function shouldRunFinalAcReconcile({ fixesApplied, finalReconcile, finalTestGreen, acCount }) {
   if (typeof fixesApplied !== 'number' || !Number.isFinite(fixesApplied) || fixesApplied <= 0) {
     return { run: false, reason: 'no_fixes' };
-  }
-  if (runEval !== true) {
-    return { run: false, reason: 'eval_skipped' };
   }
   if (!(Number.isInteger(acCount) && acCount > 0)) {
     return { run: false, reason: 'no_ac' };
@@ -3638,7 +3634,7 @@ state.finalAcResults = null
 state.finalUnsatisfiedAc = null
 state.finalUnsatisfiedAcByActor = null
 const _acCount = (req.acceptance_criteria ?? []).length
-const _facDecision = shouldRunFinalAcReconcile({ fixesApplied: iterate?.fixes_applied ?? 0, finalReconcile, finalTestGreen, runEval: state.runEval, acCount: _acCount })
+const _facDecision = shouldRunFinalAcReconcile({ fixesApplied: iterate?.fixes_applied ?? 0, finalReconcile, finalTestGreen, acCount: _acCount })
 if (_facDecision.run) {
   // final 再評価対象 item: 未解消 ESCALATE / 未 checked かつ triage 未済の advisory item。
   // 表示専用（checkItem は呼ばない）— escalateCount / 収束判定 / classifyMergeTier の入力は不変（軸A 不変）。
@@ -3981,7 +3977,6 @@ const mergeTier = classifyMergeTier({
   unsatisfiedAgentAc: acGapsFinal.agent.length > 0,
   unsatisfiedHumanAc: acGapsFinal.human.length > 0,
   unsatisfiedCiAc: (acGapsFinal.ci ?? []).length > 0,
-  evalSkipped: !state.runEval,
   dangerFailClosed: dangerFailClosedFinal,
   riskValueDropped: riskValueDroppedFinal,
   finalReconcile,

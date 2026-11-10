@@ -4,7 +4,7 @@
 //       empty-diff 差し戻し（reimpl-empty-diff）の dev-implementer call は opts に model キーを持たない
 //       （frontmatter 既定で起動）。model を渡すのは green-fix#i / green-fix#retry-i の 'sonnet' だけ
 //   (c) implementer の null は再試行されず 1 回で drop に計上される
-//   (d) micro / standard / complex の spawn 数・Evaluate 回数が fallback 撤去前から journal handoff の 1 spawn 化分だけ減った値と一致する
+//   (d) micro / standard / complex の spawn 数・Evaluate 回数が shape 別経路の実測値と一致する
 //   (e) telemetry: impl_model_config は成功 / failure / abort の 3 経路で 'fable'
 //
 // frontmatter 値（model: fable / effort: medium）と impl_model_config リテラルの一致は review-model-frontmatter.test.mjs (d)。
@@ -117,7 +117,8 @@ test('[impl-model-default] (c) impl:serial:issue-1 の null は再試行され�
 // 実行 commit-hook#<iter>（issue #1188）で dev-runner-haiku が 1 増え、analyze ゲート通過後に全 AC を渡す観測型の
 // 分類 agent ac-observational#<issue>（issue #1259）で dev-runner が 1 増え、Setup のテストコマンドの解決 resolve-test-commands
 // （issue #1278。既定は base に tests/run-*.sh がある repo で resolver を起動しない）で dev-runner-haiku が 1 増え、
-// micro の ci-check-lite が dev-runner-haiku-ro から stdout-relay に移った値）
+// micro の ci-check-lite が dev-runner-haiku-ro から stdout-relay に移り、micro でも Evaluate を走らせる（issue #1382）ので
+// micro に evaluator と Evaluate に伴う exec-proxy が増えた値）
 // ============================================================
 
 const SHAPES = {
@@ -128,9 +129,9 @@ const SHAPES = {
       'danger-grep': { risk: { ok: true, hits: [] }, files: [...MICRO_FILES], diffhash: { hash: 'AAA', empty: false } },
       'ci-check-lite': { status: 'passed', passed: 1, failed: 0, pending: 0, skipped: 0, failed_checks: [], waited_seconds: 0, poll_attempts: 0 },
     },
-    total: 15,
-    evals: 0,
-    byType: { 'dev-flow:dev-runner': 1, 'dev-flow:dev-runner-haiku-wo': 1, 'dev-flow:dev-implementer': 1, 'dev-flow:dev-runner-haiku': 6, 'dev-flow:dev-runner-haiku-ro': 4, 'dev-flow:stdout-relay': 1, 'dev-flow:pr-reviewer': 1 },
+    total: 18,
+    evals: 1,
+    byType: { 'dev-flow:dev-runner': 1, 'dev-flow:dev-runner-haiku-wo': 1, 'dev-flow:dev-implementer': 1, 'dev-flow:evaluator': 1, 'dev-flow:dev-runner-haiku': 6, 'dev-flow:dev-runner-haiku-ro': 6, 'dev-flow:stdout-relay': 1, 'dev-flow:pr-reviewer': 1 },
   },
   standard: {
     args: analyzeArgs(1, { acceptance_criteria: ['a', 'b', 'c', 'd'], issue_type: 'feat' }),

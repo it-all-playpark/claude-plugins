@@ -4,9 +4,9 @@
 //
 //   standard: green-fix の申告（files / summary / concerns）が eval#1 の prompt に echo される
 //             （state→prompt のデータ echo。本経路 green-fix concerns → evaluator focus_areas 到達）
-//   micro:    実効 shape micro（Evaluate を通常 skip）でも green-fix が 1 回あれば Evaluate を強制し、
+//   micro:    実効 shape micro でも green-fix が 1 回あれば Evaluate の強制条件になり、
 //             evaluator prompt に green-fix 監査 concern（`[#n] <summary>` と files の echo）が入る
-//             （runEval の `|| greenFixCount > 0` 分岐の regression guard）
+//             （evalForced の `|| greenFixCount > 0` 分岐の regression guard）
 //   zero:     green-fix 0 回の負の制御群 — evaluator prompt に green-fix 監査 concern が注入されない
 //
 // 「テスト弱体化」等の日本語文言は言い回し変更で落ちるため pin しない（issue #636 AC-1）。
@@ -99,8 +99,9 @@ test('[green-fix-routing] standard: eval#1 の prompt に green-fix の concerns
 
 // ---- micro: green-fix による Evaluate 強制と監査 concern の注入 ----
 
-test('[green-fix-routing] micro: 実効 shape が micro で、green-fix 1 回により Evaluate が強制される', async () => {
-  const { logs } = await run('micro');
+test('[green-fix-routing] micro: 実効 shape が micro で、green-fix 1 回が Evaluate の強制条件になり lite route に入らない', async () => {
+  const { logs, calls } = await run('micro');
+  assert.equal(calls.filter((c) => c.label === 'pr-review-lite').length, 0, `green-fix のある micro は lite route に入らないはず: ${labels(calls)}`);
   assert.ok(logs.some((l) => l.startsWith('shape: micro')), `実効 shape が micro になっていない:\n${logs.filter((l) => l.startsWith('shape:')).join('\n')}`);
 });
 

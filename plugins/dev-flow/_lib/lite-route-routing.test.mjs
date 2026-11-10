@@ -109,7 +109,7 @@ function makeLiteRouteSandbox(analyzeReq, opts = {}) {
     // Diff triage: label 'danger-grep'（issue #544 統合呼び出し）。risk.hits は dangerHits で
     // 可変。files（旧 realized-diff。issue #376 F3 fix — 未stub だと realizedCount が NaN になり
     // classifyShape が fail-safe で complex に倒し、EFFECTIVE_SHAPE!=='micro' となって
-    // state.runEval が強制 true になり LITE ゲートを常に無効化してしまうため、clean シナリオでは
+    // LITE ゲートを常に無効化してしまうため、clean シナリオでは
     // realized 変更なしを明示的に返す）は [] 固定。
     if (label === 'danger-grep') {
       return { risk: { ok: true, hits: dangerHits }, files: [], diffhash: null };
@@ -206,13 +206,20 @@ test('[lite-route][A] clean-micro-lite: 判断系 agent（dev-implementer/dev-ru
 // (B) clean-lite: pr-reviewer 1 回のみ、workflow('pr-iterate') は呼ばれない
 // ============================================================
 
-test('[lite-route][B] clean-micro-lite: pr-reviewer 呼び出しが 1 回のみで workflow(\'pr-iterate\') は呼ばれない', async () => {
+test('[lite-route][B] clean-micro-lite: evaluator 1 回の後に pr-reviewer（pr-review-lite）が 1 回のみで workflow(\'pr-iterate\') は呼ばれない', async () => {
   const { ctx, calls, workflowCalls } = makeLiteRouteSandbox(makeCleanMicroReq(), {
     reviewOverride: { decision: 'approve', issues: [] },
   });
   const err = await runDevFlowInSandbox(src, ctx);
   failOnStructuralCrash(err);
 
+  // 強制条件の無い micro でも evaluator が 1 回 AC を判定してから lite route に入る
+  const evaluatorIdx = calls.flatMap((c, i) => (c.agentType === 'dev-flow:evaluator' ? [i] : []));
+  assert.equal(evaluatorIdx.length, 1, `clean-micro-lite: evaluator は 1 回呼ばれるべきだが ${evaluatorIdx.length} 回だった`);
+  assert.ok(
+    evaluatorIdx[0] < calls.findIndex((c) => c.label === 'pr-review-lite'),
+    `evaluator は pr-review-lite より前に呼ばれるべき（labels: ${calls.map((c) => c.label).join(', ')}）`,
+  );
   const reviewerCalls = calls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
   assert.equal(
     reviewerCalls.length,
@@ -263,10 +270,10 @@ test('[lite-route][C] lite review が critical finding を返す → workflow(\'
 });
 
 // ============================================================
-// (D) AC-3: danger-grep hit（runEval=true 強制）では lite に入らず現行 security path を通す
+// (D) AC-3: danger-grep hit（evalForced=true）では lite に入らず現行 security path を通す
 // ============================================================
 
-test('[lite-route][D] danger-grep hit（micro でも runEval 強制）: lite をバイパスし workflow(\'pr-iterate\') + Evaluate 系呼び出しが現れる（AC-3）', async () => {
+test('[lite-route][D] danger-grep hit（micro でも Evaluate の強制条件）: lite をバイパスし workflow(\'pr-iterate\') + Evaluate 系呼び出しが現れる（AC-3）', async () => {
   const { ctx, calls, workflowCalls } = makeLiteRouteSandbox(makeCleanMicroReq(), {
     dangerHits: ['xss'],
   });
@@ -281,7 +288,7 @@ test('[lite-route][D] danger-grep hit（micro でも runEval 強制）: lite を
     `danger-grep hit（micro）: Evaluate（evaluator 呼び出し）が security path 強制で発生するはずだが `
       + `${evaluatorCalls.length} 回だった`,
   );
-  // danger hit 時は lite ゲート条件 `!state.runEval` が false になり lite に入らない
+  // danger hit 時は lite ゲート条件 `!state.evalForced` が false になり lite に入らない
   // （lite の pr-reviewer 呼び出しは発生しない — 現行 workflow('pr-iterate') フル経路のみ）。
   const reviewerCalls = calls.filter((c) => c.agentType === 'dev-flow:pr-reviewer');
   assert.equal(

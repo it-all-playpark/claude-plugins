@@ -5,7 +5,8 @@
 // テストケース:
 //   (A) realized 6 件（全件宣言）→ shape=complex + evaluator >= 1 回 + shape_reason が realized ベース
 //   (B) realized 6 件 + eval#1 fail → reimpl → eval#2 pass（EVAL_PASSES=EVAL_MAX の full ループ）
-//   (C) realized 1 件（宣言済み）→ shape=micro + evaluator 0 回 + lite route
+//   (C) realized 1 件（宣言済み）→ shape=micro + evaluator 1 回 + lite route
+//   (C3) 強制条件の無い micro は evaluator が fail でも 1 回（差し戻さない）、宣言外変更のある micro は差し戻しループ
 //   (C2) 変更 3 件（ephemeral・宣言外なし）→ realized_file_count 3（件数を減らす補正は ephemeral・宣言外の除外だけ）
 //   (D) danger-grep の files が null（count 欠損）→ shape=complex + evaluator >= 1 回
 //   (E) breaking_change=true + realized 1 件 → shape=complex + evaluator >= 1 回
@@ -97,12 +98,38 @@ test('[realized-shape] (B) realized 6 files + eval#1 fail → reimpl#1 → eval#
   assert.equal(returned.shape, 'complex');
 });
 
-test('[realized-shape] (C) realized 1 file（宣言済み）→ shape=micro、evaluator 0 回、lite route', async () => {
+test('[realized-shape] (C) realized 1 file（宣言済み）→ shape=micro、evaluator 1 回、lite route', async () => {
   const { calls, returned } = await run({ ...filesOverrides(MICRO_FILES) });
-  assert.equal(evaluatorCalls(calls).length, 0, `micro clean は evaluator 0 回のはずだが ${evaluatorCalls(calls).length} 回`);
+  assert.equal(evaluatorCalls(calls).length, 1, `micro clean は evaluator 1 回のはずだが ${evaluatorCalls(calls).length} 回`);
   assert.equal(returned.shape, 'micro');
   assert.equal(returned.route, 'lite');
   assert.match(returned.shape_reason, /realized 1 file\(s\), 2 AC, type=fix → shape=micro/);
+});
+
+test('[realized-shape] (C3) micro の Evaluate の深さ: 強制条件なしは fail でも evaluator 1 回、宣言外変更ありは差し戻して 2 回', async () => {
+  const ACR = [0, 1].map((i) => ({ ac_index: i, satisfied: true, verified_by: 'inspection', evidence: 'ok' }));
+  const evals = {
+    'eval#1': {
+      verdict: 'fail', total: 50, threshold: 80,
+      feedback: [{ topic: 'test-issue', severity: 'critical', dimension: 'implementation', description: 'fix needed', suggestion: 'fix it' }],
+      feedback_level: 'implementation', ac_results: ACR, security_clearance: [],
+    },
+    'eval#2': {
+      verdict: 'pass', total: 100, threshold: 80, feedback: [], feedback_level: 'implementation', ac_results: ACR, security_clearance: [],
+      critical_resolutions: [{ id: 'EVAL-1-test-issue', resolved: true, evidence: 'fixed' }],
+    },
+  };
+  const clean = await run({ ...filesOverrides(MICRO_FILES), ...evals });
+  assert.equal(clean.returned.shape, 'micro');
+  assert.equal(evaluatorCalls(clean.calls).length, 1, `強制条件の無い micro は 1 pass のはずだが ${evaluatorCalls(clean.calls).length} 回`);
+  assert.equal(clean.calls.filter((c) => c.label === 'reimpl#1:serial:issue-1').length, 0);
+
+  const withUndeclared = [...MICRO_FILES, 'src/undeclared.ts'];
+  const forced = await run({ ...filesOverrides(withUndeclared, { declared: MICRO_FILES }), ...evals });
+  assert.equal(forced.returned.shape, 'micro');
+  assert.equal(evaluatorCalls(forced.calls).length, 2, `宣言外変更のある micro は差し戻しループのはずだが ${evaluatorCalls(forced.calls).length} 回`);
+  assert.equal(forced.calls.filter((c) => c.label === 'reimpl#1:serial:issue-1').length, 1);
+  assert.equal(forced.returned.route, 'full');
 });
 
 test('[realized-shape] (C2) 変更 3 files（全件宣言・ephemeral 0・宣言外 0）→ realized_file_count は 3（diff-triage 応答に余分なキーがあっても件数を減らさない）', async () => {
@@ -149,7 +176,7 @@ test("[realized-shape] (H) req.shape='complex' + estimated_change_file_count=7 �
     { shape: 'complex', estimated_change_file_count: 7 },
   );
   assert.equal(returned.shape, 'micro');
-  assert.equal(evaluatorCalls(calls).length, 0);
+  assert.equal(evaluatorCalls(calls).length, 1);
 });
 
 test('[realized-shape] (I) return object / journal telemetry に事前見積もり由来のキーが無い', async () => {
@@ -163,11 +190,11 @@ test('[realized-shape] (I) return object / journal telemetry に事前見積も�
   assert.equal(telemetry.shape, 'standard');
 });
 
-test('[realized-shape] (J) micro / standard / complex の spawn 構造: implement 1/1/2・evaluator 0/1/2・route lite/full/full', async () => {
+test('[realized-shape] (J) micro / standard / complex の spawn 構造: implement 1/1/2・evaluator 1/1/2・route lite/full/full', async () => {
   const implCount = (calls) => calls.filter((c) => c.agentType === 'dev-flow:dev-implementer').length;
   const micro = await run({ ...filesOverrides(MICRO_FILES) });
   assert.equal(micro.returned.shape, 'micro');
-  assert.deepEqual([implCount(micro.calls), evaluatorCalls(micro.calls).length, micro.returned.route], [1, 0, 'lite']);
+  assert.deepEqual([implCount(micro.calls), evaluatorCalls(micro.calls).length, micro.returned.route], [1, 1, 'lite']);
 
   const standard = await run({});
   assert.equal(standard.returned.shape, 'standard');

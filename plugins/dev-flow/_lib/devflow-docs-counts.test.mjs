@@ -224,7 +224,7 @@ test('atlas / pipeline.md: LITE 条件が dev-flow.js の const LITE と一致�
   assert.ok(liteBlock.includes("ciLite.status === 'passed' || ciLite.status === 'no_checks'"), 'lite route の CI 判定が変わった — pipeline.md の PR 節を見直す');
   const lite = atlasSrc.split('\n').find((l) => l.includes('R4{"LITE ?'));
   assert.ok(lite, 'atlas に LITE 判定ノードが無い');
-  for (const cond of ['micro', 'runEval=false', 'danger clean', 'ci の AC なし']) {
+  for (const cond of ['micro', 'evalForced=false', 'danger clean', 'ci の AC なし']) {
     assert.ok(lite.includes(cond), `atlas の LITE 判定ノードに「${cond}」が無い: ${lite}`);
   }
 });

@@ -50,7 +50,7 @@ const EVALUATE_RESULT = {
   state: {
     plan: { serial: [] }, ledger: { items: [] }, risk: { ok: true, hits: [] }, dangerHits: [], testsurfHits: [], testsurfPatterns: [],
     securityReview: { target: false, reasons: [], reviewer_context_changed: false },
-    triage: { shape: 'standard', reason: 'r' }, EFFECTIVE_SHAPE: 'standard', runEval: true,
+    triage: { shape: 'standard', reason: 'r' }, EFFECTIVE_SHAPE: 'standard', evalForced: false,
     evalResult: { verdict: 'pass' }, evalDiffHash: 'H', secDiffHash: null,
     unsatisfiedAcByActor: { agent: [], human: [], ci: [] }, val: null, greenFixCount: 0, concerns: [],
   },
@@ -77,9 +77,12 @@ test('[stage-contract] EVALUATE_RESULT_SPEC: PR 工程が読む state と redgre
   assert.deepEqual(stageShapeErrors(EVALUATE_RESULT, EVALUATE_RESULT_SPEC), []);
   const { redgreen_state_dir: _r, ...withoutDir } = EVALUATE_RESULT;
   assert.deepEqual(stageShapeErrors(withoutDir, EVALUATE_RESULT_SPEC), ['redgreen_state_dir: 欠落']);
-  const broken = { ...EVALUATE_RESULT, state: { ...EVALUATE_RESULT.state, runEval: 'yes', securityReview: { target: false, reasons: [] } } };
+  const broken = { ...EVALUATE_RESULT, state: { ...EVALUATE_RESULT.state, evalForced: 'yes', securityReview: { target: false, reasons: [] } } };
   assert.deepEqual(stageShapeErrors(broken, EVALUATE_RESULT_SPEC), [
     'state.securityReview.reviewer_context_changed: 欠落',
-    'state.runEval: boolean が必要（受信: string）',
+    'state.evalForced: boolean が必要（受信: string）',
   ]);
+  // runEval は evalForced の代わりにならない
+  const { evalForced: _e, ...stateWithoutForced } = EVALUATE_RESULT.state;
+  assert.deepEqual(stageShapeErrors({ ...EVALUATE_RESULT, state: { ...stateWithoutForced, runEval: true } }, EVALUATE_RESULT_SPEC), ['state.evalForced: 欠落']);
 });

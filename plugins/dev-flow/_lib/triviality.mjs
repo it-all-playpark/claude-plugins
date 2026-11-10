@@ -5,7 +5,7 @@
 // 入力は実装後の realized diff のみ。Setup 末尾の analyze ゲートまでに得られる LLM の事前見積もり（shape / 見込み file 数）は
 // decision に使わない（issue #676）— 実装前の予測は log と失敗 telemetry にしか効かず、決定論なのは
 // 写像と「欠損 → complex」の既定則だけだったため。micro の LITE 経路に対する意味的リスクの安全網は
-// runEval 強制条件（danger-grep / testsurf / greenFix / dropped task / undeclared file / UI 接触）が担う。
+// Evaluate の強制条件（danger-grep / testsurf / greenFix / dropped task / undeclared file / UI 接触）が担う。
 //
 // INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
 // 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
@@ -26,7 +26,7 @@
 //      のときだけ（広く浅い変更を complex に上げない）
 // lineStats が無い / 不正 / 件数が realizedCount と合わないときは補正せず file 数判定のまま（取れない行数を
 // 0 と読んで下げない）。変更がテストだけの run も補正しない（testsurf / test-only 経路の扱いを変えない）。
-// 下げた先で意味的リスクを拾うのは Validate（typecheck / test）と runEval 強制条件で、ここでは見ない。
+// 下げた先で意味的リスクを拾うのは Validate（typecheck / test）と Evaluate（強制条件があれば差し戻しループ）で、ここでは見ない。
 const SHAPE_DELETION_DOWNSHIFT_RATIO = 0.3;
 // main の直近 150 commit で「重み付け後 file 数 > 5 かつ追加 ≤ 100 行」は、path 移行・manifest 整理等の
 // 機械的な広く浅い変更だけだった（ロジック変更を含む run は 134 行以上）。
