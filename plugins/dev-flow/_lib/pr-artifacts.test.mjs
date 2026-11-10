@@ -857,6 +857,22 @@ test('[pr-artifacts] prPhaseFailureComment: 失敗段・理由・commit 状態�
   assert.ok(!uncommitted.includes('push 出力全文'), uncommitted);
 });
 
+test('[pr-artifacts] prPhaseFailureComment: 見出しの直後に commit → push → pr-create の進み具合を 1 行で出す（issue #1359）', () => {
+  const progressOf = (failed_step, committed) => {
+    const body = prPhaseFailureComment({ worktree: '/wt', branch: 'b', facts: { failed_step, failure_reason: 'x', committed }, commands: ['git push origin HEAD'] });
+    const lines = body.split('\n');
+    assert.equal(lines[0], `## dev-flow: PR phase で停止（step: ${failed_step}）`);
+    assert.equal(lines[1], '');
+    return lines[2];
+  };
+  assert.equal(progressOf('commit', false), '**進み具合**: commit ❌ → push ⬜ → pr-create ⬜');
+  assert.equal(progressOf('push', true), '**進み具合**: commit ✅ → push ❌ → pr-create ⬜');
+  assert.equal(progressOf('pr-create', true), '**進み具合**: commit ✅ → push ✅ → pr-create ❌');
+  // 段が分からない run は commit だけを committed から決め、残りは推測しない
+  assert.equal(progressOf('unknown', true), '**進み具合**: commit ✅ → push ❔ 段不明 → pr-create ❔ 段不明');
+  assert.equal(progressOf('unknown', false), '**進み具合**: commit ⬜ → push ❔ 段不明 → pr-create ❔ 段不明');
+});
+
 // ---- (g) prBodyEditPrompt ----
 
 test('[pr-artifacts] prBodyEditPrompt: gh pr edit --body-file を指示し、本文を delimiter で verbatim 転写させる', () => {

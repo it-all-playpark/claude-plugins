@@ -2,7 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { mdCell } from './md-cell.mjs';
 import { buildDevflowSummaryBody } from './devflow-summary-format.mjs';
-import { classifyMergeTier, seedSecurityLedger, reconcileDanger, partitionUncheckedBlocking } from './merge-tier.mjs';
+import { classifyMergeTier, seedSecurityLedger, reconcileDanger, partitionUncheckedBlocking, HOLD_REASON_CODES } from './merge-tier.mjs';
 
 globalThis.mdCell = mdCell;
 
@@ -22,6 +22,10 @@ const BASE_INPUT = {
   testGreen: true,
   evalVerdict: 'pass',
 };
+
+// AC を 1 件 satisfied にした結果。BASE_INPUT（acResults なし）は判断カードで AC が ⚠️ 未検証になり「✅ 要対応事項なし」を
+// 出さないので、機械の確認 5 項目が ✅ の状態で見出しを確かめるテストはこれを足す（issue #1359）
+const VERIFIED_AC = [{ ac_index: 0, satisfied: true, evidence: 'ok', verified_by: 'evaluator' }];
 
 // SEC seed ledger item ヘルパー（merge-tier.mjs の seedDangerLedgerItems 形状に合わせる）。
 // blockingItems の source:'seed' && dimension:'security' && floor:true item から
@@ -75,18 +79,18 @@ const AT_A_GLANCE_CASES = [
   { name: 'mergeTier=REVIEW', input: { mergeTier: 'REVIEW' }, want: '🔷 **REVIEW**' },
   { name: 'testGreen=true', input: { testGreen: true }, want: '✅ green' },
   { name: 'testGreen=false', input: { testGreen: false }, want: '❌ red' },
-  { name: 'testGreen=null', input: { testGreen: null }, want: '不明' },
+  { name: 'testGreen=null', input: { testGreen: null }, want: '| ⚠️ 未検証 | ✅ pass |' },
   { name: 'evalVerdict=pass', input: { evalVerdict: 'pass' }, want: '✅ pass' },
   { name: 'evalVerdict=fail', input: { evalVerdict: 'fail' }, want: '❌ fail' },
-  { name: 'evalVerdict=null', input: { evalVerdict: null }, want: '不明' },
+  { name: 'evalVerdict=null', input: { evalVerdict: null }, want: '| ✅ green | ⚠️ 未検証 |' },
   { name: 'ledgerConverged=true', input: { ledgerConverged: true }, want: '✅ 収束' },
   { name: 'ledgerConverged=false', input: { ledgerConverged: false }, want: '⚠️ 未収束' },
   { name: 'dangerHits 2件', input: { dangerHits: ['SQL_INJECTION', 'PATH_TRAVERSAL'] }, want: '⚠️ 2 クラス' },
   { name: 'dangerHits 0件', input: { dangerHits: [] }, want: '✅ clean' },
   { name: 'acResults 6件全 satisfied', input: { acResults: SIX_SATISFIED_AC }, want: '✅ 6/6' },
-  { name: 'acResults undefined', input: { acResults: undefined }, want: '—' },
+  { name: 'acResults undefined', input: { acResults: undefined }, want: '| ✅ 収束 | ⚠️ 未検証 |' },
   { name: 'shape=complex', input: { shape: 'complex' }, want: 'complex' },
-  { name: 'shape=null', input: { shape: null }, want: '不明' },
+  { name: 'shape=null', input: { shape: null }, want: '| 🔷 **REVIEW** | ⚠️ 未検証 |' },
 ];
 
 test.each(AT_A_GLANCE_CASES)('$name -> at-a-glance テーブルに「$want」を含む', ({ input, want }) => {
@@ -794,7 +798,9 @@ test('checked:true の CONCERN-* item は「解消済み証跡」件数行（✅
     ],
   });
   assert.ok(body.includes('<summary>✅ Goal Ledger 解消済み 1 件</summary>'), '解消済み件数行（折りたたみのサマリ行）を含む');
-  assert.ok(body.includes('### ✅ 要対応事項なし'), '要対応事項なしを含む');
+  // 解消済みの concern は要対応に出ない。残るのは AC 未判定（BASE_INPUT は acResults なし）の要確認だけ
+  assert.ok(body.includes('### ⚠️ 要確認（機械の確認が ✅ でない 1 項目'), '要確認は AC 未判定の 1 項目だけ');
+  assert.ok(!body.includes('### ⚠️ 要対応'), '要対応を含まない');
 });
 
 // ─── undefined が文字列に含まれない ──────────────────────────────────────────
@@ -1073,6 +1079,7 @@ test('environment item は「⚠️ 要対応」テーブルから除外され�
 test('environment item のみ + 他に未解消なし -> 「### ✅ 要対応事項なし」と環境ノートが両方出る', () => {
   const body = buildDevflowSummaryBody({
     ...BASE_INPUT,
+    acResults: VERIFIED_AC,
     advisoryItems: [
       {
         id: 'ENV-NPM-CACHE-EPERM',
@@ -1599,6 +1606,7 @@ test('iterateStatus 未指定/null -> history 込みでも「pr-iterate 未解�
 test('配置: 見出しは「要対応事項なし」より後・「Goal Ledger: item なし」より前で、前後に空行を伴う', () => {
   const body = buildDevflowSummaryBody({
     ...BASE_INPUT,
+    acResults: VERIFIED_AC,
     iterateStatus: 'fix_failed',
     iterateHistory: HIST_2,
     iterateIterations: 2,
@@ -1786,6 +1794,7 @@ test('AC4 不変性 pin: 再帰 freeze した入力で throw せず、各 tier �
 test('issue #626 AC1: 残る unchecked が triaged advisory 1 件のみなら件数付き見出しが出て「### ⚠️ 要対応」は出ない', () => {
   const body = buildDevflowSummaryBody({
     ...BASE_INPUT,
+    acResults: VERIFIED_AC,
     advisoryItems: [
       {
         ...concernItem('[plan:major] A: a'),
@@ -1891,6 +1900,7 @@ test('issue #614 AC5 (#626 AC4): blocking lane の item は triaged が付いて
 test('issue #626: triaged advisory 2 件 -> 見出し・summary・details テーブル行数が 2 件で一致する', () => {
   const body = buildDevflowSummaryBody({
     ...BASE_INPUT,
+    acResults: VERIFIED_AC,
     advisoryItems: [
       { ...concernItem('[plan:major] A: a', { id: 'CONCERN-1' }), triaged: true, triaged_evidence: 'evidence A' },
       { ...concernItem('[plan:major] B: b', { id: 'CONCERN-2' }), triaged: true, triaged_evidence: 'evidence B' },
@@ -1989,6 +1999,7 @@ test('issue #626: triaged 表示を含む出力は <details>/</details> がち�
 test('issue #626: 配置は 要対応事項なし(トリアージ済み件数) < <details> < pr-iterate 未解消の指摘 の順で、details の前後に空行がある', () => {
   const body = buildDevflowSummaryBody({
     ...BASE_INPUT,
+    acResults: VERIFIED_AC,
     advisoryItems: [
       {
         ...concernItem('[plan:major] A: a'),
@@ -2014,6 +2025,7 @@ test('issue #626: 配置は 要対応事項なし(トリアージ済み件数) <
 test('issue #626: dimension:environment の triaged item は環境ノート経路のまま（件数のみ、details なし）', () => {
   const body = buildDevflowSummaryBody({
     ...BASE_INPUT,
+    acResults: VERIFIED_AC,
     advisoryItems: [
       { id: 'ENV-X', text: 't', dimension: 'environment', severity: 'minor', checked: false, triaged: true, triaged_evidence: 'e' },
     ],
@@ -2039,13 +2051,13 @@ function glanceCells(body) {
 
 // テスト列（glanceCells[2]）の表示を finalReconcile × finalTestGreen × testGreen の表で見る:
 //   AC2: finalReconcile='reverified' は finalTestGreen（最終 tree の再検証結果）を優先する
-//        （finalTestGreen=null は 5c の Final reconcile 行と同じ「不明」）。skipped / 未指定は testGreen そのまま
+//        （finalTestGreen=null は未検証）。skipped / 未指定は testGreen そのまま
 //   #1168: finalReconcile='unavailable' は fix 後の最終 tree を再検証できていないので、testGreen に依らず unavailable の表示
 const UNAVAILABLE_CELL = '⚠️ unavailable（最終 tree で再検証不能）・未検証';
 test.each([
   { name: 'AC2: reverified, finalTestGreen=true, testGreen=false', input: { finalReconcile: 'reverified', finalTestGreen: true, testGreen: false }, want: '✅ green' },
   { name: 'AC2: reverified, finalTestGreen=false, testGreen=true', input: { finalReconcile: 'reverified', finalTestGreen: false, testGreen: true }, want: '❌ red' },
-  { name: 'AC2: reverified, finalTestGreen=null, testGreen=true', input: { finalReconcile: 'reverified', finalTestGreen: null, testGreen: true }, want: '不明' },
+  { name: 'AC2: reverified, finalTestGreen=null, testGreen=true', input: { finalReconcile: 'reverified', finalTestGreen: null, testGreen: true }, want: '⚠️ 未検証' },
   // issue #1138: 落ちたファイルの単体再実行が green（flake 候補）でも red のまま出し、flake 候補であることを添える
   { name: '#1138: reverified, finalTestGreen=false + finalTestFlaky', input: { finalReconcile: 'reverified', finalTestGreen: false, finalTestFlaky: { files: ['a.bats'], logs: [] } }, want: '❌ red（単体再実行は green — flake 候補）' },
   { name: '#1138: skipped, Validate red + finalTestFlaky', input: { finalReconcile: 'skipped', testGreen: false, validateTests: 'failed', finalTestFlaky: { files: ['a.bats'], logs: [] } }, want: '❌ red（単体再実行は green — flake 候補）' },
@@ -2250,11 +2262,13 @@ test('issue #658 AC-2: HOLD+ESCALATE 全件解消 -> 要対応表の escalate �
   };
   const body = buildDevflowSummaryBody({
     ...BASE_INPUT,
+    acResults: VERIFIED_AC,
     mergeTier: 'HOLD',
     holdReasons: [{ code: 'escalate', reason: 'ESCALATE-TO-HUMAN 項目 1 件', kind: 'human_judgment' }],
     holdKind: 'human_judgment',
     advisoryItems: [resolvedItem],
     finalReconcile: 'reverified',
+    finalTestGreen: true,
   });
   assert.ok(body.includes('### ✅ 要対応事項なし'), '見出しは要対応事項なし');
   assert.ok(!body.includes('### ⚠️ 要対応'), '⚠️ 要対応見出しは出ない');
@@ -2300,12 +2314,12 @@ test('issue #658 AC-3: HOLD 理由と現状テーブルに holdReasons の reaso
     finalReconcile: 'reverified',
   });
   assert.ok(body.includes('### HOLD になった理由と現状'), 'HOLD 理由テーブル見出しを含む');
-  assert.ok(body.includes('| 理由 | 現状 | 対応 |'), 'HOLD 理由テーブルヘッダーを含む');
+  assert.ok(body.includes('| 理由 | 区分 | 現状 | 対応 |'), 'HOLD 理由テーブルヘッダーを含む');
   assert.ok(
-    body.includes('| ESCALATE-TO-HUMAN 項目 1 件 | ESCALATE 1 件中 1 件は fix 後 tree で解消確認済み | 不要（マージ可否の判断のみ） |'),
+    body.includes('| ESCALATE-TO-HUMAN 項目 1 件 | 人が確かめる | ESCALATE 1 件中 1 件は fix 後 tree で解消確認済み | 不要（マージ可否の判断のみ） |'),
     'escalate 行の現状/対応を含む',
   );
-  assert.ok(body.includes('| some future reason | — | 人が確認する |'), '未知 code は fail-safe 表示（throw しない）');
+  assert.ok(body.includes('| some future reason | — | — | 人が確認する |'), '未知 code は fail-safe 表示（throw しない。区分も —）');
   assert.ok(!body.includes('**Merge tier 理由**:'), 'holdReasons があるときは従来の箇条書きに落ちない');
 });
 
@@ -2333,7 +2347,7 @@ test('PR#662 レビュー: mergeable_conflicting 単独 HOLD でも結論行が�
     body.includes('**結論: 自動マージ対象外（HOLD）。修正作業が必要です。**'),
     '結論行は修正作業が必要です',
   );
-  assert.ok(body.includes('| base branch と conflict | base branch と conflict | conflict を解消して push する |'), 'HOLD 理由テーブルの対応列');
+  assert.ok(body.includes('| base branch と conflict | PR を直す | base branch と conflict | conflict を解消して push する |'), 'HOLD 理由テーブルの対応列');
 });
 
 test('issue #661: pr_closes_missing 単独 HOLD で現状/対応表示と gh pr edit の再投入手順が出る（結論行は修正作業が必要）', () => {
@@ -2389,7 +2403,7 @@ test('issue #1248 AC-1 / AC-4: validate_test_red の現状に落ちたファイ�
   const row = (validateTestEvidence) => holdRow1248(holdBody1248(['validate_test_red'], { validateTestEvidence }), 'validate_test_red');
   assert.equal(
     row({ failedFiles: files, diffTouched: ['p/_lib/a.test.mjs'], baseDiffers: ['p/b.bats'], baseSame: ['p/c.bats'] }),
-    `| ${VALIDATE_RED_REASON} | ${VALIDATE_RED_CUR} — 落ちたテストファイル 5 件: diff が触れた 1 件・base 再実行で base では同じように落ちなかった 1 件・`
+    `| ${VALIDATE_RED_REASON} | PR を直す | ${VALIDATE_RED_CUR} — 落ちたテストファイル 5 件: diff が触れた 1 件・base 再実行で base では同じように落ちなかった 1 件・`
       + `base でも同じように落ちた 1 件・base で確かめていない 2 件（落ちたファイル: ${fileList1248(files)}） | ${VALIDATE_RED_FIX} |`,
   );
   // 証拠はどちらか 1 つで足りる
@@ -2412,15 +2426,15 @@ test('issue #1248 AC-2 / AC-4: final_test_red の現状に落ちたファイル�
   // ファイル名は mdCell で escape（| が表の列を壊さない）
   assert.equal(
     row({ failedFiles: ['tests/a.bats', 'x|y.test.mjs'], diffTouched: ['tests/a.bats'] }),
-    `| ${FINAL_RED_REASON} | ${FINAL_RED_CUR} — 落ちたテストファイル 2 件: diff が触れた 1 件・base との比較はしていない（落ちたファイル: \`tests/a.bats\`, \`x\\|y.test.mjs\`） | 修正が必要 |`,
+    `| ${FINAL_RED_REASON} | PR を直す | ${FINAL_RED_CUR} — 落ちたテストファイル 2 件: diff が触れた 1 件・base との比較はしていない（落ちたファイル: \`tests/a.bats\`, \`x\\|y.test.mjs\`） | 修正が必要 |`,
   );
   assert.equal(
     row({ failedFiles: ['tests/a.bats'], diffTouched: [] }),
-    `| ${FINAL_RED_REASON} | ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff が触れた 0 件・base との比較はしていない（落ちたファイル: \`tests/a.bats\`） | ${RED_UNKNOWN} |`,
+    `| ${FINAL_RED_REASON} | 人が確かめる | ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff が触れた 0 件・base との比較はしていない（落ちたファイル: \`tests/a.bats\`） | ${RED_UNKNOWN} |`,
   );
   assert.equal(
     row({ failedFiles: ['tests/a.bats'], diffTouched: null }),
-    `| ${FINAL_RED_REASON} | ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff との照合なし（一覧の取得失敗）・base との比較はしていない（落ちたファイル: \`tests/a.bats\`） | ${RED_UNKNOWN} |`,
+    `| ${FINAL_RED_REASON} | 人が確かめる | ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff との照合なし（一覧の取得失敗）・base との比較はしていない（落ちたファイル: \`tests/a.bats\`） | ${RED_UNKNOWN} |`,
   );
   // test#final は base と比べないので、baseDiffers が来ても証拠にしない。Validate の入力も使わない
   assert.ok(row({ failedFiles: ['tests/a.bats'], diffTouched: [], baseDiffers: ['tests/a.bats'] }).endsWith(`| ${RED_UNKNOWN} |`));
@@ -2430,9 +2444,9 @@ test('issue #1248 AC-2 / AC-4: final_test_red の現状に落ちたファイル�
 test('issue #1248 AC-3: failed_files が空の red は「現状」に落ちたファイルを特定できなかったと書き、原因未確定にする', () => {
   for (const ev of [{ failedFiles: [], diffTouched: [], baseDiffers: [], baseSame: [] }, { failedFiles: [], diffTouched: null }, null, undefined]) {
     const v = holdRow1248(holdBody1248(['validate_test_red'], { validateTestEvidence: ev }), 'validate_test_red');
-    assert.equal(v, `| ${VALIDATE_RED_REASON} | ${VALIDATE_RED_CUR}${NOT_IDENTIFIED} | ${RED_UNKNOWN} |`, JSON.stringify(ev));
+    assert.equal(v, `| ${VALIDATE_RED_REASON} | 人が確かめる | ${VALIDATE_RED_CUR}${NOT_IDENTIFIED} | ${RED_UNKNOWN} |`, JSON.stringify(ev));
     const f = holdRow1248(holdBody1248(['final_test_red'], { finalTestEvidence: ev }), 'final_test_red');
-    assert.equal(f, `| ${FINAL_RED_REASON} | ${FINAL_RED_CUR}${NOT_IDENTIFIED} | ${RED_UNKNOWN} |`, JSON.stringify(ev));
+    assert.equal(f, `| ${FINAL_RED_REASON} | 人が確かめる | ${FINAL_RED_CUR}${NOT_IDENTIFIED} | ${RED_UNKNOWN} |`, JSON.stringify(ev));
   }
 });
 
@@ -2449,7 +2463,7 @@ test('issue #1248 AC-5: ci_checks_failed は失敗した check を確認して�
   const body = holdBody1248(['ci_checks_failed']);
   assert.equal(
     holdRow1248(body, 'ci_checks_failed'),
-    `| ${CI_FAILED_REASON} | PR head の CI checks が失敗（fail / cancel）— 原因は run で未確認 | \`gh pr checks 42\` で失敗した check を確認し、diff が原因か判断する |`,
+    `| ${CI_FAILED_REASON} | 人が確かめる | PR head の CI checks が失敗（fail / cancel）— 原因は run で未確認 | \`gh pr checks 42\` で失敗した check を確認し、diff が原因か判断する |`,
   );
 });
 
@@ -2508,8 +2522,8 @@ test('issue #1117 / #1168: validate_tests_not_run / final_reconcile_unavailable 
   const NOT_RUN = 'テストが 1 件も実行されていない（Validate tests:error = テスト起動失敗）';
   const UNAVAILABLE = 'Final reconcile 再検証不能（pr-iterate fix 適用後の最終 tree の test 状態を確認できず）— 人間確認必須';
   for (const kind of ['human_judgment', 'deterministic_recheck']) {
-    assert.equal(rowOf('validate_tests_not_run', NOT_RUN, kind), `| ${NOT_RUN} | テストが 1 件も実行されていない（ローカルは起動失敗） | テストを手元で実行するか、CI の test 結果を確認する |`, kind);
-    assert.equal(rowOf('final_reconcile_unavailable', UNAVAILABLE, kind), `| ${UNAVAILABLE} | 最終 tree のテスト状態が未確認 | 最終 tree でテストを手動実行する |`, kind);
+    assert.equal(rowOf('validate_tests_not_run', NOT_RUN, kind), `| ${NOT_RUN} | dev-flow 側を疑う | テストが 1 件も実行されていない（ローカルは起動失敗） | テストを手元で実行するか、CI の test 結果を確認する |`, kind);
+    assert.equal(rowOf('final_reconcile_unavailable', UNAVAILABLE, kind), `| ${UNAVAILABLE} | dev-flow 側を疑う | 最終 tree のテスト状態が未確認 | 最終 tree でテストを手動実行する |`, kind);
   }
 });
 
@@ -2522,7 +2536,7 @@ test('issue #1276: no_tests_run（実行対象のテストが 0 本）の HOLD �
     holdReasons: [{ code: 'no_tests_run', reason: REASON, kind: 'human_judgment' }],
     holdKind: 'human_judgment',
   }).split('\n').find((l) => l.startsWith(`| ${REASON} |`));
-  assert.equal(row, `| ${REASON} | テストを 1 本も実行していない（実行対象のテストが 0 本） | テストの要否と実行方法を確認する |`);
+  assert.equal(row, `| ${REASON} | 人が確かめる | テストを 1 本も実行していない（実行対象のテストが 0 本） | テストの要否と実行方法を確認する |`);
 });
 
 test('issue #1082: security_review_unresolved は stop_reason=reviewer_context_changed なら「自動 review をしていない」と変わった指示ファイルを一覧する固定コマンド、それ以外は従来の文面', () => {
@@ -2538,7 +2552,7 @@ test('issue #1082: security_review_unresolved は stop_reason=reviewer_context_c
   const changed = rowOf({ target: true, status: 'unresolved', stop_reason: 'reviewer_context_changed', rounds: 0, critical: 0, major: 0, minor: 0 });
   // 対応列: 変わった指示ファイルの一覧コマンドと、隔離した security review（issue #1083）の実行案内
   const ISOLATED = 'Anthropic API に通信できるシェル（plugin の bin/ が PATH に載る Claude Code のセッション等）で `security-review-isolated 42` を実行すると、PR の worktree に入らない別プロセスで security review を回せる（結果は gate に戻らない — merge 判断の材料）';
-  assert.equal(changed, `| ${REASON} | 指示ファイルを変える PR なので自動 review をしていない（review 0 回） | \`gh pr diff 42 --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる）。${ISOLATED} |`);
+  assert.equal(changed, `| ${REASON} | 人が確かめる | 指示ファイルを変える PR なので自動 review をしていない（review 0 回） | \`gh pr diff 42 --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる）。${ISOLATED} |`);
   for (const want of ['自動 review をしていない', '指示ファイルを変える PR', 'review 0 回']) assert.ok(changed.includes(want), want);
   for (const want of ['`security-review-isolated 42`', 'Anthropic API に通信できるシェル', 'plugin の bin/ が PATH に載る Claude Code のセッション', 'gate に戻らない', 'merge 判断の材料']) assert.ok(changed.includes(want), want);
   assert.ok(!changed.includes('clear になっていない（'), '現状に「clear になっていない」を出さない');
@@ -2553,14 +2567,14 @@ test('issue #1082: security_review_unresolved は stop_reason=reviewer_context_c
   // review を実行して critical / major が残った・review 前の別の前提チェックで止めた・review に到達しなかった run は従来の文面
   const ACTION = '`/pr-iterate 42` で回収するか、人が diff を確認する（指摘の本文は公開コメントに載せない）';
   assert.equal(rowOf({ target: true, status: 'unresolved', stop_reason: null, rounds: 2, critical: 1, major: 2, minor: 0 }),
-    `| ${REASON} | security review が今の PR head で clear になっていない（敵対的 review 2 回・最終 critical 1 / major 2） | ${ACTION} |`);
+    `| ${REASON} | 人が確かめる | security review が今の PR head で clear になっていない（敵対的 review 2 回・最終 critical 1 / major 2） | ${ACTION} |`);
   assert.equal(rowOf({ target: true, status: 'unresolved', stop_reason: 'diff_unavailable', rounds: 0, critical: 0, major: 0, minor: 0 }),
-    `| ${REASON} | security review が今の PR head で clear になっていない（敵対的 review 0 回・最終 critical 0 / major 0） | ${ACTION} |`);
+    `| ${REASON} | 人が確かめる | security review が今の PR head で clear になっていない（敵対的 review 0 回・最終 critical 0 / major 0） | ${ACTION} |`);
   assert.equal(rowOf({ target: true, status: 'not_run', stop_reason: null, rounds: 0, critical: 0, major: 0, minor: 0 }),
-    `| ${REASON} | security review が今の PR head で clear になっていない（LGTM の前の review に到達していない） | ${ACTION} |`);
+    `| ${REASON} | 人が確かめる | security review が今の PR head で clear になっていない（LGTM の前の review に到達していない） | ${ACTION} |`);
   // fix が直さずに人の判断に返した指摘は件数だけを出す（issue #1121）
   assert.equal(rowOf({ target: true, status: 'unresolved', stop_reason: null, rounds: 1, critical: 1, major: 1, minor: 0, deferred: 2 }),
-    `| ${REASON} | security review が今の PR head で clear になっていない（敵対的 review 1 回・最終 critical 1 / major 1）— security の指摘 2 件を fix が直さずに人の判断に返した | ${ACTION} |`);
+    `| ${REASON} | 人が確かめる | security review が今の PR head で clear になっていない（敵対的 review 1 回・最終 critical 1 / major 1）— security の指摘 2 件を fix が直さずに人の判断に返した | ${ACTION} |`);
 });
 
 test('issue #834: 「CI 未完了」の開示（disclosures）は REVIEW の終端サマリの参考に出る', () => {
@@ -2695,6 +2709,7 @@ test('issue #658 AC-4: HOLD kind ごとに「あなたがやること」の定�
 test('issue #658 AC-5: 解消済み証跡セクションが要対応セクションより下にあり、fix 後解消確認の件数行が末尾に追加される', () => {
   const body = buildDevflowSummaryBody({
     ...BASE_INPUT,
+    acResults: VERIFIED_AC,
     blockingItems: [{ id: 'B1', text: 'resolved', severity: 'major', checked: true, dimension: 'quality' }],
     advisoryItems: [
       { id: 'A1', text: 'needs escalation', severity: 'major', checked: true, dimension: 'design', escalate: true, final_resolution: 'resolved', final_evidence: 'verified' },
@@ -2998,7 +3013,7 @@ test('issue #794 AC1: 同じ AC に紐づく ledger 未収束・ESCALATE・AC �
   assert.deepEqual(input.holdReasons.map((r) => r.code), ['ledger_unconverged', 'escalate', 'ac_agent_unsatisfied']);
   const body = buildDevflowSummaryBody(input);
   assert.deepEqual(rows794(body, '### HOLD になった理由と現状'), [
-    '| AC#4 未達 — ledger 未収束・ESCALATE・AC 未達（エージェント） を 1 行にまとめた（内訳: ledger_unconverged / escalate / ac_agent_unsatisfied） | 未 checked blocking 1 件・ESCALATE 1 件中 0 件は fix 後 tree で解消確認済み・AC 判定 satisfied:false | 修正が必要・要判断（blast-radius）（下表 AC#4 未達 行） |',
+    '| AC#4 未達 — ledger 未収束・ESCALATE・AC 未達（エージェント） を 1 行にまとめた（内訳: ledger_unconverged / escalate / ac_agent_unsatisfied） | PR を直す・人が確かめる | 未 checked blocking 1 件・ESCALATE 1 件中 0 件は fix 後 tree で解消確認済み・AC 判定 satisfied:false | 修正が必要・要判断（blast-radius）（下表 AC#4 未達 行） |',
   ]);
   assert.deepEqual(rows794(body, '### ⚠️ 要対応'), [
     '| ❌ 未解消 | 必須（AC#4 未達 に紐づく 3 件 — 内訳: ledger_unconverged / escalate / ac_agent_unsatisfied） | ac | AC#4 未達: [final-reconcile 不成立] dotfiles 側に起動形を足す / ac4-dotfiles — dotfiles 側は worktree の外 | 未解消 / AC 判定 satisfied:false（inspection）: dotfiles 側が未変更 / ESCALATE: 未判断 | 修正が必要・要判断（blast-radius） |',
@@ -3022,9 +3037,9 @@ test('issue #794 AC3: AC に紐づかない項目が同じ code に残るとき�
     advisoryItems: [UNLINKED_E_794, AC4_ESC_794],
   }));
   assert.deepEqual(rows794(body, '### HOLD になった理由と現状'), [
-    '| AC#4 未達 — ledger 未収束・ESCALATE・AC 未達（エージェント） を 1 行にまとめた（内訳: ledger_unconverged / escalate / ac_agent_unsatisfied） | 未 checked blocking 1 件・ESCALATE 1 件中 0 件は fix 後 tree で解消確認済み・AC 判定 satisfied:false | 修正が必要・要判断（blast-radius）（下表 AC#4 未達 行） |',
-    '| ledger 未収束（未 checked blocking 残） | 未 checked blocking 2 件 | 修正が必要（下表 ❌ 行） |',
-    '| ESCALATE-TO-HUMAN 項目 2 件 | ESCALATE 2 件中 0 件は fix 後 tree で解消確認済み | 要判断 2 件（下表 ⚠️ 行） |',
+    '| AC#4 未達 — ledger 未収束・ESCALATE・AC 未達（エージェント） を 1 行にまとめた（内訳: ledger_unconverged / escalate / ac_agent_unsatisfied） | PR を直す・人が確かめる | 未 checked blocking 1 件・ESCALATE 1 件中 0 件は fix 後 tree で解消確認済み・AC 判定 satisfied:false | 修正が必要・要判断（blast-radius）（下表 AC#4 未達 行） |',
+    '| ledger 未収束（未 checked blocking 残） | PR を直す | 未 checked blocking 2 件 | 修正が必要（下表 ❌ 行） |',
+    '| ESCALATE-TO-HUMAN 項目 2 件 | 人が確かめる | ESCALATE 2 件中 0 件は fix 後 tree で解消確認済み | 要判断 2 件（下表 ⚠️ 行） |',
   ], 'ac_agent_unsatisfied は AC#4 だけなので行を消し、紐づかない項目が残る code は従来の行のまま');
   const required = rows794(body, '### ⚠️ 要対応');
   assert.equal(required.length, 3, required.join('\n'));
@@ -3066,7 +3081,7 @@ test('issue #1291: fail-closed の SEC seed 7 件と未 checked の通常 blocki
     blockingItems, ledgerConverged: false,
   });
   const ledgerRow = rows794(body, '### HOLD になった理由と現状').find((l) => l.startsWith('| ledger 未収束'));
-  assert.equal(ledgerRow, '| ledger 未収束（未 checked blocking 残） | 未 checked blocking 1 件 | 修正が必要（下表 ❌ 行） |');
+  assert.equal(ledgerRow, '| ledger 未収束（未 checked blocking 残） | PR を直す | 未 checked blocking 1 件 | 修正が必要（下表 ❌ 行） |');
 });
 
 // ─── issue #844: 観測型 AC の未達は対応欄を「実行して確かめる」にし、どの AC が観測型かを出す ───
@@ -3418,4 +3433,105 @@ test('issue #829: summary の既定理由文は classifyMergeTier の REVIEW の
   assert.equal(mt.reasons.length, 1, `${mt.tier}: 既定文だけ`);
   const body = buildDevflowSummaryBody({ ...BASE_INPUT, mergeTier: mt.tier, mergeTierReasons: mt.reasons });
   assert.ok(!body.includes(mt.reasons[0]), `${mt.tier}: 既定文「${mt.reasons[0]}」を既定として扱う`);
+});
+
+// ─── issue #1359: 判断カード（問い / 機械の確認の件数 / あなたが確かめること）と HOLD を解く手段の区分 ───
+
+const COUNT_1359 = (ok, unverified, failed) => `機械の確認（テスト、評価、AC、危険検出、台帳）: ✅ 確認済み ${ok} / ⚠️ 未検証 ${unverified} / ❌ 不合格 ${failed}`;
+
+// 判断カードの行: 結論行の直後に 問い / 件数 / 「あなたが確かめること」の見出しと箇条書き（次の空行まで）
+function card1359(body) {
+  const lines = body.split('\n');
+  const c = lines.findIndex((l) => l.startsWith('**結論: '));
+  const h = lines.indexOf('### あなたが確かめること');
+  return {
+    question: lines[c + 2],
+    count: lines[c + 4],
+    headingIdx: h,
+    conclusionIdx: c,
+    tableIdx: lines.findIndex((l) => l.startsWith('| Merge tier |')),
+    checks: lines.slice(h + 2, lines.indexOf('', h + 2)),
+  };
+}
+
+// danger-grep が clean と判定した SEC seed（evidence 'danger-grep clean' で checked）
+const cleanSec1359 = () => reconcileDanger({ items: seedSecurityLedger() }, { ok: true, hits: [] }).items;
+
+test('issue #1359 AC-1: PR #1354 型（REVIEW・micro・eval skip・AC 判定なし・テスト green・danger-grep clean）は評価と AC を ⚠️ に数え、AC の行を出して「✅ 要対応事項なし」を出さない', () => {
+  const body = buildDevflowSummaryBody({
+    ...BASE_INPUT,
+    mergeTier: 'REVIEW',
+    mergeTierReasons: ['標準 — 人間が LGTM して merge', 'AC は未検証（micro eval skip）— evaluator 0 回のため acceptance_criteria の充足は判定していない'],
+    shape: 'micro',
+    evalVerdict: null,
+    acResults: null,
+    testGreen: true,
+    validateTests: 'passed',
+    dangerHits: [],
+    blockingItems: cleanSec1359(),
+  });
+  const card = card1359(body);
+  assert.ok(card.conclusionIdx >= 0 && card.headingIdx > card.conclusionIdx && card.tableIdx > card.headingIdx, '結論行 < 判断カード < tier 表');
+  assert.ok(card.question.startsWith('**あなたが決めること**: ') && card.question.includes('2 項目'), card.question);
+  assert.equal(card.count, COUNT_1359(3, 2, 0));
+  assert.deepEqual(card.checks, [
+    '- ⚠️ 評価: evaluator が判定していない — diff が issue の意図どおりかを確かめる',
+    '- ⚠️ AC: AC を誰も判定していない — issue の受入条件を 1 つずつ diff と突き合わせる',
+  ]);
+  assert.ok(body.includes('| 🔷 **REVIEW** | micro | ✅ green | ⚠️ 未検証 | ✅ 収束 | ⚠️ 未検証 | ✅ clean |'), 'tier 表の評価・AC は ⚠️ 未検証');
+  assert.ok(!body.includes('✅ 要対応事項なし'), '要対応事項なしを出さない');
+  assert.ok(body.includes('### ⚠️ 要確認（機械の確認が ✅ でない 2 項目 — 上の「あなたが確かめること」）'), body);
+});
+
+test('issue #1359 AC-1: テストの結果が不明で他が確認済みなら、テストだけを ⚠️ に数え「✅ 要対応事項なし」を出さない', () => {
+  const body = buildDevflowSummaryBody({ ...BASE_INPUT, acResults: VERIFIED_AC, testGreen: null });
+  const card = card1359(body);
+  assert.equal(card.count, COUNT_1359(4, 1, 0));
+  assert.deepEqual(card.checks, ['- ⚠️ テスト: 結果が分からない — CI の test 結果か手元の実行で確かめる']);
+  assert.ok(body.includes('| 🔷 **REVIEW** | standard | ⚠️ 未検証 | ✅ pass |'), 'tier 表のテストは ⚠️ 未検証');
+  assert.ok(!body.includes('✅ 要対応事項なし'), '要対応事項なしを出さない');
+});
+
+test('issue #1359 AC-1: 5 項目すべて確認済みなら「あなたが確かめること」の下は「なし」だけで、要対応事項なしを出す', () => {
+  const body = buildDevflowSummaryBody({ ...BASE_INPUT, acResults: VERIFIED_AC, blockingItems: cleanSec1359() });
+  const card = card1359(body);
+  assert.equal(card.question, '**あなたが決めること**: この diff を merge してよいか（機械の確認は 5 項目とも ✅）');
+  assert.equal(card.count, COUNT_1359(5, 0, 0));
+  assert.deepEqual(card.checks, ['なし']);
+  assert.ok(body.includes('### ✅ 要対応事項なし'), body);
+});
+
+test('issue #1359 AC-1: 不合格（red・eval fail・AC 未達）は ❌、danger-grep 実行不能は検出 0 件でも ⚠️ に数える', () => {
+  const body = buildDevflowSummaryBody({
+    ...BASE_INPUT,
+    testGreen: false,
+    evalVerdict: 'fail',
+    acResults: [{ ac_index: 0, satisfied: true, evidence: 'ok', verified_by: 'evaluator' }, { ac_index: 1, satisfied: false, evidence: 'ng', verified_by: 'evaluator' }],
+    blockingItems: reconcileDanger({ items: seedSecurityLedger() }, { ok: false }).items,
+    ledgerConverged: false,
+  });
+  const card = card1359(body);
+  assert.equal(card.count, COUNT_1359(0, 2, 3));
+  assert.deepEqual(card.checks.map((l) => l.split(':')[0]), ['- ❌ テスト', '- ❌ 評価', '- ❌ AC', '- ⚠️ 危険検出', '- ⚠️ 台帳']);
+  assert.ok(card.checks[2].includes('未達 1 件（AC#2）'), card.checks[2]);
+  assert.ok(body.includes('| ⚠️ 未収束 | ❌ 1/2 | ⚠️ 未検証 |'), 'danger-grep 実行不能の危険検出セルは clean と出さない');
+});
+
+test('issue #1359 AC-2: HOLD_REASON_CODES の全 code について HOLD の表の区分列が「PR を直す / 人が確かめる / dev-flow 側を疑う」のどれか 1 つになる', () => {
+  const REMEDIES = ['PR を直す', '人が確かめる', 'dev-flow 側を疑う'];
+  for (const code of HOLD_REASON_CODES) {
+    const reason = `reason-${code}`;
+    const body = buildDevflowSummaryBody({
+      ...BASE_INPUT,
+      mergeTier: 'HOLD',
+      mergeTierReasons: [reason],
+      holdReasons: [{ code, reason, kind: 'human_judgment' }],
+      holdKind: 'human_judgment',
+    });
+    assert.ok(body.includes('| 理由 | 区分 | 現状 | 対応 |'), `${code}: 区分の列がある`);
+    const row = body.split('\n').find((l) => l.startsWith(`| ${reason} |`));
+    assert.ok(row != null, `${code}: HOLD の表に行がある`);
+    const remedy = row.split(' | ')[1];
+    assert.ok(REMEDIES.includes(remedy), `${code}: 区分「${remedy}」は 3 値のどれか`);
+  }
 });

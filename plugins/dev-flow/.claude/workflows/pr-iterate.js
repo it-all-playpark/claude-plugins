@@ -761,6 +761,17 @@ const STATUS_HEADLINE = {
   'security_unresolved': '🛡️ SECURITY REVIEW 未完了 — 敵対的 security review が今の head で clear にならなかった。人間へエスカレーション',
 };
 
+const STATUS_QUESTION = {
+  'lgtm': 'review は LGTM。下の確かめることが済んだら `gh pr ready <PR>` して merge してよいか',
+  'stuck': '同じ指摘が繰り返されて自動修正が止まった。残った指摘を自分で直すか、修正方針を決めて回し直すか',
+  'fix_failed': '自動修正が適用されなかった。残った指摘を自分で直すか、修正方針を決めて回し直すか',
+  'max_reached': '反復の上限で止まった。最後の修正を自分で review して進めるか、残った指摘を自分で直すか',
+  'ci_error': 'CI の状態を取れなかった。`gh pr checks <PR>` で実状態を確かめてから `/pr-iterate <PR>` を再実行するか',
+  'ci_pending': 'CI が終わっていない。完了を待って `/pr-iterate <PR>` を再実行するか',
+  'review_contract_error': 'reviewer が結果を返さなかった。自分で diff を review して進めるか、回し直すか',
+  'security_unresolved': 'security review が今の head で clear になっていない。diff の security を自分で確かめて進めるか、指摘を直すか',
+};
+
 const SECURITY_CONTEXT_CHANGED_HEADLINE = '🛡️ SECURITY REVIEW 未実施 — 指示ファイルを変える PR なので自動 review をしていない（review <ROUNDS> 回）。変わった指示ファイルを人が確認する';
 
 const FIX_DIRECTION_LINE = '**修正方針**: /pr-iterate を起動した人が決めた修正方針（`--direction`）を fix に渡して回した（本文はこのコメントに載せない）';
@@ -943,6 +954,65 @@ function priorHoldCounts({ unresolved, unconfirmed }) {
   return [unresolved > 0 ? `${unresolved} 件が未解消` : null, unconfirmed > 0 ? `${unconfirmed} 件が未確認` : null].filter((s) => s != null).join('・');
 }
 
+function terminalDecisionCard({ pr, status, lastDecision, ciLastStatus, ciLastFailedChecks, ciLastHead, endHead, securityReview, priorHold, priorHoldOpen }) {
+  const checks = `\`gh pr checks ${pr}\``;
+  let review;
+  if (status === 'lgtm' || (status === 'security_unresolved' && lastDecision === 'approve')) review = { state: 'ok' };
+  else if (status === 'stuck' || status === 'fix_failed') review = { state: 'failed', note: `blocking の指摘が残ったまま終了（status: ${status}）— 下の「反復履歴」と指摘の詳細を確かめる` };
+  else if (status === 'max_reached') review = { state: 'unverified', note: '最後の修正を再レビューしていない（反復上限）— 最後の反復の指摘と修正の diff を確かめる' };
+  else if (status === 'review_contract_error') review = { state: 'unverified', note: 'reviewer が結果を返さなかった — diff を自分で review する' };
+  else review = { state: 'unverified', note: `LGTM に届くか確かめていない（status: ${mdCell(status)}）— CI の確定後に \`/pr-iterate ${pr}\` を再実行する` };
+
+  let ci;
+  if (ciLastStatus == null) ci = { state: 'unverified', note: `未観測 — ${checks} で確かめる` };
+  else if (!isSameHead(ciLastHead, endHead)) ci = { state: 'unverified', note: `${mdCell(ciLastStatus)} は終端 head の結果と確かめられない — ${checks} で確かめる` };
+  else if (ciLastStatus === 'passed') ci = { state: 'ok' };
+  else if (ciLastStatus === 'failed') {
+    const names = (ciLastFailedChecks || []).map((n) => `\`${mdCell(n)}\``);
+    ci = { state: 'failed', note: `failed（${names.length ? names.join(', ') : 'check 名不明'}）— 失敗した check を確かめる` };
+  } else if (ciLastStatus === 'pending') ci = { state: 'unverified', note: `pending（未完了）— 完了を待って ${checks} で結果を確かめる` };
+  else if (ciLastStatus === 'no_checks') ci = { state: 'unverified', note: 'check が 1 件も無い（CI 未設定）— テストを手元で確かめる' };
+  else ci = { state: 'unverified', note: `状態を取得できなかった — ${checks} で確かめる` };
+
+  const sr = securityReview;
+  let security;
+  if (sr == null) security = { state: 'unverified', note: 'この run の結果が無い — diff の security を確かめる' };
+  else if (sr.target !== true || sr.status === 'cleared') security = { state: 'ok' };
+  else if (isSecurityContextChanged(sr)) security = { state: 'unverified', note: '自動 review をしていない（指示ファイルを変える PR）— 変わった指示ファイルと diff を確かめる' };
+  else if ((sr.critical ?? 0) + (sr.major ?? 0) > 0) security = { state: 'failed', note: `critical ${sr.critical ?? 0} / major ${sr.major ?? 0} が残る — 人が diff を確かめる（指摘の本文は公開コメントに載せない）` };
+  else security = { state: 'unverified', note: `clear になっていない（${sr.status === 'not_run' ? 'LGTM の前の review に到達していない' : 'review の結果を確かめられなかった'}）— 人が diff を確かめる` };
+
+  const items = [
+    { name: '最終レビュー', ...review },
+    { name: 'CI', ...ci },
+    { name: 'security review', ...security },
+  ];
+  if (priorHold) {
+    const state = priorHold.unresolved > 0 ? 'failed' : priorHold.unconfirmed > 0 ? 'unverified' : 'ok';
+    items.push({ name: 'dev-flow の HOLD 回収', state, note: `HOLD 理由 ${priorHoldOpen} — 下の「dev-flow の HOLD 理由の回収状況」を確かめる` });
+  }
+  const count = (state) => items.filter((it) => it.state === state).length;
+  const open = items.filter((it) => it.state !== 'ok');
+  const question = (STATUS_QUESTION[status] ?? `status ${status} で終了した。次にどうするか`).split('<PR>').join(String(pr));
+  return [
+    `**あなたが決めること**: ${question}`,
+    '',
+    `機械の確認（${items.map((it) => it.name).join('、')}）: ✅ 確認済み ${count('ok')} / ⚠️ 未検証 ${count('unverified')} / ❌ 不合格 ${count('failed')}`,
+    '',
+    '### あなたが確かめること',
+    '',
+    ...(open.length === 0 ? ['なし'] : open.map((it) => `- ${it.state === 'failed' ? '❌' : '⚠️'} ${it.name}: ${it.note}`)),
+    '',
+  ];
+}
+
+function blockingTreatment(round, isLastRound, status, iterations) {
+  if ((round.blocking ?? []).length === 0) return 'なし';
+  const terminal = isLastRound && (typeof iterations !== 'number' || round.iteration === iterations);
+  if (!terminal) return '修正に回した';
+  return status === 'max_reached' ? '修正したが再レビューなし' : '未修正で終了';
+}
+
 function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], ciLastHead = null, ciVerifyStatus = null, ciVerifyHead = null, mergeableLast = null, humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, finalTestCheck = null, securityReview = null, securityReviewHead = null, headSha = null, endHead = headSha, fixDirectionUsed = false }) {
   const DECISION_EMOJI = { 'approve': '✅', 'request-changes': '🔴', 'comment': '💬' };
   const lines = [];
@@ -969,6 +1039,7 @@ function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSu
   }
   lines.push(`### ${headline}`);
   lines.push('');
+  lines.push(...terminalDecisionCard({ pr, status, lastDecision, ciLastStatus, ciLastFailedChecks, ciLastHead, endHead, securityReview, priorHold, priorHoldOpen }));
 
   lines.push('| 終了状態 | 反復回数 | 最終判定 |');
   lines.push('|---|---|---|');
@@ -1034,17 +1105,20 @@ function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSu
     lines.push('');
     lines.push('### 反復履歴');
     lines.push('');
-    lines.push('| 反復 | 判定 | 要修正 (blocking) | 軽微 (minor) | 総評 |');
-    lines.push('|---|---|---|---|---|');
-    for (const round of histList) {
+    lines.push('| 反復 | 判定 | critical | major | minor | blocking の扱い | 総評 |');
+    lines.push('|---|---|---|---|---|---|---|');
+    histList.forEach((round, idx) => {
       const rEmoji = DECISION_EMOJI[round.decision] ?? '';
       const rLabel = DECISION_LABEL[round.decision] ?? round.decision;
-      const bCount = (round.blocking ?? []).length;
+      const blocking = round.blocking ?? [];
+      const cCount = blocking.filter((f) => f?.severity === 'critical').length;
+      const jCount = blocking.filter((f) => f?.severity === 'major').length;
       const mCount = (round.minor ?? []).length;
+      const treatment = blockingTreatment(round, idx === histList.length - 1, status, iterations);
       const rawSummary = mdCell(round.summary);
       const rSummary = rawSummary.length > 120 ? rawSummary.slice(0, 120) + '…' : rawSummary;
-      lines.push(`| ${round.iteration} | ${rEmoji} ${rLabel} | ${bCount} | ${mCount} | ${rSummary} |`);
-    }
+      lines.push(`| ${round.iteration} | ${rEmoji} ${rLabel} | ${cCount} | ${jCount} | ${mCount} | ${treatment} | ${rSummary} |`);
+    });
   }
 
   const allBlocking = histList.flatMap((r) => (r.blocking ?? []).map((f) => ({ iter: r.iteration, ...f })));

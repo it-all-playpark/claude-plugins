@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { buildTerminalSummaryBody, buildRereviewNoticeBody } from './pr-comment-format.mjs';
+import { buildTerminalSummaryBody, buildRereviewNoticeBody, STATUS_HEADLINE } from './pr-comment-format.mjs';
 import { mdCell } from './md-cell.mjs';
 globalThis.mdCell = mdCell;
 
@@ -396,6 +396,15 @@ test('buildTerminalSummaryBody: lastVerificationEvidence を渡すと **検証�
     '',
     '### 🎉 LGTM',
     '',
+    '**あなたが決めること**: review は LGTM。下の確かめることが済んだら `gh pr ready 10` して merge してよいか',
+    '',
+    '機械の確認（最終レビュー、CI、security review）: ✅ 確認済み 1 / ⚠️ 未検証 2 / ❌ 不合格 0',
+    '',
+    '### あなたが確かめること',
+    '',
+    '- ⚠️ CI: 未観測 — `gh pr checks 10` で確かめる',
+    '- ⚠️ security review: この run の結果が無い — diff の security を確かめる',
+    '',
     '| 終了状態 | 反復回数 | 最終判定 |',
     '|---|---|---|',
     '| lgtm | 2 | ✅ 承認 (LGTM) |',
@@ -410,10 +419,10 @@ test('buildTerminalSummaryBody: lastVerificationEvidence を渡すと **検証�
     '',
     '### 反復履歴',
     '',
-    '| 反復 | 判定 | 要修正 (blocking) | 軽微 (minor) | 総評 |',
-    '|---|---|---|---|---|',
-    '| 1 | 🔴 変更要求 | 0 | 0 | issues |',
-    '| 2 | ✅ 承認 (LGTM) | 0 | 0 | fixed |',
+    '| 反復 | 判定 | critical | major | minor | blocking の扱い | 総評 |',
+    '|---|---|---|---|---|---|---|',
+    '| 1 | 🔴 変更要求 | 0 | 0 | 0 | なし | issues |',
+    '| 2 | ✅ 承認 (LGTM) | 0 | 0 | 0 | なし | fixed |',
     '',
     '---',
     '*このコメントは pr-iterate により自動生成されました。*',
@@ -540,9 +549,9 @@ test('buildTerminalSummaryBody: history の minor が反復履歴テーブルの
       },
     ],
   });
-  assert.ok(body.includes('| 反復 | 判定 | 要修正 (blocking) | 軽微 (minor) | 総評 |'), '反復履歴テーブルヘッダが新レイアウトで出る');
-  assert.ok(body.includes('| 1 | 💬 コメント | 0 | 2 | minor only |'), 'iteration 1 の minor 件数 2 が出る');
-  assert.ok(body.includes('| 2 | ✅ 承認 (LGTM) | 0 | 0 | looks good |'), 'iteration 2 の minor 件数 0 が出る（キー無し）');
+  assert.ok(body.includes('| 反復 | 判定 | critical | major | minor | blocking の扱い | 総評 |'), '反復履歴テーブルヘッダが新レイアウトで出る');
+  assert.ok(body.includes('| 1 | 💬 コメント | 0 | 0 | 2 | なし | minor only |'), 'iteration 1 の minor 件数 2 が出る');
+  assert.ok(body.includes('| 2 | ✅ 承認 (LGTM) | 0 | 0 | 0 | なし | looks good |'), 'iteration 2 の minor 件数 0 が出る（キー無し）');
   assert.ok(body.includes('軽微な指摘（minor）の全詳細（自動修正対象外・2 件）'), '全 minor 詳細見出しが件数付きで出る');
   assert.ok(body.includes('1. 🟡 minor — 場所指定なし（反復 1 回目）'), '全 minor 詳細の見出し行に反復番号が付く');
   assert.ok(body.includes('nit one'), '全 minor 詳細に nit one が出る');
@@ -561,7 +570,7 @@ test('buildTerminalSummaryBody: history 全 round に minor キーが無い場�
       { iteration: 1, decision: 'approve', summary: 'ok', blocking: [] },
     ],
   });
-  assert.ok(body.includes('| 1 | ✅ 承認 (LGTM) | 0 | 0 | ok |'), 'minor キー無しでも minor 列 0 で出る');
+  assert.ok(body.includes('| 1 | ✅ 承認 (LGTM) | 0 | 0 | 0 | なし | ok |'), 'minor キー無しでも minor 列 0 で出る');
   assert.ok(!body.includes('軽微な指摘（minor）の全詳細'), 'minor 0 件なら全 minor 詳細 details は出ない');
 });
 
@@ -1011,4 +1020,87 @@ test('buildTerminalSummaryBody: 判定表の外の code — 人の判断待ち�
   ]);
   assert.equal(new Set([NOT_JUDGED, UNRESOLVED_HUMAN, UNRESOLVED_FINAL_TEST]).size, 3);
   assert.equal(headlineOf(body), '### LGTM（review）— dev-flow の HOLD 理由 3 件が未解消・1 件が未確認。merge 前に確認');
+});
+
+// --- 判断カード（issue #1359） ---------------------------------------------------
+
+const CLEARED_SR_1359 = { target: true, status: 'cleared', stop_reason: null, rounds: 1, critical: 0, major: 0, minor: 0 };
+
+// 見出しの直後の判断カード: 問い / 件数 / 「あなたが確かめること」の見出しと箇条書き（次の空行まで）
+function card1359(body) {
+  const lines = body.split('\n');
+  const h = lines.findIndex((l) => l.startsWith('### ') && !l.startsWith('### あなたが確かめること'));
+  const c = lines.indexOf('### あなたが確かめること');
+  return {
+    question: lines[h + 2],
+    count: lines[h + 4],
+    heading: lines[h + 6],
+    checks: lines.slice(c + 2, lines.indexOf('', c + 2)),
+  };
+}
+
+test('issue #1359 AC-3: STATUS_HEADLINE の全キーで判断カードの問いが空でない', () => {
+  for (const status of Object.keys(STATUS_HEADLINE)) {
+    const card = card1359(buildTerminalSummaryBody({ pr: 9, status, iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [] }));
+    assert.ok(card.question.startsWith('**あなたが決めること**: '), `${status}: ${card.question}`);
+    assert.ok(card.question.slice('**あなたが決めること**: '.length).trim().length > 0, `${status}: 問いが空でない`);
+    assert.ok(!card.question.includes(`${status} で終了した`), `${status}: 既定の問いに落ちない`);
+    assert.equal(card.heading, '### あなたが確かめること', status);
+  }
+});
+
+test('issue #1359 AC-3: CI が pending なら CI を ⚠️ に数え「あなたが確かめること」に出す', () => {
+  const body = buildTerminalSummaryBody({
+    pr: 9, status: 'ci_pending', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [],
+    ciLastStatus: 'pending', securityReview: CLEARED_SR_1359, ...ON_HEAD,
+  });
+  const card = card1359(body);
+  assert.equal(card.count, '機械の確認（最終レビュー、CI、security review）: ✅ 確認済み 1 / ⚠️ 未検証 2 / ❌ 不合格 0');
+  assert.ok(card.checks.includes('- ⚠️ CI: pending（未完了）— 完了を待って `gh pr checks 9` で結果を確かめる'), card.checks.join('\n'));
+});
+
+test('issue #1359 AC-3: 全項目が確認済みの lgtm は「あなたが確かめること」の下が「なし」だけ。HOLD の後の回収 run は HOLD 回収も数える', () => {
+  const opts = { pr: 9, status: 'lgtm', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed', securityReview: CLEARED_SR_1359, ...ON_HEAD };
+  const card = card1359(buildTerminalSummaryBody(opts));
+  assert.equal(card.count, '機械の確認（最終レビュー、CI、security review）: ✅ 確認済み 3 / ⚠️ 未検証 0 / ❌ 不合格 0');
+  assert.deepEqual(card.checks, ['なし']);
+
+  const recovered = card1359(buildTerminalSummaryBody({ ...opts, priorDevflow: { tier: 'HOLD', codes: ['ci_checks_failed'], url: PRIOR_URL } }));
+  assert.equal(recovered.count, '機械の確認（最終レビュー、CI、security review、dev-flow の HOLD 回収）: ✅ 確認済み 4 / ⚠️ 未検証 0 / ❌ 不合格 0');
+  assert.deepEqual(recovered.checks, ['なし']);
+  const open = card1359(buildTerminalSummaryBody({ ...opts, priorDevflow: { tier: 'HOLD', codes: ['escalate'], url: PRIOR_URL } }));
+  assert.deepEqual(open.checks, ['- ❌ dev-flow の HOLD 回収: HOLD 理由 1 件が未解消 — 下の「dev-flow の HOLD 理由の回収状況」を確かめる']);
+});
+
+test('issue #1359 AC-3: 指摘が残った stuck・critical / major が残る security review は ❌、終端 head と別の head の CI は ⚠️', () => {
+  const card = card1359(buildTerminalSummaryBody({
+    pr: 9, status: 'stuck', iterations: 1, lastDecision: 'request-changes', lastSummary: 'x', history: [],
+    ciLastStatus: 'passed', ...ON_HEAD, ciLastHead: OTHER_HEAD,
+    securityReview: { target: true, status: 'unresolved', stop_reason: null, rounds: 2, critical: 1, major: 0, minor: 0 },
+  }));
+  assert.equal(card.count, '機械の確認（最終レビュー、CI、security review）: ✅ 確認済み 0 / ⚠️ 未検証 1 / ❌ 不合格 2');
+  assert.deepEqual(card.checks.map((l) => l.split(':')[0]), ['- ❌ 最終レビュー', '- ⚠️ CI', '- ❌ security review']);
+});
+
+// 反復履歴の本文行（| <反復> | で始まる行）
+const historyRows1359 = (body) => body.split('\n').filter((l) => /^\| \d+ \|/.test(l));
+const finding1359 = (severity) => ({ severity, file: 'a.js', line: 1, description: `${severity} finding` });
+
+test('issue #1359 AC-4: 反復履歴は反復ごとに critical / major / minor の件数と blocking の扱いを出す（stuck・max_reached・lgtm）', () => {
+  const history = [
+    { iteration: 1, decision: 'request-changes', summary: 'r1', blocking: [finding1359('critical'), finding1359('major'), finding1359('major')], minor: [finding1359('minor')] },
+    { iteration: 2, decision: 'request-changes', summary: 'r2', blocking: [finding1359('major')], minor: [finding1359('minor'), finding1359('minor')] },
+  ];
+  const rowsOf = (status, h, iterations) => historyRows1359(buildTerminalSummaryBody({ pr: 9, status, iterations, lastDecision: h[h.length - 1].decision, lastSummary: 'x', history: h }));
+  assert.deepEqual(rowsOf('stuck', history, 2), [
+    '| 1 | 🔴 変更要求 | 1 | 2 | 1 | 修正に回した | r1 |',
+    '| 2 | 🔴 変更要求 | 0 | 1 | 2 | 未修正で終了 | r2 |',
+  ]);
+  assert.deepEqual(rowsOf('max_reached', history, 2), [
+    '| 1 | 🔴 変更要求 | 1 | 2 | 1 | 修正に回した | r1 |',
+    '| 2 | 🔴 変更要求 | 0 | 1 | 2 | 修正したが再レビューなし | r2 |',
+  ]);
+  assert.deepEqual(rowsOf('lgtm', [{ iteration: 1, decision: 'approve', summary: 'ok', blocking: [], minor: [finding1359('minor')] }], 1), [
+    '| 1 | ✅ 承認 (LGTM) | 0 | 0 | 1 | なし | ok |',
+  ]);
 });

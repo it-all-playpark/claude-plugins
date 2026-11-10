@@ -86,7 +86,7 @@ test('[hold-reason-ac-grouping] (B) ac_index の無い / 範囲外の escalate �
     assert.deepEqual(plain(result.merge_tier_hold_reasons.map((r) => r.code)), HOLD_CODES, 'merge tier の code 集合は変わらない');
 
     const hold = tableRows(body, '### HOLD になった理由と現状');
-    assert.ok(hold.includes('| ESCALATE-TO-HUMAN 項目 1 件 | ESCALATE 1 件中 0 件は fix 後 tree で解消確認済み | 要判断 1 件（下表 ⚠️ 行） |'), `escalate 行は従来どおり: ${hold.join('\n')}`);
+    assert.ok(hold.includes('| ESCALATE-TO-HUMAN 項目 1 件 | 人が確かめる | ESCALATE 1 件中 0 件は fix 後 tree で解消確認済み | 要判断 1 件（下表 ⚠️ 行） |'), `escalate 行は従来どおり: ${hold.join('\n')}`);
     assert.ok(hold.some((l) => l.includes('（内訳: ledger_unconverged / ac_agent_unsatisfied）')), `AC-FINAL-2 と AC#2 未達は 1 行: ${hold.join('\n')}`);
     assert.equal(hold.length, 2);
 
