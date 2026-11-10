@@ -455,6 +455,21 @@ make_failing_in_a_stub() {
     echo "$JSON" | jq -e '.failed_files == ["packages/a/src/x.test.ts"]'
 }
 
+@test "commands --files: ファイル名の改行を引数境界にせず 1 つの引数としてランナーに渡す" {
+    rmdir "$WT/tests"
+    mkdir -p "$WT/packages/a"
+    nl_name=$'x.test.ts\n--help'
+    : > "$WT/packages/a/$nl_name"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$#" > "%s/argc.log"\nprintf "%%s" "$1" > "%s/arg1.log"\nexit 0\n' \
+        "$TMP_DIR" "$TMP_DIR" > "$STUB_DIR/fakerunner"
+    chmod +x "$STUB_DIR/fakerunner"
+    export PATH="$STUB_DIR:$PATH"
+    entry_commands packages/a
+    run_tests --commands "$CMDS" --files "packages/a/$nl_name"
+    [ "$(cat "$TMP_DIR/argc.log")" = 1 ]
+    [ "$(cat "$TMP_DIR/arg1.log")" = "$nl_name" ]
+}
+
 @test "commands --files: どの entry の dir にも含まれないファイルがあれば何も実行せず error" {
     rmdir "$WT/tests"
     mkdir -p "$WT/packages/a" "$WT/packages/ab"

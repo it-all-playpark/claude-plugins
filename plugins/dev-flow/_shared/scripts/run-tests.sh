@@ -266,7 +266,8 @@ fi
 
 # 解決したテストコマンド（--commands）。COMMAND_MODE は "command"（commands の各 entry を実行）・"unresolved"
 # （実行しない）・""（base の tests/run-*.sh）。実行する entry ごとに ENTRY_DIRS（"." か <WT> 相対の dir）と
-# ENTRY_ARGVS（argv を 1 行 1 語で書いたファイル。shell を通さず空白で区切る）を並べる
+# ENTRY_ARGVS（argv を NUL 区切りで書いたファイル。shell を通さず空白で区切る。ファイル名の改行を引数境界にしないよう
+# 振り分けたファイル一覧も NUL 区切り）を並べる
 COMMAND_MODE=""
 ENTRY_DIRS=()
 ENTRY_ARGVS=()
@@ -314,7 +315,7 @@ if [[ "$COMMAND_MODE" == command ]]; then
             # `-` で始まるパスは ./ を付けて渡す（PR が足した `-x` 名のファイルをランナーが option として読み、
             # テストを実行しないまま exit 0 で passed にしないように）
             [[ "$p" == -* ]] && p="./$p"
-            printf '%s\n' "$p" >> "$LOG_DIR/entry-$best.files"
+            printf '%s\0' "$p" >> "$LOG_DIR/entry-$best.files"
         done
     fi
     for k in "${!entry_dirs[@]}"; do
@@ -328,7 +329,7 @@ if [[ "$COMMAND_MODE" == command ]]; then
                     cat "$LOG_DIR/entry-$k.files"
                     n=$((n + 1))
                 else
-                    printf '%s\n' "$w"
+                    printf '%s\0' "$w"
                 fi
             done > "$argv_file"
             if [[ $n -ne 1 ]]; then
@@ -337,7 +338,7 @@ if [[ "$COMMAND_MODE" == command ]]; then
             fi
         else
             read -r -a words <<< "$(jq -r --argjson k "$k" '.commands[$k].full_command' "$COMMANDS_FILE")"
-            printf '%s\n' "${words[@]}" > "$argv_file"
+            printf '%s\0' "${words[@]}" > "$argv_file"
         fi
         ENTRY_DIRS+=("${entry_dirs[$k]}")
         ENTRY_ARGVS+=("$argv_file")
@@ -437,7 +438,7 @@ if [[ "$COMMAND_MODE" == unresolved ]]; then
     exit 0
 elif [[ "$COMMAND_MODE" == command ]]; then
     for k in "${!ENTRY_DIRS[@]}"; do
-        label=$(tr '\n' ' ' < "${ENTRY_ARGVS[$k]}")
+        label=$(tr '\0' ' ' < "${ENTRY_ARGVS[$k]}")
         label="${label% }"
         [[ "${ENTRY_DIRS[$k]}" == "." ]] || label="${ENTRY_DIRS[$k]}: $label"
         TARGETS+=("$label")
@@ -545,7 +546,7 @@ for i in "${!TARGETS[@]}"; do
         DEVFLOW_FAILED_FILES="$failed_out" "$target" > "$log" 2>&1 < /dev/null
         rc=$?
     else
-        while IFS= read -r w; do CMD_ARGV+=("$w"); done < "${TARGET_ARGVS[$i]}"
+        while IFS= read -r -d '' w; do CMD_ARGV+=("$w"); done < "${TARGET_ARGVS[$i]}"
         (cd "$WT/$tdir" || exit 126; exec "${CMD_ARGV[@]}") > "$log" 2>&1 < /dev/null
         rc=$?
     fi
