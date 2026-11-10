@@ -997,11 +997,15 @@ function terminalDecisionCard({ pr, status, history, ciLastStatus, ciLastFailedC
   }
   const count = (state) => items.filter((it) => it.state === state).length;
   const open = items.filter((it) => it.state !== 'ok');
+  const tally = [['ok', '✅ 確認済み'], ['unverified', '⚠️ 未検証'], ['failed', '❌ 不合格']]
+    .filter(([state]) => count(state) > 0)
+    .map(([state, label]) => `${label} ${count(state)}`)
+    .join(' / ');
   const question = (STATUS_QUESTION[status] ?? `status ${status} で終了した。次にどうするか`).split('<PR>').join(String(pr));
   return [
     `**あなたが決めること**: ${question}`,
     '',
-    `機械の確認（${items.map((it) => it.name).join('、')}）: ✅ 確認済み ${count('ok')} / ⚠️ 未検証 ${count('unverified')} / ❌ 不合格 ${count('failed')}`,
+    `機械の確認（${items.map((it) => it.name).join('、')}）: ${tally}`,
     '',
     '### あなたが確かめること',
     '',

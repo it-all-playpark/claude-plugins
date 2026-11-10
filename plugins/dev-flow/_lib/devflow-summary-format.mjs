@@ -684,7 +684,12 @@ export function buildDevflowSummaryBody({
       : 'この diff を merge してよいか（機械の確認は 5 項目とも ✅）';
   lines.push(`**あなたが決めること**: ${cardQuestion}`);
   lines.push('');
-  lines.push(`機械の確認（${cardItems.map((it) => it.name).join('、')}）: ✅ 確認済み ${cardCount('ok')} / ⚠️ 未検証 ${cardCount('unverified')} / ❌ 不合格 ${cardCount('failed')}`);
+  // 0 件の区分は出さない（⚠️ / ❌ が 0 件でも見えると読み手が身構える）
+  const cardTally = [['ok', '✅ 確認済み'], ['unverified', '⚠️ 未検証'], ['failed', '❌ 不合格']]
+    .filter(([state]) => cardCount(state) > 0)
+    .map(([state, label]) => `${label} ${cardCount(state)}`)
+    .join(' / ');
+  lines.push(`機械の確認（${cardItems.map((it) => it.name).join('、')}）: ${cardTally}`);
   lines.push('');
   lines.push('### あなたが確かめること');
   lines.push('');

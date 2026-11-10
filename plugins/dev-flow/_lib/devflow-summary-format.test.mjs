@@ -3437,7 +3437,7 @@ test('issue #829: summary の既定理由文は classifyMergeTier の REVIEW の
 
 // ─── issue #1359: 判断カード（問い / 機械の確認の件数 / あなたが確かめること）と HOLD を解く手段の区分 ───
 
-const COUNT_1359 = (ok, unverified, failed) => `機械の確認（テスト、評価、AC、危険検出、台帳）: ✅ 確認済み ${ok} / ⚠️ 未検証 ${unverified} / ❌ 不合格 ${failed}`;
+const COUNT_1359 = (tally) => `機械の確認（テスト、評価、AC、危険検出、台帳）: ${tally}`;
 
 // 判断カードの行: 結論行の直後に 問い / 件数 / 「あなたが確かめること」の見出しと箇条書き（次の空行まで）
 function card1359(body) {
@@ -3473,7 +3473,7 @@ test('issue #1359 AC-1: evaluator の判定が無い run（REVIEW・micro・AC �
   const card = card1359(body);
   assert.ok(card.conclusionIdx >= 0 && card.headingIdx > card.conclusionIdx && card.tableIdx > card.headingIdx, '結論行 < 判断カード < tier 表');
   assert.ok(card.question.startsWith('**あなたが決めること**: ') && card.question.includes('2 項目'), card.question);
-  assert.equal(card.count, COUNT_1359(3, 2, 0));
+  assert.equal(card.count, COUNT_1359('✅ 確認済み 3 / ⚠️ 未検証 2'));
   assert.deepEqual(card.checks, [
     '- ⚠️ 評価: evaluator が判定していない — diff が issue の意図どおりかを確かめる',
     '- ⚠️ AC: AC を誰も判定していない — issue の受入条件を 1 つずつ diff と突き合わせる',
@@ -3486,7 +3486,7 @@ test('issue #1359 AC-1: evaluator の判定が無い run（REVIEW・micro・AC �
 test('issue #1359 AC-1: テストの結果が不明で他が確認済みなら、テストだけを ⚠️ に数え「✅ 要対応事項なし」を出さない', () => {
   const body = buildDevflowSummaryBody({ ...BASE_INPUT, acResults: VERIFIED_AC, testGreen: null });
   const card = card1359(body);
-  assert.equal(card.count, COUNT_1359(4, 1, 0));
+  assert.equal(card.count, COUNT_1359('✅ 確認済み 4 / ⚠️ 未検証 1'));
   assert.deepEqual(card.checks, ['- ⚠️ テスト: 結果が分からない — CI の test 結果か手元の実行で確かめる']);
   assert.ok(body.includes('| 🔷 **REVIEW** | standard | ⚠️ 未検証 | ✅ pass |'), 'tier 表のテストは ⚠️ 未検証');
   assert.ok(!body.includes('✅ 要対応事項なし'), '要対応事項なしを出さない');
@@ -3496,7 +3496,7 @@ test('issue #1359 AC-1: 5 項目すべて確認済みなら「あなたが確か
   const body = buildDevflowSummaryBody({ ...BASE_INPUT, acResults: VERIFIED_AC, blockingItems: cleanSec1359() });
   const card = card1359(body);
   assert.equal(card.question, '**あなたが決めること**: この diff を merge してよいか（機械の確認は 5 項目とも ✅）');
-  assert.equal(card.count, COUNT_1359(5, 0, 0));
+  assert.equal(card.count, COUNT_1359('✅ 確認済み 5'));
   assert.deepEqual(card.checks, ['なし']);
   assert.ok(body.includes('### ✅ 要対応事項なし'), body);
 });
@@ -3511,7 +3511,7 @@ test('issue #1359 AC-1: 不合格（red・eval fail・AC 未達）は ❌、dang
     ledgerConverged: false,
   });
   const card = card1359(body);
-  assert.equal(card.count, COUNT_1359(0, 2, 3));
+  assert.equal(card.count, COUNT_1359('⚠️ 未検証 2 / ❌ 不合格 3'));
   assert.deepEqual(card.checks.map((l) => l.split(':')[0]), ['- ❌ テスト', '- ❌ 評価', '- ❌ AC', '- ⚠️ 危険検出', '- ⚠️ 台帳']);
   assert.ok(card.checks[2].includes('未達 1 件（AC#2）'), card.checks[2]);
   assert.ok(body.includes('| ⚠️ 未収束 | ❌ 1/2 | ⚠️ 未検証 |'), 'danger-grep 実行不能の危険検出セルは clean と出さない');

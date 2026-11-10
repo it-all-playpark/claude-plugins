@@ -398,7 +398,7 @@ test('buildTerminalSummaryBody: lastVerificationEvidence を渡すと **検証�
     '',
     '**あなたが決めること**: review は LGTM。下の確かめることが済んだら `gh pr ready 10` して merge してよいか',
     '',
-    '機械の確認（最終レビュー、CI、security review）: ✅ 確認済み 1 / ⚠️ 未検証 2 / ❌ 不合格 0',
+    '機械の確認（最終レビュー、CI、security review）: ✅ 確認済み 1 / ⚠️ 未検証 2',
     '',
     '### あなたが確かめること',
     '',
@@ -1081,18 +1081,18 @@ test('issue #1359 AC-3: CI が pending なら CI を ⚠️ に数え「あな�
     ciLastStatus: 'pending', securityReview: CLEARED_SR_1359, ...ON_HEAD,
   });
   const card = card1359(body);
-  assert.equal(card.count, '機械の確認（最終レビュー、CI、security review）: ✅ 確認済み 1 / ⚠️ 未検証 2 / ❌ 不合格 0');
+  assert.equal(card.count, '機械の確認（最終レビュー、CI、security review）: ✅ 確認済み 1 / ⚠️ 未検証 2');
   assert.ok(card.checks.includes('- ⚠️ CI: pending（未完了）— 完了を待って `gh pr checks 9` で結果を確かめる'), card.checks.join('\n'));
 });
 
 test('issue #1359 AC-3: 全項目が確認済みの lgtm は「あなたが確かめること」の下が「なし」だけ。HOLD の後の回収 run は HOLD 回収も数える', () => {
   const opts = { pr: 9, status: 'lgtm', iterations: 1, lastDecision: 'approve', lastSummary: 'ok', history: [], ciLastStatus: 'passed', securityReview: CLEARED_SR_1359, ...ON_HEAD };
   const card = card1359(buildTerminalSummaryBody(opts));
-  assert.equal(card.count, '機械の確認（最終レビュー、CI、security review）: ✅ 確認済み 3 / ⚠️ 未検証 0 / ❌ 不合格 0');
+  assert.equal(card.count, '機械の確認（最終レビュー、CI、security review）: ✅ 確認済み 3');
   assert.deepEqual(card.checks, ['なし']);
 
   const recovered = card1359(buildTerminalSummaryBody({ ...opts, priorDevflow: { tier: 'HOLD', codes: ['ci_checks_failed'], url: PRIOR_URL } }));
-  assert.equal(recovered.count, '機械の確認（最終レビュー、CI、security review、dev-flow の HOLD 回収）: ✅ 確認済み 4 / ⚠️ 未検証 0 / ❌ 不合格 0');
+  assert.equal(recovered.count, '機械の確認（最終レビュー、CI、security review、dev-flow の HOLD 回収）: ✅ 確認済み 4');
   assert.deepEqual(recovered.checks, ['なし']);
   const open = card1359(buildTerminalSummaryBody({ ...opts, priorDevflow: { tier: 'HOLD', codes: ['escalate'], url: PRIOR_URL } }));
   assert.deepEqual(open.checks, ['- ❌ dev-flow の HOLD 回収: HOLD 理由 1 件が未解消 — 下の「dev-flow の HOLD 理由の回収状況」を確かめる']);
@@ -1104,7 +1104,7 @@ test('issue #1359 AC-3: 指摘が残った stuck・critical / major が残る se
     ciLastStatus: 'passed', ...ON_HEAD, ciLastHead: OTHER_HEAD,
     securityReview: { target: true, status: 'unresolved', stop_reason: null, rounds: 2, critical: 1, major: 0, minor: 0 },
   }));
-  assert.equal(card.count, '機械の確認（最終レビュー、CI、security review）: ✅ 確認済み 0 / ⚠️ 未検証 1 / ❌ 不合格 2');
+  assert.equal(card.count, '機械の確認（最終レビュー、CI、security review）: ⚠️ 未検証 1 / ❌ 不合格 2');
   assert.deepEqual(card.checks.map((l) => l.split(':')[0]), ['- ❌ 最終レビュー', '- ⚠️ CI', '- ❌ security review']);
 });
 
