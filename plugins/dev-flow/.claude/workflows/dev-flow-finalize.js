@@ -1531,6 +1531,7 @@ function buildDevflowSummaryBody({
   testCommands,
   prBodySynced,
   prBodyHasDiagram,
+  reviewPoints,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -1828,11 +1829,97 @@ function buildDevflowSummaryBody({
   lines.push(`**結論: ${tierPhrase}。${fixPhrase}。${testPhrase}**`);
   lines.push('');
 
+  const holdRows = [];
+  if (mergeTier === 'HOLD' && Array.isArray(holdReasons) && holdReasons.length > 0) {
+    const escalateTotal = escalateAll.length;
+    const escalateResolved = escalateAll.filter((it) => isResolved(it)).length;
+    const holdCodeSet = new Set(holdReasons.map((hr) => hr && hr.code));
+    const holdAcGroups = acGroups
+      .map((g) => ({ ...g, holdCodes: g.codes.filter((c) => holdCodeSet.has(c)) }))
+      .filter((g) => g.holdCodes.length >= 2);
+    const ledgerUnconvergedIds = new Set(holdReasons.find((hr) => hr && hr.code === 'ledger_unconverged')?.item_ids ?? []);
+    const ledgerUnconvergedItems = uncheckedBlocking.filter((it) => ledgerUnconvergedIds.has(it.id));
+    const codeAcIndexes = {
+      ledger_unconverged: ledgerUnconvergedItems.map(itemAcIndex),
+      escalate: escalateAll.map(itemAcIndex),
+      ac_agent_unsatisfied: acAgentGaps,
+      ac_human_pending: acHumanGaps,
+      ac_ci_pending: acCiGaps,
+    };
+    const absorbedCodes = new Set(Object.keys(codeAcIndexes).filter((code) => {
+      const covered = new Set(holdAcGroups.filter((g) => g.holdCodes.includes(code)).map((g) => g.acIndex));
+      return covered.size > 0 && codeAcIndexes[code].every((k) => covered.has(k));
+    }));
+    const CODE_LABEL = {
+      ledger_unconverged: 'ledger 未収束',
+      escalate: 'ESCALATE',
+      ac_agent_unsatisfied: 'AC 未達（エージェント）',
+      ac_human_pending: 'AC 未達（人手）',
+      ac_ci_pending: 'AC 未確定（CI）',
+    };
+    const holdCtx = {
+      escalateTotal,
+      escalateResolved,
+      uncheckedBlockingCount: ledgerUnconvergedItems.length,
+      unclearedCount: uncleared.length,
+      iterateStatus,
+      pr,
+      humanAcGaps: acHumanGaps,
+      observationalAcGaps: observationalGaps,
+      unreachableAcGaps: unreachableGaps,
+      ciVerify,
+      conflictAutoresolve,
+      securityReview,
+      redFacts,
+    };
+    let acGroupRowsEmitted = false;
+    for (const hr of holdReasons) {
+      if (!acGroupRowsEmitted && holdAcGroups.some((g) => g.holdCodes.includes(hr && hr.code))) {
+        acGroupRowsEmitted = true;
+        for (const g of holdAcGroups) {
+          const reason = `${g.label} — ${g.holdCodes.map((c) => CODE_LABEL[c]).join('・')} を 1 行にまとめた（内訳: ${g.holdCodes.join(' / ')}）`;
+          const current = g.holdCodes.map((c) => {
+            if (c === 'ledger_unconverged') return `未 checked blocking ${g.blocking.length} 件`;
+            if (c === 'escalate') return `ESCALATE ${g.escalate.length} 件中 ${g.escalate.filter((it) => isResolved(it)).length} 件は fix 後 tree で解消確認済み`;
+            return 'AC 判定 satisfied:false';
+          }).join('・');
+          const remedy = [...new Set(g.holdCodes.map((c) => holdReasonDisplay(c, holdCtx).remedy))].join('・');
+          holdRows.push({ reason, remedy, current, action: `${g.actions.join('・')}（下表 ${g.label} 行）` });
+        }
+      }
+      if (absorbedCodes.has(hr && hr.code)) continue;
+      const { current, action, remedy } = holdReasonDisplay(hr && hr.code, holdCtx);
+      holdRows.push({ reason: mdCell(hr && hr.reason), remedy, current, action });
+    }
+  }
+
+  const SEV_LABEL_FOLLOWUP = { 'critical': '🔴 critical', 'major': '🟠 major', 'minor': '🟡 minor' };
+  const followupHead = (f) => `${SEV_LABEL_FOLLOWUP[f.severity] ?? String(f.severity ?? '不明')} — ${
+    (f.file != null && f.file !== '') ? (f.line != null ? `\`${f.file}:${f.line}\`` : `\`${f.file}\``) : '場所指定なし'}`;
+  const ciCheckText = localVerify != null && localVerify.status === 'passed'
+    ? `マージ前: PR の CI（${localVerify.label ? `\`${localVerify.label}\` ラベルで走る ` : ''}build / docker-build / 全 unit テスト等）の結果を確認する — ci の AC はローカル実行で判定済みで、run は check の結果を待っていない`
+    : null;
+  const preMergeItems = [
+    ...cardOpen.map((it) => ({ source: 'machine', card: `${it.state === 'failed' ? '❌' : '⚠️'} ${it.name}: ${it.note}` })),
+    ...(prBodySynced === false ? [{ source: 'pr_body', card: prBodyHasDiagram === true ? PR_BODY_STALE_NOTE_WITH_DIAGRAM : PR_BODY_STALE_NOTE }] : []),
+    ...holdRows.filter((row) => !row.action.startsWith('不要'))
+      .map((row) => ({ source: 'hold', card: `🔶 HOLD の理由「${row.reason}」: ${row.action}`, row })),
+    ...(Array.isArray(humanFollowups) ? humanFollowups.filter((f) => f != null) : [])
+      .map((f, i) => ({ source: 'followup', card: `👤 人間側 follow-up ${i + 1}: ${followupHead(f)}（詳細は下の「人間側 follow-up」）`, followup: f })),
+    ...(ciCheckText != null ? [{ source: 'local_verify', card: `⚠️ ${ciCheckText}`, text: ciCheckText }] : []),
+    ...(Array.isArray(reviewPoints) ? reviewPoints : [])
+      .filter((p) => typeof p === 'string' && p.trim().length > 0)
+      .map((p) => ({ source: 'review_point', card: `👀 人間に見てほしい点: ${mdCell(p.replace(/\s+/g, ' ').trim())}` })),
+  ];
+  const preMergeOf = (source) => preMergeItems.filter((it) => it.source === source);
+
   const cardQuestion = mergeTier === 'HOLD'
     ? '下の「HOLD になった理由と現状」を解消してから merge するか'
-    : cardOpen.length > 0
-      ? `機械の確認が ✅ でない ${cardOpen.length} 項目（下の「あなたが確かめること」）を確かめたうえで、この diff を merge してよいか`
-      : 'この diff を merge してよいか（機械の確認は 5 項目とも ✅）';
+    : preMergeItems.length === 0
+      ? 'この diff を merge してよいか（機械の確認は 5 項目とも ✅）'
+      : preMergeItems.length === cardOpen.length
+        ? `機械の確認が ✅ でない ${cardOpen.length} 項目（下の「あなたが確かめること」）を確かめたうえで、この diff を merge してよいか`
+        : `下の「あなたが確かめること」の ${preMergeItems.length} 項目を確かめたうえで、この diff を merge してよいか`;
   lines.push(`**あなたが決めること**: ${cardQuestion}`);
   lines.push('');
   const cardTally = [['ok', '✅ 確認済み'], ['unverified', '⚠️ 未検証'], ['failed', '❌ 不合格']]
@@ -1843,10 +1930,8 @@ function buildDevflowSummaryBody({
   lines.push('');
   lines.push('### あなたが確かめること');
   lines.push('');
-  const prBodyStale = prBodySynced === false;
-  if (cardOpen.length === 0 && !prBodyStale) lines.push('なし');
-  for (const it of cardOpen) lines.push(`- ${it.state === 'failed' ? '❌' : '⚠️'} ${it.name}: ${it.note}`);
-  if (prBodyStale) lines.push(`- ${prBodyHasDiagram === true ? PR_BODY_STALE_NOTE_WITH_DIAGRAM : PR_BODY_STALE_NOTE}`);
+  if (preMergeItems.length === 0) lines.push('なし');
+  for (const it of preMergeItems) lines.push(`- ${it.card}`);
   lines.push('');
 
   lines.push('| Merge tier | shape | テスト | 評価 | 台帳 (Ledger) | AC | 危険検出 |');
@@ -1914,8 +1999,8 @@ function buildDevflowSummaryBody({
     youDoLines.push(`1. diff を review し LGTM → \`gh pr ready ${pr}\` → マージ`);
   }
   let youDoN = youDoLines.length + 1;
-  if (localVerify != null && localVerify.status === 'passed') {
-    youDoLines.push(`${youDoN}. マージ前: PR の CI（${localVerify.label ? `\`${localVerify.label}\` ラベルで走る ` : ''}build / docker-build / 全 unit テスト等）の結果を確認する — ci の AC はローカル実行で判定済みで、run は check の結果を待っていない`);
+  for (const it of preMergeOf('local_verify')) {
+    youDoLines.push(`${youDoN}. ${it.text}`);
     youDoN++;
   }
   const seenDangerClasses = new Set();
@@ -1944,66 +2029,7 @@ function buildDevflowSummaryBody({
     lines.push('');
     lines.push('| 理由 | 区分 | 現状 | 対応 |');
     lines.push('|---|---|---|---|');
-    const escalateTotal = escalateAll.length;
-    const escalateResolved = escalateAll.filter((it) => isResolved(it)).length;
-    const holdCodeSet = new Set(holdReasons.map((hr) => hr && hr.code));
-    const holdAcGroups = acGroups
-      .map((g) => ({ ...g, holdCodes: g.codes.filter((c) => holdCodeSet.has(c)) }))
-      .filter((g) => g.holdCodes.length >= 2);
-    const ledgerUnconvergedIds = new Set(holdReasons.find((hr) => hr && hr.code === 'ledger_unconverged')?.item_ids ?? []);
-    const ledgerUnconvergedItems = uncheckedBlocking.filter((it) => ledgerUnconvergedIds.has(it.id));
-    const codeAcIndexes = {
-      ledger_unconverged: ledgerUnconvergedItems.map(itemAcIndex),
-      escalate: escalateAll.map(itemAcIndex),
-      ac_agent_unsatisfied: acAgentGaps,
-      ac_human_pending: acHumanGaps,
-      ac_ci_pending: acCiGaps,
-    };
-    const absorbedCodes = new Set(Object.keys(codeAcIndexes).filter((code) => {
-      const covered = new Set(holdAcGroups.filter((g) => g.holdCodes.includes(code)).map((g) => g.acIndex));
-      return covered.size > 0 && codeAcIndexes[code].every((k) => covered.has(k));
-    }));
-    const CODE_LABEL = {
-      ledger_unconverged: 'ledger 未収束',
-      escalate: 'ESCALATE',
-      ac_agent_unsatisfied: 'AC 未達（エージェント）',
-      ac_human_pending: 'AC 未達（人手）',
-      ac_ci_pending: 'AC 未確定（CI）',
-    };
-    const holdCtx = {
-      escalateTotal,
-      escalateResolved,
-      uncheckedBlockingCount: ledgerUnconvergedItems.length,
-      unclearedCount: uncleared.length,
-      iterateStatus,
-      pr,
-      humanAcGaps: acHumanGaps,
-      observationalAcGaps: observationalGaps,
-      unreachableAcGaps: unreachableGaps,
-      ciVerify,
-      conflictAutoresolve,
-      securityReview,
-      redFacts,
-    };
-    let acGroupRowsEmitted = false;
-    for (const hr of holdReasons) {
-      if (!acGroupRowsEmitted && holdAcGroups.some((g) => g.holdCodes.includes(hr && hr.code))) {
-        acGroupRowsEmitted = true;
-        for (const g of holdAcGroups) {
-          const reason = `${g.label} — ${g.holdCodes.map((c) => CODE_LABEL[c]).join('・')} を 1 行にまとめた（内訳: ${g.holdCodes.join(' / ')}）`;
-          const current = g.holdCodes.map((c) => {
-            if (c === 'ledger_unconverged') return `未 checked blocking ${g.blocking.length} 件`;
-            if (c === 'escalate') return `ESCALATE ${g.escalate.length} 件中 ${g.escalate.filter((it) => isResolved(it)).length} 件は fix 後 tree で解消確認済み`;
-            return 'AC 判定 satisfied:false';
-          }).join('・');
-          const remedy = [...new Set(g.holdCodes.map((c) => holdReasonDisplay(c, holdCtx).remedy))].join('・');
-          lines.push(`| ${reason} | ${remedy} | ${current} | ${g.actions.join('・')}（下表 ${g.label} 行） |`);
-        }
-      }
-      if (absorbedCodes.has(hr && hr.code)) continue;
-      const { current, action, remedy } = holdReasonDisplay(hr && hr.code, holdCtx);
-      lines.push(`| ${mdCell(hr && hr.reason)} | ${remedy} | ${current} | ${action} |`);
-    }
+    for (const row of holdRows) lines.push(`| ${row.reason} | ${row.remedy} | ${row.current} | ${row.action} |`);
   } else if (mergeTier === 'HOLD') {
     lines.push('**Merge tier 理由**:');
     if (!mergeTierReasons || mergeTierReasons.length === 0) {
@@ -2204,18 +2230,13 @@ function buildDevflowSummaryBody({
     }
   }
 
-  const followups = Array.isArray(humanFollowups) ? humanFollowups.filter((f) => f != null) : [];
+  const followups = preMergeOf('followup').map((it) => it.followup);
   if (followups.length > 0) {
-    const SEV_LABEL_FOLLOWUP = { 'critical': '🔴 critical', 'major': '🟠 major', 'minor': '🟡 minor' };
     lines.push('');
     lines.push(`### 👤 人間側 follow-up（worktree の外を指す指摘 — 自動修正の対象外・${followups.length} 件）`);
     lines.push('');
     followups.forEach((f, i) => {
-      const sev = SEV_LABEL_FOLLOWUP[f.severity] ?? String(f.severity ?? '不明');
-      const loc = (f.file != null && f.file !== '')
-        ? (f.line != null ? `\`${f.file}:${f.line}\`` : `\`${f.file}\``)
-        : '場所指定なし';
-      lines.push(`${i + 1}. ${sev} — ${loc}`);
+      lines.push(`${i + 1}. ${followupHead(f)}`);
       lines.push(`   - 指摘: ${mdCell(f.description)}`);
       if (f.suggestion != null && f.suggestion !== '') {
         lines.push(`   - 提案: ${mdCell(f.suggestion)}`);
@@ -4151,6 +4172,8 @@ const summaryBody = buildDevflowSummaryBody({
   baseFailingTests: state.baseFailing.env,
   humanFollowups: iterate?.human_followups ?? null,
   outOfScope: state.plan?.out_of_scope ?? null,
+  // PR 本文の「人間に見てほしい点」と同じ plan.review_points。判断カード「あなたが確かめること」に出す
+  reviewPoints: state.plan?.review_points ?? null,
   unsatisfiedAcByActor: acGapsFinal,
   ciVerify: state.ciVerify ?? null,
   localVerify: state.localVerify ?? null,

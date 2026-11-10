@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { devFlowArgs, makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowResponder, makeWorkflowContext } from './test-helpers/vm-sandbox.mjs';
+import { devFlowArgs, makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, devFlowResponder, makeWorkflowContext, STANDARD_FILES } from './test-helpers/vm-sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -145,6 +145,23 @@ test('[summary-post] post-summary stub が posted:false を返しても result.m
 // summary_posted（issue #712 AC-3）: 投稿失敗が fail-open の log 1 行で消えないよう、
 // 返り値・終端 note に出す。
 // ============================================================
+
+// issue #1406 AC-4: finalize は PR 本文と同じ plan.review_points を終端サマリーに渡す
+test('[summary-post] plan に review_points を持つ run は、post-summary に渡る本文の判断カードと PR 本文の両方にその項目が出る', async () => {
+  const POINT = '追加した直後は一覧に名前が並ばない（変更前は即時に表示）';
+  const { ctx, calls } = makeDevFlowSandbox({
+    overrides: { 'impl:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: [...STANDARD_FILES], summary: 's', concerns: [], review_points: [POINT] } },
+  });
+  const { error } = await runWorkflowCapture(src, ctx);
+  assertNoCrash(error, 'review_points');
+  assert.equal(error, null, `dev-flow run が throw した: ${error?.message}`);
+  assert.ok(calls.find((c) => c.label === 'pr#1')?.prompt.includes(`## 人間に見てほしい点\n- ${POINT}`), 'PR 本文に review_points が無い');
+  const lines = calls.find((c) => c.label === 'post-summary').prompt.split('\n');
+  const h = lines.indexOf('### あなたが確かめること');
+  assert.ok(h >= 0, '終端サマリーに判断カードが無い');
+  const card = lines.slice(h + 2, lines.indexOf('', h + 2));
+  assert.ok(card.includes(`- 👀 人間に見てほしい点: ${POINT}`), `判断カードに review_points が無い: ${card.join('\n')}`);
+});
 
 async function runWithPost(postResult) {
   const { ctx } = makeDevFlowSandbox({ overrides: { 'post-summary': postResult } });
