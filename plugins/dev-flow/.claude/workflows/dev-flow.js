@@ -1256,48 +1256,35 @@ function makeSeenTracker(threshold) {
 
 
 // ==== BEGIN inline: _lib/ci-check.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
-const CI_STATUS = {
+const CI_RELAY_STDOUT = {
   type: 'object',
-  required: ['status', 'passed', 'failed', 'pending', 'skipped'],
-  properties: {
-    status: { type: 'string', enum: ['passed', 'failed', 'pending', 'no_checks', 'error'] },
-    passed: { type: 'integer', minimum: 0 },
-    failed: { type: 'integer', minimum: 0 },
-    pending: { type: 'integer', minimum: 0 },
-    skipped: { type: 'integer', minimum: 0 },
-    failed_checks: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          bucket: { type: 'string' },
-          state: { type: 'string' },
-          link: { type: 'string' },
-        },
-      },
-    },
-    pending_checks: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          state: { type: 'string' },
-          link: { type: 'string' },
-        },
-      },
-    },
-    waited_seconds: { type: 'number' },
-    poll_attempts: { type: 'number' },
-    head_sha: { type: 'string' },
-    epoch: { type: ['number', 'null'] },
-    next_action: { type: 'string', enum: ['poll', 'done'] },
-    message: { type: 'string' },
-  },
+  required: ['stdout'],
+  properties: { stdout: { type: 'string' } },
+  additionalProperties: false,
 };
 
+const CI_STATUS_VALUES = ['passed', 'failed', 'pending', 'no_checks', 'error'];
+const CI_COUNT_KEYS = ['passed', 'failed', 'pending', 'skipped'];
+
 const CI_RELAY_FAILED = { status: 'error', passed: 0, failed: 0, pending: 0, skipped: 0 };
+const CI_WAIT_RELAY_FAILED = { slept: false, status: 'error', passed: 0, failed: 0, pending: 0, skipped: 0 };
+
+function ciRelayResult(res, { wait = false } = {}) {
+  const failed = wait ? CI_WAIT_RELAY_FAILED : CI_RELAY_FAILED;
+  const stdout = res?.stdout;
+  if (typeof stdout !== 'string' || stdout === '') return failed;
+  let out;
+  try {
+    out = JSON.parse(stdout);
+  } catch {
+    return failed;
+  }
+  if (out === null || typeof out !== 'object' || Array.isArray(out)) return failed;
+  if (!CI_STATUS_VALUES.includes(out.status)) return failed;
+  if (!CI_COUNT_KEYS.every((k) => Number.isInteger(out[k]) && out[k] >= 0)) return failed;
+  return out;
+}
+
 function checkNameArgs(flag, names) {
   return (Array.isArray(names) ? names : []).map((name) => ` ${flag} '${String(name).split("'").join("'\\''")}'`).join('');
 }
@@ -1307,17 +1294,18 @@ function checkCiCommand({ pr, repo, exclude = [], only = [], wait = 0 }) {
     + (Number(wait) > 0 ? ' --wait ' + wait : '');
 }
 
-function ciRelayPrompt({ objective, command, failed }) {
+function ciRelayPrompt({ objective, command }) {
   return `## Objective\n${objective}\n\n`
     + `## Tools\n- 使用可: Bash のみ\n\n`
     + `## Boundary\n`
     + `- 読み取り専用。最終行のコマンド以外を実行しない（再実行・再取得をしない）\n`
     + `- ファイルを変更しない\n\n`
     + `## Output format\n`
-    + `最終行のコマンドの **stdout の JSON object をそのまま** 返せ（キーの追加・削除・値の書き換え・要約をしない）。`
-    + `exit 非0・stdout 空・JSON 不正・拒否されたときは ${JSON.stringify(failed)} を一字一句そのまま返せ（成功の値を作らない）。`
-    + `prose 禁止。JSON のみ返せ。\n\n`
-    + `## Token cap\nJSON のみ。1 行以内。\n\n`
+    + `{"stdout": "<最終行のコマンドの stdout の 1 行目>"} を返せ。stdout の値は 1 行目を一字一句そのまま写した **1 つの文字列** `
+    + `（末尾の改行は含めない。JSON として読み直して object に組み立て直さない・キーを足さない・整形・要約・値の書き換えをしない）。`
+    + `exit 非0・stdout 空・拒否されたときは {"stdout": ""} を返せ（成功の値を作らない）。`
+    + `prose 禁止。\n\n`
+    + `## Token cap\nstdout の 1 フィールドのみ。\n\n`
     + `## Command\n`
     + `次のコマンドを 1 回だけ、一字一句そのままの単文で実行せよ（cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトを付けない）:\n`
     + command;
@@ -1325,15 +1313,9 @@ function ciRelayPrompt({ objective, command, failed }) {
 
 function ciCheckPrompt({ pr, repo, exclude = [] }) {
   return ciRelayPrompt({
-    objective: `PR #${pr} の head commit sha と CI ステータスを 1 回取得し、JSON を返せ。`,
+    objective: `PR #${pr} の head commit sha と CI ステータスを 1 回取得し、stdout を返せ。`,
     command: checkCiCommand({ pr, repo, exclude }),
-    failed: CI_RELAY_FAILED,
   });
-}
-
-function ciEffectiveStatus(ci) {
-  if (ci == null) return { status: 'error', failed_checks: [] };
-  return ci;
 }
 // ==== END inline: _lib/ci-check.mjs ====
 // ==== BEGIN inline: _lib/review-ac.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
@@ -3640,12 +3622,11 @@ if (LITE) {
     route = 'full'
     iterateEpochRes = epochResOf({ epoch: iterate?.end_epoch })
   } else {
-    const ciLiteRaw = await failOpenAgent(
+    // 中継の返り値（check-ci の stdout の文字列。hook が実 stdout に縛る）を parse する。null・空・形の違いは error → full pr-iterate へ委譲
+    const ciLite = ciRelayResult(await failOpenAgent(
       ciCheckPrompt({ pr: pr.pr_number, repo: REPO }),
-      { agentType: 'stdout-relay', schema: CI_STATUS, label: 'ci-check-lite', phase: 'PR' },
-    )
-    // 応答は hook が check-ci の実 stdout か失敗時の JSON（status:'error'）に縛る。null も error → full pr-iterate へ委譲
-    const ciLite = ciEffectiveStatus(ciLiteRaw)
+      { agentType: 'stdout-relay', schema: CI_RELAY_STDOUT, label: 'ci-check-lite', phase: 'PR' },
+    ))
     if (ciLite.status === 'passed' || ciLite.status === 'no_checks') {
       state.liteReview = { decision: reviewLite?.decision ?? null, ci: ciLite.status, summary: reviewLite?.summary ?? null }
       iterate = { status: 'lgtm', fixes_applied: 0 }

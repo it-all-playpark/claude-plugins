@@ -6,15 +6,17 @@
 // prompt と harness が記録した実行結果を正にする:
 //   - Bash: command が prompt（computed task の枠の後）の最終行（harness の 2 字下げを外したもの）と完全に一致し、
 //     その行の先頭トークンが check-ci のときだけ通す
-//   - StructuredOutput: 値が、直前にそのコマンドを実行した Bash の実 stdout の JSON か、prompt が定める失敗時の JSON
-//     （_lib/ci-check.mjs の CI_RELAY_FAILED / CI_WAIT_RELAY_FAILED。Bash を実行していなくてよい）と一致するときだけ通す
-// 判定の方式（枠の後の最終行・tool_result の stdout・固定の失敗時の JSON）は security の中継の bind
+//   - StructuredOutput: 入力がキー stdout だけを持ち、その値が、直前にそのコマンドを実行した Bash の実 stdout の 1 行目と
+//     一字一句一致する文字列か、空文字（中継が stdout を返せないときの固定の値。Bash を実行していなくてよい）のときだけ通す。
+//     正規化・部分一致・JSON としての同値判定をしない（中継に object を組み立て直させると、キーの追加・欠落・型の違いで
+//     CI が通っていても拒否される。文字列の parse と形の検証は workflow 側 — _lib/ci-check.mjs の ciRelayResult — が行う）
+// 判定の方式（枠の後の最終行・tool_result の stdout・固定の失敗時の値）は security の中継の bind
 // （security-relay-bind.mjs）と同じ。transcript の読み取りは共有しない — CI の変更で security の gate を外せる中継の判定を
 // 動かさないため。
 // prompt と stdout は harness が書く subagent の transcript（`<transcript_path から .jsonl を除いたもの>/subagents/` 配下の
 // `agent-<agent_id>.jsonl`）から読む。transcript は Claude Code の設定ディレクトリの下にあり、sandbox の中の中継や PR のプロセスからは
 // 書けない（hook 用に別の記録を書かない — 書いた場所が sandbox から書けるなら、そこが偽造の入口になる）。
-// transcript・prompt が見つからない・枠の形が想定と違う・コマンド行が取れない・行が JSON でないときは deny（fail-closed）。
+// transcript・prompt が見つからない・枠の形が想定と違う・コマンド行が取れないときは deny（fail-closed）。
 // 分類: incentive-structural（中継が PR の文を読める限り誘導を否定できない。sunset しない）。
 //
 // stdin: PreToolUse の入力 JSON（tool_name・tool_input・transcript_path・agent_id）
@@ -22,7 +24,6 @@
 //   （中継の session に入力由来の文字列を返さない）。exit 0。想定外で落ちたときは呼び出し側が deny にする。
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { CI_RELAY_FAILED, CI_WAIT_RELAY_FAILED } from '../ci-check.mjs'
 
 // harness が workflow の prompt を載せる枠（この行の後に prompt の各行を 2 字下げして続ける）
 const FRAME_HEAD = '[Workflow harness — computed task] '
@@ -54,15 +55,9 @@ function promptCommand(entries) {
   return { command }
 }
 
-// prompt のコマンドが定める失敗時の JSON（check-ci 以外は null）。--wait は checkCiCommand が末尾に置く
-function failedOutputOf(command) {
-  if (!command.startsWith('check-ci ')) return null
-  return / --wait [0-9]+$/.test(command) ? CI_WAIT_RELAY_FAILED : CI_RELAY_FAILED
-}
-
-// command を実行した最後の Bash の実 stdout の 1 行目の JSON object（実行していない・失敗した・JSON でなければ null）。
+// command を実行した最後の Bash の実 stdout の 1 行目（実行していない・失敗したら null）。
 // tool_result の本文は stdout の後に stderr が続くので、1 行目だけを stdout として読む（check-ci は JSON 1 行を stdout に出す）
-function stdoutJsonOf(entries, command) {
+function stdoutLineOf(entries, command) {
   let id = null
   for (const e of entries) {
     if (e?.type !== 'assistant' || !Array.isArray(e?.message?.content)) continue
@@ -82,20 +77,8 @@ function stdoutJsonOf(entries, command) {
   const text = typeof result.content === 'string' ? result.content
     : Array.isArray(result.content) ? result.content.filter((x) => x?.type === 'text' && typeof x.text === 'string').map((x) => x.text).join('\n')
     : null
-  if (text == null) return null
-  try {
-    const v = JSON.parse(text.split('\n')[0])
-    return v !== null && typeof v === 'object' && !Array.isArray(v) ? v : null
-  } catch {
-    return null
-  }
+  return text == null ? null : text.split('\n')[0]
 }
-
-// key の順に依らない JSON の一致
-const canonical = (v) => (Array.isArray(v) ? `[${v.map(canonical).join(',')}]`
-  : v !== null && typeof v === 'object' ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}`
-  : JSON.stringify(v))
-const sameJson = (a, b) => canonical(a) === canonical(b)
 
 // <root> の配下（symlink はたどらない）で name のファイルを探す
 function findFiles(root, name, depth = 0) {
@@ -136,8 +119,7 @@ try {
 
 const prompt = promptCommand(entries)
 if (prompt.error) deny(prompt.error)
-const failed = failedOutputOf(prompt.command)
-if (failed == null) deny('workflow の prompt のコマンドが check-ci でない')
+if (!prompt.command.startsWith('check-ci ')) deny('workflow の prompt のコマンドが check-ci でない')
 
 if (tool === 'Bash') {
   // 一致するコマンドでも sandbox の外では実行させない（PR の指示を受けた中継が sandbox を外せてしまう）
@@ -146,9 +128,10 @@ if (tool === 'Bash') {
   deny('stdout-relay は workflow の prompt の最終行のコマンドを一字一句そのまま実行する')
 }
 
+const DENY_OUTPUT = 'stdout-relay の返り値は {"stdout": <実行したコマンドの stdout の 1 行目と一字一句同じ文字列>} か {"stdout": ""} に限る'
 const output = input?.tool_input
-const allowed = [failed]
-const stdout = stdoutJsonOf(entries, prompt.command)
-if (stdout != null) allowed.push(stdout)
-if (allowed.some((a) => sameJson(a, output))) decide(true)
-deny('stdout-relay の返り値は、実行したコマンドの stdout の JSON か prompt が定める失敗時の JSON に限る')
+if (output === null || typeof output !== 'object' || Array.isArray(output)) deny(DENY_OUTPUT)
+const keys = Object.keys(output)
+if (keys.length !== 1 || keys[0] !== 'stdout' || typeof output.stdout !== 'string') deny(DENY_OUTPUT)
+if (output.stdout === '' || output.stdout === stdoutLineOf(entries, prompt.command)) decide(true)
+deny(DENY_OUTPUT)

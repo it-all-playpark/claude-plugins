@@ -187,7 +187,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
   - push の待機累計 3600 秒・読めない結果・throw は `pr-push stop`
   - lite の review・CI が判定できないときはフル pr-iterate へ昇格する（fail-safe）
 - **コード**: `phase('PR')`・`prPhasePrompt`・`prPhaseFailure`・`prIterateArgs`（`.claude/workflows/dev-flow.js`）、`buildPrBody`・
-  `buildCommitMessage`・`prPhaseJob`（`_lib/pr-artifacts.mjs`）、`classifyLiteReview`（`_lib/lite-route.mjs`）、`ciEffectiveStatus`（`_lib/ci-check.mjs`）
+  `buildCommitMessage`・`prPhaseJob`（`_lib/pr-artifacts.mjs`）、`classifyLiteReview`（`_lib/lite-route.mjs`）、`ciRelayResult`（`_lib/ci-check.mjs`）
 
 ## pr-iterate
 

@@ -6,13 +6,13 @@
 //   - 既定の上限 CI_WAIT_CEILING_SECONDS=300, CI_POLL_SECONDS=45。poll 回数の上限は待機上限から導く（ciMaxPolls）。
 //     args.ci_wait_ceiling_seconds は正の整数だけ受け、未指定は既定値（ciWaitCeiling）
 //   - prompt にループ指示が無い（1 spawn = 1 判定。ci-check は待機もしない）
-//   - CI_STATUS の status enum は closed（'error' が欠けると gh fetch 失敗を green と誤認しうる）
+//   - 中継の返り値 schema は CI_RELAY_STDOUT の 1 つ（stdout の文字列 1 フィールド・additionalProperties:false）。
+//     中継に check-ci の stdout を object に組み立て直させない（転写の揺れで hook に拒否され、CI が通っていても
+//     ci_pending / ci_error になる）
 //   - prompt の最終行は check-ci を先頭トークンにした bare 単文（hook がこの行と完全一致する Bash だけを通す）で、
-//     head_sha・slept を agent に足させる手順を持たず、示す失敗時の JSON は export した定数と同じ
-//     （hook はその定数との一致で返り値を通す）
-//   - ciEffectiveStatus は null を error にし、それ以外（件数と status が食い違う応答を含む）はそのまま返す
-//     （返り値は hook が check-ci の実 stdout に縛る）
-//   - CI_WAIT_CHECK は slept を required に持つ（実待機不成立の判別に使う）
+//     返り値は {"stdout": "<stdout の 1 行目>"} か {"stdout": ""}。head_sha・slept を agent に足させる手順を持たない
+//   - ciRelayResult は stdout を parse した object の status が closed enum（'error' が欠けると gh fetch 失敗を green と
+//     誤認しうる）にあり件数が非負整数のときだけその object を返し、それ以外は失敗時の値（待つ prompt は slept:false 付き）にする
 //   - 並列 ci-check の採否（ciHeadRejectReason）は 40 桁 sha の一致だけを採用にする
 //
 // prompt 本文が dev-flow.js / pr-iterate.js の inline 区間と全文一致することは
@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { CI_POLL_SECONDS, CI_WAIT_CEILING_SECONDS, ciWaitCeiling, ciMaxPolls, CI_TURN_MARGIN, CI_STATUS, CI_WAIT_CHECK, ciCheckPrompt, ciWaitCheckPrompt, checkCiCommand, ciHeadRejectReason, isFullCommitSha, ciEffectiveStatus, CI_VERIFY_POLL_SECONDS, CI_VERIFY_CHECK, ciVerifyPrompt, ciVerifyVerdict, CI_RELAY_FAILED, CI_WAIT_RELAY_FAILED } from './ci-check.mjs';
+import { CI_POLL_SECONDS, CI_WAIT_CEILING_SECONDS, ciWaitCeiling, ciMaxPolls, CI_TURN_MARGIN, CI_RELAY_STDOUT, CI_STATUS_VALUES, ciRelayResult, ciCheckPrompt, ciWaitCheckPrompt, checkCiCommand, ciHeadRejectReason, isFullCommitSha, CI_VERIFY_POLL_SECONDS, ciVerifyPrompt, ciVerifyVerdict, CI_RELAY_FAILED, CI_WAIT_RELAY_FAILED } from './ci-check.mjs';
 
 // ============================================================
 // 定数
@@ -50,17 +50,17 @@ function readCheckCiWaitMax() {
 
 // prompt の最終行（hook が Bash と照合する行）
 const lastLine = (p) => p.split('\n').at(-1);
-// prompt が示す失敗時の JSON（`{"` で始まる 1 行の JSON object を全部拾う）
-const failedJsonsOf = (p) => (p.match(/\{"[^{}\n]*\}/g) ?? []).map((s) => JSON.parse(s));
+// prompt が示す返り値の形（`{"` で始まる 1 行の JSON object の表記を全部拾う）
+const outputFormsOf = (p) => p.match(/\{"[^{}\n]*\}/g) ?? [];
 
 const RELAY_PROMPTS = [
-  ['ciCheckPrompt', ciCheckPrompt({ pr: 7, repo: 'o/n' }), CI_RELAY_FAILED],
-  ['ciCheckPrompt（exclude）', ciCheckPrompt({ pr: 7, repo: 'o/n', exclude: ['e2e', "it's"] }), CI_RELAY_FAILED],
-  ['ciCheckPrompt（repo なし）', ciCheckPrompt({ pr: 7, repo: null }), CI_RELAY_FAILED],
-  ['ciWaitCheckPrompt', ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: CI_POLL_SECONDS }), CI_WAIT_RELAY_FAILED],
-  ['ciWaitCheckPrompt（exclude）', ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: CI_POLL_SECONDS, exclude: ['e2e'] }), CI_WAIT_RELAY_FAILED],
-  ['ciVerifyPrompt（待機なし）', ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: 0 }), CI_RELAY_FAILED],
-  ['ciVerifyPrompt（待機あり）', ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: CI_VERIFY_POLL_SECONDS }), CI_WAIT_RELAY_FAILED],
+  ['ciCheckPrompt', ciCheckPrompt({ pr: 7, repo: 'o/n' })],
+  ['ciCheckPrompt（exclude）', ciCheckPrompt({ pr: 7, repo: 'o/n', exclude: ['e2e', "it's"] })],
+  ['ciCheckPrompt（repo なし）', ciCheckPrompt({ pr: 7, repo: null })],
+  ['ciWaitCheckPrompt', ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: CI_POLL_SECONDS })],
+  ['ciWaitCheckPrompt（exclude）', ciWaitCheckPrompt({ pr: 7, repo: 'o/n', seconds: CI_POLL_SECONDS, exclude: ['e2e'] })],
+  ['ciVerifyPrompt（待機なし）', ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: 0 })],
+  ['ciVerifyPrompt（待機あり）', ciVerifyPrompt({ pr: 7, repo: 'o/n', checks: ['e2e'], seconds: CI_VERIFY_POLL_SECONDS })],
 ];
 
 test('[ci-check] 1 spawn の必要 turn（check-ci + StructuredOutput + margin = 5）が stdout-relay の maxTurns を超えない', () => {
@@ -69,7 +69,7 @@ test('[ci-check] 1 spawn の必要 turn（check-ci + StructuredOutput + margin =
   assert.ok(ciRelayTurns(CI_TURN_MARGIN) <= maxTurns, `必要 turn ${ciRelayTurns(CI_TURN_MARGIN)} が maxTurns ${maxTurns} を超えている`);
 });
 
-for (const [name, p, failed] of RELAY_PROMPTS) {
+for (const [name, p] of RELAY_PROMPTS) {
   test(`[ci-check] ${name}: 最終行は先頭トークンが check-ci の bare 単文 1 本（| && ; リダイレクトを含まない）で、Bash はその 1 本だけ`, () => {
     const line = lastLine(p);
     assert.equal(line.split(' ')[0], 'check-ci', `最終行の先頭トークンが check-ci でない: ${line}`);
@@ -80,11 +80,10 @@ for (const [name, p, failed] of RELAY_PROMPTS) {
     assert.deepEqual((body.match(/`(check-ci|ci-wait|gh|sleep)\b[^`]*`/g) ?? []), [], `最終行の他に実行させるコマンドがある: ${body}`);
   });
 
-  test(`[ci-check] ${name}: 示す失敗時の JSON は export した定数と同じで、head_sha・slept を足させる手順が無い`, () => {
-    assert.deepEqual(failedJsonsOf(p), [failed], `prompt が示す失敗時の JSON が定数と食い違う: ${p}`);
-    const withoutFailed = p.split(JSON.stringify(failed)).join('');
-    for (const key of ['head_sha', 'slept']) {
-      assert.ok(!withoutFailed.includes(key), `prompt が ${key} を agent に扱わせている: ${withoutFailed}`);
+  test(`[ci-check] ${name}: 返り値は成功時 {"stdout": "<最終行のコマンドの stdout の 1 行目>"}・失敗時 {"stdout": ""} だけで、head_sha・slept・status を扱わせない`, () => {
+    assert.deepEqual(outputFormsOf(p), ['{"stdout": "<最終行のコマンドの stdout の 1 行目>"}', '{"stdout": ""}'], `prompt が示す返り値の形が違う: ${p}`);
+    for (const key of ['head_sha', 'slept', 'status']) {
+      assert.ok(!p.includes(key), `prompt が ${key} を agent に扱わせている: ${p}`);
     }
   });
 }
@@ -96,12 +95,9 @@ test('[ci-check] 待機する prompt は最終行の check-ci に --wait を付�
   assert.equal(lastLine(ciCheckPrompt({ pr: 7, repo: 'o/n' })), 'check-ci --pr 7 --repo o/n');
 });
 
-test('[ci-check] 失敗時の JSON は status:error（待機する prompt は slept:false も）で、CI_STATUS / CI_WAIT_CHECK の required を満たす', () => {
-  assert.equal(CI_RELAY_FAILED.status, 'error');
-  assert.equal(CI_WAIT_RELAY_FAILED.status, 'error');
-  assert.equal(CI_WAIT_RELAY_FAILED.slept, false);
-  for (const k of CI_STATUS.required) assert.ok(k in CI_RELAY_FAILED, `CI_RELAY_FAILED に ${k} が無い`);
-  for (const k of CI_WAIT_CHECK.required) assert.ok(k in CI_WAIT_RELAY_FAILED, `CI_WAIT_RELAY_FAILED に ${k} が無い`);
+test('[ci-check] 失敗時の値は status:error・件数 0（待機する prompt は slept:false も）', () => {
+  assert.deepEqual(CI_RELAY_FAILED, { status: 'error', passed: 0, failed: 0, pending: 0, skipped: 0 });
+  assert.deepEqual(CI_WAIT_RELAY_FAILED, { slept: false, status: 'error', passed: 0, failed: 0, pending: 0, skipped: 0 });
 });
 
 test('[ci-check] CI_TURN_MARGIN は 3（実測: 文書化 worst case 8 に対し 10 tool call で StructuredOutput 未達）', () => {
@@ -131,77 +127,78 @@ test('[ci-check] ciWaitCeiling: 未指定は既定 300、正の整数はその�
 });
 
 // ============================================================
-// schema
+// schema（中継の返り値は stdout の文字列 1 フィールド）
 // ============================================================
 
-test('[ci-check] CI_STATUS の status enum は 5 値の closed enum', () => {
-  assert.deepEqual(
-    CI_STATUS.properties.status.enum,
-    ['passed', 'failed', 'pending', 'no_checks', 'error'],
-  );
+test('[ci-check] CI_RELAY_STDOUT は required が stdout だけ・stdout は string・additionalProperties:false の object', () => {
+  assert.deepEqual(CI_RELAY_STDOUT, {
+    type: 'object',
+    required: ['stdout'],
+    properties: { stdout: { type: 'string' } },
+    additionalProperties: false,
+  });
 });
 
-test('[ci-check] CI_STATUS は status と check-ci の件数（passed / failed / pending / skipped）を required に持つ', () => {
-  assert.deepEqual(CI_STATUS.required, ['status', 'passed', 'failed', 'pending', 'skipped']);
-  for (const k of ['passed', 'failed', 'pending', 'skipped']) {
-    assert.equal(CI_STATUS.properties[k].type, 'integer', `${k} は整数`);
-    assert.equal(CI_STATUS.properties[k].minimum, 0, `${k} は非負`);
-  }
-  for (const k of ['slept', 'status', 'passed', 'failed', 'pending', 'skipped']) {
-    assert.ok(CI_WAIT_CHECK.required.includes(k), `CI_WAIT_CHECK は ${k} を required に持つべき`);
-  }
+test('[ci-check] ci-check.mjs が export する schema（type:object の定数）は CI_RELAY_STDOUT の 1 つだけ', async () => {
+  const mod = await import('./ci-check.mjs');
+  const schemas = Object.entries(mod).filter(([, v]) => v !== null && typeof v === 'object' && v.type === 'object').map(([k]) => k);
+  assert.deepEqual(schemas, ['CI_RELAY_STDOUT']);
+});
+
+test('[ci-check] CI_STATUS_VALUES は 5 値の closed enum', () => {
+  assert.deepEqual(CI_STATUS_VALUES, ['passed', 'failed', 'pending', 'no_checks', 'error']);
 });
 
 // ============================================================
-// ciEffectiveStatus（null だけを error にする。返り値は hook が check-ci の実 stdout に縛る）
+// ciRelayResult（中継の返り値 {stdout} を workflow が採る object に直す）
 // ============================================================
 
 const counts = (passed, failed, pending, skipped) => ({ passed, failed, pending, skipped });
+const relayed = (out) => ({ stdout: JSON.stringify(out) });
 
-test('[ci-check] ciEffectiveStatus: null は status:error を合成する', () => {
-  assert.deepEqual(ciEffectiveStatus(null), { status: 'error', failed_checks: [] });
-  assert.deepEqual(ciEffectiveStatus(undefined), { status: 'error', failed_checks: [] });
-});
-
-test('[ci-check] ciEffectiveStatus: null 以外は件数と status が食い違っても count_mismatch を付けずにそのまま返す', () => {
-  for (const ci of [
-    { status: 'passed', ...counts(2, 0, 0, 1), failed_checks: [], head_sha: 'a'.repeat(40), epoch: 1 },
-    { status: 'passed', ...counts(5, 0, 2, 0), failed_checks: [] },
-    { status: 'no_checks', ...counts(1, 0, 0, 0) },
-    { status: 'pending', ...counts(1, 0, 0, 0) },
-    { status: 'error', ...counts(0, 0, 0, 0), message: 'x' },
-    CI_RELAY_FAILED,
-    CI_WAIT_RELAY_FAILED,
+test('[ci-check] ciRelayResult: stdout が status 5 値・件数が非負整数の object なら、その object を返す（wait の有無に依らない）', () => {
+  for (const out of [
+    { status: 'passed', ...counts(2, 0, 0, 1), failed_checks: [], pending_checks: [], head_sha: 'a'.repeat(40), waited_seconds: 0, poll_attempts: 1, epoch: 1, next_action: 'done' },
+    { status: 'failed', ...counts(1, 1, 0, 0), failed_checks: [{ name: 'bats', bucket: 'fail', state: 'FAILURE', link: 'https://example.com/r/1' }] },
+    { status: 'pending', ...counts(0, 0, 1, 0) },
+    { status: 'no_checks', ...counts(0, 0, 0, 0) },
+    { status: 'error', ...counts(0, 0, 0, 0), message: 'gh pr view: exit 1' },
+    // 件数と status の照合はしない（check-ci の実 stdout であることは hook が縛る）
+    { status: 'passed', ...counts(5, 0, 2, 0) },
+    { slept: true, status: 'passed', ...counts(1, 0, 0, 0), epoch: null },
+    { slept: false, status: 'pending', ...counts(0, 0, 0, 0) },
   ]) {
-    const r = ciEffectiveStatus(ci);
-    assert.equal(r, ci, `応答をそのまま返すべき: ${JSON.stringify(ci)}`);
-    assert.ok(!('count_mismatch' in r), `count_mismatch を付けてはならない: ${JSON.stringify(r)}`);
+    assert.deepEqual(ciRelayResult(relayed(out)), out, `待たない prompt: ${JSON.stringify(out)}`);
+    assert.deepEqual(ciRelayResult(relayed(out), { wait: true }), out, `待つ prompt: ${JSON.stringify(out)}`);
   }
 });
 
-test('[ci-check] CI_STATUS の failed_checks 要素は {name, bucket, state, link}、pending_checks 要素は {name, state, link}', () => {
-  assert.deepEqual(Object.keys(CI_STATUS.properties.failed_checks.items.properties).sort(), ['bucket', 'link', 'name', 'state']);
-  assert.deepEqual(Object.keys(CI_STATUS.properties.pending_checks.items.properties).sort(), ['link', 'name', 'state']);
-});
-
-test('[ci-check] CI_STATUS は並列 ci-check の照合用に optional head_sha（string）を持つ', () => {
-  assert.equal(CI_STATUS.properties.head_sha.type, 'string');
-  assert.ok(!CI_STATUS.required.includes('head_sha'), 'head_sha は optional でなければならない（取得失敗は省略 → 不採用で直列に倒す）');
-});
-
-test('[ci-check] CI_STATUS は clock telemetry 給電用の optional epoch を持つ（check-ci は date の失敗で null を出す）', () => {
-  assert.deepEqual(CI_STATUS.properties.epoch.type, ['number', 'null']);
-  assert.ok(!CI_STATUS.required.includes('epoch'), 'epoch は optional でなければならない');
-});
-
-test('[ci-check] CI_WAIT_CHECK schema は slept（boolean）を required に持ち、status 以下は CI_STATUS と同じ', () => {
-  assert.ok(CI_WAIT_CHECK.required.includes('slept'), 'slept は required でなければならない');
-  assert.ok(CI_WAIT_CHECK.required.includes('status'), 'status は required でなければならない');
-  assert.equal(CI_WAIT_CHECK.properties.slept.type, 'boolean');
-  for (const [k, v] of Object.entries(CI_STATUS.properties)) {
-    assert.deepEqual(CI_WAIT_CHECK.properties[k], v, `CI_WAIT_CHECK.properties.${k} は CI_STATUS と一致するべき`);
-  }
-});
+const BAD_RELAY_RESULTS = [
+  ['null（agent の null / throw を failOpenAgent が null にしたもの）', null],
+  ['undefined', undefined],
+  ['stdout が空', { stdout: '' }],
+  ['stdout が無い', {}],
+  ['stdout が文字列でない', { stdout: { status: 'passed', ...counts(1, 0, 0, 0) } }],
+  ['check-ci の stdout を object のまま返す形', { status: 'passed', ...counts(1, 0, 0, 0) }],
+  ['parse 失敗（途中で切れた JSON）', { stdout: '{"status":"passed",' }],
+  ['parse 失敗（JSON でない文）', { stdout: 'CI is green' }],
+  ['object でない（null）', { stdout: 'null' }],
+  ['object でない（配列）', { stdout: '[{"status":"passed"}]' }],
+  ['object でない（文字列）', { stdout: '"passed"' }],
+  ['status が無い', relayed(counts(1, 0, 0, 0))],
+  ['status が enum の外', relayed({ status: 'success', ...counts(1, 0, 0, 0) })],
+  ['件数が欠ける', relayed({ status: 'passed', passed: 1, failed: 0, pending: 0 })],
+  ['件数が負', relayed({ status: 'passed', ...counts(1, 0, -1, 0) })],
+  ['件数が整数でない', relayed({ status: 'passed', ...counts(1.5, 0, 0, 0) })],
+  ['件数が文字列', relayed({ status: 'passed', ...counts('1', 0, 0, 0) })],
+];
+for (const [name, res] of BAD_RELAY_RESULTS) {
+  test(`[ci-check] ciRelayResult: ${name} は待たない prompt なら CI_RELAY_FAILED、待つ prompt なら CI_WAIT_RELAY_FAILED`, () => {
+    assert.equal(ciRelayResult(res), CI_RELAY_FAILED);
+    assert.equal(ciRelayResult(res, { wait: false }), CI_RELAY_FAILED);
+    assert.equal(ciRelayResult(res, { wait: true }), CI_WAIT_RELAY_FAILED);
+  });
+}
 
 // ============================================================
 // prompt
@@ -310,6 +307,19 @@ test('[ci-check] CI 取得を書く docs とスクリプトの先頭コメント
   }
 });
 
+// agent 定義と失敗ポリシー表が中継の返り値を書く形は prompt と同じ（stdout の文字列と {"stdout": ""}）。
+// agent 定義が object の転写を指示すると、prompt と食い違って中継が object を組み立て直し、hook に拒否される。
+test('[ci-check] stdout-relay.md と exec-proxy.md の ci-check 行は中継の返り値を stdout の文字列と {"stdout": ""} で書く', () => {
+  const plugin = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const relayMd = readFileSync(join(plugin, 'agents', 'stdout-relay.md'), 'utf8');
+  const row = readFileSync(join(plugin, 'dev-flow', 'references', 'exec-proxy.md'), 'utf8').split('\n').find((l) => l.startsWith('| ci-check<br>')) ?? '';
+  for (const [name, text] of [['stdout-relay.md', relayMd], ['exec-proxy.md の ci-check 行', row]]) {
+    assert.ok(text.includes('{"stdout": ""}'), `${name} が失敗時の返り値 {"stdout": ""} を書いていない`);
+    assert.ok(/`stdout` の文字列|stdout の 1 行目/.test(text), `${name} が返り値を stdout の文字列として書いていない`);
+  }
+  assert.ok(relayMd.includes('{"stdout": "<stdout の 1 行目>"}'), 'stdout-relay.md が成功時の返り値の形を書いていない');
+});
+
 // ============================================================
 // head sha（並列 ci-check の照合。issue #806）
 // ============================================================
@@ -359,7 +369,6 @@ test('[ci-check] ci-verify prompt の最終行は check-ci --only（待つとき
   const waitMax = readCheckCiWaitMax();
   assert.ok(CI_VERIFY_POLL_SECONDS <= waitMax, `CI_VERIFY_POLL_SECONDS=${CI_VERIFY_POLL_SECONDS} が check-ci の WAIT_SECONDS_MAX=${waitMax} を超える`);
   assert.ok(CI_POLL_SECONDS <= waitMax, `CI_POLL_SECONDS=${CI_POLL_SECONDS} が check-ci の WAIT_SECONDS_MAX=${waitMax} を超える`);
-  assert.ok(CI_VERIFY_CHECK.required.every((k) => CI_STATUS.required.includes(k)));
 });
 
 test('[ci-check] ciVerifyVerdict: no_checks（label 直後で job 未登録）は pending、passed / failed / error はそのまま', () => {

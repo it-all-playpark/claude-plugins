@@ -14,7 +14,7 @@
 
 // 1 spawn = 1 判定。1 回目の poll は ci-check（待機なし）、2 回目以降は ci-wait-check（待機してから
 // 1 回判定）。中継は stdout-relay（agents/stdout-relay.md）で、prompt の最終行の `check-ci` を 1 回実行して
-// stdout の JSON をそのまま返す。待機も check-ci の `--wait <秒>` が行う（内部で ci-wait.sh の短い sleep の
+// stdout の 1 行目を 1 つの文字列のまま返す（CI_RELAY_STDOUT）。parse と形の検証は workflow 側（ciRelayResult）が行う。待機も check-ci の `--wait <秒>` が行う（内部で ci-wait.sh の短い sleep の
 // 連結 → `gh pr view` を 1 回）ので、どの prompt も Bash は 1 単文で、必要 turn は
 // 1（check-ci）+ 1（StructuredOutput）+ CI_TURN_MARGIN = 5。stdout-relay の maxTurns を超えないこと
 // （_lib/ci-check.test.mjs が agent md を実読して pin）。CI 待ちのループは workflow script 側（pr-iterate.js）が持ち、
@@ -26,7 +26,7 @@
 // slept:false）を積算せず、同じ応答の status も採らずに即 ci_pending 終端にする。
 //
 // 中継の Bash と返り値は hooks/pretool-stdout-relay-guard.sh（_lib/scripts/stdout-relay-bind.mjs）が、
-// prompt の最終行のコマンドとその実 stdout（または下の失敗時の JSON）に縛る。中継は PR の worktree を cwd に
+// prompt の最終行のコマンドとその実 stdout の 1 行目の文字列（または空文字）に縛る。中継は PR の worktree を cwd に
 // 起動され PR の文に誘導され得るので、返り値を転記の正しさに預けない（分類: incentive-structural）。
 export const CI_POLL_SECONDS = 45; // script 側 poll ループの poll 間隔（秒）
 // script 側ループの nominal 総待機上限（秒）の既定値。上限は prerun（dev-flow-prerun / pr-iterate-prerun の
@@ -56,74 +56,58 @@ export function ciMaxPolls(ceilingSeconds) {
 // 実測マージン。文書化 worst case 8 tool call に対し実測 10 で StructuredOutput 未達だった差分に基づく。
 export const CI_TURN_MARGIN = 3;
 
-// CI gate schema。
-// stdout-relay が bare `check-ci --pr <N> --repo <R>` を実行し、その stdout JSON を verbatim で返す。
+// stdout-relay の返り値 schema（ci-check / ci-wait-check / ci-verify / ci-check-lite で共通）。
+// stdout-relay が bare `check-ci --pr <N> --repo <R>` を実行し、その stdout の 1 行目（check-ci が出す JSON 1 行）を
+// 文字列のまま stdout に入れて返す。失敗（exit 非0・stdout 空・拒否）は空文字。
+// 中継に JSON の object を組み立て直させない: hook は返り値を実 stdout との一字一句の一致に縛るので、object を写させると
+// キーの追加・欠落・型の違いで、CI が通っていても返り値が拒否されて ci_pending / ci_error になる。
 // check-ci（pr-iterate/scripts/check-ci.sh）は内部で読み取り専用の `gh pr view --json headRefOid,statusCheckRollup` を
 // 1 回実行して分類する。agent は rollup を argv に転写しないので、入力側の転写の破損で判定が変わらない。
-// schema は check-ci の stdout に出る全キー（配列の要素のキーを含む）を、出る値の型で宣言する。hook は返り値を実 stdout との
-// 完全一致に縛るので、宣言の無いキーを中継が落とす・別の型で渡すと、CI が通っていても返り値が拒否されて ci_error になる。
-// check-ci の出力にキーを足す・型を変えるときは、ここも同時に直す（_lib/relay-schema-coverage.test.mjs が実出力を照らす）。
-// status:'error' は check-ci が gh fetch 失敗を分類した値か、中継が stdout を返せないときの CI_RELAY_FAILED。
-// workflow 側は proxy の空応答（turn 上限到達等）も同じ 'error' に合成するため、受け手は原因を 1 つに断定できない。
-// 即座に人間へエスカレーションする。
-// 件数（passed / failed / pending / skipped）は check-ci が status と一緒に出す値で、required にする。
-export const CI_STATUS = {
+export const CI_RELAY_STDOUT = {
   type: 'object',
-  required: ['status', 'passed', 'failed', 'pending', 'skipped'],
-  properties: {
-    status: { type: 'string', enum: ['passed', 'failed', 'pending', 'no_checks', 'error'] },
-    passed: { type: 'integer', minimum: 0 },
-    failed: { type: 'integer', minimum: 0 },
-    pending: { type: 'integer', minimum: 0 },
-    skipped: { type: 'integer', minimum: 0 },
-    // link は rollup が check run の URL（detailsUrl / targetUrl）を持つ check にだけ出る。
-    failed_checks: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          bucket: { type: 'string' },
-          state: { type: 'string' },
-          link: { type: 'string' },
-        },
-      },
-    },
-    pending_checks: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          state: { type: 'string' },
-          link: { type: 'string' },
-        },
-      },
-    },
-    // check-ci.sh が常に出す accounting キー（1 spawn = 1 判定では常に 0 / 1）。
-    // workflow は読まず script 側で積算する（issue #663）。
-    waited_seconds: { type: 'number' },
-    poll_attempts: { type: 'number' },
-    // check-ci が rollup と同じ gh 応答から取った PR head の commit sha。pr-iterate は review#i と並列に
-    // 起動した ci-check#i の結果を、この値が review 開始時の head と一致するときだけ採る（ciHeadRejectReason）。
-    head_sha: { type: 'string' },
-    // dev-flow の clock telemetry（issue #443）が iterate_end の給電元として読む optional epoch。
-    // check-ci は `date +%s` に失敗すると null を出し、返り値の end_epoch は省略される（fail-open）。
-    epoch: { type: ['number', 'null'] },
-    // check-ci が全分岐で出す poll の指示。workflow は読まない（poll の継続は script 側が status で決める）。
-    next_action: { type: 'string', enum: ['poll', 'done'] },
-    // status:'error' のときの取得失敗の理由（gh の stderr の先頭を含む）。workflow は読まない。
-    message: { type: 'string' },
-  },
+  required: ['stdout'],
+  properties: { stdout: { type: 'string' } },
+  additionalProperties: false,
 };
 
-// 中継が check-ci の stdout を返せない（exit 非0・stdout 空・JSON 不正・hook の拒否）ときに返す JSON。prompt が定める
-// fail-closed の形で、hooks/pretool-stdout-relay-guard.sh は中継の返り値を stdout の JSON かこの形のどちらかに限る。
+// check-ci の stdout の status（closed enum）。'error' は check-ci が gh fetch 失敗を分類した値か、中継が stdout を
+// 返せないときの CI_RELAY_FAILED。受け手は原因を 1 つに断定できないので、即座に人間へエスカレーションする。
+export const CI_STATUS_VALUES = ['passed', 'failed', 'pending', 'no_checks', 'error'];
+// check-ci が status と一緒に必ず出す件数のキー
+export const CI_COUNT_KEYS = ['passed', 'failed', 'pending', 'skipped'];
+
+// 中継が check-ci の stdout を返せなかった（null / throw・stdout 空・JSON 不正・形が違う）ときに ciRelayResult が返す値。
 // 待機しない prompt（ci-check / ci-check-lite / 待たない ci-verify）は status:'error'（ci_error に倒す）。
 export const CI_RELAY_FAILED = { status: 'error', passed: 0, failed: 0, pending: 0, skipped: 0 };
 // 待機する prompt（ci-wait-check / 待つ ci-verify。check-ci --wait）は slept:false も持つ — 待機の成否が分からないので
 // workflow は待機を積算せず、同じ応答の status も採らない（ci-wait-check の slept 判定）。
 export const CI_WAIT_RELAY_FAILED = { slept: false, status: 'error', passed: 0, failed: 0, pending: 0, skipped: 0 };
+
+/**
+ * 中継（stdout-relay）の返り値を workflow が採る object に直す純関数。stdout を JSON.parse した object で、status が
+ * CI_STATUS_VALUES にあり件数（CI_COUNT_KEYS）が非負整数のときだけその object を返す。それ以外（null — agent の null /
+ * throw を failOpenAgent が null にしたもの — ・stdout が空・parse 失敗・object でない・形が違う）は失敗時の値を返す。
+ * CI 状態の不明を green と同一視しない（成功の値を合成しない）。
+ *
+ * @param {{stdout?: unknown}|null|undefined} res - 中継の返り値（CI_RELAY_STDOUT）
+ * @param {{wait?: boolean}} [opts] - wait: 待機する prompt（check-ci --wait）か
+ * @returns {object} check-ci の stdout の object か、CI_RELAY_FAILED（wait なら CI_WAIT_RELAY_FAILED）
+ */
+export function ciRelayResult(res, { wait = false } = {}) {
+  const failed = wait ? CI_WAIT_RELAY_FAILED : CI_RELAY_FAILED;
+  const stdout = res?.stdout;
+  if (typeof stdout !== 'string' || stdout === '') return failed;
+  let out;
+  try {
+    out = JSON.parse(stdout);
+  } catch {
+    return failed;
+  }
+  if (out === null || typeof out !== 'object' || Array.isArray(out)) return failed;
+  if (!CI_STATUS_VALUES.includes(out.status)) return failed;
+  if (!CI_COUNT_KEYS.every((k) => Number.isInteger(out[k]) && out[k] >= 0)) return failed;
+  return out;
+}
 
 // check-ci の --only / --exclude に渡す check 名の引数列（名前は単一引用符で囲む。空なら空文字）。
 function checkNameArgs(flag, names) {
@@ -140,18 +124,19 @@ export function checkCiCommand({ pr, repo, exclude = [], only = [], wait = 0 }) 
 }
 
 // stdout-relay へ渡す prompt（3 prompt で共通の形）。最終行は check-ci の bare 単文そのもの — hook はこの行と完全に一致する
-// Bash だけを通し、返り値をその stdout の JSON か failed（CI_RELAY_FAILED / CI_WAIT_RELAY_FAILED）に限る。
-function ciRelayPrompt({ objective, command, failed }) {
+// Bash だけを通し、返り値を {"stdout": <その stdout の 1 行目と一字一句同じ文字列>} か {"stdout": ""} に限る。
+function ciRelayPrompt({ objective, command }) {
   return `## Objective\n${objective}\n\n`
     + `## Tools\n- 使用可: Bash のみ\n\n`
     + `## Boundary\n`
     + `- 読み取り専用。最終行のコマンド以外を実行しない（再実行・再取得をしない）\n`
     + `- ファイルを変更しない\n\n`
     + `## Output format\n`
-    + `最終行のコマンドの **stdout の JSON object をそのまま** 返せ（キーの追加・削除・値の書き換え・要約をしない）。`
-    + `exit 非0・stdout 空・JSON 不正・拒否されたときは ${JSON.stringify(failed)} を一字一句そのまま返せ（成功の値を作らない）。`
-    + `prose 禁止。JSON のみ返せ。\n\n`
-    + `## Token cap\nJSON のみ。1 行以内。\n\n`
+    + `{"stdout": "<最終行のコマンドの stdout の 1 行目>"} を返せ。stdout の値は 1 行目を一字一句そのまま写した **1 つの文字列** `
+    + `（末尾の改行は含めない。JSON として読み直して object に組み立て直さない・キーを足さない・整形・要約・値の書き換えをしない）。`
+    + `exit 非0・stdout 空・拒否されたときは {"stdout": ""} を返せ（成功の値を作らない）。`
+    + `prose 禁止。\n\n`
+    + `## Token cap\nstdout の 1 フィールドのみ。\n\n`
     + `## Command\n`
     + `次のコマンドを 1 回だけ、一字一句そのままの単文で実行せよ（cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトを付けない）:\n`
     + command;
@@ -168,22 +153,10 @@ function ciRelayPrompt({ objective, command, failed }) {
  */
 export function ciCheckPrompt({ pr, repo, exclude = [] }) {
   return ciRelayPrompt({
-    objective: `PR #${pr} の head commit sha と CI ステータスを 1 回取得し、JSON を返せ。`,
+    objective: `PR #${pr} の head commit sha と CI ステータスを 1 回取得し、stdout を返せ。`,
     command: checkCiCommand({ pr, repo, exclude }),
-    failed: CI_RELAY_FAILED,
   });
 }
-
-// ci-wait-check exec-proxy の応答 schema — script 側 poll ループの 2 回目以降の 1 poll 分
-// （待機 + 1 回判定）。slept は check-ci --wait の stdout 由来で、true 以外なら workflow は status を採らない。
-export const CI_WAIT_CHECK = {
-  type: 'object',
-  required: ['slept', ...CI_STATUS.required],
-  properties: {
-    slept: { type: 'boolean' },
-    ...CI_STATUS.properties,
-  },
-};
 
 /**
  * ci-wait-check exec-proxy の prompt を組み立てる純粋関数（待機してから 1 回だけ判定する）。
@@ -197,9 +170,8 @@ export const CI_WAIT_CHECK = {
  */
 export function ciWaitCheckPrompt({ pr, repo, seconds, exclude = [] }) {
   return ciRelayPrompt({
-    objective: `CI 完了待ちのため ${seconds} 秒待機してから PR #${pr} の CI ステータスを 1 回取得し、JSON を返せ（待機と取得は最終行のコマンドが行う）。`,
+    objective: `CI 完了待ちのため ${seconds} 秒待機してから PR #${pr} の CI ステータスを 1 回取得し、stdout を返せ（待機と取得は最終行のコマンドが行う）。`,
     command: checkCiCommand({ pr, repo, exclude, wait: seconds }),
-    failed: CI_WAIT_RELAY_FAILED,
   });
 }
 
@@ -211,18 +183,6 @@ export function ciWaitCheckPrompt({ pr, repo, seconds, exclude = [] }) {
 // （待機と取得は check-ci --wait の 1 回の Bash で、Bash tool の既定 timeout 120 秒に収まる長さにする — check-ci は
 // 収まらない秒数を exit 1 で拒否する。長い待ちで poll 間隔を延ばし spawn 数を抑える）。
 export const CI_VERIFY_POLL_SECONDS = 90;
-
-// ci-verify#i.k の応答 schema。slept は待機した poll（2 回目以降）でだけ返る。passed_checks は check-ci --only の出力
-// （link 付き。success の根拠 URL）。
-export const CI_VERIFY_CHECK = {
-  type: 'object',
-  required: [...CI_STATUS.required],
-  properties: {
-    slept: { type: 'boolean' },
-    ...CI_STATUS.properties,
-    passed_checks: CI_STATUS.properties.failed_checks,
-  },
-};
 
 /**
  * ci-verify exec-proxy の prompt を組み立てる純粋関数（ci_verify.checks だけを判定する。seconds > 0 なら待機してから判定）。
@@ -238,13 +198,12 @@ export function ciVerifyPrompt({ pr, repo, checks, seconds }) {
   const wait = Number(seconds) > 0;
   const names = (Array.isArray(checks) ? checks : []).join(', ');
   return ciRelayPrompt({
-    objective: (wait ? seconds + ' 秒待機してから ' : '') + `PR #${pr} の CI check（${names}）の状態を 1 回取得し、JSON を返せ。`,
+    objective: (wait ? seconds + ' 秒待機してから ' : '') + `PR #${pr} の CI check（${names}）の状態を 1 回取得し、stdout を返せ。`,
     command: checkCiCommand({ pr, repo, only: checks, wait: wait ? seconds : 0 }),
-    failed: wait ? CI_WAIT_RELAY_FAILED : CI_RELAY_FAILED,
   });
 }
 
-// ci-verify の 1 回の判定（ciEffectiveStatus 済み）を待ちループの分岐に写す純関数。
+// ci-verify の 1 回の判定（ciRelayResult 済み）を待ちループの分岐に写す純関数。
 // no_checks は pending（label を付けた直後は対象 job がまだ登録されていない）。error は待たずに終える（状態不明を
 // 待ち続けて上限まで spawn しない）。
 export function ciVerifyVerdict(eff) {
@@ -253,22 +212,8 @@ export function ciVerifyVerdict(eff) {
   return 'pending';
 }
 
-/**
- * ci-check / ci-wait-check / ci-verify / ci-check-lite の proxy 応答を workflow が採る形に直す純関数。
- * null（agent の null / throw）は status:'error' にし、それ以外はそのまま返す。応答は hook
- * （hooks/pretool-stdout-relay-guard.sh）が check-ci の実 stdout か CI_RELAY_FAILED / CI_WAIT_RELAY_FAILED に縛り、
- * 形は schema（CI_STATUS 等）が縛るので、件数との照合はしない。
- *
- * @param {object|null} ci - proxy の応答
- * @returns {object} status が 5 値 enum のいずれかで確定した応答
- */
-export function ciEffectiveStatus(ci) {
-  if (ci == null) return { status: 'error', failed_checks: [] };
-  return ci;
-}
-
 // 並列 ci-check の採否判定。pr-iterate は review#i と ci-check#i を parallel() で同時に起動し、
-// ci-check の応答 head_sha が review 開始時の head（expectedSha）と一致するときだけ結果を採る。
+// ci-check の応答（ciRelayResult 済み）の head_sha が review 開始時の head（expectedSha）と一致するときだけ結果を採る。
 // 一致を要求するのは、fix の push 直後に起動した ci-check が GitHub 側の head 更新前の snapshot
 // （旧 commit の check）を読んで、旧 head の green で LGTM を確定させないため。check-ci は head sha と
 // checks を同じ gh 応答から取るので、sha が一致すれば checks も同じ head のもの。
@@ -284,7 +229,7 @@ export function isFullCommitSha(s) {
 
 /**
  * @param {object} opts
- * @param {object|null} opts.ci - 並列 ci-check の応答（null は agent の null / throw）
+ * @param {object|null} opts.ci - 並列 ci-check の応答（ciRelayResult 済み。null は並列 ci-check を起動していない round）
  * @param {string|null} opts.expectedSha - review 開始時の PR head commit sha
  * @returns {null|'ci_null'|'review_head_unknown'|'ci_head_missing'|'head_mismatch'}
  */

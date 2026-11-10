@@ -1,8 +1,9 @@
 // ci-truth-routing.test.mjs — CI の真偽を proxy の転記に預けないことを workflow を VM 実行して観測する。
 //
 // 守っている不変条件:
-//   - 中継（stdout-relay）の返り値は hook が check-ci の実 stdout か失敗時の JSON（CI_RELAY_FAILED / CI_WAIT_RELAY_FAILED）に
-//     縛る。pr-iterate / dev-flow lite route は失敗時の JSON・null を passed に倒さない（ci_error / full pr-iterate への委譲）
+//   - 中継（stdout-relay）の返り値は hook が check-ci の実 stdout の 1 行目の文字列か空文字（{"stdout": ""}）に縛る。
+//     pr-iterate / dev-flow lite route は空文字・JSON でない文字列・形の違う JSON・null を passed に倒さない
+//     （ci_error / full pr-iterate への委譲）
 //   - Merge tier は merge-tier-facts の checks に fail / cancel / 未知 bucket があれば HOLD（ci_checks_failed）にする。
 //     pending / 取得失敗は HOLD にせず、終端サマリに「CI 未完了」を出す（fail-open）。mergeStateStatus=UNSTABLE は見ない
 
@@ -14,7 +15,6 @@ import { dirname, join } from 'node:path';
 import {
   makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, assertNoCrash, mergeTierFacts, shapeOverrides,
 } from './test-helpers/vm-sandbox.mjs';
-import { CI_RELAY_FAILED, CI_WAIT_RELAY_FAILED } from './ci-check.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const prIterateSrc = readFileSync(join(here, '..', '.claude', 'workflows', 'pr-iterate.js'), 'utf8');
@@ -36,9 +36,17 @@ async function runDevFlow(overrides, workflow) {
   return { result, calls };
 }
 
-// ---- (a) 中継の失敗時の JSON・null → passed を採らない ----
+// ---- (a) 中継が stdout を返せない・stdout が check-ci の形でない → passed を採らない ----
 
-for (const [name, response] of [['中継の失敗時の JSON（CI_RELAY_FAILED）', CI_RELAY_FAILED], ['null', null]]) {
+// 中継が check-ci の stdout を返せなかった返り値（workflow の ciRelayResult が失敗時の値に直す）
+const RELAY_UNUSABLE = [
+  ['{"stdout": ""}', { stdout: '' }],
+  ['null', null],
+  ['JSON でない stdout', { stdout: 'CI is green' }],
+  ['件数の無い passed の stdout', { stdout: '{"status":"passed"}' }],
+];
+
+for (const [name, response] of RELAY_UNUSABLE) {
   test(`[ci-truth] CI gate: ci-check#1 と直列の取り直しが ${name} なら lgtm に進まず ci_error で終端する`, async () => {
     const { result, calls } = await runPrIterate({ 'ci-check#1': response, 'ci-check#1-serial': response });
 
@@ -49,15 +57,17 @@ for (const [name, response] of [['中継の失敗時の JSON（CI_RELAY_FAILED�
   });
 }
 
-test('[ci-truth] CI gate: ci-wait-check が中継の失敗時の JSON（CI_WAIT_RELAY_FAILED）なら lgtm に進まない', async () => {
-  const { result } = await runPrIterate({
-    'ci-check#1': { status: 'pending', passed: 5, failed: 0, pending: 2, skipped: 0, failed_checks: [] },
-    'ci-wait-check#1.2': CI_WAIT_RELAY_FAILED,
-  });
+for (const [name, response] of RELAY_UNUSABLE) {
+  test(`[ci-truth] CI gate: ci-wait-check が ${name} なら lgtm に進まない`, async () => {
+    const { result } = await runPrIterate({
+      'ci-check#1': { status: 'pending', passed: 5, failed: 0, pending: 2, skipped: 0, failed_checks: [] },
+      'ci-wait-check#1.2': response,
+    });
 
-  assert.notEqual(result?.status, 'lgtm');
-  assert.equal(result?.status, 'ci_pending');
-});
+    assert.notEqual(result?.status, 'lgtm');
+    assert.equal(result?.status, 'ci_pending');
+  });
+}
 
 test('[ci-truth] CI gate: check-ci の stdout の passed は lgtm', async () => {
   const { result } = await runPrIterate({ 'ci-check#1': { status: 'passed', passed: 5, failed: 0, pending: 0, skipped: 1, failed_checks: [] } });
@@ -65,7 +75,7 @@ test('[ci-truth] CI gate: check-ci の stdout の passed は lgtm', async () => 
   assert.equal(result?.ci_last_status, 'passed');
 });
 
-for (const [name, response] of [['中継の失敗時の JSON（CI_RELAY_FAILED）', CI_RELAY_FAILED], ['null', null]]) {
+for (const [name, response] of RELAY_UNUSABLE) {
   test(`[ci-truth] dev-flow lite route: ci-check-lite が ${name} なら lgtm 終端せず full pr-iterate へ委譲する`, async () => {
     const launches = [];
     const workflow = async (name, args) => { launches.push({ name, args }); return { status: 'lgtm', iterations: 1, fixes_applied: 0 }; };

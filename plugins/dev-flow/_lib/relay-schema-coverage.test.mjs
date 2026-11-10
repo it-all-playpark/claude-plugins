@@ -1,15 +1,19 @@
-// hook で実 stdout に縛った中継（stdout-relay・security-codex-relay）の返り値 schema が、中継が実行するスクリプトの
-// stdout を表せることの検査（issue #1372）。
+// hook で実 stdout に縛った中継（stdout-relay・security-codex-relay）の返り値を、中継が実行するスクリプトの実 stdout で
+// 照らす検査（issue #1372）。
 //
 // 守っている不変条件:
-//   - 中継の prompt の最終行のコマンド（check-ci / security-review-scope / security-review-codex-prep /
+//   - CI の中継（stdout-relay）: prompt の最終行の check-ci を実際に実行した stdout（exit 0）は、どの分岐でも 1 行で、
+//     その 1 行目を {stdout} に包んで ciRelayResult に通すと失敗時の値（CI_RELAY_FAILED / CI_WAIT_RELAY_FAILED）にならず、
+//     stdout を parse した object がそのまま返る。exit 非0 の stdout は hook が返り値として通さない
+//   - security の中継（security-codex-relay）: prompt の最終行のコマンド（security-review-scope / security-review-codex-prep /
 //     security-review-codex-result）を実際に実行した stdout は、どの分岐でも、その prompt に渡す schema に
 //     どの深さのキーも宣言され、型が一致する。exit 0 の stdout（中継がそのまま返す）は required も満たす。exit 非0 の stdout は
-//     hook が返り値として通さず、中継は失敗時の JSON（CI_RELAY_FAILED 等）を返すので、required は見ない
-//   - schema から宣言を 1 つ外すと、どれかの分岐の stdout がその schema から外れる（宣言はすべて実出力に対応する）
+//     hook が返り値として通さず、中継は失敗時の JSON を返すので、required は見ない。schema から宣言を 1 つ外すと、
+//     どれかの分岐の stdout がその schema から外れる（宣言はすべて実出力に対応する）
 //
-// なぜ: hook（_lib/scripts/stdout-relay-bind.mjs / security-relay-bind.mjs）は返り値を実 stdout との完全一致に縛る。
-// schema に宣言の無いキーを中継が落とす・別の型で渡すと返り値が拒否され、CI が通っていても ci_error（security は判定不能）になる。
+// なぜ: hook（_lib/scripts/stdout-relay-bind.mjs / security-relay-bind.mjs）は返り値を実 stdout との一致に縛る。
+// CI は workflow の parse（ciRelayResult）が check-ci の実出力を受け付けないと、CI が通っていても ci_error / ci_pending になる。
+// security は schema に宣言の無いキーを中継が落とす・別の型で渡すと返り値が拒否され、判定不能になる。
 // 手書きの出力例ではなくスクリプトの実出力を照らすのは、出力例がスクリプトとずれると同じ食い違いを見逃すため。
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -19,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  CI_POLL_SECONDS, CI_STATUS, CI_VERIFY_CHECK, CI_VERIFY_POLL_SECONDS, CI_WAIT_CHECK, ciCheckPrompt, ciVerifyPrompt, ciWaitCheckPrompt,
+  CI_POLL_SECONDS, CI_RELAY_FAILED, CI_VERIFY_POLL_SECONDS, CI_WAIT_RELAY_FAILED, ciCheckPrompt, ciRelayResult, ciVerifyPrompt, ciWaitCheckPrompt,
 } from './ci-check.mjs';
 import {
   SECURITY_CODEX_ISSUES_SCHEMA, SECURITY_CODEX_PREP_SCHEMA, SECURITY_CODEX_RESULT_SCHEMA, codexIssuesPrompt, codexPrepPrompt, codexVerdictPrompt,
@@ -135,7 +139,7 @@ function checkCiRuns(prompt, { waits }) {
     const r = runCheckCiWithRollup(JSON.stringify(rollup), args, stubs);
     const out = parseStdout(r, branch);
     check(out, r);
-    runs.push({ branch, out, exit: r.status });
+    runs.push({ branch, out, exit: r.status, stdout: r.stdout });
   };
   for (const [status, rollup] of Object.entries(ROLLUPS)) {
     add(status, rollup, sleepOk, (out, r) => {
@@ -165,25 +169,41 @@ function checkCiRuns(prompt, { waits }) {
 
 const CI_TARGET = { pr: 1, repo: 'acme/skills' };
 
-test('[relay-schema] ci-check: check-ci の全分岐の stdout を CI_STATUS が宣言し、宣言を 1 つ外すと外れる', () => {
+// exit 0 の分岐の実 stdout の 1 行目（中継が写す文字列。hook が返り値と照らすのもこの行）を {stdout} に包んで
+// ciRelayResult に通すと、失敗時の値にならず stdout の object がそのまま返ることを確かめる。
+function assertRelayResultAcceptsRuns(name, runs, { waits }) {
+  const relayable = runs.filter((r) => r.exit === 0);
+  // 全 status と、待機する prompt の slept:false を踏んでいること（踏まない分岐は検査されないまま残る）
+  const statuses = new Set(relayable.map((r) => r.out.status));
+  for (const status of ['passed', 'failed', 'pending', 'no_checks']) assert.ok(statuses.has(status), `${name}: exit 0 の分岐に status=${status} が無い`);
+  if (waits) assert.ok(relayable.some((r) => r.out.slept === false), `${name}: exit 0 の分岐に slept:false が無い`);
+  for (const { branch, out, stdout } of relayable) {
+    const lines = stdout.replace(/\n$/, '').split('\n');
+    assert.equal(lines.length, 1, `${name} / ${branch}: check-ci の stdout が 1 行でない（中継と hook は 1 行目だけを扱う）: ${JSON.stringify(stdout)}`);
+    const res = ciRelayResult({ stdout: lines[0] }, { wait: waits });
+    assert.notEqual(res, CI_RELAY_FAILED, `${name} / ${branch}: 実 stdout が失敗時の値（CI_RELAY_FAILED）になった: ${lines[0]}`);
+    assert.notEqual(res, CI_WAIT_RELAY_FAILED, `${name} / ${branch}: 実 stdout が失敗時の値（CI_WAIT_RELAY_FAILED）になった: ${lines[0]}`);
+    assert.deepEqual(res, out, `${name} / ${branch}: ciRelayResult が stdout の object をそのまま返さない`);
+  }
+}
+
+test('[relay-schema] ci-check: check-ci の各分岐の実 stdout（exit 0）を {stdout} に包んで ciRelayResult に通すと失敗時の値にならない', () => {
   const runs = checkCiRuns(ciCheckPrompt({ ...CI_TARGET, exclude: ['docs'] }), { waits: false });
-  assertSchemaCoversRuns('CI_STATUS', CI_STATUS, runs);
+  assertRelayResultAcceptsRuns('ci-check', runs, { waits: false });
 }, TIMEOUT);
 
-test('[relay-schema] ci-wait-check: check-ci --wait の全分岐（slept:true / slept:false）の stdout を CI_WAIT_CHECK が宣言し、宣言を 1 つ外すと外れる', () => {
+test('[relay-schema] ci-wait-check: check-ci --wait の各分岐（slept:true / slept:false）の実 stdout（exit 0）を {stdout} に包んで ciRelayResult に通すと失敗時の値にならない', () => {
   const runs = checkCiRuns(ciWaitCheckPrompt({ ...CI_TARGET, seconds: CI_POLL_SECONDS }), { waits: true });
-  assertSchemaCoversRuns('CI_WAIT_CHECK', CI_WAIT_CHECK, runs);
+  assertRelayResultAcceptsRuns('ci-wait-check', runs, { waits: true });
 }, TIMEOUT);
 
-test('[relay-schema] ci-verify: check-ci --only（待機なし / --wait）の全分岐の stdout を CI_VERIFY_CHECK が宣言し、宣言を 1 つ外すと外れる', () => {
+test('[relay-schema] ci-verify: check-ci --only（待機なし / --wait）の各分岐の実 stdout（exit 0）を {stdout} に包んで ciRelayResult に通すと失敗時の値にならない', () => {
   const noWait = checkCiRuns(ciVerifyPrompt({ ...CI_TARGET, checks: ['e2e'], seconds: 0 }), { waits: false });
   const wait = checkCiRuns(ciVerifyPrompt({ ...CI_TARGET, checks: ['e2e'], seconds: CI_VERIFY_POLL_SECONDS }), { waits: true });
   const passed = noWait.find((r) => r.branch === 'passed').out;
   assert.deepEqual(passed.passed_checks.map((c) => c.name), ['e2e'], '--only は passed_checks を出す');
-  assertSchemaCoversRuns('CI_VERIFY_CHECK', CI_VERIFY_CHECK, [
-    ...noWait.map((r) => ({ ...r, branch: `待機なし / ${r.branch}` })),
-    ...wait.map((r) => ({ ...r, branch: `--wait / ${r.branch}` })),
-  ]);
+  assertRelayResultAcceptsRuns('ci-verify（待機なし）', noWait, { waits: false });
+  assertRelayResultAcceptsRuns('ci-verify（--wait）', wait, { waits: true });
 }, TIMEOUT);
 
 // ============================================================

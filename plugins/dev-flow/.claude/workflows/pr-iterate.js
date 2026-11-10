@@ -1242,49 +1242,34 @@ function ciWaitCeiling(raw) {
 function ciMaxPolls(ceilingSeconds) {
   return Math.floor(ceilingSeconds / CI_POLL_SECONDS) + 1;
 }
-const CI_STATUS = {
+const CI_RELAY_STDOUT = {
   type: 'object',
-  required: ['status', 'passed', 'failed', 'pending', 'skipped'],
-  properties: {
-    status: { type: 'string', enum: ['passed', 'failed', 'pending', 'no_checks', 'error'] },
-    passed: { type: 'integer', minimum: 0 },
-    failed: { type: 'integer', minimum: 0 },
-    pending: { type: 'integer', minimum: 0 },
-    skipped: { type: 'integer', minimum: 0 },
-    failed_checks: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          bucket: { type: 'string' },
-          state: { type: 'string' },
-          link: { type: 'string' },
-        },
-      },
-    },
-    pending_checks: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          state: { type: 'string' },
-          link: { type: 'string' },
-        },
-      },
-    },
-    waited_seconds: { type: 'number' },
-    poll_attempts: { type: 'number' },
-    head_sha: { type: 'string' },
-    epoch: { type: ['number', 'null'] },
-    next_action: { type: 'string', enum: ['poll', 'done'] },
-    message: { type: 'string' },
-  },
+  required: ['stdout'],
+  properties: { stdout: { type: 'string' } },
+  additionalProperties: false,
 };
+
+const CI_STATUS_VALUES = ['passed', 'failed', 'pending', 'no_checks', 'error'];
+const CI_COUNT_KEYS = ['passed', 'failed', 'pending', 'skipped'];
 
 const CI_RELAY_FAILED = { status: 'error', passed: 0, failed: 0, pending: 0, skipped: 0 };
 const CI_WAIT_RELAY_FAILED = { slept: false, status: 'error', passed: 0, failed: 0, pending: 0, skipped: 0 };
+
+function ciRelayResult(res, { wait = false } = {}) {
+  const failed = wait ? CI_WAIT_RELAY_FAILED : CI_RELAY_FAILED;
+  const stdout = res?.stdout;
+  if (typeof stdout !== 'string' || stdout === '') return failed;
+  let out;
+  try {
+    out = JSON.parse(stdout);
+  } catch {
+    return failed;
+  }
+  if (out === null || typeof out !== 'object' || Array.isArray(out)) return failed;
+  if (!CI_STATUS_VALUES.includes(out.status)) return failed;
+  if (!CI_COUNT_KEYS.every((k) => Number.isInteger(out[k]) && out[k] >= 0)) return failed;
+  return out;
+}
 
 function checkNameArgs(flag, names) {
   return (Array.isArray(names) ? names : []).map((name) => ` ${flag} '${String(name).split("'").join("'\\''")}'`).join('');
@@ -1295,17 +1280,18 @@ function checkCiCommand({ pr, repo, exclude = [], only = [], wait = 0 }) {
     + (Number(wait) > 0 ? ' --wait ' + wait : '');
 }
 
-function ciRelayPrompt({ objective, command, failed }) {
+function ciRelayPrompt({ objective, command }) {
   return `## Objective\n${objective}\n\n`
     + `## Tools\n- 使用可: Bash のみ\n\n`
     + `## Boundary\n`
     + `- 読み取り専用。最終行のコマンド以外を実行しない（再実行・再取得をしない）\n`
     + `- ファイルを変更しない\n\n`
     + `## Output format\n`
-    + `最終行のコマンドの **stdout の JSON object をそのまま** 返せ（キーの追加・削除・値の書き換え・要約をしない）。`
-    + `exit 非0・stdout 空・JSON 不正・拒否されたときは ${JSON.stringify(failed)} を一字一句そのまま返せ（成功の値を作らない）。`
-    + `prose 禁止。JSON のみ返せ。\n\n`
-    + `## Token cap\nJSON のみ。1 行以内。\n\n`
+    + `{"stdout": "<最終行のコマンドの stdout の 1 行目>"} を返せ。stdout の値は 1 行目を一字一句そのまま写した **1 つの文字列** `
+    + `（末尾の改行は含めない。JSON として読み直して object に組み立て直さない・キーを足さない・整形・要約・値の書き換えをしない）。`
+    + `exit 非0・stdout 空・拒否されたときは {"stdout": ""} を返せ（成功の値を作らない）。`
+    + `prose 禁止。\n\n`
+    + `## Token cap\nstdout の 1 フィールドのみ。\n\n`
     + `## Command\n`
     + `次のコマンドを 1 回だけ、一字一句そのままの単文で実行せよ（cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトを付けない）:\n`
     + command;
@@ -1313,48 +1299,26 @@ function ciRelayPrompt({ objective, command, failed }) {
 
 function ciCheckPrompt({ pr, repo, exclude = [] }) {
   return ciRelayPrompt({
-    objective: `PR #${pr} の head commit sha と CI ステータスを 1 回取得し、JSON を返せ。`,
+    objective: `PR #${pr} の head commit sha と CI ステータスを 1 回取得し、stdout を返せ。`,
     command: checkCiCommand({ pr, repo, exclude }),
-    failed: CI_RELAY_FAILED,
   });
 }
 
-const CI_WAIT_CHECK = {
-  type: 'object',
-  required: ['slept', ...CI_STATUS.required],
-  properties: {
-    slept: { type: 'boolean' },
-    ...CI_STATUS.properties,
-  },
-};
-
 function ciWaitCheckPrompt({ pr, repo, seconds, exclude = [] }) {
   return ciRelayPrompt({
-    objective: `CI 完了待ちのため ${seconds} 秒待機してから PR #${pr} の CI ステータスを 1 回取得し、JSON を返せ（待機と取得は最終行のコマンドが行う）。`,
+    objective: `CI 完了待ちのため ${seconds} 秒待機してから PR #${pr} の CI ステータスを 1 回取得し、stdout を返せ（待機と取得は最終行のコマンドが行う）。`,
     command: checkCiCommand({ pr, repo, exclude, wait: seconds }),
-    failed: CI_WAIT_RELAY_FAILED,
   });
 }
 
 const CI_VERIFY_POLL_SECONDS = 90;
 
-const CI_VERIFY_CHECK = {
-  type: 'object',
-  required: [...CI_STATUS.required],
-  properties: {
-    slept: { type: 'boolean' },
-    ...CI_STATUS.properties,
-    passed_checks: CI_STATUS.properties.failed_checks,
-  },
-};
-
 function ciVerifyPrompt({ pr, repo, checks, seconds }) {
   const wait = Number(seconds) > 0;
   const names = (Array.isArray(checks) ? checks : []).join(', ');
   return ciRelayPrompt({
-    objective: (wait ? seconds + ' 秒待機してから ' : '') + `PR #${pr} の CI check（${names}）の状態を 1 回取得し、JSON を返せ。`,
+    objective: (wait ? seconds + ' 秒待機してから ' : '') + `PR #${pr} の CI check（${names}）の状態を 1 回取得し、stdout を返せ。`,
     command: checkCiCommand({ pr, repo, only: checks, wait: wait ? seconds : 0 }),
-    failed: wait ? CI_WAIT_RELAY_FAILED : CI_RELAY_FAILED,
   });
 }
 
@@ -1362,11 +1326,6 @@ function ciVerifyVerdict(eff) {
   const s = eff?.status;
   if (s === 'passed' || s === 'failed' || s === 'error') return s;
   return 'pending';
-}
-
-function ciEffectiveStatus(ci) {
-  if (ci == null) return { status: 'error', failed_checks: [] };
-  return ci;
 }
 
 const CI_HEAD_SHA_RE = /^[0-9a-f]{40}$/i;
@@ -2240,14 +2199,14 @@ function observeCi(ciEff) {
 }
 // round の 1 回目の CI 判定。review#i と並列に取った ci-check#i を採用できていればそれを使い（spawn 0）、
 // 不採用（head 不一致・null・throw）なら review の後に直列で ci-check を起動する。label は並列分と区別して
-// ci-check#i-serial（並列 ci-check を起動しなかった round は ci-check#i）。返り値は生の応答（null 含む）で、
-// fail-open の合成と poll 計上は呼び出し側（CI gate / blocking round）が判定 1 回分として行う。
+// ci-check#i-serial（並列 ci-check を起動しなかった round は ci-check#i）。返り値は ciRelayResult 済みの応答
+// （中継が stdout を返せなければ status:'error'）で、poll 計上は呼び出し側（CI gate / blocking round）が判定 1 回分として行う。
 async function firstCiCheck(iteration, adopted, parallelLaunched) {
   if (adopted != null) return adopted
-  return failOpenAgent(
+  return ciRelayResult(await failOpenAgent(
     ciCheckPrompt({ pr: PR, repo: REPO, exclude: CI_EXCLUDE }),
-    { agentType: 'stdout-relay', schema: CI_STATUS, label: `ci-check#${iteration}${parallelLaunched ? '-serial' : ''}`, phase: 'Iterate' },
-  )
+    { agentType: 'stdout-relay', schema: CI_RELAY_STDOUT, label: `ci-check#${iteration}${parallelLaunched ? '-serial' : ''}`, phase: 'Iterate' },
+  ))
 }
 // review 側の失敗で CI 判定へ進まずに終端する round でも、並列で採用できた ci-check の結果は捨てずに
 // 最終 CI 状態として観測する（判定 1 回分として計上）。不採用なら CI 判定が要らないので起動し直さない。
@@ -2255,7 +2214,7 @@ function observeAdoptedCi(adopted) {
   if (adopted == null) return
   if (Number.isFinite(adopted.epoch)) lastCiEpoch = adopted.epoch
   totalCiPollAttempts += 1
-  observeCi(ciEffectiveStatus(adopted))
+  observeCi(adopted)
 }
 // ci-check の failed_checks を fix loop へ流す synthetic blocking finding に変換する（CI gate と blocking round で共用）。
 // topic `ci::<name>` は reviewSeen の stuck 検出キー — 同一 check が REVIEW_STUCK 回失敗し続ければ stuck 終端になる。
@@ -2422,17 +2381,17 @@ async function waitCiVerify(iteration) {
   for (;;) {
     const seconds = polls === 0 ? 0 : CI_VERIFY_POLL_SECONDS
     const label = `ci-verify#${iteration}.${polls + 1}`
-    const res = await failOpenAgent(
+    const res = ciRelayResult(await failOpenAgent(
       ciVerifyPrompt({ pr: PR, repo: REPO, checks: CI_VERIFY.checks, seconds }),
-      { agentType: 'stdout-relay', schema: CI_VERIFY_CHECK, label, phase: 'Iterate' },
-    )
-    if (seconds > 0 && res?.slept !== true) {
-      log(`⚠️ iteration ${iteration}: ${label} が実待機を報告しなかった（${res == null ? 'null/throw' : 'slept=false'}）— 積算せず ci-verify を pending で打ち切る（累積 ${waited}s / poll ${polls} 回）`)
+      { agentType: 'stdout-relay', schema: CI_RELAY_STDOUT, label, phase: 'Iterate' },
+    ), { wait: seconds > 0 })
+    if (seconds > 0 && res.slept !== true) {
+      log(`⚠️ iteration ${iteration}: ${label} が実待機を報告しなかった（中継が stdout を返さないか slept=false）— 積算せず ci-verify を pending で打ち切る（累積 ${waited}s / poll ${polls} 回）`)
       return { verdict: 'pending', eff, waited, polls }
     }
     polls += 1
     waited += seconds
-    eff = ciEffectiveStatus(res)
+    eff = res
     const verdict = ciVerifyVerdict(eff)
     if (verdict !== 'pending') return { verdict, eff, waited, polls }
     if (waited + CI_VERIFY_POLL_SECONDS > CI_VERIFY.wait_ceiling_seconds) {
@@ -3067,10 +3026,10 @@ for (i = 1; i <= MAX; i++) {
   const secParallel = securityTarget
   const thunks = [() => callReviewAgent(reviewPrompt, `review#${i}`)]
   if (ciParallelLaunched) {
-    thunks.push(() => failOpenAgent(
+    thunks.push(async () => ciRelayResult(await failOpenAgent(
       ciCheckPrompt({ pr: PR, repo: REPO, exclude: CI_EXCLUDE }),
-      { agentType: 'stdout-relay', schema: CI_STATUS, label: `ci-check#${i}`, phase: 'Iterate' },
-    ))
+      { agentType: 'stdout-relay', schema: CI_RELAY_STDOUT, label: `ci-check#${i}`, phase: 'Iterate' },
+    )))
   }
   if (secParallel) thunks.push(() => securityRound(i))
   const launched = thunks.length > 1 ? await parallel(thunks) : [await thunks[0]()]
@@ -3129,7 +3088,7 @@ for (i = 1; i <= MAX; i++) {
     // 並列 ci-check は round 冒頭（fix push 直後）に取るので、head_sha が一致しても GitHub が新 head の
     // check を未登録なだけで no_checks が返り得る。no_checks は passed 扱いで lgtm を確定させるため、
     // LGTM gate では並列分の no_checks を採らず review の後の直列 ci-check で取り直す（CI 未検証の lgtm を防ぐ）。
-    const gateAdopted = ciAdopted != null && ciEffectiveStatus(ciAdopted).status === 'no_checks' ? null : ciAdopted
+    const gateAdopted = ciAdopted?.status === 'no_checks' ? null : ciAdopted
     if (ciAdopted != null && gateAdopted == null) {
       log(`⚠️ iteration ${i}: 並列 ci-check#${i} の no_checks を CI gate では採らない（新 head の check 未登録の可能性）— 直列に起動し直す`)
     }
@@ -3137,15 +3096,14 @@ for (i = 1; i <= MAX; i++) {
       if (gatePolls === 0) {
         gatePolls = 1
         ci = await firstCiCheck(i, gateAdopted, ciParallelLaunched)
-        if (ci == null) log(`⚠️ ci-check#${i} が結果を返さず — fail-open で status=error（ci_error 終端）扱い`)
       } else {
         const waitLabel = `ci-wait-check#${i}.${gatePolls + 1}`
-        const waitResult = await failOpenAgent(
+        const waitResult = ciRelayResult(await failOpenAgent(
           ciWaitCheckPrompt({ pr: PR, repo: REPO, seconds: CI_POLL_SECONDS, exclude: CI_EXCLUDE }),
-          { agentType: 'stdout-relay', schema: CI_WAIT_CHECK, label: waitLabel, phase: 'Iterate' },
-        )
-        if (waitResult?.slept !== true) {
-          log(`⚠️ iteration ${i}: ${waitLabel} が実待機を報告しなかった（${waitResult == null ? 'null/throw' : 'slept=false'}）— 実待機ゼロを nominal 加算で隠さず ci_pending で終端（累積 ${gateWaited}s / poll ${gatePolls} 回）`)
+          { agentType: 'stdout-relay', schema: CI_RELAY_STDOUT, label: waitLabel, phase: 'Iterate' },
+        ), { wait: true })
+        if (waitResult.slept !== true) {
+          log(`⚠️ iteration ${i}: ${waitLabel} が実待機を報告しなかった（中継が stdout を返さないか slept=false）— 実待機ゼロを nominal 加算で隠さず ci_pending で終端（累積 ${gateWaited}s / poll ${gatePolls} 回）`)
           break
         }
         gatePolls += 1
@@ -3153,8 +3111,8 @@ for (i = 1; i <= MAX; i++) {
         log(`iteration ${i}: CI pending — ${CI_POLL_SECONDS}s 待機して再判定した（累積 ${gateWaited}s / 上限 ${CI_WAIT_CEILING}s）`)
         ci = waitResult
       }
-      ciEff = ciEffectiveStatus(ci)
-      if (Number.isFinite(ci?.epoch)) lastCiEpoch = ci.epoch
+      ciEff = ci
+      if (Number.isFinite(ci.epoch)) lastCiEpoch = ci.epoch
       if (ciEff.status !== 'pending') break
       if (gateWaited + CI_POLL_SECONDS > CI_WAIT_CEILING || gatePolls >= CI_GATE_MAX_POLLS) {
         log(`iteration ${i}: CI pending のまま待機上限 ${CI_WAIT_CEILING}s / poll 上限 ${CI_GATE_MAX_POLLS} 回に到達（累積 ${gateWaited}s / poll ${gatePolls} 回）— ci_pending で終端`)
@@ -3234,8 +3192,8 @@ for (i = 1; i <= MAX; i++) {
 
       break
     } else if (ciEff.status === 'error') {
-      // status:'error' は check-ci の gh fetch 失敗分類か、中継が stdout を返せなかった失敗時の JSON（hook の拒否を含む）か、
-      // proxy の空応答（turn 上限到達等）の fail-open 合成。原因を 1 つに断定できないので CI failure と誤解釈せず、
+      // status:'error' は check-ci の gh fetch 失敗分類か、中継が stdout を返せなかった（空文字・check-ci の形でない stdout・
+      // hook の拒否・proxy の空応答 — turn 上限到達等）ときに ciRelayResult が合成した値。原因を 1 つに断定できないので CI failure と誤解釈せず、
       // 実状態の確認手順を添えて人間へ渡す。
       terminal = 'ci_error'
       log(`⚠️ CI check returned error — CI ステータスを確定できなかった（proxy が結果を返さなかった / 中継の失敗 / gh fetch 失敗）。gh pr checks ${PR} で実状態を確認すること。人間へエスカレーション`)
@@ -3293,10 +3251,8 @@ for (i = 1; i <= MAX; i++) {
     // reviewSeen にも register して同一 check の反復失敗を REVIEW_STUCK に乗せる。
     // null / error は fail-open（finding を足さず fix へ進む。CI 状態は ci_last_status で人間に見せる）。
     // terminalPath は 'review' のまま（返り値 terminal_path の 'ci' は「CI-failed 分岐（ci_gate）に入った」の意味を保つ）。
-    const ciProbe = await firstCiCheck(i, ciAdopted, ciParallelLaunched)
-    if (ciProbe == null) log(`⚠️ ci-check#${i} が結果を返さず — blocking round では finding を足さず status=error として記録のみ（fail-open）`)
-    const ciProbeEff = ciEffectiveStatus(ciProbe)
-    if (Number.isFinite(ciProbe?.epoch)) lastCiEpoch = ciProbe.epoch
+    const ciProbeEff = await firstCiCheck(i, ciAdopted, ciParallelLaunched)
+    if (Number.isFinite(ciProbeEff.epoch)) lastCiEpoch = ciProbeEff.epoch
     totalCiPollAttempts += 1
     observeCi(ciProbeEff)
     const ciFindings = ciProbeEff.status === 'failed' ? ciFailedFindings(ciProbeEff) : []

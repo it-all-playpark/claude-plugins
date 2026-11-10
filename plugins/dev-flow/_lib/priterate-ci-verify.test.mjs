@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makePrIterateSandbox, runWorkflowCapture, assertNoCrash } from './test-helpers/vm-sandbox.mjs';
 import { runCheckCiWithRollup } from './test-helpers/check-ci-gh-stub.mjs';
-import { CI_VERIFY_CHECK, ciVerifyPrompt, checkCiCommand, CI_VERIFY_POLL_SECONDS } from './ci-check.mjs';
+import { CI_RELAY_STDOUT, ciVerifyPrompt, checkCiCommand, CI_VERIFY_POLL_SECONDS } from './ci-check.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude', 'workflows', 'pr-iterate.js'), 'utf8');
@@ -54,7 +54,7 @@ test('[ci-verify] success: round の CI 判定から e2e を外し、LGTM 後の
   assert.equal(v[1].prompt, ciVerifyPrompt({ pr: 5, repo: 'acme/skills', checks: ['e2e'], seconds: CI_VERIFY_POLL_SECONDS }));
   assert.ok(v[1].prompt.endsWith(`\n${checkCiCommand({ pr: 5, repo: 'acme/skills', only: ['e2e'], wait: CI_VERIFY_POLL_SECONDS })}`), v[1].prompt);
   assert.ok(v[0].prompt.endsWith(`\n${checkCiCommand({ pr: 5, repo: 'acme/skills', only: ['e2e'] })}`), '1 回目の poll は待たない');
-  assert.equal(JSON.stringify(v[0].schema), JSON.stringify(CI_VERIFY_CHECK));
+  for (const c of v) assert.equal(JSON.stringify(c.schema), JSON.stringify(CI_RELAY_STDOUT), `${c.label} の schema は canonical の CI_RELAY_STDOUT であるべき`);
   assert.equal(calls.filter((c) => c.label.startsWith('fix#')).length, 0);
 });
 
@@ -118,13 +118,19 @@ test('[ci-verify] skipped の e2e は passed にならない: check-ci --only �
   assert.equal(calls.filter((c) => c.label.startsWith('fix#')).length, 0);
 });
 
-test('[ci-verify] 待機の不成立（slept:true 以外）は積算せず pending で打ち切る', async () => {
-  const { result, calls } = await run({ 'ci-verify#1.1': verifyPending(false), 'ci-verify#1.2': null });
-  assert.equal(result.status, 'lgtm');
-  assert.equal(result.ci_verify.status, 'pending');
-  assert.equal(result.ci_verify.waited_seconds, 0);
-  assert.equal(verifyCalls(calls).length, 2);
-});
+for (const [name, response] of [
+  ['null', null],
+  ['{"stdout": ""}', { stdout: '' }],
+  ['slept:false の stdout', { stdout: JSON.stringify({ slept: false, status: 'pending', passed: 0, failed: 0, pending: 0, skipped: 0 }) }],
+]) {
+  test(`[ci-verify] 待機の不成立（${name}）は積算せず pending で打ち切る`, async () => {
+    const { result, calls } = await run({ 'ci-verify#1.1': verifyPending(false), 'ci-verify#1.2': response });
+    assert.equal(result.status, 'lgtm');
+    assert.equal(result.ci_verify.status, 'pending');
+    assert.equal(result.ci_verify.waited_seconds, 0);
+    assert.equal(verifyCalls(calls).length, 2);
+  });
+}
 
 test('[ci-verify] ci_verify を渡さない run は ci-verify を起動せず、round の CI 判定も check を外さない', async () => {
   const { result, calls } = await run({}, '5');

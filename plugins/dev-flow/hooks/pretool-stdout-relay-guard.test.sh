@@ -5,7 +5,7 @@
 # 中継（dev-flow:stdout-relay）の Bash と返り値は、その spawn の transcript
 # （`<transcript_path から .jsonl を除いたもの>/subagents/**/agent-<agent_id>.jsonl`）にある workflow の prompt と実 stdout に縛られる。
 # transcript は security-codex-relay の hook のテストと同じ形（harness の枠 + 2 字下げの prompt + tool_use / tool_result）で置く。
-# 失敗時の JSON は _lib/ci-check.mjs が export する定数を node で読んで使う（値を書き写さない）。
+# 返り値は {"stdout": <実 stdout の 1 行目と一字一句同じ文字列>} か {"stdout": ""} だけが通る。
 #
 # Usage: bash pretool-stdout-relay-guard.test.sh
 #
@@ -40,10 +40,8 @@ SHA2="$(printf 'b%.0s' {1..40})"
 CHECK_CMD="check-ci --pr 5 --repo acme/skills"
 WAIT_CMD="check-ci --pr 5 --repo acme/skills --exclude 'e2e' --wait 45"
 
-# _lib/ci-check.mjs の失敗時の JSON（prompt が示す形）
-CI_MJS="${PLUGIN_ROOT}/_lib/ci-check.mjs"
-RELAY_FAILED=$(node --input-type=module -e "import { CI_RELAY_FAILED } from '${CI_MJS}'; process.stdout.write(JSON.stringify(CI_RELAY_FAILED))")
-WAIT_RELAY_FAILED=$(node --input-type=module -e "import { CI_WAIT_RELAY_FAILED } from '${CI_MJS}'; process.stdout.write(JSON.stringify(CI_WAIT_RELAY_FAILED))")
+# 中継が stdout を返せないときの固定の返り値（prompt が示す形）
+RELAY_FAILED='{"stdout": ""}'
 
 # ---- transcript の fixture ----
 WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/pretool-stdout-relay-guard-test.XXXXXX")
@@ -141,6 +139,10 @@ run_cmd() {
 run_so() {
   run_raw "$1" "$2" "$(hook_input StructuredOutput "${4:-$RELAY}" "$3")"
 }
+# as_stdout <文字列> — 中継の返り値 {"stdout": <文字列>}
+as_stdout() {
+  jq -cn --arg s "$1" '{stdout:$s}'
+}
 
 echo "=== pretool-stdout-relay-guard tests ==="
 
@@ -208,57 +210,69 @@ jq -cn --arg c "$(framed "$(relay_prompt "$CHECK_CMD")")" '{type:"user", isSidec
 run_cmd "user request の行が無い transcript でも一致は通す" silent "$CHECK_CMD"
 run_cmd "user request の行が無い transcript でも差し替えは deny" deny "check-ci --pr 6 --repo acme/skills"
 
-echo "[返り値は実行したコマンドの実 stdout の JSON か、prompt が定める失敗時の JSON のときだけ通す]"
+echo "[返り値は {stdout: 実行したコマンドの実 stdout の 1 行目と一字一句同じ文字列} か {stdout: \"\"} のときだけ通す]"
 PENDING_OUT="{\"passed\":5,\"failed\":0,\"pending\":2,\"skipped\":0,\"failed_checks\":[],\"pending_checks\":[{\"name\":\"e2e\",\"state\":\"IN_PROGRESS\"}],\"status\":\"pending\",\"head_sha\":\"${SHA}\",\"waited_seconds\":0,\"poll_attempts\":1,\"epoch\":1700000000,\"next_action\":\"done\"}"
+PASSED_OUT=$(jq -c '.status = "passed" | .pending = 0 | .passed = 7 | .pending_checks = []' <<<"$PENDING_OUT")
 new_transcript "$(framed "$(relay_prompt "$CHECK_CMD")")"
-run_so "Bash を実行せずに passed を返したら deny" deny "$(jq -c '.status = "passed" | .pending = 0' <<<"$PENDING_OUT")"
-run_so "Bash を実行していなくても prompt の失敗時の JSON は通す" silent "$RELAY_FAILED"
+run_so "Bash を実行せずに passed の stdout を返したら deny" deny "$(as_stdout "$PASSED_OUT")"
+run_so "{\"stdout\": \"\"} は Bash 未実行でも通す" silent "$RELAY_FAILED"
 add_bash "$CHECK_CMD" "$PENDING_OUT"
-run_so "stdout と一致する返り値は通す（key の順は問わない）" silent "$(jq -c '{next_action, epoch, poll_attempts, waited_seconds, head_sha, status, pending_checks, failed_checks, skipped, pending, failed, passed}' <<<"$PENDING_OUT")"
-run_so "status を passed に変えたら deny" deny "$(jq -c '.status = "passed"' <<<"$PENDING_OUT")"
-run_so "件数（pending）を変えたら deny" deny "$(jq -c '.pending = 0' <<<"$PENDING_OUT")"
-run_so "status と件数を揃えて passed にしても deny" deny "$(jq -c '.status = "passed" | .passed = 7 | .pending = 0 | .pending_checks = []' <<<"$PENDING_OUT")"
-run_so "head_sha を変えたら deny" deny "$(jq -c --arg s "$SHA2" '.head_sha = $s' <<<"$PENDING_OUT")"
-run_so "slept を足したら deny" deny "$(jq -c '.slept = true' <<<"$PENDING_OUT")"
-run_so "key を足したら deny" deny "$(jq -c '.note = "ok"' <<<"$PENDING_OUT")"
-run_so "key を落としたら deny" deny "$(jq -c 'del(.pending_checks)' <<<"$PENDING_OUT")"
-run_so "失敗時の JSON は Bash を実行した後も通す" silent "$RELAY_FAILED"
-run_so "失敗時の JSON に成功の値を混ぜたら deny" deny "$(jq -c '.status = "passed"' <<<"$RELAY_FAILED")"
-run_so "待機しない prompt に待機の失敗時の JSON は deny" deny "$WAIT_RELAY_FAILED"
-add_bash "check-ci --pr 6 --repo acme/skills" "$(jq -c '.status = "passed" | .pending = 0 | .passed = 7 | .pending_checks = []' <<<"$PENDING_OUT")"
-run_so "prompt と違うコマンドの stdout を写したら deny" deny "$(jq -c '.status = "passed" | .pending = 0 | .passed = 7 | .pending_checks = []' <<<"$PENDING_OUT")"
+run_so "stdout の 1 行目と一致する文字列は通す" silent "$(as_stdout "$PENDING_OUT")"
+run_so "1 字違う文字列（pending の件数 2 → 3）は deny" deny "$(as_stdout "$(jq -c '.pending = 3' <<<"$PENDING_OUT")")"
+run_so "status を passed に書き換えた文字列は deny" deny "$(as_stdout "$(jq -c '.status = "passed"' <<<"$PENDING_OUT")")"
+run_so "status と件数を揃えて passed にした文字列も deny" deny "$(as_stdout "$PASSED_OUT")"
+run_so "head_sha を変えた文字列は deny" deny "$(as_stdout "${PENDING_OUT/$SHA/$SHA2}")"
+run_so "key の順を入れ替えた文字列（JSON として同値）は deny" deny "$(as_stdout "$(jq -c '{status} + .' <<<"$PENDING_OUT")")"
+run_so "空白を足して整形した文字列（JSON として同値）は deny" deny "$(as_stdout "$(jq -c . <<<"$PENDING_OUT" | sed 's/,/, /g')")"
+run_so "末尾に改行を足した文字列は deny" deny "$(as_stdout "${PENDING_OUT}
+")"
+run_so "前後に空白を足した文字列は deny" deny "$(as_stdout " ${PENDING_OUT}")"
+run_so "stdout の一部だけの文字列は deny" deny "$(as_stdout "${PENDING_OUT:0:40}")"
+run_so "stdout 以外のキーを足すと deny" deny "$(jq -c --arg s "$PENDING_OUT" '{stdout:$s, message:$s}' <<<null)"
+run_so "{\"stdout\": \"\"} にキーを足しても deny" deny '{"stdout":"","status":"passed"}'
+run_so "check-ci の stdout を object で渡す形（旧形式）は deny" deny "$PENDING_OUT"
+run_so "stdout の値を object で渡したら deny" deny "$(jq -c '{stdout: .}' <<<"$PENDING_OUT")"
+run_so "stdout のキーが無ければ deny" deny '{}'
+run_so "stdout が null なら deny" deny '{"stdout":null}'
+run_so "status:error の object（旧形式の失敗時の JSON）は deny" deny '{"status":"error","passed":0,"failed":0,"pending":0,"skipped":0}'
+run_so "{\"stdout\": \"\"} は Bash を実行した後も通す" silent "$RELAY_FAILED"
+add_bash "check-ci --pr 6 --repo acme/skills" "$PASSED_OUT"
+run_so "prompt と違うコマンドの stdout を写したら deny" deny "$(as_stdout "$PASSED_OUT")"
 new_transcript "$(framed "$(relay_prompt "$CHECK_CMD")")"
 add_bash "$CHECK_CMD" "${PENDING_OUT}
 (node:1) Warning: stderr の行"
-run_so "stdout の後の stderr の行は読まない" silent "$PENDING_OUT"
+run_so "stdout の後の stderr の行は読まない（1 行目だけが通る）" silent "$(as_stdout "$PENDING_OUT")"
+run_so "stderr の行まで含めた文字列は deny" deny "$(as_stdout "${PENDING_OUT}
+(node:1) Warning: stderr の行")"
 new_transcript "$(framed "$(relay_prompt "$CHECK_CMD")")"
 add_bash "$CHECK_CMD" "Exit code 1
 ${PENDING_OUT}" true
-run_so "失敗した Bash の出力から値は作れない" deny "$PENDING_OUT"
-run_so "失敗した Bash の後は失敗時の JSON を通す" silent "$RELAY_FAILED"
+run_so "失敗した Bash の出力から値は作れない" deny "$(as_stdout "$PENDING_OUT")"
+run_so "失敗した Bash の出力の 1 行目も通さない" deny "$(as_stdout "Exit code 1")"
+run_so "失敗した Bash の後は {\"stdout\": \"\"} を通す" silent "$RELAY_FAILED"
 new_transcript "$(framed "$(relay_prompt "$CHECK_CMD")")"
 add_bash "$CHECK_CMD" '{"status":"pending","passed":0,"failed":0,"pending":1,"skipped":0}'
 add_bash "$CHECK_CMD" '{"status":"failed","passed":0,"failed":1,"pending":0,"skipped":0}'
-run_so "最後に実行した Bash の stdout だけを使う" deny '{"status":"pending","passed":0,"failed":0,"pending":1,"skipped":0}'
-run_so "最後の stdout はそのまま通す" silent '{"status":"failed","passed":0,"failed":1,"pending":0,"skipped":0}'
+run_so "最後に実行した Bash の stdout だけを使う" deny "$(as_stdout '{"status":"pending","passed":0,"failed":0,"pending":1,"skipped":0}')"
+run_so "最後の stdout はそのまま通す" silent "$(as_stdout '{"status":"failed","passed":0,"failed":1,"pending":0,"skipped":0}')"
 
 WAIT_OUT="{\"slept\":true,\"passed\":1,\"failed\":0,\"pending\":0,\"skipped\":0,\"failed_checks\":[],\"pending_checks\":[],\"status\":\"passed\",\"head_sha\":\"${SHA}\",\"waited_seconds\":0,\"poll_attempts\":1,\"epoch\":1700000000,\"next_action\":\"done\"}"
 new_transcript "$(framed "$(relay_prompt "$WAIT_CMD")")"
-run_so "wait: Bash を実行せずに slept:true を返したら deny" deny "$WAIT_OUT"
-run_so "wait: Bash を実行していなくても待機の失敗時の JSON は通す" silent "$WAIT_RELAY_FAILED"
-run_so "wait: 待機しない prompt の失敗時の JSON は deny" deny "$RELAY_FAILED"
+run_so "wait: Bash を実行せずに slept:true の stdout を返したら deny" deny "$(as_stdout "$WAIT_OUT")"
+run_so "wait: {\"stdout\": \"\"} は Bash 未実行でも通す" silent "$RELAY_FAILED"
 add_bash "$WAIT_CMD" "$WAIT_OUT"
-run_so "wait: stdout と一致する返り値は通す" silent "$WAIT_OUT"
-run_so "wait: slept を落としたら deny" deny "$(jq -c 'del(.slept)' <<<"$WAIT_OUT")"
-run_so "wait: slept を false にしたら deny" deny "$(jq -c '.slept = false' <<<"$WAIT_OUT")"
-run_so "wait: 件数を変えたら deny" deny "$(jq -c '.passed = 2' <<<"$WAIT_OUT")"
+run_so "wait: stdout の 1 行目と一致する文字列は通す" silent "$(as_stdout "$WAIT_OUT")"
+run_so "wait: stdout の全キーに message を足した object（旧形式）は deny" deny "$(jq -c --arg s "$WAIT_OUT" '. + {message:$s}' <<<"$WAIT_OUT")"
+run_so "wait: slept を落とした文字列は deny" deny "$(as_stdout "$(jq -c 'del(.slept)' <<<"$WAIT_OUT")")"
+run_so "wait: slept を false にした文字列は deny" deny "$(as_stdout "$(jq -c '.slept = false' <<<"$WAIT_OUT")")"
 new_transcript "$(framed "$(relay_prompt "$WAIT_CMD")")"
-add_bash "$WAIT_CMD" '{"slept":false,"status":"pending","passed":0,"failed":0,"pending":0,"skipped":0}'
-run_so "wait: 待機が成立しなかった stdout はそのまま通す" silent '{"slept":false,"status":"pending","passed":0,"failed":0,"pending":0,"skipped":0}'
-run_so "wait: 待機が成立しなかった stdout を slept:true にしたら deny" deny '{"slept":true,"status":"pending","passed":0,"failed":0,"pending":0,"skipped":0}'
+SLEPT_FALSE_OUT='{"slept":false,"status":"pending","passed":0,"failed":0,"pending":0,"skipped":0}'
+add_bash "$WAIT_CMD" "$SLEPT_FALSE_OUT"
+run_so "wait: 待機が成立しなかった stdout はそのまま通す" silent "$(as_stdout "$SLEPT_FALSE_OUT")"
+run_so "wait: 待機が成立しなかった stdout を slept:true にしたら deny" deny "$(as_stdout "${SLEPT_FALSE_OUT/false/true}")"
 
 new_transcript "$(framed "$(relay_prompt "gh pr view 5 --json statusCheckRollup")")"
-run_so "返り値: prompt の最終行が check-ci でなければ失敗時の JSON も deny" deny "$RELAY_FAILED"
+run_so "返り値: prompt の最終行が check-ci でなければ {\"stdout\": \"\"} も deny" deny "$RELAY_FAILED"
 run_raw "返り値: transcript が見つからなければ deny" deny "$(hook_input StructuredOutput "$RELAY" "$RELAY_FAILED" | jq -c '.agent_id = "aother"')"
 run_so "返り値: 他の agent は対象外" silent '{"status":"passed","passed":1,"failed":0,"pending":0,"skipped":0}' "$OTHER"
 
