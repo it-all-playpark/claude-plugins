@@ -35,6 +35,8 @@ const RESOLVED_ROWS_MAX = 30;
 export const RESOLVED_CELL_MAX = 200;
 // pr-iterate の修正後に PR 本文を作り直す `gh pr edit` が失敗した run で「あなたが確かめること」に出す 1 行。
 export const PR_BODY_STALE_NOTE = '⚠️ PR 本文: 「受入条件の結果」の表と checkbox が修正前のまま（本文の更新に失敗）— AC の結果は本文ではなくこのコメントで確かめる';
+// 同じ run で PR 本文に構成の変化の図が載っているときの 1 行。図も修正前の tree と照合したもので、修正後の構成とは限らない。
+export const PR_BODY_STALE_NOTE_WITH_DIAGRAM = '⚠️ PR 本文: 「受入条件の結果」の表と checkbox、「構成の変化」の図が修正前のまま（本文の更新に失敗）— AC の結果は本文ではなくこのコメントで、構成は diff で確かめる';
 
 // 観測型 AC（実行して出力・記録を観測しないと確かめられない AC）が未達のときの対応欄（issue #844）。
 const OBSERVATIONAL_AC_ACTION = '実行して AC の主張を確認する（例: merge 後の実 run・計測）';
@@ -250,6 +252,7 @@ function resolvedCell(v) {
  *   解決元（user 設定 / tests/run-*.sh / resolver と根拠のファイル）を 1 行出す（表示専用）
  * @param {boolean|null|undefined} [opts.prBodySynced] - pr-iterate の修正後に PR 本文を作り直した `gh pr edit` の成否
  *   （作り直さない run は null）。false のときだけ「あなたが確かめること」に、PR 本文の受入条件の結果が修正前のままである旨を 1 行出す（表示専用）
+ * @param {boolean|null|undefined} [opts.prBodyHasDiagram] - PR 本文に構成の変化の図が載っているか。true なら上の 1 行に図も修正前のままである旨を含める
  * @returns {string}
  */
 export function buildDevflowSummaryBody({
@@ -301,6 +304,7 @@ export function buildDevflowSummaryBody({
   hooksNotRunning,
   testCommands,
   prBodySynced,
+  prBodyHasDiagram,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -688,7 +692,7 @@ export function buildDevflowSummaryBody({
   const prBodyStale = prBodySynced === false;
   if (cardOpen.length === 0 && !prBodyStale) lines.push('なし');
   for (const it of cardOpen) lines.push(`- ${it.state === 'failed' ? '❌' : '⚠️'} ${it.name}: ${it.note}`);
-  if (prBodyStale) lines.push(`- ${PR_BODY_STALE_NOTE}`);
+  if (prBodyStale) lines.push(`- ${prBodyHasDiagram === true ? PR_BODY_STALE_NOTE_WITH_DIAGRAM : PR_BODY_STALE_NOTE}`);
   lines.push('');
 
   lines.push('| Merge tier | shape | テスト | 評価 | 台帳 (Ledger) | AC | 危険検出 |');

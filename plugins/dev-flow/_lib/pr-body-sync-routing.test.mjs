@@ -11,8 +11,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, mergeTierFacts } from './test-helpers/vm-sandbox.mjs';
-import { PR_BODY_STALE_NOTE } from './devflow-summary-format.mjs';
+import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, mergeTierFacts, STANDARD_FILES } from './test-helpers/vm-sandbox.mjs';
+import { PR_BODY_STALE_NOTE, PR_BODY_STALE_NOTE_WITH_DIAGRAM } from './devflow-summary-format.mjs';
+import { PR_BODY_DIAGRAM_UNVERIFIED, PR_BODY_DIAGRAM_MISMATCH } from './pr-artifacts.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const devFlowSrc = readFileSync(join(here, '..', '.claude', 'workflows', 'dev-flow.js'), 'utf8');
@@ -284,4 +285,85 @@ test('[pr-body-sync-routing] ac-checkbox-sync が edited:false を返しても r
   const card = summary.slice(summary.indexOf('### あなたが確かめること'), summary.indexOf('| Merge tier |'));
   assert.ok(card.split('\n').includes(`- ${PR_BODY_STALE_NOTE}`), `「あなたが確かめること」に PR 本文が修正前のままである旨が無い:\n${card}`);
   assert.match(PR_BODY_STALE_NOTE, /PR 本文.*受入条件の結果.*修正前のまま/);
+});
+
+// ---- 9. 構成の変化の図: Evaluate の diagram_check を PR phase と修正後の作り直しまで渡す（issue #1366） ----
+
+const DIAGRAM = { kind: 'flowchart', before: 'flowchart LR\n  A --> B', after: 'flowchart LR\n  A --> B\n  C --> B' };
+const IMPL_DIAGRAM = { 'impl:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: [...STANDARD_FILES], summary: 's', concerns: [], diagram: DIAGRAM } };
+const withDiagramCheck = (diagram_check) => ({ ...IMPL_DIAGRAM, 'eval#1': { ...EVAL_AC, diagram_check } });
+const CONSISTENT = { consistent: true, mismatches: [] };
+const MISMATCHED = { consistent: false, mismatches: ['after の C --> B は diff に無い'] };
+const MERMAID_FENCE = '```mermaid';
+const FIGURES = `**before**\n\n${MERMAID_FENCE}\n${DIAGRAM.before}\n\`\`\`\n\n**after**\n\n${MERMAID_FENCE}\n${DIAGRAM.after}\n\`\`\``;
+const FIXED_RUNS = {
+  lgtm: [
+    {
+      'reconcile-sync': { ok: true, head: 'a'.repeat(40) },
+      'final-ac-reconcile': {
+        ac_results: [
+          { ac_index: 0, gist: 'a の要旨', satisfied: true, verified_by: 'inspection', evidence: 'ok' },
+          { ac_index: 1, gist: 'b の要旨', satisfied: true, verified_by: 'inspection', evidence: 'ok' },
+        ],
+        item_resolutions: [],
+      },
+    },
+    async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }),
+  ],
+  max_reached: [
+    { 'reconcile-sync': { ok: false } },
+    async () => ({ status: 'max_reached', iterations: 10, fixes_applied: 3 }),
+  ],
+};
+
+function assertNoFigure(body) {
+  assert.ok(!body.includes(MERMAID_FENCE), `食い違った図のフェンスが本文にある:\n${body}`);
+  assert.ok(body.includes(`## 構成の変化\n${PR_BODY_DIAGRAM_MISMATCH}\n- ${MISMATCHED.mismatches[0]}\n\n`), `食い違いの表示が無い:\n${body}`);
+  assert.equal(PR_BODY_DIAGRAM_MISMATCH, '⚠️ 図は diff と食い違ったため載せていない');
+}
+
+test('[pr-body-sync-routing] PR phase: Evaluate の diagram_check が一致なら本文に図のフェンスを出し、未照合・食い違いの注記を付けない', async () => {
+  const { calls } = await run(withDiagramCheck(CONSISTENT));
+  const body = bodyOf(calls.find((c) => c.label === 'pr#1'));
+  assert.ok(body.includes(`## 構成の変化\n${FIGURES}\n\n`), `一致した図が本文に無い:\n${body}`);
+  assert.ok(!body.includes('⚠️ 図は'), `一致した図に注記が付いている:\n${body}`);
+});
+
+test('[pr-body-sync-routing] PR phase: Evaluate の diagram_check が食い違いなら本文に図のフェンスを出さず、食い違いを出す', async () => {
+  const { calls } = await run(withDiagramCheck(MISMATCHED));
+  assertNoFigure(bodyOf(calls.find((c) => c.label === 'pr#1')));
+});
+
+for (const [status, [overrides, workflow]] of Object.entries(FIXED_RUNS)) {
+  test(`[pr-body-sync-routing] fixes_applied>0 + ${status}: Evaluate で一致した図は、作り直した本文では ⚠️ 図は diff と未照合 を付けて出す`, async () => {
+    const { result, calls } = await run({ ...withDiagramCheck(CONSISTENT), ...overrides }, workflow);
+    assert.equal(result?.iterate_status, status);
+    // PR 作成時の本文は照合済みの図（注記なし）
+    assert.ok(!bodyOf(calls.find((c) => c.label === 'pr#1')).includes(PR_BODY_DIAGRAM_UNVERIFIED));
+    const body = bodyOf(calls.find((c) => c.label === 'ac-checkbox-sync'));
+    assert.ok(body.includes(`## 構成の変化\n${PR_BODY_DIAGRAM_UNVERIFIED}\n\n${FIGURES}\n\n`), `修正後の本文の図が未照合になっていない:\n${body}`);
+    assert.equal(PR_BODY_DIAGRAM_UNVERIFIED, '⚠️ 図は diff と未照合');
+  });
+
+  test(`[pr-body-sync-routing] fixes_applied>0 + ${status}: Evaluate で食い違った図は、作り直した本文でも出さない`, async () => {
+    const { calls } = await run({ ...withDiagramCheck(MISMATCHED), ...overrides }, workflow);
+    assertNoFigure(bodyOf(calls.find((c) => c.label === 'ac-checkbox-sync')));
+  });
+}
+
+test('[pr-body-sync-routing] 本文の作り直しが失敗し PR 本文に図がある run は、終端サマリーの 1 行に図も修正前のままであることを含める', async () => {
+  const [overrides, workflow] = FIXED_RUNS.lgtm;
+  const cardOf = async (diagramCheck) => {
+    const { result, calls } = await run({ ...withDiagramCheck(diagramCheck), ...overrides, 'ac-checkbox-sync': { edited: false } }, workflow);
+    assert.equal(result?.pr_body_synced, false);
+    const summary = calls.find((c) => c.label === 'post-summary').prompt;
+    return summary.slice(summary.indexOf('### あなたが確かめること'), summary.indexOf('| Merge tier |')).split('\n');
+  };
+  const card = await cardOf(CONSISTENT);
+  assert.ok(card.includes(`- ${PR_BODY_STALE_NOTE_WITH_DIAGRAM}`), `図も修正前のままである旨が無い:\n${card.join('\n')}`);
+  assert.ok(!card.includes(`- ${PR_BODY_STALE_NOTE}`), '図がある run で図に触れない行を重ねて出さない');
+  assert.match(PR_BODY_STALE_NOTE_WITH_DIAGRAM, /PR 本文.*受入条件の結果.*構成の変化.*図.*修正前のまま/);
+  // 食い違いで図を載せなかった run の本文に図は無いので、図に触れない行のままにする
+  const noFigure = await cardOf(MISMATCHED);
+  assert.ok(noFigure.includes(`- ${PR_BODY_STALE_NOTE}`) && !noFigure.includes(`- ${PR_BODY_STALE_NOTE_WITH_DIAGRAM}`), noFigure.join('\n'));
 });

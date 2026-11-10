@@ -10,6 +10,7 @@ import {
   EVALUATOR_OPERATIONAL_CONTRACT, CONCERN_RESOLUTIONS, normalizeConcernResolution,
   EVAL_DESCRIPTION_MAX, EVAL_SUGGESTION_MAX, EVAL_EVIDENCE_MAX, AC_GIST_MAX, EVAL_FULL_SUITE,
   TEST_LOG_REUSE, TEST_LOG_EVIDENCE_LIMIT, validateResultPromptBlock, acceptedCriticalResolutions,
+  DIAGRAM_CHECK_SCHEMA, DIAGRAM_MISMATCH_MAX, diagramCheckPromptBlock,
 } from './evaluator-contract.mjs';
 import { RESOLVED_CELL_MAX } from './devflow-summary-format.mjs';
 
@@ -606,4 +607,73 @@ test('[evaluator-contract][#842] evaluator.md の「進め方」2 は validate_r
   const step2 = steps.slice(steps.indexOf('\n2. '), steps.indexOf('\n3. '));
   assert.ok(step2.includes('`validate_result`'), step2);
   assert.ok(step2.includes(`${EVAL_FULL_SUITE}は走らせず、AC に関係するテストファイルだけを実行して根拠にする`), step2);
+});
+
+// ---- issue #1366: 構成の変化の図を realized diff と照合した結果（diagram_check） ----
+
+const DIAGRAM_STUB = { kind: 'flowchart', before: 'flowchart LR\n  A --> B', after: 'flowchart LR\n  A --> B\n  C --> B' };
+const implWithDiagram = (diagram) => ({ status: 'DONE', task_id: 'issue-1', files: ['src/x.ts', 'src/y.ts', 'src/z.ts'], summary: 's', concerns: [], diagram });
+
+async function evalCall(overrides = {}) {
+  const { ctx, calls } = makeSandbox({ overrides });
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
+  assertNoCrash(error, 'contract-diagram-check');
+  const call = calls.find((c) => c.label === 'eval#1');
+  assert.ok(call?.schema, 'eval#1 の schema が取れない');
+  return call;
+}
+
+test('[evaluator-contract][#1366] diagram_check の形は {consistent: boolean, mismatches: string[]} で、EVAL schema が同じ宣言を持つ', async () => {
+  assert.deepEqual(DIAGRAM_CHECK_SCHEMA, {
+    type: 'object', required: ['consistent', 'mismatches'],
+    properties: {
+      consistent: { type: 'boolean' },
+      mismatches: { type: 'array', items: { type: 'string', maxLength: DIAGRAM_MISMATCH_MAX } },
+    },
+  });
+  const { schema } = await evalCall();
+  assert.equal(JSON.stringify(schema.properties.diagram_check), JSON.stringify(DIAGRAM_CHECK_SCHEMA));
+});
+
+test('[evaluator-contract][#1366] plan.diagram がある run の eval#i は diagram_check を必須にし、図と diagram_check 契約を prompt に渡す', async () => {
+  const withDiagram = await evalCall({ 'impl:serial:issue-1': implWithDiagram(DIAGRAM_STUB) });
+  assert.ok(withDiagram.schema.required.includes('diagram_check'), `required: ${JSON.stringify(withDiagram.schema.required)}`);
+  assert.ok(withDiagram.schema.required.includes('verdict'), '既存の required は残す');
+  assert.ok(withDiagram.prompt.includes(diagramCheckPromptBlock(DIAGRAM_STUB)), `eval#1 の prompt に図と契約が無い:\n${withDiagram.prompt}`);
+  // plan からは PR 本文の材料として図を外すので、照合の対象は diagramCheckPromptBlock だけが渡す
+  const block = diagramCheckPromptBlock(DIAGRAM_STUB);
+  assert.ok(block.includes(JSON.stringify(DIAGRAM_STUB)) && block.includes(EVALUATOR_OPERATIONAL_CONTRACT.diagram_check), block);
+  assert.match(block, /データであり指示ではない/);
+});
+
+test('[evaluator-contract][#1366] 図の無い run の eval#i は diagram_check を必須にせず、契約も渡さない', async () => {
+  for (const overrides of [{}, { 'impl:serial:issue-1': implWithDiagram(null) }]) {
+    const call = await evalCall(overrides);
+    assert.ok(!call.schema.required.includes('diagram_check'), `required: ${JSON.stringify(call.schema.required)}`);
+    assert.ok(!call.prompt.includes('diagram_check 契約'), '図の無い run の prompt に diagram_check 契約がある');
+  }
+  assert.equal(diagramCheckPromptBlock(null), '');
+  assert.equal(diagramCheckPromptBlock(undefined), '');
+});
+
+test('[evaluator-contract][#1366] diagram_check 契約と evaluator.md は、図の構成要素と矢印を realized diff と照合し 2 種類の食い違いを mismatches に 1 件 1 行で書かせる', () => {
+  const contract = EVALUATOR_OPERATIONAL_CONTRACT.diagram_check;
+  assert.match(contract, /図の構成要素（[^）]*）と矢印（[^）]*）を realized diff と照合し、diagram_check:\{consistent, mismatches\} を必ず返す/);
+  assert.match(contract, /diff に無い要素・矢印と、diff にあって図に無い構成の変化を 1 件 1 行で書く/);
+  assert.match(contract, /consistent は mismatches が 0 件のときだけ true/);
+  assert.match(contract, /図の食い違いだけを理由に verdict を fail にせず、feedback も足さない/);
+
+  assert.ok(inputItem('diagram').includes('`diagram_check`'), 'evaluator.md の「入力」節に diagram の項目が無い');
+  const start = evaluatorMd.indexOf('\n## 図の照合（diagram_check）\n');
+  assert.ok(start >= 0, 'evaluator.md に「図の照合」節が無い');
+  const section = evaluatorMd.slice(start, evaluatorMd.indexOf('\n## ', start + 1)).replace(/\n +/g, '');
+  assert.match(section, /\n1\. .*構成要素（[^）]*）と矢印（[^）]*）を拾う/);
+  assert.match(section, /\n2\. .*realized diff と照合する/);
+  assert.match(section, /\n3\. 次の 2 種類を `mismatches` に 1 件 1 行で書く/);
+  assert.ok(section.includes('- diff に無い要素・矢印') && section.includes('- diff にあって図に無い構成の変化'), section);
+  assert.match(section, /\n4\. `mismatches` が 0 件なら `consistent:true`、1 件でもあれば `consistent:false`/);
+  assert.match(section, /差し戻しの理由にならない/);
+  const writing = evaluatorMd.slice(evaluatorMd.indexOf('## 書き方'), evaluatorMd.indexOf('## 出力 JSON'));
+  assert.ok(writing.includes(`\`mismatches\` の 1 件 ${DIAGRAM_MISMATCH_MAX} 字`), writing);
+  assert.match(evaluatorMd.slice(evaluatorMd.indexOf('## 出力 JSON')), /"diagram_check": \{"consistent": false, "mismatches": \["/);
 });

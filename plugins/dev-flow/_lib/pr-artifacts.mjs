@@ -8,7 +8,7 @@
 // （agent 側の要約・判断を挟まない転写契約。pr-iterate の commit-ensure と同型）。
 // 同一入力 → 同一出力（決定論）。I/O なし。
 //
-// PR body は見える部分を人間向けの短い要約（結論 → 何が変わるか → 人間に見てほしい点 → 含めなかったもの →
+// PR body は見える部分を人間向けの短い要約（結論 → 何が変わるか → 構成の変化の図 → 人間に見てほしい点 → 含めなかったもの →
 // 受入条件の結果の表 → Closes）に限り、判定材料（受入条件・設計判断・検証・pr_sections）は `<details>` に畳む（issue #928）。evaluator は `<details>` の
 // 中も本文として読むので、畳んでも判定材料は減らない。builder は本文を切らない — 長さは IMPL schema の maxLength で
 // 書き手（dev-implementer）に要約させ、pr_sections の合計だけは prSectionsTrimFeedback で差し戻す。
@@ -106,6 +106,13 @@ export const PR_BODY_OUT_OF_SCOPE_MAX = 5;
 // 見える部分（`<details>` の外）の見出し。結論行と Closes 行の間にこの順で、材料が非空のときだけ出す。
 export const PR_BODY_CHANGES_HEADING = '## 何が変わるか';
 export const PR_BODY_REVIEW_POINTS_HEADING = '## 人間に見てほしい点';
+// `## 何が変わるか` の直後に出す構成の変化の図（plan.diagram。dev-implementer が描いた before / after の Mermaid）。
+// 書き手の図をそのまま載せると、実装とずれた図を人間が信じて merge するので、evaluator の diagram_check（realized diff との
+// 照合）で出し分ける: 一致なら図だけ、照合が無ければ未照合の 1 行と図、食い違いなら図を出さず食い違いの箇条書きだけ。
+export const PR_BODY_DIAGRAM_HEADING = '## 構成の変化';
+export const PR_BODY_DIAGRAM_UNVERIFIED = '⚠️ 図は diff と未照合';
+export const PR_BODY_DIAGRAM_MISMATCH = '⚠️ 図は diff と食い違ったため載せていない';
+export const PR_DIAGRAM_KINDS = ['flowchart', 'sequence', 'er'];
 // 判定材料を畳む `<details>` の summary。材料が空でも「（なし）」で必ず出す（verifyPrBody が構造を検証する）。
 export const PR_BODY_DETAILS = { acceptance: '受入条件', decisions: '設計判断', verification: '検証' };
 // pr_sections（IMPL が返す複数行 markdown）の合計上限。PR 本文は Evaluate / final-ac-reconcile の判定文脈に
@@ -193,6 +200,8 @@ const PR_NOTE_LABELS = { verification: '検証', measurement: '計測' };
 // 改行を保ち（CRLF の正規化と前後の空行除去のみ）、heading は 1 行に畳む（issue #815）。
 // behavior_changes（何が変わるか）/ review_points（人間に見てほしい点）は [string] を 1 行に畳んで同じ規則で
 // plan に取り込み、PR body の見える部分の材料にする（issue #928）。
+// diagram（{kind, before, after}。構成の変化の図）は最後に返された有効な 1 件を plan.diagram に取り込む。null・kind が
+// enum 外・before / after が空の報告は前回分を保持する。
 export function adoptImplPrNotes(plan, results) {
   const decisions = [];
   const notes = [];
@@ -200,7 +209,9 @@ export function adoptImplPrNotes(plan, results) {
   const sections = [];
   const changes = [];
   const reviewPoints = [];
+  let diagram = null;
   for (const r of arr(results)) {
+    diagram = diagramOf(r?.diagram) ?? diagram;
     changes.push(...textItems(r?.behavior_changes));
     reviewPoints.push(...textItems(r?.review_points));
     for (const s of arr(r?.pr_sections)) {
@@ -229,7 +240,15 @@ export function adoptImplPrNotes(plan, results) {
     ...(sections.length ? { pr_sections: sections } : {}),
     ...(changes.length ? { behavior_changes: changes } : {}),
     ...(reviewPoints.length ? { review_points: reviewPoints } : {}),
+    ...(diagram ? { diagram } : {}),
   };
+}
+
+function diagramOf(d) {
+  if (d == null || typeof d !== 'object' || !PR_DIAGRAM_KINDS.includes(d.kind)) return null;
+  const before = sectionMarkdown(d.before);
+  const after = sectionMarkdown(d.after);
+  return before && after ? { kind: d.kind, before, after } : null;
 }
 
 function textItems(v) {
@@ -304,6 +323,44 @@ function outOfScopeSection(plan) {
   const shown = all.slice(0, PR_BODY_OUT_OF_SCOPE_MAX);
   const excess = all.length - shown.length;
   return excess > 0 ? `${bulletList(shown)}\n（他 ${excess} 件）` : bulletList(shown);
+}
+
+// 図の本文（before / after）は PR の作者が書けるデータなので、`<details>` の中と同じ無害化を掛けてから、中のバッククォートの
+// 連続より長いフェンスで囲む — 中身でフェンスを閉じさせず、後続の節と Closes 行をコードに飲み込ませない。
+function mermaidBlock(src) {
+  const text = neutralizeStructure(src);
+  const fence = fenceFor(text);
+  return `${fence}mermaid\n${text}\n${fence}`;
+}
+
+// 食い違いの 1 件（evaluator が書くが、図と diff の文字列を引用しうる）。1 行に畳んでから無害化し、行頭のフェンス記号は
+// 箇条書きの中でコードブロックを開かせない。
+function mismatchLine(v) {
+  return neutralizeStructure(collapseWhitespace(v)).replace(/^(?=`{3,}|~{3,})/, ZWSP);
+}
+
+// `## 構成の変化` の節本文（plan.diagram が無ければ null = 節ごと出さない）。diagramCheck は evaluator の
+// {consistent, mismatches}。consistent が true / false 以外（null・未指定）は未照合として扱う。
+function diagramSection(plan, diagramCheck) {
+  const d = diagramOf(plan?.diagram);
+  if (!d) return null;
+  if (diagramCheck?.consistent === false) {
+    const mismatches = arr(diagramCheck.mismatches).map(mismatchLine).filter(Boolean);
+    return mismatches.length ? `${PR_BODY_DIAGRAM_MISMATCH}\n${bulletList(mismatches)}` : PR_BODY_DIAGRAM_MISMATCH;
+  }
+  const figures = `**before**\n\n${mermaidBlock(d.before)}\n\n**after**\n\n${mermaidBlock(d.after)}`;
+  return diagramCheck?.consistent === true ? figures : `${PR_BODY_DIAGRAM_UNVERIFIED}\n\n${figures}`;
+}
+
+// PR 本文に図そのものが載るか（plan.diagram があり、照合で食い違っていない）。
+export function prBodyShowsDiagram(plan, diagramCheck) {
+  return diagramOf(plan?.diagram) != null && diagramCheck?.consistent !== false;
+}
+
+// pr-iterate の修正後に本文を作り直すときの diagram_check。照合したのは修正前の tree なので、一致の判定は持ち越さず
+// 未照合（null）に戻す。食い違いは持ち越す — 修正後の tree で一致を確かめていない図を出さない。
+export function diagramCheckAfterFixes(diagramCheck) {
+  return diagramCheck?.consistent === false ? diagramCheck : null;
 }
 
 // 検証 details に足す pr_notes 行: 先頭 PR_BODY_NOTES_MAX 件を `- 計測: ...` / `- 検証: ...`、超過分は `（他 N 件）` 1 行。
@@ -387,19 +444,21 @@ function hitLine(label, hits, keyOf) {
 
 // PR body（issue #928）。見える部分は人間向けの短い要約で、次の順に並ぶ:
 //   結論 1 行（plan.summary > issue title > `issue #<n> の変更`）→ `## 何が変わるか`（plan.behavior_changes）→
-//   `## 人間に見てほしい点`（plan.review_points）→ `## この PR に含めなかったもの`（plan.out_of_scope）→
+//   `## 構成の変化`（plan.diagram。diagramSection）→ `## 人間に見てほしい点`（plan.review_points）→ `## この PR に含めなかったもの`（plan.out_of_scope）→
 //   `## 受入条件の結果`（AC 1 件 1 行の表。acRows）
 // 見出し付きの節は材料が空なら節ごと出さない。判定材料はその後ろに `<details>` で畳む:
 //   受入条件（AC 全文の checkbox）→ 設計判断 → 検証（danger-grep / test-surface hit + pr_notes）→ pr_sections（1 件 1 つ）
 // 最後の行は `Closes #<issue>`。builder はどの欄も字数で切らない（1 行要約欄の長さは IMPL schema の maxLength が持つ）。
 // acResults（[{ac_index, gist, satisfied, evidence, test_files}]）は evaluator の AC 判定。無い AC は「未検証」になる。
 // acStale:true は pr-iterate の修正後に AC を再検証していない run で、全 AC の結果を「修正後に未再評価」にする。
-export function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false }) {
+// diagramCheck（{consistent, mismatches}）は evaluator が図を realized diff と照合した結果。無ければ図は未照合として出す。
+export function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false, diagramCheck = null }) {
   let conclusionText = collapseWhitespace(plan?.summary);
   if (!conclusionText) conclusionText = collapseWhitespace(req?.issue_title);
   if (!conclusionText) conclusionText = `issue #${issue} の変更`;
   const changes = textItems(plan?.behavior_changes);
   const reviewPoints = textItems(plan?.review_points);
+  const diagram = diagramSection(plan, diagramCheck);
   const outOfScope = outOfScopeSection(plan);
   const rows = acRows(req, acResults, acStale);
   const acTable = acResultsSection(rows);
@@ -411,6 +470,7 @@ export function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResu
   const sections = [
     `**${conclusionText}**`,
     ...(changes.length ? [`${PR_BODY_CHANGES_HEADING}\n${bulletList(changes)}`] : []),
+    ...(diagram ? [`${PR_BODY_DIAGRAM_HEADING}\n${diagram}`] : []),
     ...(reviewPoints.length ? [`${PR_BODY_REVIEW_POINTS_HEADING}\n${bulletList(reviewPoints)}`] : []),
     ...(outOfScope ? [`${PR_BODY_OUT_OF_SCOPE_HEADING}\n${outOfScope}`] : []),
     ...(acTable ? [`${PR_BODY_AC_RESULTS_HEADING}\n${acTable}`] : []),
@@ -437,7 +497,7 @@ export function prBodyEvidenceInstr(prBody) {
 
 // evaluator に渡す plan から PR 本文の材料（本文へ組み立て済みのもの）を外す。生データを並べると evaluator が
 // 本文ではなく生データで「PR 本文に書く」型の AC を判定してしまう（issue #815）。
-export const PR_BODY_PLAN_KEYS = ['architecture_decisions', 'pr_notes', 'pr_sections', 'out_of_scope', 'behavior_changes', 'review_points'];
+export const PR_BODY_PLAN_KEYS = ['architecture_decisions', 'pr_notes', 'pr_sections', 'out_of_scope', 'behavior_changes', 'review_points', 'diagram'];
 
 export function planWithoutPrBodyMaterial(plan) {
   if (plan == null || typeof plan !== 'object') return plan;

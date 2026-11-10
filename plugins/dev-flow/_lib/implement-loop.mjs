@@ -84,6 +84,17 @@ export const IMPL = {
     },
     // PR 本文と終端サマリーの「この PR に含めなかったもの」に転記する（concerns だけでは人間の目に届かない）。
     out_of_scope: { type: 'array', items: { type: 'string', maxLength: 198 } },
+    // 構成の変化の before / after 図（Mermaid の本文）。PR 本文の「構成の変化」に載り、evaluator が realized diff と照合する。
+    // kind の enum は pr-artifacts の PR_DIAGRAM_KINDS と同値（literal の理由は上と同じ）。
+    diagram: {
+      type: ['object', 'null'],
+      required: ['kind', 'before', 'after'],
+      properties: {
+        kind: { type: 'string', enum: ['flowchart', 'sequence', 'er'] },
+        before: { type: 'string', maxLength: 1500 },
+        after: { type: 'string', maxLength: 1500 },
+      },
+    },
     epoch: { type: 'number' },
   },
 }

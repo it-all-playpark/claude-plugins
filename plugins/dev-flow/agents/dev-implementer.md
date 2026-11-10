@@ -87,6 +87,15 @@ issue の受入条件（AC）をすべて満たす変更を worktree に残し�
   全文転写ではなく AC の根拠に要る行だけを選んで書く（PR 本文は evaluator の判定文脈にそのまま入り、長いほど
   判定が薄まる）。超えると要約の差し戻し（`pr_sections_over_limit`）が来る — そのときはコード・テストを変えず
   `pr_sections` だけを書き直して返す。evaluator は PR 本文そのもので AC を判定する。差し戻しで再実行したときも、PR 本文に載せたい項目は毎回全件返す（空なら前回分が残る。正当化クラス: contract）
+- **構成の変化は `diagram` で図にして返す。** 変更が 2 つ以上のファイルにまたがり、ファイル間の呼び出し・データの流れ・
+  構成要素が増減または付け替わるときは、`diagram` に `{kind, before, after}` を返す。それ以外（1 ファイルの変更、
+  関数の中身・文言・設定値だけの変更など、構成が変わらない変更）は `null` を返す。`kind` は `flowchart`（呼び出し・
+  依存・データの流れ）/ `sequence`（やり取りの順序）/ `er`（データの構造）から選ぶ。`before` は変更前、`after` は
+  変更後の構成を、Mermaid の本文（`flowchart LR` / `sequenceDiagram` / `erDiagram` の宣言行から始まるソース。
+  コードフェンスは付けない）で各 1500 字以内に書く。図には diff に実在する構成要素（ファイル・関数・テーブル等）と
+  矢印だけを描き、before と after で同じ要素には同じ名前を使う。PR 本文の「構成の変化」に載り、人間は diff を
+  読み込む前にこの図で変更の形を判断する。evaluator が図を realized diff と照合し、食い違った図は PR 本文に
+  載らない。差し戻しで構成が変わったら図も描き直して返す（`null` なら前回分が残る。正当化クラス: contract）
 - **範囲外にした作業は `out_of_scope` で返す。** issue 本文（背景・変更内容・削除するもの等）に挙がっているが
   AC に入っていない、または worktree の外にあるため実施しなかった作業を 1 項目 1 文で書く（上の
   `AC-<n> 未実施（worktree 外）` の作業もここに書く）。PR 本文と終端サマリーの「この PR に含めなかったもの」に
@@ -150,12 +159,14 @@ status は正直に付ける。動かないものを `DONE` にしない（正�
   "pr_notes": [{"section": "measurement | verification", "text": "PR 本文「検証」に載せる計測値・検証結果（条件と数値を書く。234 字以内）"}],
   "pr_sections": [{"heading": "PR 本文の折りたたみ見出し（80 字以内）", "markdown": "対応表など複数行の markdown（改行保持・切られない。合計 3000 字以内）"}],
   "out_of_scope": ["PR 本文・終端サマリー「この PR に含めなかったもの」に載せる、issue 本文にあるが実施しなかった作業と理由（1 項目 1 文・198 字以内）"],
+  "diagram": {"kind": "flowchart | sequence | er", "before": "変更前の構成の Mermaid 本文（1500 字以内）", "after": "変更後の構成の Mermaid 本文（1500 字以内）"},
   "blocking_reason": null,
   "missing_context": null
 }
 ```
 
 `review_points` / `design_decisions` / `pr_notes` / `pr_sections` / `out_of_scope` は該当が無ければ空配列でよい。
+`diagram` は構成が変わらない変更では `null` にする。
 `behavior_changes` は `DONE` / `DONE_WITH_CONCERNS` では必ず 1 項目以上返す（正当化クラス: contract）。
 
 `BLOCKED` のときの `blocking_reason` は `{"block_class": "approach_mismatch" | "guard_blocked",
