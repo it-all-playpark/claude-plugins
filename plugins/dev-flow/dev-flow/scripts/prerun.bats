@@ -50,6 +50,13 @@ if [[ "$1" == "run" ]]; then
     cat "$GH_RUN_STUB_FIXTURE"
     exit 0
 fi
+# gh pr list（既存 branch を head にした merged PR）は GH_PR_STUB_FIXTURE 未設定なら失敗
+if [[ "$1" == "pr" ]]; then
+    printf '%s\n' "$*" >>"$GH_PR_STUB_LOG"
+    [[ -n "${GH_PR_STUB_FIXTURE:-}" ]] || { echo "gh stub: no pr fixture" >&2; exit 1; }
+    cat "$GH_PR_STUB_FIXTURE"
+    exit 0
+fi
 if [[ -z "${GH_STUB_FIXTURE:-}" ]]; then
     echo "gh stub: no fixture (GH_STUB_FIXTURE unset)" >&2
     exit 1
@@ -64,7 +71,8 @@ STUB
     export PATH="$STUB_DIR:$PATH"
     export DEVFLOW_JEV_CLASSIFY=jev-classify-not-installed
     export GH_RUN_STUB_LOG="$BATS_TEST_TMPDIR/gh-run.log"
-    unset GH_STUB_FIXTURE GH_RUN_STUB_FIXTURE
+    export GH_PR_STUB_LOG="$BATS_TEST_TMPDIR/gh-pr.log"
+    unset GH_STUB_FIXTURE GH_RUN_STUB_FIXTURE GH_PR_STUB_FIXTURE
     # user 設定（"dev-flow".security_reviewer の読み先）を実行者の環境から切り離す
     export HOME="$BATS_TEST_TMPDIR/home"
     mkdir -p "$HOME"
@@ -1064,4 +1072,153 @@ issue1_local_branches() {
     echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
     echo "$output" | jq -e '.worktree_error | contains("\"dev-flow\".branch_format が不正") and contains("{issue} が無い")'
     [ ! -e "$WT" ]
+}
+
+# ---- (19) 既存 branch の判定: merge 済みの branch を古い tree のまま run に渡さない（issue #1400）----
+# 再利用経路（既存 worktree）と local branch 経路（worktree が無く local branch だけ）が同じ判定を通る。
+
+# ROOT の origin の URL を acme/app の GitHub の形にする（fetch は insteadOf で bare origin）。出力に repo が載り、merged PR を読む
+use_github_origin() {
+    git -C "$ROOT" remote set-url origin https://github.com/acme/app.git
+    git -C "$ROOT" config url."$ORIGIN".insteadOf https://github.com/acme/app.git
+}
+
+# ROOT の local branch feature/issue-1（無ければ origin/dev 起点で作る）に独自コミットを 1 つ積み、その sha を stdout に出す。
+# worktree は残さない（local branch 経路の入力を作る）
+commit_on_local_branch() {
+    local tmp="$BATS_TEST_TMPDIR/branch-wt"
+    if git -C "$ROOT" show-ref --verify --quiet refs/heads/feature/issue-1; then
+        git -C "$ROOT" worktree add -q "$tmp" feature/issue-1
+    else
+        git -C "$ROOT" worktree add -q --no-track -b feature/issue-1 "$tmp" origin/dev
+    fi
+    echo "$1" > "$tmp/$1.txt"
+    git -C "$tmp" add "$1.txt"
+    git -C "$tmp" commit -q -m "own commit $1"
+    git -C "$tmp" rev-parse HEAD
+    git -C "$ROOT" worktree remove --force "$tmp"
+}
+
+# local branch feature/issue-1 の今の tip を origin/dev に入れる（merge commit / ff 方式の merge 相当。remote に branch は作らない）
+merge_local_branch_into_origin_dev() {
+    git -C "$ROOT" push -q origin feature/issue-1:dev
+    git -C "$SEED" pull -q origin dev
+}
+
+# 第 1 引数の JSON を gh pr list の出力にする
+set_merged_prs() {
+    printf '%s\n' "$1" > "$BATS_TEST_TMPDIR/merged-prs.json"
+    export GH_PR_STUB_FIXTURE="$BATS_TEST_TMPDIR/merged-prs.json"
+}
+
+@test "(19a) remote branch の無い merge 済みの local branch だけがあり origin/dev が先へ進んだ -> created、origin/dev へ fast-forward して head はその sha" {
+    old_head="$(commit_on_local_branch work)"
+    merge_local_branch_into_origin_dev
+    advance_origin_dev
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .branch == "feature/issue-1"'
+    new_base="$(git -C "$ROOT" rev-parse origin/dev)"
+    [ "$new_base" != "$old_head" ]
+    [ "$(git -C "$WT" rev-parse HEAD)" = "$new_base" ]
+    echo "$output" | jq -e --arg h "$new_base" '.head == $h'
+}
+
+@test "(19b) local branch 経路: squash / rebase で merge 済み（merged PR の head が branch の tip で origin/dev の祖先でない）-> worktree を作らず ok:false、branch 名・PR 番号・回復手順" {
+    use_github_origin
+    tip="$(commit_on_local_branch work)"
+    advance_origin_dev
+    set_merged_prs "$(jq -nc --arg o "$tip" '[{number: 42, headRefOid: $o}]')"
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error" and has("head") == false'
+    echo "$output" | jq -e '.worktree_error | contains("branch feature/issue-1 は PR #42 で merge 済み") and contains("git branch -D feature/issue-1")'
+    [ ! -e "$WT" ]
+    [ "$(git -C "$ROOT" rev-parse feature/issue-1)" = "$tip" ]
+}
+
+@test "(19c) 再利用経路: merged PR の head が branch の tip の祖先で origin/dev の祖先でない -> ok:false、worktree と HEAD を変えない" {
+    use_github_origin
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .repo == "acme/app"'
+
+    echo "work" > "$WT/work.txt"
+    git -C "$WT" add work.txt
+    git -C "$WT" commit -q -m "own commit"
+    pr_head="$(git -C "$WT" rev-parse HEAD)"
+    echo "more" > "$WT/more.txt"
+    git -C "$WT" add more.txt
+    git -C "$WT" commit -q -m "commit after the PR"
+    own_head="$(git -C "$WT" rev-parse HEAD)"
+    advance_origin_dev
+    set_merged_prs "$(jq -nc --arg o "$pr_head" '[{number: 7, headRefOid: $o}]')"
+
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "reused"'
+    echo "$output" | jq -e '.worktree_error | contains("branch feature/issue-1 は PR #7 で merge 済み") and contains("git branch -D feature/issue-1") and contains("git worktree remove")'
+    [ "$(git -C "$WT" rev-parse HEAD)" = "$own_head" ]
+    [ -f "$WT/work.txt" ] && [ -f "$WT/more.txt" ]
+    [ -z "$(git -C "$WT" status --porcelain)" ]
+}
+
+@test "(19d) local branch 経路: 独自コミットがあり merged PR が無い -> ok:true で head は branch の sha。読み取りは gh pr list の 1 回" {
+    use_github_origin
+    tip="$(commit_on_local_branch work)"
+    advance_origin_dev
+    set_merged_prs '[]'
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --arg h "$tip" '.ok == true and .worktree_status == "created" and .head == $h'
+    [ "$(git -C "$WT" rev-parse HEAD)" = "$tip" ]
+    [ "$(wc -l <"$GH_PR_STUB_LOG" | tr -d ' ')" = "1" ]
+    grep -qx -- 'pr list --repo acme/app --head feature/issue-1 --state merged --limit 100 --json number,headRefOid' "$GH_PR_STUB_LOG"
+}
+
+@test "(19e) local branch 経路: merge commit 方式の merged PR（head が origin/dev の祖先）の上に新しい commit を積んだ branch -> ok:true で head は branch の sha" {
+    use_github_origin
+    merged="$(commit_on_local_branch work)"
+    merge_local_branch_into_origin_dev
+    advance_origin_dev
+    tip="$(commit_on_local_branch followup)"
+    set_merged_prs "$(jq -nc --arg o "$merged" '[{number: 42, headRefOid: $o}]')"
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --arg h "$tip" '.ok == true and .worktree_status == "created" and .head == $h'
+    [ "$(git -C "$WT" rev-parse HEAD)" = "$tip" ]
+}
+
+@test "(19f) merged PR の読み取りに失敗（gh の失敗・出力が JSON でない）-> merged PR 無しとみなさず worktree を作らずに ok:false" {
+    use_github_origin
+    commit_on_local_branch work
+    cd "$ROOT"
+    # gh の失敗（GH_PR_STUB_FIXTURE 未設定）
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | contains("branch feature/issue-1 を head にした merged PR を読み取れなかった")'
+    [ ! -e "$WT" ]
+
+    set_merged_prs 'not json'
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | contains("merged PR を読み取れなかった")'
+    [ ! -e "$WT" ]
+}
+
+@test "(19g) origin が GitHub でない（repo キー無し）-> 独自コミットがある local branch でも merged PR を読まず ok:true で head は branch の sha" {
+    tip="$(commit_on_local_branch work)"
+    advance_origin_dev
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --arg h "$tip" '.ok == true and has("repo") == false and .head == $h'
+    [ ! -e "$GH_PR_STUB_LOG" ]
 }
