@@ -746,12 +746,24 @@ function fenceFor(text) {
   return '`'.repeat(Math.max(3, longest + 1));
 }
 
+// 段の進み具合の 1 行（issue #1359）。commit → push → pr-create の順に、失敗した段の前は ✅・失敗した段は ❌・後は ⬜。
+// 段が分からない（unknown）run は commit だけを committed から決め、残りは推測せず ❔ にする
+function prPhaseProgressLine(facts) {
+  const idx = PR_FAILED_STEP_VALUES.indexOf(facts.failed_step);
+  const marks = PR_FAILED_STEP_VALUES.map((step, i) => {
+    if (idx < 0) return step === 'commit' ? (facts.committed ? '✅' : '⬜') : '❔ 段不明';
+    return i < idx ? '✅' : i === idx ? '❌' : '⬜';
+  });
+  return `**進み具合**: ${PR_FAILED_STEP_VALUES.map((step, i) => `${step} ${marks[i]}`).join(' → ')}`;
+}
+
 export function prPhaseFailureComment({ worktree, branch, facts, commands }) {
   const reasonFence = fenceFor(facts.failure_reason);
   const cmdText = commands.join('\n');
   const cmdFence = fenceFor(cmdText);
   const commit = facts.committed ? `済み${facts.head_sha ? `（\`${facts.head_sha}\`）` : ''}` : '未（worktree の変更は未 commit のまま残っている）';
   return `## dev-flow: PR phase で停止（step: ${facts.failed_step}）\n\n`
+    + `${prPhaseProgressLine(facts)}\n\n`
     + `Implement〜Evaluate は完了済み。run は push / PR 作成を再試行せずに終了した。\n\n`
     + `- 失敗段: \`${facts.failed_step}\`\n`
     + `- commit: ${commit}\n`

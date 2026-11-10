@@ -124,8 +124,17 @@ function testRedFacts(ev, withBase) {
     : ['base との比較はしていない'])];
   return { note: ` — 落ちたテストファイル ${failed} 件: ${parts.join('・')}${failedFilesNote(ev.failedFiles)}`, evidence: touched + (withBase ? differs : 0) > 0 };
 }
-// validate_test_red / final_test_red の {現状, 対応}
-const testRedRow = (current, f, fixAction) => ({ current: current + f.note, action: f.evidence ? fixAction : TEST_RED_UNKNOWN_ACTION });
+// HOLD を解く手段の区分（issue #1359）。HOLD の表の「区分」列に出し、人が PR を直すか・自分で確かめるか・dev-flow の不具合を
+// 疑うかを atlas を引かずに決められるようにする。holdReasonDisplay は HOLD_REASON_CODES の全 code にこのどれか 1 つを返す
+const HOLD_REMEDY_FIX_PR = 'PR を直す';
+const HOLD_REMEDY_HUMAN = '人が確かめる';
+const HOLD_REMEDY_DEVFLOW = 'dev-flow 側を疑う';
+// validate_test_red / final_test_red の {現状, 対応, 区分}。diff が原因だと示す証拠が無い red は直す対象が決まらない
+const testRedRow = (current, f, fixAction) => ({
+  current: current + f.note,
+  action: f.evidence ? fixAction : TEST_RED_UNKNOWN_ACTION,
+  remedy: f.evidence ? HOLD_REMEDY_FIX_PR : HOLD_REMEDY_HUMAN,
+});
 
 function resolvedCell(v) {
   if (v == null) return '';
@@ -545,10 +554,12 @@ export function buildDevflowSummaryBody({
   // ファイルとログは merge tier の開示行に出る）。
   const flakeCandidate = Array.isArray(finalTestFlaky?.files) && finalTestFlaky.files.length > 0;
   const RED_CELL = flakeCandidate ? '❌ red（単体再実行は green — flake 候補）' : '❌ red';
+  // 値が無いセルは中立の表示（「不明」「—」）にせず未検証と出す — 確かめていないものを確かめたように読ませない（issue #1359）
+  const UNVERIFIED_CELL = '⚠️ 未検証';
   let testCell;
   let testUnverified = false;
   if (finalReconcile === 'reverified') {
-    testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? RED_CELL : '不明';
+    testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? RED_CELL : UNVERIFIED_CELL;
   } else if (finalReconcile === 'unavailable') {
     testCell = '⚠️ unavailable（最終 tree で再検証不能）・未検証';
     testUnverified = true;
@@ -556,26 +567,22 @@ export function buildDevflowSummaryBody({
     testCell = '⚠️ 未実行（環境）・未検証';
     testUnverified = true;
   } else if (testGreen == null) {
-    testCell = '不明';
+    testCell = UNVERIFIED_CELL;
   } else if (testGreen === true) {
     testCell = baseFailing.length > 0 ? `✅ green（base でも失敗する既存の失敗 ${baseFailing.length} 件を除く）` : '✅ green';
   } else {
     testCell = RED_CELL;
   }
 
-  const testPhrase = testUnverified ? 'テストはローカル未実行・CI 未確認のため、CI の test 結果を確認してからマージ。' : '';
-  lines.push(`**結論: ${tierPhrase}。${fixPhrase}。${testPhrase}**`);
-  lines.push('');
-
-  // 3. at-a-glance テーブル
+  // 3. at-a-glance テーブルのセル（判断カードも同じセルから振り分ける）
   const tierCell = `${TIER_EMOJI[mergeTier] ?? ''} **${mergeTier}**`;
-  const shapeCell = shape != null ? shape : '不明';
+  const shapeCell = shape != null ? shape : UNVERIFIED_CELL;
   // evaluator verdict=fail でも、pr-iterate が fix を適用して LGTM 終端し（iterate_fixed + lgtm）、
   // AC が最終 tree で再検証済み（finalAcReconcile=reverified）なら最終状態は pass。4 条件 AND。
   // 表示のみ — merge tier / HOLD reasons / telemetry の eval_verdict は fix 前 verdict のまま不変。
   let evalCell;
   if (evalVerdict == null) {
-    evalCell = '不明';
+    evalCell = UNVERIFIED_CELL;
   } else if (evalVerdict === 'pass') {
     evalCell = '✅ pass';
   } else if (
@@ -589,7 +596,7 @@ export function buildDevflowSummaryBody({
   const ledgerCell = ledgerConverged ? '✅ 収束' : '⚠️ 未収束';
   let acCell;
   if (!acArr) {
-    acCell = '—';
+    acCell = UNVERIFIED_CELL;
   } else {
     const s = acArr.filter(a => a.satisfied === true).length;
     const t = acArr.length;
@@ -601,11 +608,75 @@ export function buildDevflowSummaryBody({
   // SEC seed が無い・unchecked・fail-closed のクラスは cleared に入らず従来どおり ⚠️ / マージ後の行を出す。
   const clearedDangerClasses = new Set(securityClearance.filter(sc => sc.cleared === true).map(sc => sc.danger_class));
   let dangerCell;
-  if (!dangerArr) dangerCell = '✅ clean';
+  // danger-grep が実行できなかった（fail-closed）・clear していない SEC がある run は、検出 0 件でも clean と出さない
+  if (!dangerArr) dangerCell = secFailClosed || uncleared.length > 0 ? UNVERIFIED_CELL : '✅ clean';
   else if (dangerArr.every(cls => clearedDangerClasses.has(cls))) dangerCell = `✅ cleared（${dangerArr.length} クラス）`;
   else dangerCell = `⚠️ ${dangerArr.length} クラス`;
   const testsurfArr = testsurfHits && testsurfHits.length > 0 ? testsurfHits : null;
   const hasTestsurf = testsurfArr != null || testsurfClearance.length > 0;
+
+  // 判断カード（issue #1359）: 機械の確認 5 項目を表のセルの印で ✅（確認済み）/ ⚠️（未検証）/ ❌（不合格）に振り分け、
+  // ✅ でない項目だけを「あなたが確かめること」に 1 行ずつ出す。表示専用 — merge tier・HOLD 理由は変えない。
+  const cardState = (cell) => (cell.startsWith('✅') ? 'ok' : cell.startsWith('❌') ? 'failed' : 'unverified');
+  const openDangerClasses = [...new Set([
+    ...(dangerArr || []).filter((cls) => !clearedDangerClasses.has(cls)),
+    ...uncleared.map((sc) => sc.danger_class),
+  ])];
+  const cardItems = [
+    {
+      name: 'テスト',
+      cell: testCell,
+      note: cardState(testCell) === 'failed' ? `red${flakeCandidate ? '（単体再実行は green — flake 候補）' : ''} — 落ちたテストを確かめる`
+        : finalReconcile === 'unavailable' ? '最終 tree で再検証できなかった — CI の test 結果か手元の実行で確かめる'
+          : validateTests === 'error' ? 'ローカルで 1 件も実行されていない（起動失敗）— CI の test 結果か手元の実行で確かめる'
+            : '結果が分からない — CI の test 結果か手元の実行で確かめる',
+    },
+    {
+      name: '評価',
+      cell: evalCell,
+      note: evalVerdict == null ? 'evaluator が判定していない — diff が issue の意図どおりかを確かめる'
+        : `evaluator の判定が ${mdCell(evalVerdict)} — 下の「要対応」の項目を確かめる`,
+    },
+    {
+      name: 'AC',
+      cell: acCell,
+      note: !acArr ? 'AC を誰も判定していない — issue の受入条件を 1 つずつ diff と突き合わせる'
+        : `未達 ${unsatisfiedAC.length} 件（${unsatisfiedAC.map((a) => `AC#${a.ac_index + 1}`).join(', ')}）— 下の未達 AC の行を確かめる`,
+    },
+    {
+      name: '危険検出',
+      cell: dangerCell,
+      note: secFailClosed ? 'danger-grep の結果が無い（fail-closed）— diff の security を確かめる'
+        : `clear していない danger class（${openDangerClasses.join(', ')}）— 該当する diff を確かめる`,
+    },
+    {
+      name: '台帳',
+      cell: ledgerCell,
+      note: '未収束（checked でない必須項目がある）— 下の「要対応」の行を確かめる',
+    },
+  ].map((it) => ({ ...it, state: cardState(it.cell) }));
+  const cardOpen = cardItems.filter((it) => it.state !== 'ok');
+  const cardCount = (state) => cardItems.filter((it) => it.state === state).length;
+
+  const testPhrase = testUnverified ? 'テストはローカル未実行・CI 未確認のため、CI の test 結果を確認してからマージ。' : '';
+  lines.push(`**結論: ${tierPhrase}。${fixPhrase}。${testPhrase}**`);
+  lines.push('');
+
+  // 判断カード: 問い / 件数 / あなたが確かめること（結論行の直後・at-a-glance 表より前）
+  const cardQuestion = mergeTier === 'HOLD'
+    ? '下の「HOLD になった理由と現状」を解消してから merge するか'
+    : cardOpen.length > 0
+      ? `機械の確認が ✅ でない ${cardOpen.length} 項目（下の「あなたが確かめること」）を確かめたうえで、この diff を merge してよいか`
+      : 'この diff を merge してよいか（機械の確認は 5 項目とも ✅）';
+  lines.push(`**あなたが決めること**: ${cardQuestion}`);
+  lines.push('');
+  lines.push(`機械の確認（${cardItems.map((it) => it.name).join('、')}）: ✅ 確認済み ${cardCount('ok')} / ⚠️ 未検証 ${cardCount('unverified')} / ❌ 不合格 ${cardCount('failed')}`);
+  lines.push('');
+  lines.push('### あなたが確かめること');
+  lines.push('');
+  if (cardOpen.length === 0) lines.push('なし');
+  for (const it of cardOpen) lines.push(`- ${it.state === 'failed' ? '❌' : '⚠️'} ${it.name}: ${it.note}`);
+  lines.push('');
 
   lines.push('| Merge tier | shape | テスト | 評価 | 台帳 (Ledger) | AC | 危険検出 |');
   lines.push('|---|---|---|---|---|---|---|');
@@ -713,8 +784,8 @@ export function buildDevflowSummaryBody({
   if (mergeTier === 'HOLD' && Array.isArray(holdReasons) && holdReasons.length > 0) {
     lines.push('### HOLD になった理由と現状');
     lines.push('');
-    lines.push('| 理由 | 現状 | 対応 |');
-    lines.push('|---|---|---|');
+    lines.push('| 理由 | 区分 | 現状 | 対応 |');
+    lines.push('|---|---|---|---|');
     const escalateTotal = escalateAll.length;
     const escalateResolved = escalateAll.filter((it) => isResolved(it)).length;
     // 同じ AC に紐づく HOLD 理由が 2 つ以上あるときだけ AC ごとに 1 行にまとめる（issue #794）。
@@ -745,6 +816,21 @@ export function buildDevflowSummaryBody({
       ac_human_pending: 'AC 未達（人手）',
       ac_ci_pending: 'AC 未確定（CI）',
     };
+    const holdCtx = {
+      escalateTotal,
+      escalateResolved,
+      uncheckedBlockingCount: ledgerUnconvergedItems.length,
+      unclearedCount: uncleared.length,
+      iterateStatus,
+      pr,
+      humanAcGaps: acHumanGaps,
+      observationalAcGaps: observationalGaps,
+      unreachableAcGaps: unreachableGaps,
+      ciVerify,
+      conflictAutoresolve,
+      securityReview,
+      redFacts,
+    };
     let acGroupRowsEmitted = false;
     for (const hr of holdReasons) {
       if (!acGroupRowsEmitted && holdAcGroups.some((g) => g.holdCodes.includes(hr && hr.code))) {
@@ -756,26 +842,14 @@ export function buildDevflowSummaryBody({
             if (c === 'escalate') return `ESCALATE ${g.escalate.length} 件中 ${g.escalate.filter((it) => isResolved(it)).length} 件は fix 後 tree で解消確認済み`;
             return 'AC 判定 satisfied:false';
           }).join('・');
-          lines.push(`| ${reason} | ${current} | ${g.actions.join('・')}（下表 ${g.label} 行） |`);
+          // まとめた行の区分は内訳の code の区分を重複なく並べる
+          const remedy = [...new Set(g.holdCodes.map((c) => holdReasonDisplay(c, holdCtx).remedy))].join('・');
+          lines.push(`| ${reason} | ${remedy} | ${current} | ${g.actions.join('・')}（下表 ${g.label} 行） |`);
         }
       }
       if (absorbedCodes.has(hr && hr.code)) continue;
-      const { current, action } = holdReasonDisplay(hr && hr.code, {
-        escalateTotal,
-        escalateResolved,
-        uncheckedBlockingCount: ledgerUnconvergedItems.length,
-        unclearedCount: uncleared.length,
-        iterateStatus,
-        pr,
-        humanAcGaps: acHumanGaps,
-        observationalAcGaps: observationalGaps,
-        unreachableAcGaps: unreachableGaps,
-        ciVerify,
-        conflictAutoresolve,
-        securityReview,
-        redFacts,
-      });
-      lines.push(`| ${mdCell(hr && hr.reason)} | ${current} | ${action} |`);
+      const { current, action, remedy } = holdReasonDisplay(hr && hr.code, holdCtx);
+      lines.push(`| ${mdCell(hr && hr.reason)} | ${remedy} | ${current} | ${action} |`);
     }
   } else if (mergeTier === 'HOLD') {
     // fail-safe フォールバック: holdReasons が null/空でも従来どおり mergeTierReasons を列挙する。
@@ -816,9 +890,13 @@ export function buildDevflowSummaryBody({
   }
 
   // 6. 要対応セクション（常時可視。issue #658 AC-2）
+  // 修正が要る項目が無くても、判断カードに ✅ でない項目があれば「要対応事項なし」と出さない（issue #1359）
   lines.push('');
   if (hasRequiredItems) {
     lines.push('### ⚠️ 要対応');
+  } else if (cardOpen.length > 0) {
+    lines.push(`### ⚠️ 要確認（機械の確認が ✅ でない ${cardOpen.length} 項目 — 上の「あなたが確かめること」）`);
+    if (unresolvedAdvisory.length > 0) lines.push('', '### ℹ️ 任意の確認事項');
   } else if (unresolvedAdvisory.length > 0) {
     lines.push('### ℹ️ 任意の確認事項');
   } else {
@@ -1189,9 +1267,10 @@ export function buildDevflowSummaryBody({
   return lines.join('\n');
 }
 
-// HOLD 理由 code -> {現状, 対応} の fail-safe 写像（issue #658）。merge-tier.mjs の
+// HOLD 理由 code -> {現状, 対応, 区分} の fail-safe 写像（issue #658, #1359）。merge-tier.mjs の
 // HOLD_REASON_CODES を canonical とする（import 不可のため重複定義）。out-of-enum / 欠落は
-// throw せず '—' / '人が確認する' に落とす（表示専用フィールドのため）。
+// throw せず '—' / '人が確認する' / 区分 '—' に落とす（表示専用フィールドのため）。区分の網羅は
+// devflow-summary-format.test.mjs が HOLD_REASON_CODES の全要素を回して pin する。
 function holdReasonDisplay(code, ctx) {
   switch (code) {
     case 'escalate': {
@@ -1199,16 +1278,17 @@ function holdReasonDisplay(code, ctx) {
       return {
         current: `ESCALATE ${escalateTotal} 件中 ${escalateResolved} 件は fix 後 tree で解消確認済み`,
         action: escalateTotal === escalateResolved ? '不要（マージ可否の判断のみ）' : `要判断 ${escalateTotal - escalateResolved} 件（下表 ⚠️ 行）`,
+        remedy: HOLD_REMEDY_HUMAN,
       };
     }
     case 'ledger_unconverged':
-      return { current: `未 checked blocking ${ctx.uncheckedBlockingCount} 件`, action: '修正が必要（下表 ❌ 行）' };
+      return { current: `未 checked blocking ${ctx.uncheckedBlockingCount} 件`, action: '修正が必要（下表 ❌ 行）', remedy: HOLD_REMEDY_FIX_PR };
     case 'ac_agent_unsatisfied':
-      return { current: 'エージェントで満たせる AC が差し戻し後も未達（ループの取りこぼし）', action: '修正が必要（下表 ❌ 未達 行）' };
+      return { current: 'エージェントで満たせる AC が差し戻し後も未達（ループの取りこぼし）', action: '修正が必要（下表 ❌ 未達 行）', remedy: HOLD_REMEDY_FIX_PR };
     case 'ac_human_pending': {
       const obs = Array.isArray(ctx.observationalAcGaps) ? ctx.observationalAcGaps : [];
       const unreachable = Array.isArray(ctx.unreachableAcGaps) ? ctx.unreachableAcGaps : [];
-      if (obs.length === 0 && unreachable.length === 0) return { current: '人手作業を要する AC が未達（人手 AC 待ち）', action: '人手で実施して AC を確認する（下表 ❌ 未達 行）' };
+      if (obs.length === 0 && unreachable.length === 0) return { current: '人手作業を要する AC が未達（人手 AC 待ち）', action: '人手で実施して AC を確認する（下表 ❌ 未達 行）', remedy: HOLD_REMEDY_HUMAN };
       const others = (Array.isArray(ctx.humanAcGaps) ? ctx.humanAcGaps : []).filter((k) => !obs.includes(k) && !unreachable.includes(k));
       const acList = (ks) => ks.map((k) => `AC#${k + 1}`).join(', ');
       const current = [
@@ -1221,7 +1301,7 @@ function holdReasonDisplay(code, ctx) {
         ...(unreachable.length > 0 ? [UNREACHABLE_ENV_AC_ACTION] : []),
         ...(obs.length > 0 ? [OBSERVATIONAL_AC_ACTION] : []),
       ];
-      return { current: current.join('・'), action: `${actions.join('・')}（下表 ❌ 未達 行）` };
+      return { current: current.join('・'), action: `${actions.join('・')}（下表 ❌ 未達 行）`, remedy: HOLD_REMEDY_HUMAN };
     }
     case 'ac_ci_pending': {
       const v = ctx.ciVerify;
@@ -1230,48 +1310,50 @@ function holdReasonDisplay(code, ctx) {
         : v?.status === 'failed' ? `CI の ${checks} が failure（pr-iterate の fix 後も green にならない）`
           : v?.status === 'error' ? `CI の ${checks} の状態を取得できない`
             : `CI の ${checks} の完了待ちに到達していない（pr-iterate が LGTM 前に終端）`;
-      return { current, action: ciAcAction(v) };
+      return { current, action: ciAcAction(v), remedy: HOLD_REMEDY_HUMAN };
     }
     case 'danger_unresolved':
-      return { current: `security clearance 未確認 ${ctx.unclearedCount} 件`, action: '人が該当 diff を確認する' };
+      return { current: `security clearance 未確認 ${ctx.unclearedCount} 件`, action: '人が該当 diff を確認する', remedy: HOLD_REMEDY_HUMAN };
     case 'danger_fail_closed':
-      return { current: 'danger-grep 実行不能（security 未検証）', action: 'danger-grep を手動実行して確認する' };
+      return { current: 'danger-grep 実行不能（security 未検証）', action: 'danger-grep を手動実行して確認する', remedy: HOLD_REMEDY_DEVFLOW };
     case 'merge_facts_dropped':
-      return { current: 'merge-tier-facts の転記欠落（danger-grep 結果を受け取れず security 未検証）', action: 'danger-grep を手動実行して確認する' };
+      return { current: 'merge-tier-facts の転記欠落（danger-grep 結果を受け取れず security 未検証）', action: 'danger-grep を手動実行して確認する', remedy: HOLD_REMEDY_DEVFLOW };
     case 'breaking_structured':
-      return { current: 'analyze が breaking_change=true と判定', action: '互換性影響と告知要否を判断する' };
+      return { current: 'analyze が breaking_change=true と判定', action: '互換性影響と告知要否を判断する', remedy: HOLD_REMEDY_HUMAN };
     case 'final_reconcile_unavailable':
-      return { current: '最終 tree のテスト状態が未確認', action: '最終 tree でテストを手動実行する' };
+      return { current: '最終 tree のテスト状態が未確認', action: '最終 tree でテストを手動実行する', remedy: HOLD_REMEDY_DEVFLOW };
     case 'final_test_red':
       return testRedRow('fix 後の最終 tree でテスト失敗', ctx.redFacts[code], '修正が必要');
     case 'validate_test_red':
       return testRedRow('Validate のテスト失敗が残ったまま PR へ進行（pr-iterate の fix 0 件で最終 tree の再検証なし）', ctx.redFacts[code], '修正が必要（落ちたテストを直して push する）');
     case 'validate_tests_not_run':
-      return { current: 'テストが 1 件も実行されていない（ローカルは起動失敗）', action: 'テストを手元で実行するか、CI の test 結果を確認する' };
+      return { current: 'テストが 1 件も実行されていない（ローカルは起動失敗）', action: 'テストを手元で実行するか、CI の test 結果を確認する', remedy: HOLD_REMEDY_DEVFLOW };
     case 'no_tests_run':
-      return { current: 'テストを 1 本も実行していない（実行対象のテストが 0 本）', action: 'テストの要否と実行方法を確認する' };
+      return { current: 'テストを 1 本も実行していない（実行対象のテストが 0 本）', action: 'テストの要否と実行方法を確認する', remedy: HOLD_REMEDY_HUMAN };
     case 'test_runner_changed':
-      return { current: 'PR が tests/run-*.sh を書き換えた・足した（そのランナーの green はテストが通った証拠にならない）', action: 'ランナーの変更を確認し、base のランナーでテストを実行する' };
+      return { current: 'PR が tests/run-*.sh を書き換えた・足した（そのランナーの green はテストが通った証拠にならない）', action: 'ランナーの変更を確認し、base のランナーでテストを実行する', remedy: HOLD_REMEDY_HUMAN };
     case 'final_ac_unavailable':
-      return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する' };
+      return { current: '最終 tree の AC 再検証結果を取得できず', action: 'AC を手動で再確認する', remedy: HOLD_REMEDY_DEVFLOW };
     case 'iterate_non_lgtm':
-      return { current: `pr-iterate status=${ctx.iterateStatus ?? 'null'}`, action: `未解消指摘を修正する（\`/pr-iterate ${ctx.pr}\` 単体起動で回収可）` };
+      return { current: `pr-iterate status=${ctx.iterateStatus ?? 'null'}`, action: `未解消指摘を修正する（\`/pr-iterate ${ctx.pr}\` 単体起動で回収可）`, remedy: HOLD_REMEDY_FIX_PR };
     case 'hash_mismatch':
-      return { current: '評価済み tree と PR tree が乖離', action: '差分を確認し必要なら再評価する' };
+      return { current: '評価済み tree と PR tree が乖離', action: '差分を確認し必要なら再評価する', remedy: HOLD_REMEDY_DEVFLOW };
     case 'testsurf_uncleared':
-      return { current: 'test-weakening 未クリア', action: '該当テスト変更の正当性を確認する' };
+      return { current: 'test-weakening 未クリア', action: '該当テスト変更の正当性を確認する', remedy: HOLD_REMEDY_HUMAN };
     case 'mergeable_conflicting':
-      return { current: `base branch と conflict${conflictStoppedNote(ctx.conflictAutoresolve)}`, action: 'conflict を解消して push する' };
+      return { current: `base branch と conflict${conflictStoppedNote(ctx.conflictAutoresolve)}`, action: 'conflict を解消して push する', remedy: HOLD_REMEDY_FIX_PR };
     case 'pr_closes_missing':
       return {
         current: 'PR body に Closes 行が無い（merge しても issue が自動 close されない）',
         action: `\`gh pr edit ${ctx.pr} --body-file <本文ファイル>\` で Closes 行を含む本文を再投入する`,
+        remedy: HOLD_REMEDY_FIX_PR,
       };
     case 'ci_checks_failed':
       return {
         // run は CI の失敗の原因（diff か、環境・既存の失敗か）を確かめる材料を持たないので、修正 push を断定しない
         current: 'PR head の CI checks が失敗（fail / cancel）— 原因は run で未確認',
         action: `\`gh pr checks ${ctx.pr}\` で失敗した check を確認し、diff が原因か判断する`,
+        remedy: HOLD_REMEDY_HUMAN,
       };
     case 'security_review_unresolved': {
       const s = ctx.securityReview;
@@ -1283,6 +1365,7 @@ function holdReasonDisplay(code, ctx) {
           current: `指示ファイルを変える PR なので自動 review をしていない（review ${Number.isFinite(s.rounds) ? s.rounds : 0} 回）`,
           action: `\`gh pr diff ${ctx.pr} --name-only \\| grep -iE '(^\\|/)(claude(\\.local)?\\|agents)\\.md$\\|^\\.claude/'\` で変わった指示ファイルを一覧し、人が中身と diff を確認する（\`@\` import 先も確かめる）。`
             + `Anthropic API に通信できるシェル（plugin の bin/ が PATH に載る Claude Code のセッション等）で \`security-review-isolated ${ctx.pr}\` を実行すると、PR の worktree に入らない別プロセスで security review を回せる（結果は gate に戻らない — merge 判断の材料）`,
+          remedy: HOLD_REMEDY_HUMAN,
         };
       }
       const counts = s && s.status !== 'not_run' && Number.isFinite(s.rounds)
@@ -1292,9 +1375,10 @@ function holdReasonDisplay(code, ctx) {
       return {
         current: `security review が今の PR head で clear になっていない${counts}${deferred}`,
         action: `\`/pr-iterate ${ctx.pr}\` で回収するか、人が diff を確認する（指摘の本文は公開コメントに載せない）`,
+        remedy: HOLD_REMEDY_HUMAN,
       };
     }
     default:
-      return { current: '—', action: '人が確認する' };
+      return { current: '—', action: '人が確認する', remedy: '—' };
   }
 }
