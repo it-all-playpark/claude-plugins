@@ -6,10 +6,6 @@
 // INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
 // 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
-// diff-risk-classify.sh が test-weakening クラスの hit に付与する content pattern（固定順）。
-// file-deletion 系と assert/expect 純減は spike #361 の FP 実測により不採用（follow-up）。
-export const TESTSURF_PATTERNS = ['skip', 'only', 'todo', 'xfail', 'tautology', 'exclude-cfg'];
-
 // risk.hits のうち class==='test-weakening'（test-surface 縮小系）の hit のみを返す。
 // risk が null または risk.ok!==true（danger-grep 実行失敗/転写失敗/空出力）は空配列を返す。
 // fail-closed（全 TESTSURF item を unchecked に戻す等）は同一スクリプトの SEC 側 reconcileDanger

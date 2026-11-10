@@ -9,10 +9,6 @@
 // INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
 // 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
-// green-fix 再評価のモード。assert_only = テストファイルだけの変更で testsurf / danger hit 0 件
-// （テストの assert を弱めていないかだけを確認）。full = それ以外（差分全体を評価）。
-export const GREEN_FIX_RECHECK_MODES = ['assert_only', 'full'];
-
 // recheck_resolutions[].resolution の closed enum。resolved 以外（enum 外を含む）は解消根拠を取り下げる側に倒す。
 export const RECHECK_RESOLUTIONS = ['resolved', 'unresolved'];
 
@@ -29,7 +25,8 @@ export function isTestFilePath(p) {
   return typeof p === 'string' && p.length > 0 && TEST_FILE_RES.some((re) => re.test(p));
 }
 
-// green-fix 差分の再評価モードを決める。
+// green-fix 差分の再評価モードを決める。assert_only = テストファイルだけの変更で testsurf / danger hit 0 件
+// （テストの assert を弱めていないかだけを確認）。full = それ以外（差分全体を評価）。
 //   files:     評価済み tree → green-fix 後 tree の差分パス（ephemeral 除外済み）。null = 取得不能
 //   truncated: numstat の打ち切り有無（打ち切りは差分全体が見えていないので full）
 //   risk:      diff-triage の risk（working tree 全体 vs base）。hit は files に含まれるものだけを見る

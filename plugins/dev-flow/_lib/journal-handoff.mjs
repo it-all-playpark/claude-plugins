@@ -136,8 +136,6 @@ export function buildJournalPendingWriteInstr({ prefix, id, payload }) {
     + `結果を {saved, logged} で返せ。どの手順で失敗しても throw せず {saved, logged} を返すこと。\n`;
 }
 
-export const JOURNAL_LOG_STATUSES = ['logged', 'save_failed', 'log_failed'];
-
 // classifyJournalLogStatus({ saved, logged }): reduces the handoff outcome to the 3-value closed
 // enum reported on the caller's return object. saved!==true means the payload never reached a
 // write attempt (save_failed). logged===true means the pending/ write succeeded (logged). A write

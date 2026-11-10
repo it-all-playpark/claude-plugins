@@ -8,7 +8,6 @@ import os from 'node:os';
 import {
   ABORT_ERROR_CATEGORY,
   JOURNAL_HANDOFF_RESULT,
-  JOURNAL_LOG_STATUSES,
   buildAbortErrorMsg,
   buildAbortHandoffPayload,
   buildJournalHandoffPayload,
@@ -251,10 +250,6 @@ test('JOURNAL_HANDOFF_RESULT requires both saved and logged booleans', () => {
 
 // ---- classifyJournalLogStatus ----
 
-test('JOURNAL_LOG_STATUSES is the closed 3-value enum', () => {
-  assert.deepEqual(JOURNAL_LOG_STATUSES, ['logged', 'save_failed', 'log_failed']);
-});
-
 test('classifyJournalLogStatus returns save_failed when saved is not true', () => {
   assert.equal(classifyJournalLogStatus({ saved: false, logged: true }), 'save_failed');
   assert.equal(classifyJournalLogStatus({ saved: undefined, logged: true }), 'save_failed');
@@ -456,7 +451,7 @@ test('runJournalHandoff always returns one of the 3-value closed enum', async ()
     async () => { throw new Error('boom'); },
   ]) {
     const { status } = await runHandoffWith(responder);
-    assert.ok(JOURNAL_LOG_STATUSES.includes(status), `3 値 enum 外: ${status}`);
+    assert.ok(['logged', 'save_failed', 'log_failed'].includes(status), `3 値 enum 外: ${status}`);
   }
 });
 

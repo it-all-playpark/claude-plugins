@@ -6,9 +6,6 @@
 // INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
 // 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
 
-// telemetry final_ac_reconcile の 3 値。
-export const FINAL_AC_RECONCILE_VALUES = ['skipped', 'reverified', 'unavailable'];
-
 // Final AC reconcile を実行すべきかを判定する純粋関数。
 //
 // 判定順（最初に該当した reason を返す）:

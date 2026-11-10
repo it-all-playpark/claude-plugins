@@ -138,10 +138,6 @@ export function newlyUncheckedSecClasses(before, after) {
 //   CI は PR head の workflow・スクリプトで動き PR 自身が書き換えられるため、テストを走らせた証拠にならない。
 const FINAL_RECONCILE_VALUES = ['skipped', 'reverified', 'unavailable'];
 
-// merge tier HOLD 理由の分類（issue #599）。'deterministic_recheck': 決定論的な再チェック
-// （本文の再投入等）で解消しうる。'human_judgment': 決定論的手段では解消できず人間確認が必須。
-export const HOLD_REASON_KINDS = ['deterministic_recheck', 'human_judgment'];
-
 // HOLD 理由の閉じた code enum（issue #658、issue #661 で pr_closes_missing 追加）。summary 側
 // （devflow-summary-format.mjs）の「現状/対応」写像キー。reason は自由文で将来変わりうるため、summary は
 // reason の prefix 一致ではなくこの安定 code で文言を写像する。out-of-enum/欠落時は summary が
@@ -207,6 +203,8 @@ function isValidPrClosesStatus(v) {
 export const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
 
 // HOLD 理由配列（[{ reason, kind }]）から代表 kind を集約する純関数。
+// kind は merge tier HOLD 理由の分類（issue #599）。'deterministic_recheck': 決定論的な再チェック
+// （本文の再投入等）で解消しうる。'human_judgment': 決定論的手段では解消できず人間確認が必須。
 // いずれかが 'human_judgment' なら 'human_judgment'（human 判断が 1 件でもあれば全体を human 扱いにする
 // fail-closed 側の集約）。全件 'deterministic_recheck' ならそのまま。空/非配列は null（HOLD 以外）。
 export function aggregateHoldKind(holdReasons) {

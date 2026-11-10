@@ -1,19 +1,12 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
-  FINAL_AC_RECONCILE_VALUES,
   shouldRunFinalAcReconcile,
   validateFinalAcResults,
   FINAL_ITEM_RESOLUTIONS,
   validateFinalItemResolutions,
   finalRedgreenTargets,
 } from './final-ac-reconcile.mjs';
-
-// ---- (1) FINAL_AC_RECONCILE_VALUES ----
-
-test('FINAL_AC_RECONCILE_VALUES は skipped/reverified/unavailable の 3 値配列', () => {
-  assert.deepEqual(FINAL_AC_RECONCILE_VALUES, ['skipped', 'reverified', 'unavailable']);
-});
 
 // ---- (2) shouldRunFinalAcReconcile ----
 

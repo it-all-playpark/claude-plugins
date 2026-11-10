@@ -1,19 +1,12 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
-  TESTSURF_PATTERNS,
   testsurfHitsOf,
   secHitsOf,
   testsurfPatternsOf,
   reconcileTestsurf,
 } from './testsurf.mjs';
 import { GATE_POLICIES, gateLane } from './gate-policy.mjs';
-
-// ---- TESTSURF_PATTERNS ----
-
-test('TESTSURF_PATTERNS は spike #361 採用の 6 content パターン固定順', () => {
-  assert.deepEqual(TESTSURF_PATTERNS, ['skip', 'only', 'todo', 'xfail', 'tautology', 'exclude-cfg']);
-});
 
 // ---- testsurfHitsOf / secHitsOf ----
 
