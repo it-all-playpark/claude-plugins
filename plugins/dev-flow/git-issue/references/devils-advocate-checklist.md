@@ -29,6 +29,11 @@ Treat findings as `blocking` if any item below is true:
   SKILL.md の軽い経路ではこの項目に当たった issue はその場で直さず重い経路に切り替える）
 - データや形式を変える変更（保存済みデータ・設定・API の形式）なのに、移行の要件が AC か `## 制約・取らないこと` に無い
   （移行の要件は、既存データの変換の要否と、後方互換を保たない変更の範囲）
+- 本文（ゴール・なぜ・AC）が今の挙動（表示・出力・条件・タイミング）を述べていて、
+  AC がその挙動の出どころ・条件・タイミングを置き換えるのに、
+  置き換えで無くなる・変わる今の挙動を残すか捨てるかが AC か `## 制約・取らないこと` に無い
+  （本文が述べる今の挙動と AC を突き合わせて判定し、本文に無い今の挙動は補わない。残すか捨てるかは 1 行で書く。
+  書かれていないと implementer が挙動の後退をテストで正しい挙動として固め、人が決める前に仕様に入る）
 - Dependency order is impossible or contradictory
 - agent issue に `executor: human` タスクが残存している（agent 実行の計画・実装 issue に人手作業が混入。
   human 判定基準は SKILL.md の Executor Classification。human issue に切り出し、実装 issue は Blocked by で紐付ける）
