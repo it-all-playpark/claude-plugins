@@ -1178,13 +1178,27 @@ const CI_STATUS = {
           name: { type: 'string' },
           bucket: { type: 'string' },
           state: { type: 'string' },
+          link: { type: 'string' },
+        },
+      },
+    },
+    pending_checks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          state: { type: 'string' },
+          link: { type: 'string' },
         },
       },
     },
     waited_seconds: { type: 'number' },
     poll_attempts: { type: 'number' },
     head_sha: { type: 'string' },
-    epoch: { type: 'number' },
+    epoch: { type: ['number', 'null'] },
+    next_action: { type: 'string', enum: ['poll', 'done'] },
+    message: { type: 'string' },
   },
 };
 
@@ -1687,7 +1701,15 @@ const SECURITY_CODEX_RESULT_SCHEMA = {
     cleared: { type: 'boolean' },
     reason: { type: ['string', 'null'] },
     reviewed_sha: { type: ['string', 'null'] },
-    counts: { type: 'object' },
+    counts: {
+      type: 'object',
+      properties: {
+        critical: { type: 'integer', minimum: 0 },
+        major: { type: 'integer', minimum: 0 },
+        minor: { type: 'integer', minimum: 0 },
+      },
+    },
+    issues: { type: 'array', maxItems: 0 },
     error: { type: 'string' },
   },
 };
@@ -1696,7 +1718,24 @@ const SECURITY_CODEX_ISSUES_SCHEMA = {
   type: 'object', required: ['ok'],
   properties: {
     ok: { type: 'boolean' },
-    issues: { type: 'array', items: { type: 'object' } },
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: ['critical', 'major', 'minor'] },
+          topic: { type: 'string' },
+          file: { type: 'string' },
+          line: { type: 'integer' },
+          description: { type: 'string' },
+          suggestion: { type: 'string' },
+        },
+      },
+    },
+    cleared: SECURITY_CODEX_RESULT_SCHEMA.properties.cleared,
+    reason: SECURITY_CODEX_RESULT_SCHEMA.properties.reason,
+    reviewed_sha: SECURITY_CODEX_RESULT_SCHEMA.properties.reviewed_sha,
+    counts: SECURITY_CODEX_RESULT_SCHEMA.properties.counts,
     error: { type: 'string' },
   },
 };

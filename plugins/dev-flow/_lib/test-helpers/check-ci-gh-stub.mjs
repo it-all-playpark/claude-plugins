@@ -15,12 +15,15 @@ export const CHECK_CI_STUB_HEAD_SHA = '0123456789abcdef0123456789abcdef01234567'
 
 // gh スタブが rollup を返す状態で script を 1 回実行する。rollup は JSON 文字列のまま応答に埋めるので、
 // rollup として読めない値（'not json' 等）もそのまま渡せる。
-function runWithRollupStub(script, args, rollupText) {
+// stubs は PATH 先頭に足す実行ファイル（名前 → 中身）。gh を渡せば gh スタブを差し替え（取得失敗の再現）、
+// sleep / date を渡せば check-ci --wait の待機と epoch の分岐を実待機なしで再現できる。
+function runWithRollupStub(script, args, rollupText, stubs = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'check-ci-gh-stub-'));
   try {
     const response = join(dir, 'response.json');
     writeFileSync(response, `{"headRefOid":"${CHECK_CI_STUB_HEAD_SHA}","statusCheckRollup":${rollupText}}`);
     writeFileSync(join(dir, 'gh'), '#!/usr/bin/env bash\ncat "$CHECK_CI_GH_STUB_RESPONSE"\n', { mode: 0o755 });
+    for (const [name, body] of Object.entries(stubs)) writeFileSync(join(dir, name), body, { mode: 0o755 });
     return spawnSync('bash', [script, ...args], {
       encoding: 'utf8',
       env: { ...process.env, PATH: `${dir}:${CORE_BIN}:${process.env.PATH}`, CHECK_CI_GH_STUB_RESPONSE: response },
@@ -35,10 +38,11 @@ function runWithRollupStub(script, args, rollupText) {
  *
  * @param {string} rollupText - 応答の statusCheckRollup に埋める文字列
  * @param {string[]} [args] - check-ci に足す引数（--only / --exclude 等）
+ * @param {Record<string, string>} [stubs] - PATH 先頭に足す実行ファイル（名前 → 中身。gh / sleep / date）
  * @returns {import('node:child_process').SpawnSyncReturns<string>}
  */
-export function runCheckCiWithRollup(rollupText, args = []) {
-  return runWithRollupStub(CHECK_CI, ['--pr', '1', ...args], rollupText);
+export function runCheckCiWithRollup(rollupText, args = [], stubs = {}) {
+  return runWithRollupStub(CHECK_CI, ['--pr', '1', ...args], rollupText, stubs);
 }
 
 /**
