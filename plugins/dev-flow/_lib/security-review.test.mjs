@@ -85,16 +85,21 @@ test('[security-review][2] Claude 経路・Codex 経路の prompt は同じ境�
   const boundary = SECURITY_REVIEW_BOUNDARY.slice(SECURITY_REVIEW_BOUNDARY.indexOf('## 境界'), SECURITY_REVIEW_BOUNDARY.indexOf('## severity'));
   assert.ok(boundary.includes('同じ uid のプロセスとして残っている前提の攻撃'), boundary);
   assert.ok(boundary.includes('業務ロジックの正しさ'), boundary);
-  // 将来の PR が対象のファイルを変えて初めて成り立つ経路は除外し、今の diff が出力を根拠にする・偽る・免除ファイルの出力が入る経路は除外しない
+  // 将来の PR が対象のファイルを変えて初めて成り立つ経路は除外し、今の diff が出力を根拠にする・偽る経路は除外しない
   assert.ok(boundary.includes('将来の PR が security review の対象のファイル（`isSecurityReviewExemptPath` が false のもの）を変えて初めて成り立つ経路'), boundary);
-  for (const s of ['ただし次はこの除外に含めず通常どおり判定する', '今の diff が PR の制御できる出力を gate の根拠にすること自体', '今の diff がその出力を偽ること',
-    '免除ファイル（`*.bats`・`*.test.*`・`*.spec.*`・`.md` 等）の出力が根拠に入る経路']) {
+  for (const s of ['ただし次はこの除外に含めず通常どおり判定する', '今の diff が PR の制御できる出力を gate の根拠にすること自体', '今の diff がその出力を偽ること']) {
     assert.ok(boundary.includes(s), `境界の節に ${s} が無い`);
   }
-  // テストランナー・テストファイルの出力が evaluator の根拠になることを reviewer に伝える
+  // PR が書いたテストの中身による AC 判定・red→green の偽装は除外し（塞ぐと委譲の層を追う検査が積み上がる）、起動経路の差し替え・迂回は除外しない
+  for (const s of ['PR が書いたテストの中身（テストファイル・テストが読む fixture・起動経路が委譲する先のテストファイル）が出す結果で、'
+    + 'AC 判定・red→green・テストの green を偽れる経路', 'テストの中身は PR の主張そのもの', '起動経路を差し替え・迂回する経路はこの除外に含めない']) {
+    assert.ok(boundary.includes(s), `境界の節に ${s} が無い`);
+  }
+  // 境界の内側に残るのはテストの起動経路（evaluator の AC 判定と red→green の根拠）だけ
   const threat = SECURITY_REVIEW_BOUNDARY.slice(0, SECURITY_REVIEW_BOUNDARY.indexOf('## 境界'));
-  assert.ok(threat.includes('テストランナー（`tests/run-*.sh` や `package.json` の test script 等）とテストファイルの出力は、dev-flow の evaluator が AC 判定の'
-    + '根拠に使う。実際の実行と異なる結果を出させる変更は、検証や gate の素通りとして判定する。'), threat);
+  assert.ok(threat.includes('テストの起動経路（`tests/run-*.sh`・`package.json` の scripts・Makefile 等、テストを起動するコマンドが名指す追跡ファイル）は、'
+    + 'dev-flow が evaluator の AC 判定と red→green の根拠に使う。PR が起動経路を差し替え・迂回して実際の実行と異なる結果を出させる変更は、'
+    + '検証や gate の素通りとして判定する。'), threat);
   assert.ok(SECURITY_REVIEW_BOUNDARY.includes('「経路を否定できない」だけでは major にしない'));
   assert.ok(SECURITY_REVIEW_BOUNDARY.includes('人に手作業を課す修正'));
 });
