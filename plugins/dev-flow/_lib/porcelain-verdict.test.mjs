@@ -2,6 +2,7 @@
 //   AC-1: 警告行・exit code・基準線（null / stage 済みの行）からの dirty・新規行・回収可否
 //   AC-2: 回収の add コマンドの組み立て規則
 //   AC-3: CLI が一時 git repo で基準線ファイルを書き、digest で検証して判定する（HEAD・index は変えない）
+//   #1383: fix が追跡をやめて worktree に残したファイル（fix の前の HEAD で追跡されていた `??` 行）は新規行・回収に数えない
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -17,6 +18,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const BIN = join(here, '..', 'bin', 'porcelain-verdict');
 
 const ENV_FILE = '?? .worktreeinclude';
+const ADD = 'git --literal-pathspecs add --ignore-removal -- ';
 const verdict = (lines, baseline, extra = {}) => porcelainVerdict({ output: `${lines.join('\n')}\n`, exitCode: 0, baseline, ...extra });
 
 // ---- AC-1: 判定 ----
@@ -74,13 +76,31 @@ test('[AC-1] 基準線ファイルの不一致（mismatch）は基準線 null �
   assert.equal(verdict([], [], { mismatch: true }).dirty, true);
 });
 
+test('[#1383 AC-5] untrackedByFix に入るパスの `??` 行は新規行・dirty・add から外れる（空なら外さない。`??` 以外の行と基準線なし・mismatch は外さない）', () => {
+  const lines = [ENV_FILE, '?? pnpm-lock.yaml', '?? "\\346\\227\\245\\346\\234\\254.md"'];
+  const untrackedByFix = new Set(['pnpm-lock.yaml', '日本.md']);
+  const dropped = verdict(lines, [ENV_FILE], { untrackedByFix });
+  assert.deepEqual([dropped.dirty, dropped.new_lines, dropped.add_command, dropped.recoverable], [false, [], null, true]);
+
+  const empty = verdict(lines, [ENV_FILE], { untrackedByFix: new Set() });
+  assert.deepEqual(empty, verdict(lines, [ENV_FILE]), '集合が空なら引数なしと同じ結果');
+  assert.deepEqual([empty.dirty, empty.new_lines], [true, lines.slice(1)]);
+
+  const mixed = verdict(['D  pnpm-lock.yaml', '?? pnpm-lock.yaml', ' M a.ts', '?? new.md'], [], { untrackedByFix: new Set(['pnpm-lock.yaml', 'a.ts']) });
+  assert.deepEqual(mixed.new_lines, ['D  pnpm-lock.yaml', ' M a.ts', '?? new.md']);
+  assert.equal(mixed.add_command, `${ADD}'a.ts' 'new.md'`);
+
+  for (const extra of [{ baseline: null }, { mismatch: true }]) {
+    const v = porcelainVerdict({ output: '?? pnpm-lock.yaml\n', exitCode: 0, baseline: [], untrackedByFix, ...extra });
+    assert.deepEqual([v.dirty, v.new_lines], [true, ['?? pnpm-lock.yaml']], JSON.stringify(extra));
+  }
+});
+
 test('[AC-3 (b)] 基準線ファイルの行は porcelain 行に数えない', () => {
   assert.deepEqual(porcelainLines(`?? ${PORCELAIN_BASELINE_DIR}/${'a'.repeat(64)}\n M a.ts\n`), [' M a.ts']);
 });
 
 // ---- AC-2: add コマンド ----
-
-const ADD = 'git --literal-pathspecs add --ignore-removal -- ';
 
 test('[AC-2] 未 stage の変更・未追跡ファイルを単一引用符の引数で `git --literal-pathspecs add --ignore-removal --` に並べる', () => {
   assert.equal(leftoverAddCommand([' M a.ts', '?? new.md', 'AM b.ts', ' D gone.ts']), `${ADD}'a.ts' 'new.md' 'b.ts' 'gone.ts'`);
@@ -196,7 +216,61 @@ test('[AC-3 (e)] 基準線ファイルを消しても dirty・回収不可', () 
   assert.deepEqual(new Set(v.new_lines), new Set([ENV_FILE, ' D kept.txt']));
 }));
 
-const EMPTY_DIGEST = createHash('sha256').update('').digest('hex');
+// ---- #1383: fix が追跡をやめて worktree に残したファイル ----
+
+test('[#1383 AC-1] 基準線のあとで追跡解除を commit して worktree に残したファイルは、新規行・add に入らず clean', () => withRepo((repo) => {
+  const { digest } = takeBaseline(repo);
+  repo.git('rm', '-q', '--cached', 'fixed.txt');
+  repo.git('commit', '-q', '-m', 'untrack fixed.txt');
+  assert.ok(repo.git('status', '--porcelain', '--untracked-files=all').includes('?? fixed.txt'), 'fixed.txt は worktree に未追跡で残る');
+  const v = repo.cli('check', digest);
+  assert.deepEqual([v.baseline, v.dirty, v.new_lines, v.add_command], ['ok', false, [], null], JSON.stringify(v));
+}));
+
+test('[#1383 AC-2] 未 commit の追跡解除は `D  p` だけが新規行で `?? p` を add しない。commit すると clean', () => withRepo((repo) => {
+  const { digest } = takeBaseline(repo);
+  repo.git('rm', '-q', '--cached', 'fixed.txt');
+  const v = repo.cli('check', digest);
+  assert.deepEqual([v.baseline, v.dirty, v.new_lines, v.add_command], ['ok', true, ['D  fixed.txt'], null], JSON.stringify(v));
+  repo.git('commit', '-q', '-m', 'untrack fixed.txt');
+  const after = repo.cli('check', digest);
+  assert.deepEqual([after.dirty, after.new_lines], [false, []], JSON.stringify(after));
+}));
+
+test('[#1383 AC-3] 基準線の HEAD でも追跡されていなかった未追跡ファイルは、追跡解除と並んでも新規行・add に入り dirty', () => withRepo((repo) => {
+  const { digest } = takeBaseline(repo);
+  repo.git('rm', '-q', '--cached', 'fixed.txt');
+  repo.git('commit', '-q', '-m', 'untrack fixed.txt');
+  writeFileSync(join(repo.dir, 'added.txt'), 'new\n');
+  const v = repo.cli('check', digest);
+  assert.deepEqual([v.baseline, v.dirty, v.recoverable, v.new_lines, v.add_command], ['ok', true, true, ['?? added.txt'], `${ADD}'added.txt'`], JSON.stringify(v));
+}));
+
+test('[#1383 AC-4] 基準線ファイルの HEAD の sha を書き換えると mismatch。HEAD の sha を持たない基準線ファイルも digest が合っていても mismatch', () => withRepo((repo) => {
+  const { digest, file } = takeBaseline(repo);
+  const head = repo.git('rev-parse', 'HEAD').trim();
+  const content = readFileSync(file, 'utf8');
+  assert.ok(content.startsWith(`HEAD ${head}\n`), `基準線ファイルの 1 行目は fix の前の HEAD: ${content}`);
+  repo.git('rm', '-q', '--cached', 'fixed.txt');
+  repo.git('commit', '-q', '-m', 'untrack fixed.txt');
+
+  // 追跡解除の commit の sha に書き換える（その HEAD では fixed.txt は追跡されていない）
+  writeFileSync(file, content.replace(head, repo.git('rev-parse', 'HEAD').trim()));
+  const tampered = repo.cli('check', digest);
+  assert.deepEqual([tampered.baseline, tampered.dirty, tampered.recoverable, tampered.add_command], ['mismatch', true, false, null], JSON.stringify(tampered));
+
+  const headless = content.slice(content.indexOf('\n') + 1);
+  const headlessDigest = createHash('sha256').update(headless).digest('hex');
+  writeFileSync(join(repo.dir, PORCELAIN_BASELINE_DIR, headlessDigest), headless);
+  const old = repo.cli('check', headlessDigest);
+  assert.deepEqual([old.baseline, old.dirty, old.recoverable, old.add_command], ['mismatch', true, false, null], JSON.stringify(old));
+}));
+
+/** porcelain 行の無い基準線ファイルの内容と digest（今の HEAD）。 */
+function emptyBaseline(repo) {
+  const content = `HEAD ${repo.git('rev-parse', 'HEAD').trim()}\n`;
+  return { content, digest: createHash('sha256').update(content).digest('hex') };
+}
 
 test('[AC-3] PR が基準線のパスに追跡させた symlink の先へは書かない（symlink 自体を基準線ファイルで置き換える）', () => withRepo((repo) => {
   const outside = mkdtempSync(join(tmpdir(), 'porcelain-verdict-outside-'));
@@ -204,10 +278,11 @@ test('[AC-3] PR が基準線のパスに追跡させた symlink の先へは書�
     const target = join(outside, 'settings.json');
     writeFileSync(target, '{"keep":true}\n');
     mkdirSync(join(repo.dir, PORCELAIN_BASELINE_DIR), { recursive: true });
+    // digest は HEAD の sha を含むので、symlink は commit せず index に載せる（基準線のパスの行は porcelain 行に数えない）
+    const { digest: EMPTY_DIGEST } = emptyBaseline(repo);
     const link = join(repo.dir, PORCELAIN_BASELINE_DIR, EMPTY_DIGEST);
     symlinkSync(target, link);
     repo.git('add', '-A');
-    repo.git('commit', '-q', '-m', 'plant symlink');
     const b = repo.cli('baseline');
     assert.equal(b.baseline_digest, EMPTY_DIGEST);
     assert.equal(readFileSync(target, 'utf8'), '{"keep":true}\n', 'symlink の先が書き換えられた');
@@ -225,8 +300,9 @@ test('[AC-3] 基準線のディレクトリが symlink なら書かず・読ま�
     symlinkSync(outside, join(repo.dir, PORCELAIN_BASELINE_DIR));
     assert.equal(repo.cli('baseline').baseline_digest, null);
     assert.deepEqual(readdirSync(outside), [], 'symlink の先に基準線ファイルが作られた');
-    writeFileSync(join(outside, EMPTY_DIGEST), '');
-    assert.equal(repo.cli('check', EMPTY_DIGEST).baseline, 'mismatch');
+    const { content, digest } = emptyBaseline(repo);
+    writeFileSync(join(outside, digest), content);
+    assert.equal(repo.cli('check', digest).baseline, 'mismatch');
   } finally {
     rmSync(outside, { recursive: true, force: true });
   }

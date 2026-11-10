@@ -394,15 +394,47 @@ test('[AC-7] commit-ensure#1 の手順 2 は `git commit -m` を bare 単文で�
   assert.doesNotMatch(prompt, /`git (?:[^`]* )?push[ `]/, 'commit-ensure#1 に git push がある');
 });
 
-test('[AC-7] porcelain-verdict は git status を 1 回実行するだけで、add・commit・push を実行しない', () => {
+test('[AC-7] porcelain-verdict が起動する子プロセスは git だけで、status と読み取りだけのサブコマンドを GIT_OPTIONAL_LOCKS=0 で起動し、add・commit・push・gh を実行しない', () => {
   const cli = readFileSync(join(here, '..', '_shared', 'scripts', 'porcelain-verdict.mjs'), 'utf8');
   assert.ok(cli.includes("const STATUS_ARGS = ['status', '--porcelain', '--untracked-files=all']"), 'status の引数が --untracked-files=all でない');
+  // 子プロセスの起動は git の 1 か所（GIT_OPTIONAL_LOCKS=0 を付ける helper）だけ
   const calls = cli.match(/\b(?:spawnSync|spawn|execFileSync|execFile|execSync|exec)\(/g) ?? [];
-  assert.deepEqual(calls, ['spawnSync('], `子プロセスの起動は status の 1 回だけ: ${calls.join(', ')}`);
-  assert.ok(cli.includes("spawnSync('git', STATUS_ARGS, {"), 'spawnSync が status 以外を実行している');
-  assert.ok(cli.includes("GIT_OPTIONAL_LOCKS: '0'"), 'status は GIT_OPTIONAL_LOCKS=0 で実行する');
-  for (const file of [join(here, '..', 'bin', 'porcelain-verdict'), join(here, '..', '_shared', 'scripts', 'porcelain-verdict.sh')]) {
+  assert.deepEqual(calls, ['spawnSync('], `子プロセスの起動は git の helper の 1 か所だけ: ${calls.join(', ')}`);
+  assert.match(cli, /spawnSync\('git', args, \{[^}]*env: \{ \.\.\.process\.env, GIT_OPTIONAL_LOCKS: '0' \}/, 'spawnSync が git 以外を実行しているか、GIT_OPTIONAL_LOCKS=0 を付けていない');
+  // helper に渡す引数は *_ARGS の定数だけで、サブコマンドは status・HEAD の sha（rev-parse）・追跡の有無（ls-tree）に限る
+  const subcommands = Object.fromEntries([...cli.matchAll(/^const (\w+_ARGS) = \['([a-z-]+)'/gm)].map((m) => [m[1], m[2]]));
+  assert.deepEqual(subcommands, { STATUS_ARGS: 'status', HEAD_ARGS: 'rev-parse', TREE_ARGS: 'ls-tree' });
+  const gitCalls = [...cli.matchAll(/\bgit\(([^)]*)\)/g)].map((m) => m[1]);
+  assert.deepEqual(gitCalls, ['STATUS_ARGS', 'HEAD_ARGS', '[...TREE_ARGS, head]'], `git の起動は *_ARGS の定数だけを渡す: ${gitCalls.join(' | ')}`);
+  for (const file of [join(here, '..', 'bin', 'porcelain-verdict'), join(here, '..', '_shared', 'scripts', 'porcelain-verdict.sh'), join(here, '..', '_shared', 'scripts', 'porcelain-verdict.mjs')]) {
     assert.doesNotMatch(readFileSync(file, 'utf8'), /\bgit (?:add|commit|push)\b|\bgh\b/, `${file} が add・commit・push・gh を実行している`);
+  }
+
+  // 実際に起動される git を PATH の先頭に置いた記録用の git で確かめる（baseline と、追跡の有無を問い合わせる check）
+  const dir = mkdtempSync(join(tmpdir(), 'porcelain-verdict-spawn-'));
+  try {
+    const repo = join(dir, 'repo');
+    const shim = join(dir, 'shim');
+    const log = join(dir, 'git.log');
+    mkdirSync(repo);
+    mkdirSync(shim);
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+    const sh = (cmd) => execFileSync('sh', ['-c', cmd], { cwd: repo, env, encoding: 'utf8' });
+    const realGit = sh('command -v git').trim();
+    writeFileSync(join(shim, 'git'), `#!/bin/sh\nprintf '%s %s\\n' "\${GIT_OPTIONAL_LOCKS-unset}" "$1" >> '${log}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+    sh('git init -q && git config user.name t && git config user.email t@example.com');
+    writeFileSync(join(repo, 'fixed.txt'), 'before\n');
+    sh('git add -A && git commit -q -m init');
+    const shimEnv = { ...env, PATH: `${shim}:${env.PATH}` };
+    delete shimEnv.GIT_OPTIONAL_LOCKS;
+    const verdictCli = (...args) => JSON.parse(execFileSync('node', [join(here, '..', '_shared', 'scripts', 'porcelain-verdict.mjs'), ...args], { cwd: repo, env: shimEnv, encoding: 'utf8' }));
+    const { baseline_digest: digest } = verdictCli('baseline');
+    writeFileSync(join(repo, 'added.txt'), 'new\n');
+    assert.equal(verdictCli('check', digest).baseline, 'ok');
+    const spawned = readFileSync(log, 'utf8').split('\n').filter(Boolean);
+    assert.deepEqual(spawned, ['0 status', '0 rev-parse', '0 status', '0 ls-tree'], `起動された git: ${spawned.join(', ')}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
