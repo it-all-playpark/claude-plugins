@@ -185,6 +185,12 @@ same_as_base() {
   [ -n "$blob" ] && [ "$blob" = "$(git rev-parse -q --verify "$BASE:$path" 2>/dev/null)" ]
 }
 
+# 照合するのは $BASE にあるか git が追跡しているパスだけ。PR が持ち込めるのは追跡されたファイルで、未追跡のもの
+# (.venv/bin/pytest・node_modules/.bin/* 等の環境側の実行ファイル)まで照合すると全ペアが入力エラーになり実証が成立しない
+in_command_scope() {
+  [ "$(git cat-file -t "$BASE:$1" 2>/dev/null)" = blob ] || git ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+}
+
 # package.json の scripts(pre / post を含む)を $BASE と worktree で比べる。workspace の各 package も対象にする
 # (--filter 等で別の package の script に委譲できる)
 check_package_scripts() {
@@ -216,7 +222,7 @@ check_base_command() {
       esac ;;
     make|gmake|just|task)
       for f in GNUmakefile makefile Makefile justfile Justfile .justfile Taskfile.yml Taskfile.yaml; do
-        if [ -f "$f" ] || git cat-file -e "$BASE:$f" 2>/dev/null; then
+        if in_command_scope "$f"; then
           same_as_base "$f" || { echo "test command file changed vs base: $f"; return 1; }
         fi
       done ;;
@@ -227,7 +233,7 @@ check_base_command() {
     for path in "$w" "${w#*=}"; do
       path="${path#./}"
       [ -n "$path" ] && [[ "$path" != /* ]] || continue
-      if [ -f "$path" ] || [ "$(git cat-file -t "$BASE:$path" 2>/dev/null)" = blob ]; then
+      if in_command_scope "$path"; then
         same_as_base "$path" || { echo "test command file changed vs base: $path"; return 1; }
       fi
     done

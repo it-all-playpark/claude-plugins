@@ -1111,6 +1111,28 @@ use_runners() {
   [ -f "$REPO/impl.mjs" ]
 }
 
+@test "L5c: files_command が名指す未追跡のローカル実行ファイル(.venv/bin 等)は照合せずに実行する" {
+  echo "export const ok = true;" > "$REPO/impl.mjs"
+  make_test
+  mkdir -p "$REPO/.venv/bin"
+  printf '#!/usr/bin/env bash\necho "pytest $*" >> "%s/calls.log"\n[ -f "%s/impl.mjs" ]\n' "$REPO" "$REPO" > "$REPO/.venv/bin/pytest"
+  chmod +x "$REPO/.venv/bin/pytest"
+  use_commands '.venv/bin/pytest {files}'
+
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0] | {red, green, reason}')" = '{"red":true,"green":true,"reason":"ok"}' ]
+  [ -f "$REPO/calls.log" ]
+
+  # 同じパスでも PR が追跡に足したものは照合して入力エラー
+  rm "$REPO/calls.log"
+  git -C "$REPO" add -f .venv/bin/pytest
+  run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "test command file changed vs base: .venv/bin/pytest" ]
+  [ ! -f "$REPO/calls.log" ]
+}
+
 @test "L6: コマンドファイルが無い・unresolved のときは全ペアが入力エラーで exit 2、テストを実行しない" {
   echo "export const a = 1;" > "$REPO/impl1.mjs"
   echo "export const b = 2;" > "$REPO/impl2.mjs"
