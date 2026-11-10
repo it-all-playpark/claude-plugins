@@ -90,16 +90,22 @@ test('[security-review][2] Claude 経路・Codex 経路の prompt は同じ境�
   for (const s of ['ただし次はこの除外に含めず通常どおり判定する', '今の diff が PR の制御できる出力を gate の根拠にすること自体', '今の diff がその出力を偽ること']) {
     assert.ok(boundary.includes(s), `境界の節に ${s} が無い`);
   }
-  // PR が書いたテストの中身による AC 判定・red→green の偽装は除外し（塞ぐと委譲の層を追う検査が積み上がる）、起動経路の差し替え・迂回は除外しない
-  for (const s of ['PR が書いたテストの中身（テストファイル・テストが読む fixture・起動経路が委譲する先のテストファイル）が出す結果で、'
-    + 'AC 判定・red→green・テストの green を偽れる経路', 'テストの中身は PR の主張そのもの', '起動経路を差し替え・迂回する経路はこの除外に含めない']) {
+  // 除外するのは PR が書いたテストがそのテスト自身の結果を偽る経路だけ（塞ぐと委譲の層を追う検査が積み上がる）。
+  // 既存のテストの結果を変える経路・実行対象の選択や集計・報告を変える部分・起動経路の差し替え・迂回は除外しない
+  for (const s of ['PR が書いたテストの assertion と、PR が書いたテストの結果だけを変える fixture・ヘルパーが、そのテスト自身の結果を偽る経路',
+    'テストの中身は PR の主張そのもの',
+    'PR が書いていない既存のテストの結果を変える経路（既存テストも読む共有のヘルパー・fixture の書き換えを含む）と、'
+    + '同じファイルの中でも実行対象の選択や他のテストの結果の集計・報告を変える部分は、この除外に含めず通常どおり判定する',
+    '起動経路を差し替え・迂回する経路はこの除外に含めない']) {
     assert.ok(boundary.includes(s), `境界の節に ${s} が無い`);
   }
-  // 境界の内側に残るのはテストの起動経路（evaluator の AC 判定と red→green の根拠）だけ
+  // テストの起動経路は役割（実行対象の選択と結果の集計・報告）で定め、ファイルの種類の列挙に頼らせない
   const threat = SECURITY_REVIEW_BOUNDARY.slice(0, SECURITY_REVIEW_BOUNDARY.indexOf('## 境界'));
-  assert.ok(threat.includes('テストの起動経路（`tests/run-*.sh`・`package.json` の scripts・Makefile 等、テストを起動するコマンドが名指す追跡ファイル）は、'
-    + 'dev-flow が evaluator の AC 判定と red→green の根拠に使う。PR が起動経路を差し替え・迂回して実際の実行と異なる結果を出させる変更は、'
-    + '検証や gate の素通りとして判定する。'), threat);
+  for (const s of ['テストの起動経路は、どのテストを実行し、結果をどう集計・報告するかを決めるもので、ファイルの種類・置き場所を問わない',
+    'ランナーの設定ファイル、reporter、ランナーの plugin、テストの収集・結果報告の hook、テストフレームワークの挙動を差し替えるセットアップ用コード',
+    'PR がこれらで実行対象を変える・他のテストの結果を書き換える・実際の実行と異なる結果を出させる変更は、検証や gate の素通りとして判定する。']) {
+    assert.ok(threat.includes(s), `Threat model の節に ${s} が無い`);
+  }
   assert.ok(SECURITY_REVIEW_BOUNDARY.includes('「経路を否定できない」だけでは major にしない'));
   assert.ok(SECURITY_REVIEW_BOUNDARY.includes('人に手作業を課す修正'));
 });

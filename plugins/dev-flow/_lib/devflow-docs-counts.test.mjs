@@ -337,9 +337,12 @@ test('security-review.md: 守る要件と境界（R1〜R3）と経路を持ち�
   for (const s of ['- R1 ', '- R2 ', '- R3 ', '**境界の外（塞がない。issue にもしない）**', '`SECURITY_REVIEW_BOUNDARY`', '`SECURITY_FIX_GUIDANCE`']) {
     assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
   }
-  // テストの中身による偽装は境界の外（理由つき）、テストの起動経路は境界の内側
-  for (const s of ['PR が書いたテストの中身', 'テストの中身は PR の主張そのもの', '委譲の層を追う検査が積み上がる', '品質の review と人間の merge が守る',
-    'テストの起動経路（`tests/run-*.sh`・`package.json` の scripts・Makefile 等、テストを起動するコマンドが名指す追跡ファイル）は\n  境界の内側に残り']) {
+  // テストの中身による偽装は境界の外（理由つき）、テストの起動経路は境界の内側。2 つは役割で分ける（理由つき）
+  for (const s of ['テストの中身は PR の主張そのもの', '委譲の層を追う検査が積み上がる', '品質の review と人間の merge が守る',
+    'ファイルの種類ではなく役割で分ける',
+    'テストの起動経路は、どのテストを実行し、結果をどう集計・報告するかを決めるもので、ファイルの種類・置き場所を問わない',
+    'ファイルの種類で列挙すると次の種類で同じ曖昧さが出る', 'テストの中身が偽れるのは自身の結果だけ',
+    'PR が書いていない既存のテストの結果を変える経路', '同じファイルの中でも実行対象の選択や他のテストの結果の集計・報告を変える部分']) {
     assert.ok(boundary.includes(s), `security-review.md の守る要件と境界に ${s} が無い`);
   }
   // R2 の根拠は workflow / script の head 照合。reviewed_sha は渡した head_sha の写しかを見る出力の整合で、根拠にしない
