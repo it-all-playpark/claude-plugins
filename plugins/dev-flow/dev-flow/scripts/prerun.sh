@@ -7,7 +7,8 @@
 # `Workflow({ args: { issue, setup: <JSON> } })` の args.setup へそのまま渡す。
 #
 # 行う処理: base 解決 (origin/dev → origin/HEAD フォールバック) → worktree 作成/再利用 +
-# 起点(base)一致検証 + 独自コミット無しの再利用 worktree を base へ fast-forward + 書き込み probe →.devflow-tmp を info/exclude に足す
+# 起点(base)一致検証 + 既存 branch の判定（独自コミット無しなら base へ fast-forward、squash / rebase で merge 済みなら
+# ok:false）+ 書き込み probe →.devflow-tmp を info/exclude に足す
 # （対象 repo が ignore していなければ）→ .devflow-tmp の git clean -fdx → analyze
 # （issue 取得 + 本文全文を .devflow-tmp/issue-body.md へ書く + contract parse + Jev 有界判定。prerun-analyze.sh。detect-stack と並列）‖
 # detect-stack。各段は独立に ok/error を報告し、後続段を巻き込まない。
@@ -24,7 +25,8 @@
 #
 # GitHub I/O は analyze 段の `analyze-issue`（GitHub CLI の issue 取得を内蔵）と blocker 判定
 # （prerun-analyze.sh の dependencies API / Blocked by 先の issue 状態）、CI 待ちの上限を決める PR で走った
-# 成功 run の一覧（ci-wait-ceiling.sh が内蔵する run list）の読み取りのみ。
+# 成功 run の一覧（ci-wait-ceiling.sh が内蔵する run list）、既存 branch を head にした merged PR の一覧
+# （merged-pr-heads.sh が内蔵する pr list）の読み取りのみ。
 # リモート更新系の書き込みコマンドは持たない（.claude/rules/dev-flow.md 参照）。
 
 set -euo pipefail
@@ -40,6 +42,8 @@ PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$PLUGIN_ROOT/_shared/scripts/worktree-checkout.sh"
 # shellcheck source=../../_shared/scripts/ci-wait-ceiling.sh
 source "$PLUGIN_ROOT/_shared/scripts/ci-wait-ceiling.sh"
+# shellcheck source=../../_shared/scripts/merged-pr-heads.sh
+source "$PLUGIN_ROOT/_shared/scripts/merged-pr-heads.sh"
 # shellcheck source=../../_shared/scripts/devflow-config.sh
 source "$PLUGIN_ROOT/_shared/scripts/devflow-config.sh"
 # shellcheck source=../../_shared/scripts/security-reviewer-config.sh
@@ -241,28 +245,71 @@ slug_ok() {
     [[ "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#1} -le 40 ]]
 }
 
-fast_forward_reused() {
-    # 独自コミット 0 件・未コミット変更なしの再利用 worktree を origin/<base>（冒頭の fetch で更新済み）へ
-    # 進める。古い起点のまま run を始めると、その間に base へ入った変更と conflict した PR を作るため。
-    # 独自コミット / 未コミット変更があれば作業中とみなし触らない。ff 失敗は fail-closed（worktree_error）。
-    local ahead dirty behind ff_out
-    ahead="$(git -C "$WT" rev-list --count "origin/${base}..HEAD" 2>&1)" || {
-        worktree_error="再利用 worktree の独自コミット数を判定できなかった: ${ahead}"
+# judge_existing_branch の結果: 既存 branch の worktree を origin/<base> へ fast-forward するか
+EXISTING_BRANCH_FF=false
+
+judge_existing_branch() {
+    # judge_existing_branch <branch> [<既存 worktree>]
+    # 既存 branch で run を始めてよいかを判定する。再利用経路（既存 worktree を渡す）と local branch 経路（worktree を
+    # 作る前。渡さない）の両方がこれを呼ぶ — 片方だけが判定すると、merge 済みの branch がもう片方から古い tree のまま run に入る。
+    #   未コミット変更あり（既存 worktree のみ）        -> 作業中とみなし触らない
+    #   独自コミット 0 件で origin/<base> より遅れている -> EXISTING_BRANCH_FF=true（古い起点のまま始めると、その間に base へ
+    #                                                      入った変更と conflict した PR を作る。merge commit / ff で merge 済みの
+    #                                                      branch もここに入る）
+    #   独自コミットあり・origin が GitHub             -> branch を head にした merged PR のうち、head commit が branch の
+    #                                                      履歴にあり origin/<base> の祖先でないもの（squash / rebase で merge。
+    #                                                      commit が base の履歴に入らない）があれば worktree_error で止める。
+    #                                                      そのまま進むと base より古い tree の逆差分を実装とみなして PR phase で落ちる
+    # merged PR を読めなかったときは無しとみなさず止める（fail-closed）。branch の削除・reset はしない（回復手順として示すだけ）。
+    local br="$1" wt="${2:-}" ahead dirty behind prs num oid recover
+    EXISTING_BRANCH_FF=false
+    ahead="$(git -C "$ROOT" rev-list --count "origin/${base}..refs/heads/${br}" 2>&1)" || {
+        worktree_error="branch ${br} の独自コミット数を判定できなかった: ${ahead}"
         return 1
     }
-    [[ "$ahead" == "0" ]] || return 0
-    dirty="$(git -C "$WT" status --porcelain --untracked-files=all -- . ':(exclude).devflow-tmp' 2>&1)" || {
-        worktree_error="再利用 worktree の未コミット変更を判定できなかった: ${dirty}"
+    if [[ -n "$wt" ]]; then
+        dirty="$(git -C "$wt" status --porcelain --untracked-files=all -- . ':(exclude).devflow-tmp' 2>&1)" || {
+            worktree_error="再利用 worktree の未コミット変更を判定できなかった: ${dirty}"
+            return 1
+        }
+        [[ -z "$dirty" ]] || return 0
+    fi
+    if [[ "$ahead" == "0" ]]; then
+        behind="$(git -C "$ROOT" rev-list --count "refs/heads/${br}..origin/${base}" 2>&1)" || {
+            worktree_error="branch ${br} の遅れを判定できなかった: ${behind}"
+            return 1
+        }
+        [[ "$behind" == "0" ]] || EXISTING_BRANCH_FF=true
+        return 0
+    fi
+    # origin が GitHub でなければ PR は無い
+    [[ -n "$repo" ]] || return 0
+    prs="$(merged_pr_heads "$repo" "$br")" || {
+        worktree_error="branch ${br} を head にした merged PR を読み取れなかった（GitHub CLI の失敗か、出力が JSON でない）。merge 済みの branch かを判定できないため止めた。GitHub へ届く状態にして dev-flow を再実行せよ。"
         return 1
     }
-    [[ -z "$dirty" ]] || return 0
-    behind="$(git -C "$WT" rev-list --count "HEAD..origin/${base}" 2>&1)" || {
-        worktree_error="再利用 worktree の遅れを判定できなかった: ${behind}"
+    while read -r num oid; do
+        [[ -n "$num" ]] || continue
+        git -C "$ROOT" merge-base --is-ancestor "$oid" "refs/heads/${br}" 2>/dev/null || continue
+        git -C "$ROOT" merge-base --is-ancestor "$oid" "origin/${base}" 2>/dev/null && continue
+        if [[ -n "$wt" ]]; then
+            recover="git worktree remove ${wt} で worktree を削除し、git branch -D ${br} で local branch を消して"
+        else
+            recover="git branch -D ${br} で local branch を消して"
+        fi
+        worktree_error="branch ${br} は PR #${num} で merge 済み（squash / rebase。head commit ${oid:0:12} は origin/${base} の履歴に無い）。このまま始めると origin/${base} より古い tree で実装することになるため止めた。${recover}から dev-flow を再実行せよ（origin/${base} 起点で作り直される）。merge 後に積んだ未 merge の commit があれば、消す前に別の branch へ退避せよ。"
         return 1
-    }
-    [[ "$behind" == "0" ]] && return 0
+    done <<<"$prs"
+    return 0
+}
+
+fast_forward_existing() {
+    # judge_existing_branch が EXISTING_BRANCH_FF=true にした worktree を origin/<base>（冒頭の fetch で更新済み）へ進める。
+    # ff 失敗は fail-closed（worktree_error）。
+    local ff_out
+    [[ "$EXISTING_BRANCH_FF" == true ]] || return 0
     if ! ff_out="$(git -C "$WT" merge --ff-only --quiet "origin/${base}" 2>&1)"; then
-        worktree_error="再利用 worktree を origin/${base} へ fast-forward できなかった: ${ff_out}"
+        worktree_error="worktree を origin/${base} へ fast-forward できなかった: ${ff_out}"
         return 1
     fi
     return 0
@@ -322,7 +369,8 @@ elif [[ "$BASE_OK" == true ]]; then
             BRANCH="$BRANCH_FOUND"
             if validate_start_point "$BRANCH_FOUND" \
                 && worktree_error="$(partial_checkout_error "$WT")" \
-                && fast_forward_reused; then
+                && judge_existing_branch "$BRANCH_FOUND" "$WT" \
+                && fast_forward_existing; then
                 SEG2_CORE_OK=true
             fi
         fi
@@ -356,10 +404,13 @@ elif [[ "$BASE_OK" == true ]]; then
             elif [[ "$match_count" -eq 1 ]]; then
                 BRANCH="$matches"
                 if grep -qxF -- "$BRANCH" <<<"$local_matches"; then
-                    if worktree_add "$ROOT" "$WT" "$BRANCH" ""; then
+                    # 判定は worktree を作る前に行う（merge 済みの branch では worktree を作らずに止める）
+                    if ! judge_existing_branch "$BRANCH"; then
+                        worktree_status="error"
+                    elif worktree_add "$ROOT" "$WT" "$BRANCH" ""; then
                         worktree_status="created"
                         CREATED_THIS_CALL=true
-                        if validate_start_point "$BRANCH"; then
+                        if validate_start_point "$BRANCH" && fast_forward_existing; then
                             SEG2_CORE_OK=true
                         fi
                     else
