@@ -190,7 +190,11 @@ select_pair_command() {
   PAIR_DIR="$dir"
   PAIR_TESTS=()
   for t in "${TESTS[@]}"; do
-    if [ "$dir" = "." ]; then PAIR_TESTS+=("$t"); else PAIR_TESTS+=("${t#"$dir"/}"); fi
+    [ "$dir" = "." ] || t="${t#"$dir"/}"
+    # `-` で始まるパスは ./ を付けて渡す(PR が足した `-x` 名のファイルをランナーが option として読み、
+    # テストを実行しないまま exit 0 で green にしないように)
+    case "$t" in -*) t="./$t" ;; esac
+    PAIR_TESTS+=("$t")
   done
   read -r -a FILES_WORDS <<< "${CMD_FILES_COMMANDS[$chosen]}"
 }

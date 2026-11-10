@@ -438,19 +438,20 @@ make_failing_in_a_stub() {
     [ "$(wc -l < "$TMP_DIR/calls.log" | tr -d ' ')" = 2 ]
 }
 
-@test "commands --files: 各ファイルを含む最も深い entry に振り分け、dir からの相対パスで {files} に渡す（ファイルの無い entry は実行しない）" {
+@test "commands --files: 各ファイルを含む最も深い entry に振り分け、dir からの相対パスで {files} に渡す（ファイルの無い entry は実行しない・- 始まりは ./ を付けて option にしない）" {
     rmdir "$WT/tests"
     mkdir -p "$WT/packages/a/src" "$WT/packages/b" "$WT/top"
     : > "$WT/packages/a/src/x.test.ts"
     : > "$WT/packages/a/y.test.ts"
     : > "$WT/top/z.test.ts"
     : > "$WT/packages/b/.keep"
+    : > "$WT/packages/a/--help"
     make_failing_in_a_stub
     export PATH="$STUB_DIR:$PATH"
     entry_commands . packages/a packages/b
-    run_tests --commands "$CMDS" --files packages/a/src/x.test.ts top/z.test.ts packages/a/y.test.ts
-    [ "$(cat "$TMP_DIR/calls.log")" = "$(printf '%s\n' "$WT fakerunner top/z.test.ts" "$WT/packages/a fakerunner src/x.test.ts y.test.ts")" ]
-    echo "$JSON" | jq -e '.status == "failed" and [.scripts[].path] == ["fakerunner top/z.test.ts", "packages/a: fakerunner src/x.test.ts y.test.ts"]'
+    run_tests --commands "$CMDS" --files packages/a/src/x.test.ts top/z.test.ts packages/a/y.test.ts packages/a/--help
+    [ "$(cat "$TMP_DIR/calls.log")" = "$(printf '%s\n' "$WT fakerunner top/z.test.ts" "$WT/packages/a fakerunner src/x.test.ts y.test.ts ./--help")" ]
+    echo "$JSON" | jq -e '.status == "failed" and [.scripts[].path] == ["fakerunner top/z.test.ts", "packages/a: fakerunner src/x.test.ts y.test.ts ./--help"]'
     echo "$JSON" | jq -e '.failed_files == ["packages/a/src/x.test.ts"]'
 }
 

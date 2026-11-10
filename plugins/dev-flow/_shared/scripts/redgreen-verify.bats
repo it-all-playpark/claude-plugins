@@ -1152,6 +1152,13 @@ use_runners() {
   [ "$(sed "s|^$phys/|REPO/|; s|^$REPO/|REPO/|" "$REPO/calls.log")" = "$(printf 'REPO/packages/a pnpm exec vitest run src/x.test.ts\nREPO/packages/a pnpm exec vitest run src/x.test.ts')" ]
   rm "$REPO/calls.log"
 
+  # dir からの相対パスが `-` で始まるときは ./ を付けてランナーの option にしない
+  echo "// t" > "$REPO/packages/a/--help"
+  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "packages/a/--help" "packages/a/src/impl.ts"
+  [ "$status" -eq 0 ]
+  [ "$(sed "s|^$phys/|REPO/|; s|^$REPO/|REPO/|" "$REPO/calls.log")" = "$(printf 'REPO/packages/a pnpm exec vitest run ./--help\nREPO/packages/a pnpm exec vitest run ./--help')" ]
+  rm "$REPO/calls.log" "$REPO/packages/a/--help"
+
   # 1 ペアの test_files が複数の entry に分かれる
   run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "packages/a/src/x.test.ts,tests/test_root.py" "packages/a/src/impl.ts"
   [ "$status" -eq 2 ]

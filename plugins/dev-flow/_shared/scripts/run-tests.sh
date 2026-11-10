@@ -311,6 +311,9 @@ if [[ "$COMMAND_MODE" == command ]]; then
             fi
             dir="${entry_dirs[$best]}"
             [[ "$dir" == "." ]] || p="${p#"$dir"/}"
+            # `-` で始まるパスは ./ を付けて渡す（PR が足した `-x` 名のファイルをランナーが option として読み、
+            # テストを実行しないまま exit 0 で passed にしないように）
+            [[ "$p" == -* ]] && p="./$p"
             printf '%s\n' "$p" >> "$LOG_DIR/entry-$best.files"
         done
     fi
