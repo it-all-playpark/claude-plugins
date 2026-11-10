@@ -124,6 +124,8 @@ feedback は `pass` でも返せる（escalate だけの報告など）。
 `requirements.acceptance_criteria` の各項目について（正当化クラス: contract）:
 
 - `ac_index`（0 始まり）/ `satisfied` / `evidence`（file:line・テスト名）
+- `gist`（必須）: その AC が何を求めているかの要旨を日本語 40 字以内で書く（識別子・パスは原文のまま）。
+  判定結果や根拠は書かない — PR 本文の「受入条件の結果」の表に AC の要旨として載り、人間が AC 全文を開かずに読む
 - `verified_by`: テストで実証できるなら `"test"`、コードを読んでしか判断できないなら `"inspection"`
 - `test_files` / `impl_files`（`"test"` のときのみ）: その AC を守るテストと対象実装を worktree 相対パスで。
   red→green の証明は呼び出し側が別途行うので、申告だけでよい。
@@ -140,7 +142,7 @@ feedback は `pass` でも返せる（escalate だけの報告など）。
 ## 書き方
 
 自然文フィールドは日本語で簡潔に（識別子・パス・コマンド・enum・エラー引用は原文のまま）。字数の上限は
-`description` 300 字・`suggestion` 200 字・各 `evidence` 200 字（超えると schema 検証で差し戻される。正当化クラス: contract）。
+`description` 300 字・`suggestion` 200 字・各 `evidence` 200 字・`gist` 40 字（超えると schema 検証で差し戻される。正当化クラス: contract）。
 「事実 → 影響 → 推奨対応」の順で、file:line・テスト名・推奨アクションは削らない（正当化クラス: capability-bound）。
 
 ## 出力 JSON
@@ -161,8 +163,8 @@ feedback は `pass` でも返せる（escalate だけの報告など）。
   "feedback_level": "implementation",
   "task_type": "api",
   "ac_results": [
-    {"ac_index": 0, "satisfied": true, "evidence": "src/user.test.mjs::creates user", "verified_by": "test", "test_files": ["src/user.test.mjs"], "impl_files": ["src/user.mjs"]},
-    {"ac_index": 1, "satisfied": false, "evidence": "e2e/tenant.spec.ts は追加済みだが DB コンテナが sandbox 内で起動せず実行できない", "verified_by": "inspection", "unreachable_env": true}
+    {"ac_index": 0, "gist": "ユーザー作成 API が user を保存する", "satisfied": true, "evidence": "src/user.test.mjs::creates user", "verified_by": "test", "test_files": ["src/user.test.mjs"], "impl_files": ["src/user.mjs"]},
+    {"ac_index": 1, "gist": "テナント分離を e2e で確かめる", "satisfied": false, "evidence": "e2e/tenant.spec.ts は追加済みだが DB コンテナが sandbox 内で起動せず実行できない", "verified_by": "inspection", "unreachable_env": true}
   ],
   "critical_resolutions": [
     {"id": "EVAL-1-input-validation-missing", "resolved": true, "evidence": "src/user.ts:42 で zod による email 検証を確認"}

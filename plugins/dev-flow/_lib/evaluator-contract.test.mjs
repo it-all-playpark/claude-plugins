@@ -8,7 +8,7 @@ import { DEV_FLOW_SCENARIOS } from './test-helpers/dev-flow-scenarios.mjs';
 
 import {
   EVALUATOR_OPERATIONAL_CONTRACT, CONCERN_RESOLUTIONS, normalizeConcernResolution,
-  EVAL_DESCRIPTION_MAX, EVAL_SUGGESTION_MAX, EVAL_EVIDENCE_MAX, EVAL_FULL_SUITE,
+  EVAL_DESCRIPTION_MAX, EVAL_SUGGESTION_MAX, EVAL_EVIDENCE_MAX, AC_GIST_MAX, EVAL_FULL_SUITE,
   TEST_LOG_REUSE, TEST_LOG_EVIDENCE_LIMIT, validateResultPromptBlock, acceptedCriticalResolutions,
 } from './evaluator-contract.mjs';
 import { RESOLVED_CELL_MAX } from './devflow-summary-format.mjs';
@@ -562,11 +562,42 @@ test('[evaluator-contract][#842] eval#i の EVAL schema と final-ac-reconcile �
   assert.equal(JSON.stringify(finalSchema.properties.item_resolutions.items.properties.resolution.enum), JSON.stringify(['resolved', 'unresolved']));
 });
 
+// ---- issue #1365: ac_results の各要素は AC の要旨 gist（必須・40 字以内）を持つ ----
+
+test('[evaluator-contract][#1365] eval#i の EVAL schema と final-ac-reconcile の FINAL_AC schema で ac_results[].gist が required かつ maxLength 40', async () => {
+  assert.equal(AC_GIST_MAX, 40);
+  const { ctx, calls } = makeSandbox({
+    fixesApplied: 1,
+    overrides: { 'test#final': { tests: 'passed', green: true, summary: '' } },
+  });
+  const { error } = await runWorkflowCapture(devFlowSrc, ctx);
+  assertNoCrash(error, 'contract-ac-gist');
+  for (const label of ['eval#1', 'final-ac-reconcile']) {
+    const items = calls.find((c) => c.label === label)?.schema?.properties?.ac_results?.items;
+    assert.ok(items, `${label} の schema の ac_results.items が取れない`);
+    assert.ok(items.required.includes('gist'), `${label}: gist が required でない（${JSON.stringify(items.required)}）`);
+    assert.equal(items.properties.gist?.type, 'string', `${label}: gist の type`);
+    assert.equal(items.properties.gist?.maxLength, 40, `${label}: gist の maxLength`);
+  }
+  // Final reconcile の evidence 必須は変えない
+  assert.ok(calls.find((c) => c.label === 'final-ac-reconcile').schema.properties.ac_results.items.required.includes('evidence'));
+});
+
+test('[evaluator-contract][#1365] evaluator.md の ac_results の説明と final_ac_reconcile 契約に gist の書き方がある', () => {
+  const section = evaluatorMd.slice(evaluatorMd.indexOf('## AC ごとの判定（ac_results）'), evaluatorMd.indexOf('## 書き方'));
+  assert.match(section, new RegExp(`\`gist\`（必須）: その AC が何を求めているかの要旨を日本語 ${AC_GIST_MAX} 字以内で書く`));
+  assert.match(section, /判定結果や根拠は書かない/);
+  const example = evaluatorMd.slice(evaluatorMd.indexOf('## 出力 JSON'));
+  assert.equal((example.match(/"gist": "/g) ?? []).length, (example.match(/"ac_index": /g) ?? []).length, '出力例の ac_results は全要素が gist を持つ');
+  assert.ok(EVALUATOR_OPERATIONAL_CONTRACT.final_ac_reconcile.includes(`gist は AC の要旨（その AC が何を求めているか）を日本語 ${AC_GIST_MAX} 字以内で書く`));
+});
+
 test('[evaluator-contract][#842] evaluator.md の「書き方」の字数は schema の maxLength と一致する', () => {
   const section = evaluatorMd.slice(evaluatorMd.indexOf('## 書き方'), evaluatorMd.indexOf('## 出力 JSON'));
   assert.ok(section.includes(`\`description\` ${EVAL_DESCRIPTION_MAX} 字`), section);
   assert.ok(section.includes(`\`suggestion\` ${EVAL_SUGGESTION_MAX} 字`), section);
   assert.ok(section.includes(`各 \`evidence\` ${EVAL_EVIDENCE_MAX} 字`), section);
+  assert.ok(section.includes(`\`gist\` ${AC_GIST_MAX} 字`), section);
   assert.ok(!section.includes('200 字程度'), '上限ではない目安の字数が残っている');
 });
 

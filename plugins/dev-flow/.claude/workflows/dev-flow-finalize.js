@@ -142,7 +142,8 @@ const EVALUATOR_OPERATIONAL_CONTRACT = {
   ].join('\n'),
   final_ac_reconcile: [
     'final_ac_reconcile 契約:',
-    '- prompt で「final AC 再検証」が指示された場合、渡された既存 acceptance_criteria のみを最終 PR tree に対して one-shot で再検証し、ac_results:[{ac_index, satisfied, evidence, verified_by}] を全 AC 分ちょうど 1 回ずつ返す。',
+    '- prompt で「final AC 再検証」が指示された場合、渡された既存 acceptance_criteria のみを最終 PR tree に対して one-shot で再検証し、ac_results:[{ac_index, gist, satisfied, evidence, verified_by}] を全 AC 分ちょうど 1 回ずつ返す。',
+    '- gist は AC の要旨（その AC が何を求めているか）を日本語 40 字以内で書く。判定結果・根拠は書かない（PR 本文の受入条件の結果の表に AC の要旨として載る）。',
     '- ac_index は渡された AC の index をそのまま返す。AC の追加・分割・言い換え・index の欠落や重複は禁止。',
     '- 新規 finding の報告・feedback の付与・コード修正・追加検証 loop の要求は禁止（出力は ac_results のみが使われる）。',
     '- satisfied:true / false のいずれでも非空 evidence 必須（file:line / テスト名 / 実行結果）。index 不完全・evidence 欠落は出力全体が unavailable 扱いとなり merge tier が HOLD になる。',
@@ -174,6 +175,7 @@ const EVALUATOR_OPERATIONAL_CONTRACT = {
 }
 
 const EVAL_EVIDENCE_MAX = 200
+const AC_GIST_MAX = 40
 
 function testRunLogs(res) {
   if (!res || res.tests === 'error' || !Array.isArray(res.scripts)) return []
@@ -738,7 +740,8 @@ function applyCiAcResults(acResults, actors, ciVerify) {
   const satisfied = ciVerify?.status === 'passed'
   const kept = acResults.filter((r) => !(r && Number.isInteger(r.ac_index) && ci.includes(r.ac_index)))
   const verifiedBy = ciVerify?.source === 'local' ? 'local' : 'ci'
-  const ciResults = ci.map((i) => ({ ac_index: i, satisfied, verified_by: verifiedBy, ci: true, evidence }))
+  const pending = ciVerify == null ? { ci_pending: true } : {}
+  const ciResults = ci.map((i) => ({ ac_index: i, satisfied, verified_by: verifiedBy, ci: true, ...pending, evidence }))
   return [...kept, ...ciResults].sort((a, b) => (Number.isInteger(a?.ac_index) ? a.ac_index : Infinity) - (Number.isInteger(b?.ac_index) ? b.ac_index : Infinity))
 }
 
@@ -1373,6 +1376,7 @@ const DEFAULT_TIER_REASON = '標準 — 人間が LGTM して merge';
 
 const RESOLVED_ROWS_MAX = 30;
 const RESOLVED_CELL_MAX = 200;
+const PR_BODY_STALE_NOTE = '⚠️ PR 本文: 「受入条件の結果」の表と checkbox が修正前のまま（本文の更新に失敗）— AC の結果は本文ではなくこのコメントで確かめる';
 
 const OBSERVATIONAL_AC_ACTION = '実行して AC の主張を確認する（例: merge 後の実 run・計測）';
 const UNREACHABLE_ENV_AC_ACTION = '実行して確認する';
@@ -1512,6 +1516,7 @@ function buildDevflowSummaryBody({
   headSha,
   hooksNotRunning,
   testCommands,
+  prBodySynced,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -1820,8 +1825,10 @@ function buildDevflowSummaryBody({
   lines.push('');
   lines.push('### あなたが確かめること');
   lines.push('');
-  if (cardOpen.length === 0) lines.push('なし');
+  const prBodyStale = prBodySynced === false;
+  if (cardOpen.length === 0 && !prBodyStale) lines.push('なし');
   for (const it of cardOpen) lines.push(`- ${it.state === 'failed' ? '❌' : '⚠️'} ${it.name}: ${it.note}`);
+  if (prBodyStale) lines.push(`- ${PR_BODY_STALE_NOTE}`);
   lines.push('');
 
   lines.push('| Merge tier | shape | テスト | 評価 | 台帳 (Ledger) | AC | 危険検出 |');
@@ -2510,17 +2517,45 @@ const PR_BODY_OUT_OF_SCOPE_MAX = 5;
 const PR_BODY_CHANGES_HEADING = '## 何が変わるか';
 const PR_BODY_REVIEW_POINTS_HEADING = '## 人間に見てほしい点';
 const PR_BODY_DETAILS = { acceptance: '受入条件', decisions: '設計判断', verification: '検証' };
-function acceptanceSection(req, ledger, acResults) {
-  const acs = arr(req?.acceptance_criteria);
-  if (acs.length === 0) return '（なし）';
-  const items = arr(ledger?.items);
+const PR_BODY_AC_RESULTS_HEADING = '## 受入条件の結果';
+const PR_BODY_AC_UNVERIFIED = '⚠️ 未検証';
+const PR_BODY_AC_STALE = '⚠️ 修正後に未再評価';
+const PR_BODY_AC_EMPTY_CELL = '—';
+
+function acRows(req, acResults, acStale) {
   const results = arr(acResults);
-  const lines = acs.map((ac, i) => {
-    const fromResults = results.find((r) => r?.ac_index === i);
-    const checked = fromResults ? fromResults.satisfied === true : items.find((x) => x?.id === `AC-${i + 1}`)?.checked === true;
-    return `- [${checked ? 'x' : ' '}] ${str(ac).trim()}`;
+  return arr(req?.acceptance_criteria).map((ac, i) => {
+    const r = results.find((x) => x?.ac_index === i) ?? null;
+    const judged = r != null && acStale !== true;
+    const tests = arr(r?.test_files).map((f) => str(f).replace(/`/g, '').trim()).filter(Boolean);
+    return {
+      text: str(ac).trim(),
+      gist: r ? str(r.gist) : '',
+      result: acStale === true ? PR_BODY_AC_STALE
+        : !r || r.ci_pending === true ? PR_BODY_AC_UNVERIFIED
+        : r.satisfied === true ? '✅' : '❌',
+      evidence: !judged ? '' : tests.length ? tests.map((f) => `\`${f}\``).join(', ') : str(r.evidence),
+      checked: judged && r.satisfied === true,
+    };
   });
-  return lines.join('\n');
+}
+
+function acTableCell(v) {
+  return cell(neutralizeStructure(str(v))) || PR_BODY_AC_EMPTY_CELL;
+}
+
+function acResultsSection(rows) {
+  if (rows.length === 0) return null;
+  return [
+    '| AC | 要旨 | 結果 | 根拠 |',
+    '|---|---|---|---|',
+    ...rows.map((r, i) => `| AC-${i + 1} | ${acTableCell(r.gist)} | ${r.result} | ${acTableCell(r.evidence)} |`),
+  ].join('\n');
+}
+
+function acceptanceSection(rows) {
+  if (rows.length === 0) return '（なし）';
+  return rows.map((r) => `- [${r.checked ? 'x' : ' '}] ${r.text}`).join('\n');
 }
 
 function decisionsSection(plan) {
@@ -2564,11 +2599,14 @@ function closeOpenFence(md) {
   }
   return open == null ? md : `${md}\n${open}`;
 }
-function neutralizeSectionMarkdown(md) {
-  return closeOpenFence(md)
+function neutralizeStructure(md) {
+  return md
     .replace(/<(\/?details\b)/gi, `<${ZWSP}$1`)
     .replace(/<!--/g, `<!${ZWSP}--`)
     .replace(/^(?=Closes #\d+\s*$)/gm, ZWSP);
+}
+function neutralizeSectionMarkdown(md) {
+  return neutralizeStructure(closeOpenFence(md));
 }
 
 function detailsBlock(summary, markdown) {
@@ -2619,13 +2657,15 @@ function hitLine(label, hits, keyOf) {
   return `- ${label}: ${list.length} 件（${items.join('、')}）`;
 }
 
-function buildPrBody({ issue, req, plan, ledger, testsurfHits, dangerHits, acResults }) {
+function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false }) {
   let conclusionText = collapseWhitespace(plan?.summary);
   if (!conclusionText) conclusionText = collapseWhitespace(req?.issue_title);
   if (!conclusionText) conclusionText = `issue #${issue} の変更`;
   const changes = textItems(plan?.behavior_changes);
   const reviewPoints = textItems(plan?.review_points);
   const outOfScope = outOfScopeSection(plan);
+  const rows = acRows(req, acResults, acStale);
+  const acTable = acResultsSection(rows);
   const verify = [
     hitLine('danger-grep', arr(dangerHits), (h) => h?.class),
     hitLine('test-surface', arr(testsurfHits), (h) => h?.pattern),
@@ -2636,7 +2676,8 @@ function buildPrBody({ issue, req, plan, ledger, testsurfHits, dangerHits, acRes
     ...(changes.length ? [`${PR_BODY_CHANGES_HEADING}\n${bulletList(changes)}`] : []),
     ...(reviewPoints.length ? [`${PR_BODY_REVIEW_POINTS_HEADING}\n${bulletList(reviewPoints)}`] : []),
     ...(outOfScope ? [`${PR_BODY_OUT_OF_SCOPE_HEADING}\n${outOfScope}`] : []),
-    detailsBlock(PR_BODY_DETAILS.acceptance, acceptanceSection(req, ledger, acResults)),
+    ...(acTable ? [`${PR_BODY_AC_RESULTS_HEADING}\n${acTable}`] : []),
+    detailsBlock(PR_BODY_DETAILS.acceptance, acceptanceSection(rows)),
     detailsBlock(PR_BODY_DETAILS.decisions, decisionsSection(plan)),
     detailsBlock(PR_BODY_DETAILS.verification, verify),
     ...sectionBlocks(plan),
@@ -2650,7 +2691,8 @@ function prBodyEvidenceInstr(prBody) {
     + `<<<PR_BODY_PREVIEW_BEGIN>>>\n${str(prBody)}<<<PR_BODY_PREVIEW_END>>>\n`
     + `「PR 本文に書く」型の AC は、この本文テキストに該当内容があるかで判定せよ（<details> の中も本文に含む。`
     + `本文に無い内容は、コードのコメントや実装エージェントの報告にあっても未達）。\n`
-    + `本文の「受入条件」のチェックボックス（- [ ] / - [x]）は未確定であり、AC の充足・未達の根拠にするな。\n`;
+    + `本文の「受入条件」のチェックボックス（- [ ] / - [x]）は未確定であり、AC の充足・未達の根拠にするな。\n`
+    + `本文の「受入条件の結果」の表は未確定であり、AC の充足・未達の根拠にするな。\n`;
 }
 
 const PR_BODY_EDIT = {
@@ -2947,9 +2989,11 @@ const FINAL_AC = {
       type: 'array',
       items: {
         type: 'object',
-        required: ['ac_index', 'satisfied', 'evidence'],
+        required: ['ac_index', 'satisfied', 'evidence', 'gist'],
         properties: {
           ac_index: { type: 'number' },
+          // AC の要旨（日本語）。Evaluate の EVAL と同じ形で、作り直す PR 本文の「受入条件の結果」の表に載る
+          gist: { type: 'string', maxLength: AC_GIST_MAX },
           satisfied: { type: 'boolean' },
           evidence: { type: 'string' },
           verified_by: { type: 'string', enum: ['test', 'inspection'] },
@@ -3743,15 +3787,23 @@ if (finalRecheckTargets.length) {
   log(`Final reconcile: 解消済み item の再検証 — reconfirm ${rp.reconfirm.length} 件 / 取り下げ ${rp.reopen.length} 件${rp.reopen.length ? `（${rp.reopen.map((r) => r.id).join(', ')}）` : ''}`)
 }
 
-// AC checkbox 同期: pr-iterate が fix を適用し lgtm 終端し Final AC reconcile が reverified の
-// ときのみ、最終 AC 結果で PR body を再生成して gh pr edit。表示専用のため失敗は fail-open。
+// PR 本文の作り直し: pr-iterate が fix を適用した run は終了状態（lgtm / max_reached / stuck 等）に依らず PR body を
+// 再生成して gh pr edit する — PR 作成時の「受入条件の結果」は修正前の tree の判定で、残すと最終 tree の結果に見える。
+// Final AC reconcile が reverified なら最終 AC 結果で、それ以外は全 AC を「修正後に未再評価」にする（要旨だけ Evaluate から残す）。
+// 表示専用のため失敗は fail-open（終端サマリーの「あなたが確かめること」に本文が修正前のままである旨を出す）。
 let prBodySynced = null
-if (iterate?.status === 'lgtm' && (iterate?.fixes_applied ?? 0) > 0 && finalAcReconcile === 'reverified') {
-  const prBodyFinal = buildPrBody({ issue: ISSUE, req, plan: state.plan, ledger: state.ledger, testsurfHits: state.testsurfHits, dangerHits: secHitsOf(state.risk), acResults: state.finalAcResults })
+if ((iterate?.fixes_applied ?? 0) > 0) {
+  const acReverified = finalAcReconcile === 'reverified'
+  const prBodyFinal = buildPrBody({
+    issue: ISSUE, req, plan: state.plan, testsurfHits: state.testsurfHits, dangerHits: secHitsOf(state.risk),
+    acResults: acReverified ? state.finalAcResults : (state.evalResult?.ac_results ?? null), acStale: !acReverified,
+  })
   prBodyLatest = prBodyFinal
   const sync = await failOpenAgent(prBodyEditPrompt({ wt: WT, pr: pr.pr_number, repo: REPO, prBody: prBodyFinal, fileName: 'pr-body-final.md' }), { agentType: 'dev-runner-haiku', schema: PR_BODY_EDIT, label: 'ac-checkbox-sync', phase: 'Final reconcile' })
   prBodySynced = sync?.edited === true
-  log(prBodySynced ? 'ac-checkbox-sync: PR body の AC checkbox を Final AC reconcile 結果へ更新' : '⚠️ ac-checkbox-sync: PR body 更新に失敗（fail-open。checkbox は fix 前のまま）')
+  log(prBodySynced
+    ? `ac-checkbox-sync: PR body の受入条件の結果を${acReverified ? ' Final AC reconcile 結果' : '「修正後に未再評価」'}へ更新`
+    : '⚠️ ac-checkbox-sync: PR body 更新に失敗（fail-open。受入条件の結果は fix 前のまま）')
 }
 
 // Phase Merge tier: 最終 diff に danger-grep を再実行し merge tier を算出する。merge は全 tier 人間。
@@ -4045,6 +4097,7 @@ const summaryBody = buildDevflowSummaryBody({
   headSha: prMeta?.ok === true ? prMeta.headRefOid : null,
   hooksNotRunning: PRERUN.hooks_not_running,
   testCommands: TEST_COMMANDS,
+  prBodySynced,
 })
 // 投稿失敗は fail-open だが summary_posted として返り値・終端 note に出す（log 1 行では人間が気づけない）。
 const summaryBodyFile = `${WT}/.devflow-tmp/dev-flow-summary.md`

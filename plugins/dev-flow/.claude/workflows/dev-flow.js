@@ -1612,17 +1612,45 @@ const PR_BODY_CHANGES_HEADING = '## 何が変わるか';
 const PR_BODY_REVIEW_POINTS_HEADING = '## 人間に見てほしい点';
 const PR_BODY_DETAILS = { acceptance: '受入条件', decisions: '設計判断', verification: '検証' };
 const PR_SECTIONS_MAX_CHARS = 3000;
-function acceptanceSection(req, ledger, acResults) {
-  const acs = arr(req?.acceptance_criteria);
-  if (acs.length === 0) return '（なし）';
-  const items = arr(ledger?.items);
+const PR_BODY_AC_RESULTS_HEADING = '## 受入条件の結果';
+const PR_BODY_AC_UNVERIFIED = '⚠️ 未検証';
+const PR_BODY_AC_STALE = '⚠️ 修正後に未再評価';
+const PR_BODY_AC_EMPTY_CELL = '—';
+
+function acRows(req, acResults, acStale) {
   const results = arr(acResults);
-  const lines = acs.map((ac, i) => {
-    const fromResults = results.find((r) => r?.ac_index === i);
-    const checked = fromResults ? fromResults.satisfied === true : items.find((x) => x?.id === `AC-${i + 1}`)?.checked === true;
-    return `- [${checked ? 'x' : ' '}] ${str(ac).trim()}`;
+  return arr(req?.acceptance_criteria).map((ac, i) => {
+    const r = results.find((x) => x?.ac_index === i) ?? null;
+    const judged = r != null && acStale !== true;
+    const tests = arr(r?.test_files).map((f) => str(f).replace(/`/g, '').trim()).filter(Boolean);
+    return {
+      text: str(ac).trim(),
+      gist: r ? str(r.gist) : '',
+      result: acStale === true ? PR_BODY_AC_STALE
+        : !r || r.ci_pending === true ? PR_BODY_AC_UNVERIFIED
+        : r.satisfied === true ? '✅' : '❌',
+      evidence: !judged ? '' : tests.length ? tests.map((f) => `\`${f}\``).join(', ') : str(r.evidence),
+      checked: judged && r.satisfied === true,
+    };
   });
-  return lines.join('\n');
+}
+
+function acTableCell(v) {
+  return cell(neutralizeStructure(str(v))) || PR_BODY_AC_EMPTY_CELL;
+}
+
+function acResultsSection(rows) {
+  if (rows.length === 0) return null;
+  return [
+    '| AC | 要旨 | 結果 | 根拠 |',
+    '|---|---|---|---|',
+    ...rows.map((r, i) => `| AC-${i + 1} | ${acTableCell(r.gist)} | ${r.result} | ${acTableCell(r.evidence)} |`),
+  ].join('\n');
+}
+
+function acceptanceSection(rows) {
+  if (rows.length === 0) return '（なし）';
+  return rows.map((r) => `- [${r.checked ? 'x' : ' '}] ${r.text}`).join('\n');
 }
 
 function decisionsSection(plan) {
@@ -1705,11 +1733,14 @@ function closeOpenFence(md) {
   }
   return open == null ? md : `${md}\n${open}`;
 }
-function neutralizeSectionMarkdown(md) {
-  return closeOpenFence(md)
+function neutralizeStructure(md) {
+  return md
     .replace(/<(\/?details\b)/gi, `<${ZWSP}$1`)
     .replace(/<!--/g, `<!${ZWSP}--`)
     .replace(/^(?=Closes #\d+\s*$)/gm, ZWSP);
+}
+function neutralizeSectionMarkdown(md) {
+  return neutralizeStructure(closeOpenFence(md));
 }
 
 function detailsBlock(summary, markdown) {
@@ -1799,13 +1830,15 @@ function hitLine(label, hits, keyOf) {
   return `- ${label}: ${list.length} 件（${items.join('、')}）`;
 }
 
-function buildPrBody({ issue, req, plan, ledger, testsurfHits, dangerHits, acResults }) {
+function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false }) {
   let conclusionText = collapseWhitespace(plan?.summary);
   if (!conclusionText) conclusionText = collapseWhitespace(req?.issue_title);
   if (!conclusionText) conclusionText = `issue #${issue} の変更`;
   const changes = textItems(plan?.behavior_changes);
   const reviewPoints = textItems(plan?.review_points);
   const outOfScope = outOfScopeSection(plan);
+  const rows = acRows(req, acResults, acStale);
+  const acTable = acResultsSection(rows);
   const verify = [
     hitLine('danger-grep', arr(dangerHits), (h) => h?.class),
     hitLine('test-surface', arr(testsurfHits), (h) => h?.pattern),
@@ -1816,7 +1849,8 @@ function buildPrBody({ issue, req, plan, ledger, testsurfHits, dangerHits, acRes
     ...(changes.length ? [`${PR_BODY_CHANGES_HEADING}\n${bulletList(changes)}`] : []),
     ...(reviewPoints.length ? [`${PR_BODY_REVIEW_POINTS_HEADING}\n${bulletList(reviewPoints)}`] : []),
     ...(outOfScope ? [`${PR_BODY_OUT_OF_SCOPE_HEADING}\n${outOfScope}`] : []),
-    detailsBlock(PR_BODY_DETAILS.acceptance, acceptanceSection(req, ledger, acResults)),
+    ...(acTable ? [`${PR_BODY_AC_RESULTS_HEADING}\n${acTable}`] : []),
+    detailsBlock(PR_BODY_DETAILS.acceptance, acceptanceSection(rows)),
     detailsBlock(PR_BODY_DETAILS.decisions, decisionsSection(plan)),
     detailsBlock(PR_BODY_DETAILS.verification, verify),
     ...sectionBlocks(plan),
@@ -3445,9 +3479,11 @@ phase('PR')
 const prCommitMessage = buildCommitMessage({ issue: ISSUE, req, plan: state.plan, titleFormat: PRERUN.pr_title_format })
 // PR body の danger-grep 行は {class, file} の hit 単位で出す。state.dangerHits はクラス名 string[]
 // （security_focus / telemetry 用）なので渡さない。
+// 受入条件の結果の表と checkbox は Evaluate の ac_results から付ける（Evaluate を通らない run は全 AC が未検証）。
 const prBody = buildPrBody({
-  issue: ISSUE, req, plan: state.plan, ledger: state.ledger,
+  issue: ISSUE, req, plan: state.plan,
   testsurfHits: state.testsurfHits, dangerHits: secHitsOf(state.risk),
+  acResults: state.evalResult?.ac_results ?? null,
 })
 // ci の AC がある run だけ PR に ci_verify.label を付ける（CI がこのラベルで ci_verify.checks の job を回す）。
 const PR_LABEL = CI_AC_INDEXES.length ? CI_VERIFY.label : null

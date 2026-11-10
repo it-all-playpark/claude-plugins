@@ -403,6 +403,8 @@ function ciAcEvidence(ciVerify) {
 // ac_results の ci AC を CI の判定で置き換える（evaluator / final-ac-reconcile の判定は使わない）。
 // ci AC の結果が無ければ足す。satisfied は ciVerify.status === 'passed' のときだけ true。非配列はそのまま返す。
 // ciVerify.source === 'local'（local-verify の結果）なら verified_by は 'local'、根拠は log_path と exit code。
+// ciVerify が null（CI の判定前 — Evaluate 時点）なら ci_pending:true を付ける。satisfied:false は「未達」ではなく
+// 「まだ判定していない」で、PR 本文の表（pr-artifacts の acRows）はこれを ❌ ではなく未検証として出す。
 export function applyCiAcResults(acResults, actors, ciVerify) {
   if (!Array.isArray(acResults)) return acResults
   const ci = ciAcIndexes(actors)
@@ -411,7 +413,8 @@ export function applyCiAcResults(acResults, actors, ciVerify) {
   const satisfied = ciVerify?.status === 'passed'
   const kept = acResults.filter((r) => !(r && Number.isInteger(r.ac_index) && ci.includes(r.ac_index)))
   const verifiedBy = ciVerify?.source === 'local' ? 'local' : 'ci'
-  const ciResults = ci.map((i) => ({ ac_index: i, satisfied, verified_by: verifiedBy, ci: true, evidence }))
+  const pending = ciVerify == null ? { ci_pending: true } : {}
+  const ciResults = ci.map((i) => ({ ac_index: i, satisfied, verified_by: verifiedBy, ci: true, ...pending, evidence }))
   return [...kept, ...ciResults].sort((a, b) => (Number.isInteger(a?.ac_index) ? a.ac_index : Infinity) - (Number.isInteger(b?.ac_index) ? b.ac_index : Infinity))
 }
 

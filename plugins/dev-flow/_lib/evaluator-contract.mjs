@@ -67,7 +67,8 @@ export const EVALUATOR_OPERATIONAL_CONTRACT = {
   // final_ac_reconcile は dev-flow-finalize.js の final-ac-reconcile が本契約全文を prompt に注入する。
   final_ac_reconcile: [
     'final_ac_reconcile 契約:',
-    '- prompt で「final AC 再検証」が指示された場合、渡された既存 acceptance_criteria のみを最終 PR tree に対して one-shot で再検証し、ac_results:[{ac_index, satisfied, evidence, verified_by}] を全 AC 分ちょうど 1 回ずつ返す。',
+    '- prompt で「final AC 再検証」が指示された場合、渡された既存 acceptance_criteria のみを最終 PR tree に対して one-shot で再検証し、ac_results:[{ac_index, gist, satisfied, evidence, verified_by}] を全 AC 分ちょうど 1 回ずつ返す。',
+    '- gist は AC の要旨（その AC が何を求めているか）を日本語 40 字以内で書く。判定結果・根拠は書かない（PR 本文の受入条件の結果の表に AC の要旨として載る）。',
     '- ac_index は渡された AC の index をそのまま返す。AC の追加・分割・言い換え・index の欠落や重複は禁止。',
     '- 新規 finding の報告・feedback の付与・コード修正・追加検証 loop の要求は禁止（出力は ac_results のみが使われる）。',
     '- satisfied:true / false のいずれでも非空 evidence 必須（file:line / テスト名 / 実行結果）。index 不完全・evidence 欠落は出力全体が unavailable 扱いとなり merge tier が HOLD になる。',
@@ -107,6 +108,9 @@ export const EVALUATOR_OPERATIONAL_CONTRACT = {
 export const EVAL_DESCRIPTION_MAX = 300
 export const EVAL_SUGGESTION_MAX = 200
 export const EVAL_EVIDENCE_MAX = 200
+// ac_results[].gist（AC の要旨）の字数上限。EVAL と FINAL_AC の schema が maxLength に使う。PR 本文の見える部分の表
+// （pr-artifacts の受入条件の結果）の 1 セルに載るので、AC 全文を開かずに読める長さに収めさせる。
+export const AC_GIST_MAX = 40
 
 // 全件スイートの範囲。Validate と同じ tree を評価するときは evaluator に走らせない（Validate が同じ tree で
 // 実行済みで、再実行は評価の所要時間とコストの大半を占める）。evaluator.md の「進め方」も同じ文字列で案内する。
