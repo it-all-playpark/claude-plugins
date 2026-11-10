@@ -633,6 +633,14 @@ test('[pr-artifacts] PR body: CI 判定前（Evaluate 時点の applyCiAcResults
   assert.equal(acTableRows(before)[0][2], '✅');
   assert.equal(acTableRows(before)[1][2], PR_BODY_AC_UNVERIFIED);
   assert.equal(detailsOf(before, '受入条件'), '- [x] AC one\n- [ ] AC two');
+  // ci AC の要旨は evaluator の gist
+  assert.equal(acTableRows(before)[1][1], 'g2');
+  // check が完了していない・待っていない run（Final reconcile の pending / not_run）も ❌ ではなく ⚠️ 未検証
+  for (const status of ['pending', 'not_run']) {
+    const row = acTableRows(build({ status, checks: ['e2e'] }))[1];
+    assert.equal(row[2], PR_BODY_AC_UNVERIFIED, status);
+    assert.equal(row[1], 'g2', status);
+  }
   // CI の判定後は未達なら ❌、success なら ✅
   assert.equal(acTableRows(build({ status: 'failed', checks: ['e2e'] }))[1][2], '❌');
   assert.equal(acTableRows(build({ status: 'passed', checks: ['e2e'] }))[1][2], '✅');

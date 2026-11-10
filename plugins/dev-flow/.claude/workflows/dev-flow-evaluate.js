@@ -387,10 +387,15 @@ function applyCiAcResults(acResults, actors, ciVerify) {
   if (!ci.length) return acResults
   const evidence = ciAcEvidence(ciVerify)
   const satisfied = ciVerify?.status === 'passed'
-  const kept = acResults.filter((r) => !(r && Number.isInteger(r.ac_index) && ci.includes(r.ac_index)))
+  const isCi = (r) => r && Number.isInteger(r.ac_index) && ci.includes(r.ac_index)
+  const kept = acResults.filter((r) => !isCi(r))
+  const gistOf = (i) => acResults.find((r) => isCi(r) && r.ac_index === i && typeof r.gist === 'string')?.gist
   const verifiedBy = ciVerify?.source === 'local' ? 'local' : 'ci'
-  const pending = ciVerify == null ? { ci_pending: true } : {}
-  const ciResults = ci.map((i) => ({ ac_index: i, satisfied, verified_by: verifiedBy, ci: true, ...pending, evidence }))
+  const pending = ciVerify == null || ciVerify.status === 'pending' || ciVerify.status === 'not_run' ? { ci_pending: true } : {}
+  const ciResults = ci.map((i) => {
+    const gist = gistOf(i)
+    return { ac_index: i, ...(gist !== undefined ? { gist } : {}), satisfied, verified_by: verifiedBy, ci: true, ...pending, evidence }
+  })
   return [...kept, ...ciResults].sort((a, b) => (Number.isInteger(a?.ac_index) ? a.ac_index : Infinity) - (Number.isInteger(b?.ac_index) ? b.ac_index : Infinity))
 }
 
