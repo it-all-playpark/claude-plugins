@@ -253,6 +253,8 @@ function resolvedCell(v) {
  * @param {boolean|null|undefined} [opts.prBodySynced] - pr-iterate の修正後に PR 本文を作り直した `gh pr edit` の成否
  *   （作り直さない run は null）。false のときだけ「あなたが確かめること」に、PR 本文の受入条件の結果が修正前のままである旨を 1 行出す（表示専用）
  * @param {boolean|null|undefined} [opts.prBodyHasDiagram] - PR 本文に構成の変化の図が載っているか。true なら上の 1 行に図も修正前のままである旨を含める
+ * @param {string[]|null|undefined} [opts.reviewPoints] - dev-implementer が review_points[] で申告した、merge 前に人間が確かめる点
+ *   （PR 本文の「人間に見てほしい点」と同じ plan.review_points）。各項目を「あなたが確かめること」に 1 行ずつ出す（表示専用）
  * @returns {string}
  */
 export function buildDevflowSummaryBody({
@@ -305,6 +307,7 @@ export function buildDevflowSummaryBody({
   testCommands,
   prBodySynced,
   prBodyHasDiagram,
+  reviewPoints,
 }) {
   const EVAL_STALENESS_VALUES = ['none', 'hash_mismatch', 'hash_reconverged', 'iterate_incomplete', 'iterate_fixed'];
   if (evalStaleness != null && !EVAL_STALENESS_VALUES.includes(evalStaleness)) {
@@ -676,12 +679,115 @@ export function buildDevflowSummaryBody({
   lines.push(`**結論: ${tierPhrase}。${fixPhrase}。${testPhrase}**`);
   lines.push('');
 
+  // HOLD の表の行 {理由, 区分, 現状, 対応}。判断カードより前に 1 回だけ組み、「HOLD になった理由と現状」の表はこの配列を描く
+  const holdRows = [];
+  if (mergeTier === 'HOLD' && Array.isArray(holdReasons) && holdReasons.length > 0) {
+    const escalateTotal = escalateAll.length;
+    const escalateResolved = escalateAll.filter((it) => isResolved(it)).length;
+    // 同じ AC に紐づく HOLD 理由が 2 つ以上あるときだけ AC ごとに 1 行にまとめる（issue #794）。
+    // 各 code の行は、その code が数えた項目が全部まとめた行の AC に入るときだけ消す（AC に紐づかない
+    // 項目が残る code は従来の行のまま残す）。
+    const holdCodeSet = new Set(holdReasons.map((hr) => hr && hr.code));
+    const holdAcGroups = acGroups
+      .map((g) => ({ ...g, holdCodes: g.codes.filter((c) => holdCodeSet.has(c)) }))
+      .filter((g) => g.holdCodes.length >= 2);
+    // ledger_unconverged が数える item は merge tier が振り分けた item_ids だけ（専用 code に振り分けた seed は数えない）
+    const ledgerUnconvergedIds = new Set(holdReasons.find((hr) => hr && hr.code === 'ledger_unconverged')?.item_ids ?? []);
+    const ledgerUnconvergedItems = uncheckedBlocking.filter((it) => ledgerUnconvergedIds.has(it.id));
+    const codeAcIndexes = {
+      ledger_unconverged: ledgerUnconvergedItems.map(itemAcIndex),
+      escalate: escalateAll.map(itemAcIndex),
+      ac_agent_unsatisfied: acAgentGaps,
+      ac_human_pending: acHumanGaps,
+      ac_ci_pending: acCiGaps,
+    };
+    const absorbedCodes = new Set(Object.keys(codeAcIndexes).filter((code) => {
+      const covered = new Set(holdAcGroups.filter((g) => g.holdCodes.includes(code)).map((g) => g.acIndex));
+      return covered.size > 0 && codeAcIndexes[code].every((k) => covered.has(k));
+    }));
+    const CODE_LABEL = {
+      ledger_unconverged: 'ledger 未収束',
+      escalate: 'ESCALATE',
+      ac_agent_unsatisfied: 'AC 未達（エージェント）',
+      ac_human_pending: 'AC 未達（人手）',
+      ac_ci_pending: 'AC 未確定（CI）',
+    };
+    const holdCtx = {
+      escalateTotal,
+      escalateResolved,
+      uncheckedBlockingCount: ledgerUnconvergedItems.length,
+      unclearedCount: uncleared.length,
+      iterateStatus,
+      pr,
+      humanAcGaps: acHumanGaps,
+      observationalAcGaps: observationalGaps,
+      unreachableAcGaps: unreachableGaps,
+      ciVerify,
+      conflictAutoresolve,
+      securityReview,
+      redFacts,
+    };
+    let acGroupRowsEmitted = false;
+    for (const hr of holdReasons) {
+      if (!acGroupRowsEmitted && holdAcGroups.some((g) => g.holdCodes.includes(hr && hr.code))) {
+        acGroupRowsEmitted = true;
+        for (const g of holdAcGroups) {
+          const reason = `${g.label} — ${g.holdCodes.map((c) => CODE_LABEL[c]).join('・')} を 1 行にまとめた（内訳: ${g.holdCodes.join(' / ')}）`;
+          const current = g.holdCodes.map((c) => {
+            if (c === 'ledger_unconverged') return `未 checked blocking ${g.blocking.length} 件`;
+            if (c === 'escalate') return `ESCALATE ${g.escalate.length} 件中 ${g.escalate.filter((it) => isResolved(it)).length} 件は fix 後 tree で解消確認済み`;
+            return 'AC 判定 satisfied:false';
+          }).join('・');
+          // まとめた行の区分は内訳の code の区分を重複なく並べる
+          const remedy = [...new Set(g.holdCodes.map((c) => holdReasonDisplay(c, holdCtx).remedy))].join('・');
+          holdRows.push({ reason, remedy, current, action: `${g.actions.join('・')}（下表 ${g.label} 行）` });
+        }
+      }
+      if (absorbedCodes.has(hr && hr.code)) continue;
+      const { current, action, remedy } = holdReasonDisplay(hr && hr.code, holdCtx);
+      holdRows.push({ reason: mdCell(hr && hr.reason), remedy, current, action });
+    }
+  }
+
+  // merge 前に人がやることの一覧。判断カード「あなたが確かめること」・人間側 follow-up の節・あなたがやること のマージ前の行は
+  // この一覧の項目から描き、HOLD の表は一覧に入れた行と同じ holdRows を描く（出どころを足すときはここに足す。カードの側は
+  // 直さない）。空のときだけカードに「なし」と出す。任意の確認事項（ℹ️）とマージ後の確認は merge 前の判断に要らないので
+  // 入れない。表示専用 — merge tier・HOLD 理由・機械の確認の件数は変えない。
+  const SEV_LABEL_FOLLOWUP = { 'critical': '🔴 critical', 'major': '🟠 major', 'minor': '🟡 minor' };
+  const followupHead = (f) => `${SEV_LABEL_FOLLOWUP[f.severity] ?? String(f.severity ?? '不明')} — ${
+    (f.file != null && f.file !== '') ? (f.line != null ? `\`${f.file}:${f.line}\`` : `\`${f.file}\``) : '場所指定なし'}`;
+  // ci の AC をローカル実行で satisfied にした run は、PR に付けた label の CI（full-ci の build / docker-build / 全 unit テスト等）の
+  // 結果を run が待っていない。merge 前に人間が確認する（issue #863）。
+  const ciCheckText = localVerify != null && localVerify.status === 'passed'
+    ? `マージ前: PR の CI（${localVerify.label ? `\`${localVerify.label}\` ラベルで走る ` : ''}build / docker-build / 全 unit テスト等）の結果を確認する — ci の AC はローカル実行で判定済みで、run は check の結果を待っていない`
+    : null;
+  const preMergeItems = [
+    ...cardOpen.map((it) => ({ source: 'machine', card: `${it.state === 'failed' ? '❌' : '⚠️'} ${it.name}: ${it.note}` })),
+    // PR 本文の作り直しに失敗した run: 本文の表は修正前の tree の判定のまま残っている
+    ...(prBodySynced === false ? [{ source: 'pr_body', card: prBodyHasDiagram === true ? PR_BODY_STALE_NOTE_WITH_DIAGRAM : PR_BODY_STALE_NOTE }] : []),
+    // 対応が「不要」の行（解消を確認済みの ESCALATE 等）は人がやることではないので表にだけ出す
+    ...holdRows.filter((row) => !row.action.startsWith('不要'))
+      .map((row) => ({ source: 'hold', card: `🔶 HOLD の理由「${row.reason}」: ${row.action}`, row })),
+    // pr-iterate が worktree の外を指すとして fix から外した指摘（issue #793）。指摘と提案の本文は節に出す
+    ...(Array.isArray(humanFollowups) ? humanFollowups.filter((f) => f != null) : [])
+      .map((f, i) => ({ source: 'followup', card: `👤 人間側 follow-up ${i + 1}: ${followupHead(f)}（詳細は下の「人間側 follow-up」）`, followup: f })),
+    ...(ciCheckText != null ? [{ source: 'local_verify', card: `⚠️ ${ciCheckText}`, text: ciCheckText }] : []),
+    // implementer が申告した「人間に見てほしい点」。終端サマリーに節は無く、カードにだけ出す
+    ...(Array.isArray(reviewPoints) ? reviewPoints : [])
+      .filter((p) => typeof p === 'string' && p.trim().length > 0)
+      .map((p) => ({ source: 'review_point', card: `👀 人間に見てほしい点: ${mdCell(p.replace(/\s+/g, ' ').trim())}` })),
+  ];
+  const preMergeOf = (source) => preMergeItems.filter((it) => it.source === source);
+
   // 判断カード: 問い / 件数 / あなたが確かめること（結論行の直後・at-a-glance 表より前）
+  // HOLD でない run の問い: 一覧が空なら「5 項目とも ✅」、機械の確認だけならその件数、ほかの出どころがあれば一覧の件数を出す
   const cardQuestion = mergeTier === 'HOLD'
     ? '下の「HOLD になった理由と現状」を解消してから merge するか'
-    : cardOpen.length > 0
-      ? `機械の確認が ✅ でない ${cardOpen.length} 項目（下の「あなたが確かめること」）を確かめたうえで、この diff を merge してよいか`
-      : 'この diff を merge してよいか（機械の確認は 5 項目とも ✅）';
+    : preMergeItems.length === 0
+      ? 'この diff を merge してよいか（機械の確認は 5 項目とも ✅）'
+      : preMergeItems.length === cardOpen.length
+        ? `機械の確認が ✅ でない ${cardOpen.length} 項目（下の「あなたが確かめること」）を確かめたうえで、この diff を merge してよいか`
+        : `下の「あなたが確かめること」の ${preMergeItems.length} 項目を確かめたうえで、この diff を merge してよいか`;
   lines.push(`**あなたが決めること**: ${cardQuestion}`);
   lines.push('');
   // 0 件の区分は出さない（⚠️ / ❌ が 0 件でも見えると読み手が身構える）
@@ -693,11 +799,8 @@ export function buildDevflowSummaryBody({
   lines.push('');
   lines.push('### あなたが確かめること');
   lines.push('');
-  // PR 本文の作り直しに失敗した run: 本文の表は修正前の tree の判定のまま残っている。機械の確認 5 項目とは別の行で出す
-  const prBodyStale = prBodySynced === false;
-  if (cardOpen.length === 0 && !prBodyStale) lines.push('なし');
-  for (const it of cardOpen) lines.push(`- ${it.state === 'failed' ? '❌' : '⚠️'} ${it.name}: ${it.note}`);
-  if (prBodyStale) lines.push(`- ${prBodyHasDiagram === true ? PR_BODY_STALE_NOTE_WITH_DIAGRAM : PR_BODY_STALE_NOTE}`);
+  if (preMergeItems.length === 0) lines.push('なし');
+  for (const it of preMergeItems) lines.push(`- ${it.card}`);
   lines.push('');
 
   lines.push('| Merge tier | shape | テスト | 評価 | 台帳 (Ledger) | AC | 危険検出 |');
@@ -771,10 +874,8 @@ export function buildDevflowSummaryBody({
     youDoLines.push(`1. diff を review し LGTM → \`gh pr ready ${pr}\` → マージ`);
   }
   let youDoN = youDoLines.length + 1;
-  // ci の AC をローカル実行で satisfied にした run は、PR に付けた label の CI（full-ci の build / docker-build / 全 unit テスト等）の
-  // 結果を run が待っていない。merge 前に人間が確認する（issue #863）。
-  if (localVerify != null && localVerify.status === 'passed') {
-    youDoLines.push(`${youDoN}. マージ前: PR の CI（${localVerify.label ? `\`${localVerify.label}\` ラベルで走る ` : ''}build / docker-build / 全 unit テスト等）の結果を確認する — ci の AC はローカル実行で判定済みで、run は check の結果を待っていない`);
+  for (const it of preMergeOf('local_verify')) {
+    youDoLines.push(`${youDoN}. ${it.text}`);
     youDoN++;
   }
   const seenDangerClasses = new Set();
@@ -808,71 +909,7 @@ export function buildDevflowSummaryBody({
     lines.push('');
     lines.push('| 理由 | 区分 | 現状 | 対応 |');
     lines.push('|---|---|---|---|');
-    const escalateTotal = escalateAll.length;
-    const escalateResolved = escalateAll.filter((it) => isResolved(it)).length;
-    // 同じ AC に紐づく HOLD 理由が 2 つ以上あるときだけ AC ごとに 1 行にまとめる（issue #794）。
-    // 各 code の行は、その code が数えた項目が全部まとめた行の AC に入るときだけ消す（AC に紐づかない
-    // 項目が残る code は従来の行のまま残す）。
-    const holdCodeSet = new Set(holdReasons.map((hr) => hr && hr.code));
-    const holdAcGroups = acGroups
-      .map((g) => ({ ...g, holdCodes: g.codes.filter((c) => holdCodeSet.has(c)) }))
-      .filter((g) => g.holdCodes.length >= 2);
-    // ledger_unconverged が数える item は merge tier が振り分けた item_ids だけ（専用 code に振り分けた seed は数えない）
-    const ledgerUnconvergedIds = new Set(holdReasons.find((hr) => hr && hr.code === 'ledger_unconverged')?.item_ids ?? []);
-    const ledgerUnconvergedItems = uncheckedBlocking.filter((it) => ledgerUnconvergedIds.has(it.id));
-    const codeAcIndexes = {
-      ledger_unconverged: ledgerUnconvergedItems.map(itemAcIndex),
-      escalate: escalateAll.map(itemAcIndex),
-      ac_agent_unsatisfied: acAgentGaps,
-      ac_human_pending: acHumanGaps,
-      ac_ci_pending: acCiGaps,
-    };
-    const absorbedCodes = new Set(Object.keys(codeAcIndexes).filter((code) => {
-      const covered = new Set(holdAcGroups.filter((g) => g.holdCodes.includes(code)).map((g) => g.acIndex));
-      return covered.size > 0 && codeAcIndexes[code].every((k) => covered.has(k));
-    }));
-    const CODE_LABEL = {
-      ledger_unconverged: 'ledger 未収束',
-      escalate: 'ESCALATE',
-      ac_agent_unsatisfied: 'AC 未達（エージェント）',
-      ac_human_pending: 'AC 未達（人手）',
-      ac_ci_pending: 'AC 未確定（CI）',
-    };
-    const holdCtx = {
-      escalateTotal,
-      escalateResolved,
-      uncheckedBlockingCount: ledgerUnconvergedItems.length,
-      unclearedCount: uncleared.length,
-      iterateStatus,
-      pr,
-      humanAcGaps: acHumanGaps,
-      observationalAcGaps: observationalGaps,
-      unreachableAcGaps: unreachableGaps,
-      ciVerify,
-      conflictAutoresolve,
-      securityReview,
-      redFacts,
-    };
-    let acGroupRowsEmitted = false;
-    for (const hr of holdReasons) {
-      if (!acGroupRowsEmitted && holdAcGroups.some((g) => g.holdCodes.includes(hr && hr.code))) {
-        acGroupRowsEmitted = true;
-        for (const g of holdAcGroups) {
-          const reason = `${g.label} — ${g.holdCodes.map((c) => CODE_LABEL[c]).join('・')} を 1 行にまとめた（内訳: ${g.holdCodes.join(' / ')}）`;
-          const current = g.holdCodes.map((c) => {
-            if (c === 'ledger_unconverged') return `未 checked blocking ${g.blocking.length} 件`;
-            if (c === 'escalate') return `ESCALATE ${g.escalate.length} 件中 ${g.escalate.filter((it) => isResolved(it)).length} 件は fix 後 tree で解消確認済み`;
-            return 'AC 判定 satisfied:false';
-          }).join('・');
-          // まとめた行の区分は内訳の code の区分を重複なく並べる
-          const remedy = [...new Set(g.holdCodes.map((c) => holdReasonDisplay(c, holdCtx).remedy))].join('・');
-          lines.push(`| ${reason} | ${remedy} | ${current} | ${g.actions.join('・')}（下表 ${g.label} 行） |`);
-        }
-      }
-      if (absorbedCodes.has(hr && hr.code)) continue;
-      const { current, action, remedy } = holdReasonDisplay(hr && hr.code, holdCtx);
-      lines.push(`| ${mdCell(hr && hr.reason)} | ${remedy} | ${current} | ${action} |`);
-    }
+    for (const row of holdRows) lines.push(`| ${row.reason} | ${row.remedy} | ${row.current} | ${row.action} |`);
   } else if (mergeTier === 'HOLD') {
     // fail-safe フォールバック: holdReasons が null/空でも従来どおり mergeTierReasons を列挙する。
     lines.push('**Merge tier 理由**:');
@@ -1102,18 +1139,13 @@ export function buildDevflowSummaryBody({
 
   // 6c. 人間側 follow-up（issue #793）。pr-iterate が worktree の外を指すとして fix から外した指摘。
   // 空なら 1 行も追加しない（既存サマリーとの byte 一致を保つ）。
-  const followups = Array.isArray(humanFollowups) ? humanFollowups.filter((f) => f != null) : [];
+  const followups = preMergeOf('followup').map((it) => it.followup);
   if (followups.length > 0) {
-    const SEV_LABEL_FOLLOWUP = { 'critical': '🔴 critical', 'major': '🟠 major', 'minor': '🟡 minor' };
     lines.push('');
     lines.push(`### 👤 人間側 follow-up（worktree の外を指す指摘 — 自動修正の対象外・${followups.length} 件）`);
     lines.push('');
     followups.forEach((f, i) => {
-      const sev = SEV_LABEL_FOLLOWUP[f.severity] ?? String(f.severity ?? '不明');
-      const loc = (f.file != null && f.file !== '')
-        ? (f.line != null ? `\`${f.file}:${f.line}\`` : `\`${f.file}\``)
-        : '場所指定なし';
-      lines.push(`${i + 1}. ${sev} — ${loc}`);
+      lines.push(`${i + 1}. ${followupHead(f)}`);
       lines.push(`   - 指摘: ${mdCell(f.description)}`);
       if (f.suggestion != null && f.suggestion !== '') {
         lines.push(`   - 提案: ${mdCell(f.suggestion)}`);

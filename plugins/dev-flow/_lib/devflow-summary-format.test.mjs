@@ -1,10 +1,19 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { mdCell } from './md-cell.mjs';
-import { buildDevflowSummaryBody } from './devflow-summary-format.mjs';
+import { buildDevflowSummaryBody as buildSummaryBody, PR_BODY_STALE_NOTE } from './devflow-summary-format.mjs';
 import { classifyMergeTier, seedSecurityLedger, reconcileDanger, partitionUncheckedBlocking, HOLD_REASON_CODES } from './merge-tier.mjs';
 
 globalThis.mdCell = mdCell;
+
+// このファイルのテストが組んだ本文を全部記録する。末尾のテスト（issue #1406 AC-2）が、記録した本文のすべてに
+// 「節に merge 前に人がやることが出るなら判断カードは『なし』でない」をかける
+const SEEN_BODIES = [];
+function buildDevflowSummaryBody(input) {
+  const body = buildSummaryBody(input);
+  SEEN_BODIES.push(body);
+  return body;
+}
 
 // ─── 共通テストデータ ───────────────────────────────────────────────────────────
 
@@ -3533,5 +3542,137 @@ test('issue #1359 AC-2: HOLD_REASON_CODES の全 code について HOLD の表�
     assert.ok(row != null, `${code}: HOLD の表に行がある`);
     const remedy = row.split(' | ')[1];
     assert.ok(REMEDIES.includes(remedy), `${code}: 区分「${remedy}」は 3 値のどれか`);
+  }
+});
+
+// ─── issue #1406: merge 前に人がやることの一覧（判断カードと各節を同じ一覧から描く） ───
+
+// 機械の確認が 5 項目とも ✅ で、ほかの出どころも空の入力（判断カードは「なし」）
+const CLEAN_1406 = () => ({ ...BASE_INPUT, acResults: VERIFIED_AC, blockingItems: cleanSec1359() });
+const CLOSES_REASON_1406 = 'PR body に Closes 行なし';
+const CLOSES_ACTION_1406 = '`gh pr edit 42 --body-file <本文ファイル>` で Closes 行を含む本文を再投入する';
+const FOLLOWUP_1406 = { severity: 'major', topic: 'out', file: 'docs/outside.md', line: 3, description: 'worktree の外の設定が要る', suggestion: '人間が足す' };
+const REVIEW_POINT_1406 = '追加した直後は一覧に名前が並ばない（変更前は即時に表示）';
+const CI_CHECK_1406 = 'マージ前: PR の CI（`full-ci` ラベルで走る build / docker-build / 全 unit テスト等）の結果を確認する — ci の AC はローカル実行で判定済みで、run は check の結果を待っていない';
+const MIXED_QUESTION_1406 = (n) => `**あなたが決めること**: 下の「あなたが確かめること」の ${n} 項目を確かめたうえで、この diff を merge してよいか`;
+
+// 出どころを 1 つだけ持つ入力。card: 判断カードに出る行、section: その項目が出る節の行（節を持つ出どころだけ）、
+// tally: 機械の確認の件数（機械の確認を試す入力だけ 1 項目を ✅ 以外にする）
+const SOURCES_1406 = [
+  {
+    name: '機械の確認の ✅ 以外',
+    input: { testGreen: null },
+    card: '- ⚠️ テスト: 結果が分からない — CI の test 結果か手元の実行で確かめる',
+    tally: '✅ 確認済み 4 / ⚠️ 未検証 1',
+  },
+  { name: 'PR 本文の作り直しの失敗', input: { prBodySynced: false }, card: `- ${PR_BODY_STALE_NOTE}` },
+  {
+    name: 'HOLD の表で対応が「不要」以外の行',
+    input: {
+      mergeTier: 'HOLD',
+      mergeTierReasons: [CLOSES_REASON_1406],
+      holdReasons: [{ code: 'pr_closes_missing', reason: CLOSES_REASON_1406, kind: 'deterministic_recheck' }],
+      holdKind: 'deterministic_recheck',
+    },
+    card: `- 🔶 HOLD の理由「${CLOSES_REASON_1406}」: ${CLOSES_ACTION_1406}`,
+    section: `| ${CLOSES_REASON_1406} | PR を直す | PR body に Closes 行が無い（merge しても issue が自動 close されない） | ${CLOSES_ACTION_1406} |`,
+  },
+  {
+    name: 'humanFollowups',
+    input: { humanFollowups: [FOLLOWUP_1406] },
+    card: '- 👤 人間側 follow-up 1: 🟠 major — `docs/outside.md:3`（詳細は下の「人間側 follow-up」）',
+    section: '1. 🟠 major — `docs/outside.md:3`',
+  },
+  {
+    name: 'localVerify.status === passed のマージ前の CI 確認',
+    input: { localVerify: { status: 'passed', command: 'pnpm test:int', label: 'full-ci' } },
+    card: `- ⚠️ ${CI_CHECK_1406}`,
+    section: `2. ${CI_CHECK_1406}`,
+  },
+  { name: 'review_points', input: { reviewPoints: [REVIEW_POINT_1406] }, card: `- 👀 人間に見てほしい点: ${REVIEW_POINT_1406}` },
+];
+
+test('issue #1406: 出どころが全部空なら判断カードは「なし」（出どころごとの入力の土台）', () => {
+  assert.deepEqual(card1359(buildDevflowSummaryBody(CLEAN_1406())).checks, ['なし']);
+});
+
+for (const src of SOURCES_1406) {
+  test(`issue #1406 AC-1: 出どころが ${src.name} だけの入力で、その項目が判断カードに出る${src.section ? '（該当する節にも出る）' : ''}`, () => {
+    const body = buildDevflowSummaryBody({ ...CLEAN_1406(), ...src.input });
+    const card = card1359(body);
+    assert.equal(card.count, COUNT_1359(src.tally ?? '✅ 確認済み 5'), 'ほかの出どころ（機械の確認）は空');
+    assert.deepEqual(card.checks, [src.card]);
+    if (src.section) {
+      const lines = body.split('\n');
+      assert.ok(lines.indexOf(src.section) > card.tableIdx, `節に「${src.section}」の行が無い:\n${body}`);
+    }
+  });
+}
+
+test('issue #1406 AC-1: review_points は 1 項目 1 行で出し、空白だけの項目・文字列でない項目は出さない', () => {
+  const body = buildDevflowSummaryBody({ ...CLEAN_1406(), reviewPoints: ['一覧の並び順を確かめる', '  ', null, '改行を\n含む点'] });
+  assert.deepEqual(card1359(body).checks, ['- 👀 人間に見てほしい点: 一覧の並び順を確かめる', '- 👀 人間に見てほしい点: 改行を 含む点']);
+});
+
+test('issue #1406 AC-1: HOLD の表で対応が「不要」の行は判断カードに出さず、表には残す', () => {
+  const esc = { id: 'ESC-1', text: '要判断', dimension: 'design', severity: 'major', source: 'escalate', escalate: true, checked: false, final_resolution: 'resolved', final_evidence: 'fix 後に解消' };
+  const body = buildDevflowSummaryBody({
+    ...CLEAN_1406(),
+    mergeTier: 'HOLD',
+    mergeTierReasons: ['ESCALATE 1 件', CLOSES_REASON_1406],
+    advisoryItems: [esc],
+    holdReasons: [
+      { code: 'escalate', reason: 'ESCALATE 1 件', kind: 'human_judgment' },
+      { code: 'pr_closes_missing', reason: CLOSES_REASON_1406, kind: 'deterministic_recheck' },
+    ],
+    holdKind: 'human_judgment',
+  });
+  const row = body.split('\n').find((l) => l.startsWith('| ESCALATE 1 件 |'));
+  assert.ok(row != null && row.endsWith('| 不要（マージ可否の判断のみ） |'), `表に「不要」の行が無い:\n${body}`);
+  const checks = card1359(body).checks;
+  assert.equal(checks.length, 1, checks.join('\n'));
+  assert.ok(checks[0].includes(CLOSES_REASON_1406) && !checks.some((l) => l.includes('ESCALATE 1 件')), checks.join('\n'));
+});
+
+test('issue #1406 AC-3: HOLD でない run で機械の確認以外の項目があるとき、問いを「5 項目とも ✅」の文にせず、カードの項目を確かめたうえで merge してよいかを問う', () => {
+  const nonHold = SOURCES_1406.filter((s) => s.tally == null && s.input.mergeTier !== 'HOLD');
+  assert.equal(nonHold.length, 4);
+  for (const src of nonHold) {
+    const question = card1359(buildDevflowSummaryBody({ ...CLEAN_1406(), ...src.input })).question;
+    assert.equal(question, MIXED_QUESTION_1406(1), src.name);
+  }
+  const mixed = card1359(buildDevflowSummaryBody({ ...CLEAN_1406(), testGreen: null, reviewPoints: [REVIEW_POINT_1406] }));
+  assert.equal(mixed.question, MIXED_QUESTION_1406(2), '機械の確認 1 項目 + review_points 1 項目');
+  assert.equal(mixed.checks.length, 2);
+});
+
+test('issue #1406 AC-3: HOLD の run の問いは、一覧に項目があっても今のまま', () => {
+  const hold = SOURCES_1406.find((s) => s.input.mergeTier === 'HOLD');
+  const body = buildDevflowSummaryBody({ ...CLEAN_1406(), ...hold.input, reviewPoints: [REVIEW_POINT_1406] });
+  assert.equal(card1359(body).question, '**あなたが決めること**: 下の「HOLD になった理由と現状」を解消してから merge するか');
+});
+
+// 本文の節に出ている merge 前に人がやること: HOLD の表で対応が「不要」以外の行・人間側 follow-up の節・あなたがやること のマージ前の行
+function preMergeInSections1406(body) {
+  const lines = body.split('\n');
+  const t = lines.indexOf('| 理由 | 区分 | 現状 | 対応 |');
+  const holdRows = [];
+  for (let i = t + 2; t >= 0 && i < lines.length && lines[i].startsWith('| '); i++) holdRows.push(lines[i]);
+  return [
+    ...holdRows.filter((row) => !row.split(' | ').at(-1).startsWith('不要')),
+    ...lines.filter((l) => l.startsWith('### 👤 人間側 follow-up')),
+    ...lines.filter((l) => /^\d+\. マージ前: /.test(l)),
+  ];
+}
+
+// このファイルの最後に置く（上のテストが組んだ本文を全部見る）
+test('issue #1406 AC-2: このファイルのどの入力でも、節に merge 前に人がやることが出るなら判断カードは「なし」でない', () => {
+  assert.ok(SEEN_BODIES.length >= 200, `このファイルの入力を記録できていない（${SEEN_BODIES.length} 件。このテストだけを選んで実行していないか）`);
+  const withItems = SEEN_BODIES.filter((body) => preMergeInSections1406(body).length > 0);
+  for (const kind of ['| ', '### 👤', 'マージ前: ']) {
+    assert.ok(withItems.some((body) => preMergeInSections1406(body).some((l) => l.includes(kind))), `「${kind}」の項目を持つ入力がこのファイルに無い`);
+  }
+  for (const body of withItems) {
+    assert.notDeepEqual(card1359(body).checks, ['なし'], `節に ${preMergeInSections1406(body).join(' / ')} が出ているのに判断カードが「なし」:\n${body}`);
   }
 });
