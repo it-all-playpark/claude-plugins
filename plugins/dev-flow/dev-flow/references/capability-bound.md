@@ -146,7 +146,12 @@ report と比べて読む。
 - **sunset トリガ**: major モデルリリースごとの dry-run
 - **次のモデル世代での測り直し方**: 変える agent の frontmatter だけを新しい model・effort にして merge 済みの過去 run を同じ入力で
   回し直し、verdict と critical/major 指摘の再現・結果を返さずに打ち切られた spawn の数・所要とコストを比べる。品質を落とさずに
-  所要かコストが下がるなら frontmatter を変える issue を立てる。品質ゲート agent に `opts.model` を渡さない不変条件は変えない
+  所要かコストが下がるなら frontmatter を変える issue を立てる。品質ゲート agent に `opts.model` を渡さない不変条件は変えない。
+  green-fix の override は frontmatter に無いので別に測る。override の別名（`'sonnet'`）が解決された ID の変化を dev-flow-health が
+  起票したら（`model_changes` の `dev-flow:dev-implementer` のうち、transcript の prompt が green-fix のもの）、green-fix が入った
+  merge 済みの過去 run の green-fix を同じ失敗の入力（同じ commit・同じ失敗したテストの出力）から新しい ID で回し直し、前の ID の
+  結果と比べる — green-fix の後に Validate が green になるか・Evaluate のテスト弱体化監査で弱体化と判定されないか・結果を返さずに
+  打ち切られた spawn の数・所要とコスト。劣化しなければ override の別名を保ち、劣化するなら別名を変える issue を立てる
 
 ### security-reviewer の cwd
 
@@ -173,6 +178,9 @@ report と比べて読む。
   同じ入力で回し、下の指標が劣化しないことを確かめてから削る。contract / incentive-structural / blast-radius の指示は外さない
   - `agents/evaluator.md`: merge 済みの過去 run の Evaluate を replay し、verdict と critical/major 指摘の再現が劣化しないこと
   - `agents/pr-reviewer.md`: 過去 PR の review を replay し、review の判定と critical/major 指摘の再現が劣化しないこと
-  - `agents/dev-implementer.md`: merge 済みの過去 issue を同じ base commit から Implement 〜 Evaluate まで回し直し、実装を
+  - `agents/dev-implementer.md`: `dev-flow:dev-implementer` の新しい ID がどの別名から解決されたものかで従う項目を分ける
+    （transcript の prompt が Validate の green-fix のものなら override、それ以外は frontmatter）。frontmatter の `model:` の別名から
+    来た ID の変化は、merge 済みの過去 issue を同じ base commit から Implement 〜 Evaluate まで回し直し、実装を
     受け取る側の結果が劣化しないこと — evaluator の verdict、Evaluate の差し戻しの回数、Validate が green-fix なしで green に
-    なるか（evaluator の指示は変えずに回す。implementer 自身の報告は指標にしない）
+    なるか（evaluator の指示は変えずに回す。implementer 自身の報告は指標にしない）。green-fix の override の別名から来た ID の
+    変化は節を測り直さず、「subagent の model・effort の割り当て」の測り直し方の green-fix の override の手順に従う

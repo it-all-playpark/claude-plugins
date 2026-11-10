@@ -191,6 +191,29 @@ test('(j) pipeline.md は model・effort の選定根拠を書かず、model の
   assert.ok(pipelineSrc.includes('`capability-bound.md`'), 'pipeline.md が capability-bound.md を指していない');
 });
 
+// green-fix の override（opts.model の別名）は frontmatter に無く、「frontmatter だけを変えて回し直す」手順では測れない。
+// 別名が解決された ID が変わったときに何を回し、何を比べて別名を保つか変えるかを、同じ項目の測り直し方に持つ
+const MODEL_ITEM = 'subagent の model・effort の割り当て';
+const OVERRIDE_REMEASURE = ['green-fix の override', "`'sonnet'`", 'dev-flow-health', '`model_changes`', 'merge 済みの過去 run の green-fix', '同じ失敗の入力', '新しい ID',
+  'Validate が green になるか', 'テスト弱体化監査', '打ち切られた spawn の数', '所要とコスト', '別名を保ち', '別名を変える issue'];
+
+function overrideRemeasureErrors(items) {
+  const how = items.find(({ title }) => title === MODEL_ITEM)?.fields[REMEASURE_FIELD] ?? '';
+  const at = how.indexOf('green-fix の override');
+  const seg = at < 0 ? '' : how.slice(at);
+  return OVERRIDE_REMEASURE.filter((s) => !seg.includes(s)).map((s) => `green-fix の override の測り直し方に「${s}」が無い`);
+}
+
+test('(j2) model・effort の測り直し方は、green-fix の override の別名が解決された ID の変化での回し直しと指標を持つ', () => {
+  assert.deepEqual(overrideRemeasureErrors(capItems), []);
+  const item = capItems.find(({ title }) => title === MODEL_ITEM);
+  const how = item.fields[REMEASURE_FIELD];
+  const withHow = (h) => capItems.map((it) => (it === item ? { ...it, fields: { ...it.fields, [REMEASURE_FIELD]: h } } : it));
+  // frontmatter の回し直しの文だけでは満たさない（override の手順より前の語を数えない）
+  assert.equal(overrideRemeasureErrors(withHow(how.slice(0, how.indexOf('green-fix の override')))).length, OVERRIDE_REMEASURE.length);
+  assert.deepEqual(overrideRemeasureErrors(withHow(how.replace('テスト弱体化監査', '監査'))), ['green-fix の override の測り直し方に「テスト弱体化監査」が無い']);
+});
+
 // exec-proxy.md は proxy ごとの失敗ポリシー表だけを持つ。label は workflow に実在し、agent の担当・tools・maxTurns は書き写さない
 const EXEC_PROXY_MAX_BYTES = 30 * 1024;
 const EXEC_PROXY_HEADER = '| proxy と label | 失敗の検出 | ポリシー | 理由 |';
@@ -486,6 +509,9 @@ test('(v) capability-bound と宣言した節は capability-bound.md の agent �
 // dev-implementer は判定を出さないので、指標は実装を受け取る側の結果（evaluator の verdict・差し戻しの回数・Validate の green）
 const REMEASURE_FIELD = '次のモデル世代での測り直し方';
 const IMPLEMENTER_METRICS = ['evaluator の verdict', '差し戻しの回数', 'Validate', 'green'];
+// dev-flow:dev-implementer の ID は frontmatter の別名と green-fix の override の別名の 2 つから解決される。override から来た
+// ID の変化は節の測り直しではなく、model・effort の項目（MODEL_ITEM）の override の手順に回す
+const IMPLEMENTER_ID_ORIGIN = ['`dev-flow:dev-implementer` の新しい ID', 'frontmatter の `model:` の別名から', 'green-fix の override の別名から', `「${MODEL_ITEM}」の測り直し方`];
 
 function remeasureByAgent(items) {
   const how = items.find(({ title }) => title === AGENT_CAP_ITEM)?.fields[REMEASURE_FIELD] ?? '';
@@ -510,6 +536,9 @@ function remeasureErrors(items) {
   for (const m of IMPLEMENTER_METRICS) {
     if (!(perAgent['dev-implementer.md'] ?? '').includes(m)) errors.push(`dev-implementer.md の測り直し方に指標「${m}」が無い`);
   }
+  for (const s of IMPLEMENTER_ID_ORIGIN) {
+    if (!(perAgent['dev-implementer.md'] ?? '').includes(s)) errors.push(`dev-implementer.md の測り直し方に、ID の出どころの振り分け「${s}」が無い`);
+  }
   return errors;
 }
 
@@ -523,6 +552,7 @@ test('(x) agent 指示の測り直し方は、節を挙げた agent ごとに mo
   assert.ok(remeasureErrors(withHow(dropped)).includes('測り直し方に dev-implementer.md の項目が無い'));
   assert.ok(remeasureErrors(withHow(how.replace('差し戻しの回数', '所要'))).includes('dev-implementer.md の測り直し方に指標「差し戻しの回数」が無い'));
   assert.ok(remeasureErrors(withHow(how.replace('`model_changes`', 'モデル更新'))).includes('測り直し方の前置きに「`model_changes`」が無い'));
+  assert.ok(remeasureErrors(withHow(how.replace('green-fix の override の別名から', 'それ以外から'))).includes('dev-implementer.md の測り直し方に、ID の出どころの振り分け「green-fix の override の別名から」が無い'));
 });
 
 const EXPECTED_PATHS = [
