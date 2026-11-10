@@ -481,6 +481,50 @@ test('(v) capability-bound と宣言した節は capability-bound.md の agent �
   assert.notDeepEqual(listedCapabilitySections(capItems), declaredCapabilitySections(added));
 });
 
+// 節を挙げた agent のどれの model ID が変わっても、その agent の節を何で測り直すかが決まっているようにする。
+// 「測り直し方」は agent ごとの項目（"- `agents/<file>`: ..."）を持ち、合図は dev-flow-health の model_changes。
+// dev-implementer は判定を出さないので、指標は実装を受け取る側の結果（evaluator の verdict・差し戻しの回数・Validate の green）
+const REMEASURE_FIELD = '次のモデル世代での測り直し方';
+const IMPLEMENTER_METRICS = ['evaluator の verdict', '差し戻しの回数', 'Validate', 'green'];
+
+function remeasureByAgent(items) {
+  const how = items.find(({ title }) => title === AGENT_CAP_ITEM)?.fields[REMEASURE_FIELD] ?? '';
+  const [lead, ...rest] = how.split(/ - `agents\/([\w-]+\.md)`: /);
+  const perAgent = {};
+  for (let i = 0; i < rest.length; i += 2) perAgent[rest[i]] = rest[i + 1];
+  return { lead, perAgent };
+}
+
+function remeasureErrors(items) {
+  const { lead, perAgent } = remeasureByAgent(items);
+  const errors = [];
+  for (const s of ['dev-flow-health', '`model_changes`', 'capability-bound と宣言した段落・項目を外した agent', 'contract / incentive-structural / blast-radius の指示は外さない']) {
+    if (!lead.includes(s)) errors.push(`測り直し方の前置きに「${s}」が無い`);
+  }
+  const listed = [...new Set(listedCapabilitySections(items).map((s) => s.split('「')[0]))];
+  for (const file of listed) {
+    const seg = perAgent[file];
+    if (!seg) errors.push(`測り直し方に ${file} の項目が無い`);
+    else if (!seg.includes('劣化しない')) errors.push(`${file} の測り直し方が、劣化しないことを見る指標を書いていない`);
+  }
+  for (const m of IMPLEMENTER_METRICS) {
+    if (!(perAgent['dev-implementer.md'] ?? '').includes(m)) errors.push(`dev-implementer.md の測り直し方に指標「${m}」が無い`);
+  }
+  return errors;
+}
+
+test('(x) agent 指示の測り直し方は、節を挙げた agent ごとに model_changes を合図にした手順と指標を持つ', () => {
+  assert.deepEqual(remeasureErrors(capItems), []);
+  const item = capItems.find(({ title }) => title === AGENT_CAP_ITEM);
+  const withHow = (how) => capItems.map((it) => (it === item ? { ...it, fields: { ...it.fields, [REMEASURE_FIELD]: how } } : it));
+  const how = item.fields[REMEASURE_FIELD];
+  const { perAgent } = remeasureByAgent(capItems);
+  const dropped = how.replace(` - \`agents/dev-implementer.md\`: ${perAgent['dev-implementer.md']}`, '');
+  assert.ok(remeasureErrors(withHow(dropped)).includes('測り直し方に dev-implementer.md の項目が無い'));
+  assert.ok(remeasureErrors(withHow(how.replace('差し戻しの回数', '所要'))).includes('dev-implementer.md の測り直し方に指標「差し戻しの回数」が無い'));
+  assert.ok(remeasureErrors(withHow(how.replace('`model_changes`', 'モデル更新'))).includes('測り直し方の前置きに「`model_changes`」が無い'));
+});
+
 const EXPECTED_PATHS = [
   'plugins/dev-flow/.claude/workflows/**',
   'plugins/dev-flow/agents/**',
