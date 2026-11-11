@@ -245,6 +245,25 @@ export const VISUAL_SNAPSHOTS_COMMIT = {
 function visualSnapshotsPngSpecs(paths) {
   return paths.map((p) => visualSnapshotsShellArg(`:(top,glob)${String(p).replace(/\/+$/, '')}/**/*.png`)).join(' ')
 }
+// git add・git commit・git restore は合致するファイルが 1 つも無い pathspec があると失敗する（PNG の無い path を 1 つ含むだけで
+// commit も取り消しもできない）。commit・取り消しの pathspec は、撮り直しで PNG が変わった path だけに絞る。
+// 変わった PNG の一覧を取る read-only exec-proxy の prompt（応答は VISUAL_SNAPSHOTS_LINES。ls-files は合致しない pathspec で失敗しない）。
+export function visualSnapshotsChangedPrompt({ wt, paths }) {
+  return `次のコマンドを **先頭トークンが git の bare 単文** で 1 回だけ実行し、stdout の各行を配列 lines に一字一句そのまま（要約・整形・並べ替え・件数制限をせず）入れて {"ok": true, "lines": [...]} で返せ`
+    + `（stdout が空なら {"ok": true, "lines": []}。exit 非0・コマンド実行不能なら ok:false/error で返せ。失敗時に ok:true を生成してはならない。`
+    + `cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止。-C で worktree を渡しているため cd は不要）:\n`
+    + `git -C ${wt} -c core.quotePath=false ls-files --modified --deleted --others --exclude-standard -- ${visualSnapshotsPngSpecs(paths)}`
+}
+// 宣言の paths のうち、一覧（visualSnapshotsChangedPrompt の応答）に PNG がある path。一覧が取れなければ null。
+// 一覧のファイル名は path の振り分けにだけ使い、コマンドには入れない（pathspec は宣言の paths から作る）。
+export function visualSnapshotsChangedPaths(paths, list) {
+  if (list == null || list.ok !== true || !Array.isArray(list.lines)) return null
+  const files = list.lines.filter((l) => typeof l === 'string').map((l) => l.replace(/\r$/, '').replace(/^"/, ''))
+  return paths.filter((p) => {
+    const dir = `${String(p).replace(/^(\.\/)+/, '').replace(/\/+$/, '')}/`
+    return files.some((f) => f.startsWith(dir))
+  })
+}
 export function visualSnapshotsCommitPrompt({ wt, pr, headRef, paths, pushSteps }) {
   const specs = visualSnapshotsPngSpecs(paths)
   return `## Objective\n撮り直した基準画像の PNG を PR #${pr} のブランチに commit・push し、commit の前後の head sha を返す。\n\n`
@@ -254,7 +273,7 @@ export function visualSnapshotsCommitPrompt({ wt, pr, headRef, paths, pushSteps 
     + `3. \`git commit -m "test(pr-${pr}): ${VISUAL_SNAPSHOTS_COMMIT_SUBJECT}" -- ${specs}\` を実行する。exit 0 なら committed:true。`
     + `それ以外は committed:false, pushed:false として push せずに手順 6 へ進む（原因調査・再試行をしない）。\n`
     + `4. push する。${pushSteps}失敗・timeout・running でも手順 5 へ進む。\n`
-    + `5. \`git -C ${wt} rev-list "origin/${headRef}"..HEAD --count\` を実行する。警告行を除いた出力が 0 なら pushed:true。コマンド失敗または非数値出力なら pushed:false。\n`
+    + `5. \`git -C ${wt} rev-list ${visualSnapshotsShellArg(`origin/${headRef}..HEAD`)} --count\` を実行する。警告行を除いた出力が 0 なら pushed:true。コマンド失敗または非数値出力なら pushed:false。\n`
     + `6. \`git -C ${wt} rev-parse HEAD\` を実行し、stdout の 40 桁 hex をそのまま head_sha とする（失敗時は空文字）。\n`
     + `7. { "head_before": <1の結果>, "committed": <3の結果>, "pushed": <5の結果>, "head_sha": <6の結果>, "push_result": <4の push_result。手順 4 で push しなければキーごと省く> } を返す。\n\n`
     + `## Output format\n{ "head_before": string, "committed": boolean, "pushed": boolean, "head_sha": string, "push_result": object }\nprose 禁止。JSON のみ返せ。\n\n`

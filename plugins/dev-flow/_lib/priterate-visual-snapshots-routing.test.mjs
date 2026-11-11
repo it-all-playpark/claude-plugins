@@ -139,6 +139,7 @@ async function run({ captured = true, caller = 'dev-flow', decl = declaration(),
     real[`visual-snapshots-start#${n}`] = execJson;
     real[`visual-snapshots-stop#${n}`] = execJson;
     for (let k = 1; k <= 3; k++) real[`visual-snapshots-wait#${n}.${k}`] = execJson;
+    real[`visual-snapshots-changed#${n}`] = execLines;
     real[`visual-snapshots-commit#${n}`] = commitSnapshots();
     real[`visual-snapshots-revert#${n}`] = revertSnapshots;
     // fix の後の commit 保証: fix の stub が commit・push 済みなので clean。head は実際の HEAD
@@ -211,6 +212,41 @@ test('[priterate-visual-snapshots] (F) pr-fixer の修正の後: 次の review �
   assert.equal(r.result.fixes_applied, 2);
   // 一覧は最終の head の PR の差分から作る。最後に撮影した tree は最終の tree なので、撮り直せていない旨は出さない
   assert.deepEqual(r.result.visual_snapshots, { changed: [PNG], notes: [] });
+}, TIMEOUT);
+
+test('[priterate-visual-snapshots] (P) 宣言の paths の一部に PNG が無くても、撮り直しの commit・push と取り消しは PNG の変わった path だけで行う', async () => {
+  const decl = { ...declaration(), paths: ['tests/visual', 'tests/none'] };
+  const fixToV3 = ({ commitSource }) => ({
+    'review#1': BLOCKING,
+    'fix#1': () => { commitSource('screen v3\n', 'fix: screen v3'); return { applied: true, files: ['src/x.ts'], summary: 'fixed', deferred_security_ids: [] }; },
+  });
+  const r = await run({ decl, overrides: fixToV3 });
+  assert.equal(r.result.status, 'lgtm');
+  assert.deepEqual(snapshotCommits(r.labels), ['visual-snapshots-commit#2']);
+  assert.ok(r.at('visual-snapshots-stop#1') < r.at('visual-snapshots-changed#2') && r.at('visual-snapshots-changed#2') < r.at('visual-snapshots-commit#2'), r.labels.join(', '));
+  const commitPrompt = r.prompt('visual-snapshots-commit#2');
+  assert.ok(!commitPrompt.includes('tests/none'), commitPrompt);
+  // PR の head branch 名は単一引用符で 1 引数に閉じる（ブランチ名の $(…) をシェルに展開させない）
+  assert.ok(commitPrompt.includes(`rev-list 'origin/feature/x..HEAD' --count`), commitPrompt);
+  assertSnapshotCommit(r, r.head());
+  assert.equal(read(r.wt, PNG), 'screen v3\n');
+  assert.deepEqual(r.result.visual_snapshots, { changed: [PNG], notes: [] });
+
+  // push に失敗した commit の取り消しも、PNG の無い path に阻まれずに撮り直しの前へ戻す
+  let fixSha = null;
+  const x = await run({
+    decl,
+    overrides: (tools) => ({
+      ...fixToV3(tools),
+      'fix#1': () => { fixSha = tools.commitSource('screen v3\n', 'fix: screen v3'); return { applied: true, files: ['src/x.ts'], summary: 'fixed', deferred_security_ids: [] }; },
+      'visual-snapshots-commit#2': tools.commitSnapshots({ pushed: false }),
+    }),
+  });
+  assert.ok(x.labels.includes('visual-snapshots-revert#2'), x.labels.join(', '));
+  assert.ok(!x.prompt('visual-snapshots-revert#2').includes('tests/none'), x.prompt('visual-snapshots-revert#2'));
+  assert.equal(x.head(), fixSha);
+  assert.equal(read(x.wt, PNG), 'screen v2\n');
+  assert.equal(git(x.wt, 'status', '--porcelain'), '');
 }, TIMEOUT);
 
 test('[priterate-visual-snapshots] (C) conflict の自動解決の後: 次の review の前に撮り直して push し、review には merge commit に加えて撮り直しの commit も読ませる', async () => {

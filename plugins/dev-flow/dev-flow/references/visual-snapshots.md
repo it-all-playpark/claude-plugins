@@ -75,5 +75,5 @@ phase 全体の地図は `pipeline.md`、不変条件は `.claude/rules/dev-flow
 - shape: `withoutVisualSnapshotPngs`（`_lib/diff-triage.mjs`）
 - PR 本文: `buildPrBody`・`visualSnapshotsAfterIterate`（`_lib/pr-artifacts.mjs`）。終了レポート: `buildTerminalSummaryBody`（`_lib/pr-comment-format.mjs`）
 - label: `diff-hash-snapshot#<i>`・`visual-snapshots-start#<n>`・`visual-snapshots-wait#<n>.<k>`・`visual-snapshots-stop#<n>`・
-  `diff-hash-snapshot-after#<i>`・`visual-snapshots-list`。pr-iterate だけ: `visual-snapshots-commit#<i>`・`visual-snapshots-revert#<i>`・
+  `diff-hash-snapshot-after#<i>`・`visual-snapshots-list`。pr-iterate だけ: `visual-snapshots-changed#<i>`・`visual-snapshots-commit#<i>`・`visual-snapshots-revert#<i>`・
   `diff-hash-snapshot-reverted#<i>`・`diff-hash-snapshot-final`。finalize だけ: `visual-snapshots-body-sync`
