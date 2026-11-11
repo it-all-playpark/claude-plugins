@@ -1,7 +1,9 @@
 # 基準画像の撮影（visual_snapshots）
 
 画面を持つ repo が `"dev-flow".visual_snapshots` を宣言すると、dev-flow は Evaluate の各評価の前に基準画像を撮り直し、変わった PNG を
-PR に入れる。人は PR の Files changed の画像差分（2-up / Swipe / Onion skin）で画面の変化を見比べる。宣言の無い repo では何もしない。
+PR に入れる。pr-iterate（dev-flow からの nested 起動・`/pr-iterate <pr>` の単体起動）は、tree が最後に撮影した tree から変わったら
+次の review の前に撮り直し、変わった PNG を同じ PR に push する。人は PR の Files changed の画像差分（2-up / Swipe / Onion skin）で
+画面の変化を見比べる。宣言の無い repo では何もしない。
 phase 全体の地図は `pipeline.md`、不変条件は `.claude/rules/dev-flow.md`。本文のパスは `plugins/dev-flow/` 相対。
 
 ## 宣言
@@ -18,6 +20,10 @@ phase 全体の地図は `pipeline.md`、不変条件は `.claude/rules/dev-flow
   worktree（PR head）の設定ファイルは読まない — 実装が書き換えた宣言で、撮影コマンドと「変えてよい場所」を PR が選べないように
 - 検証は `devflow_visual_snapshots_of`。不正な宣言（`paths` が空・`/` 始まり・`..` を含む等）は `dev-flow-prerun` が worktree を作らずに
   `ok:false` で止める（黙って未設定にすると、撮影されないまま画面の変わる PR が出続ける）
+- pr-iterate への受け渡しは `security_reviewer` と同じ道: 単体起動は `pr-iterate-prerun` が同じ `devflow_visual_snapshots` で読んで
+  出力の `visual_snapshots` に載せ（不正な宣言は `ok:false`）、wrapper（`pr-iterate/SKILL.md`）が Workflow の引数にそのまま転記する。
+  nested 起動は `prIterateArgs()` が Setup で検証した宣言と、Evaluate が最後に撮影できた tree（`visual_snapshots_tree`。
+  最後の撮影が失敗した run は null）を渡す
 
 ## 判定
 
@@ -31,8 +37,19 @@ phase 全体の地図は `pipeline.md`、不変条件は `.claude/rules/dev-flow
   （追跡ファイルの変更・削除、新しいファイル、`paths` の下の PNG でないファイル）があれば、その撮影の結果を PNG ごとすべて捨てて
   worktree を command の前に戻す（実 index は書かない）。command は PR のコードなので、PNG 以外に書いたものを評価される tree と PR に入れない
 - **PR 本文**: 評価の後に、PR の差分（`origin/<base>` と評価した tree の間）で `paths` の下で変わった PNG の一覧を取り
-  （`reportVisualSnapshots`）、「画面の変化」にパスを並べる（`visualSnapshotsSection`）。変わった PNG も理由も無ければ節を出さない。
-  pr-iterate の fix の後は撮り直さず、PR 本文を作り直すときも PR 作成時の一覧を載せる
+  （`reportVisualSnapshots`）、「画面の変化」にパスを並べる（`visualSnapshotsSection`）。変わった PNG も理由も無ければ節を出さない
+- **pr-iterate**: 各 round の review の前に worktree の tree を取り、最後に撮影した tree と違えば（pr-fixer の修正・conflict の自動解消など
+  理由を問わない。単体起動の最初は撮影した tree が無いので必ず）、Evaluate と同じ `captureVisualSnapshots` で今の tree を撮影する。
+  変わった PNG があれば「画面の変化（撮り直し）」の commit として PR ブランチに push し（stage と commit は `paths` の下の PNG だけ）、
+  その round の review・CI 判定・security review は撮り直しの commit を含む head を対象にする（head 照合は今の仕組みのまま。conflict の
+  自動解消の直後の review には撮り直しの commit も読ませる）。review の後には撮り直さない — review を通した head と merge する head を
+  食い違わせない。撮り直しの commit は `fixes_applied` に数える（Final reconcile が最終 tree の test を取り直し、PR 本文を作り直す）
+- **最終の一覧**: pr-iterate は終わるとき（LGTM・上限到達など終わり方を問わない）に、最終の head の PR の差分（`origin/<base>` と最終の head の
+  間）で `paths` の下で変わった PNG の一覧を作り、返り値 `visual_snapshots` に載せる。最後に撮影できた tree が最終の tree と違えば
+  「最終の画面は撮り直せていない（PNG は前の tree のもの）」を 1 行足す（この時点では撮り直しも push もしない）。nested の run は
+  finalize が PR 本文を作り直すときにこの一覧を載せ、PR 作成時の一覧を再掲しない（`visualSnapshotsAfterIterate`）。head が変わらなくても
+  一覧か理由が PR 作成時と違う run（撮り直しの失敗等）は、本文の「画面の変化」だけを差し替える（`visual-snapshots-body-sync`。
+  失敗は fail-open）。単体起動は PR 本文を書き換えず、終了レポートの「画面の変化」に同じ一覧を出す
 
 ## 失敗の扱い
 
@@ -43,13 +60,20 @@ phase 全体の地図は `pipeline.md`、不変条件は `.claude/rules/dev-flow
 - 捨てた撮影の後始末は `local-verify` の supervisor が行う（stop・TERM でも走る）。戻し切れなかったとき・終了後の tree が撮影前と違うときは、
   その旨を理由に足す（残った変更は評価される diff と PR に見える）
 - 変わった PNG の一覧が取れなければ、その旨を「画面の変化」に出す
+- pr-iterate の撮り直しの commit・push の失敗も fail-open: その commit を取り消し、`paths` の下の PNG を撮り直しの前に戻して
+  （`git reset --soft` と `paths` の下の PNG だけの `git restore`。worktree のほかの変更に触れない）、理由を「画面の変化」に 1 行出して
+  review を続ける。失敗した tree も記録し、同じ tree で繰り返さない。pr-iterate の status・終わり方・merge tier は変えない
 
 ## コード
 
-- 宣言: `devflow_visual_snapshots`（`_shared/scripts/devflow-config.sh`）、`dev-flow/scripts/prerun.sh`、`normalizeVisualSnapshots`（`_lib/prerun-setup.mjs`）
-- 撮影: `captureVisualSnapshots`・`reportVisualSnapshots`（`.claude/workflows/dev-flow-evaluate.js`）、`_lib/visual-snapshots.mjs`、
-  `_shared/scripts/local-verify.sh`（`paths` のある宣言）
+- 宣言: `devflow_visual_snapshots`（`_shared/scripts/devflow-config.sh`）、`dev-flow/scripts/prerun.sh`、`_shared/scripts/pr-iterate-prerun.sh`、
+  `normalizeVisualSnapshots`（`_lib/prerun-setup.mjs`）
+- 撮影: `captureVisualSnapshots`・`reportVisualSnapshots`（`_lib/visual-snapshots.mjs`。`.claude/workflows/dev-flow-evaluate.js` と
+  `.claude/workflows/pr-iterate.js` が使う）、`_shared/scripts/local-verify.sh`（`paths` のある宣言）
+- pr-iterate の撮り直し: `recaptureVisualSnapshots`（`.claude/workflows/pr-iterate.js`）、`visualSnapshotsCommitPrompt`・
+  `visualSnapshotsRevertPrompt`（`_lib/visual-snapshots.mjs`）
 - shape: `withoutVisualSnapshotPngs`（`_lib/diff-triage.mjs`）
-- PR 本文: `buildPrBody`（`_lib/pr-artifacts.mjs`）
+- PR 本文: `buildPrBody`・`visualSnapshotsAfterIterate`（`_lib/pr-artifacts.mjs`）。終了レポート: `buildTerminalSummaryBody`（`_lib/pr-comment-format.mjs`）
 - label: `diff-hash-snapshot#<i>`・`visual-snapshots-start#<n>`・`visual-snapshots-wait#<n>.<k>`・`visual-snapshots-stop#<n>`・
-  `diff-hash-snapshot-after#<i>`・`visual-snapshots-list`
+  `diff-hash-snapshot-after#<i>`・`visual-snapshots-list`。pr-iterate だけ: `visual-snapshots-commit#<i>`・`visual-snapshots-revert#<i>`・
+  `diff-hash-snapshot-reverted#<i>`・`diff-hash-snapshot-final`。finalize だけ: `visual-snapshots-body-sync`

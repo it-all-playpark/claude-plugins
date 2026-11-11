@@ -609,7 +609,8 @@ export function porcelainVerdictResponse(lines, baseline = [], { exitCode = 0, m
  * 値ならそのまま、null なら null）。
  *
  * security-pr-head#n の既定の headRefOid は GitHub の PR head（最後に push された head）: args.nested.head_sha から始め、
- * pr-meta・commit-ensure#i の応答（override を含む）の head_sha と、自動解消した conflict-resolve#i の head_after で置き換える。
+ * pr-meta・commit-ensure#i の応答（override を含む）の head_sha と、自動解消した conflict-resolve#i の head_after、
+ * push まで済んだ visual-snapshots-commit#i の head_sha で置き換える。
  * 40 桁の sha でなければ SECURITY_SCOPE_DEFAULT_HEAD（workflow の shaNow も 40 桁でなく、照合しない）。
  *
  * @param {Record<string, unknown>} [overrides={}]
@@ -625,6 +626,8 @@ export function prIterateResponder(overrides = {}, rounds = null, { initialHead 
     const res = respond(callCtx);
     if (callCtx.label === 'pr-meta' || /^commit-ensure#\d+$/.test(callCtx.label)) prHead = fullSha(res?.head_sha);
     if (/^conflict-resolve#\d+$/.test(callCtx.label) && res?.result?.status === 'resolved') prHead = fullSha(res.result.head_after);
+    // 基準画像の撮り直しの commit を push した応答（issue #1412）も PR head を進める
+    if (/^visual-snapshots-commit#\d+$/.test(callCtx.label) && res?.committed === true && res?.pushed === true) prHead = fullSha(res.head_sha);
     return res;
   };
 }

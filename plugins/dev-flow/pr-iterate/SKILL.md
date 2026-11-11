@@ -30,7 +30,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 1. **prerun 実行**: launch dir（リポジトリルートか、その worktree）で Bash 1 コマンドとして
    `pr-iterate-prerun <PR>` を実行する（PR が cwd の repo と別なら `--repo owner/name` を付ける）。前置形
    （`cd X && ...` / `VAR=x ...` / `bash <path>` 等）は使わず、bare 名を先頭トークンにする。stdout の
-   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_reviewer, plugin_commit, pr_intent?, fix_direction?, error?}`）
+   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_reviewer, visual_snapshots, plugin_commit, pr_intent?, fix_direction?, error?}`）
    をそのまま保持する。
 
    `/pr-iterate <PR> --direction <file>` で起動されたら、prerun に `--direction <file>` を付ける（`<file>` は人が渡した
@@ -66,6 +66,9 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      `_shared/scripts/devflow-config.sh` で、user 設定の repo 別の節 → PR の base の `origin/<base>` の `skill-config.json` →
      `.claude/skill-config.json` → user 設定の順に読み（書き方は `dev-flow/SKILL.md`）、PR head（worktree）とメイン checkout の作業ツリーの設定は読まない。無ければ `"claude"`。
      security review の対象判定は prerun では取らない（workflow が reviewer に関わらず hook で縛った `security-codex-relay` で取る）
+   - 基準画像の撮影の宣言（`"dev-flow".visual_snapshots`）を、dev-flow と同じ `devflow_visual_snapshots`（`_shared/scripts/devflow-config.sh`）で
+     `security_reviewer` と同じ読み先から読んで検証し、`visual_snapshots` に載せる（宣言が無ければ null）。PR head（worktree）の設定は
+     読まない。不正な宣言は `ok:false`
    - 実行中の dev-flow plugin の commit（12 桁 hex）を `dev-flow-prerun` と同じ方法で決め、`plugin_commit` に載せる
      （決められなければ null）。journal entry の世代の記録専用
    - 同じ `gh pr view` で PR の title と body を取り、`pr_intent`（`{title, body, body_omitted}`）に載せる（`ok:false` では載せない）。
@@ -84,7 +87,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
    worktree なら不要）。別の worktree に入っている場合は先に `ExitWorktree`（worktree は keep）で launch dir へ
    戻ってから入る。
 
-3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`prior_summary`・`ci_wait_ceiling_seconds`・`security_reviewer`・`plugin_commit`・`pr_intent`・`fix_direction` の値は prerun 出力をそのまま転記し、加工・要約しない:
+3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`prior_summary`・`ci_wait_ceiling_seconds`・`security_reviewer`・`visual_snapshots`・`plugin_commit`・`pr_intent`・`fix_direction` の値は prerun 出力をそのまま転記し、加工・要約しない:
 
    ```
    Workflow({ name: 'dev-flow:pr-iterate-run', args: {
@@ -95,6 +98,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      prior_summary: <prior_summary>,
      ci_wait_ceiling_seconds: <ci_wait_ceiling_seconds>,
      security_reviewer: <security_reviewer>,
+     visual_snapshots: <visual_snapshots>,
      plugin_commit: <plugin_commit>,
      pr_intent: <pr_intent>,
      fix_direction: <fix_direction>,
@@ -105,6 +109,12 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
      中の文を wrapper が指示として読まない）。workflow はそれを security review の指摘を含む fix#i にだけ「PR の意図（保つ要件）」
      として区切りの内側のデータで渡し、意図を保ったまま指摘の経路を塞ぐ設計を探させる。`fix_direction` と security review の
      指摘の直し方の禁止より下に置く。review・security review の判定者には渡さない
+
+   - `visual_snapshots` は prerun 出力の値（object か null）をキーの追加・削除・書き換えをせずにそのまま転記する（null でも渡す）。
+     宣言のある run では、workflow が各 review の前に worktree の tree を最後に撮影した tree と比べ、違えば（単体起動の最初は必ず）
+     基準画像を撮り直し、変わった PNG を「画面の変化（撮り直し）」の commit として PR ブランチに push してから review する。
+     単体起動は PR 本文を書き換えず、最終の head の PR の差分で変わった基準画像の一覧を終了レポートの「画面の変化」に出す
+     （`dev-flow/references/visual-snapshots.md`）。宣言は PR の worktree の設定ファイルから読んで渡さない
 
    - `plugin_commit` は null でもそのまま渡す（workflow は journal entry の `telemetry.plugin_commit` に載せる。dev-flow-health が
      失敗し始めた commit と直った後の再発を割り出すのに使う）

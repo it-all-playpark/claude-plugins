@@ -57,6 +57,7 @@ const EVALUATE_RESULT = {
     visualSnapshots: null,
   },
   redgreen_state_dir: null,
+  visual_snapshots_tree: null,
 };
 
 test('[stage-contract] EVALUATE_ARGS_SPEC: Validate までの state と注記を満たす引数は通し、欠けたキー・型違いは throw する', () => {
@@ -90,6 +91,11 @@ test('[stage-contract] EVALUATE_RESULT_SPEC: PR 工程が読む state と redgre
   ]);
   const { visualSnapshots: _v, ...stateWithoutSnapshots } = EVALUATE_RESULT.state;
   assert.deepEqual(stageShapeErrors({ ...EVALUATE_RESULT, state: stateWithoutSnapshots }, EVALUATE_RESULT_SPEC), ['state.visualSnapshots: 欠落']);
+  // visual_snapshots_tree は基準画像を最後に撮影できた tree（string）か、撮影できていない（null）。欠落は null と同じに扱わない
+  assert.deepEqual(stageShapeErrors({ ...EVALUATE_RESULT, visual_snapshots_tree: 'a'.repeat(40) }, EVALUATE_RESULT_SPEC), []);
+  const { visual_snapshots_tree: _t, ...withoutTree } = EVALUATE_RESULT;
+  assert.deepEqual(stageShapeErrors(withoutTree, EVALUATE_RESULT_SPEC), ['visual_snapshots_tree: 欠落']);
+  assert.deepEqual(stageShapeErrors({ ...EVALUATE_RESULT, visual_snapshots_tree: 1 }, EVALUATE_RESULT_SPEC), ['visual_snapshots_tree: string|null が必要（受信: number）']);
   // runEval は evalForced の代わりにならない
   const { evalForced: _e, ...stateWithoutForced } = EVALUATE_RESULT.state;
   assert.deepEqual(stageShapeErrors({ ...EVALUATE_RESULT, state: { ...stateWithoutForced, runEval: true } }, EVALUATE_RESULT_SPEC), ['state.evalForced: 欠落']);

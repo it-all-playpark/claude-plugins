@@ -64,8 +64,8 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
      "local_verify": {"command": "pnpm test:e2e:local", "db": {"engine": "postgres", "version": "17"}, "env": "E2E_EXTERNAL_DATABASE_URL", "timeout_seconds": 1500}}}}}
    ```
    `visual_snapshots` は画面を持つ repo の opt-in（`"dev-flow".visual_snapshots`。`local_verify` と同じ `command`・`db`・`env`・
-   `timeout_seconds` に、基準画像のディレクトリ `paths` を足した宣言）。宣言すると Evaluate の各評価の前に基準画像を撮り直し、
-   `paths` の下で変わった PNG を PR に入れる（PR の Files changed の画像差分で画面の変化を見比べる）。不正な宣言は
+   `timeout_seconds` に、基準画像のディレクトリ `paths` を足した宣言）。宣言すると Evaluate の各評価の前と、pr-iterate で tree が変わった後の
+   review の前に基準画像を撮り直し、`paths` の下で変わった PNG を PR に入れる（PR の Files changed の画像差分で画面の変化を見比べる）。不正な宣言は
    `dev-flow-prerun` が `ok:false` で止める。宣言の例・判定・失敗の扱いは `references/visual-snapshots.md`。
    `security_reviewer` は nested pr-iterate の security review を回す CLI の opt-in（`"dev-flow".security_reviewer`。
    無ければ `"claude"`）。`claude` / `codex` 以外は `dev-flow-run` が明示 error で止める。security review の守る要件と境界・経路は

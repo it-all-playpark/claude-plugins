@@ -1319,14 +1319,94 @@ function visualSnapshotsListPrompt({ wt, base, tree, paths }) {
     + `git -C ${wt} -c core.quotePath=false diff --name-only --no-renames origin/${base} ${tree} -- ${specs}`
 }
 
-function visualSnapshotsReport(list, note) {
+const VISUAL_SNAPSHOTS_STALE_NOTE = '最終の画面は撮り直せていない（PNG は前の tree のもの）'
+
+function visualSnapshotsReport(list, note, stale = false) {
   const listed = list != null && list.ok === true && Array.isArray(list.lines)
   const changed = listed ? [...new Set(list.lines.filter((l) => typeof l === 'string').map((l) => l.replace(/\r$/, '')).filter((l) => l.trim() !== ''))] : []
   const notes = [
     ...(typeof note === 'string' && note ? [note] : []),
+    ...(stale === true ? [VISUAL_SNAPSHOTS_STALE_NOTE] : []),
     ...(listed ? [] : ['変わった基準画像の一覧を取得できなかった（Files changed で確かめる）']),
   ]
   return { changed, notes }
+}
+
+
+const VISUAL_SNAPSHOTS_LINES = {
+  type: 'object', required: ['ok'],
+  properties: { ok: { type: 'boolean' }, lines: { type: 'array', items: { type: 'string' } }, error: { type: 'string' } },
+}
+
+function visualSnapshotsRunState(lastTree = null) {
+  return { lastTree, attempts: 0, note: null }
+}
+
+async function captureVisualSnapshots({ decl, wt, run, readTree, at, carryOn, spawn, log }) {
+  try {
+    return await captureVisualSnapshotsOnce({ decl, wt, run, readTree, at, carryOn, spawn, log })
+  } catch (e) {
+    run.note = `撮影の途中で例外が起きたため、撮影の結果を確かめられていない（${String(e && e.message ? e.message : e).slice(0, 200)}）`
+    run.lastTree = null
+    log(`⚠️ visual-snapshots: ${at} の前の撮影が例外 — ${carryOn}（fail-open）: ${e && e.message ? e.message : e}`)
+    return { attempted: true, captured: false, before: null, after: null }
+  }
+}
+async function captureVisualSnapshotsOnce({ decl, wt, run, readTree, at, carryOn, spawn, log }) {
+  const before = await readTree('before')
+  if (before == null) {
+    run.note = '撮影前の worktree の tree を取得できなかったため撮影していない'
+    log(`⚠️ visual-snapshots: ${at} の前の tree を取得できない — 撮影しない（fail-open）`)
+    return { attempted: false, captured: false, before: null, after: null }
+  }
+  if (before === run.lastTree) {
+    log(`visual-snapshots: ${at} — tree が最後に撮影した tree と同じ（撮り直さない）`)
+    return { attempted: false, captured: false, before, after: before }
+  }
+  const n = ++run.attempts
+  const stateDir = `${wt}/${VISUAL_SNAPSHOTS_STATE_DIR}`
+  const proxy = (cmd) => `次を Bash で **timeout 600000** を指定して 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ`
+    + `（判定や脚色をしない。失敗時に ok:true を生成してはならない。& や nohup を足さない — 常駐化はコマンド自身が行う）:\n${cmd}`
+  const runner = (schema, label) => ({ agentType: 'dev-runner-haiku', schema, label })
+  let res = null
+  try {
+    const start = await spawn(
+      proxy(`local-verify start --worktree '${wt}' --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_START_WAIT_SEC} --config-pct ${localVerifyConfigArg(decl)}`),
+      runner(VISUAL_SNAPSHOTS_RESULT, `visual-snapshots-start#${n}`),
+    )
+    res = await waitBgJob({
+      start,
+      wait: (k) => spawn(
+        proxy(`local-verify wait --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_WAIT_SEC}`),
+        runner(VISUAL_SNAPSHOTS_RESULT, `visual-snapshots-wait#${n}.${k}`),
+      ),
+      maxPolls: localVerifyWaitPolls(decl.timeout_seconds),
+      schema: VISUAL_SNAPSHOTS_RESULT,
+    })
+  } finally {
+    const stop = await spawn(proxy(`local-verify stop --state-dir '${stateDir}'`), runner(VISUAL_SNAPSHOTS_STOP, `visual-snapshots-stop#${n}`))
+    if (!stop || stop.ok !== true) log(`⚠️ visual-snapshots-stop#${n}: 停止を確認できない（${stop?.error ?? 'proxy の応答が無い'}）— 後片付けは local-verify の supervisor の trap に委ねる`)
+  }
+  const outcome = visualSnapshotsOutcome(res, localVerifyVerdict(res), decl.timeout_seconds)
+  const after = outcome.tree ?? await readTree('after')
+  const unrestored = !outcome.captured && (outcome.restored === false || (outcome.restored == null && after != null && after !== before))
+  run.note = outcome.captured ? null : `${outcome.note}${unrestored ? VISUAL_SNAPSHOTS_UNRESTORED_NOTE : ''}`
+  run.lastTree = after
+  log(outcome.captured
+    ? `visual-snapshots#${n}: 撮影した（${at} の前。tree ${before.slice(0, 8)} → ${after ? after.slice(0, 8) : '不明'}${after === before ? '。変わった基準画像なし' : ''}）`
+    : `⚠️ visual-snapshots#${n}: ${run.note} — ${carryOn}（fail-open）`)
+  return { attempted: true, captured: outcome.captured, before, after }
+}
+
+async function reportVisualSnapshots({ decl, wt, base, tree, note, stale = false, spawn, log }) {
+  let list = null
+  try {
+    list = !base || tree == null ? null : await spawn(
+      visualSnapshotsListPrompt({ wt, base, tree, paths: decl.paths }),
+      { agentType: 'dev-runner-haiku-ro', schema: VISUAL_SNAPSHOTS_LINES, label: 'visual-snapshots-list', retryOnContractViolation: true },
+    )
+  } catch (e) { log(`⚠️ visual-snapshots-list が例外 — 一覧なしで続ける（fail-open）: ${e && e.message ? e.message : e}`) }
+  return visualSnapshotsReport(list, note, stale)
 }
 // ==== END inline: _lib/visual-snapshots.mjs ====
 // ==== BEGIN inline: _lib/pr-artifacts.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
@@ -2681,92 +2761,36 @@ async function execDiffTriagePhase(state) {
   return state
 }
 
-// 基準画像の撮影（_lib/visual-snapshots.mjs）: 宣言 visual_snapshots のある run だけ、各評価（eval#i）の前に worktree の tree を取り、
-// 最後に撮影した tree と違えば宣言コマンドを local-verify（paths のある宣言）で head の worktree に対して実行する。評価の前に
-// 撮るので、変わった PNG は評価される tree（この後の diff-hash-eval）に入り、PR 直前の diff hash の照合はそのまま成り立つ。
-// 撮影の成否は PR 本文の「画面の変化」に出すだけで、ledger・差し戻し・merge tier には入れない（fail-open。撮影コマンドは
-// PR のコードなので、結果で gate を動かさない）。失敗した・paths の下の PNG 以外を変えた撮影は local-verify が worktree を
-// 撮影前に戻す。start には Setup で検証した宣言を --config-pct で渡す（worktree の設定ファイルは読ませない）。
-// stop は finally で必ず呼ぶ（呼ばれなくても supervisor の trap が DB の削除と worktree の後始末をする）。
-// 撮影と一覧の取得の中の例外もここで受けて理由にする — 表示だけの処理の失敗で評価を止めない（子の throw は親が HOLD にする）。
-const visualSnapshotsRun = { lastTree: null, attempts: 0, note: null }
-async function visualSnapshotsTree(dhPrompt, label) {
-  const dh = await failOpenAgent(dhPrompt, { agentType: 'dev-runner-haiku-ro', schema: DIFFHASH, label, phase: 'Evaluate', retryOnContractViolation: true })
-  return dh && typeof dh.hash === 'string' ? dh.hash : null
-}
-async function captureVisualSnapshots(dhPrompt, i) {
+// 基準画像の撮影（_lib/visual-snapshots.mjs の captureVisualSnapshots）: 宣言 visual_snapshots のある run だけ、各評価（eval#i）の前に
+// worktree の tree を取り、最後に撮影した tree と違えば宣言コマンドを local-verify（paths のある宣言）で head の worktree に対して
+// 実行する。評価の前に撮るので、変わった PNG は評価される tree（この後の diff-hash-eval）に入り、PR 直前の diff hash の照合は
+// そのまま成り立つ。撮影の成否は PR 本文の「画面の変化」に出すだけで、ledger・差し戻し・merge tier には入れない（fail-open。
+// 撮影コマンドは PR のコードなので、結果で gate を動かさない）。
+const visualSnapshotsRun = visualSnapshotsRunState()
+const visualSnapshotsSpawn = (prompt, o) => failOpenAgent(prompt, { ...o, phase: 'Evaluate' })
+async function captureVisualSnapshotsBeforeEval(dhPrompt, i) {
   if (!VISUAL_SNAPSHOTS) return
-  try {
-    await captureVisualSnapshotsOnce(dhPrompt, i)
-  } catch (e) {
-    visualSnapshotsRun.note = `撮影の途中で例外が起きたため、撮影の結果を確かめられていない（${String(e && e.message ? e.message : e).slice(0, 200)}）`
-    visualSnapshotsRun.lastTree = null
-    log(`⚠️ visual-snapshots: eval#${i} の前の撮影が例外 — 評価と PR は続ける（fail-open）: ${e && e.message ? e.message : e}`)
-  }
-}
-async function captureVisualSnapshotsOnce(dhPrompt, i) {
-  const run = visualSnapshotsRun
-  const before = await visualSnapshotsTree(dhPrompt, `diff-hash-snapshot#${i}`)
-  if (before == null) {
-    run.note = '撮影前の worktree の tree を取得できなかったため撮影していない'
-    log(`⚠️ visual-snapshots: eval#${i} の前の tree を取得できない — 撮影しない（fail-open）`)
-    return
-  }
-  if (before === run.lastTree) {
-    log(`visual-snapshots: eval#${i} — tree が最後に撮影した tree と同じ（撮り直さない）`)
-    return
-  }
-  const n = ++run.attempts
-  const stateDir = `${WT}/${VISUAL_SNAPSHOTS_STATE_DIR}`
-  const proxy = (cmd) => `次を Bash で **timeout 600000** を指定して 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ`
-    + `（判定や脚色をしない。失敗時に ok:true を生成してはならない。& や nohup を足さない — 常駐化はコマンド自身が行う）:\n${cmd}`
-  const spawnOpts = (schema, label) => ({ agentType: 'dev-runner-haiku', schema, label, phase: 'Evaluate' })
-  let res = null
-  try {
-    const start = await failOpenAgent(
-      proxy(`local-verify start --worktree '${WT}' --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_START_WAIT_SEC} --config-pct ${localVerifyConfigArg(VISUAL_SNAPSHOTS)}`),
-      spawnOpts(VISUAL_SNAPSHOTS_RESULT, `visual-snapshots-start#${n}`),
-    )
-    res = await waitBgJob({
-      start,
-      wait: (k) => failOpenAgent(
-        proxy(`local-verify wait --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_WAIT_SEC}`),
-        spawnOpts(VISUAL_SNAPSHOTS_RESULT, `visual-snapshots-wait#${n}.${k}`),
-      ),
-      maxPolls: localVerifyWaitPolls(VISUAL_SNAPSHOTS.timeout_seconds),
-      schema: VISUAL_SNAPSHOTS_RESULT,
-    })
-  } finally {
-    const stop = await failOpenAgent(proxy(`local-verify stop --state-dir '${stateDir}'`), spawnOpts(VISUAL_SNAPSHOTS_STOP, `visual-snapshots-stop#${n}`))
-    if (!stop || stop.ok !== true) log(`⚠️ visual-snapshots-stop#${n}: 停止を確認できない（${stop?.error ?? 'proxy の応答が無い'}）— 後片付けは local-verify の supervisor の trap に委ねる`)
-  }
-  const outcome = visualSnapshotsOutcome(res, localVerifyVerdict(res), VISUAL_SNAPSHOTS.timeout_seconds)
-  // 終了後の tree は local-verify の応答（snapshot.tree）から取る。応答に無いときだけ取り直す
-  const after = outcome.tree ?? await visualSnapshotsTree(dhPrompt, `diff-hash-snapshot-after#${i}`)
-  const unrestored = !outcome.captured && (outcome.restored === false || (outcome.restored == null && after != null && after !== before))
-  run.note = outcome.captured ? null : `${outcome.note}${unrestored ? VISUAL_SNAPSHOTS_UNRESTORED_NOTE : ''}`
-  // 失敗した撮影の tree も記録する — 同じ tree で同じコマンドを評価のたびに繰り返さない
-  run.lastTree = after
-  log(outcome.captured
-    ? `visual-snapshots#${n}: 撮影した（eval#${i} の前。tree ${before.slice(0, 8)} → ${after ? after.slice(0, 8) : '不明'}${after === before ? '。変わった基準画像なし' : ''}）`
-    : `⚠️ visual-snapshots#${n}: ${run.note} — 評価と PR は続ける（fail-open）`)
+  await captureVisualSnapshots({
+    decl: VISUAL_SNAPSHOTS, wt: WT, run: visualSnapshotsRun, at: `eval#${i}`, carryOn: '評価と PR は続ける',
+    readTree: async (when) => {
+      const dh = await failOpenAgent(dhPrompt, { agentType: 'dev-runner-haiku-ro', schema: DIFFHASH, label: when === 'before' ? `diff-hash-snapshot#${i}` : `diff-hash-snapshot-after#${i}`, phase: 'Evaluate', retryOnContractViolation: true })
+      return dh && typeof dh.hash === 'string' ? dh.hash : null
+    },
+    spawn: visualSnapshotsSpawn, log,
+  })
 }
 
 // PR 本文の「画面の変化」の材料を決める: 評価が終わった tree と origin/<base> の間で、宣言の paths の下で変わった PNG の一覧と、
 // 最後の撮影の理由。一覧に載る PNG は plan の宣言外の変更だが、撮影が入れたものなので Final reconcile が pr-iterate の fix 由来の
 // 宣言外変更と取り違えないよう state.undeclared に足す。取得失敗は fail-open（理由を足すだけ）。
-async function reportVisualSnapshots(state) {
+async function reportVisualSnapshotsOfEval(state) {
   if (!VISUAL_SNAPSHOTS) { state.visualSnapshots = null; return state }
-  let list = null
-  try {
+  state.visualSnapshots = await reportVisualSnapshots({
+    decl: VISUAL_SNAPSHOTS, wt: WT, base: BASE,
     // 評価が終わった tree（post-eval の green-fix を再評価した run はその後の tree）。取れていなければ最後に撮影した tree
-    const tree = state.evalDiffHash ?? visualSnapshotsRun.lastTree
-    list = tree == null ? null : await failOpenAgent(
-      visualSnapshotsListPrompt({ wt: WT, base: BASE, tree, paths: VISUAL_SNAPSHOTS.paths }),
-      { agentType: 'dev-runner-haiku-ro', schema: TREE_DIFF_LINES, label: 'visual-snapshots-list', phase: 'Evaluate', retryOnContractViolation: true },
-    )
-  } catch (e) { log(`⚠️ visual-snapshots-list が例外 — 一覧なしで続ける（fail-open）: ${e && e.message ? e.message : e}`) }
-  state.visualSnapshots = visualSnapshotsReport(list, visualSnapshotsRun.note)
+    tree: state.evalDiffHash ?? visualSnapshotsRun.lastTree,
+    note: visualSnapshotsRun.note, spawn: visualSnapshotsSpawn, log,
+  })
   const known = state.undeclared ?? []
   state.undeclared = [...known, ...state.visualSnapshots.changed.filter((p) => !known.includes(p))]
   log(`visual-snapshots: PR の差分で変わった基準画像 ${state.visualSnapshots.changed.length} 件${state.visualSnapshots.notes.length ? ` / ${state.visualSnapshots.notes.join(' / ')}` : ''}`)
@@ -2835,7 +2859,7 @@ async function execEvaluatePhase(state) {
     const openConcerns = ledger.items.filter((it) => it.source === 'concern' && it.dimension === 'concern' && !it.checked).map((it) => ({ id: it.id, text: it.text }))
     // 評価の前に基準画像を撮り直す（宣言のある run で、tree が最後に撮影した tree から変わっているときだけ）。下の diff hash より前に
     // 撮るので、変わった PNG は評価される tree に入る。
-    await captureVisualSnapshots(state.dhPrompt, i)
+    await captureVisualSnapshotsBeforeEval(state.dhPrompt, i)
     // 各 evaluator 呼び出し前に diff hash を取る（呼び出し後の tree 変化 — redgreen-verify の restore 失敗等 — を検出するため）。
     {
       // throw は failOpenAgent で吸収。read-only probe のため契約違反リトライ opt-in
@@ -3237,6 +3261,12 @@ state = await execDiffTriagePhase(state)
 phase('Evaluate')
 state = await execEvaluatePhase(state)
 state = await execPostEvalValidate(state)
-state = await reportVisualSnapshots(state)
+state = await reportVisualSnapshotsOfEval(state)
 
-return { state, redgreen_state_dir: redgreenStateDir }
+// visual_snapshots_tree: 基準画像を最後に撮影できた tree（宣言が無い・最後の撮影が失敗した run は null）。親が pr-iterate に渡す。
+// tree は proxy が中継した値なので、tree OID の形でなければ null にする（pr-iterate が最初の review の前に撮り直すだけ。
+// 表示のための値の形の違いで、PR を作った後の pr-iterate を引数の検証で止めない）
+const visualSnapshotsTree = VISUAL_SNAPSHOTS && visualSnapshotsRun.note == null && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(String(visualSnapshotsRun.lastTree))
+  ? visualSnapshotsRun.lastTree
+  : null
+return { state, redgreen_state_dir: redgreenStateDir, visual_snapshots_tree: visualSnapshotsTree }

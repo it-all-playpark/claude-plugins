@@ -89,6 +89,19 @@ test('[priterate-skill-wrapper] prerun 出力・Workflow の args は security r
   assert.ok(contract && contract[1].split(/,\s*/).includes('security_reviewer') && !contract[1].split(/,\s*/).includes('security_review'), `pr-iterate-prerun.sh の Output 欄: ${contract?.[1]}`);
 });
 
+test('[priterate-skill-wrapper] prerun 出力の visual_snapshots を Workflow の args にそのまま転記する（単体起動も基準画像を撮り直す。issue #1412）', () => {
+  const prerunOutput = steps.match(/JSON 1 行（`\{([^}]*)\}`）/);
+  assert.ok(prerunOutput && prerunOutput[1].split(/,\s*/).includes('visual_snapshots'), `prerun 出力の一覧に visual_snapshots が無い: ${prerunOutput?.[1]}`);
+  const launch = steps.slice(steps.indexOf("Workflow({ name: 'dev-flow:pr-iterate-run'"));
+  const args = launch.slice(0, launch.indexOf('} })'));
+  assert.ok(args.includes('visual_snapshots: <visual_snapshots>'), `Workflow の args に visual_snapshots が無い: ${args}`);
+  assert.match(steps, /`security_reviewer`・`visual_snapshots`・[^\n]*の値は prerun 出力をそのまま転記し、加工・要約しない/, '転記する値の一覧に visual_snapshots が無い');
+  // pr-iterate-prerun.sh の Output 欄（スクリプトの出力契約）も同じキーを持つ
+  const prerunSrc = readFileSync(join(pluginRoot, '_shared/scripts/pr-iterate-prerun.sh'), 'utf8');
+  const contract = prerunSrc.match(/^#\s+\{ok, pr, ([^}]*)\}$/m);
+  assert.ok(contract && contract[1].split(/,\s*/).includes('visual_snapshots'), `pr-iterate-prerun.sh の Output 欄: ${contract?.[1]}`);
+});
+
 test('[priterate-skill-wrapper] /pr-iterate <PR> --direction <file> を受け、prerun に --direction を渡し、出力の fix_direction を加工せずに args.fix_direction へ転記する（issue #1122）', () => {
   assert.ok(src.includes('/pr-iterate <PR> --direction <file>'), '--direction 付きの起動形が書かれていない');
   const prerunStep = steps.slice(0, steps.indexOf("EnterWorktree({ path: '<prerun 出力の worktree>' })"));

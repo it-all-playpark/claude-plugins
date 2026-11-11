@@ -32,7 +32,7 @@
 # 再利用する worktree の basename が git / git-* のときも ok:false で人間に返す（worktree 分離ガードの拒否。移動はしない）。
 #
 # Output (stdout, JSON 1 行):
-#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_reviewer, plugin_commit, pr_intent?, fix_direction?, error?}
+#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_reviewer, visual_snapshots, plugin_commit, pr_intent?, fix_direction?, error?}
 #   plugin_commit: 実行中の dev-flow plugin の commit（12 桁 hex）。dev-flow-prerun と同じ dev-flow/scripts/plugin-commit.sh で
 #     plugin root から決める（telemetry 記録専用で gate の入力にしない）。決められなければ null（ok:false でも載せる）
 #   fix_direction: --direction のファイルの本文（ok:true で --direction を渡したときだけ載せる）
@@ -55,6 +55,11 @@
 #     無ければ "claude"。値は検証せずに渡す — workflow が範囲外を明示 error にする。ok:false の早期終端では null）。
 #     対象判定（target / reasons / reviewer_context_changed）は出さない — workflow が reviewer に関わらず hook で縛った
 #     security-codex-relay で取り、引数で受け取らない
+#   visual_snapshots: 基準画像の撮影の宣言（"dev-flow".visual_snapshots。dev-flow-prerun と同じ devflow-config.sh の
+#     devflow_visual_snapshots で、security_reviewer と同じ読み先から読んで検証した {command, db, env, timeout_seconds, paths}。
+#     PR head（worktree）の設定は読まない — PR が撮影コマンドと「変えてよい場所」を選べないように）。宣言が無ければ null。
+#     不正な宣言は ok:false（黙って未設定にすると、撮り直されないまま画面の変わる PR が review を通る）。workflow は
+#     宣言のある run で、各 review の前に基準画像を撮り直す
 #   不明な値は null。ok:false でも exit 0（引数不正と --direction の拒否のみ exit 2、stdout 空）。
 #
 # GitHub I/O は `gh pr view` と `gh run list`（PR で走った成功 run。いずれも読み取り）のみ。push / comment / worktree の削除（この呼び出しで作った
@@ -172,6 +177,8 @@ pr_intent="null"
 ci_wait_ceiling_seconds="$CI_WAIT_CEILING_DEFAULT"
 # security review を回す CLI の opt-in。ok:false の早期終端では null（読む前に止まる）
 security_reviewer="null"
+# 基準画像の撮影の宣言。ok:false の早期終端と宣言の無い repo では null
+visual_snapshots="null"
 error=""
 
 emit() {
@@ -192,6 +199,7 @@ emit() {
         --argjson prior_summary "$prior_summary" \
         --argjson ci_wait_ceiling_seconds "$ci_wait_ceiling_seconds" \
         --argjson security_reviewer "$security_reviewer" \
+        --argjson visual_snapshots "$visual_snapshots" \
         --argjson fix_direction "${DIRECTION_JSON:-null}" \
         --argjson pr_intent "$pr_intent" \
         --arg plugin_commit "$plugin_commit" \
@@ -202,7 +210,7 @@ emit() {
          head_sha: ($head_sha | nz), repo: ($repo | nz), epoch: $epoch,
          worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree,
          prior_devflow: $prior_devflow, prior_summary: $prior_summary, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds,
-         security_reviewer: $security_reviewer,
+         security_reviewer: $security_reviewer, visual_snapshots: $visual_snapshots,
          plugin_commit: (if ($plugin_commit | test("^[0-9a-f]{12}$")) then $plugin_commit else null end)}
         + (if $ok and $pr_intent != null then {pr_intent: $pr_intent} else {} end)
         + (if $ok and $fix_direction != null then {fix_direction: $fix_direction} else {} end)
@@ -470,5 +478,14 @@ exclude_devflow_tmp "$WT" || true
 # 作業ツリーの設定ファイルは読まない。対象判定はここで取らない — workflow が reviewer に関わらず hook で縛った
 # security-codex-relay で取る（wrapper の LLM が転記する値を判定の入力にしない）
 security_reviewer="$(security_reviewer_config "$ROOT" "$base_ref")"
+
+# ============================================================================
+# Segment 6: 基準画像の撮影の宣言
+# ============================================================================
+
+# "dev-flow".visual_snapshots。dev-flow-prerun と同じ devflow_visual_snapshots（devflow-config.sh）で読んで検証する。
+# 読み先は security_reviewer と同じで、PR head（worktree）の設定ファイルは読まない。不正な宣言は ok:false で止める
+visual_snapshots_checked="$(devflow_visual_snapshots "$ROOT" "$base_ref")" || fail "$visual_snapshots_checked"
+visual_snapshots="$visual_snapshots_checked"
 
 emit true

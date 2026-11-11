@@ -746,6 +746,84 @@ comment_json() {
     echo "$output" | jq -e '.ok == true and .security_reviewer == "codex"'
 }
 
+# ---- (12) 基準画像の撮影の宣言（"dev-flow".visual_snapshots。issue #1412）----
+
+VISUAL_DECL='{"command":"pnpm test:visual:update","db":{"engine":"postgres","version":"17"},"env":"E2E_EXTERNAL_DATABASE_URL","timeout_seconds":900,"paths":["apps/*/e2e/__screenshots__"]}'
+
+# 第 1 引数の branch の skill-config.json に "dev-flow".visual_snapshots = 第 2 引数（JSON）を commit して push する
+commit_visual_config() {
+    git -C "$SEED" checkout -q "$1"
+    jq -n --argjson v "$2" '{"dev-flow": {visual_snapshots: $v}}' > "$SEED/skill-config.json"
+    git -C "$SEED" add skill-config.json
+    git -C "$SEED" commit -q -m "visual config"
+    git -C "$SEED" push -q origin "$1"
+    if [[ "$1" == "feature/x" ]]; then
+        HEAD_SHA="$(git -C "$SEED" rev-parse feature/x)"
+        write_pr_fixture "$HEAD_SHA"
+    fi
+}
+
+@test "(12a) 宣言が無ければ visual_snapshots は null、base branch の宣言は検証した形で載せる（ok:false の早期終端では null）" {
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and has("visual_snapshots") and .visual_snapshots == null'
+
+    commit_visual_config main "$(jq -c '. + {extra: "落とすキー"}' <<<"$VISUAL_DECL")"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --argjson want "$VISUAL_DECL" '.ok == true and .visual_snapshots == $want'
+
+    export GH_STUB_FAIL=1
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .visual_snapshots == null'
+}
+
+@test "(12b) PR head（worktree）の設定ファイルに書かれた宣言は読まない（base の宣言・未設定のまま）" {
+    commit_visual_config feature/x "$(jq -c '.command = "echo from-pr-head" | .paths = ["src"]' <<<"$VISUAL_DECL")"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .visual_snapshots == null'
+    # worktree（PR head）には宣言が書いてある
+    wt="$(echo "$output" | jq -r '.worktree')"
+    jq -e '."dev-flow".visual_snapshots.command == "echo from-pr-head"' "$wt/skill-config.json"
+
+    # base に宣言があれば、PR head が書き換えても base の宣言のまま
+    commit_visual_config main "$VISUAL_DECL"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --argjson want "$VISUAL_DECL" '.ok == true and .visual_snapshots == $want'
+}
+
+@test "(12c) user 設定の宣言も読む（dev-flow-prerun と同じ読み先）" {
+    mkdir -p "$HOME/.claude"
+    jq -n --argjson v "$VISUAL_DECL" '{"dev-flow": {visual_snapshots: $v}}' > "$HOME/.claude/skill-config.json"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --argjson want "$VISUAL_DECL" '.ok == true and .visual_snapshots == $want'
+}
+
+@test "(12d) 不正な宣言（paths が空・.. を含む・command が無い）は ok:false で止め、error にどのキーがなぜ不正かを出す" {
+    cd "$ROOT"
+    commit_visual_config main "$(jq -c '.paths = []' <<<"$VISUAL_DECL")"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .visual_snapshots == null and (.error | contains("visual_snapshots が不正") and contains("paths が空でない配列でない"))'
+
+    commit_visual_config main "$(jq -c '.paths = ["../outside"]' <<<"$VISUAL_DECL")"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and (.error | contains("paths に .. を含むものがある"))'
+
+    commit_visual_config main "$(jq -c 'del(.command)' <<<"$VISUAL_DECL")"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and (.error | contains("command が空でない文字列でない"))'
+}
+
 # ---- (9) 人が決めた修正方針（--direction。issue #1122）----
 
 @test "(9a) --direction のファイルを launch dir で読み、本文を加工せずに fix_direction に載せる（無ければ・ok:false では載せない）" {
