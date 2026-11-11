@@ -18,7 +18,7 @@
 import { test, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -78,7 +78,7 @@ function makeWorktree({ captured }) {
 const BLOCKING = { decision: 'request-changes', issues: [{ severity: 'major', topic: 'screen-copy', file: 'src/x.ts', description: '文言が違う', suggestion: '直す' }], summary: '要修正' };
 const APPROVE = { decision: 'approve', issues: [], summary: 'ok' };
 
-async function run({ captured = true, caller = 'dev-flow', decl = declaration(), passTree = caller === 'dev-flow', overrides = () => ({}), args = {} } = {}) {
+async function run({ captured = true, caller = 'dev-flow', decl = declaration(), passTree = caller === 'dev-flow', overrides = () => ({}), args = {}, baseRef = 'main' } = {}) {
   const fx = makeWorktree({ captured });
   const { wt } = fx;
   const procEnv = {
@@ -153,7 +153,7 @@ async function run({ captured = true, caller = 'dev-flow', decl = declaration(),
     overrides: { ...real, ...overrides(tools) },
     args: {
       pr: 5,
-      nested: { caller, cwd: wt, head_ref: 'feature/x', base_ref: 'main', head_sha: headAtStart, repo: 'acme/skills' },
+      nested: { caller, cwd: wt, head_ref: 'feature/x', base_ref: baseRef, head_sha: headAtStart, repo: 'acme/skills' },
       ...(decl ? { visual_snapshots: decl } : {}),
       ...(decl && passTree ? { visual_snapshots_tree: treeAtStart } : {}),
       ...args,
@@ -247,6 +247,15 @@ test('[priterate-visual-snapshots] (P) 宣言の paths の一部に PNG が無�
   assert.equal(x.head(), fixSha);
   assert.equal(read(x.wt, PNG), 'screen v2\n');
   assert.equal(git(x.wt, 'status', '--porcelain'), '');
+}, TIMEOUT);
+
+test('[priterate-visual-snapshots] (Q) 終了時の一覧取得は PR の base branch 名を単一引用符で 1 引数に閉じ、名前の $(…) をシェルに展開させない', async () => {
+  const marker = join(mkdtempSync(join(tmpdir(), 'vs-base-')), 'pwn');
+  const base = `base/$(touch${'${IFS}'}${marker})`;
+  const r = await run({ baseRef: base });
+  assert.ok(r.labels.includes('visual-snapshots-list'), r.labels.join(', '));
+  assert.ok(!existsSync(marker), 'base branch 名の $(…) が実行された');
+  assert.ok(r.prompt('visual-snapshots-list').includes(`'origin/${base}'`), r.prompt('visual-snapshots-list'));
 }, TIMEOUT);
 
 test('[priterate-visual-snapshots] (C) conflict の自動解決の後: 次の review の前に撮り直して push し、review には merge commit に加えて撮り直しの commit も読ませる', async () => {

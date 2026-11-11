@@ -104,7 +104,7 @@ export function visualSnapshotsListPrompt({ wt, base, tree, paths }) {
   return `次のコマンドを **先頭トークンが git の bare 単文** で 1 回だけ実行し、stdout の各行を配列 lines に一字一句そのまま（要約・整形・並べ替え・件数制限をせず）入れて {"ok": true, "lines": [...]} で返せ`
     + `（stdout が空なら {"ok": true, "lines": []}。exit 非0・コマンド実行不能なら ok:false/error で返せ。失敗時に ok:true を生成してはならない。`
     + `cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止。-C で worktree を渡しているため cd は不要）:\n`
-    + `git -C ${wt} -c core.quotePath=false diff --name-only --no-renames origin/${base} ${tree} -- ${specs}`
+    + `git -C ${wt} -c core.quotePath=false diff --name-only --no-renames ${visualSnapshotsShellArg(`origin/${base}`)} ${tree} -- ${specs}`
 }
 
 // 最後に撮影できた tree と最終の tree が違う run の「画面の変化」に出す 1 行（pr-iterate の終わり。表示だけで gate に使わない）。
