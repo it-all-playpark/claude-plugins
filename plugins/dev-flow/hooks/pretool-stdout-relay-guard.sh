@@ -22,7 +22,7 @@
 #
 # fail-closed: exit 2 以外の非 0 終了は tool を通すので、判定中に想定外で終わったら EXIT trap が deny を出して exit 0 にする。
 # hook は deny を出力するだけで、ファイルの変更・プロセス操作・外部送信をしない。抜け道（環境変数・フラグ）は作らない。
-# 判定用の記録を別に書かない。deny の理由に入力の文字列を埋め込まない（中継の session に入力由来の文字列を返さない）。
+# 判定用の記録を別に書かない。deny の理由は guard と bind の固定の文に限る（中継の session に入力由来の文字列を返さない）。
 
 export LC_ALL=C
 
@@ -52,12 +52,18 @@ pass_through() {
 # stdout-relay-bind.mjs が {allow:true} を返したときだけ通す（node が無い・落ちた・判定が読めないときは deny）。
 # deny の理由は bind が返す固定の文（入力由来の文字列を含まない）
 bind() {
-  local out reason
+  local out denied
   command -v node >/dev/null 2>&1 || emit_deny "node を実行できず中継の入出力を確かめられない"
   out=$(node "$BIND" 2>/dev/null <<<"$INPUT") || emit_deny "中継の入出力を確かめられない"
   [[ $(jq -r '.allow == true' 2>/dev/null <<<"$out") == true ]] && pass_through
-  reason=$(jq -r '.reason | if type == "string" and (test("[\"\\\\]") | not) then . else "" end' 2>/dev/null <<<"$out") || reason=""
-  emit_deny "${reason:-中継の入出力を確かめられない}"
+  # reason は `"` や `\` を含み得るので、文字列に埋め込まず jq に JSON として出させる（中継は理由の文を見て返り値を直す）
+  denied=$(jq -c 'if .allow == false and (.reason | type == "string" and . != "") then
+      {hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: .reason}}
+    else error("bad") end' 2>/dev/null <<<"$out") || emit_deny "中継の入出力を確かめられない"
+  [[ -n $denied ]] || emit_deny "中継の入出力を確かめられない"
+  DECIDED=1
+  printf '%s\n' "$denied"
+  exit 0
 }
 
 INPUT=$(cat) || INPUT=""
