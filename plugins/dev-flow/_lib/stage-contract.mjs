@@ -39,10 +39,13 @@ export const EVALUATE_ARGS_SPEC = {
   ci_ac_indexes: 'array',
   notes: { deletion: 'string', deps: 'string', turbopack: 'string', test_discovery: 'string' },
   test_commands: TEST_COMMANDS_RESULT_SPEC,
+  // repo の "dev-flow".visual_snapshots（Setup で検証した宣言。無ければ null）。子が各評価の前に基準画像を撮り直す
+  visual_snapshots: 'object|null',
 }
 
 // dev-flow-evaluate.js の返り値。state は PR 工程以降が読む state（評価ループの途中経過は返さない）。
 // redgreen_state_dir は Evaluate の redgreen が作った state dir（Final reconcile の redgreen-final が使い回す）。
+// visualSnapshots は PR 本文の「画面の変化」の材料（{ changed, notes }。宣言の無い run は null）。
 export const EVALUATE_RESULT_SPEC = {
   state: {
     plan: 'object', ledger: 'object', risk: 'object', dangerHits: 'array', testsurfHits: 'array', testsurfPatterns: 'array',
@@ -50,6 +53,7 @@ export const EVALUATE_RESULT_SPEC = {
     triage: 'object', EFFECTIVE_SHAPE: 'string', evalForced: 'boolean',
     evalResult: 'object|null', evalDiffHash: 'string|null', secDiffHash: 'string|null',
     unsatisfiedAcByActor: 'object', val: 'object|null', greenFixCount: 'number', concerns: 'array',
+    visualSnapshots: 'object|null',
   },
   redgreen_state_dir: 'string|null',
 }
@@ -66,6 +70,7 @@ export const FINALIZE_ARGS_SPEC = {
     req: 'object', plan: 'object', setup: { branch: 'string' }, ledger: 'object',
     val: 'object|null', risk: 'object|null', evalResult: 'object|null',
     acVerify: 'array', baseFailing: 'object', unsatisfiedAcByActor: 'object', guardBlockedResults: 'array',
+    visualSnapshots: 'object|null',
   },
   pr: { pr_url: 'string', pr_number: 'string|number' },
   pr_body: 'string',

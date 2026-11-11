@@ -181,11 +181,13 @@ fi
 #   security_reviewer: nested pr-iterate の security review を回す CLI の opt-in（無ければ "claude"。security-reviewer-config.sh）
 #   ci_verify: sandbox 内で実行できない検証を CI のどの check で判定するかの宣言（issue #861）
 #   local_verify: その検証を pg-broker の DB でローカル実行するコマンドの宣言（issue #863）
+#   visual_snapshots: 基準画像を撮り直すコマンドと基準画像のディレクトリの宣言（issue #1410）
 #   pr_title_format: commit subject（= PR タイトル）のテンプレート
 #   branch_format: 作業ブランチ名の書式（未設定は feature/issue-{issue}。dev-flow-ready-set も同じ書式で実行中の issue を探す）
 # 値・形の検証は workflow 側（_lib/prerun-setup.mjs の security_reviewer の enum・normalizeCiVerify /
 # normalizeLocalVerify / normalizePrTitleFormat）が行い、不正なら fail-closed で止める。branch_format は worktree を作る前に
 # ブランチ名を決めるので、ここで検証し（devflow_branch_format_of）、不正なら worktree を作らずに ok:false で止める。
+# visual_snapshots もここで検証し（devflow_visual_snapshots_of）、不正なら同じく worktree を作らずに ok:false で止める。
 security_reviewer="$(security_reviewer_config "$ROOT" "$base")"
 ci_verify_json="$(devflow_config "$ROOT" "$base" ci_verify)"
 local_verify_json="$(devflow_config "$ROOT" "$base" local_verify)"
@@ -195,6 +197,11 @@ branch_format_error=""
 BRANCH_FORMAT="$(devflow_branch_format_of "$branch_format_json")" || {
     branch_format_error="$BRANCH_FORMAT"
     BRANCH_FORMAT=""
+}
+visual_snapshots_error=""
+visual_snapshots_json="$(devflow_visual_snapshots "$ROOT" "$base")" || {
+    visual_snapshots_error="$visual_snapshots_json"
+    visual_snapshots_json="null"
 }
 
 # ============================================================================
@@ -318,6 +325,9 @@ fast_forward_existing() {
 if [[ "$BASE_OK" == true && -n "$branch_format_error" ]]; then
     worktree_status="error"
     worktree_error="$branch_format_error"
+elif [[ "$BASE_OK" == true && -n "$visual_snapshots_error" ]]; then
+    worktree_status="error"
+    worktree_error="$visual_snapshots_error"
 elif [[ "$BASE_OK" == true ]]; then
     WTLIST2="$(git -C "$ROOT" worktree list --porcelain 2>&1)" || WTLIST2=""
     # --worktree は raw のまま JSON へ出力する契約なので、物理パスは既存 worktree ブロックとの突合せにだけ使う
@@ -587,6 +597,7 @@ OUT_JSON="$(jq -n \
     --argjson analyze "$analyze_json" \
     --argjson ci_verify "$ci_verify_json" \
     --argjson local_verify "$local_verify_json" \
+    --argjson visual_snapshots "$visual_snapshots_json" \
     --argjson pr_title_format "$pr_title_format_json" \
     --argjson skip_worktree "$(skip_worktree_json)" \
     --argjson hooks_not_running "$hooks_not_running" \
@@ -602,7 +613,7 @@ OUT_JSON="$(jq -n \
     + (if $have_head then {head: $head} else {} end)
     + (if $have_worktree_error then {worktree_error: $worktree_error} else {} end)
     + {worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree, hooks_not_running: $hooks_not_running}
-    + {clean: $clean, stack: $stack, analyze: $analyze, ci_verify: $ci_verify, local_verify: $local_verify, pr_title_format: $pr_title_format, epoch: $epoch}
+    + {clean: $clean, stack: $stack, analyze: $analyze, ci_verify: $ci_verify, local_verify: $local_verify, visual_snapshots: $visual_snapshots, pr_title_format: $pr_title_format, epoch: $epoch}
     + {ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds, security_reviewer: $security_reviewer}
     + {plugin_commit: (if ($plugin_commit | test("^[0-9a-f]{12}$")) then $plugin_commit else null end)}
     ')"

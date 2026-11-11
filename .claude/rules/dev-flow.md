@@ -18,6 +18,7 @@ paths:
 - `pipeline.md` — phase ごとの判定・失敗の扱い
 - `security-review.md` — security review の境界と経路
 - `telemetry.md` — telemetry キー一覧
+- `visual-snapshots.md` — 基準画像の撮影
 - `exec-proxy.md` — exec-proxy の失敗ポリシー表
 - `analyze-issue.md` — analyze の出力キー
 - `capability-bound.md` — 能力しだいの判断と sunset トリガ

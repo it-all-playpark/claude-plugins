@@ -74,6 +74,54 @@ export function parseDiffTriageFields(unified) {
   };
 }
 
+// 宣言 "dev-flow".visual_snapshots の paths（基準画像のディレクトリ。repo 相対の glob）1 件を、その下の PNG に一致する
+// 正規表現にする。規則は git の pathspec `:(glob)<path>/**/*.png` と同じ（撮影の後始末をする local-verify と、PR の差分の
+// 一覧を取る git がこの pathspec で判定するので、食い違うと数えないファイルと PR に入るファイルがずれる）:
+// `*` と `?` は `/` をまたがず、segment 全体の `**` は 0 個以上のディレクトリに一致する。
+function visualSnapshotPngRegex(dir) {
+  const glob = `${String(dir).replace(/\/+$/, '')}/**/*.png`;
+  const literal = (ch) => ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let re = '';
+  let i = 0;
+  while (i < glob.length) {
+    const c = glob[i];
+    if (c === '*') {
+      let j = i;
+      while (glob[j] === '*') j++;
+      const wholeSegment = j - i === 2 && (i === 0 || glob[i - 1] === '/');
+      if (wholeSegment && glob[j] === '/') { re += '(?:[^/]+/)*'; i = j + 1; continue; }
+      if (wholeSegment && j === glob.length) { re += '.*'; i = j; continue; }
+      re += '[^/]*';
+      i = j;
+      continue;
+    }
+    if (c === '?') { re += '[^/]'; i++; continue; }
+    if (c === '[') {
+      const close = glob.indexOf(']', i + 2);
+      if (close > 0) {
+        const body = glob.slice(i + 1, close);
+        re += `[${(body[0] === '!' ? `^${body.slice(1)}` : body).replace(/\\/g, '\\\\')}]`;
+        i = close + 1;
+        continue;
+      }
+    }
+    if (c === '\\' && i + 1 < glob.length) { re += literal(glob[i + 1]); i += 2; continue; }
+    re += literal(c);
+    i++;
+  }
+  return new RegExp(`^${re}$`);
+}
+
+// withoutVisualSnapshotPngs: shape の判定に数える変わったファイルから、宣言の paths の下の PNG を外す（issue #1410）。
+// 基準画像は撮影コマンドが書き換える生成物で、枚数で shape を上げると画面の変わる PR がそれだけで complex になる。
+// paths は PR の外（origin/<base>・user 設定）から読んだ宣言の値だけを渡す — PR が自分で数えないファイルを選べないように。
+// paths の下でも PNG でないファイルは残す。files が配列でなければそのまま返す（取得失敗の null を空と取り違えない）。
+export function withoutVisualSnapshotPngs(files, paths) {
+  if (!Array.isArray(files) || !Array.isArray(paths) || paths.length === 0) return files;
+  const res = paths.filter((p) => typeof p === 'string' && p.trim() !== '').map(visualSnapshotPngRegex);
+  return files.filter((f) => !res.some((re) => re.test(f)));
+}
+
 // lineStatsFor: classifyShape に渡す file ごとの行数を、realized count に数えた files の順で組む。
 // 1 件でも lines に行数が無い file（binary・取得失敗）があれば null を返し、file 数判定に戻す。
 export function lineStatsFor(files, lines) {

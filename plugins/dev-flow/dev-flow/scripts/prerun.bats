@@ -692,6 +692,33 @@ JSON
     jq -e '.security_reviewer == "codex" and .pr_title_format == "#{issue} {title}"' "$WT/.devflow-tmp/prerun-setup.json"
 }
 
+@test "(10f) origin/<base> の \"dev-flow\".visual_snapshots -> 検証した宣言を visual_snapshots に入れ（無ければ null）、不正なら worktree を作らずに ok:false" {
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e 'has("visual_snapshots") and .visual_snapshots == null'
+
+    git -C "$SEED" checkout -q dev
+    echo '{"dev-flow":{"visual_snapshots":{"command":"pnpm test:visual","db":{"engine":"postgres","version":"17"},"env":"E2E_EXTERNAL_DATABASE_URL","timeout_seconds":900,"paths":["tests/visual"]}}}' > "$SEED/skill-config.json"
+    git -C "$SEED" add skill-config.json
+    git -C "$SEED" commit -q -m "add visual_snapshots"
+    git -C "$SEED" push -q origin dev
+
+    WT2="$BATS_TEST_TMPDIR/wt/df-2"
+    run --separate-stderr "$SCRIPT" --issue 2 --worktree "$WT2"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .visual_snapshots == {"command":"pnpm test:visual","db":{"engine":"postgres","version":"17"},"env":"E2E_EXTERNAL_DATABASE_URL","timeout_seconds":900,"paths":["tests/visual"]}'
+
+    echo '{"dev-flow":{"visual_snapshots":{"command":"pnpm test:visual","db":{"engine":"postgres","version":"17"},"env":"E2E_EXTERNAL_DATABASE_URL","timeout_seconds":900,"paths":["../outside"]}}}' > "$SEED/skill-config.json"
+    git -C "$SEED" commit -q -am "break visual_snapshots"
+    git -C "$SEED" push -q origin dev
+
+    WT3="$BATS_TEST_TMPDIR/wt/df-3"
+    run --separate-stderr "$SCRIPT" --issue 3 --worktree "$WT3"
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error" and (.worktree_error | contains("\"dev-flow\".visual_snapshots が不正")) and (.worktree_error | contains("paths に .. を含むものがある"))'
+    [ ! -e "$WT3" ]
+}
+
 # ---- (11) 引数エラー ----
 
 @test "(11a) --issue 欠落 -> exit 2, stdout空" {

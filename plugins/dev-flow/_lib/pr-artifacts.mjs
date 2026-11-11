@@ -352,6 +352,30 @@ function diagramSection(plan, diagramCheck) {
   return diagramCheck?.consistent === true ? figures : `${PR_BODY_DIAGRAM_UNVERIFIED}\n\n${figures}`;
 }
 
+// `## 画面の変化` の節本文（issue #1410）。visualSnapshots は dev-flow-evaluate が返す { changed, notes }（宣言
+// "dev-flow".visual_snapshots の無い run は null）:
+//   changed: PR の差分（origin/<base> と head の間）で、宣言の paths の下で変わった PNG のパス
+//   notes: 撮影できなかった・撮影の結果を捨てた理由（1 件 1 行）
+// どちらも空なら null = 節ごと出さない。パスは先頭 PR_BODY_VISUAL_PATHS_MAX 件を並べ、超過分は `（他 N 件）` 1 行に畳む
+// （画面の多い repo で本文を PNG の一覧で埋めない。全件は Files changed にある）。パスと理由は撮影コマンド（PR のコード）が
+// 決められるデータなので、1 行に畳んで本文の構造を壊す記法を無害化する。
+export const PR_BODY_VISUAL_HEADING = '## 画面の変化';
+export const PR_BODY_VISUAL_PATHS_MAX = 30;
+export const PR_BODY_VISUAL_COMPARE_NOTE = '見比べは PR の Files changed の画像差分（2-up / Swipe / Onion skin）で行う。';
+function visualSnapshotsSection(visualSnapshots) {
+  const changed = textItems(visualSnapshots?.changed);
+  const notes = textItems(visualSnapshots?.notes);
+  if (changed.length === 0 && notes.length === 0) return null;
+  const lines = [];
+  if (changed.length) {
+    const shown = changed.slice(0, PR_BODY_VISUAL_PATHS_MAX).map((p) => `- \`${neutralizeStructure(p).replace(/`/g, "'")}\``);
+    const excess = changed.length - shown.length;
+    lines.push(`基準画像の PNG が ${changed.length} 件変わった。${PR_BODY_VISUAL_COMPARE_NOTE}`, ...shown, ...(excess > 0 ? [`（他 ${excess} 件）`] : []));
+  }
+  for (const n of notes) lines.push(`⚠️ ${neutralizeStructure(n)}`);
+  return lines.join('\n');
+}
+
 // PR 本文に図そのものが載るか（plan.diagram があり、照合で食い違っていない）。
 export function prBodyShowsDiagram(plan, diagramCheck) {
   return diagramOf(plan?.diagram) != null && diagramCheck?.consistent !== false;
@@ -444,7 +468,7 @@ function hitLine(label, hits, keyOf) {
 
 // PR body（issue #928）。見える部分は人間向けの短い要約で、次の順に並ぶ:
 //   結論 1 行（plan.summary > issue title > `issue #<n> の変更`）→ `## 何が変わるか`（plan.behavior_changes）→
-//   `## 構成の変化`（plan.diagram。diagramSection）→ `## 人間に見てほしい点`（plan.review_points）→ `## この PR に含めなかったもの`（plan.out_of_scope）→
+//   `## 構成の変化`（plan.diagram。diagramSection）→ `## 画面の変化`（visualSnapshots。visualSnapshotsSection）→ `## 人間に見てほしい点`（plan.review_points）→ `## この PR に含めなかったもの`（plan.out_of_scope）→
 //   `## 受入条件の結果`（AC 1 件 1 行の表。acRows）
 // 見出し付きの節は材料が空なら節ごと出さない。判定材料はその後ろに `<details>` で畳む:
 //   受入条件（AC 全文の checkbox）→ 設計判断 → 検証（danger-grep / test-surface hit + pr_notes）→ pr_sections（1 件 1 つ）
@@ -452,13 +476,14 @@ function hitLine(label, hits, keyOf) {
 // acResults（[{ac_index, gist, satisfied, evidence, test_files}]）は evaluator の AC 判定。無い AC は「未検証」になる。
 // acStale:true は pr-iterate の修正後に AC を再検証していない run で、全 AC の結果を「修正後に未再評価」にする。
 // diagramCheck（{consistent, mismatches}）は evaluator が図を realized diff と照合した結果。無ければ図は未照合として出す。
-export function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false, diagramCheck = null }) {
+export function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false, diagramCheck = null, visualSnapshots = null }) {
   let conclusionText = collapseWhitespace(plan?.summary);
   if (!conclusionText) conclusionText = collapseWhitespace(req?.issue_title);
   if (!conclusionText) conclusionText = `issue #${issue} の変更`;
   const changes = textItems(plan?.behavior_changes);
   const reviewPoints = textItems(plan?.review_points);
   const diagram = diagramSection(plan, diagramCheck);
+  const visual = visualSnapshotsSection(visualSnapshots);
   const outOfScope = outOfScopeSection(plan);
   const rows = acRows(req, acResults, acStale);
   const acTable = acResultsSection(rows);
@@ -471,6 +496,7 @@ export function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResu
     `**${conclusionText}**`,
     ...(changes.length ? [`${PR_BODY_CHANGES_HEADING}\n${bulletList(changes)}`] : []),
     ...(diagram ? [`${PR_BODY_DIAGRAM_HEADING}\n${diagram}`] : []),
+    ...(visual ? [`${PR_BODY_VISUAL_HEADING}\n${visual}`] : []),
     ...(reviewPoints.length ? [`${PR_BODY_REVIEW_POINTS_HEADING}\n${bulletList(reviewPoints)}`] : []),
     ...(outOfScope ? [`${PR_BODY_OUT_OF_SCOPE_HEADING}\n${outOfScope}`] : []),
     ...(acTable ? [`${PR_BODY_AC_RESULTS_HEADING}\n${acTable}`] : []),

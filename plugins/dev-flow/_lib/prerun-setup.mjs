@@ -18,6 +18,9 @@
 //   のと同じもの）を evaluator prompt に注入する test_files の受理条件の文に整形する純関数。
 // normalizeCiVerify: prerun の ci_verify（repo の CI 判定の宣言。null は未設定）を検証・正規化する純関数。
 // normalizeLocalVerify: prerun の local_verify（ci の AC をローカル実行で判定する宣言。null は未設定）を検証・正規化する純関数。
+// normalizeVisualSnapshots: prerun の visual_snapshots（基準画像を撮り直すコマンドと基準画像のディレクトリの宣言。null は未設定）を
+//   受け取る純関数。宣言の検証は prerun（_shared/scripts/devflow-config.sh の devflow_visual_snapshots_of）が済ませているので、
+//   ここは workflow が読むキーの型だけを確かめる。
 // normalizePrTitleFormat: prerun の pr_title_format（commit subject = PR タイトルのテンプレート。null は未設定）を検証する純関数。
 // analyze: prerun の analyze 段の結果（{ok, ...}）。ok:true の中身の whitelist 検証は
 //   buildReqFromContract（_lib/analyze-contract.mjs）が担い、ここでは object / ok boolean /
@@ -120,6 +123,7 @@ export function validatePrerunSetup(raw, issue) {
   const frameworks = raw.stack.frameworks.filter((f) => typeof f === 'string');
   const ciVerify = normalizeCiVerify(raw.ci_verify);
   const localVerify = normalizeLocalVerify(raw.local_verify);
+  const visualSnapshots = normalizeVisualSnapshots(raw.visual_snapshots);
   const prTitleFormat = normalizePrTitleFormat(raw.pr_title_format);
 
   return {
@@ -138,6 +142,7 @@ export function validatePrerunSetup(raw, issue) {
     hooks_not_running: [...raw.hooks_not_running],
     ci_verify: ciVerify,
     local_verify: localVerify,
+    visual_snapshots: visualSnapshots,
     pr_title_format: prTitleFormat,
   };
 }
@@ -216,6 +221,18 @@ export function normalizeLocalVerify(raw) {
     env: raw.env,
     timeout_seconds: raw.timeout_seconds,
   };
+}
+
+// visual_snapshots（issue #1410）: prerun が検証済みの "dev-flow".visual_snapshots。dev-flow-evaluate が Evaluate の各評価の前に
+// command を local-verify で実行し、paths の下で変わった PNG を PR に入れる。未設定（null / 欠落）は null。
+export function normalizeVisualSnapshots(raw) {
+  if (raw == null) return null;
+  const ok = isPlainObject(raw) && isNonEmptyString(raw.command) && Number.isInteger(raw.timeout_seconds) && raw.timeout_seconds > 0
+    && Array.isArray(raw.paths) && raw.paths.length > 0 && raw.paths.every(isNonEmptyString);
+  if (!ok) {
+    throw new Error(`dev-flow: args.setup の visual_snapshots が不正（受信: ${stringifyForError(raw)}）— dev-flow-prerun が検証して出した値（{ command, db, env, timeout_seconds, paths }）をそのまま渡せ`);
+  }
+  return raw;
 }
 
 export function summarizePrerunDeps(deps) {
