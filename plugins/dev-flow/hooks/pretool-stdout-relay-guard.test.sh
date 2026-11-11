@@ -95,12 +95,17 @@ PASS=0
 FAIL=0
 FAILURES=()
 
-# run_raw <name> <expected: deny|silent> <raw stdin>
+# hook を起動する plugin root と PATH（bind が落ちる・node が無い場合を再現するケースだけが差し替える）
+HOOK_ROOT="$PLUGIN_ROOT"
+HOOK_PATH="$PATH"
+
+# run_raw <name> <expected: deny|silent> <raw stdin> [reason]
 #   silent: 無出力で exit 0 / deny: permissionDecision=deny の JSON を出して exit 0
+#   reason を渡したら、permissionDecisionReason がその文と一字一句同じことも確かめる
 run_raw() {
   local name="$1" expected="$2" input="$3"
   local output status=0
-  output=$(printf '%s' "$input" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$BASH" -c "$HOOK_CMD" 2>/dev/null) || status=$?
+  output=$(printf '%s' "$input" | PATH="$HOOK_PATH" CLAUDE_PLUGIN_ROOT="$HOOK_ROOT" "$BASH" -c "$HOOK_CMD" 2>/dev/null) || status=$?
 
   local got
   if [[ $status -ne 0 ]]; then
@@ -110,6 +115,14 @@ run_raw() {
   else
     got=$(jq -r '.hookSpecificOutput | select(.hookEventName == "PreToolUse") | .permissionDecision' <<<"$output" 2>/dev/null || true)
     [[ -n $got ]] || got="unparsable-output"
+  fi
+  if [[ $# -ge 4 && $got == "$expected" ]]; then
+    local reason
+    reason=$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<<"$output" 2>/dev/null || true)
+    if [[ $reason != "$4" ]]; then
+      expected="${expected} reason=$4"
+      got="${got} reason=${reason}"
+    fi
   fi
 
   if [[ $got == "$expected" ]]; then
@@ -130,15 +143,26 @@ run_bash() {
   run_raw "$name" "$expected" "$(hook_input "$tool" "$agent" "$(jq -cn --arg cmd "$cmd" '{command:$cmd}')")"
 }
 
-# run_cmd <name> <expected> <command> — 今の transcript のまま中継の Bash を起動する
+# run_cmd <name> <expected> <command> [reason] — 今の transcript のまま中継の Bash を起動する
 run_cmd() {
-  run_raw "$1" "$2" "$(hook_input Bash "$RELAY" "$(jq -cn --arg cmd "$3" '{command:$cmd}')")"
+  run_raw "$1" "$2" "$(hook_input Bash "$RELAY" "$(jq -cn --arg cmd "$3" '{command:$cmd}')")" "${@:4}"
 }
 
-# run_so <name> <expected> <返り値の JSON> [agent_type] — 今の transcript のまま中継の StructuredOutput を起動する
+# run_so <name> <expected> <返り値の JSON> [agent_type] [reason] — 今の transcript のまま中継の StructuredOutput を起動する
 run_so() {
-  run_raw "$1" "$2" "$(hook_input StructuredOutput "${4:-$RELAY}" "$3")"
+  run_raw "$1" "$2" "$(hook_input StructuredOutput "${4:-$RELAY}" "$3")" "${@:5}"
 }
+
+# deny の理由の文。bind の文は stdout-relay-bind.mjs の固定の文、GENERIC は bind の判定を得られないときの guard の文
+BIND_MJS="${PLUGIN_ROOT}/_lib/scripts/stdout-relay-bind.mjs"
+DENY_OUTPUT=$(sed -n "s/^const DENY_OUTPUT = '\(.*\)'\$/\1/p" "$BIND_MJS")
+if [[ $DENY_OUTPUT != *'"'* ]]; then
+  echo "FAIL: stdout-relay-bind.mjs から DENY_OUTPUT の文（引用符を含む）を取れない: ${DENY_OUTPUT}" >&2
+  exit 1
+fi
+DENY_COMMAND="stdout-relay は workflow の prompt の最終行のコマンドを一字一句そのまま実行する"
+DENY_NO_TRANSCRIPT="中継の transcript が見つからない"
+GENERIC="中継の入出力を確かめられない"
 # as_stdout <文字列> — 中継の返り値 {"stdout": <文字列>}
 as_stdout() {
   jq -cn --arg s "$1" '{stdout:$s}'
@@ -157,7 +181,7 @@ echo "[Bash は prompt の最終行と完全一致し、先頭トークンが ch
 run_bash "prompt の最終行と一致する check-ci は通す" silent "$RELAY" "$CHECK_CMD"
 run_bash "prompt の最終行と一致する check-ci --wait（引用符付きの check 名を含む）は通す" silent "$RELAY" "$WAIT_CMD"
 new_transcript "$(framed "$(relay_prompt "$CHECK_CMD")")"
-run_cmd "PR 番号を 1 字変えたら deny" deny "check-ci --pr 6 --repo acme/skills"
+run_cmd "PR 番号を 1 字変えたら deny（理由は bind の文）" deny "check-ci --pr 6 --repo acme/skills" "$DENY_COMMAND"
 run_cmd "--repo を落としたら deny" deny "check-ci --pr 5"
 run_cmd "末尾に空白を足したら deny" deny "${CHECK_CMD} "
 run_cmd "--only を足したら deny" deny "${CHECK_CMD} --only 'lint'"
@@ -190,7 +214,7 @@ new_transcript "$(framed "$(relay_prompt "$CHECK_CMD")")"
 run_raw "transcript_path が無ければ deny" deny "$(hook_input Bash "$RELAY" "$(jq -cn --arg cmd "$CHECK_CMD" '{command:$cmd}')" | jq -c 'del(.transcript_path)')"
 run_raw "agent_id が無ければ deny" deny "$(hook_input Bash "$RELAY" "$(jq -cn --arg cmd "$CHECK_CMD" '{command:$cmd}')" | jq -c 'del(.agent_id)')"
 run_raw "agent_id にパスの文字があれば deny" deny "$(hook_input Bash "$RELAY" "$(jq -cn --arg cmd "$CHECK_CMD" '{command:$cmd}')" | jq -c '.agent_id = "../x"')"
-run_raw "その agent の transcript が見つからなければ deny" deny "$(hook_input Bash "$RELAY" "$(jq -cn --arg cmd "$CHECK_CMD" '{command:$cmd}')" | jq -c '.agent_id = "aother"')"
+run_raw "その agent の transcript が見つからなければ deny（理由は bind の文）" deny "$(hook_input Bash "$RELAY" "$(jq -cn --arg cmd "$CHECK_CMD" '{command:$cmd}')" | jq -c '.agent_id = "aother"')" "$DENY_NO_TRANSCRIPT"
 cp "$TRANSCRIPT" "${WORKDIR}/session/subagents/agent-${AGENT_ID}.jsonl"
 run_cmd "同じ agent の transcript が 2 つあれば deny" deny "$CHECK_CMD"
 rm -f "${WORKDIR}/session/subagents/agent-${AGENT_ID}.jsonl"
@@ -218,6 +242,7 @@ run_so "Bash を実行せずに passed の stdout を返したら deny" deny "$(
 run_so "{\"stdout\": \"\"} は Bash 未実行でも通す" silent "$RELAY_FAILED"
 add_bash "$CHECK_CMD" "$PENDING_OUT"
 run_so "stdout の 1 行目と一致する文字列は通す" silent "$(as_stdout "$PENDING_OUT")"
+run_so "stdout の値を {\"stdout\": \"<1 行目>\"} の文字列で二重に包んだら deny（理由は DENY_OUTPUT の文のまま）" deny "$(as_stdout "$(as_stdout "$PENDING_OUT" | sed 's/^{"stdout":/{"stdout": /')")" "$RELAY" "$DENY_OUTPUT"
 run_so "1 字違う文字列（pending の件数 2 → 3）は deny" deny "$(as_stdout "$(jq -c '.pending = 3' <<<"$PENDING_OUT")")"
 run_so "status を passed に書き換えた文字列は deny" deny "$(as_stdout "$(jq -c '.status = "passed"' <<<"$PENDING_OUT")")"
 run_so "status と件数を揃えて passed にした文字列も deny" deny "$(as_stdout "$PASSED_OUT")"
@@ -275,6 +300,37 @@ new_transcript "$(framed "$(relay_prompt "gh pr view 5 --json statusCheckRollup"
 run_so "返り値: prompt の最終行が check-ci でなければ {\"stdout\": \"\"} も deny" deny "$RELAY_FAILED"
 run_raw "返り値: transcript が見つからなければ deny" deny "$(hook_input StructuredOutput "$RELAY" "$RELAY_FAILED" | jq -c '.agent_id = "aother"')"
 run_so "返り値: 他の agent は対象外" silent '{"status":"passed","passed":1,"failed":0,"pending":0,"skipped":0}' "$OTHER"
+
+echo "[bind の判定を得られないときは guard の固定の文で deny]"
+# hook は自分の場所から bind を引くので、bind だけを差し替えた plugin root を作って起動する
+FAKE_ROOT="${WORKDIR}/plugin"
+mkdir -p "${FAKE_ROOT}/hooks" "${FAKE_ROOT}/_lib/scripts"
+cp "${SCRIPT_DIR}/pretool-stdout-relay-guard.sh" "${FAKE_ROOT}/hooks/"
+FAKE_BIND="${FAKE_ROOT}/_lib/scripts/stdout-relay-bind.mjs"
+new_transcript "$(framed "$(relay_prompt "$CHECK_CMD")")"
+add_bash "$CHECK_CMD" "$PENDING_OUT"
+HOOK_ROOT="$FAKE_ROOT"
+printf 'process.exit(1)\n' >"$FAKE_BIND"
+run_cmd "bind が非 0 で落ちたら汎用文で deny" deny "$CHECK_CMD" "$GENERIC"
+run_so "bind が非 0 で落ちたら返り値も汎用文で deny" deny "$(as_stdout "$PENDING_OUT")" "$RELAY" "$GENERIC"
+printf 'process.stdout.write("allow\\n")\n' >"$FAKE_BIND"
+run_cmd "bind の出力が JSON でなければ汎用文で deny" deny "$CHECK_CMD" "$GENERIC"
+printf 'process.stdout.write("{\\"allow\\":false}\\n")\n' >"$FAKE_BIND"
+run_cmd "bind の deny に reason の文字列が無ければ汎用文で deny" deny "$CHECK_CMD" "$GENERIC"
+echo "[bind が deny で返した reason は \" や \\ を含んでもその文のまま出す]"
+printf '%s\n' 'process.stdout.write(JSON.stringify({allow: false, reason: String.raw`固定の文 "a" \n C:\x`}) + "\n")' >"$FAKE_BIND"
+run_cmd "bind の reason が \" と \\ を含んでもその文のまま deny" deny "$CHECK_CMD" '固定の文 "a" \n C:\x'
+HOOK_ROOT="$PLUGIN_ROOT"
+echo "[node を起動できないときは guard の固定の文で deny]"
+# node だけが無い PATH（hook が使う他のコマンドは symlink で置く）
+NO_NODE_BIN="${WORKDIR}/bin"
+mkdir -p "$NO_NODE_BIN"
+for tool in bash jq cat dirname; do
+  ln -s "$(command -v "$tool")" "${NO_NODE_BIN}/${tool}"
+done
+HOOK_PATH="$NO_NODE_BIN"
+run_cmd "node を起動できなければ汎用文で deny" deny "$CHECK_CMD" "node を実行できず${GENERIC}"
+HOOK_PATH="$PATH"
 
 echo
 echo "=== ${PASS} passed, ${FAIL} failed ==="
