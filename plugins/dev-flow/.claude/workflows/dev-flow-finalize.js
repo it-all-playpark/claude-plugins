@@ -2727,6 +2727,15 @@ function diagramCheckAfterFixes(diagramCheck) {
   return diagramCheck?.consistent === false ? diagramCheck : null;
 }
 
+const PR_BODY_VISUAL_FINAL_UNAVAILABLE = '最終の head で変わった基準画像の一覧を取得できなかった（Files changed で確かめる）';
+function visualSnapshotsAfterIterate(atPr, afterIterate) {
+  if (atPr == null) return null;
+  if (afterIterate != null && typeof afterIterate === 'object' && Array.isArray(afterIterate.changed) && Array.isArray(afterIterate.notes)) {
+    return { changed: afterIterate.changed, notes: afterIterate.notes };
+  }
+  return { changed: [], notes: [PR_BODY_VISUAL_FINAL_UNAVAILABLE] };
+}
+
 function noteLines(plan) {
   const all = arr(plan?.pr_notes)
     .filter((n) => PR_NOTE_SECTIONS.includes(n?.section) && collapseWhitespace(n?.text))
@@ -3014,6 +3023,9 @@ const pr = ARGS.pr
 const prBody = ARGS.pr_body
 let prBodyLatest = prBody
 const iterate = ARGS.iterate
+// pr-iterate の後の「画面の変化」の材料（最終の head の PR の差分から pr-iterate が作った一覧。宣言の無い run は null）。
+// pr-iterate が head を変えた run（fixes_applied > 0。撮り直しの commit も数える）の本文の作り直しと宣言外パス再監査が使う。
+const visualSnapshotsFinal = visualSnapshotsAfterIterate(state.visualSnapshots, iterate?.visual_snapshots)
 const route = ARGS.route
 let evalStaleness = ARGS.eval_staleness
 
@@ -3694,7 +3706,9 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
       // Step4 宣言外パス再監査（advisory）: Diff triage 時点の undeclared に無い新規分のみ集約 1 item
       const planAllTasksF = state.plan.serial ?? []
       const undeclaredFinal = diffDeclaredPaths(planAllTasksF, filesFinal)
-      const newUndeclared = undeclaredFinal.filter((p) => !(state.undeclared ?? []).includes(p))
+      // pr-iterate が撮り直した基準画像（最終の「画面の変化」の一覧）は撮影が入れたもので、fix 由来の宣言外変更に数えない
+      const knownUndeclared = [...(state.undeclared ?? []), ...(visualSnapshotsFinal?.changed ?? [])]
+      const newUndeclared = undeclaredFinal.filter((p) => !knownUndeclared.includes(p))
       if (newUndeclared.length > 0) {
         state.ledger = appendItem(state.ledger, { id: 'CONCERN-FINAL', text: `pr-iterate fix 後に plan 宣言外の変更 ${newUndeclared.length} 件: ${newUndeclared.join(', ')}`.slice(0, 500), dimension: 'concern', severity: 'major', source: 'concern', check: { kind: 'inspection' } }).ledger
         log(`Final reconcile: fix 由来の宣言外変更 ${newUndeclared.length} 件 → CONCERN-FINAL（advisory）へ注入`)
@@ -3906,8 +3920,8 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
     issue: ISSUE, req, plan: state.plan, testsurfHits: state.testsurfHits, dangerHits: secHitsOf(state.risk),
     acResults: acReverified ? state.finalAcResults : (state.evalResult?.ac_results ?? null), acStale: !acReverified,
     diagramCheck: diagramCheckAfterFixes(state.evalResult?.diagram_check),
-    // 「画面の変化」は PR 作成時の材料のまま載せる（pr-iterate の fix の後は撮り直さない）
-    visualSnapshots: state.visualSnapshots,
+    // 「画面の変化」は最終の head の PR の差分から作った一覧を載せる（PR 作成時の一覧は再掲しない）
+    visualSnapshots: visualSnapshotsFinal,
   })
   prBodyLatest = prBodyFinal
   const sync = await failOpenAgent(prBodyEditPrompt({ wt: WT, pr: pr.pr_number, repo: REPO, prBody: prBodyFinal, fileName: 'pr-body-final.md' }), { agentType: 'dev-runner-haiku', schema: PR_BODY_EDIT, label: 'ac-checkbox-sync', phase: 'Final reconcile' })
@@ -3915,6 +3929,21 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
   log(prBodySynced
     ? `ac-checkbox-sync: PR body の受入条件の結果を${acReverified ? ' Final AC reconcile 結果' : '「修正後に未再評価」'}へ更新`
     : '⚠️ ac-checkbox-sync: PR body 更新に失敗（fail-open。受入条件の結果は fix 前のまま）')
+} else if (iterate?.visual_snapshots != null && state.visualSnapshots != null
+  && JSON.stringify(visualSnapshotsFinal) !== JSON.stringify(state.visualSnapshots)) {
+  // head は変わっていないが「画面の変化」の材料が PR 作成時と違う run（pr-iterate の撮り直しが失敗して元に戻した等）: 撮り直せていない
+  // 理由を PR 本文に出すために「画面の変化」だけを差し替える。受入条件の結果と図は PR 作成時のまま（tree は変わっていない）。
+  // 表示専用で失敗は fail-open（prBodySynced は受入条件の結果の同期の値なので変えない）
+  const prBodyVisual = buildPrBody({
+    issue: ISSUE, req, plan: state.plan, testsurfHits: state.testsurfHits, dangerHits: secHitsOf(state.risk),
+    acResults: state.evalResult?.ac_results ?? null, diagramCheck: state.evalResult?.diagram_check ?? null,
+    visualSnapshots: visualSnapshotsFinal,
+  })
+  const sync = await failOpenAgent(prBodyEditPrompt({ wt: WT, pr: pr.pr_number, repo: REPO, prBody: prBodyVisual, fileName: 'pr-body-final.md' }), { agentType: 'dev-runner-haiku', schema: PR_BODY_EDIT, label: 'visual-snapshots-body-sync', phase: 'Final reconcile' })
+  if (sync?.edited === true) prBodyLatest = prBodyVisual
+  log(sync?.edited === true
+    ? 'visual-snapshots-body-sync: PR body の「画面の変化」を最終の head の一覧へ更新'
+    : '⚠️ visual-snapshots-body-sync: PR body 更新に失敗（fail-open。「画面の変化」は PR 作成時のまま）')
 }
 
 // Phase Merge tier: 最終 diff に danger-grep を再実行し merge tier を算出する。merge は全 tier 人間。

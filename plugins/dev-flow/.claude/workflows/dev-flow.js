@@ -59,6 +59,7 @@ const EVALUATE_RESULT_SPEC = {
     visualSnapshots: 'object|null',
   },
   redgreen_state_dir: 'string|null',
+  visual_snapshots_tree: 'string|null',
 }
 
 const FINALIZE_RESULT_SPEC = {
@@ -3515,6 +3516,8 @@ if (evaluateError) {
 state = evaluated.state
 // Evaluate の redgreen が作った state dir。Final reconcile の redgreen-final が使い回す。
 const redgreenStateDir = evaluated.redgreen_state_dir
+// Evaluate が基準画像を最後に撮影できた tree（宣言が無い・最後の撮影が失敗した run は null）。pr-iterate に渡す。
+const visualSnapshotsTree = evaluated.visual_snapshots_tree
 ABORT_CTX.shape = state.EFFECTIVE_SHAPE
 feedClockMark('evaluate_end', maxEpochRes([state.evalResult, state.postEvalVal, state.postEvalRecheck]))
 
@@ -3666,6 +3669,10 @@ const prIterateArgs = () => ({
   security_reviewer: PRERUN.security_reviewer,
   // Setup で解決したテストコマンド（pr-iterate は解決し直さない）
   test_commands: TEST_COMMANDS,
+  // 基準画像の撮影の宣言（Setup で検証した値。無ければ null）と、Evaluate が最後に撮影できた tree。pr-iterate は tree がこれと
+  // 違う round の review の前に撮り直して push する
+  visual_snapshots: VISUAL_SNAPSHOTS,
+  visual_snapshots_tree: visualSnapshotsTree,
   ...(CI_AC_INDEXES.length ? { ci_verify: { label: CI_VERIFY.label, checks: CI_VERIFY.checks, wait_ceiling_seconds: CI_VERIFY.wait_ceiling_seconds, ...(LOCAL_VERIFY_DECIDED ? { wait: false } : {}) } } : {}),
   nested: {
     caller: 'dev-flow', cwd: WT, head_ref: state.setup.branch,

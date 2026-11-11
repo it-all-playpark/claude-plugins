@@ -387,6 +387,19 @@ export function diagramCheckAfterFixes(diagramCheck) {
   return diagramCheck?.consistent === false ? diagramCheck : null;
 }
 
+// pr-iterate の後に本文を作り直すときの「画面の変化」の材料。pr-iterate は review の前に基準画像を撮り直して push しうるので、
+// PR 作成時の一覧（atPr。宣言の無い run は null）は載せず、pr-iterate が最終の head の PR の差分から作った一覧
+// （afterIterate = 返り値の visual_snapshots。{ changed, notes }）を載せる。その一覧が無い・形が違う run は PR 作成時の一覧に
+// 戻さず、取得できなかった旨を出す（最終の head と合うか分からない一覧を最終の画面として見せない）。
+export const PR_BODY_VISUAL_FINAL_UNAVAILABLE = '最終の head で変わった基準画像の一覧を取得できなかった（Files changed で確かめる）';
+export function visualSnapshotsAfterIterate(atPr, afterIterate) {
+  if (atPr == null) return null;
+  if (afterIterate != null && typeof afterIterate === 'object' && Array.isArray(afterIterate.changed) && Array.isArray(afterIterate.notes)) {
+    return { changed: afterIterate.changed, notes: afterIterate.notes };
+  }
+  return { changed: [], notes: [PR_BODY_VISUAL_FINAL_UNAVAILABLE] };
+}
+
 // 検証 details に足す pr_notes 行: 先頭 PR_BODY_NOTES_MAX 件を `- 計測: ...` / `- 検証: ...`、超過分は `（他 N 件）` 1 行。
 function noteLines(plan) {
   const all = arr(plan?.pr_notes)

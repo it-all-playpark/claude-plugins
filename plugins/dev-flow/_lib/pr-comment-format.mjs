@@ -174,6 +174,26 @@ const isPlainPath = (p) => /^[A-Za-z0-9_.@+\/-]+$/.test(p);
 // backtick を含む名前は code span に入れない（code span を途中で閉じる）。外に出す名前は backtick を escape する
 const pathCell = (p) => (p.includes('`') ? mdCell(p).replace(/`/g, '\\`') : `\`${mdCell(p)}\``);
 
+// 「画面の変化」の行（pr-iterate の返り値 visual_snapshots = { changed, notes }。最終の head の PR の差分で、宣言の paths の下で
+// 変わった PNG と、撮り直せなかった理由）。単体起動は PR 本文を書き換えないので、dev-flow が PR 本文に載せるのと同じ一覧を
+// 終了レポートに出す。パスは先頭 TERMINAL_VISUAL_PATHS_MAX 件を並べ、超過分は件数にする（全件は Files changed にある）。
+// パスと理由は撮影コマンド（PR のコード）が決められるデータなので mdCell で 1 行に畳む。
+const TERMINAL_VISUAL_PATHS_MAX = 30;
+function formatVisualSnapshotsLines(visualSnapshots) {
+  const texts = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim() !== '') : []);
+  const changed = texts(visualSnapshots?.changed);
+  const notes = texts(visualSnapshots?.notes);
+  const out = [];
+  if (changed.length > 0) {
+    const shown = changed.slice(0, TERMINAL_VISUAL_PATHS_MAX);
+    out.push(`最終の head の PR の差分で、基準画像の PNG が ${changed.length} 件変わった。見比べは PR の Files changed の画像差分（2-up / Swipe / Onion skin）で行う。`);
+    for (const p of shown) out.push(`- ${pathCell(p)}`);
+    if (changed.length > shown.length) out.push(`（他 ${changed.length - shown.length} 件）`);
+  }
+  for (const n of notes) out.push(`⚠️ ${mdCell(n)}`);
+  return out;
+}
+
 function finalTestRunLabel(t) {
   if (t != null && t.tests === 'passed' && t.green === true) return 'passed';
   if (t != null && t.tests === 'failed') {
@@ -423,9 +443,11 @@ function blockingTreatment(round, isLastRound, status, iterations) {
  * @param {string|null} [opts.endHead] - 観測と比べる終端 head。fix が head を動かしたか確かめられなかった run は null（省略時は headSha）
  * @param {boolean} [opts.fixDirectionUsed] - /pr-iterate を起動した人の修正方針（args.fix_direction）を fix に渡した run か。
  *   true なら渡したことだけを 1 行出す（方針の本文は受け取らない — 公開の PR コメントに載せない）
+ * @param {{changed: string[], notes: string[]}|null} [opts.visualSnapshots] - 「画面の変化」の一覧（最終の head の PR の差分で変わった
+ *   基準画像の PNG と、撮り直せなかった理由）。repo が visual_snapshots を宣言していない run は null
  * @returns {string}
  */
-export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], ciLastHead = null, ciVerifyStatus = null, ciVerifyHead = null, mergeableLast = null, humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, finalTestCheck = null, securityReview = null, securityReviewHead = null, headSha = null, endHead = headSha, fixDirectionUsed = false }) {
+export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], ciLastHead = null, ciVerifyStatus = null, ciVerifyHead = null, mergeableLast = null, humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, finalTestCheck = null, securityReview = null, securityReviewHead = null, headSha = null, endHead = headSha, fixDirectionUsed = false, visualSnapshots = null }) {
   const DECISION_EMOJI = { 'approve': '✅', 'request-changes': '🔴', 'comment': '💬' };
   const lines = [];
   const priorHold = priorDevflow != null && priorDevflow.tier === 'HOLD'
@@ -565,6 +587,15 @@ export function buildTerminalSummaryBody({ pr, status, iterations, lastDecision,
     lines.push('### 🔀 base との conflict の自動解消');
     lines.push('');
     lines.push(...conflictLines);
+  }
+
+  // 画面の変化（repo が visual_snapshots を宣言した run。変わった PNG も理由も無ければ 1 行も足さない）。
+  const visualLines = formatVisualSnapshotsLines(visualSnapshots);
+  if (visualLines.length > 0) {
+    lines.push('');
+    lines.push('### 🖼 画面の変化');
+    lines.push('');
+    lines.push(...visualLines);
   }
 
   const allMinor = histList.flatMap((r) => (r.minor ?? []).map((f) => ({ iter: r.iteration, ...f })));

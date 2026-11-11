@@ -27,6 +27,8 @@ import {
   PR_BODY_VISUAL_HEADING,
   PR_BODY_VISUAL_PATHS_MAX,
   PR_BODY_VISUAL_COMPARE_NOTE,
+  PR_BODY_VISUAL_FINAL_UNAVAILABLE,
+  visualSnapshotsAfterIterate,
   PR_BODY_AC_RESULTS_HEADING,
   PR_BODY_AC_UNVERIFIED,
   PR_BODY_AC_STALE,
@@ -51,6 +53,7 @@ import {
   PR_PUSH_WAIT_CAPPED_REASON,
   PR_PUSH_NOT_INVOKED_REASON,
 } from './pr-artifacts.mjs';
+import { VISUAL_SNAPSHOTS_STALE_NOTE, visualSnapshotsReport } from './visual-snapshots.mjs';
 
 // pr-push wait の stdout（pr-push 経由の push 失敗であることの証拠）
 const pushResult = (tail) => ({ status: 'failed', exit_code: 1, log: '/wt/.devflow-tmp/push-output.log', tail, epoch: 1 });
@@ -612,6 +615,54 @@ test(`[pr-artifacts] PR body: 変わった PNG は先頭 ${PR_BODY_VISUAL_PATHS_
   });
   assertBodyStructureIntact(hostile, 1);
   assert.ok(visualSectionOf(hostile).includes("- `tests/visual/a'b.png`"), hostile);
+});
+
+// ---- issue #1412: pr-iterate の後に本文を作り直すときは、最終の head の PR の差分から作った一覧を載せ、PR 作成時の一覧を再掲しない ----
+
+test('[pr-artifacts] visualSnapshotsAfterIterate: pr-iterate の後の本文は最終の head の一覧を載せ、PR 作成時の一覧は載せない（一覧が無ければ取得できなかった旨）', () => {
+  const atPr = { changed: ['tests/visual/at-pr.png'], notes: ['PR 作成時の理由'] };
+  const final = { changed: ['tests/visual/home.png', 'tests/visual/new.png'], notes: [] };
+  assert.deepEqual(visualSnapshotsAfterIterate(atPr, final), final);
+  const section = visualSectionOf(visualBody(visualSnapshotsAfterIterate(atPr, final)));
+  assert.ok(section.includes('- `tests/visual/new.png`') && !section.includes('at-pr.png') && !section.includes('PR 作成時の理由'), section);
+  // 最終の head で PNG の変化が無くなった run は節ごと出さない（PR 作成時の一覧に戻さない）
+  assert.ok(!visualBody(visualSnapshotsAfterIterate(atPr, { changed: [], notes: [] })).includes(PR_BODY_VISUAL_HEADING));
+  // pr-iterate が一覧を返さなかった・形が違う run は、PR 作成時の一覧に戻さず取得できなかった旨を出す
+  for (const missing of [undefined, null, 'x', { changed: 'a.png', notes: [] }, { changed: [] }]) {
+    assert.deepEqual(visualSnapshotsAfterIterate(atPr, missing), { changed: [], notes: [PR_BODY_VISUAL_FINAL_UNAVAILABLE] }, JSON.stringify(missing));
+  }
+  assert.equal(visualSectionOf(visualBody(visualSnapshotsAfterIterate(atPr, undefined))), `${PR_BODY_VISUAL_HEADING}\n⚠️ ${PR_BODY_VISUAL_FINAL_UNAVAILABLE}`);
+  // 宣言の無い run（PR 作成時の材料が null）は null のまま
+  assert.equal(visualSnapshotsAfterIterate(null, final), null);
+  assert.equal(visualSnapshotsAfterIterate(null, undefined), null);
+});
+
+test('[pr-artifacts] PR body: 最後に撮影できた tree が最終の tree と違う run（撮り直しの失敗・最後の修正の push の後に上限で終了）は「最終の画面は撮り直せていない」を 1 行出す', () => {
+  assert.equal(VISUAL_SNAPSHOTS_STALE_NOTE, '最終の画面は撮り直せていない（PNG は前の tree のもの）');
+  const atPr = { changed: ['tests/visual/home.png'], notes: [] };
+  const list = { ok: true, lines: ['tests/visual/home.png'] };
+  // 撮り直しの失敗: 失敗の理由と、PNG が前の tree のものである旨の両方を出す
+  const failed = '撮影のコマンドが exit 7 で失敗したため、この撮影の PNG は入れていない';
+  assert.equal(visualSectionOf(visualBody(visualSnapshotsAfterIterate(atPr, visualSnapshotsReport(list, failed, true)))), [
+    PR_BODY_VISUAL_HEADING,
+    `基準画像の PNG が 1 件変わった。${PR_BODY_VISUAL_COMPARE_NOTE}`,
+    '- `tests/visual/home.png`',
+    `⚠️ ${failed}`,
+    `⚠️ ${VISUAL_SNAPSHOTS_STALE_NOTE}`,
+  ].join('\n'));
+  // 最後の修正の push の後に上限で終わった: 撮影は失敗していないので、撮り直せていない旨だけを出す
+  assert.equal(visualSectionOf(visualBody(visualSnapshotsAfterIterate(atPr, visualSnapshotsReport(list, null, true)))), [
+    PR_BODY_VISUAL_HEADING,
+    `基準画像の PNG が 1 件変わった。${PR_BODY_VISUAL_COMPARE_NOTE}`,
+    '- `tests/visual/home.png`',
+    `⚠️ ${VISUAL_SNAPSHOTS_STALE_NOTE}`,
+  ].join('\n'));
+  // 変わった PNG が 0 件でも 1 行は出す。最後に撮影できた tree が最終の tree と同じ run は出さない
+  assert.equal(visualSectionOf(visualBody(visualSnapshotsAfterIterate(atPr, visualSnapshotsReport({ ok: true, lines: [] }, null, true)))), `${PR_BODY_VISUAL_HEADING}\n⚠️ ${VISUAL_SNAPSHOTS_STALE_NOTE}`);
+  assert.ok(!visualBody(visualSnapshotsAfterIterate(atPr, visualSnapshotsReport(list, null, false))).includes(VISUAL_SNAPSHOTS_STALE_NOTE));
+  // 表示だけ: 節の外（受入条件・Closes 等）は撮り直せた run と同じ
+  const strip = (body) => body.replace(visualSectionOf(body), '');
+  assert.equal(strip(visualBody(visualSnapshotsReport(list, failed, true))), strip(visualBody(visualSnapshotsReport(list, null, false))));
 });
 
 test('[pr-artifacts] PR body: diagram_check が無ければ図の前に「⚠️ 図は diff と未照合」の 1 行を付けて出す', () => {

@@ -392,6 +392,34 @@ const SECURITY_REVIEWER = args?.security_reviewer == null
       }
       return args.security_reviewer
     })()
+// visual_snapshots: repo の "dev-flow".visual_snapshots（基準画像を撮り直すコマンドと基準画像のディレクトリ paths の宣言。無ければ null）。
+// dev-flow は dev-flow-prerun、単体起動の wrapper は pr-iterate-prerun が検証して出した値を渡す（どちらも worktree の設定ファイルは
+// 読まない — PR が撮影コマンドと「変えてよい場所」を選べないように）。宣言のある run は、各 review の前に worktree の tree が最後に
+// 撮影した tree と違えば撮り直し、変わった PNG を PR ブランチに push する（下の「基準画像の撮り直し」）。不正形は明示 throw。
+const VISUAL_SNAPSHOTS = args?.visual_snapshots == null
+  ? null
+  : (() => {
+      const v = args.visual_snapshots
+      const ok = typeof v === 'object' && typeof v.command === 'string' && v.command.trim() !== ''
+        && Number.isInteger(v.timeout_seconds) && v.timeout_seconds > 0
+        && Array.isArray(v.paths) && v.paths.length > 0
+        && v.paths.every((p) => typeof p === 'string' && p.trim() !== '' && !p.startsWith('/') && !p.split('/').includes('..'))
+      if (!ok) {
+        throw new Error(`pr-iterate: args.visual_snapshots が不正形です（prerun が検証して出した { command, db, env, timeout_seconds, paths } をそのまま渡す）: ${JSON.stringify(v)}`)
+      }
+      return v
+    })()
+// visual_snapshots_tree: dev-flow が渡す、Evaluate が基準画像を最後に撮影できた worktree の tree OID（撮影できていなければ null）。
+// 単体起動は渡さない（最初の review の前に撮影する）。不正形は明示 throw。
+const VISUAL_SNAPSHOTS_TREE_ARG = args?.visual_snapshots_tree == null
+  ? null
+  : (() => {
+      const t = args.visual_snapshots_tree
+      if (typeof t !== 'string' || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(t)) {
+        throw new Error(`pr-iterate: args.visual_snapshots_tree は tree OID（小文字 hex 40 桁か 64 桁）（受信: ${JSON.stringify(t)}）`)
+      }
+      return t
+    })()
 // 終端サマリーの PR コメント投稿。dev-flow は自分の終端サマリーを投稿するので caller:'dev-flow' のときだけ止め、
 // 単体起動（wrapper 経由の caller:'standalone' / nested 無しの直接起動）は投稿する
 const POST_TERMINAL_SUMMARY = NESTED?.caller !== 'dev-flow'
@@ -843,6 +871,22 @@ const shortShaCell = (s) => `\`${String(s).slice(0, 7)}\``;
 const isPlainPath = (p) => /^[A-Za-z0-9_.@+\/-]+$/.test(p);
 const pathCell = (p) => (p.includes('`') ? mdCell(p).replace(/`/g, '\\`') : `\`${mdCell(p)}\``);
 
+const TERMINAL_VISUAL_PATHS_MAX = 30;
+function formatVisualSnapshotsLines(visualSnapshots) {
+  const texts = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim() !== '') : []);
+  const changed = texts(visualSnapshots?.changed);
+  const notes = texts(visualSnapshots?.notes);
+  const out = [];
+  if (changed.length > 0) {
+    const shown = changed.slice(0, TERMINAL_VISUAL_PATHS_MAX);
+    out.push(`最終の head の PR の差分で、基準画像の PNG が ${changed.length} 件変わった。見比べは PR の Files changed の画像差分（2-up / Swipe / Onion skin）で行う。`);
+    for (const p of shown) out.push(`- ${pathCell(p)}`);
+    if (changed.length > shown.length) out.push(`（他 ${changed.length - shown.length} 件）`);
+  }
+  for (const n of notes) out.push(`⚠️ ${mdCell(n)}`);
+  return out;
+}
+
 function finalTestRunLabel(t) {
   if (t != null && t.tests === 'passed' && t.green === true) return 'passed';
   if (t != null && t.tests === 'failed') {
@@ -1024,7 +1068,7 @@ function blockingTreatment(round, isLastRound, status, iterations) {
   return status === 'security_unresolved' ? SECURITY_UNRESOLVED_TREATMENT : '未修正で終了';
 }
 
-function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], ciLastHead = null, ciVerifyStatus = null, ciVerifyHead = null, mergeableLast = null, humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, finalTestCheck = null, securityReview = null, securityReviewHead = null, headSha = null, endHead = headSha, fixDirectionUsed = false }) {
+function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSummary, lastVerificationEvidence, history, ciWaitSeconds, ciPollAttempts, ciLastStatus = null, ciLastFailedChecks = [], ciLastHead = null, ciVerifyStatus = null, ciVerifyHead = null, mergeableLast = null, humanFollowups = [], conflictAutoresolve = [], priorDevflow = null, finalTestCheck = null, securityReview = null, securityReviewHead = null, headSha = null, endHead = headSha, fixDirectionUsed = false, visualSnapshots = null }) {
   const DECISION_EMOJI = { 'approve': '✅', 'request-changes': '🔴', 'comment': '💬' };
   const lines = [];
   const priorHold = priorDevflow != null && priorDevflow.tier === 'HOLD'
@@ -1157,6 +1201,14 @@ function buildTerminalSummaryBody({ pr, status, iterations, lastDecision, lastSu
     lines.push('### 🔀 base との conflict の自動解消');
     lines.push('');
     lines.push(...conflictLines);
+  }
+
+  const visualLines = formatVisualSnapshotsLines(visualSnapshots);
+  if (visualLines.length > 0) {
+    lines.push('');
+    lines.push('### 🖼 画面の変化');
+    lines.push('');
+    lines.push(...visualLines);
   }
 
   const allMinor = histList.flatMap((r) => (r.minor ?? []).map((f) => ({ iter: r.iteration, ...f })));
@@ -2033,6 +2085,260 @@ function unresolvedTestCommands(source, commandsFile, error) {
 }
 // ==== END inline: _lib/test-commands.mjs ====
 
+// 基準画像の撮り直し（visual_snapshots）は local-verify で回す（値と判定は _lib/local-verify.mjs）
+// ==== BEGIN inline: _lib/local-verify.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+const LOCAL_VERIFY_START_WAIT_SEC = 300
+const LOCAL_VERIFY_WAIT_SEC = 480
+function localVerifyConfigArg(cfg) {
+  return encodeURIComponent(JSON.stringify(cfg)).replace(/[!'()*~]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
+}
+
+function localVerifyWaitPolls(timeoutSeconds) {
+  const t = Number.isInteger(timeoutSeconds) && timeoutSeconds > 0 ? timeoutSeconds : 0
+  return Math.ceil(t / LOCAL_VERIFY_WAIT_SEC) + 1
+}
+
+function localVerifyVerdict(res) {
+  if (!res || typeof res !== 'object') return 'error'
+  switch (res.status) {
+    case 'passed': return res.exit_code === 0 ? 'passed' : 'error'
+    case 'failed':
+    case 'timeout': return 'failed'
+    case 'unavailable': return 'unavailable'
+    case 'running': return 'running'
+    default: return 'error'
+  }
+}
+// ==== END inline: _lib/local-verify.mjs ====
+// 撮影・一覧・撮り直しの commit の部品は evaluate と共用する（_lib/visual-snapshots.mjs）
+// ==== BEGIN inline: _lib/visual-snapshots.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+const VISUAL_SNAPSHOTS_STATE_DIR = '.devflow-tmp/visual-snapshots'
+const VISUAL_SNAPSHOTS_OUTSIDE_SHOWN = 5
+const VISUAL_SNAPSHOTS_UNRESTORED_NOTE = '（worktree を撮影前の状態に戻し切れていない。Files changed で意図しない変更が無いか確かめる）'
+
+const VISUAL_SNAPSHOTS_GUARD = {
+  type: ['object', 'null'],
+  properties: {
+    tree_before: { type: 'string' }, tree: { type: ['string', 'null'] }, discarded: { type: 'boolean' }, restored: { type: ['boolean', 'null'] },
+    outside: { type: 'array', items: { type: 'string' } }, outside_count: { type: 'number' },
+  },
+}
+const VISUAL_SNAPSHOTS_RESULT = {
+  type: 'object', required: ['ok', 'status'],
+  properties: {
+    ok: { type: 'boolean' }, status: { type: 'string', enum: ['running', 'passed', 'failed', 'timeout', 'stopped', 'unavailable', 'error'] },
+    exit_code: { type: ['number', 'null'] }, log_path: { type: 'string' }, log_tail: { type: 'string' }, reason: { type: 'string' }, error: { type: 'string' },
+    db_deleted: { type: ['boolean', 'null'] }, snapshot: VISUAL_SNAPSHOTS_GUARD,
+  },
+}
+const VISUAL_SNAPSHOTS_STOP = {
+  type: 'object', required: ['ok'],
+  properties: {
+    ok: { type: 'boolean' }, stopped: { type: 'boolean' }, was_running: { type: 'boolean' }, db_deleted: { type: ['boolean', 'null'] },
+    error: { type: 'string' }, snapshot: VISUAL_SNAPSHOTS_GUARD,
+  },
+}
+
+function visualSnapshotsOneLine(v) {
+  return String(v ?? '').replace(/\s+/g, ' ').trim()
+}
+
+function visualSnapshotsOutcome(res, verdict, timeoutSeconds) {
+  const snap = res != null && typeof res === 'object' && res.snapshot != null && typeof res.snapshot === 'object' ? res.snapshot : null
+  const tree = typeof snap?.tree === 'string' && snap.tree ? snap.tree : null
+  if (verdict === 'passed') return { captured: true, tree, restored: null, note: null }
+  const outside = (Array.isArray(snap?.outside) ? snap.outside : []).filter((p) => typeof p === 'string' && p).map(visualSnapshotsOneLine)
+  const detail = (v) => (visualSnapshotsOneLine(v) ? `（${visualSnapshotsOneLine(v).slice(0, 200)}）` : '')
+  let note
+  if (outside.length) {
+    const total = Number.isInteger(snap.outside_count) && snap.outside_count > outside.length ? snap.outside_count : outside.length
+    const shown = outside.slice(0, VISUAL_SNAPSHOTS_OUTSIDE_SHOWN)
+    note = `撮影のコマンドが paths の下の PNG 以外を変えたため、この撮影の結果をすべて捨てた: ${shown.join(', ')}${total > shown.length ? ` ほか ${total - shown.length} 件` : ''}`
+  } else if (res?.status === 'timeout') {
+    note = `撮影のコマンドが上限時間（${timeoutSeconds} 秒）を超えて止められたため、この撮影の PNG は入れていない`
+  } else if (res?.status === 'failed') {
+    note = `撮影のコマンドが exit ${res.exit_code ?? '?'} で失敗したため、この撮影の PNG は入れていない${detail(res.reason)}`
+  } else if (verdict === 'unavailable') {
+    note = `使い捨ての DB を確保できなかったため撮影できなかった${detail(res?.reason)}`
+  } else if (verdict === 'running') {
+    note = `撮影が上限時間（${timeoutSeconds} 秒）を過ぎても終わらなかったため、この撮影の PNG は入れていない`
+  } else {
+    note = `撮影の結果を取得できなかったため、この撮影の PNG は入れていない${detail(res?.error ?? res?.reason ?? 'proxy の応答が無い・形が不正')}`
+  }
+  return { captured: false, tree, restored: typeof snap?.restored === 'boolean' ? snap.restored : null, note }
+}
+
+function visualSnapshotsShellArg(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`
+}
+
+function visualSnapshotsListPrompt({ wt, base, tree, paths }) {
+  const specs = paths.map((p) => visualSnapshotsShellArg(`:(top,glob)${String(p).replace(/\/+$/, '')}/**/*.png`)).join(' ')
+  return `次のコマンドを **先頭トークンが git の bare 単文** で 1 回だけ実行し、stdout の各行を配列 lines に一字一句そのまま（要約・整形・並べ替え・件数制限をせず）入れて {"ok": true, "lines": [...]} で返せ`
+    + `（stdout が空なら {"ok": true, "lines": []}。exit 非0・コマンド実行不能なら ok:false/error で返せ。失敗時に ok:true を生成してはならない。`
+    + `cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止。-C で worktree を渡しているため cd は不要）:\n`
+    + `git -C ${wt} -c core.quotePath=false diff --name-only --no-renames ${visualSnapshotsShellArg(`origin/${base}`)} ${tree} -- ${specs}`
+}
+
+const VISUAL_SNAPSHOTS_STALE_NOTE = '最終の画面は撮り直せていない（PNG は前の tree のもの）'
+
+function visualSnapshotsReport(list, note, stale = false) {
+  const listed = list != null && list.ok === true && Array.isArray(list.lines)
+  const changed = listed ? [...new Set(list.lines.filter((l) => typeof l === 'string').map((l) => l.replace(/\r$/, '')).filter((l) => l.trim() !== ''))] : []
+  const notes = [
+    ...(typeof note === 'string' && note ? [note] : []),
+    ...(stale === true ? [VISUAL_SNAPSHOTS_STALE_NOTE] : []),
+    ...(listed ? [] : ['変わった基準画像の一覧を取得できなかった（Files changed で確かめる）']),
+  ]
+  return { changed, notes }
+}
+
+
+const VISUAL_SNAPSHOTS_TREE = {
+  type: 'object', required: ['hash', 'empty'],
+  properties: { hash: { type: 'string' }, empty: { type: 'boolean' }, epoch: { type: 'number' } },
+}
+function visualSnapshotsTreePrompt(wt) {
+  return `次のコマンドを **先頭トークンが worktree-diff-hash の bare 単文** で 1 回だけ実行し、**stdout の JSON 1 行をそのまま** verbatim で返せ（判定や脚色をしない）。`
+    + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止`
+    + `（第 1 引数で worktree 絶対パスを渡しているため cd は不要）:\n`
+    + `worktree-diff-hash ${wt} HEAD`
+}
+const VISUAL_SNAPSHOTS_LINES = {
+  type: 'object', required: ['ok'],
+  properties: { ok: { type: 'boolean' }, lines: { type: 'array', items: { type: 'string' } }, error: { type: 'string' } },
+}
+
+function visualSnapshotsRunState(lastTree = null) {
+  return { lastTree, attempts: 0, note: null }
+}
+
+async function captureVisualSnapshots({ decl, wt, run, readTree, at, carryOn, spawn, log }) {
+  try {
+    return await captureVisualSnapshotsOnce({ decl, wt, run, readTree, at, carryOn, spawn, log })
+  } catch (e) {
+    run.note = `撮影の途中で例外が起きたため、撮影の結果を確かめられていない（${String(e && e.message ? e.message : e).slice(0, 200)}）`
+    run.lastTree = null
+    log(`⚠️ visual-snapshots: ${at} の前の撮影が例外 — ${carryOn}（fail-open）: ${e && e.message ? e.message : e}`)
+    return { attempted: true, captured: false, before: null, after: null }
+  }
+}
+async function captureVisualSnapshotsOnce({ decl, wt, run, readTree, at, carryOn, spawn, log }) {
+  const before = await readTree('before')
+  if (before == null) {
+    run.note = '撮影前の worktree の tree を取得できなかったため撮影していない'
+    log(`⚠️ visual-snapshots: ${at} の前の tree を取得できない — 撮影しない（fail-open）`)
+    return { attempted: false, captured: false, before: null, after: null }
+  }
+  if (before === run.lastTree) {
+    log(`visual-snapshots: ${at} — tree が最後に撮影した tree と同じ（撮り直さない）`)
+    return { attempted: false, captured: false, before, after: before }
+  }
+  const n = ++run.attempts
+  const stateDir = `${wt}/${VISUAL_SNAPSHOTS_STATE_DIR}`
+  const proxy = (cmd) => `次を Bash で **timeout 600000** を指定して 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ`
+    + `（判定や脚色をしない。失敗時に ok:true を生成してはならない。& や nohup を足さない — 常駐化はコマンド自身が行う）:\n${cmd}`
+  const runner = (schema, label) => ({ agentType: 'dev-runner-haiku', schema, label })
+  let res = null
+  try {
+    const start = await spawn(
+      proxy(`local-verify start --worktree '${wt}' --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_START_WAIT_SEC} --config-pct ${localVerifyConfigArg(decl)}`),
+      runner(VISUAL_SNAPSHOTS_RESULT, `visual-snapshots-start#${n}`),
+    )
+    res = await waitBgJob({
+      start,
+      wait: (k) => spawn(
+        proxy(`local-verify wait --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_WAIT_SEC}`),
+        runner(VISUAL_SNAPSHOTS_RESULT, `visual-snapshots-wait#${n}.${k}`),
+      ),
+      maxPolls: localVerifyWaitPolls(decl.timeout_seconds),
+      schema: VISUAL_SNAPSHOTS_RESULT,
+    })
+  } finally {
+    const stop = await spawn(proxy(`local-verify stop --state-dir '${stateDir}'`), runner(VISUAL_SNAPSHOTS_STOP, `visual-snapshots-stop#${n}`))
+    if (!stop || stop.ok !== true) log(`⚠️ visual-snapshots-stop#${n}: 停止を確認できない（${stop?.error ?? 'proxy の応答が無い'}）— 後片付けは local-verify の supervisor の trap に委ねる`)
+  }
+  const outcome = visualSnapshotsOutcome(res, localVerifyVerdict(res), decl.timeout_seconds)
+  const after = outcome.tree ?? await readTree('after')
+  const unrestored = !outcome.captured && (outcome.restored === false || (outcome.restored == null && after != null && after !== before))
+  run.note = outcome.captured ? null : `${outcome.note}${unrestored ? VISUAL_SNAPSHOTS_UNRESTORED_NOTE : ''}`
+  run.lastTree = after
+  log(outcome.captured
+    ? `visual-snapshots#${n}: 撮影した（${at} の前。tree ${before.slice(0, 8)} → ${after ? after.slice(0, 8) : '不明'}${after === before ? '。変わった基準画像なし' : ''}）`
+    : `⚠️ visual-snapshots#${n}: ${run.note} — ${carryOn}（fail-open）`)
+  return { attempted: true, captured: outcome.captured, before, after }
+}
+
+async function reportVisualSnapshots({ decl, wt, base, tree, note, stale = false, spawn, log }) {
+  let list = null
+  try {
+    list = !base || tree == null ? null : await spawn(
+      visualSnapshotsListPrompt({ wt, base, tree, paths: decl.paths }),
+      { agentType: 'dev-runner-haiku-ro', schema: VISUAL_SNAPSHOTS_LINES, label: 'visual-snapshots-list', retryOnContractViolation: true },
+    )
+  } catch (e) { log(`⚠️ visual-snapshots-list が例外 — 一覧なしで続ける（fail-open）: ${e && e.message ? e.message : e}`) }
+  return visualSnapshotsReport(list, note, stale)
+}
+
+const VISUAL_SNAPSHOTS_COMMIT_SUBJECT = '画面の変化（撮り直し）'
+const VISUAL_SNAPSHOTS_COMMIT = {
+  type: 'object', required: ['committed', 'pushed'],
+  properties: {
+    head_before: { type: 'string' }, committed: { type: 'boolean' }, pushed: { type: 'boolean' }, head_sha: { type: 'string' },
+    push_result: { type: 'object' },
+  },
+}
+function visualSnapshotsPngSpecs(paths) {
+  return paths.map((p) => visualSnapshotsShellArg(`:(top,glob)${String(p).replace(/\/+$/, '')}/**/*.png`)).join(' ')
+}
+function visualSnapshotsChangedPrompt({ wt, paths }) {
+  return `次のコマンドを **先頭トークンが git の bare 単文** で 1 回だけ実行し、stdout の各行を配列 lines に一字一句そのまま（要約・整形・並べ替え・件数制限をせず）入れて {"ok": true, "lines": [...]} で返せ`
+    + `（stdout が空なら {"ok": true, "lines": []}。exit 非0・コマンド実行不能なら ok:false/error で返せ。失敗時に ok:true を生成してはならない。`
+    + `cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止。-C で worktree を渡しているため cd は不要）:\n`
+    + `git -C ${wt} -c core.quotePath=false ls-files --modified --deleted --others --exclude-standard -- ${visualSnapshotsPngSpecs(paths)}`
+}
+function visualSnapshotsChangedPaths(paths, list) {
+  if (list == null || list.ok !== true || !Array.isArray(list.lines)) return null
+  const files = list.lines.filter((l) => typeof l === 'string').map((l) => l.replace(/\r$/, '').replace(/^"/, ''))
+  return paths.filter((p) => {
+    const dir = `${String(p).replace(/^(\.\/)+/, '').replace(/\/+$/, '')}/`
+    return files.some((f) => f.startsWith(dir))
+  })
+}
+function visualSnapshotsCommitPrompt({ wt, pr, headRef, paths, pushSteps }) {
+  const specs = visualSnapshotsPngSpecs(paths)
+  return `## Objective\n撮り直した基準画像の PNG を PR #${pr} のブランチに commit・push し、commit の前後の head sha を返す。\n\n`
+    + `## Steps\n以下を順に bare 単文（先頭トークンが git・pr-push のいずれか。cd 前置・bash 前置・env 代入前置・&& 連結禁止）で実行せよ:\n`
+    + `1. \`git -C ${wt} rev-parse HEAD\` を実行し、stdout の 40 桁 hex をそのまま head_before とする（失敗時は空文字）。\n`
+    + `2. \`git add -- ${specs}\` を実行する（一字一句そのまま 1 回。パスを書き換え・追加・削除しない。ほかの add は実行しない）。\n`
+    + `3. \`git commit -m "test(pr-${pr}): ${VISUAL_SNAPSHOTS_COMMIT_SUBJECT}" -- ${specs}\` を実行する。exit 0 なら committed:true。`
+    + `それ以外は committed:false, pushed:false として push せずに手順 6 へ進む（原因調査・再試行をしない）。\n`
+    + `4. push する。${pushSteps}失敗・timeout・running でも手順 5 へ進む。\n`
+    + `5. \`git -C ${wt} rev-list ${visualSnapshotsShellArg(`origin/${headRef}..HEAD`)} --count\` を実行する。警告行を除いた出力が 0 なら pushed:true。コマンド失敗または非数値出力なら pushed:false。\n`
+    + `6. \`git -C ${wt} rev-parse HEAD\` を実行し、stdout の 40 桁 hex をそのまま head_sha とする（失敗時は空文字）。\n`
+    + `7. { "head_before": <1の結果>, "committed": <3の結果>, "pushed": <5の結果>, "head_sha": <6の結果>, "push_result": <4の push_result。手順 4 で push しなければキーごと省く> } を返す。\n\n`
+    + `## Output format\n{ "head_before": string, "committed": boolean, "pushed": boolean, "head_sha": string, "push_result": object }\nprose 禁止。JSON のみ返せ。\n\n`
+    + `## Tools\n使用可: Bash, Read\n\n## Boundary\n上記コマンド以外のファイル変更・git 操作禁止。\n\n## Token cap\nJSON のみ。1 行以内。`
+}
+const VISUAL_SNAPSHOTS_REVERT = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, error: { type: 'string' } } }
+function visualSnapshotsRevertPrompt({ sha, paths }) {
+  const specs = visualSnapshotsPngSpecs(paths)
+  return `## Objective\npush できなかった基準画像の撮り直しの commit を取り消し、基準画像の PNG を撮り直しの前の状態に戻す。\n\n`
+    + `## Steps\n以下を順に bare 単文（先頭トークンが git。cd 前置・bash 前置・env 代入前置・&& 連結禁止）で 1 回ずつ実行せよ:\n`
+    + `1. \`git reset --soft ${sha}\`\n`
+    + `2. \`git restore --source=${sha} --staged --worktree -- ${specs}\`\n`
+    + `両方 exit 0 なら {"ok": true}。どちらかが exit 非 0 なら {"ok": false, "error": <stderr の要旨>} を返す（再試行・原因調査をしない。失敗時に ok:true を生成してはならない）。\n\n`
+    + `## Output format\n{ "ok": boolean, "error": string }\nprose 禁止。JSON のみ返せ。\n\n`
+    + `## Tools\n使用可: Bash\n\n## Boundary\n上記コマンド以外のファイル変更・git 操作禁止。push しない。\n\n## Token cap\nJSON のみ。1 行以内。`
+}
+function visualSnapshotsReviewNote({ sha, scope, paths }) {
+  return `この review の前に、パイプラインが基準画像を撮り直した commit ${sha}（${JSON.stringify(paths)} の下の PNG だけ）を PR ブランチに push した。`
+    + `review の対象の head はこの commit を含む。`
+    + (scope === 'remerge' ? `上の範囲に加えて \`git show --stat ${sha}\` でこの commit の変更も確かめる。` : '')
+    + `画像の中身は判定しない（人間が PR の Files changed の画像差分で確かめる）。\n`
+}
+// ==== END inline: _lib/visual-snapshots.mjs ====
+
 phase('Iterate')
 
 // repo (owner/name) probe: PR の base repo URL から owner/name を導出する（telemetry の repo 解決用）。
@@ -2690,6 +2996,92 @@ async function ensureFixCommitted(i, shaPrev) {
   return { ensured: false, headSha, deltaLines }
 }
 
+// ---- 基準画像の撮り直し ----
+// 宣言 visual_snapshots のある run は、各 round の review の前に worktree の tree（worktree-diff-hash）を取り、最後に撮影した tree と
+// 違えば（pr-fixer の修正・conflict の自動解消など理由を問わない。単体起動の最初は撮影した tree が無い）、今の tree で撮影する
+// （_lib/visual-snapshots.mjs の captureVisualSnapshots。evaluate と同じ local-verify・同じ守り）。変わった PNG があれば
+// 「画面の変化（撮り直し）」の commit として PR ブランチに push し、shaNow をその commit にする — この後の review・ci-check・
+// security review の head 照合と delta の範囲は、撮り直しの commit を含む head を対象にする。review の後に撮り直すと、review を
+// 通した head と merge する head が食い違う。
+// 撮り直しの commit は fixesApplied に数える（conflict の自動解消と同じ。nested 起動の dev-flow が Final reconcile で最終 tree の
+// test を取り直し、PR 本文を作り直す）。
+// 撮影・commit・push の失敗は fail-open: commit を取り消して paths の下の PNG を撮り直しの前に戻し、理由を「画面の変化」に出して
+// review を続ける。merge tier・HOLD 理由・terminal には使わない（撮影コマンドは PR のコード）。失敗した tree も記録し、同じ tree で
+// 繰り返さない。
+const visualRun = visualSnapshotsRunState(VISUAL_SNAPSHOTS_TREE_ARG)
+// 最後に撮影できた tree（失敗した撮影は入れない）。run の終わりに最終の tree と比べ、違えば「撮り直せていない」と開示する
+let visualCapturedTree = VISUAL_SNAPSHOTS_TREE_ARG
+const visualSpawn = (prompt, o) => failOpenAgent(prompt, { ...o, phase: 'Iterate' })
+async function visualTree(label) {
+  const dh = await visualSpawn(visualSnapshotsTreePrompt(isoWt), { agentType: 'dev-runner-haiku-ro', schema: VISUAL_SNAPSHOTS_TREE, label })
+  return dh && typeof dh.hash === 'string' && dh.hash ? dh.hash : null
+}
+// 返り値: 撮り直しの commit を push したらその head sha（取れなければ true）、それ以外は null
+async function recaptureVisualSnapshots(iteration) {
+  if (!VISUAL_SNAPSHOTS) return null
+  try {
+    return await recaptureVisualSnapshotsOnce(iteration)
+  } catch (e) {
+    visualRun.note = `撮り直しの途中で例外が起きたため、撮り直しの結果を確かめられていない（${String(e?.message ?? e).slice(0, 200)}）`
+    log(`⚠️ visual-snapshots: review#${iteration} の前の撮り直しが例外 — review は続ける（fail-open）: ${e?.message ?? e}`)
+    return null
+  }
+}
+async function recaptureVisualSnapshotsOnce(iteration) {
+  const shot = await captureVisualSnapshots({
+    decl: VISUAL_SNAPSHOTS, wt: isoWt, run: visualRun, at: `review#${iteration}`, carryOn: 'review は続ける',
+    readTree: (when) => visualTree(when === 'before' ? `diff-hash-snapshot#${iteration}` : `diff-hash-snapshot-after#${iteration}`),
+    spawn: visualSpawn, log,
+  })
+  if (!shot.captured) return null
+  if (shot.after != null && shot.after === shot.before) {
+    visualCapturedTree = shot.after
+    return null
+  }
+  // commit・取り消しの pathspec は PNG が変わった path だけにする（合致の無い pathspec で git が失敗する）。一覧が取れなければ全 path
+  const changed = visualSnapshotsChangedPaths(VISUAL_SNAPSHOTS.paths, await visualSpawn(
+    visualSnapshotsChangedPrompt({ wt: isoWt, paths: VISUAL_SNAPSHOTS.paths }),
+    { agentType: 'dev-runner-haiku-ro', schema: VISUAL_SNAPSHOTS_LINES, label: `visual-snapshots-changed#${iteration}`, retryOnContractViolation: true },
+  ))
+  if (changed != null && changed.length === 0) {
+    visualCapturedTree = shot.after
+    log(`visual-snapshots: review#${iteration} — 撮影で変わった基準画像なし（commit しない）`)
+    return null
+  }
+  const paths = changed ?? VISUAL_SNAPSHOTS.paths
+  const wasUnsettled = endHeadUnsettled
+  securityHeadMayChange()
+  const label = `visual-snapshots-commit#${iteration}`
+  const res = await settlePush(label, await visualSpawn(
+    visualSnapshotsCommitPrompt({ wt: isoWt, pr: PR, headRef: prMeta?.head_ref || '', paths, pushSteps: PROXY_PUSH_STEPS }),
+    { agentType: 'dev-runner-haiku', schema: VISUAL_SNAPSHOTS_COMMIT, label },
+  ), (r) => r.committed === true && r.pushed !== true)
+  if (res?.committed === true && res.pushed === true) {
+    const head = isFullCommitSha(res.head_sha) ? res.head_sha.trim() : null
+    shaNow = head
+    endHeadUnsettled = head == null
+    fixesApplied++
+    visualCapturedTree = shot.after
+    log(`iteration ${iteration}: 撮り直した基準画像を「${VISUAL_SNAPSHOTS_COMMIT_SUBJECT}」の commit として push した（head ${head ? head.slice(0, 7) : '不明'}）— この round の review はこの commit を含む head を対象にする`)
+    return head ?? true
+  }
+  // commit・push に失敗: commit を取り消し、paths の下の PNG を撮り直しの前に戻す。戻せたかは tree で確かめる
+  const before = isFullCommitSha(shaNow) ? shaNow.trim() : (isFullCommitSha(res?.head_before) ? res.head_before.trim() : null)
+  let restored = false
+  if (before != null) {
+    const reverted = await visualSpawn(
+      visualSnapshotsRevertPrompt({ sha: before, paths }),
+      { agentType: 'dev-runner-haiku', schema: VISUAL_SNAPSHOTS_REVERT, label: `visual-snapshots-revert#${iteration}` },
+    )
+    restored = reverted?.ok === true && await visualTree(`diff-hash-snapshot-reverted#${iteration}`) === shot.before
+  }
+  if (restored) endHeadUnsettled = wasUnsettled
+  visualRun.lastTree = shot.before
+  visualRun.note = `撮り直した基準画像の commit・push に失敗したため、撮り直しの前の状態に戻した${restored ? '' : VISUAL_SNAPSHOTS_UNRESTORED_NOTE}`
+  log(`⚠️ iteration ${iteration}: ${visualRun.note}（committed=${res?.committed ?? 'null'} / pushed=${res?.pushed ?? 'null'}）— review は続ける（fail-open）`)
+  return null
+}
+
 // ---- 敵対的 security review ----
 // 信頼境界をまたぎうる変更を含む PR は、LGTM を確定する前に security-reviewer の review を通す。対象かどうかは round 1 の前の
 // 判定（security-scope#0）と、今の PR head の `<base>...<head>` の diff で取り直す判定（security-scope#i）のどれか
@@ -2998,6 +3390,8 @@ if (POST_TERMINAL_SUMMARY && PRIOR_SUMMARY?.head_mismatch === true) {
 
 for (i = 1; i <= MAX; i++) {
   terminalPath = 'review'
+  // 基準画像の撮り直し: review の範囲（shaNow）を決める前に行う。push したらこの round の review は撮り直しの commit を含む head を見る
+  const visualSha = await recaptureVisualSnapshots(i)
   const prior = reviewSeen.prior()   // 前 iteration までの累積 findings
   // review scope: i ≥ 2 で sha_prev..sha_now が確定していれば delta、確定できなければ full（fail-open。
   // delta を空扱いにして approve へ倒さない）。scope / delta_lines は round の history に載せる。
@@ -3016,6 +3410,7 @@ for (i = 1; i <= MAX; i++) {
       ? `PR #${PR} の fix delta を批判的にレビューせよ。gh pr view で宣言意図を確認し、読む diff は下記 delta_range に限定する。\n`
         + reviewDeltaBlock({ shaPrev, shaNow })
       : `PR #${PR} を批判的にレビューせよ。gh pr view / gh pr diff で実 diff を確認し、宣言意図に照合する。\n`)
+    + (visualSha != null ? visualSnapshotsReviewNote({ sha: typeof visualSha === 'string' ? visualSha : 'HEAD', scope: roundScope, paths: VISUAL_SNAPSHOTS.paths }) : '')
     + `summary は結論 1-2 文に留めよ。検証した根拠（テスト実行・diff 照合・edge case 確認等）は verification_evidence に 1 項目 1 文の配列で列挙せよ。\n`
     // remerge round も読む範囲が PR 全体ではないので、AC は delta round と同じく既出 findings の解消確認にだけ使わせる
     + acceptanceCriteriaBlock(ACCEPTANCE_CRITERIA, { scope: roundScope === 'full' ? 'full' : 'delta' })
@@ -3435,6 +3830,25 @@ if (NESTED?.caller !== 'dev-flow' && PRIOR_DEVFLOW?.tier === 'HOLD' && PRIOR_DEV
   }
 }
 
+// 「画面の変化」の一覧（宣言のある run だけ。返り値 visual_snapshots と単体起動の終了レポートに載る）: 終わり方を問わず、最終の head の
+// PR の差分（origin/<base> と最終の head の間）で paths の下で変わった PNG から作る。最後に撮影できた tree が最終の tree と違えば
+// （最後の修正の push の後に上限で終わった・撮り直しに失敗した等）「最終の画面は撮り直せていない」と 1 行出す。ここでは撮り直しも
+// push もしない（review を通していない head を作らない）。表示だけで、status・merge tier には使わない（fail-open）。
+let visualSnapshotsFinal = null
+if (VISUAL_SNAPSHOTS) {
+  const finalTree = await visualTree('diff-hash-snapshot-final')
+  const notes = [visualRun.note, finalTree == null ? '最終の worktree の tree を取得できず、PNG が最終の画面のものか確かめられていない' : null].filter((n) => n != null)
+  visualSnapshotsFinal = await reportVisualSnapshots({
+    decl: VISUAL_SNAPSHOTS, wt: isoWt, base: prMeta?.base_ref || '',
+    // 最終の head。head を確かめられていない run は worktree の HEAD
+    tree: isFullCommitSha(shaNow) && !endHeadUnsettled ? shaNow.trim() : 'HEAD',
+    note: notes.length ? notes.join(' / ') : null,
+    stale: finalTree != null && finalTree !== visualCapturedTree,
+    spawn: visualSpawn, log,
+  })
+  log(`visual-snapshots: 最終の head の PR の差分で変わった基準画像 ${visualSnapshotsFinal.changed.length} 件${visualSnapshotsFinal.notes.length ? ` / ${visualSnapshotsFinal.notes.join(' / ')}` : ''}`)
+}
+
 // 終端サマリーを PR に 1 回だけ投稿する
 const summaryBody = buildTerminalSummaryBody({
   pr: PR,
@@ -3463,6 +3877,7 @@ const summaryBody = buildTerminalSummaryBody({
   endHead: endHeadUnsettled ? null : shaNow,
   // 方針を渡したことだけを載せる（本文は渡さない）
   fixDirectionUsed: FIX_DIRECTION != null,
+  visualSnapshots: visualSnapshotsFinal,
 })
 log(`終端 CI 状態: ${ciLastStatus ?? '未観測'}${ciLastStatus === 'failed' ? `（${ciLastFailedChecks.join(', ')}）` : ''}`)
 log('終端サマリーは comment として投稿する（formal review は投稿しない — issue #524）')
@@ -3558,6 +3973,8 @@ return {
   conflict_autoresolve: conflictAttempts,
   // 敵対的 security review の結果 {target, status, stop_reason, rounds, critical, major, minor, deferred}（件数だけ）。dev-flow の Merge tier が使う
   security_review: securityReview,
+  // 「画面の変化」の一覧 { changed, notes }（最終の head の PR の差分から作る。宣言の無い run は null）。dev-flow は PR 本文の作り直しに使う
+  visual_snapshots: visualSnapshotsFinal,
   // LGTM 後の CI_VERIFY.checks の待ち結果（args.ci_verify を受けた run だけ）。dev-flow が ci の AC の判定に使う
   ...(CI_VERIFY ? {
     ci_verify: {

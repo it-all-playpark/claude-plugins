@@ -46,6 +46,8 @@ export const EVALUATE_ARGS_SPEC = {
 // dev-flow-evaluate.js の返り値。state は PR 工程以降が読む state（評価ループの途中経過は返さない）。
 // redgreen_state_dir は Evaluate の redgreen が作った state dir（Final reconcile の redgreen-final が使い回す）。
 // visualSnapshots は PR 本文の「画面の変化」の材料（{ changed, notes }。宣言の無い run は null）。
+// visual_snapshots_tree は基準画像を最後に撮影できた worktree の tree OID（宣言が無い・最後の撮影が失敗した run は null）。
+// 親が pr-iterate に渡し、pr-iterate は tree がこれと違う round の review の前に撮り直す。
 export const EVALUATE_RESULT_SPEC = {
   state: {
     plan: 'object', ledger: 'object', risk: 'object', dangerHits: 'array', testsurfHits: 'array', testsurfPatterns: 'array',
@@ -56,6 +58,7 @@ export const EVALUATE_RESULT_SPEC = {
     visualSnapshots: 'object|null',
   },
   redgreen_state_dir: 'string|null',
+  visual_snapshots_tree: 'string|null',
 }
 
 // dev-flow-finalize.js（pr-iterate の後の Final reconcile・Merge tier・終端サマリー）の引数。
