@@ -8,6 +8,7 @@
 //   (c) 静的: callFixAgent に渡す prompt は fixPrompt() で組んだものだけ（5 要素を持たない prompt を足させない）
 //   (d)(e) fix#1 / commit-ensure#1 の push は pr-push の start / wait だけで行い、timeout: 600000 指定・run_in_background 禁止・再発行禁止
 //   (f) AC がある run の security review の指摘を含む fix#1 にだけ、AC の番号付き一覧と AC とぶつかる指摘を人に返させる指示が入る（issue #1163）
+//   (g) visual_snapshots の宣言がある run の fix#1 にだけ、撮影シナリオの指示と宣言の paths が入る（issue #1413）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -18,6 +19,7 @@ import {
   makePrIterateSandbox, runWorkflowCapture, assertNoCrash, securityReviewHeadOf, porcelainBaselineResponse, porcelainVerdictResponse,
 } from './test-helpers/vm-sandbox.mjs';
 import { PR_PUSH_MAX_WAIT_SEC, PR_PUSH_WAIT_SEC, prPushLogPath } from './pr-artifacts.mjs';
+import { visualSnapshotsScenarioNote } from './visual-snapshots.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const prIterateSrc = readFileSync(join(here, '..', '.claude/workflows/pr-iterate.js'), 'utf8');
@@ -194,6 +196,40 @@ test('[fix-prompt-contract] (f) AC がある run の security review の指摘�
   assert.ok(!reviewOnly.includes('security review の指摘の直し方:'), 'review の指摘だけの fix に security の修正方針が入っている');
   assert.ok(!reviewOnly.includes('AC-1 flake の HOLD を外す'), `security の指摘を含まない fix#1 に AC の一覧が入っている: ${reviewOnly}`);
   assert.ok(!reviewOnly.includes(AC_CONFLICT_RULE), 'security の指摘を含まない fix#1 に AC とぶつかる指摘の指示が入っている');
+});
+
+// repo が visual_snapshots を宣言した run の fix は、画面を変えたら撮影シナリオを足すか直す（issue #1413）。文は dev-implementer と
+// 同じ 1 か所（_lib/visual-snapshots.mjs の visualSnapshotsScenarioNote）で組む
+const VISUAL_DECL = { command: 'pnpm test:visual', db: { engine: 'postgres', version: '17' }, env: 'E2E_EXTERNAL_DATABASE_URL', timeout_seconds: 900, paths: ['apps/web/e2e/__screenshots__'] };
+const SCENARIO_RULE = '画面の表示を変えたら、その画面とその状態を写す撮影シナリオがあるかを確かめ、無ければ足すか直す';
+const FIX_ROUTES = {
+  fix_loop: {
+    'review#1': { decision: 'request-changes', issues: [{ severity: 'major', topic: 't', file: 'src/a.js', line: 1, description: 'd', suggestion: '' }], summary: 'ng' },
+    'fix#1': { applied: false, files: [], summary: 'stop' },
+  },
+  ci_gate: {
+    'ci-check#1': { status: 'failed', passed: 0, failed: 1, pending: 0, skipped: 0, failed_checks: [{ name: 'bats', bucket: 'fail', state: 'FAILURE' }] },
+    'fix#1': { applied: false, files: [], summary: 'stop' },
+  },
+};
+
+test('[fix-prompt-contract] (g) visual_snapshots の宣言がある run の fix#1 にだけ、撮影シナリオの指示と宣言の paths が Steps に入る', async () => {
+  for (const [label, overrides] of Object.entries(FIX_ROUTES)) {
+    const withDecl = await fixPromptOf(overrides, { pr: '5', visual_snapshots: VISUAL_DECL });
+    const steps = sectionOf(withDecl, '## Steps');
+    assert.ok(steps.includes(SCENARIO_RULE), `${label}: 宣言のある run の fix#1 に撮影シナリオの指示が無い: ${withDecl}`);
+    assert.ok(steps.includes('["apps/web/e2e/__screenshots__"] の下の PNG'), `${label}: 宣言の paths が無い: ${steps}`);
+    assert.ok(steps.includes('基準画像の PNG は自分で書かない・撮り直さない'), `${label}: PNG を書かせない指示が無い: ${steps}`);
+    assert.ok(steps.includes(visualSnapshotsScenarioNote(VISUAL_DECL)), `${label}: 指示が visualSnapshotsScenarioNote の文と違う: ${steps}`);
+    assertFiveElements(withDecl, `${label} with visual_snapshots`);
+
+    // 宣言が無い run（引数に無い・null）の fix#1 には入れない
+    for (const args of ['5', { pr: '5', visual_snapshots: null }]) {
+      const noDecl = await fixPromptOf(overrides, args);
+      assert.ok(!noDecl.includes('撮影シナリオ'), `${label} ${JSON.stringify(args)}: 宣言の無い run の fix#1 に撮影シナリオの指示が入っている: ${noDecl}`);
+      assert.ok(!noDecl.includes('visual_snapshots'), `${label} ${JSON.stringify(args)}: 宣言の無い run の fix#1 に visual_snapshots の注記が入っている`);
+    }
+  }
 });
 
 test('[fix-prompt-contract] (c) 静的: callFixAgent に渡す prompt は fixPrompt() で組んだ 2 つだけ', () => {

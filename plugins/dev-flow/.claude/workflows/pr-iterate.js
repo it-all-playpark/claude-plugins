@@ -2168,6 +2168,14 @@ function visualSnapshotsOutcome(res, verdict, timeoutSeconds) {
   return { captured: false, tree, restored: typeof snap?.restored === 'boolean' ? snap.restored : null, note }
 }
 
+function visualSnapshotsScenarioNote(decl) {
+  if (decl == null || !Array.isArray(decl.paths)) return ''
+  return `visual_snapshots: この repo は撮影シナリオで基準画像（${JSON.stringify(decl.paths)} の下の PNG）を撮り、PR の画像差分で画面の変化を見せる。`
+    + `画面の表示を変えたら、その画面とその状態を写す撮影シナリオがあるかを確かめ、無ければ足すか直す`
+    + `（シナリオの書き方・置き場所はこの repo の既存のシナリオに従う）。`
+    + `基準画像の PNG は自分で書かない・撮り直さない（撮影と commit はパイプラインが行う）。\n`
+}
+
 function visualSnapshotsShellArg(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`
 }
@@ -2667,6 +2675,7 @@ function fixPrompt({ objective, issuesHeading, issuesText, guidance = '' }) {
     + `${FIX_PUSH_STEPS}\n\n`
     + `解消すべき${issuesHeading}:\n${issuesText}\n`
     + (guidance ? `\n${guidance}` : '')
+    + (VISUAL_SNAPSHOTS ? `\n${visualSnapshotsScenarioNote(VISUAL_SNAPSHOTS)}` : '')
     + (FIX_DIRECTION != null ? fixDirectionSection(FIX_DIRECTION) : '')
     + `\n## Output format\n{ "applied": boolean, "files": string[], "summary": string, "deferred_security_ids": string[] }。applied は修正を commit・push まで終えたときだけ true。files は変更したファイルの repo 相対パス。`
     + `deferred_security_ids は security review の指摘のうち直さずに人の判断に返したものの番号（その指摘行の先頭の \`[S1]\` の S1）で、security review の指摘が無い fix・全部直した fix では空の配列 [] にする（省略しない）。JSON のみ返せ。\n`

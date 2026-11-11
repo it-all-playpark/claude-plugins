@@ -41,6 +41,10 @@ JSON レポートの 2 つ。計画は成果物ではない — 実装を正し�
 - `base`: worktree が指している base commit。diff はここからの差分で評価される
 - `fix_feedback`（Evaluate 差し戻し時のみ）: evaluator の `feedback[]`。各項目を解消する。
   `topic: "AC-<n> 未達"` の項目は、worktree 内で満たせる AC を evaluator が未達と判定したもの
+- `visual_snapshots`（repo が基準画像の撮影を宣言した run のみ）: 基準画像のディレクトリ `paths` と、撮影シナリオの指示。
+  画面の表示を変えたら、その画面とその状態を写す撮影シナリオがあるかを確かめ、無ければその repo の書き方で足すか直す
+  （シナリオが写さない画面は基準画像が変わらず、PR の画像差分に出ない）。基準画像の PNG は書かない — 撮影と commit は
+  パイプラインが行う
 
 ## ゴール
 

@@ -182,10 +182,11 @@ export function implementDrops(plan, results) {
  *   spawn: (prompt: string, opts: object) => Promise<unknown>,
  *   spawnFailOpen: (prompt: string, opts: object) => Promise<unknown>,
  *   log: (msg: string) => void,
- *   notes: () => {deletion: string, deps: string, turbopack: string}}} env
+ *   notes: () => {deletion: string, deps: string, turbopack: string, visual: string}}} env
  *   commandsFile: Setup で解決したテストコマンドのファイル（run-tests の --commands。dev-flow-test-commands の commands_file）/
  *   spawn: throw を伝播させる spawn（trackedAgent）/ spawnFailOpen: throw を null に落とす spawn（failOpenAgent）/
- *   notes: 実装 spawn prompt に足す注記（呼び出しごとに読む — 削除手段の注記は Implement の途中で決まる）
+ *   notes: 実装 spawn prompt に足す注記（呼び出しごとに読む — 削除手段の注記は Implement の途中で決まる）。visual は
+ *   visualSnapshotsScenarioNote（_lib/visual-snapshots.mjs）の文で、宣言の無い run は空文字
  */
 export function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFailOpen, log, notes }) {
   // 中身は `run-tests start` の stdout 転写だけ（run-tests-prompt）。Turbopack fallback 規約は渡さない — 転写 agent は
@@ -224,6 +225,7 @@ export function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, 
             + `approach_mismatch findings（過去 iteration 全件の累積。**過去に BLOCKED になったいずれのアプローチへの回帰も禁止** — 全件と異なる代替設計を採れ）:\n${JSON.stringify(blocked.findings)}\n`
           : '')
       + note.deletion
+      + note.visual
       + STAGING_CONVENTION
       + note.deps
       + note.turbopack
@@ -415,6 +417,7 @@ export function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, 
         + (hookFail ? preCommitHookFixNote(hookFail) : '')
         + `task_id: issue-${issue}（返却 JSON の task_id にそのまま echo せよ）\n`
         + note.deletion
+        + note.visual
         + STAGING_CONVENTION
         + note.turbopack,
         { agentType: IMPL_AGENT, model: GREEN_FIX_MODEL, schema: IMPL, label: `green-fix#${iterLabel}`, phase: phaseName },
