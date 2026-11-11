@@ -23,6 +23,7 @@ const FINALIZE_ARGS_SPEC = {
     req: 'object', plan: 'object', setup: { branch: 'string' }, ledger: 'object',
     val: 'object|null', risk: 'object|null', evalResult: 'object|null',
     acVerify: 'array', baseFailing: 'object', unsatisfiedAcByActor: 'object', guardBlockedResults: 'array',
+    visualSnapshots: 'object|null',
   },
   pr: { pr_url: 'string', pr_number: 'string|number' },
   pr_body: 'string',
@@ -2701,6 +2702,23 @@ function diagramSection(plan, diagramCheck) {
   return diagramCheck?.consistent === true ? figures : `${PR_BODY_DIAGRAM_UNVERIFIED}\n\n${figures}`;
 }
 
+const PR_BODY_VISUAL_HEADING = '## 画面の変化';
+const PR_BODY_VISUAL_PATHS_MAX = 30;
+const PR_BODY_VISUAL_COMPARE_NOTE = '見比べは PR の Files changed の画像差分（2-up / Swipe / Onion skin）で行う。';
+function visualSnapshotsSection(visualSnapshots) {
+  const changed = textItems(visualSnapshots?.changed);
+  const notes = textItems(visualSnapshots?.notes);
+  if (changed.length === 0 && notes.length === 0) return null;
+  const lines = [];
+  if (changed.length) {
+    const shown = changed.slice(0, PR_BODY_VISUAL_PATHS_MAX).map((p) => `- \`${neutralizeStructure(p).replace(/`/g, "'")}\``);
+    const excess = changed.length - shown.length;
+    lines.push(`基準画像の PNG が ${changed.length} 件変わった。${PR_BODY_VISUAL_COMPARE_NOTE}`, ...shown, ...(excess > 0 ? [`（他 ${excess} 件）`] : []));
+  }
+  for (const n of notes) lines.push(`⚠️ ${neutralizeStructure(n)}`);
+  return lines.join('\n');
+}
+
 function prBodyShowsDiagram(plan, diagramCheck) {
   return diagramOf(plan?.diagram) != null && diagramCheck?.consistent !== false;
 }
@@ -2736,13 +2754,14 @@ function hitLine(label, hits, keyOf) {
   return `- ${label}: ${list.length} 件（${items.join('、')}）`;
 }
 
-function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false, diagramCheck = null }) {
+function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false, diagramCheck = null, visualSnapshots = null }) {
   let conclusionText = collapseWhitespace(plan?.summary);
   if (!conclusionText) conclusionText = collapseWhitespace(req?.issue_title);
   if (!conclusionText) conclusionText = `issue #${issue} の変更`;
   const changes = textItems(plan?.behavior_changes);
   const reviewPoints = textItems(plan?.review_points);
   const diagram = diagramSection(plan, diagramCheck);
+  const visual = visualSnapshotsSection(visualSnapshots);
   const outOfScope = outOfScopeSection(plan);
   const rows = acRows(req, acResults, acStale);
   const acTable = acResultsSection(rows);
@@ -2755,6 +2774,7 @@ function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, ac
     `**${conclusionText}**`,
     ...(changes.length ? [`${PR_BODY_CHANGES_HEADING}\n${bulletList(changes)}`] : []),
     ...(diagram ? [`${PR_BODY_DIAGRAM_HEADING}\n${diagram}`] : []),
+    ...(visual ? [`${PR_BODY_VISUAL_HEADING}\n${visual}`] : []),
     ...(reviewPoints.length ? [`${PR_BODY_REVIEW_POINTS_HEADING}\n${bulletList(reviewPoints)}`] : []),
     ...(outOfScope ? [`${PR_BODY_OUT_OF_SCOPE_HEADING}\n${outOfScope}`] : []),
     ...(acTable ? [`${PR_BODY_AC_RESULTS_HEADING}\n${acTable}`] : []),
@@ -3886,6 +3906,8 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
     issue: ISSUE, req, plan: state.plan, testsurfHits: state.testsurfHits, dangerHits: secHitsOf(state.risk),
     acResults: acReverified ? state.finalAcResults : (state.evalResult?.ac_results ?? null), acStale: !acReverified,
     diagramCheck: diagramCheckAfterFixes(state.evalResult?.diagram_check),
+    // 「画面の変化」は PR 作成時の材料のまま載せる（pr-iterate の fix の後は撮り直さない）
+    visualSnapshots: state.visualSnapshots,
   })
   prBodyLatest = prBodyFinal
   const sync = await failOpenAgent(prBodyEditPrompt({ wt: WT, pr: pr.pr_number, repo: REPO, prBody: prBodyFinal, fileName: 'pr-body-final.md' }), { agentType: 'dev-runner-haiku', schema: PR_BODY_EDIT, label: 'ac-checkbox-sync', phase: 'Final reconcile' })

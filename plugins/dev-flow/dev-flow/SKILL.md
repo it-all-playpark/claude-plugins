@@ -47,7 +47,7 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    書き込み probe・`.devflow-tmp` の clean・issue analyze（`analyze-issue --contract` の
    決定論 parse + Jev 有界判定）・framework 検出を 1 コマンドで行い、`ok:true` なら同じ JSON を
    `<worktree>/.devflow-tmp/prerun-setup.json` にも書く。deps install はしない（手順2b）。
-   repo 設定（`"dev-flow"` の `ci_verify` / `local_verify` / `pr_title_format` / `security_reviewer` / `branch_format`）は、すべて
+   repo 設定（`"dev-flow"` の `ci_verify` / `local_verify` / `visual_snapshots` / `pr_title_format` / `security_reviewer` / `branch_format`）は、すべて
    `pr-iterate-prerun` と共通の `_shared/scripts/devflow-config.sh` で、キーごとに (1) user 設定の repo 別の節
    `"dev-flow".repos["<owner>/<repo>"].<key>` → (2) 解決した base の `origin/<base>` の `skill-config.json` →
    `.claude/skill-config.json` → (3) user 設定の `"dev-flow".<key>` の順に読み、最初に null でない値を使う。user 設定は
@@ -63,6 +63,10 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    {"dev-flow": {"repos": {"acme/app": {"security_reviewer": "codex", "pr_title_format": "#{issue} {title}", "branch_format": "issue-{issue}-{slug}",
      "local_verify": {"command": "pnpm test:e2e:local", "db": {"engine": "postgres", "version": "17"}, "env": "E2E_EXTERNAL_DATABASE_URL", "timeout_seconds": 1500}}}}}
    ```
+   `visual_snapshots` は画面を持つ repo の opt-in（`"dev-flow".visual_snapshots`。`local_verify` と同じ `command`・`db`・`env`・
+   `timeout_seconds` に、基準画像のディレクトリ `paths` を足した宣言）。宣言すると Evaluate の各評価の前に基準画像を撮り直し、
+   `paths` の下で変わった PNG を PR に入れる（PR の Files changed の画像差分で画面の変化を見比べる）。不正な宣言は
+   `dev-flow-prerun` が `ok:false` で止める。宣言の例・判定・失敗の扱いは `references/visual-snapshots.md`。
    `security_reviewer` は nested pr-iterate の security review を回す CLI の opt-in（`"dev-flow".security_reviewer`。
    無ければ `"claude"`）。`claude` / `codex` 以外は `dev-flow-run` が明示 error で止める。security review の守る要件と境界・経路は
    `references/security-review.md`。

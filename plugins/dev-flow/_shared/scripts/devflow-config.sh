@@ -1,4 +1,4 @@
-# devflow-config.sh - repo 設定 "dev-flow".<key>（ci_verify / local_verify / pr_title_format / security_reviewer /
+# devflow-config.sh - repo 設定 "dev-flow".<key>（ci_verify / local_verify / visual_snapshots / pr_title_format / security_reviewer /
 # branch_format / test_commands）を読む共有ヘルパー（source 専用。単体では実行しない）。dev-flow-prerun（dev-flow/scripts/prerun.sh）と
 # pr-iterate-prerun（pr-iterate-prerun.sh。security-reviewer-config.sh 経由）、dev-flow-ready-set（ready-set.sh）、
 # test-commands-prepare（test-commands-prepare.sh。test_commands の形はそこで検証する）が使う。
@@ -14,7 +14,8 @@
 # どのコマンドの exit 0 で satisfied にするか・gate の判定者）を選べてしまう。repo 別の上書きを user 設定にだけ
 # 置くのも同じ理由（repo に置く gitignore 済みのファイルも作業ツリーにある）。
 # 値の検証は workflow（_lib/prerun-setup.mjs、pr-iterate は args.security_reviewer の検査）が行う。branch_format だけは worktree を
-# 作る前にブランチ名を決めるので、ここの devflow_branch_format_of が検証する。JSON として読めない
+# 作る前にブランチ名を決めるので、ここの devflow_branch_format_of が検証する。visual_snapshots もここの
+# devflow_visual_snapshots_of が検証する（dev-flow-prerun が不正な宣言で止める）。JSON として読めない
 # ファイルと、object でない "dev-flow".repos・repo 別の節は未設定として扱う。
 
 # devflow_origin_repo <root>
@@ -174,4 +175,46 @@ devflow_branch_format_of() {
         return 1
     fi
     printf '%s' "$fmt"
+}
+
+# ---- 基準画像の撮影の宣言 "dev-flow".visual_snapshots（dev-flow-prerun が読む）----
+# 形は local_verify と同じ command・db・env・timeout_seconds に、基準画像のディレクトリ paths（repo 相対の glob の配列）を
+# 足したもの。dev-flow は Evaluate の各評価の前に command を local-verify で実行し、paths の下で変わった PNG だけを PR に入れる。
+
+# devflow_visual_snapshots_of <devflow_config の visual_snapshots の JSON 値>
+#   検証した宣言（{command, db: {engine, version}, env, timeout_seconds, paths}）を JSON 1 行で stdout に出す（null は null）。
+#   不正ならどのキーがなぜ不正かを書いたエラー文を stdout に出して 1 を返す。黙って未設定に倒すと、撮影されないまま
+#   画面の変わる PR が出続け、誤記に気付けない。paths を repo 相対に限るのは、worktree の外を「PNG なら変えてよい場所」に
+#   しないため（/ 始まり・.. を含むものは不正）
+devflow_visual_snapshots_of() {
+    local raw="$1" why
+    if [[ "$raw" == 'null' ]]; then
+        printf 'null'
+        return 0
+    fi
+    why="$(jq -r '
+        if type != "object" then "object でない"
+        elif (.command | type) != "string" or (.command | test("^\\s*$")) then "command が空でない文字列でない"
+        elif (.db | type) != "object" or .db.engine != "postgres" then "db.engine が \"postgres\" でない"
+        elif (.db.version | type) != "string" or (.db.version | test("^\\s*$")) then "db.version が空でない文字列でない"
+        elif (.env | type) != "string" or (.env | test("^[A-Za-z_][A-Za-z0-9_]*$") | not) then "env が環境変数名でない"
+        elif (.timeout_seconds | type) != "number" or .timeout_seconds <= 0 or (.timeout_seconds | floor) != .timeout_seconds then "timeout_seconds が正の整数でない"
+        elif (.paths | type) != "array" or (.paths | length) == 0 then "paths が空でない配列でない"
+        elif .paths | any(type != "string" or test("^\\s*$")) then "paths に空でない文字列でないものがある"
+        elif .paths | any(startswith("/")) then "paths に / 始まりのものがある"
+        elif .paths | any(split("/") | any(. == "..")) then "paths に .. を含むものがある"
+        else empty end' 2>/dev/null <<<"$raw")" || why='JSON として読めない'
+    if [[ -n "$why" ]]; then
+        printf 'dev-flow: skill-config の "dev-flow".visual_snapshots が不正（%s。受信: %s）— { command: string, db: { engine: "postgres", version: string }, env: 環境変数名, timeout_seconds: 正の整数, paths: repo 相対の glob の配列（1 件以上） } に直してから再実行せよ' \
+            "$why" "$raw"
+        return 1
+    fi
+    jq -c '{command, db: {engine: .db.engine, version: .db.version}, env, timeout_seconds, paths}' <<<"$raw"
+}
+
+# devflow_visual_snapshots <root> <base_ref>
+#   "dev-flow".visual_snapshots を devflow_config と同じ読み先の順（repo 別の節 → origin/<base> → user 設定）で読み、
+#   devflow_visual_snapshots_of で検証して出す
+devflow_visual_snapshots() {
+    devflow_visual_snapshots_of "$(devflow_config "$1" "$2" visual_snapshots)"
 }

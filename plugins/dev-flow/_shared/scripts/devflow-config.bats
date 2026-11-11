@@ -314,3 +314,80 @@ CASES
 
     [ "$(devflow_branch_name 'issue-{issue}-{slug}' 12 fix-login)" = 'issue-12-fix-login' ]
 }
+
+# ---- 基準画像の撮影の宣言 "dev-flow".visual_snapshots（issue #1410）----
+
+VISUAL_SNAPSHOTS='{"command":"pnpm test:visual","db":{"engine":"postgres","version":"17"},"env":"E2E_EXTERNAL_DATABASE_URL","timeout_seconds":900,"paths":["apps/*/e2e/__screenshots__","tests/visual"]}'
+
+@test "devflow_visual_snapshots: user 設定の repo 別の節 → origin/<base> → user 設定の順に読み、検証した宣言を返す。どこにも無ければ null" {
+    run devflow_visual_snapshots "$ROOT" main
+    [ "$status" -eq 0 ]
+    [ "$output" = "null" ]
+
+    # (3) user 設定
+    write_user_config .claude/skill-config.json "$(jq -c '{"dev-flow": {visual_snapshots: (. + {command: "user"})}}' <<<"$VISUAL_SNAPSHOTS")"
+    run devflow_visual_snapshots "$ROOT" main
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.command' <<<"$output")" = "user" ]
+
+    # (2) origin/<base> の skill-config が user 設定より先。宣言に無いキーは落とし、形は command・db・env・timeout_seconds・paths
+    push_base_config .claude/skill-config.json "$(jq -c '{"dev-flow": {visual_snapshots: (. + {command: "base", extra: 1})}}' <<<"$VISUAL_SNAPSHOTS")"
+    run devflow_visual_snapshots "$ROOT" main
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(jq -c '. + {command: "base"}' <<<"$VISUAL_SNAPSHOTS")" ]
+
+    # (1) user 設定の repo 別の節が origin/<base> より先
+    set_origin_url https://github.com/acme/app.git
+    write_user_config .claude/skill-config.json "$(jq -c '{"dev-flow": {repos: {"acme/app": {visual_snapshots: (. + {command: "user-repo"})}}}}' <<<"$VISUAL_SNAPSHOTS")"
+    run devflow_visual_snapshots "$ROOT" main
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.command' <<<"$output")" = "user-repo" ]
+}
+
+@test "devflow_visual_snapshots: worktree の作業ツリーで書き換えた宣言は使わない（origin/<base> の値）" {
+    push_base_config skill-config.json "$(jq -c '{"dev-flow": {visual_snapshots: .}}' <<<"$VISUAL_SNAPSHOTS")"
+    jq -c '{"dev-flow": {visual_snapshots: (. + {command: "evil", paths: ["src"]})}}' <<<"$VISUAL_SNAPSHOTS" > "$ROOT/skill-config.json"
+
+    run devflow_visual_snapshots "$ROOT" main
+    [ "$status" -eq 0 ]
+    [ "$output" = "$VISUAL_SNAPSHOTS" ]
+}
+
+@test "devflow_visual_snapshots_of: 不正な宣言は \"dev-flow\".visual_snapshots と理由を書いたエラー文で 1 を返す（paths が空・/ 始まり・.. を含む）" {
+    local patch why
+    while IFS='|' read -r patch why; do
+        run devflow_visual_snapshots_of "$(jq -c "$patch" <<<"$VISUAL_SNAPSHOTS")"
+        [ "$status" -eq 1 ] || { echo "accepted: $patch"; false; }
+        [[ "$output" == *'"dev-flow".visual_snapshots が不正'* ]] || { echo "no key: $output"; false; }
+        [[ "$output" == *"$why"* ]] || { echo "no reason '$why': $output"; false; }
+    done <<'CASES'
+.paths = []|paths が空でない配列でない
+del(.paths)|paths が空でない配列でない
+.paths = "tests/visual"|paths が空でない配列でない
+.paths = ["tests/visual", ""]|paths に空でない文字列でないものがある
+.paths = ["tests/visual", 1]|paths に空でない文字列でないものがある
+.paths = ["/abs/screenshots"]|paths に / 始まりのものがある
+.paths = ["../other/screenshots"]|paths に .. を含むものがある
+.paths = ["tests/../../outside"]|paths に .. を含むものがある
+.command = " "|command が空でない文字列でない
+del(.db)|db.engine が "postgres" でない
+.db.engine = "mysql"|db.engine が "postgres" でない
+.db.version = 17|db.version が空でない文字列でない
+.env = "E2E-URL"|env が環境変数名でない
+.timeout_seconds = 0|timeout_seconds が正の整数でない
+.timeout_seconds = "900"|timeout_seconds が正の整数でない
+"pnpm test:visual"|object でない
+CASES
+
+    # .. を名前の一部に含むだけのディレクトリ（a..b）は repo 相対なので通す
+    run devflow_visual_snapshots_of "$(jq -c '.paths = ["shots/a..b", "tests/**/__screenshots__/"]' <<<"$VISUAL_SNAPSHOTS")"
+    [ "$status" -eq 0 ]
+    [ "$(jq -c '.paths' <<<"$output")" = '["shots/a..b","tests/**/__screenshots__/"]' ]
+}
+
+@test "devflow_visual_snapshots: 読んだ宣言が不正なら 1 を返す（黙って未設定にしない）" {
+    push_base_config skill-config.json "$(jq -c '{"dev-flow": {visual_snapshots: (. + {paths: ["/abs"]})}}' <<<"$VISUAL_SNAPSHOTS")"
+    run devflow_visual_snapshots "$ROOT" main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'paths に / 始まりのものがある'* ]]
+}

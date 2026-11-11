@@ -54,6 +54,7 @@ const EVALUATE_ARGS_SPEC = {
   ci_ac_indexes: 'array',
   notes: { deletion: 'string', deps: 'string', turbopack: 'string', test_discovery: 'string' },
   test_commands: TEST_COMMANDS_RESULT_SPEC,
+  visual_snapshots: 'object|null',
 }
 
 function stageTypeOf(value) {
@@ -505,6 +506,29 @@ function agentAcFeedback(indexes, acceptanceCriteria, acResults) {
 }
 // ==== END inline: _lib/ac-actor.mjs ====
 // ==== BEGIN inline: _lib/local-verify.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+const LOCAL_VERIFY_START_WAIT_SEC = 300
+const LOCAL_VERIFY_WAIT_SEC = 480
+function localVerifyConfigArg(cfg) {
+  return encodeURIComponent(JSON.stringify(cfg)).replace(/[!'()*~]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
+}
+
+function localVerifyWaitPolls(timeoutSeconds) {
+  const t = Number.isInteger(timeoutSeconds) && timeoutSeconds > 0 ? timeoutSeconds : 0
+  return Math.ceil(t / LOCAL_VERIFY_WAIT_SEC) + 1
+}
+
+function localVerifyVerdict(res) {
+  if (!res || typeof res !== 'object') return 'error'
+  switch (res.status) {
+    case 'passed': return res.exit_code === 0 ? 'passed' : 'error'
+    case 'failed':
+    case 'timeout': return 'failed'
+    case 'unavailable': return 'unavailable'
+    case 'running': return 'running'
+    default: return 'error'
+  }
+}
+
 function acVerifyHow(e) {
   return e.timeout === true ? 'timeout_seconds を超えて止められた' : `exit ${e.exit_code ?? '?'}`
 }
@@ -1168,6 +1192,46 @@ function parseDiffTriageFields(unified) {
   };
 }
 
+function visualSnapshotPngRegex(dir) {
+  const glob = `${String(dir).replace(/\/+$/, '')}/**/*.png`;
+  const literal = (ch) => ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let re = '';
+  let i = 0;
+  while (i < glob.length) {
+    const c = glob[i];
+    if (c === '*') {
+      let j = i;
+      while (glob[j] === '*') j++;
+      const wholeSegment = j - i === 2 && (i === 0 || glob[i - 1] === '/');
+      if (wholeSegment && glob[j] === '/') { re += '(?:[^/]+/)*'; i = j + 1; continue; }
+      if (wholeSegment && j === glob.length) { re += '.*'; i = j; continue; }
+      re += '[^/]*';
+      i = j;
+      continue;
+    }
+    if (c === '?') { re += '[^/]'; i++; continue; }
+    if (c === '[') {
+      const close = glob.indexOf(']', i + 2);
+      if (close > 0) {
+        const body = glob.slice(i + 1, close);
+        re += `[${(body[0] === '!' ? `^${body.slice(1)}` : body).replace(/\\/g, '\\\\')}]`;
+        i = close + 1;
+        continue;
+      }
+    }
+    if (c === '\\' && i + 1 < glob.length) { re += literal(glob[i + 1]); i += 2; continue; }
+    re += literal(c);
+    i++;
+  }
+  return new RegExp(`^${re}$`);
+}
+
+function withoutVisualSnapshotPngs(files, paths) {
+  if (!Array.isArray(files) || !Array.isArray(paths) || paths.length === 0) return files;
+  const res = paths.filter((p) => typeof p === 'string' && p.trim() !== '').map(visualSnapshotPngRegex);
+  return files.filter((f) => !res.some((re) => re.test(f)));
+}
+
 function lineStatsFor(files, lines) {
   if (!Array.isArray(files) || !Array.isArray(lines)) return null;
   const byPath = new Map(lines.map((l) => [l.path, l]));
@@ -1180,6 +1244,91 @@ function lineStatsFor(files, lines) {
   return stats;
 }
 // ==== END inline: _lib/diff-triage.mjs ====
+// ==== BEGIN inline: _lib/visual-snapshots.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+const VISUAL_SNAPSHOTS_STATE_DIR = '.devflow-tmp/visual-snapshots'
+const VISUAL_SNAPSHOTS_OUTSIDE_SHOWN = 5
+const VISUAL_SNAPSHOTS_UNRESTORED_NOTE = '（worktree を撮影前の状態に戻し切れていない。Files changed で意図しない変更が無いか確かめる）'
+
+const VISUAL_SNAPSHOTS_GUARD = {
+  type: ['object', 'null'],
+  properties: {
+    tree_before: { type: 'string' }, tree: { type: ['string', 'null'] }, discarded: { type: 'boolean' }, restored: { type: ['boolean', 'null'] },
+    outside: { type: 'array', items: { type: 'string' } }, outside_count: { type: 'number' },
+  },
+}
+const VISUAL_SNAPSHOTS_RESULT = {
+  type: 'object', required: ['ok', 'status'],
+  properties: {
+    ok: { type: 'boolean' }, status: { type: 'string', enum: ['running', 'passed', 'failed', 'timeout', 'stopped', 'unavailable', 'error'] },
+    exit_code: { type: ['number', 'null'] }, log_path: { type: 'string' }, log_tail: { type: 'string' }, reason: { type: 'string' }, error: { type: 'string' },
+    db_deleted: { type: ['boolean', 'null'] }, snapshot: VISUAL_SNAPSHOTS_GUARD,
+  },
+}
+const VISUAL_SNAPSHOTS_STOP = {
+  type: 'object', required: ['ok'],
+  properties: {
+    ok: { type: 'boolean' }, stopped: { type: 'boolean' }, was_running: { type: 'boolean' }, db_deleted: { type: ['boolean', 'null'] },
+    error: { type: 'string' }, snapshot: VISUAL_SNAPSHOTS_GUARD,
+  },
+}
+
+function visualSnapshotsOneLine(v) {
+  return String(v ?? '').replace(/\s+/g, ' ').trim()
+}
+
+function visualSnapshotsOutcome(res, verdict, timeoutSeconds) {
+  const snap = res != null && typeof res === 'object' && res.snapshot != null && typeof res.snapshot === 'object' ? res.snapshot : null
+  const tree = typeof snap?.tree === 'string' && snap.tree ? snap.tree : null
+  if (verdict === 'passed') return { captured: true, tree, restored: null, note: null }
+  const outside = (Array.isArray(snap?.outside) ? snap.outside : []).filter((p) => typeof p === 'string' && p).map(visualSnapshotsOneLine)
+  const detail = (v) => (visualSnapshotsOneLine(v) ? `（${visualSnapshotsOneLine(v).slice(0, 200)}）` : '')
+  let note
+  if (outside.length) {
+    const total = Number.isInteger(snap.outside_count) && snap.outside_count > outside.length ? snap.outside_count : outside.length
+    const shown = outside.slice(0, VISUAL_SNAPSHOTS_OUTSIDE_SHOWN)
+    note = `撮影のコマンドが paths の下の PNG 以外を変えたため、この撮影の結果をすべて捨てた: ${shown.join(', ')}${total > shown.length ? ` ほか ${total - shown.length} 件` : ''}`
+  } else if (res?.status === 'timeout') {
+    note = `撮影のコマンドが上限時間（${timeoutSeconds} 秒）を超えて止められたため、この撮影の PNG は入れていない`
+  } else if (res?.status === 'failed') {
+    note = `撮影のコマンドが exit ${res.exit_code ?? '?'} で失敗したため、この撮影の PNG は入れていない${detail(res.reason)}`
+  } else if (verdict === 'unavailable') {
+    note = `使い捨ての DB を確保できなかったため撮影できなかった${detail(res?.reason)}`
+  } else if (verdict === 'running') {
+    note = `撮影が上限時間（${timeoutSeconds} 秒）を過ぎても終わらなかったため、この撮影の PNG は入れていない`
+  } else {
+    note = `撮影の結果を取得できなかったため、この撮影の PNG は入れていない${detail(res?.error ?? res?.reason ?? 'proxy の応答が無い・形が不正')}`
+  }
+  return { captured: false, tree, restored: typeof snap?.restored === 'boolean' ? snap.restored : null, note }
+}
+
+function visualSnapshotsEvalNote(decl) {
+  if (decl == null || !Array.isArray(decl.paths)) return ''
+  return `visual_snapshots: realized diff のうち ${JSON.stringify(decl.paths)} の下の PNG は、パイプラインが評価の前に撮影コマンドで撮り直した基準画像で、`
+    + `実装エージェントの変更ではない。plan に無いことを指摘にせず、画像の中身も判定しない（人間が PR の Files changed の画像差分で確かめる）。\n`
+}
+
+function visualSnapshotsShellArg(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`
+}
+
+function visualSnapshotsListPrompt({ wt, base, tree, paths }) {
+  const specs = paths.map((p) => visualSnapshotsShellArg(`:(top,glob)${String(p).replace(/\/+$/, '')}/**/*.png`)).join(' ')
+  return `次のコマンドを **先頭トークンが git の bare 単文** で 1 回だけ実行し、stdout の各行を配列 lines に一字一句そのまま（要約・整形・並べ替え・件数制限をせず）入れて {"ok": true, "lines": [...]} で返せ`
+    + `（stdout が空なら {"ok": true, "lines": []}。exit 非0・コマンド実行不能なら ok:false/error で返せ。失敗時に ok:true を生成してはならない。`
+    + `cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結・パイプ・リダイレクトは禁止。-C で worktree を渡しているため cd は不要）:\n`
+    + `git -C ${wt} -c core.quotePath=false diff --name-only --no-renames origin/${base} ${tree} -- ${specs}`
+}
+
+function visualSnapshotsReport(list, note) {
+  const listed = list != null && list.ok === true && Array.isArray(list.lines)
+  const changed = listed ? [...new Set(list.lines.filter((l) => typeof l === 'string').map((l) => l.replace(/\r$/, '')).filter((l) => l.trim() !== ''))] : []
+  const notes = [
+    ...(typeof note === 'string' && note ? [note] : []),
+    ...(listed ? [] : ['変わった基準画像の一覧を取得できなかった（Files changed で確かめる）']),
+  ]
+  return { changed, notes }
+}
+// ==== END inline: _lib/visual-snapshots.mjs ====
 // ==== BEGIN inline: _lib/pr-artifacts.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 function str(v) {
   return v == null ? '' : String(v);
@@ -1402,6 +1551,23 @@ function diagramSection(plan, diagramCheck) {
   return diagramCheck?.consistent === true ? figures : `${PR_BODY_DIAGRAM_UNVERIFIED}\n\n${figures}`;
 }
 
+const PR_BODY_VISUAL_HEADING = '## 画面の変化';
+const PR_BODY_VISUAL_PATHS_MAX = 30;
+const PR_BODY_VISUAL_COMPARE_NOTE = '見比べは PR の Files changed の画像差分（2-up / Swipe / Onion skin）で行う。';
+function visualSnapshotsSection(visualSnapshots) {
+  const changed = textItems(visualSnapshots?.changed);
+  const notes = textItems(visualSnapshots?.notes);
+  if (changed.length === 0 && notes.length === 0) return null;
+  const lines = [];
+  if (changed.length) {
+    const shown = changed.slice(0, PR_BODY_VISUAL_PATHS_MAX).map((p) => `- \`${neutralizeStructure(p).replace(/`/g, "'")}\``);
+    const excess = changed.length - shown.length;
+    lines.push(`基準画像の PNG が ${changed.length} 件変わった。${PR_BODY_VISUAL_COMPARE_NOTE}`, ...shown, ...(excess > 0 ? [`（他 ${excess} 件）`] : []));
+  }
+  for (const n of notes) lines.push(`⚠️ ${neutralizeStructure(n)}`);
+  return lines.join('\n');
+}
+
 function noteLines(plan) {
   const all = arr(plan?.pr_notes)
     .filter((n) => PR_NOTE_SECTIONS.includes(n?.section) && collapseWhitespace(n?.text))
@@ -1468,13 +1634,14 @@ function hitLine(label, hits, keyOf) {
   return `- ${label}: ${list.length} 件（${items.join('、')}）`;
 }
 
-function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false, diagramCheck = null }) {
+function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false, diagramCheck = null, visualSnapshots = null }) {
   let conclusionText = collapseWhitespace(plan?.summary);
   if (!conclusionText) conclusionText = collapseWhitespace(req?.issue_title);
   if (!conclusionText) conclusionText = `issue #${issue} の変更`;
   const changes = textItems(plan?.behavior_changes);
   const reviewPoints = textItems(plan?.review_points);
   const diagram = diagramSection(plan, diagramCheck);
+  const visual = visualSnapshotsSection(visualSnapshots);
   const outOfScope = outOfScopeSection(plan);
   const rows = acRows(req, acResults, acStale);
   const acTable = acResultsSection(rows);
@@ -1487,6 +1654,7 @@ function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, ac
     `**${conclusionText}**`,
     ...(changes.length ? [`${PR_BODY_CHANGES_HEADING}\n${bulletList(changes)}`] : []),
     ...(diagram ? [`${PR_BODY_DIAGRAM_HEADING}\n${diagram}`] : []),
+    ...(visual ? [`${PR_BODY_VISUAL_HEADING}\n${visual}`] : []),
     ...(reviewPoints.length ? [`${PR_BODY_REVIEW_POINTS_HEADING}\n${bulletList(reviewPoints)}`] : []),
     ...(outOfScope ? [`${PR_BODY_OUT_OF_SCOPE_HEADING}\n${outOfScope}`] : []),
     ...(acTable ? [`${PR_BODY_AC_RESULTS_HEADING}\n${acTable}`] : []),
@@ -2089,6 +2257,8 @@ const req = state.req
 const CI_AC_INDEXES = ARGS.ci_ac_indexes
 const TURBOPACK_NOTE = ARGS.notes.turbopack
 const TEST_DISCOVERY_NOTE = ARGS.notes.test_discovery
+// repo の "dev-flow".visual_snapshots（Setup で検証した宣言。無ければ null）。宣言のある run だけ、各評価の前に基準画像を撮り直す。
+const VISUAL_SNAPSHOTS = ARGS.visual_snapshots
 const EVAL_MAX = 10        // 評価差し戻し上限（収束モデルにより happy path は数回で抜ける）
 const EVAL_STUCK = 2       // 同一 topic がこの回数出たら stuck と判定（design churn 打ち切り）
 const DESIGN_REPLAN_MAX = 2  // design 差し戻し(replan+reimpl)の決定論上限。topic fingerprint 非依存の last-resort hard cap（incentive-structural。paraphrase で stuck 検出が漏れても総回数で打ち切る。dev-flow.js の BLOCK_MAX と同思想）
@@ -2422,8 +2592,11 @@ async function execDiffTriagePhase(state) {
   // implementer はコミットしないので diff-triage.sh は git status --porcelain をパースする。
   const realized = files == null ? null : { files }
   // ephemeral（.devflow-tmp/ 等）を除いて数える
-  const realizedNonEphemeral = realized?.files ? filterEphemeralPaths(realized.files) : null
-  if (realized?.files && realizedNonEphemeral && realizedNonEphemeral.length !== realized.files.length) log(`realized-diff: ephemeral ${realized.files.length - realizedNonEphemeral.length} 件を file count から除外`)
+  const realizedKept = realized?.files ? filterEphemeralPaths(realized.files) : null
+  if (realized?.files && realizedKept && realizedKept.length !== realized.files.length) log(`realized-diff: ephemeral ${realized.files.length - realizedKept.length} 件を file count から除外`)
+  // 宣言 visual_snapshots の paths の下の PNG（撮影コマンドが書き換える基準画像）も数えない。宣言は PR の外から読んだもの
+  const realizedNonEphemeral = withoutVisualSnapshotPngs(realizedKept, VISUAL_SNAPSHOTS?.paths)
+  if (realizedKept && realizedNonEphemeral.length !== realizedKept.length) log(`realized-diff: visual_snapshots の paths の下の PNG ${realizedKept.length - realizedNonEphemeral.length} 件を file count から除外`)
   // 宣言外 non-ephemeral 変更は shape の size 信号にせず、Evaluate 強制 + concern 監査で扱う
   const planAllTasks = state.plan.serial ?? []
   const undeclared = realizedNonEphemeral ? diffDeclaredPaths(planAllTasks, realizedNonEphemeral) : []
@@ -2508,6 +2681,98 @@ async function execDiffTriagePhase(state) {
   return state
 }
 
+// 基準画像の撮影（_lib/visual-snapshots.mjs）: 宣言 visual_snapshots のある run だけ、各評価（eval#i）の前に worktree の tree を取り、
+// 最後に撮影した tree と違えば宣言コマンドを local-verify（paths のある宣言）で head の worktree に対して実行する。評価の前に
+// 撮るので、変わった PNG は評価される tree（この後の diff-hash-eval）に入り、PR 直前の diff hash の照合はそのまま成り立つ。
+// 撮影の成否は PR 本文の「画面の変化」に出すだけで、ledger・差し戻し・merge tier には入れない（fail-open。撮影コマンドは
+// PR のコードなので、結果で gate を動かさない）。失敗した・paths の下の PNG 以外を変えた撮影は local-verify が worktree を
+// 撮影前に戻す。start には Setup で検証した宣言を --config-pct で渡す（worktree の設定ファイルは読ませない）。
+// stop は finally で必ず呼ぶ（呼ばれなくても supervisor の trap が DB の削除と worktree の後始末をする）。
+// 撮影と一覧の取得の中の例外もここで受けて理由にする — 表示だけの処理の失敗で評価を止めない（子の throw は親が HOLD にする）。
+const visualSnapshotsRun = { lastTree: null, attempts: 0, note: null }
+async function visualSnapshotsTree(dhPrompt, label) {
+  const dh = await failOpenAgent(dhPrompt, { agentType: 'dev-runner-haiku-ro', schema: DIFFHASH, label, phase: 'Evaluate', retryOnContractViolation: true })
+  return dh && typeof dh.hash === 'string' ? dh.hash : null
+}
+async function captureVisualSnapshots(dhPrompt, i) {
+  if (!VISUAL_SNAPSHOTS) return
+  try {
+    await captureVisualSnapshotsOnce(dhPrompt, i)
+  } catch (e) {
+    visualSnapshotsRun.note = `撮影の途中で例外が起きたため、撮影の結果を確かめられていない（${String(e && e.message ? e.message : e).slice(0, 200)}）`
+    visualSnapshotsRun.lastTree = null
+    log(`⚠️ visual-snapshots: eval#${i} の前の撮影が例外 — 評価と PR は続ける（fail-open）: ${e && e.message ? e.message : e}`)
+  }
+}
+async function captureVisualSnapshotsOnce(dhPrompt, i) {
+  const run = visualSnapshotsRun
+  const before = await visualSnapshotsTree(dhPrompt, `diff-hash-snapshot#${i}`)
+  if (before == null) {
+    run.note = '撮影前の worktree の tree を取得できなかったため撮影していない'
+    log(`⚠️ visual-snapshots: eval#${i} の前の tree を取得できない — 撮影しない（fail-open）`)
+    return
+  }
+  if (before === run.lastTree) {
+    log(`visual-snapshots: eval#${i} — tree が最後に撮影した tree と同じ（撮り直さない）`)
+    return
+  }
+  const n = ++run.attempts
+  const stateDir = `${WT}/${VISUAL_SNAPSHOTS_STATE_DIR}`
+  const proxy = (cmd) => `次を Bash で **timeout 600000** を指定して 1 回だけ実行し、**stdout の JSON object をそのまま** 返せ`
+    + `（判定や脚色をしない。失敗時に ok:true を生成してはならない。& や nohup を足さない — 常駐化はコマンド自身が行う）:\n${cmd}`
+  const spawnOpts = (schema, label) => ({ agentType: 'dev-runner-haiku', schema, label, phase: 'Evaluate' })
+  let res = null
+  try {
+    const start = await failOpenAgent(
+      proxy(`local-verify start --worktree '${WT}' --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_START_WAIT_SEC} --config-pct ${localVerifyConfigArg(VISUAL_SNAPSHOTS)}`),
+      spawnOpts(VISUAL_SNAPSHOTS_RESULT, `visual-snapshots-start#${n}`),
+    )
+    res = await waitBgJob({
+      start,
+      wait: (k) => failOpenAgent(
+        proxy(`local-verify wait --state-dir '${stateDir}' --wait-sec ${LOCAL_VERIFY_WAIT_SEC}`),
+        spawnOpts(VISUAL_SNAPSHOTS_RESULT, `visual-snapshots-wait#${n}.${k}`),
+      ),
+      maxPolls: localVerifyWaitPolls(VISUAL_SNAPSHOTS.timeout_seconds),
+      schema: VISUAL_SNAPSHOTS_RESULT,
+    })
+  } finally {
+    const stop = await failOpenAgent(proxy(`local-verify stop --state-dir '${stateDir}'`), spawnOpts(VISUAL_SNAPSHOTS_STOP, `visual-snapshots-stop#${n}`))
+    if (!stop || stop.ok !== true) log(`⚠️ visual-snapshots-stop#${n}: 停止を確認できない（${stop?.error ?? 'proxy の応答が無い'}）— 後片付けは local-verify の supervisor の trap に委ねる`)
+  }
+  const outcome = visualSnapshotsOutcome(res, localVerifyVerdict(res), VISUAL_SNAPSHOTS.timeout_seconds)
+  // 終了後の tree は local-verify の応答（snapshot.tree）から取る。応答に無いときだけ取り直す
+  const after = outcome.tree ?? await visualSnapshotsTree(dhPrompt, `diff-hash-snapshot-after#${i}`)
+  const unrestored = !outcome.captured && (outcome.restored === false || (outcome.restored == null && after != null && after !== before))
+  run.note = outcome.captured ? null : `${outcome.note}${unrestored ? VISUAL_SNAPSHOTS_UNRESTORED_NOTE : ''}`
+  // 失敗した撮影の tree も記録する — 同じ tree で同じコマンドを評価のたびに繰り返さない
+  run.lastTree = after
+  log(outcome.captured
+    ? `visual-snapshots#${n}: 撮影した（eval#${i} の前。tree ${before.slice(0, 8)} → ${after ? after.slice(0, 8) : '不明'}${after === before ? '。変わった基準画像なし' : ''}）`
+    : `⚠️ visual-snapshots#${n}: ${run.note} — 評価と PR は続ける（fail-open）`)
+}
+
+// PR 本文の「画面の変化」の材料を決める: 評価が終わった tree と origin/<base> の間で、宣言の paths の下で変わった PNG の一覧と、
+// 最後の撮影の理由。一覧に載る PNG は plan の宣言外の変更だが、撮影が入れたものなので Final reconcile が pr-iterate の fix 由来の
+// 宣言外変更と取り違えないよう state.undeclared に足す。取得失敗は fail-open（理由を足すだけ）。
+async function reportVisualSnapshots(state) {
+  if (!VISUAL_SNAPSHOTS) { state.visualSnapshots = null; return state }
+  let list = null
+  try {
+    // 評価が終わった tree（post-eval の green-fix を再評価した run はその後の tree）。取れていなければ最後に撮影した tree
+    const tree = state.evalDiffHash ?? visualSnapshotsRun.lastTree
+    list = tree == null ? null : await failOpenAgent(
+      visualSnapshotsListPrompt({ wt: WT, base: BASE, tree, paths: VISUAL_SNAPSHOTS.paths }),
+      { agentType: 'dev-runner-haiku-ro', schema: TREE_DIFF_LINES, label: 'visual-snapshots-list', phase: 'Evaluate', retryOnContractViolation: true },
+    )
+  } catch (e) { log(`⚠️ visual-snapshots-list が例外 — 一覧なしで続ける（fail-open）: ${e && e.message ? e.message : e}`) }
+  state.visualSnapshots = visualSnapshotsReport(list, visualSnapshotsRun.note)
+  const known = state.undeclared ?? []
+  state.undeclared = [...known, ...state.visualSnapshots.changed.filter((p) => !known.includes(p))]
+  log(`visual-snapshots: PR の差分で変わった基準画像 ${state.visualSnapshots.changed.length} 件${state.visualSnapshots.notes.length ? ` / ${state.visualSnapshots.notes.join(' / ')}` : ''}`)
+  return state
+}
+
 // Phase Evaluate: fail なら fix_feedback 付きで dev-implementer へ差し戻す（design は DESIGN_REPLAN_MAX で cap）。収束の基準は
 // 「Evaluate 収束モデル」のコメント。初回は implement の concerns / 未解消 BLOCKED を focus_areas にする。
 // 収束は isConvergedUnderPolicy のみで判定し ev.verdict は参照しない。
@@ -2568,6 +2833,9 @@ async function execEvaluatePhase(state) {
     // 各起動が使う契約を prompt に注入するので agent 定義（evaluator.md）には置かない。
     const openEvalCriticals = ledger.items.filter((it) => it.source === 'evaluator' && it.severity === 'critical' && !it.checked).map((it) => ({ id: it.id, text: it.text }))
     const openConcerns = ledger.items.filter((it) => it.source === 'concern' && it.dimension === 'concern' && !it.checked).map((it) => ({ id: it.id, text: it.text }))
+    // 評価の前に基準画像を撮り直す（宣言のある run で、tree が最後に撮影した tree から変わっているときだけ）。下の diff hash より前に
+    // 撮るので、変わった PNG は評価される tree に入る。
+    await captureVisualSnapshots(state.dhPrompt, i)
     // 各 evaluator 呼び出し前に diff hash を取る（呼び出し後の tree 変化 — redgreen-verify の restore 失敗等 — を検出するため）。
     {
       // throw は failOpenAgent で吸収。read-only probe のため契約違反リトライ opt-in
@@ -2598,6 +2866,7 @@ async function execEvaluatePhase(state) {
       // 図（plan.diagram）がある run だけ図と diagram_check 契約を渡す。結果は PR 本文の図の出し分けにだけ使う
       + diagramCheckPromptBlock(plan.diagram)
       + (sameTreeAsValidate ? validateResultPromptBlock(state.val, state.realized?.files) : '')
+      + visualSnapshotsEvalNote(VISUAL_SNAPSHOTS)
       + ((i === 1 && cls.concerns.length) ? `focus_areas（重点監査せよ。implementer の自己申告した弱点/未解消BLOCKED）:\n${JSON.stringify(cls.concerns)}\n` : '')
       + (dangerHits.length
           ? `security_focus（danger-grep が realized diff で検出した危険クラス）:\n${JSON.stringify(dangerHits)}\n`
@@ -2968,5 +3237,6 @@ state = await execDiffTriagePhase(state)
 phase('Evaluate')
 state = await execEvaluatePhase(state)
 state = await execPostEvalValidate(state)
+state = await reportVisualSnapshots(state)
 
 return { state, redgreen_state_dir: redgreenStateDir }

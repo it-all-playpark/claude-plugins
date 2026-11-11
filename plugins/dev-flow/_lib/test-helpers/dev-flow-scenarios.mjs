@@ -35,6 +35,8 @@ const REDGREEN_EVAL = {
   security_clearance: [], concern_resolutions: [],
 };
 
+const VISUAL_SNAPSHOTS = { command: 'pnpm test:visual', db: { engine: 'postgres', version: '17' }, env: 'E2E_EXTERNAL_DATABASE_URL', timeout_seconds: 900, paths: ['tests/visual'] };
+
 export const DEV_FLOW_SCENARIOS = {
   baseline: {},
   // diff-gate が空 → diff-gate-retry
@@ -216,6 +218,25 @@ export const DEV_FLOW_SCENARIOS = {
         local_verify: { command: 'pnpm test:e2e:local', db: { engine: 'postgres', version: '17' }, env: 'E2E_EXTERNAL_DATABASE_URL', timeout_seconds: 1500 },
       }),
     },
+  },
+  // repo の visual_snapshots 宣言 → Evaluate の各評価の前に tree を取り（diff-hash-snapshot#1）、local-verify start / wait / stop で
+  // 基準画像を撮り直す。評価の後に PR の差分で変わった PNG の一覧を取る（visual-snapshots-list。issue #1410）
+  'visual-snapshots': {
+    overrides: {
+      'visual-snapshots-start#1': { ok: true, status: 'running', log_path: '/tmp/wt/.devflow-tmp/visual-snapshots/logs/command.log' },
+      'visual-snapshots-wait#1.1': {
+        ok: true, status: 'passed', exit_code: 0, log_path: '/tmp/wt/.devflow-tmp/visual-snapshots/logs/command.log', log_tail: 'ok', db_deleted: true,
+        snapshot: { tree_before: 'AAA', tree: 'AAA', discarded: false, restored: null, outside: [], outside_count: 0 },
+      },
+      'visual-snapshots-stop#1': { ok: true, stopped: false, was_running: false, db_deleted: true },
+      'visual-snapshots-list': { ok: true, lines: ['tests/visual/home.png'] },
+    },
+    extra: { args: devFlowArgs(1, { visual_snapshots: VISUAL_SNAPSHOTS }) },
+  },
+  // 撮影の応答に終了後の tree が無い（proxy の応答が無い）→ tree を取り直す（diff-hash-snapshot-after#1）
+  'visual-snapshots-lost': {
+    overrides: { 'visual-snapshots-list': { ok: true, lines: [] } },
+    extra: { args: devFlowArgs(1, { visual_snapshots: VISUAL_SNAPSHOTS }) },
   },
   // cross-repo ラベル + 外部 repo の dirty 成果物 → graceful 終了（issue-labels / cross-repo-artifacts）
   'cross-repo': {

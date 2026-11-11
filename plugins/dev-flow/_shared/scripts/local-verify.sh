@@ -25,6 +25,17 @@
 # dev-flow はこれで AC 自体が inline code で指定したコマンドを実行する（issue #1208。AC の文面から凍結した値を
 # --config-pct で渡す）。
 #
+# paths（repo 相対の glob の配列。省略可）のある宣言は基準画像の撮影（"dev-flow".visual_snapshots。issue #1410）で、command が
+# worktree に残してよい変化を「paths の下の PNG」（git の pathspec `:(glob)<path>/**/*.png`）だけに限る。command の前後で
+# worktree 全体の tree（staged + unstaged + untracked。.gitignore は尊重）を比べ、次のどれかなら、その実行が変えたファイルを
+# すべて command の前の内容に戻す（追跡ファイルの変更・削除は書き戻し、新しいファイルは消す。実 index は書かない）:
+#   - command が exit 非 0・timeout・stop / TERM で終わった（途中まで書かれた PNG を残さない）
+#   - exit 0 でも paths の下の PNG 以外が変わった（failed にし、reason と snapshot.outside に変わったパスを出す）
+# 戻すのは supervisor で、結果の JSON に snapshot: {tree_before, tree, discarded, restored, outside, outside_count} を足す
+# （tree は終了後の worktree の tree OID。discarded:true は結果を捨てた、restored:false は戻し切れなかった）。
+# command は PR のコードなので、PNG 以外に書いたものを評価される tree と PR に入れない。state dir が worktree の中に
+# あるときは git に無視されている必要がある（無視されていなければ error。state dir 自身が変化に数えられる）。
+#
 # プロセスモデル:
 #   切り離し実行（detached supervisor・状態ファイル・上限時間・stop・wait）は _lib/scripts/bg-job.sh が持ち、ここは
 #   宣言の読み込み・DB の確保と削除・環境変数・expect_paths を hook で載せる。DB の確保と削除も supervisor が行う。
@@ -65,6 +76,10 @@ paths() {
     BROKER_CREATE_ERR="$BG_JOB_STATE_DIR/broker-create.err"
     # command を起こす直前に作る印。expect_paths がこれより古ければ、その実行で作られた・更新されたものではない
     CMD_STARTED="$BG_JOB_STATE_DIR/command-started"
+    # paths のある宣言: command の前の tree OID・paths の下の PNG 以外で変わったパス・撮影の決着（受け入れた / 捨てた）
+    SNAP_BEFORE="$BG_JOB_STATE_DIR/snapshot-before"
+    SNAP_OUTSIDE="$BG_JOB_STATE_DIR/snapshot-outside"
+    SNAP_RESULT="$BG_JOB_STATE_DIR/snapshot.json"
 }
 
 # ---------------------------------------------------------------------------
@@ -96,6 +111,7 @@ load_config() {
         elif (.command | type) != "string" or (.command | test("^\\s*$")) then "command が空でない string でない"
         elif .expect_paths != null and (.expect_paths | type) != "array" then "expect_paths が配列でない"
         elif (.expect_paths // []) | any(type != "string" or test("^\\s*$") or startswith("/") or (split("/") | map(select(. == "..")) | length > 0)) then "expect_paths に worktree からの相対パスでないもの（/ 始まり・.. を含む）がある"
+        elif .paths != null and ((.paths | type) != "array" or (.paths | length) == 0 or (.paths | any(type != "string" or test("^\\s*$") or startswith("/") or (split("/") | any(. == ".."))))) then "paths が worktree からの相対パスの空でない配列でない（/ 始まり・.. を含むものは不可）"
         elif .db != null and ((.db | type) != "object" or .db.engine != "postgres") then "db.engine が \"postgres\" でない"
         elif .db != null and ((.db.version | type) != "string" or (.db.version | test("^\\s*$"))) then "db.version が空でない string でない"
         elif .db != null and ((.env | type) != "string" or (.env | test("^[A-Za-z_][A-Za-z0-9_]*$") | not)) then "env が環境変数名でない"
@@ -103,7 +119,79 @@ load_config() {
         else empty end' <<<"$raw")"
     [[ -z "$problem" ]] || { echo "local_verify の宣言が不正: $problem"; return 1; }
     bg_job_write_json "$BG_JOB_SPEC" --arg cwd "$worktree" --argjson cfg "$raw" \
-        '{cwd: $cwd, command: $cfg.command, engine: $cfg.db.engine, version: $cfg.db.version, env: $cfg.env, timeout_seconds: $cfg.timeout_seconds, expect_paths: ($cfg.expect_paths // [])}'
+        '{cwd: $cwd, command: $cfg.command, engine: $cfg.db.engine, version: $cfg.db.version, env: $cfg.env, timeout_seconds: $cfg.timeout_seconds, expect_paths: ($cfg.expect_paths // []), snapshot_paths: ($cfg.paths // [])}'
+}
+
+# ---------------------------------------------------------------------------
+# paths のある宣言（基準画像の撮影）: command が残してよい変化を paths の下の PNG に限る
+# ---------------------------------------------------------------------------
+
+# worktree 全体（staged + unstaged + untracked。.gitignore は尊重）の tree OID。取れなければ何も出さない。
+snapshot_tree() {
+    "$(dirname "$SELF")/worktree-diff-hash.sh" "$1" HEAD 2>/dev/null | jq -r '.hash // empty' 2>/dev/null
+}
+
+# tree $2 → $3 で変わったパスのうち、paths の下の PNG でないものを 1 行 1 件で出す。
+snapshot_outside() {
+    local wt="$1" p specs=(':(top)') list
+    list="$(jq -r '.snapshot_paths[]?' "$BG_JOB_SPEC" 2>/dev/null)"
+    while IFS= read -r p; do
+        while [[ "$p" == */ ]]; do p="${p%/}"; done
+        [[ -n "$p" ]] || continue
+        specs+=(":(top,exclude,glob)$p/**/*.png")
+    done <<<"$list"
+    git -C "$wt" -c core.quotePath=false diff --name-only --no-renames "$2" "$3" -- "${specs[@]}"
+}
+
+# worktree を tree $2 の内容に戻す（今の tree との差分だけ。$2 に無いファイルは消し、あるものは書き戻す）。
+# 一時 index から checkout-index で書くので実 index は書かない。戻した後の tree が $2 と一致したら 0。
+snapshot_restore() {
+    local wt="$1" before="$2" now p
+    local idx="$BG_JOB_STATE_DIR/snapshot-index" added="$BG_JOB_STATE_DIR/snapshot-added" changed="$BG_JOB_STATE_DIR/snapshot-changed"
+    now="$(snapshot_tree "$wt")"
+    [[ -n "$now" ]] || return 1
+    [[ "$now" != "$before" ]] || return 0
+    git -C "$wt" diff --name-only --no-renames -z --diff-filter=A "$before" "$now" >"$added" || return 1
+    while IFS= read -r -d '' p; do rm -f -- "$wt/$p"; done <"$added"
+    git -C "$wt" diff --name-only --no-renames -z --diff-filter=a "$before" "$now" >"$changed" || return 1
+    if [[ -s "$changed" ]]; then
+        rm -f "$idx"
+        GIT_INDEX_FILE="$idx" git -C "$wt" read-tree "$before" || return 1
+        GIT_INDEX_FILE="$idx" git -C "$wt" checkout-index -f -z --stdin <"$changed" || return 1
+    fi
+    [[ "$(snapshot_tree "$wt")" == "$before" ]]
+}
+
+# command が exit 0 で終わった後: paths の下の PNG 以外が変わっていれば理由を出す（failed になり、snapshot_settle が戻す）。
+# 変わっていなければその撮影を受け入れる（SNAP_RESULT を書く — 以後 snapshot_settle は何もしない）。
+snapshot_check() {
+    [[ -f "$SNAP_BEFORE" ]] || return 0
+    local wt before after outside
+    wt="$(bg_job_read_field "$BG_JOB_SPEC" .cwd)"
+    before="$(cat "$SNAP_BEFORE")"
+    after="$(snapshot_tree "$wt")"
+    if [[ -z "$after" ]]; then echo 'command は exit 0 だが、終了後の worktree の tree を取れず、変わったファイルを確かめられない'; return 0; fi
+    if ! outside="$(snapshot_outside "$wt" "$before" "$after")"; then echo 'command は exit 0 だが、command の前後の差分を取れず、変わったファイルを確かめられない'; return 0; fi
+    if [[ -n "$outside" ]]; then
+        printf '%s\n' "$outside" >"$SNAP_OUTSIDE"
+        echo "command は exit 0 だが paths の下の PNG 以外を変えた: $(head -n 5 "$SNAP_OUTSIDE" | tr '\n' ' ' | sed 's/ *$//')"
+        return 0
+    fi
+    bg_job_write_json "$SNAP_RESULT" --arg before "$before" --arg tree "$after" \
+        '{tree_before: $before, tree: $tree, discarded: false, restored: null, outside: [], outside_count: 0}'
+}
+
+# 受け入れなかった撮影（失敗・timeout・stop・paths の下の PNG 以外の変化）を捨て、worktree を command の前に戻す。
+# cleanup（正常経路と EXIT trap）と stop から呼ばれるので、決着済み（SNAP_RESULT あり）なら何もしない。
+snapshot_settle() {
+    [[ -f "$SNAP_BEFORE" && ! -f "$SNAP_RESULT" ]] || return 0
+    local wt before tree restored=false outside='[]'
+    wt="$(bg_job_read_field "$BG_JOB_SPEC" .cwd)"
+    before="$(cat "$SNAP_BEFORE")"
+    if snapshot_restore "$wt" "$before"; then restored=true; tree="$before"; else tree="$(snapshot_tree "$wt")"; fi
+    [[ -f "$SNAP_OUTSIDE" ]] && outside="$(jq -Rnc '[inputs | select(. != "")]' "$SNAP_OUTSIDE" 2>/dev/null || echo '[]')"
+    bg_job_write_json "$SNAP_RESULT" --arg before "$before" --arg tree "$tree" --argjson restored "$restored" --argjson outside "$outside" \
+        '{tree_before: $before, tree: (if $tree == "" then null else $tree end), discarded: true, restored: $restored, outside: $outside[0:20], outside_count: ($outside | length)}'
 }
 
 # ---------------------------------------------------------------------------
@@ -148,6 +236,17 @@ bg_job_hook_prepare() {
         fi
         bg_job_set_phase preparing --arg db_id "$DB_ID"
     fi
+    if [[ "$(jq -r '.snapshot_paths | length' "$BG_JOB_SPEC" 2>/dev/null)" != 0 ]]; then
+        local wt before
+        wt="$(bg_job_read_field "$BG_JOB_SPEC" .cwd)"
+        case "$BG_JOB_STATE_DIR/" in
+            "$wt/"*) git -C "$wt" check-ignore -q "$BG_JOB_STATE_DIR" 2>/dev/null \
+                || bg_job_abort error "--state-dir ($BG_JOB_STATE_DIR) が worktree の中にあり git に無視されていない — paths のある宣言は実行しない" ;;
+        esac
+        before="$(snapshot_tree "$wt")"
+        [[ -n "$before" ]] || bg_job_abort error 'command の前の worktree の tree を取れない（git の worktree でない等）— paths のある宣言は実行しない'
+        printf '%s' "$before" >"$SNAP_BEFORE"
+    fi
     : >"$CMD_STARTED"
 }
 
@@ -159,7 +258,9 @@ bg_job_hook_command_env() {
 # failed（理由は log にも残し、log_tail で返す）。mtime が開始の印と同じものはその実行の更新と読む（秒精度の fs で
 # 開始と同じ秒に書かれた生成物を古いと誤判定しないため）
 bg_job_hook_check_success() {
-    local worktree missing='' stale='' p paths_list
+    local worktree missing='' stale='' p paths_list snap
+    snap="$(snapshot_check)"
+    if [[ -n "$snap" ]]; then echo "$snap"; return 0; fi
     worktree="$(bg_job_read_field "$BG_JOB_SPEC" .cwd)"
     paths_list="$(jq -r '.expect_paths[]?' "$BG_JOB_SPEC" 2>/dev/null)"
     while IFS= read -r p; do
@@ -177,6 +278,7 @@ bg_job_hook_check_success() {
 }
 
 bg_job_hook_cleanup() {
+    snapshot_settle
     # pg-broker create の途中で TERM を受けると、create が返った後・DB_ID を代入する前に trap が走る。
     # create の応答は file に残しているので、そこから id を拾って消す。
     if [[ -z "$DB_ID" && ! -f "$DB_DELETED" ]]; then
@@ -187,15 +289,19 @@ bg_job_hook_cleanup() {
 
 # supervisor が KILL 等で trap を走らせずに居なくなったときは、stop がここで DB を消す
 bg_job_hook_orphan_cleanup() {
+    # start が前の実行を止めるとき（SNAP_KEEP_ORPHAN）は戻さない — 前の実行の後に入った変更（差し戻しの実装）まで巻き戻すため
+    [[ -n "${SNAP_KEEP_ORPHAN:-}" ]] || snapshot_settle
     [[ ! -f "$DB_DELETED" ]] || return 0
     DB_ID="$(bg_job_read_field "$BG_JOB_STATE" .db_id)"
     delete_db
 }
 
 bg_job_hook_extra_fields() {
-    local deleted='null'
+    local deleted='null' snapshot='null'
     [[ -f "$DB_DELETED" ]] && deleted="$(jq -c '.ok' "$DB_DELETED" 2>/dev/null || echo null)"
-    bg_job_emit --argjson db_deleted "$deleted" '{db_deleted: $db_deleted}'
+    [[ -f "$SNAP_RESULT" ]] && snapshot="$(jq -c '.' "$SNAP_RESULT" 2>/dev/null || echo null)"
+    bg_job_emit --argjson db_deleted "$deleted" --argjson snapshot "$snapshot" \
+        '{db_deleted: $db_deleted} + (if $snapshot != null then {snapshot: $snapshot} else {} end)'
 }
 
 # ---------------------------------------------------------------------------
@@ -205,6 +311,7 @@ bg_job_hook_extra_fields() {
 cmd_start() {
     local worktree="$1" config_path="$2" wait_sec="$3" config_pct="$4"
     # 前回 run の残り（同じ state dir）を先に止める
+    SNAP_KEEP_ORPHAN=1
     bg_job_reset "$worktree" || return 0
     local problem
     if ! problem="$(load_config "$worktree" "$config_path" "$config_pct")"; then

@@ -1,6 +1,10 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { parseDiffTriageFields, lineStatsFor, isWellFormedRiskField } from './diff-triage.mjs';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { parseDiffTriageFields, lineStatsFor, isWellFormedRiskField, withoutVisualSnapshotPngs } from './diff-triage.mjs';
+import { makeDevFlowSandbox, runWorkflowCapture, devFlowArgs, STANDARD_FILES } from './test-helpers/vm-sandbox.mjs';
 
 // (1) null 入力 → risk.ok===false かつ hits===[]、files/hash/lines は null。hits フィールド欠落を
 // clean と同一視しない fail-closed が要件。
@@ -208,4 +212,85 @@ test.each([
   const { risk } = parseDiffTriageFields(unified);
   assert.equal(risk.ok, want.ok);
   assert.equal(risk.error, want.error);
+});
+
+// ---- issue #1410: shape の判定に数える変わったファイルから、宣言 visual_snapshots の paths の下の PNG を外す ----
+
+test('withoutVisualSnapshotPngs: paths の下の PNG だけを外し、paths の下でも PNG でないファイル・paths の外の PNG は残す', () => {
+  const files = [
+    'src/app.ts',
+    'tests/visual/home.png',
+    'tests/visual/login/form.png',
+    'tests/visual/README.md',
+    'tests/visual/home.png.orig',
+    'tests/visual/meta.json',
+    'docs/images/logo.png',
+    'tests/visual-old/home.png',
+    'home.png',
+  ];
+  assert.deepEqual(withoutVisualSnapshotPngs(files, ['tests/visual']), [
+    'src/app.ts', 'tests/visual/README.md', 'tests/visual/home.png.orig', 'tests/visual/meta.json',
+    'docs/images/logo.png', 'tests/visual-old/home.png', 'home.png',
+  ]);
+  // 末尾の / は付いていても同じ。複数の paths はどれかに一致すれば外す
+  assert.deepEqual(withoutVisualSnapshotPngs(files, ['tests/visual/', 'docs/images']), [
+    'src/app.ts', 'tests/visual/README.md', 'tests/visual/home.png.orig', 'tests/visual/meta.json', 'tests/visual-old/home.png', 'home.png',
+  ]);
+});
+
+test('withoutVisualSnapshotPngs: paths は glob（* と ? は / をまたがず、segment 全体の ** は 0 個以上のディレクトリ）', () => {
+  const files = [
+    'apps/web/e2e/__screenshots__/a.png',
+    'apps/admin/e2e/__screenshots__/chromium/b.png',
+    'apps/web/src/e2e/__screenshots__/c.png',
+    'packages/ui/__screenshots__/d.png',
+    'packages/ui/src/button/__screenshots__/e.png',
+    '__screenshots__/f.png',
+    'apps/web/e2e/__screenshots__x/g.png',
+    'shots.v1/h.png',
+    'shotsXv1/i.png',
+  ];
+  assert.deepEqual(withoutVisualSnapshotPngs(files, ['apps/*/e2e/__screenshots__']), files.filter((f) => !['apps/web/e2e/__screenshots__/a.png', 'apps/admin/e2e/__screenshots__/chromium/b.png'].includes(f)));
+  assert.deepEqual(withoutVisualSnapshotPngs(files, ['**/__screenshots__']), ['apps/web/e2e/__screenshots__x/g.png', 'shots.v1/h.png', 'shotsXv1/i.png']);
+  assert.deepEqual(withoutVisualSnapshotPngs(files, ['packages/**']), files.filter((f) => !f.startsWith('packages/')));
+  // . は任意の 1 文字でなく . にだけ一致する
+  assert.deepEqual(withoutVisualSnapshotPngs(['shots.v1/h.png', 'shotsXv1/i.png'], ['shots.v1']), ['shotsXv1/i.png']);
+  assert.deepEqual(withoutVisualSnapshotPngs(['shots.v1/h.png', 'shotsXv1/i.png'], ['shots?v1']), []);
+});
+
+test('withoutVisualSnapshotPngs: 宣言が無い・paths が空ならそのまま返し、取得失敗の null を空配列にしない', () => {
+  const files = ['tests/visual/home.png', 'src/app.ts'];
+  for (const paths of [undefined, null, []]) assert.equal(withoutVisualSnapshotPngs(files, paths), files);
+  assert.equal(withoutVisualSnapshotPngs(null, ['tests/visual']), null);
+});
+
+// Diff triage の配線: 宣言のある run は、paths の下の PNG を realized count（shape の判定）から外す。
+const devFlowSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '.claude/workflows/dev-flow.js'), 'utf8');
+const VISUAL_SNAPSHOTS = { command: 'pnpm test:visual', db: { engine: 'postgres', version: '17' }, env: 'E2E_EXTERNAL_DATABASE_URL', timeout_seconds: 900, paths: ['tests/visual'] };
+
+async function shapeOf(files, { declared = true } = {}) {
+  const impl = { status: 'DONE', task_id: 'issue-1', files: [...files], summary: 's', concerns: [] };
+  const { ctx, logs } = makeDevFlowSandbox({
+    overrides: { 'impl:serial:issue-1': impl, 'danger-grep': { risk: { ok: true, hits: [] }, files: [...files], diffhash: { hash: 'AAA', empty: false } } },
+    extra: { args: devFlowArgs(1, declared ? { visual_snapshots: VISUAL_SNAPSHOTS } : {}) },
+  });
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
+  assert.equal(error, null, `run が throw した: ${error?.message}`);
+  assert.ok(result, 'run が結果を返さない');
+  // 実効 shape は Diff triage の log（`shape: <shape> — <理由>`）で見る
+  const line = logs.find((l) => l.startsWith('shape: '));
+  return { shape: line?.split(' ')[1], logs };
+}
+
+test('[diff-triage] 宣言の paths の下の PNG は shape の判定に数えない（PNG 10 枚を足しても standard のまま）。宣言が無ければ数える', async () => {
+  const pngs = Array.from({ length: 10 }, (_, i) => `tests/visual/page-${i}.png`);
+  const withDecl = await shapeOf([...STANDARD_FILES, ...pngs]);
+  assert.equal(withDecl.shape, 'standard', withDecl.logs.filter((l) => l.includes('shape') || l.includes('realized')).join('\n'));
+  assert.ok(withDecl.logs.some((l) => l.includes('visual_snapshots の paths の下の PNG 10 件を file count から除外')), withDecl.logs.join('\n'));
+  assert.equal((await shapeOf([...STANDARD_FILES, ...pngs], { declared: false })).shape, 'complex');
+});
+
+test('[diff-triage] 宣言の paths の下でも PNG でないファイルは shape の判定に数える', async () => {
+  const notPng = ['tests/visual/a.json', 'tests/visual/b.md', 'tests/visual/c.jpg', 'tests/visual/d.png.bak'];
+  assert.equal((await shapeOf([...STANDARD_FILES, ...notPng])).shape, 'complex');
 });

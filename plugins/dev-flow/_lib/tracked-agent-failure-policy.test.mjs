@@ -98,6 +98,8 @@ const DF_LITE = DEV_FLOW_SCENARIOS['lite'];
 const DF_CROSS_REPO = DEV_FLOW_SCENARIOS['cross-repo'];
 const DF_LOCAL_VERIFY = DEV_FLOW_SCENARIOS['local-verify'];
 const DF_LOCAL_VERIFY_REIMPL = DEV_FLOW_SCENARIOS['local-verify-reimpl'];
+const DF_VISUAL_SNAPSHOTS = DEV_FLOW_SCENARIOS['visual-snapshots'];
+const DF_VISUAL_SNAPSHOTS_LOST = DEV_FLOW_SCENARIOS['visual-snapshots-lost'];
 // journal-log-abort は top-level abort catch 内でのみ呼ばれる — DEV_FLOW_SCENARIOS['abort'] の
 // トリガ throw message が THROW 定数と同じ 'injected' のため使うと自身の throw が吸収されたのか
 // 元の abort が伝播したのか区別できない。message を変えた専用 base で「元の error message が
@@ -293,6 +295,13 @@ const EXPECTED_DEV_FLOW = {
       assert.equal(result?.merge_tier, 'HOLD');
     },
   },
+  // 基準画像の撮影（issue #1410）は表示だけ（fail-open）。どの spawn が落ちても評価と PR は続け、merge tier を変えない
+  'diff-hash-snapshot#1': { config: DF_VISUAL_SNAPSHOTS, policy: 'continue', reason: 'failOpenAgent経由。撮影前のtreeが取れなければ撮影せず、理由をPR本文の「画面の変化」に出すだけ' },
+  'visual-snapshots-start#1': { config: DF_VISUAL_SNAPSHOTS, policy: 'continue', reason: 'failOpenAgent経由。撮影の起動結果が無ければその撮影のPNGを入れず評価とPRを続ける' },
+  'visual-snapshots-wait#1.1': { config: DF_VISUAL_SNAPSHOTS, policy: 'continue', reason: 'failOpenAgent経由。撮影の結果が無ければその撮影のPNGを入れず評価とPRを続ける' },
+  'visual-snapshots-stop#1': { config: DF_VISUAL_SNAPSHOTS, policy: 'continue', reason: 'failOpenAgent経由。停止確認の失敗はlogのみでDBの削除とworktreeの後始末はlocal-verifyのtrapに委ねる' },
+  'visual-snapshots-list': { config: DF_VISUAL_SNAPSHOTS, policy: 'continue', reason: 'failOpenAgent経由。変わったPNGの一覧が取れなければ「画面の変化」にその旨を出すだけ' },
+  'diff-hash-snapshot-after#1': { config: DF_VISUAL_SNAPSHOTS_LOST, policy: 'continue', reason: 'failOpenAgent経由。撮影後のtreeが取れなければ次の評価の前に撮り直すだけ' },
   'diff-hash-local-verify#2': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。実行treeのhashが取れなければnullとしFinal reconcileで最終treeでの再実行に倒す' },
   'reimpl-local-verify#1:serial:issue-1': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。local-verify差し戻しのdev-implementer失敗はnullとしてdropし再実行で判定する' },
   'test#local-verify-1': { config: DF_LOCAL_VERIFY_REIMPL, policy: 'continue', reason: 'try/catchで合成redへ変換しgreen-fixループへ継続する既存のfail-safe経路（local-verify差し戻し後）' },

@@ -127,7 +127,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
 - **判定**: 実装後・PR 前の realized diff を 1 本の exec-proxy（`diff-triage`）で読み、次を決める:
   - danger-grep（security の危険パターン）と test-surface の hit — hit は SEC seed / TESTSURF として ledger に積む
   - 実効 shape — `classifyShape` が realized diff の file 数・行数と issue 由来の決定論特徴量（AC 数・`issue_type`・構造化 `breaking_change`）で
-    1 回で決める。数える file は ephemeral・宣言外を除いたもの。安全 floor（count 欠損・AC 欠落・out-of-enum の
+    1 回で決める。数える file は ephemeral・宣言外・基準画像を除いたもの。安全 floor（count 欠損・AC 欠落・out-of-enum の
     `issue_type`・`breaking_change === true` → complex）を通った run だけ、行数で下げ方向にだけ補正する。LLM の事前見積もりは使わない
   - Evaluate の強制条件（`evalForced`）— danger-grep / testsurf の hit・green-fix・drop・宣言外変更。micro の Evaluate の深さと lite route を決める
   - 宣言外変更 — implementer が申告しなかった変更を concern に積み、evaluator の重点監査に回す

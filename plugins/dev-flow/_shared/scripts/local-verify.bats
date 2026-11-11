@@ -265,6 +265,120 @@ ac_config_pct() {
     [ ! -s "$BROKER_CALLS" ]
 }
 
+# ---- paths のある宣言（基準画像の撮影。issue #1410）: command が残してよい変化を paths の下の PNG に限る ----
+
+# WT を git の worktree にする（追跡ファイル src/app.ts・shots/home.png・shots/readme.md と、未追跡の draft.txt）
+init_snapshot_repo() {
+    git init -q -b main "$WT"
+    git -C "$WT" config user.name "Test"
+    git -C "$WT" config user.email "test@example.com"
+    mkdir -p "$WT/src" "$WT/shots"
+    echo 'app v1' > "$WT/src/app.ts"
+    echo 'png v1' > "$WT/shots/home.png"
+    echo 'readme' > "$WT/shots/readme.md"
+    git -C "$WT" add -A
+    git -C "$WT" commit -q -m init
+    echo 'draft' > "$WT/draft.txt"
+}
+
+# $1 = command, $2 = paths の JSON 配列（既定 ["shots"]）, $3 = timeout_seconds（既定 60）
+snapshot_config_pct() {
+    jq -rn --arg cmd "$1" --argjson paths "${2:-[\"shots\"]}" --argjson timeout "${3:-60}" \
+        '{command: $cmd, timeout_seconds: $timeout, paths: $paths} | tojson | @uri'
+}
+
+snapshot_tree_of() {
+    bash "$(dirname "$SCRIPT")/worktree-diff-hash.sh" "$WT" HEAD | jq -r '.hash'
+}
+
+@test "paths: paths の下の PNG だけを変えた exit 0 は passed で、PNG を worktree に残す（snapshot.discarded:false・tree は終了後の tree）" {
+    init_snapshot_repo
+    before="$(snapshot_tree_of)"
+    start_verify_pct "$(snapshot_config_pct 'echo "png v2" > shots/home.png && mkdir -p shots/nested && echo new > shots/nested/detail.png')"
+    wait_verify
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .status == "passed" and .exit_code == 0'
+    echo "$output" | jq -e --arg before "$before" '.snapshot.discarded == false and .snapshot.tree_before == $before and .snapshot.outside_count == 0'
+    [ "$(echo "$output" | jq -r '.snapshot.tree')" = "$(snapshot_tree_of)" ]
+    [ "$(cat "$WT/shots/home.png")" = 'png v2' ]
+    [ "$(cat "$WT/shots/nested/detail.png")" = 'new' ]
+    wait_supervisor_done
+}
+
+@test "paths: exit 0 でも paths の下の PNG 以外（追跡ファイルの変更・削除、新しいファイル、paths の下の PNG でないファイル）が変わったら failed にし、PNG も含めてすべて command の前に戻す" {
+    init_snapshot_repo
+    git -C "$WT" rm -q --cached shots/readme.md   # 実装が stage した変更（index）は撮影の前後で変わらない
+    before="$(snapshot_tree_of)"
+    index_before="$(git -C "$WT" ls-files -s)"
+    start_verify_pct "$(snapshot_config_pct 'echo "png v2" > shots/home.png && echo new > shots/extra.png && echo "app v2" > src/app.ts && rm draft.txt && echo x > src/new.ts && echo note > shots/notes.md')"
+    wait_verify
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .status == "failed" and .exit_code == 0'
+    echo "$output" | jq -e '.reason | contains("paths の下の PNG 以外を変えた")'
+    echo "$output" | jq -e --arg before "$before" '.snapshot.discarded == true and .snapshot.restored == true and .snapshot.tree == $before'
+    echo "$output" | jq -e '.snapshot.outside | sort == ["draft.txt", "shots/notes.md", "src/app.ts", "src/new.ts"]'
+    echo "$output" | jq -e '.snapshot.outside_count == 4'
+    wait_supervisor_done
+
+    [ "$(snapshot_tree_of)" = "$before" ]
+    [ "$(cat "$WT/src/app.ts")" = 'app v1' ]
+    [ "$(cat "$WT/draft.txt")" = 'draft' ]
+    [ "$(cat "$WT/shots/home.png")" = 'png v1' ]
+    [ ! -e "$WT/shots/extra.png" ]
+    [ ! -e "$WT/src/new.ts" ]
+    [ ! -e "$WT/shots/notes.md" ]
+    [ "$(git -C "$WT" ls-files -s)" = "$index_before" ]
+}
+
+@test "paths: exit 非 0・timeout は、途中まで書かれた PNG を残さず command の前に戻す" {
+    init_snapshot_repo
+    before="$(snapshot_tree_of)"
+    start_verify_pct "$(snapshot_config_pct 'echo "png v2" > shots/home.png; echo new > shots/extra.png; exit 3')"
+    wait_verify
+    echo "$output" | jq -e '.ok == false and .status == "failed" and .exit_code == 3'
+    echo "$output" | jq -e --arg before "$before" '.snapshot.discarded == true and .snapshot.restored == true and .snapshot.tree == $before and .snapshot.outside_count == 0'
+    wait_supervisor_done
+    [ "$(snapshot_tree_of)" = "$before" ]
+    [ ! -e "$WT/shots/extra.png" ]
+
+    start_verify_pct "$(snapshot_config_pct 'echo "png v2" > shots/home.png; sleep 300' '["shots"]' 1)"
+    wait_verify
+    echo "$output" | jq -e '.status == "timeout" and .snapshot.discarded == true and .snapshot.restored == true'
+    wait_supervisor_done
+    [ "$(cat "$WT/shots/home.png")" = 'png v1' ]
+}
+
+@test "paths: glob のディレクトリ（apps/*/shots）の下の PNG は残し、合わないディレクトリの PNG は paths の外として捨てる" {
+    init_snapshot_repo
+    start_verify_pct "$(snapshot_config_pct 'mkdir -p apps/web/shots/a && echo p > apps/web/shots/a/x.png' '["apps/*/shots/"]')"
+    wait_verify
+    echo "$output" | jq -e '.status == "passed" and .snapshot.discarded == false'
+    [ -f "$WT/apps/web/shots/a/x.png" ]
+    wait_supervisor_done
+
+    start_verify_pct "$(snapshot_config_pct 'mkdir -p apps/web/other && echo p > apps/web/other/y.png' '["apps/*/shots/"]')"
+    wait_verify
+    echo "$output" | jq -e '.status == "failed" and .snapshot.discarded == true and .snapshot.outside == ["apps/web/other/y.png"]'
+    [ ! -e "$WT/apps/web/other/y.png" ]
+    [ -f "$WT/apps/web/shots/a/x.png" ]
+    wait_supervisor_done
+}
+
+@test "paths: 空・/ 始まり・.. を含む paths は宣言不正の error、git の worktree でなければ error で、command を実行しない" {
+    start_verify_pct "$(snapshot_config_pct 'echo ran > ran.txt' '[]')"
+    echo "$output" | jq -e '.status == "error" and (.error | contains("paths"))'
+    start_verify_pct "$(snapshot_config_pct 'echo ran > ran.txt' '["/abs/shots"]')"
+    echo "$output" | jq -e '.status == "error" and (.error | contains("paths"))'
+    start_verify_pct "$(snapshot_config_pct 'echo ran > ran.txt' '["shots/../../x"]')"
+    echo "$output" | jq -e '.status == "error" and (.error | contains("paths"))'
+
+    # WT は git の worktree でない
+    start_verify_pct "$(snapshot_config_pct 'echo ran > ran.txt')"
+    [ "$(echo "$output" | jq -r '.status')" = error ] || { wait_verify; echo "$output" | jq -e '.status == "error"'; }
+    echo "$output" | jq -e '(.reason // .error) | contains("worktree の tree を取れない")'
+    [ ! -e "$WT/ran.txt" ]
+}
+
 @test "wait: start 前は error、usage error は exit 2" {
     run bash "$SCRIPT" wait --state-dir "$STATE_DIR" --wait-sec 1
     [ "$status" -eq 0 ]

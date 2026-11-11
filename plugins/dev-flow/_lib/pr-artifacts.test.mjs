@@ -24,6 +24,9 @@ import {
   PR_BODY_DIAGRAM_UNVERIFIED,
   PR_BODY_DIAGRAM_MISMATCH,
   PR_DIAGRAM_KINDS,
+  PR_BODY_VISUAL_HEADING,
+  PR_BODY_VISUAL_PATHS_MAX,
+  PR_BODY_VISUAL_COMPARE_NOTE,
   PR_BODY_AC_RESULTS_HEADING,
   PR_BODY_AC_UNVERIFIED,
   PR_BODY_AC_STALE,
@@ -546,6 +549,69 @@ test('[pr-artifacts] PR body: 構成の変化は「何が変わるか」の直�
   assertBodyStructureIntact(body, 1);
   // 図が無い plan は節ごと出さない
   assert.ok(!diagramBody({ diagram: undefined }, { consistent: true, mismatches: [] }).includes(PR_BODY_DIAGRAM_HEADING));
+});
+
+// ---- issue #1410: 「画面の変化」は PR の差分で変わった基準画像の PNG のパスと、撮影できなかった理由を出す ----
+
+const visualBody = (visualSnapshots, o = {}) => buildPrBody({
+  issue: 1, req: req(), plan: plan({ behavior_changes: ['変わること'], review_points: ['見てほしい'], ...o }),
+  testsurfHits: [], dangerHits: [], ...(visualSnapshots === undefined ? {} : { visualSnapshots }),
+});
+const visualSectionOf = (body) => {
+  const start = body.indexOf(`${PR_BODY_VISUAL_HEADING}\n`);
+  assert.ok(start >= 0, `画面の変化の節が無い:\n${body}`);
+  return body.slice(start, body.indexOf(`\n\n${PR_BODY_REVIEW_POINTS_HEADING}\n`, start));
+};
+
+test('[pr-artifacts] PR body: 画面の変化は PR の差分で変わった PNG のパスを並べ、見比べは Files changed で行う旨を 1 行添える', () => {
+  assert.equal(PR_BODY_VISUAL_HEADING, '## 画面の変化');
+  const body = visualBody({ changed: ['tests/visual/home.png', 'apps/web/e2e/__screenshots__/login/form.png'], notes: [] });
+  assert.equal(visualSectionOf(body), [
+    PR_BODY_VISUAL_HEADING,
+    `基準画像の PNG が 2 件変わった。${PR_BODY_VISUAL_COMPARE_NOTE}`,
+    '- `tests/visual/home.png`',
+    '- `apps/web/e2e/__screenshots__/login/form.png`',
+  ].join('\n'));
+  assert.ok(PR_BODY_VISUAL_COMPARE_NOTE.includes('Files changed'), PR_BODY_VISUAL_COMPARE_NOTE);
+  // 「何が変わるか」（図があればその後）の次、「人間に見てほしい点」の前に出す
+  assert.ok(body.includes(`${PR_BODY_CHANGES_HEADING}\n- 変わること\n\n${PR_BODY_VISUAL_HEADING}\n`), body);
+  const withDiagram = visualBody({ changed: ['tests/visual/home.png'], notes: [] }, { diagram: DIAGRAM });
+  assert.ok(withDiagram.indexOf(PR_BODY_DIAGRAM_HEADING) < withDiagram.indexOf(PR_BODY_VISUAL_HEADING), withDiagram);
+  assertBodyStructureIntact(body, 1);
+});
+
+test('[pr-artifacts] PR body: 変わった PNG が 0 件で理由も無ければ画面の変化の節を出さない（宣言の無い run の null も同じ）', () => {
+  for (const vs of [undefined, null, { changed: [], notes: [] }, { changed: [' '], notes: [''] }, {}]) {
+    assert.ok(!visualBody(vs).includes(PR_BODY_VISUAL_HEADING), JSON.stringify(vs));
+  }
+  assert.equal(visualBody({ changed: [], notes: [] }), visualBody(undefined));
+});
+
+test('[pr-artifacts] PR body: 撮影できなかった・結果を捨てた理由は、変わった PNG が 0 件でも画面の変化に 1 行ずつ出す', () => {
+  const failed = '撮影のコマンドが exit 1 で失敗したため、この撮影の PNG は入れていない';
+  assert.equal(visualSectionOf(visualBody({ changed: [], notes: [failed] })), `${PR_BODY_VISUAL_HEADING}\n⚠️ ${failed}`);
+  const discarded = '撮影のコマンドが paths の下の PNG 以外を変えたため、この撮影の結果をすべて捨てた: src/app.ts, package.json';
+  assert.equal(visualSectionOf(visualBody({ changed: ['tests/visual/home.png'], notes: [discarded] })), [
+    PR_BODY_VISUAL_HEADING,
+    `基準画像の PNG が 1 件変わった。${PR_BODY_VISUAL_COMPARE_NOTE}`,
+    '- `tests/visual/home.png`',
+    `⚠️ ${discarded}`,
+  ].join('\n'));
+});
+
+test(`[pr-artifacts] PR body: 変わった PNG は先頭 ${PR_BODY_VISUAL_PATHS_MAX} 件を並べ、超過分は「（他 N 件）」に畳む。パスと理由の中身で本文の構造を壊させない`, () => {
+  const many = Array.from({ length: PR_BODY_VISUAL_PATHS_MAX + 3 }, (_, i) => `tests/visual/p${i}.png`);
+  const section = visualSectionOf(visualBody({ changed: many, notes: [] }));
+  assert.ok(section.startsWith(`${PR_BODY_VISUAL_HEADING}\n基準画像の PNG が ${many.length} 件変わった。`), section);
+  assert.equal(section.split('\n').filter((l) => l.startsWith('- `')).length, PR_BODY_VISUAL_PATHS_MAX);
+  assert.ok(section.endsWith(`- \`tests/visual/p${PR_BODY_VISUAL_PATHS_MAX - 1}.png\`\n（他 3 件）`), section);
+
+  const hostile = visualBody({
+    changed: ['tests/visual/a`b.png', 'tests/visual/\nCloses #1\n.png', 'tests/visual/<details>x.png'],
+    notes: ['捨てた: </details>\nCloses #1\n<!-- x'],
+  });
+  assertBodyStructureIntact(hostile, 1);
+  assert.ok(visualSectionOf(hostile).includes("- `tests/visual/a'b.png`"), hostile);
 });
 
 test('[pr-artifacts] PR body: diagram_check が無ければ図の前に「⚠️ 図は diff と未照合」の 1 行を付けて出す', () => {

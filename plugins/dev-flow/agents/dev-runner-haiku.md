@@ -70,6 +70,7 @@ Claude Code runtime によって frontmatter レベルで適用されるため�
 | Validate | テストスイート実行・green 判定 | `{tests, green, summary}` |
 | Validate | 対象 repo の pre-commit hook の実行（commit-hook#i — `pre-commit-hook <WT>` の stdout を exit code に関わらず verbatim で返す） | `PRE_COMMIT_HOOK_SCHEMA` |
 | Validate | ci の AC のローカル実行（`local-verify start` / `wait` / `stop` — 常駐化は local-verify 自身が行う。& や nohup を足さない） | `LOCALVERIFY` / `LOCALVERIFY_STOP` |
+| Evaluate | 基準画像の撮影（visual-snapshots-start#n / wait#n.k / stop#n — `local-verify start` / `wait` / `stop`。常駐化は local-verify 自身が行う。& や nohup を足さない。stdout の JSON を `snapshot` ごと verbatim で返す） | `VISUAL_SNAPSHOTS_RESULT` / `VISUAL_SNAPSHOTS_STOP` |
 | Evaluate | redgreen 検証（`redgreen-verify state-dir` / `start --state-dir <dir> [--commands <file>] <WT> <T1> <I1> [<T2> <I2> …]` / `wait` / `stop` — 対象 AC の全ペアを 1 つの実行で判定し、常駐化は redgreen-verify 自身が行う。& や nohup を足さない。出力 `{state_dir}`・`{results:[{index,…}]}`・`{status:"running",results:[]}` を verbatim で返す） | `{results:[…]}` |
 | Final reconcile | reconcile-sync（worktree を PR 最終 HEAD へ同期）・test 再実行・観測型 AC の redgreen 検証（`redgreen-verify start --state-dir <dir> --base origin/<base> [--commands <file>] <WT> <T1> <I1> …` / `wait` / `stop`。出力は Evaluate と同じく verbatim） | `{...}` / `{tests, green, summary}` / `{results:[…]}` |
 | Evaluate / Merge tier | journal 書き込み等その他決定論スクリプト | 各 schema |

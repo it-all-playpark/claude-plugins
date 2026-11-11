@@ -319,6 +319,18 @@ test('validatePrerunSetup: local_verify の形が不正なら fail-closed で th
   }
 });
 
+// ---- visual_snapshots（issue #1410）: prerun が検証済みの宣言をそのまま渡す ----
+
+test('validatePrerunSetup: visual_snapshots は prerun の値をそのまま返し、null / 欠落は未設定（null）。workflow が読むキーの型が違えば throw', () => {
+  const VISUAL_SNAPSHOTS = { ...LOCAL_VERIFY, command: 'pnpm test:visual', paths: ['tests/visual'] };
+  assert.deepEqual(validatePrerunSetup(validRaw({ visual_snapshots: VISUAL_SNAPSHOTS }), 641).visual_snapshots, VISUAL_SNAPSHOTS);
+  assert.equal(validatePrerunSetup(validRaw({ visual_snapshots: null }), 641).visual_snapshots, null);
+  assert.equal(validatePrerunSetup(validRaw(), 641).visual_snapshots, null);
+  for (const bad of ['pnpm test:visual', { ...VISUAL_SNAPSHOTS, paths: [] }, { ...VISUAL_SNAPSHOTS, paths: 'tests/visual' }, { ...VISUAL_SNAPSHOTS, command: '' }, { ...VISUAL_SNAPSHOTS, timeout_seconds: '900' }]) {
+    assert.throws(() => validatePrerunSetup(validRaw({ visual_snapshots: bad }), 641), /visual_snapshots が不正/, JSON.stringify(bad));
+  }
+});
+
 // ---- pr_title_format: commit subject（= PR タイトル）のテンプレートを検証する ----
 
 test('validatePrerunSetup: pr_title_format は trim して返し、null / 欠落は未設定（null）', () => {

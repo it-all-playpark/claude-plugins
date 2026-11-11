@@ -56,6 +56,7 @@ const EVALUATE_RESULT_SPEC = {
     triage: 'object', EFFECTIVE_SHAPE: 'string', evalForced: 'boolean',
     evalResult: 'object|null', evalDiffHash: 'string|null', secDiffHash: 'string|null',
     unsatisfiedAcByActor: 'object', val: 'object|null', greenFixCount: 'number', concerns: 'array',
+    visualSnapshots: 'object|null',
   },
   redgreen_state_dir: 'string|null',
 }
@@ -184,6 +185,7 @@ function validatePrerunSetup(raw, issue) {
   const frameworks = raw.stack.frameworks.filter((f) => typeof f === 'string');
   const ciVerify = normalizeCiVerify(raw.ci_verify);
   const localVerify = normalizeLocalVerify(raw.local_verify);
+  const visualSnapshots = normalizeVisualSnapshots(raw.visual_snapshots);
   const prTitleFormat = normalizePrTitleFormat(raw.pr_title_format);
 
   return {
@@ -202,6 +204,7 @@ function validatePrerunSetup(raw, issue) {
     hooks_not_running: [...raw.hooks_not_running],
     ci_verify: ciVerify,
     local_verify: localVerify,
+    visual_snapshots: visualSnapshots,
     pr_title_format: prTitleFormat,
   };
 }
@@ -257,6 +260,16 @@ function normalizeLocalVerify(raw) {
     env: raw.env,
     timeout_seconds: raw.timeout_seconds,
   };
+}
+
+function normalizeVisualSnapshots(raw) {
+  if (raw == null) return null;
+  const ok = isPlainObject(raw) && isNonEmptyString(raw.command) && Number.isInteger(raw.timeout_seconds) && raw.timeout_seconds > 0
+    && Array.isArray(raw.paths) && raw.paths.length > 0 && raw.paths.every(isNonEmptyString);
+  if (!ok) {
+    throw new Error(`dev-flow: args.setup の visual_snapshots が不正（受信: ${stringifyForError(raw)}）— dev-flow-prerun が検証して出した値（{ command, db, env, timeout_seconds, paths }）をそのまま渡せ`);
+  }
+  return raw;
 }
 
 function summarizePrerunDeps(deps) {
@@ -1789,6 +1802,23 @@ function diagramSection(plan, diagramCheck) {
   return diagramCheck?.consistent === true ? figures : `${PR_BODY_DIAGRAM_UNVERIFIED}\n\n${figures}`;
 }
 
+const PR_BODY_VISUAL_HEADING = '## 画面の変化';
+const PR_BODY_VISUAL_PATHS_MAX = 30;
+const PR_BODY_VISUAL_COMPARE_NOTE = '見比べは PR の Files changed の画像差分（2-up / Swipe / Onion skin）で行う。';
+function visualSnapshotsSection(visualSnapshots) {
+  const changed = textItems(visualSnapshots?.changed);
+  const notes = textItems(visualSnapshots?.notes);
+  if (changed.length === 0 && notes.length === 0) return null;
+  const lines = [];
+  if (changed.length) {
+    const shown = changed.slice(0, PR_BODY_VISUAL_PATHS_MAX).map((p) => `- \`${neutralizeStructure(p).replace(/`/g, "'")}\``);
+    const excess = changed.length - shown.length;
+    lines.push(`基準画像の PNG が ${changed.length} 件変わった。${PR_BODY_VISUAL_COMPARE_NOTE}`, ...shown, ...(excess > 0 ? [`（他 ${excess} 件）`] : []));
+  }
+  for (const n of notes) lines.push(`⚠️ ${neutralizeStructure(n)}`);
+  return lines.join('\n');
+}
+
 function noteLines(plan) {
   const all = arr(plan?.pr_notes)
     .filter((n) => PR_NOTE_SECTIONS.includes(n?.section) && collapseWhitespace(n?.text))
@@ -1855,13 +1885,14 @@ function hitLine(label, hits, keyOf) {
   return `- ${label}: ${list.length} 件（${items.join('、')}）`;
 }
 
-function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false, diagramCheck = null }) {
+function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, acStale = false, diagramCheck = null, visualSnapshots = null }) {
   let conclusionText = collapseWhitespace(plan?.summary);
   if (!conclusionText) conclusionText = collapseWhitespace(req?.issue_title);
   if (!conclusionText) conclusionText = `issue #${issue} の変更`;
   const changes = textItems(plan?.behavior_changes);
   const reviewPoints = textItems(plan?.review_points);
   const diagram = diagramSection(plan, diagramCheck);
+  const visual = visualSnapshotsSection(visualSnapshots);
   const outOfScope = outOfScopeSection(plan);
   const rows = acRows(req, acResults, acStale);
   const acTable = acResultsSection(rows);
@@ -1874,6 +1905,7 @@ function buildPrBody({ issue, req, plan, testsurfHits, dangerHits, acResults, ac
     `**${conclusionText}**`,
     ...(changes.length ? [`${PR_BODY_CHANGES_HEADING}\n${bulletList(changes)}`] : []),
     ...(diagram ? [`${PR_BODY_DIAGRAM_HEADING}\n${diagram}`] : []),
+    ...(visual ? [`${PR_BODY_VISUAL_HEADING}\n${visual}`] : []),
     ...(reviewPoints.length ? [`${PR_BODY_REVIEW_POINTS_HEADING}\n${bulletList(reviewPoints)}`] : []),
     ...(outOfScope ? [`${PR_BODY_OUT_OF_SCOPE_HEADING}\n${outOfScope}`] : []),
     ...(acTable ? [`${PR_BODY_AC_RESULTS_HEADING}\n${acTable}`] : []),
@@ -2917,6 +2949,9 @@ if (LOCAL_VERIFY && CI_AC_INDEXES.length) log(`analyze: local_verify（${LOCAL_V
 if (req.ac_actors.includes('human')) log(`analyze: 人手 AC ${req.ac_actors.filter((a) => a === 'human').length} 件（AC-${req.ac_actors.map((a, i) => a === 'human' ? i + 1 : null).filter((n) => n != null).join(', AC-')}）— 未達でも差し戻さず Merge tier の人手 AC 待ちへ回す`)
 
 // isolation probe: implementer と同じ Write tool 経路で書けるかを subagent で確かめる（wrapper の Bash では代替できない）。
+// visual_snapshots: 宣言した repo は Evaluate の各評価の前に基準画像を撮り直し、変わった PNG を PR に入れる（dev-flow-evaluate.js）。
+const VISUAL_SNAPSHOTS = PRERUN.visual_snapshots
+if (VISUAL_SNAPSHOTS) log(`analyze: visual_snapshots（${VISUAL_SNAPSHOTS.command} / paths ${VISUAL_SNAPSHOTS.paths.join(', ')} / 上限 ${VISUAL_SNAPSHOTS.timeout_seconds}s）— Evaluate の各評価の前に基準画像を撮り直す`)
 const isoToken = String(PRERUN.epoch)
 const isoProbe = await trackedAgent(isolationProbePrompt(WT, isoToken), { agentType: 'dev-runner-haiku-wo', schema: ISOLATION_PROBE, label: 'isolation-probe', phase: 'Setup' })
 if (isoProbe && isoProbe.written === false) {
@@ -3417,6 +3452,7 @@ try {
     issue: ISSUE, repo: REPO, base: BASE, worktree: WT, gate_policy: GATE_POLICY, state, ci_ac_indexes: CI_AC_INDEXES,
     notes: { deletion: DELETION_HINT_NOTE, deps: DEPS_NOTE, turbopack: TURBOPACK_NOTE, test_discovery: TEST_DISCOVERY_NOTE },
     test_commands: TEST_COMMANDS,
+    visual_snapshots: VISUAL_SNAPSHOTS,
   })
   const shapeErrors = stageShapeErrors(evaluated, EVALUATE_RESULT_SPEC)
   if (shapeErrors.length) evaluateError = `返り値の形が不正（${shapeErrors.join(' / ')}）`
@@ -3522,6 +3558,8 @@ const prBody = buildPrBody({
   testsurfHits: state.testsurfHits, dangerHits: secHitsOf(state.risk),
   acResults: state.evalResult?.ac_results ?? null,
   diagramCheck: state.evalResult?.diagram_check ?? null,
+  // 「画面の変化」: Evaluate が撮り直した基準画像のうち PR の差分で変わった PNG と、撮影できなかった理由（宣言の無い run は null）
+  visualSnapshots: state.visualSnapshots,
 })
 // ci の AC がある run だけ PR に ci_verify.label を付ける（CI がこのラベルで ci_verify.checks の job を回す）。
 const PR_LABEL = CI_AC_INDEXES.length ? CI_VERIFY.label : null

@@ -54,6 +54,10 @@ const EXPECTED_DEV_FLOW = {
   // local-verify を実行した tree / 最終 tree の diff hash（issue #863。exit 0 を最終 tree と突き合わせる）
   'diff-hash-local-verify#*': RO,
   'diff-hash-local-verify-final': RO,
+  // 基準画像の撮影の前後の tree と、PR の差分で変わった PNG の一覧（issue #1410。読み取りのみ）
+  'diff-hash-snapshot#*': RO,
+  'diff-hash-snapshot-after#*': RO,
+  'visual-snapshots-list': RO,
   'merge-tier-facts': RO,
   'changed-files-final': RO,
   'tree-diff-numstat': RO,
@@ -77,6 +81,10 @@ const EXPECTED_DEV_FLOW = {
   'local-verify-start#*': RW,
   'local-verify-wait#*': RW,
   'local-verify-stop#*': RW,
+  // 基準画像の撮影（issue #1410）。宣言コマンドは worktree のコードを実行し PNG を書くので、同じく sandbox 内の write tier で動かす
+  'visual-snapshots-start#*': RW,
+  'visual-snapshots-wait#*': RW,
+  'visual-snapshots-stop#*': RW,
   // red→green の実証（issue #1226。redgreen は start の spawn）。テストを実行するので sandbox 内で動かす
   'rg-state-dir': RW,
   'redgreen': RW,

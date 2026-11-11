@@ -45,6 +45,7 @@ const EVALUATE_ARGS = {
     source: 'runners', status: 'resolved', commands: null, sources: ['tests/run-unit.sh'],
     commands_file: '/tmp/test-commands-x/commands.json', error: null,
   },
+  visual_snapshots: null,
 };
 const EVALUATE_RESULT = {
   state: {
@@ -53,6 +54,7 @@ const EVALUATE_RESULT = {
     triage: { shape: 'standard', reason: 'r' }, EFFECTIVE_SHAPE: 'standard', evalForced: false,
     evalResult: { verdict: 'pass' }, evalDiffHash: 'H', secDiffHash: null,
     unsatisfiedAcByActor: { agent: [], human: [], ci: [] }, val: null, greenFixCount: 0, concerns: [],
+    visualSnapshots: null,
   },
   redgreen_state_dir: null,
 };
@@ -71,6 +73,10 @@ test('[stage-contract] EVALUATE_ARGS_SPEC: Validate までの state と注記を
   const { commands_file: _c, ...tcWithoutFile } = EVALUATE_ARGS.test_commands;
   assert.throws(() => validateStageArgs('dev-flow-evaluate', { ...EVALUATE_ARGS, test_commands: tcWithoutFile }, EVALUATE_ARGS_SPEC),
     /test_commands\.commands_file: 欠落/);
+  // visual_snapshots は宣言（object）か未設定（null）。欠落は未設定と同じに扱わない
+  validateStageArgs('dev-flow-evaluate', { ...EVALUATE_ARGS, visual_snapshots: { command: 'pnpm test:visual', paths: ['tests/visual'] } }, EVALUATE_ARGS_SPEC);
+  const { visual_snapshots: _v, ...withoutSnapshots } = EVALUATE_ARGS;
+  assert.throws(() => validateStageArgs('dev-flow-evaluate', withoutSnapshots, EVALUATE_ARGS_SPEC), /visual_snapshots: 欠落/);
 });
 
 test('[stage-contract] EVALUATE_RESULT_SPEC: PR 工程が読む state と redgreen の state dir を検証し、欠けたキー・型違いを全部返す', () => {
@@ -82,6 +88,8 @@ test('[stage-contract] EVALUATE_RESULT_SPEC: PR 工程が読む state と redgre
     'state.securityReview.reviewer_context_changed: 欠落',
     'state.evalForced: boolean が必要（受信: string）',
   ]);
+  const { visualSnapshots: _v, ...stateWithoutSnapshots } = EVALUATE_RESULT.state;
+  assert.deepEqual(stageShapeErrors({ ...EVALUATE_RESULT, state: stateWithoutSnapshots }, EVALUATE_RESULT_SPEC), ['state.visualSnapshots: 欠落']);
   // runEval は evalForced の代わりにならない
   const { evalForced: _e, ...stateWithoutForced } = EVALUATE_RESULT.state;
   assert.deepEqual(stageShapeErrors({ ...EVALUATE_RESULT, state: { ...stateWithoutForced, runEval: true } }, EVALUATE_RESULT_SPEC), ['state.evalForced: 欠落']);
