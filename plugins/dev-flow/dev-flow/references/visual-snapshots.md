@@ -27,6 +27,11 @@ phase 全体の地図は `pipeline.md`、不変条件は `.claude/rules/dev-flow
 
 ## 判定
 
+- **撮影シナリオの指示**: 宣言のある run は、コードを変える agent（`dev-implementer` の Implement・差し戻し・green-fix と、pr-iterate の
+  `pr-fixer`）の prompt に同じ指示（`visualSnapshotsScenarioNote`）を足す: 画面の表示を変えたら、その画面とその状態を写す撮影シナリオが
+  あるかを確かめ、無ければ足すか直す。撮影シナリオは repo が用意した分しか画面を写さないので、シナリオが無い画面を変えた PR は
+  画像差分に何も出ない。シナリオの書き方・置き場所は repo のものに従わせ、PNG は書かせない。足したシナリオは PR の差分で見る
+  （agent の出力には載せない）
 - **Diff triage**: shape の判定に数える変わったファイルから、`paths` の下の PNG を外す（`withoutVisualSnapshotPngs`）。`paths` の下でも PNG で
   ないファイルは数える。基準画像は撮影コマンドの生成物で、枚数で shape を上げない
 - **Evaluate**: 各評価（eval#N）の前に worktree の tree を取り、最後に撮影した tree と違えば、宣言コマンドを `local-verify`（`paths` のある
@@ -72,6 +77,8 @@ phase 全体の地図は `pipeline.md`、不変条件は `.claude/rules/dev-flow
   `.claude/workflows/pr-iterate.js` が使う）、`_shared/scripts/local-verify.sh`（`paths` のある宣言）
 - pr-iterate の撮り直し: `recaptureVisualSnapshots`（`.claude/workflows/pr-iterate.js`）、`visualSnapshotsCommitPrompt`・
   `visualSnapshotsRevertPrompt`（`_lib/visual-snapshots.mjs`）
+- 撮影シナリオの指示: `visualSnapshotsScenarioNote`（`_lib/visual-snapshots.mjs`）。`makeImplementLoop` の `notes().visual`
+  （`_lib/implement-loop.mjs`）と `fixPrompt`（`.claude/workflows/pr-iterate.js`）が prompt に入れる
 - shape: `withoutVisualSnapshotPngs`（`_lib/diff-triage.mjs`）
 - PR 本文: `buildPrBody`・`visualSnapshotsAfterIterate`（`_lib/pr-artifacts.mjs`）。終了レポート: `buildTerminalSummaryBody`（`_lib/pr-comment-format.mjs`）
 - label: `diff-hash-snapshot#<i>`・`visual-snapshots-start#<n>`・`visual-snapshots-wait#<n>.<k>`・`visual-snapshots-stop#<n>`・

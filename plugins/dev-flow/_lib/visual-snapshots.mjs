@@ -93,6 +93,17 @@ export function visualSnapshotsEvalNote(decl) {
     + `実装エージェントの変更ではない。plan に無いことを指摘にせず、画像の中身も判定しない（人間が PR の Files changed の画像差分で確かめる）。\n`
 }
 
+// コードを変える agent（dev-implementer・pr-fixer）の prompt に足す指示（宣言のある run だけ。無ければ空文字）。撮影シナリオは
+// repo が用意した分しか画面を写さないので、変えた画面を写すシナリオが無いと基準画像が変わらず、PR の画像差分に何も出ない。
+// シナリオの書き方・置き場所は repo のものに従わせ、PNG は書かせない（撮影と commit は Evaluate と pr-iterate の撮影が行う）。
+export function visualSnapshotsScenarioNote(decl) {
+  if (decl == null || !Array.isArray(decl.paths)) return ''
+  return `visual_snapshots: この repo は撮影シナリオで基準画像（${JSON.stringify(decl.paths)} の下の PNG）を撮り、PR の画像差分で画面の変化を見せる。`
+    + `画面の表示を変えたら、その画面とその状態を写す撮影シナリオがあるかを確かめ、無ければ足すか直す`
+    + `（シナリオの書き方・置き場所はこの repo の既存のシナリオに従う）。`
+    + `基準画像の PNG は自分で書かない・撮り直さない（撮影と commit はパイプラインが行う）。\n`
+}
+
 function visualSnapshotsShellArg(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`
 }

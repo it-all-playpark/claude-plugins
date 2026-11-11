@@ -22,7 +22,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, MICRO_FILES, analyzeArgs } from './test-helpers/vm-sandbox.mjs';
+import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, MICRO_FILES, analyzeArgs, devFlowArgs } from './test-helpers/vm-sandbox.mjs';
+import { visualSnapshotsScenarioNote } from './visual-snapshots.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '.claude', 'workflows', 'dev-flow.js'), 'utf8');
@@ -277,6 +278,57 @@ test('[implementer] AC-6: empty-diff retry 後の test#retry-1 red → green-fix
   assert.equal(error, null, `run が throw した: ${error?.message}`);
   assert.equal(calls.find((c) => c.label === 'reimpl-empty-diff:serial:issue-1')?.agentType, IMPLEMENTER, 'empty-diff の差し戻しが dev-implementer に渡っていない');
   assertGreenFixPrompt(calls.find((c) => c.label === 'green-fix#retry-1'), 'green-fix#retry-1');
+});
+
+// ============================================================
+// visual_snapshots（issue #1413）: 宣言のある run だけ、dev-implementer の全 spawn（Implement・green-fix・Evaluate 差し戻し）の
+// prompt に撮影シナリオの指示（_lib/visual-snapshots.mjs の visualSnapshotsScenarioNote）が入る
+// ============================================================
+const VISUAL_DECL = { command: 'pnpm test:visual', db: { engine: 'postgres', version: '17' }, env: 'E2E_EXTERNAL_DATABASE_URL', timeout_seconds: 900, paths: ['apps/web/e2e/__screenshots__'] };
+const SCENARIO_RULE = '画面の表示を変えたら、その画面とその状態を写す撮影シナリオがあるかを確かめ、無ければ足すか直す';
+// [shape, 確かめる spawn の label, その spawn を起こす stub]（green-fix は Validate の red、reimpl は Evaluate の差し戻し）
+const IMPL_SPAWN_RUNS = [
+  ['standard', ['impl:serial:issue-1', 'green-fix#1'], {
+    'test#1': { tests: 'failed', green: false, summary: 'assert mismatch' },
+    'green-fix#1': { status: 'DONE', task_id: 'issue-1', files: ['src/x.ts'], summary: 'fixed', concerns: [] },
+  }],
+  ['complex', ['reimpl#1:serial:issue-1'], {
+    'reimpl#1:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: ['src/x.ts'], summary: 's', concerns: [] },
+    'eval#1': EVAL_FAIL('implementation'),
+    'eval#2': EVAL_PASS,
+  }],
+];
+async function implSpawnPrompts(setupOverrides) {
+  const out = [];
+  for (const [shape, labels, overrides] of IMPL_SPAWN_RUNS) {
+    const { calls, error } = await runFlow(shape, overrides, { args: devFlowArgs(1, { analyze: argsOf(shape).setup.analyze, ...setupOverrides }) });
+    assert.equal(error, null, `run が throw した: ${error?.message}`);
+    for (const label of labels) {
+      const call = calls.find((c) => c.label === label);
+      assert.ok(call, `${label} が spawn されていない: ${byType(calls, IMPLEMENTER).map((c) => c.label).join(', ')}`);
+      assert.equal(call.agentType, IMPLEMENTER, `${label} の agentType が ${call.agentType}`);
+      out.push(call);
+    }
+  }
+  return out;
+}
+
+test('[implementer] visual_snapshots の宣言がある run は Implement・green-fix・Evaluate 差し戻しの全 prompt に撮影シナリオの指示と宣言の paths が入る', async () => {
+  for (const c of await implSpawnPrompts({ visual_snapshots: VISUAL_DECL })) {
+    assert.ok(c.prompt.includes(SCENARIO_RULE), `${c.label} prompt に撮影シナリオの指示が無い: ${c.prompt}`);
+    assert.ok(c.prompt.includes('["apps/web/e2e/__screenshots__"] の下の PNG'), `${c.label} prompt に宣言の paths が無い: ${c.prompt}`);
+    assert.ok(c.prompt.includes('基準画像の PNG は自分で書かない・撮り直さない'), `${c.label} prompt に PNG を書かせない指示が無い`);
+    // 文は 1 か所（visualSnapshotsScenarioNote）で組んだものがそのまま入る
+    assert.ok(c.prompt.includes(visualSnapshotsScenarioNote(VISUAL_DECL)), `${c.label} prompt の指示が visualSnapshotsScenarioNote の文と違う`);
+  }
+});
+
+test('[implementer] visual_snapshots の宣言が無い run は dev-implementer のどの prompt にも撮影シナリオの指示が入らない', async () => {
+  for (const c of await implSpawnPrompts({})) {
+    assert.ok(!c.prompt.includes('撮影シナリオ'), `${c.label} prompt に撮影シナリオの指示が入っている: ${c.prompt}`);
+    assert.ok(!c.prompt.includes('visual_snapshots'), `${c.label} prompt に visual_snapshots の注記が入っている`);
+    assert.ok(!c.prompt.includes('undefined'), `${c.label} prompt に undefined が混ざっている: ${c.prompt}`);
+  }
 });
 
 // ============================================================

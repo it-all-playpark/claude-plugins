@@ -1307,6 +1307,14 @@ function visualSnapshotsEvalNote(decl) {
     + `実装エージェントの変更ではない。plan に無いことを指摘にせず、画像の中身も判定しない（人間が PR の Files changed の画像差分で確かめる）。\n`
 }
 
+function visualSnapshotsScenarioNote(decl) {
+  if (decl == null || !Array.isArray(decl.paths)) return ''
+  return `visual_snapshots: この repo は撮影シナリオで基準画像（${JSON.stringify(decl.paths)} の下の PNG）を撮り、PR の画像差分で画面の変化を見せる。`
+    + `画面の表示を変えたら、その画面とその状態を写す撮影シナリオがあるかを確かめ、無ければ足すか直す`
+    + `（シナリオの書き方・置き場所はこの repo の既存のシナリオに従う）。`
+    + `基準画像の PNG は自分で書かない・撮り直さない（撮影と commit はパイプラインが行う）。\n`
+}
+
 function visualSnapshotsShellArg(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`
 }
@@ -2138,6 +2146,7 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
             + `approach_mismatch findings（過去 iteration 全件の累積。**過去に BLOCKED になったいずれのアプローチへの回帰も禁止** — 全件と異なる代替設計を採れ）:\n${JSON.stringify(blocked.findings)}\n`
           : '')
       + note.deletion
+      + note.visual
       + STAGING_CONVENTION
       + note.deps
       + note.turbopack
@@ -2310,6 +2319,7 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
         + (hookFail ? preCommitHookFixNote(hookFail) : '')
         + `task_id: issue-${issue}（返却 JSON の task_id にそのまま echo せよ）\n`
         + note.deletion
+        + note.visual
         + STAGING_CONVENTION
         + note.turbopack,
         { agentType: IMPL_AGENT, model: GREEN_FIX_MODEL, schema: IMPL, label: `green-fix#${iterLabel}`, phase: phaseName },
@@ -2575,7 +2585,7 @@ function diffTriageTopLevelKeys(unified) {
 // Evaluate 差し戻し・post-eval 再テストの実装 spawn と test ⇄ green-fix ループは Validate と共有する（_lib/implement-loop.mjs）。
 const { runImplement, trimPrSectionsIfOver, rewriteNonJapanesePrBodyItems, runValidateLoop } = makeImplementLoop({
   wt: WT, issue: ISSUE, repo: REPO, base: BASE, commandsFile: ARGS.test_commands.commands_file, spawn: trackedAgent, spawnFailOpen: failOpenAgent, log,
-  notes: () => ({ deletion: ARGS.notes.deletion, deps: ARGS.notes.deps, turbopack: TURBOPACK_NOTE }),
+  notes: () => ({ deletion: ARGS.notes.deletion, deps: ARGS.notes.deps, turbopack: TURBOPACK_NOTE, visual: visualSnapshotsScenarioNote(VISUAL_SNAPSHOTS) }),
 })
 
 // redgreen-verify を start → wait で実行する（Evaluate の redgreen。Final reconcile の redgreen-final は dev-flow-finalize.js の同型）。待機上限・

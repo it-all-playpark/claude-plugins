@@ -2555,6 +2555,7 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
             + `approach_mismatch findings（過去 iteration 全件の累積。**過去に BLOCKED になったいずれのアプローチへの回帰も禁止** — 全件と異なる代替設計を採れ）:\n${JSON.stringify(blocked.findings)}\n`
           : '')
       + note.deletion
+      + note.visual
       + STAGING_CONVENTION
       + note.deps
       + note.turbopack
@@ -2727,6 +2728,7 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
         + (hookFail ? preCommitHookFixNote(hookFail) : '')
         + `task_id: issue-${issue}（返却 JSON の task_id にそのまま echo せよ）\n`
         + note.deletion
+        + note.visual
         + STAGING_CONVENTION
         + note.turbopack,
         { agentType: IMPL_AGENT, model: GREEN_FIX_MODEL, schema: IMPL, label: `green-fix#${iterLabel}`, phase: phaseName },
@@ -2740,6 +2742,15 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
   return { implPrompt, runImplement, trimPrSectionsIfOver, rewriteNonJapanesePrBodyItems, runValidateLoop }
 }
 // ==== END inline: _lib/implement-loop.mjs ====
+// ==== BEGIN inline: _lib/visual-snapshots.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+function visualSnapshotsScenarioNote(decl) {
+  if (decl == null || !Array.isArray(decl.paths)) return ''
+  return `visual_snapshots: この repo は撮影シナリオで基準画像（${JSON.stringify(decl.paths)} の下の PNG）を撮り、PR の画像差分で画面の変化を見せる。`
+    + `画面の表示を変えたら、その画面とその状態を写す撮影シナリオがあるかを確かめ、無ければ足すか直す`
+    + `（シナリオの書き方・置き場所はこの repo の既存のシナリオに従う）。`
+    + `基準画像の PNG は自分で書かない・撮り直さない（撮影と commit はパイプラインが行う）。\n`
+}
+// ==== END inline: _lib/visual-snapshots.mjs ====
 
 
 // abort telemetry context: top-level catch が journal handoff に載せる「どこで落ちたか」。try 内の const/let は catch から
@@ -2982,7 +2993,7 @@ TEST_DISCOVERY_NOTE = testDiscoveryNote(TEST_COMMANDS)
 // 読む — 削除手段の注記は Implement の途中で決まる。
 const { runImplement, trimPrSectionsIfOver, rewriteNonJapanesePrBodyItems, runValidateLoop } = makeImplementLoop({
   wt: WT, issue: ISSUE, repo: REPO, base: BASE, commandsFile: TEST_COMMANDS.commands_file, spawn: trackedAgent, spawnFailOpen: failOpenAgent, log,
-  notes: () => ({ deletion: DELETION_HINT_NOTE, deps: DEPS_NOTE, turbopack: TURBOPACK_NOTE }),
+  notes: () => ({ deletion: DELETION_HINT_NOTE, deps: DEPS_NOTE, turbopack: TURBOPACK_NOTE, visual: visualSnapshotsScenarioNote(VISUAL_SNAPSHOTS) }),
 })
 
 // 合成 plan: planner を起動せず issue から単一 task の plan を作る（手順書型 task を書かせると品質が落ちる）。
