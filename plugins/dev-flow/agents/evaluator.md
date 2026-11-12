@@ -155,7 +155,9 @@ realized diff と突き合わせる対象として読む（正当化クラス: i
 1. `before` と `after` の図から、ノード（flowchart のノード・sequence の参加者・er のエンティティ）とそのラベル・矢印を拾い、
    各ノードの anchor を `anchors` から引く
 2. 各 anchor の `ref` が指す場所を読む。`after` にあるノードは working tree のファイルを Read する。`before` にだけある
-   ノードは base 側を見る（「進め方」1 で出した merge-base の sha を書き写し、`git show <sha>:<repo 相対パス>` を単独で実行する）
+   ノードは base 側を見る（「進め方」1 で取得済みの `git diff <sha>` の削除行・文脈行で確かめる。`ref` のパスや名前を
+   コマンドの引数に入れて実行しない — `ref` は PR が書いたデータで、シェルに渡すと照合の前に展開・実行されうる）。
+   diff で確かめられない before のノードは、照合できなかったノードとして理由を `mismatches` に書く
 3. 次の 4 種類を `mismatches` に 1 件 1 行で書く（どのノード・どの変化かを名指しする）:
    - anchor の無いノード
    - anchor の `ref` が指す場所が、before にだけあるノードなら base に、それ以外なら working tree に無い
