@@ -18,7 +18,8 @@ import {
   makeDevFlowSandbox, makePrIterateSandbox, runWorkflowCapture, testCommandsPrepareResponse, TEST_COMMANDS_FILE,
 } from './test-helpers/vm-sandbox.mjs';
 import {
-  testCommandResolverPrompt, validateResolvedTestCommands, TEST_COMMAND_PREFIXES, TEST_COMMAND_RUNNERS,
+  testCommandResolverPrompt, testCommandsPreparePrompt, validateResolvedTestCommands, parsePreparedTestCommands,
+  TEST_COMMAND_PREFIXES, TEST_COMMAND_RUNNERS,
 } from './test-commands.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -63,6 +64,48 @@ async function runDevFlow(overrides = {}) {
 }
 
 const resolverCalls = (calls) => calls.filter((c) => c.agentType === RESOLVER);
+
+// test-commands-prepare.sh が全経路で出す最上位キー（test-commands-prepare.bats が script 側を見る）
+const PREPARE_KEYS = ['ok', 'error', 'source', 'status', 'sources', 'commands', 'commands_file', 'run_dir', 'bundle_file', 'bundle_files'];
+// ok:false の stdout（値の無いキーは null、sources / bundle_files は []）
+const PREPARE_FAILED = {
+  ok: false, error: 'origin/nope を解決できない', source: null, status: null, sources: [], commands: null,
+  commands_file: null, run_dir: null, bundle_file: null, bundle_files: [],
+};
+
+test('[test-commands] TEST_COMMANDS_PREPARE の required は prepare が出す最上位キーの全部で、値の無いキーの型は null を持ち、JSON が無いときの固定応答も同じキー集合', async () => {
+  const { calls } = await runDevFlow();
+  const schema = JSON.parse(JSON.stringify(calls.find((c) => c.label === 'resolve-test-commands').opts.schema));
+  assert.deepEqual([...schema.required].sort(), [...PREPARE_KEYS].sort());
+  assert.deepEqual(Object.keys(schema.properties).sort(), [...PREPARE_KEYS].sort());
+  // その経路に値が無いキーは null で出るので、型に null を持つ
+  for (const key of ['error', 'source', 'status', 'commands', 'commands_file', 'run_dir', 'bundle_file']) {
+    assert.ok(schema.properties[key].type.includes('null'), `${key} の型に null が無い`);
+  }
+  // stdout に JSON が無いときに中継が返す固定の応答も同じキー集合（required を満たす）
+  const fallback = JSON.parse(testCommandsPreparePrompt('/tmp/wt', 'main').match(/(\{"ok":false.*\}) を一字一句そのまま返せ/)[1]);
+  assert.deepEqual(Object.keys(fallback).sort(), [...PREPARE_KEYS].sort());
+  assert.equal(parsePreparedTestCommands(fallback), null);
+});
+
+test('[test-commands] parsePreparedTestCommands は全キーを持つ形の resolver・user 設定・tests/run-*.sh の応答を受け、ok:false は null にする', () => {
+  for (const res of [PREPARE_RESOLVER, PREPARE_USER_CONFIG, testCommandsPrepareResponse()]) {
+    assert.deepEqual(Object.keys(res).sort(), [...PREPARE_KEYS].sort(), res.source);
+    assert.equal(parsePreparedTestCommands(res), res, res.source);
+  }
+  // user 設定の形が不正（status unresolved と error。commands は null）
+  const invalidUserConfig = testCommandsPrepareResponse({ source: 'user_config', status: 'unresolved', sources: [], error: 'test_commands が不正' });
+  assert.equal(parsePreparedTestCommands(invalidUserConfig), invalidUserConfig);
+  assert.equal(parsePreparedTestCommands(PREPARE_FAILED), null);
+});
+
+test('[test-commands] prepare が ok:false（全キーを持つ形）を返したら resolver を起動せず unresolved として扱い、test#1 に --commands を付けない', async () => {
+  const { calls, labels, lastLine, stages } = await runDevFlow({ 'resolve-test-commands': PREPARE_FAILED });
+  assert.deepEqual(resolverCalls(calls), []);
+  assert.ok(!labels.includes('resolve-test-commands-write'), labels.join(', '));
+  assert.equal(stages.find((s) => s.name === FINALIZE).wargs.test_commands.status, 'unresolved');
+  assert.equal(lastLine('test#1'), 'run-tests start /tmp/wt --base origin/main');
+});
 
 test('[test-commands] 解決元が tests/run-*.sh（既定）・user 設定なら resolver を起動せず、test#1 には --commands でファイルのパスだけを渡す', async () => {
   for (const prepare of [testCommandsPrepareResponse(), PREPARE_USER_CONFIG]) {
