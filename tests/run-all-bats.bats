@@ -15,7 +15,8 @@ setup() {
     cp "$BATS_TEST_DIRNAME/run-all-bats.sh" "$FIXTURE/tests/"
     # dev-flow の run-tests 経由で本ファイル自体が実行されると、実 worktree の変更一覧が
     # 継承されて fixture repo の selection が狂う。各テストは必要なときだけ明示的に渡す。
-    unset DEVFLOW_CHANGED_FILES DEVFLOW_BASE DEVFLOW_TEST_FILES
+    # CI のシャード指定（RUN_ALL_BATS_SHARD）も同じく fixture repo を分割してしまうので外す。
+    unset DEVFLOW_CHANGED_FILES DEVFLOW_BASE DEVFLOW_TEST_FILES RUN_ALL_BATS_SHARD
 }
 
 # Fixture .bats content is written via printf (not a heredoc with a literal
@@ -117,6 +118,70 @@ write_leak_fixture() {
         RUN_ALL_BATS_JOBS="$bad" run bash "$FIXTURE/tests/run-all-bats.sh"
         [ "$status" -eq 2 ]
         [[ "$output" == *"RUN_ALL_BATS_JOBS must be a positive integer"* ]]
+    done
+}
+
+# <file> に <n> 個の test を書く。各 test は実行時に <log> へファイル名を 1 行追記する。
+write_weighted_fixture() {
+    local file="$1" n="$2" log="$3" k
+    : > "$file"
+    for ((k = 1; k <= n; k++)); do
+        printf '%stest "t%d" { echo %s >> "%s"; }\n' "$AT" "$k" "${file##*/}" "$log" >> "$file"
+    done
+}
+
+@test "実行順: 重い（@test の多い）ファイルから先に起動し、出力は discovery 順のまま" {
+    LOG="$BATS_TEST_TMPDIR/order.log"
+    write_weighted_fixture "$FIXTURE/a.bats" 1 "$LOG"
+    write_weighted_fixture "$FIXTURE/b.bats" 3 "$LOG"
+    write_weighted_fixture "$FIXTURE/c.bats" 2 "$LOG"
+
+    RUN_ALL_BATS_JOBS=1 run bash "$FIXTURE/tests/run-all-bats.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(uniq "$LOG" | tr '\n' ' ')" = "b.bats c.bats a.bats " ]
+    [[ "$output" == *"=== Running: a.bats ==="*"=== Running: b.bats ==="*"=== Running: c.bats ==="* ]]
+}
+
+@test "RUN_ALL_BATS_SHARD: 全シャードを回すと全ファイルがちょうど 1 回ずつ実行される" {
+    LOG="$BATS_TEST_TMPDIR/shard.log"
+    local name n
+    for spec in a:5 b:1 c:3 d:1 e:2 f:4 g:1; do
+        name="${spec%%:*}"
+        n="${spec##*:}"
+        write_weighted_fixture "$FIXTURE/$name.bats" "$n" "$LOG"
+    done
+    : > "$LOG"
+
+    for i in 1 2 3; do
+        RUN_ALL_BATS_JOBS=1 RUN_ALL_BATS_SHARD="$i/3" run bash "$FIXTURE/tests/run-all-bats.sh"
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"Shard $i/3: "*" of 7 .bats file(s)"* ]]
+        # 各シャードは少なくとも 1 ファイルを持つ（偏りなく割り振られる）
+        [[ "$output" != *"Shard $i/3: 0 of"* ]]
+    done
+
+    [ "$(uniq "$LOG" | sort | tr '\n' ' ')" = "a.bats b.bats c.bats d.bats e.bats f.bats g.bats " ]
+    [ "$(uniq "$LOG" | sort | uniq -d)" = "" ]
+}
+
+@test "RUN_ALL_BATS_SHARD: ファイルより多いシャードは bats を起動せず exit 0" {
+    write_ok_fixture "$FIXTURE/a.bats"
+
+    RUN_ALL_BATS_SHARD=2/2 run bash "$FIXTURE/tests/run-all-bats.sh"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Shard 2/2: 0 of 1 .bats file(s)"* ]]
+    [[ "$output" != *"Summary:"* ]]
+}
+
+@test "RUN_ALL_BATS_SHARD が <i>/<n>（1 <= i <= n）でなければ exit 2" {
+    write_ok_fixture "$FIXTURE/a.bats"
+
+    for bad in 0/3 4/3 1/0 3 abc 1/3x; do
+        RUN_ALL_BATS_SHARD="$bad" run bash "$FIXTURE/tests/run-all-bats.sh"
+        [ "$status" -eq 2 ]
+        [[ "$output" == *"RUN_ALL_BATS_SHARD must be <i>/<n>"* ]]
     done
 }
 
