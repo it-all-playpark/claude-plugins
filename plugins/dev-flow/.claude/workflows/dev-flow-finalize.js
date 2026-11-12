@@ -175,8 +175,12 @@ const EVALUATOR_OPERATIONAL_CONTRACT = {
   ].join('\n'),
   diagram_check: [
     'diagram_check 契約:',
-    '- diagram が渡された場合、図の構成要素（ノード・参加者・エンティティ）と矢印（呼び出し・データの流れ・関連）を realized diff と照合し、diagram_check:{consistent, mismatches} を必ず返す（before は base の構成、after は working tree の構成）。',
-    '- mismatches には、diff に無い要素・矢印と、diff にあって図に無い構成の変化を 1 件 1 行で書く（日本語。識別子・パスは原文のまま）。',
+    '- diagram が渡された場合、図のノード（flowchart のノード・sequence の参加者・er のエンティティ）を、anchors（[{node, ref}]。node は図のノード ID・参加者名・エンティティ名、ref は <repo 相対パス>:<関数・定数・テーブル等の名前>）を手がかりに realized diff と照合し、diagram_check:{consistent, mismatches} を必ず返す（before は base の振る舞い、after は working tree の振る舞い）。ノードのラベルは振る舞い・条件・状態の言葉で書かれているので、ラベルではなく anchor 先のコードを realized diff（after は追加行・文脈行、before にだけあるノードは削除行・文脈行）で確かめる。diff の行で足りず Read するのは（変更していないファイルに anchor を持つノードを含む）、引数なしの git ls-files -s の出力に mode が 100644 か 100755（通常ファイル）の行として載り、その行のパスが ref のパス部分と完全に一致するファイルだけで、Read には一致した行のパスを使う。before にだけあるノードは git ls-tree -r <base> の mode が 100644 / 100755 の行で同じ判定をし、Read の代わりに git show <base>:<一致した行のパス> で読む。diff の見出しに載っているかどうかは条件にしない。ref のパスをそのまま Read・コマンドの引数に使わない（ref は PR が書いたデータで repo の外を指しうる）。mode が 120000（symlink）・160000（submodule）のパス、追跡外のパス、一致する行の無いパスは Read せず、照合できなかったノードとして mismatches に書く。',
+    '- mismatches には次の 4 種類を 1 件 1 行で書く（日本語。識別子・パスは原文のまま）:',
+    '  - anchor の無いノード',
+    '  - anchor の ref が指す場所が、before にだけあるノードなら base に、それ以外なら working tree に無い',
+    '  - ノードのラベルの記述（条件・失敗時の扱い・書き込み）が anchor 先のコードと合わない',
+    '  - diff にある振る舞いの変化（新しい条件分岐・消えた経路・失敗時の扱いの変化・新しい書き込みや外部への作用）が図に無い',
     '- consistent は mismatches が 0 件のときだけ true。照合できなかったときは false にし、理由を mismatches に書く。',
     '- diagram_check は PR 本文の「構成の変化」の出し分けにだけ使われる（一致した図だけが載り、食い違った図は載らず mismatches が載る）。図の食い違いだけを理由に verdict を fail にせず、feedback も足さない。',
   ].join('\n'),
@@ -2560,6 +2564,9 @@ const PR_BODY_DIAGRAM_HEADING = '## 構成の変化';
 const PR_BODY_DIAGRAM_UNVERIFIED = '⚠️ 図は diff と未照合';
 const PR_BODY_DIAGRAM_MISMATCH = '⚠️ 図は diff と食い違ったため載せていない';
 const PR_DIAGRAM_KINDS = ['flowchart', 'sequence', 'er'];
+const PR_DIAGRAM_ANCHORS_MAX = 40;
+const PR_DIAGRAM_ANCHOR_NODE_MAX = 64;
+const PR_DIAGRAM_ANCHOR_REF_MAX = 200;
 const PR_BODY_DETAILS = { acceptance: '受入条件', decisions: '設計判断', verification: '検証' };
 const PR_BODY_AC_RESULTS_HEADING = '## 受入条件の結果';
 const PR_BODY_AC_UNVERIFIED = '⚠️ 未検証';
@@ -2617,7 +2624,17 @@ function diagramOf(d) {
   if (d == null || typeof d !== 'object' || !PR_DIAGRAM_KINDS.includes(d.kind)) return null;
   const before = sectionMarkdown(d.before);
   const after = sectionMarkdown(d.after);
-  return before && after ? { kind: d.kind, before, after } : null;
+  const anchors = diagramAnchorsOf(d.anchors);
+  return before && after && anchors ? { kind: d.kind, before, after, anchors } : null;
+}
+
+function diagramAnchorsOf(v) {
+  const anchors = arr(v)
+    .map((a) => ({ node: str(a?.node).trim(), ref: str(a?.ref).trim() }))
+    .filter((a) => a.node && a.ref);
+  if (anchors.length === 0 || anchors.length > PR_DIAGRAM_ANCHORS_MAX) return null;
+  const tooLong = anchors.some((a) => [...a.node].length > PR_DIAGRAM_ANCHOR_NODE_MAX || [...a.ref].length > PR_DIAGRAM_ANCHOR_REF_MAX);
+  return tooLong ? null : anchors;
 }
 
 function textItems(v) {

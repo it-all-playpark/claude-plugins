@@ -1618,6 +1618,9 @@ const PR_BODY_DIAGRAM_HEADING = '## 構成の変化';
 const PR_BODY_DIAGRAM_UNVERIFIED = '⚠️ 図は diff と未照合';
 const PR_BODY_DIAGRAM_MISMATCH = '⚠️ 図は diff と食い違ったため載せていない';
 const PR_DIAGRAM_KINDS = ['flowchart', 'sequence', 'er'];
+const PR_DIAGRAM_ANCHORS_MAX = 40;
+const PR_DIAGRAM_ANCHOR_NODE_MAX = 64;
+const PR_DIAGRAM_ANCHOR_REF_MAX = 200;
 const PR_BODY_DETAILS = { acceptance: '受入条件', decisions: '設計判断', verification: '検証' };
 const PR_SECTIONS_MAX_CHARS = 3000;
 const PR_BODY_AC_RESULTS_HEADING = '## 受入条件の結果';
@@ -1718,7 +1721,17 @@ function diagramOf(d) {
   if (d == null || typeof d !== 'object' || !PR_DIAGRAM_KINDS.includes(d.kind)) return null;
   const before = sectionMarkdown(d.before);
   const after = sectionMarkdown(d.after);
-  return before && after ? { kind: d.kind, before, after } : null;
+  const anchors = diagramAnchorsOf(d.anchors);
+  return before && after && anchors ? { kind: d.kind, before, after, anchors } : null;
+}
+
+function diagramAnchorsOf(v) {
+  const anchors = arr(v)
+    .map((a) => ({ node: str(a?.node).trim(), ref: str(a?.ref).trim() }))
+    .filter((a) => a.node && a.ref);
+  if (anchors.length === 0 || anchors.length > PR_DIAGRAM_ANCHORS_MAX) return null;
+  const tooLong = anchors.some((a) => [...a.node].length > PR_DIAGRAM_ANCHOR_NODE_MAX || [...a.ref].length > PR_DIAGRAM_ANCHOR_REF_MAX);
+  return tooLong ? null : anchors;
 }
 
 function textItems(v) {
@@ -2453,6 +2466,10 @@ const IMPL = {
         kind: { type: 'string', enum: ['flowchart', 'sequence', 'er'] },
         before: { type: 'string', maxLength: 1500 },
         after: { type: 'string', maxLength: 1500 },
+        anchors: {
+          type: 'array',
+          items: { type: 'object', properties: { node: { type: 'string' }, ref: { type: 'string' } } },
+        },
       },
     },
     epoch: { type: 'number' },

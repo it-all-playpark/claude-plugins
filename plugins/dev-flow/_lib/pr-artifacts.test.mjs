@@ -24,6 +24,9 @@ import {
   PR_BODY_DIAGRAM_UNVERIFIED,
   PR_BODY_DIAGRAM_MISMATCH,
   PR_DIAGRAM_KINDS,
+  PR_DIAGRAM_ANCHORS_MAX,
+  PR_DIAGRAM_ANCHOR_NODE_MAX,
+  PR_DIAGRAM_ANCHOR_REF_MAX,
   PR_BODY_VISUAL_HEADING,
   PR_BODY_VISUAL_PATHS_MAX,
   PR_BODY_VISUAL_COMPARE_NOTE,
@@ -494,7 +497,13 @@ test('[pr-artifacts] prBodyEvidenceInstr / planWithoutPrBodyMaterial: evaluator 
 
 // ---- issue #1366: 構成の変化の図（diagram）は evaluator の diagram_check で出し分ける ----
 
-const DIAGRAM = { kind: 'flowchart', before: 'flowchart LR\n  A[impl] --> B[buildPrBody]', after: 'flowchart LR\n  A[impl] --> B[buildPrBody]\n  E[evaluator] --> B' };
+// anchors の ref は図の本文に現れない固有の文字列にする（本文に anchors を出さないことを確かめるため）
+const DIAGRAM_ANCHORS = [
+  { node: 'A', ref: 'src/anchor-only-a.mjs:ANCHOR_REF_A' },
+  { node: 'B', ref: 'src/anchor-only-b.mjs:ANCHOR_REF_B' },
+  { node: 'E', ref: 'src/anchor-only-e.mjs:ANCHOR_REF_E' },
+];
+const DIAGRAM = { kind: 'flowchart', before: 'flowchart LR\n  A[実装の報告] --> B[本文に図を載せる]', after: 'flowchart LR\n  A[実装の報告] --> B[本文に図を載せる]\n  E{照合で一致?} --> B', anchors: DIAGRAM_ANCHORS };
 const diagramBody = (o = {}, diagramCheck) => buildPrBody({
   issue: 1, req: req(), plan: plan({ behavior_changes: ['変わること'], review_points: ['見てほしい'], diagram: DIAGRAM, ...o }),
   testsurfHits: [], dangerHits: [], ...(diagramCheck === undefined ? {} : { diagramCheck }),
@@ -530,18 +539,59 @@ function assertBodyStructureIntact(body, issue) {
   assert.equal(hasClosesLine(beforeCloses, issue), false, `中身の偽の Closes 行が数えられている:\n${body}`);
 }
 
-test('[pr-artifacts] adoptImplPrNotes: diagram を plan.diagram に取り込み、null・不正な報告は前回分を保持する', () => {
-  const first = adoptImplPrNotes({ serial: [] }, [{ diagram: { kind: 'sequence', before: '\r\nsequenceDiagram\r\n  A->>B: x\n\n', after: 'sequenceDiagram\n  A->>C: x', extra: 1 } }]);
-  assert.deepEqual(first.diagram, { kind: 'sequence', before: 'sequenceDiagram\n  A->>B: x', after: 'sequenceDiagram\n  A->>C: x' });
+test('[pr-artifacts] adoptImplPrNotes: diagram を anchors ごと plan.diagram に取り込み、null・不正な報告は前回分を保持する', () => {
+  const anchors = [{ node: 'A', ref: 'src/a.mjs:run' }, { node: 'B', ref: 'src/b.mjs:TABLE' }];
+  const first = adoptImplPrNotes({ serial: [] }, [{ diagram: {
+    kind: 'sequence', before: '\r\nsequenceDiagram\r\n  A->>B: x\n\n', after: 'sequenceDiagram\n  A->>C: x', extra: 1,
+    // node か ref が空白だけの項目は落とし、残りは前後の空白を除いて残す
+    anchors: [{ node: ' A ', ref: ' src/a.mjs:run\n', extra: 1 }, { node: ' ', ref: 'src/x.mjs:x' }, { node: 'X', ref: '\t' }, { node: 'Y' }, null, anchors[1]],
+  } }]);
+  assert.deepEqual(first.diagram, { kind: 'sequence', before: 'sequenceDiagram\n  A->>B: x', after: 'sequenceDiagram\n  A->>C: x', anchors });
   for (const kept of [
     adoptImplPrNotes(first, [{ diagram: null }]),
     adoptImplPrNotes(first, [{ behavior_changes: ['b'] }]),
-    adoptImplPrNotes(first, [{ diagram: { kind: 'gantt', before: 'a', after: 'b' } }]),
-    adoptImplPrNotes(first, [{ diagram: { kind: 'er', before: ' ', after: 'b' } }]),
+    adoptImplPrNotes(first, [{ diagram: { kind: 'gantt', before: 'a', after: 'b', anchors } }]),
+    adoptImplPrNotes(first, [{ diagram: { kind: 'er', before: ' ', after: 'b', anchors } }]),
   ]) assert.deepEqual(kept.diagram, first.diagram);
-  const replaced = adoptImplPrNotes(first, [{ diagram: { kind: 'er', before: 'erDiagram\n  A', after: 'erDiagram\n  B' } }, { diagram: null }]);
-  assert.deepEqual(replaced.diagram, { kind: 'er', before: 'erDiagram\n  A', after: 'erDiagram\n  B' });
+  const replaced = adoptImplPrNotes(first, [{ diagram: { kind: 'er', before: 'erDiagram\n  A', after: 'erDiagram\n  B', anchors: [anchors[0]] } }, { diagram: null }]);
+  assert.deepEqual(replaced.diagram, { kind: 'er', before: 'erDiagram\n  A', after: 'erDiagram\n  B', anchors: [anchors[0]] });
   assert.ok(!('diagram' in adoptImplPrNotes({ serial: [] }, [{ diagram: null }])), '図の無い run は plan.diagram を持たない');
+});
+
+test('[pr-artifacts] adoptImplPrNotes: anchors が無い・0 件・41 件以上・長すぎる node / ref を含む図は採らず前回分を保持し、同じ報告の他のフィールドは取り込む', () => {
+  assert.deepEqual([PR_DIAGRAM_ANCHORS_MAX, PR_DIAGRAM_ANCHOR_NODE_MAX, PR_DIAGRAM_ANCHOR_REF_MAX], [40, 64, 200]);
+  const figure = { kind: 'flowchart', before: 'flowchart LR\n  A', after: 'flowchart LR\n  A-->B' };
+  const many = (n) => Array.from({ length: n }, (_, i) => ({ node: `N${i}`, ref: `src/n.mjs:f${i}` }));
+  const prev = adoptImplPrNotes({ serial: [] }, [{ diagram: { ...figure, anchors: [{ node: 'A', ref: 'src/prev.mjs:prev' }] }, behavior_changes: ['前回'], review_points: ['前回の点'] }]);
+  // 上限ちょうどは採る（字数は code point で数える）
+  const atLimit = [...many(PR_DIAGRAM_ANCHORS_MAX - 1), { node: 'あ'.repeat(PR_DIAGRAM_ANCHOR_NODE_MAX), ref: '𠮷'.repeat(PR_DIAGRAM_ANCHOR_REF_MAX) }];
+  assert.deepEqual(adoptImplPrNotes(prev, [{ diagram: { ...figure, anchors: atLimit } }]).diagram, { ...figure, anchors: atLimit });
+  const rejected = {
+    'anchors が無い': figure,
+    'anchors が配列でない': { ...figure, anchors: { node: 'A', ref: 'src/a.mjs:run' } },
+    'anchors が 0 件': { ...figure, anchors: [] },
+    '空白の項目を落とした結果 0 件': { ...figure, anchors: [{ node: ' ', ref: 'src/a.mjs:run' }, { node: 'A', ref: '\n' }] },
+    '41 件': { ...figure, anchors: many(PR_DIAGRAM_ANCHORS_MAX + 1) },
+    'node が 65 字': { ...figure, anchors: [{ node: 'A', ref: 'src/a.mjs:run' }, { node: 'n'.repeat(PR_DIAGRAM_ANCHOR_NODE_MAX + 1), ref: 'src/a.mjs:run' }] },
+    'ref が 201 字': { ...figure, anchors: [{ node: 'A', ref: 'src/a.mjs:run' }, { node: 'B', ref: 'r'.repeat(PR_DIAGRAM_ANCHOR_REF_MAX + 1) }] },
+  };
+  for (const [name, diagram] of Object.entries(rejected)) {
+    const adopted = adoptImplPrNotes(prev, [{ diagram, behavior_changes: ['今回'], review_points: ['今回の点'], out_of_scope: ['範囲外'] }]);
+    assert.deepEqual(adopted.diagram, prev.diagram, `${name}: 前回分の図を保持していない`);
+    assert.deepEqual(adopted.behavior_changes, ['今回'], `${name}: 同じ報告の behavior_changes を取り込んでいない`);
+    assert.deepEqual(adopted.review_points, ['今回の点'], `${name}: 同じ報告の review_points を取り込んでいない`);
+    assert.deepEqual(adopted.out_of_scope, ['範囲外'], `${name}: 同じ報告の out_of_scope を取り込んでいない`);
+    assert.ok(!('diagram' in adoptImplPrNotes({ serial: [] }, [{ diagram }])), `${name}: 前回分が無ければ図を持たない`);
+  }
+});
+
+test('[pr-artifacts] PR body: anchors は diagram_check が一致・未照合のどちらの本文にも出さない', () => {
+  for (const check of [{ consistent: true, mismatches: [] }, undefined, null]) {
+    const body = diagramBody({}, check);
+    assert.ok(body.includes(DIAGRAM.after), `図が載っていない:\n${body}`);
+    for (const a of DIAGRAM_ANCHORS) assert.ok(!body.includes(a.ref), `anchors の ref が本文に出ている（${a.ref}）:\n${body}`);
+    assert.ok(!body.includes('anchors'), body);
+  }
 });
 
 test('[pr-artifacts] PR body: 構成の変化は「何が変わるか」の直後に出し、diagram_check が一致なら before / after を mermaid フェンスで出す', () => {
@@ -1356,7 +1406,7 @@ test('[pr-artifacts] dev-flow.js: IMPL schema は behavior_changes / review_poin
   for (const [v, err] of cases) assert.deepEqual(schemaErrors(schema, v), [err]);
 });
 
-test('[pr-artifacts] dev-flow.js / dev-flow-evaluate.js: IMPL schema の diagram は null か {kind, before, after}（kind は enum、before / after は各 1500 字以内）', async () => {
+test('[pr-artifacts] dev-flow.js / dev-flow-evaluate.js: IMPL schema の diagram は null か {kind, before, after, anchors?}（kind は enum、before / after は各 1500 字以内、anchors は任意で件数・長さの上限なし）', async () => {
   const { ctx, calls } = makeDevFlowSandbox();
   const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'impl schema diagram');
@@ -1367,6 +1417,18 @@ test('[pr-artifacts] dev-flow.js / dev-flow-evaluate.js: IMPL schema の diagram
   assert.deepEqual(schemaErrors(schema, { ...ok, diagram: null }), []);
   for (const kind of PR_DIAGRAM_KINDS) assert.deepEqual(schemaErrors(schema, { ...ok, diagram: { ...d, kind } }), []);
   assert.deepEqual(PR_DIAGRAM_KINDS, ['flowchart', 'sequence', 'er']);
+  // anchors は [{node, ref}] の任意のプロパティ。不備（無い・上限超え）で schema 違反にすると実装 agent の報告全体が落ちるので、
+  // 件数・長さは schema で縛らず adoptImplPrNotes が図だけを落とす
+  assert.equal(JSON.stringify(schema.properties.diagram.properties.anchors), JSON.stringify({
+    type: 'array',
+    items: { type: 'object', properties: { node: { type: 'string' }, ref: { type: 'string' } } },
+  }));
+  assert.ok(!schema.properties.diagram.required.includes('anchors'), 'anchors を必須にしている');
+  const anchorsOf = (n) => Array.from({ length: n }, (_, i) => ({ node: `N${i}`, ref: `src/n.mjs:f${i}` }));
+  assert.deepEqual(schemaErrors(schema, { ...ok, diagram: { ...d, anchors: anchorsOf(2) } }), [], 'anchors 付き');
+  assert.deepEqual(schemaErrors(schema, { ...ok, diagram: d }), [], 'anchors 無し');
+  assert.deepEqual(schemaErrors(schema, { ...ok, diagram: { ...d, anchors: anchorsOf(PR_DIAGRAM_ANCHORS_MAX + 1) } }), [], 'anchors 41 件');
+  assert.deepEqual(schemaErrors(schema, { ...ok, diagram: { ...d, anchors: [{ node: 'n'.repeat(PR_DIAGRAM_ANCHOR_NODE_MAX + 1), ref: 'r'.repeat(PR_DIAGRAM_ANCHOR_REF_MAX + 1) }] } }), [], '長い node / ref');
   const cases = [
     [{ ...d, kind: 'gantt' }, '$.diagram.kind: enum'],
     [{ ...d, before: 'あ'.repeat(1501) }, '$.diagram.before: maxLength 1500'],
@@ -1385,11 +1447,36 @@ test('[pr-artifacts] agents/dev-implementer.md: diagram を返す条件（2 フ�
   const md = readFileSync(join(here, '..', 'agents', 'dev-implementer.md'), 'utf8').replace(/\n +/g, '');
   const rule = md.split('\n').find((l) => l.startsWith('- **構成の変化は `diagram` で図にして返す。**'));
   assert.ok(rule, 'diagram の規則が無い');
-  assert.ok(rule.includes('変更が 2 つ以上のファイルにまたがり、ファイル間の呼び出し・データの流れ・構成要素が増減または付け替わるときは、`diagram` に `{kind, before, after}` を返す'), rule);
+  assert.ok(rule.includes('変更が 2 つ以上のファイルにまたがり、ファイル間の呼び出し・データの流れ・構成要素が増減または付け替わるときは、`diagram` に `{kind, before, after, anchors}` を返す'), rule);
   assert.match(rule, /それ以外（[^）]*）は `null` を返す/);
   for (const kind of PR_DIAGRAM_KINDS) assert.ok(rule.includes(`\`${kind}\``), `kind ${kind} の説明が無い`);
   assert.ok(rule.includes('各 1500 字以内'), rule);
   assert.ok(md.includes('"diagram": {"kind": "flowchart | sequence | er"'), '返す JSON の例に diagram が無い');
+});
+
+test('[pr-artifacts] agents/dev-implementer.md: 図は振る舞い・条件・状態の言葉で描かせ、ファイル・関数は anchors に書かせる', () => {
+  const md = readFileSync(join(here, '..', 'agents', 'dev-implementer.md'), 'utf8').replace(/\n +/g, '');
+  const rule = md.split('\n').find((l) => l.startsWith('- **構成の変化は `diagram` で図にして返す。**'));
+  assert.ok(rule, 'diagram の規則が無い');
+  // ノードの表記
+  assert.ok(rule.includes('ノードのラベルは振る舞い・条件・状態の言葉で書き、ファイル名・関数名をラベルにしない'), rule);
+  // anchors
+  assert.ok(rule.includes('ファイル・関数は `anchors` に書き、図のすべてのノード（sequence は参加者、er はエンティティ）に anchor を付ける（before にだけあるノードは base 側の場所を指す）'), rule);
+  assert.ok(rule.includes('`node` は図のノード ID・参加者名・エンティティ名、`ref` は `<repo 相対パス>:<関数・定数・テーブル等の名前>`'), rule);
+  assert.ok(rule.includes(`\`node\` ${PR_DIAGRAM_ANCHOR_NODE_MAX} 字・\`ref\` ${PR_DIAGRAM_ANCHOR_REF_MAX} 字・${PR_DIAGRAM_ANCHORS_MAX} 件まで`), '案内する上限が取り込みの上限と違う');
+  // 描く要素
+  for (const element of [
+    '入口（誰のどの操作）→結果',
+    '経路が分かれる条件と、旧経路が残るか',
+    '消える・止まる経路',
+    '失敗時の扱い（エラー・黙って skip・人間に返す）',
+    '書き込む状態・外部への作用',
+  ]) assert.ok(rule.includes(element), `描く要素「${element}」が無い`);
+  // kind の選び方
+  assert.ok(rule.includes('利用者の操作の流れが変わる変更は `sequence`、条件で経路が分かれる変更は `flowchart`、データの構造の変更は `er`'), rule);
+  // 返す JSON の例
+  const example = md.split('\n').find((l) => l.startsWith('"diagram": {') || l.includes('"diagram": {"kind"'));
+  assert.match(example ?? '', /"diagram": \{"kind": [^\n]*"anchors": \[\{"node": "[^"]+", "ref": "[^"]+"\}\]\}/);
 });
 
 test('[pr-artifacts] PR body: schema の上限いっぱいの 1 行要約欄は builder が 1 行も切らずに載せる', () => {

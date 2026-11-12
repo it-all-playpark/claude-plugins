@@ -86,6 +86,8 @@ export const IMPL = {
     out_of_scope: { type: 'array', items: { type: 'string', maxLength: 198 } },
     // 構成の変化の before / after 図（Mermaid の本文）。PR 本文の「構成の変化」に載り、evaluator が realized diff と照合する。
     // kind の enum は pr-artifacts の PR_DIAGRAM_KINDS と同値（literal の理由は上と同じ）。
+    // anchors（図のノード → コード上の場所。evaluator の照合の手がかり）は必須にせず、件数・長さの上限も付けない —
+    // schema 違反は spawnFailOpen で報告全体を落とすので、anchors の不備は pr-artifacts の diagramOf が図だけを落とす。
     diagram: {
       type: ['object', 'null'],
       required: ['kind', 'before', 'after'],
@@ -93,6 +95,10 @@ export const IMPL = {
         kind: { type: 'string', enum: ['flowchart', 'sequence', 'er'] },
         before: { type: 'string', maxLength: 1500 },
         after: { type: 'string', maxLength: 1500 },
+        anchors: {
+          type: 'array',
+          items: { type: 'object', properties: { node: { type: 'string' }, ref: { type: 'string' } } },
+        },
       },
     },
     epoch: { type: 'number' },
