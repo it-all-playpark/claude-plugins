@@ -682,7 +682,11 @@ test('[evaluator-contract][#1366] diagram_check 契約と evaluator.md は、図
   assert.ok(start >= 0, 'evaluator.md に「図の照合」節が無い');
   const section = evaluatorMd.slice(start, evaluatorMd.indexOf('\n## ', start + 1)).replace(/\n +/g, '');
   assert.match(section, /\n1\. .*ノード（[^）]*）とそのラベル・矢印を拾い、各ノードの anchor を `anchors` から引く/);
-  assert.match(section, /\n2\. 各 anchor の `ref` が指す場所を読む。.*`before` にだけあるノードは base 側を見る/);
+  assert.match(section, /\n2\. 各 anchor の `ref` が指す場所を、「進め方」1 で取得済みの `git diff <sha>` で確かめる。/);
+  // ref は PR が書いたデータで repo の外を指しうるので、Read は diff の見出しのパスに限り ref のパスをそのまま使わない。
+  assert.match(section, /Read してよいのは、`ref` のパスと完全に一致するパスを diff のファイル見出し（`\+\+\+ b\/<path>`）に持つファイルだけで、Read には見出しのパスを使う/);
+  assert.match(section, /`ref` のパスをそのまま Read・コマンドの引数に使わない/);
+  assert.match(contract, /ref のパスをそのまま Read・コマンドの引数に使わない/);
   assert.match(section, /\n3\. 次の 4 種類を `mismatches` に 1 件 1 行で書く/);
   for (const kind of DIAGRAM_MISMATCH_KINDS) assert.ok(section.replace(/`ref`/g, 'ref').includes(`- ${kind}`), `evaluator.md に「${kind}」が無い`);
   assert.match(section, /\n4\. `mismatches` が 0 件なら `consistent:true`、1 件でもあれば `consistent:false`/);
