@@ -681,7 +681,8 @@ assert_hit() {
     mkdir -p "$REPO/src"
     {
         printf "test.skip('checks value', () => {});\n"
-        for i in $(seq 20000); do printf 'const v%d = %d;\n' "$i" "$i"; done
+        # No shell loop: bats runs a DEBUG trap on every command (a 20000-iteration loop takes ~3s).
+        seq 20000 | awk '{ printf "const v%d = %d;\n", $1, $1 }'
     } > "$REPO/src/big.test.ts"
     git -C "$REPO" add -A
     git -C "$REPO" commit -q -m change

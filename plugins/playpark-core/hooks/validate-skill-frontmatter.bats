@@ -14,10 +14,11 @@ run_hook() {
 }
 
 # repeat <string> <count>
+# No shell loop: bats runs a DEBUG trap on every command, so a 50000-iteration loop takes ~15s.
 repeat() {
-  local out="" i
-  for ((i = 0; i < $2; i++)); do out+=$1; done
-  printf '%s' "$out"
+  local pad
+  printf -v pad '%*s' "$2" ''
+  printf '%s' "${pad// /"$1"}"
 }
 
 assert_blocked_with() {

@@ -43,6 +43,15 @@
 #     files are run (a missing one fails in bats), and none listed means bats
 #     is not started (exit 0) — other runners own the other files. An
 #     unreadable list falls back to the full suite.
+#   - Execution order: files start heaviest first (weight = number of
+#     `@test` lines) so a long file doesn't start last and become the tail.
+#     Output is still printed in discovery order.
+#   - Sharding (CI matrix): `RUN_ALL_BATS_SHARD=<i>/<n>` (1 <= i <= n) runs
+#     only shard i of n, applied after selection. Files are assigned greedily
+#     (heaviest first, to the least-loaded shard; ties to the lowest shard),
+#     so for a fixed file set every file lands in exactly one shard — running
+#     all n shards runs every file once. A shard with no file exits 0 without
+#     starting bats. An invalid value exits 2.
 #
 # Designed to be called from CI (GitHub Actions) after `brew install bats-core`
 # (macOS) or `apt install bats` (ubuntu).
@@ -210,6 +219,50 @@ if [[ "$NARROWED" == true ]]; then
     LIST_LABEL="Selected"
 fi
 
+# Weight of each file (see header) and the indices of BATS_FILES heaviest
+# first (ties in discovery order).
+declare -A WEIGHT=()
+for f in "${BATS_FILES[@]}"; do
+    WEIGHT["$f"]="$(grep -c '^@test' -- "$f" 2>/dev/null || true)"
+done
+heaviest_first() {
+    local i
+    for i in "${!BATS_FILES[@]}"; do
+        printf '%s\t%s\n' "${WEIGHT[${BATS_FILES[$i]}]:-0}" "$i"
+    done | sort -t $'\t' -k1,1nr -k2,2n | cut -f2
+}
+
+if [[ -n "${RUN_ALL_BATS_SHARD:-}" ]]; then
+    if [[ ! "$RUN_ALL_BATS_SHARD" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] \
+        || (( BASH_REMATCH[1] > BASH_REMATCH[2] )); then
+        echo "[run-all-bats] RUN_ALL_BATS_SHARD must be <i>/<n> with 1 <= i <= n (got: '$RUN_ALL_BATS_SHARD')." >&2
+        exit 2
+    fi
+    SHARD_I="${BASH_REMATCH[1]}"
+    SHARD_N="${BASH_REMATCH[2]}"
+    LOADS=()
+    for ((s = 0; s < SHARD_N; s++)); do LOADS[s]=0; done
+    declare -A IN_SHARD=()
+    while IFS= read -r i; do
+        min=0
+        for ((s = 1; s < SHARD_N; s++)); do
+            (( LOADS[s] < LOADS[min] )) && min=$s
+        done
+        # +1 so files without any @test line still spread across shards.
+        (( LOADS[min] += ${WEIGHT[${BATS_FILES[$i]}]:-0} + 1 ))
+        (( min == SHARD_I - 1 )) && IN_SHARD["${BATS_FILES[$i]}"]=1
+    done < <(heaviest_first)
+    TOTAL=${#BATS_FILES[@]}
+    SHARD_FILES=()
+    for f in "${BATS_FILES[@]}"; do
+        [[ -n "${IN_SHARD[$f]:-}" ]] && SHARD_FILES+=("$f")
+    done
+    echo "[run-all-bats] Shard ${SHARD_I}/${SHARD_N}: ${#SHARD_FILES[@]} of ${TOTAL} .bats file(s)"
+    [[ ${#SHARD_FILES[@]} -eq 0 ]] && exit 0
+    BATS_FILES=("${SHARD_FILES[@]}")
+    LIST_LABEL="Selected"
+fi
+
 echo "[run-all-bats] ${LIST_LABEL} ${#BATS_FILES[@]} .bats file(s):"
 for f in "${BATS_FILES[@]}"; do
     echo "  - ${f#$REPO_ROOT/}"
@@ -231,9 +284,9 @@ run_one() {
 }
 export -f run_one
 
-for i in "${!BATS_FILES[@]}"; do
+while IFS= read -r i; do
     printf '%s\0%s\0' "$i" "${BATS_FILES[$i]}"
-done | xargs -0 -n 2 -P "$JOBS" bash -c 'run_one "$2" "$3" "$1"' _ "$RESULT_DIR"
+done < <(heaviest_first) | xargs -0 -n 2 -P "$JOBS" bash -c 'run_one "$2" "$3" "$1"' _ "$RESULT_DIR"
 
 FAILED=()
 PASSED=()
