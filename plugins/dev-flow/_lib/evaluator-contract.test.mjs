@@ -683,10 +683,18 @@ test('[evaluator-contract][#1366] diagram_check 契約と evaluator.md は、図
   const section = evaluatorMd.slice(start, evaluatorMd.indexOf('\n## ', start + 1)).replace(/\n +/g, '');
   assert.match(section, /\n1\. .*ノード（[^）]*）とそのラベル・矢印を拾い、各ノードの anchor を `anchors` から引く/);
   assert.match(section, /\n2\. 各 anchor の `ref` が指す場所を、「進め方」1 で取得済みの `git diff <sha>` で確かめる。/);
-  // ref は PR が書いたデータで repo の外を指しうるので、Read は diff の見出しのパスに限り ref のパスをそのまま使わない。
-  assert.match(section, /Read してよいのは、`ref` のパスと完全に一致するパスを diff のファイル見出し（`\+\+\+ b\/<path>`）に持つファイルだけで、Read には見出しのパスを使う/);
+  // ref は PR が書いたデータで repo の外・symlink 先を指しうるので、Read は git ls-files -s の通常ファイルの行のパスに限り、
+  // ref のパスをそのまま使わない。diff の見出しは条件にしない（変更していないファイルに anchor を持つノードも照合する）。
+  assert.match(section, /Read してよいのは、引数なしの `git ls-files -s` の出力に mode が `100644` か`100755`（通常ファイル）の行として載り、その行のパスが `ref` のパス部分と完全に一致するファイルだけで、Read には一致した行のパスを使う/);
+  assert.match(section, /`git ls-tree -r <sha>` の mode が `100644` \/ `100755` の行で同じ判定をし、Read の代わりに `git show <sha>:<一致した行のパス>` で読む/);
+  assert.match(section, /diff の見出しに載っているかどうかは条件にしない/);
   assert.match(section, /`ref` のパスをそのまま Read・コマンドの引数に使わない/);
+  assert.match(section, /mode が `120000`（symlink）・`160000`（submodule）のパス、追跡外のパス、一致する行の無いパスは Read せず、そのノードを照合できなかったノードとして理由を`mismatches` に書く/);
+  assert.match(contract, /引数なしの git ls-files -s の出力に mode が 100644 か 100755（通常ファイル）の行として載り、その行のパスが ref のパス部分と完全に一致するファイルだけで、Read には一致した行のパスを使う/);
+  assert.match(contract, /git ls-tree -r <base> の mode が 100644 \/ 100755 の行で同じ判定をし、Read の代わりに git show <base>:<一致した行のパス> で読む/);
+  assert.match(contract, /diff の見出しに載っているかどうかは条件にしない/);
   assert.match(contract, /ref のパスをそのまま Read・コマンドの引数に使わない/);
+  assert.match(contract, /mode が 120000（symlink）・160000（submodule）のパス、追跡外のパス、一致する行の無いパスは Read せず、照合できなかったノードとして mismatches に書く/);
   assert.match(section, /\n3\. 次の 4 種類を `mismatches` に 1 件 1 行で書く/);
   for (const kind of DIAGRAM_MISMATCH_KINDS) assert.ok(section.replace(/`ref`/g, 'ref').includes(`- ${kind}`), `evaluator.md に「${kind}」が無い`);
   assert.match(section, /\n4\. `mismatches` が 0 件なら `consistent:true`、1 件でもあれば `consistent:false`/);
