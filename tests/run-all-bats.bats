@@ -87,6 +87,23 @@ write_leak_fixture() {
     [ "$status" -eq 1 ]
     [[ "$output" == *"Summary: 2 passed, 1 failed"* ]]
     [[ "$output" == *"Failed files:"*"  - b.bats"* ]]
+    # 失敗したファイルにも Elapsed 行が出る
+    echo "$output" | grep -Eq '^\[run-all-bats\] Elapsed: b\.bats [0-9]+s$'
+    [ "$(echo "$output" | grep -c '^\[run-all-bats\] Elapsed: ')" -eq 3 ]
+}
+
+@test "Elapsed: 各ファイルのブロック末尾に所要時間（整数秒）を出す" {
+    printf '%stest "slow-a" { sleep 2; true; }\n' "$AT" > "$FIXTURE/a.bats"
+    write_ok_fixture "$FIXTURE/b.bats"
+
+    RUN_ALL_BATS_JOBS=2 run bash "$FIXTURE/tests/run-all-bats.sh"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"=== Running: a.bats ==="*"slow-a"*"[run-all-bats] Elapsed: a.bats "*"=== Running: b.bats ==="*"[run-all-bats] Elapsed: b.bats "*"Summary:"* ]]
+    [ "$(echo "$output" | grep -c '^\[run-all-bats\] Elapsed: ')" -eq 2 ]
+    slow="$(echo "$output" | sed -n 's/^\[run-all-bats\] Elapsed: a\.bats \([0-9][0-9]*\)s$/\1/p')"
+    [ "$slow" -ge 2 ]
+    echo "$output" | grep -Eq '^\[run-all-bats\] Elapsed: b\.bats [0-9]+s$'
 }
 
 @test "並列実行: 完了順に関係なく出力は discovery 順にファイル単位でまとまる" {
