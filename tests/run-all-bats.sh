@@ -14,6 +14,9 @@
 #     process per file) and aggregates results. Each file's output is
 #     buffered and printed in discovery order once all files finish, so logs
 #     never interleave. Exit 0 only if all files pass; exit 1 if any test fails.
+#     Each file's block ends with `[run-all-bats] Elapsed: <path> <N>s` (whole
+#     seconds of that file's bats process, passed or failed), so a CI log shows
+#     which file sets the job's wall time.
 #   - Parallelism: `RUN_ALL_BATS_JOBS` (positive integer) overrides the
 #     default of the online CPU count; set it to 1 to run serially. Files are
 #     independent (each test uses mktemp / $BATS_TEST_TMPDIR), and serial
@@ -278,9 +281,13 @@ trap 'rm -rf "$RESULT_DIR"' EXIT
 # xargs appends each (index, file) pair after the fixed "$RESULT_DIR" arg, so
 # inside `bash -c` $1 is the result dir and $2/$3 are index/file.
 run_one() {
-    local idx="$1" file="$2" dir="$3"
+    local idx="$1" file="$2" dir="$3" rc
+    # SECONDS (bash builtin, whole seconds) works the same on macOS and ubuntu.
+    SECONDS=0
     bats "$file" > "$dir/$idx.log" 2>&1
-    echo "$?" > "$dir/$idx.rc"
+    rc=$?
+    echo "$SECONDS" > "$dir/$idx.elapsed"
+    echo "$rc" > "$dir/$idx.rc"
 }
 export -f run_one
 
@@ -300,6 +307,7 @@ for i in "${!BATS_FILES[@]}"; do
     else
         FAILED+=("$f")
     fi
+    echo "[run-all-bats] Elapsed: ${f#$REPO_ROOT/} $(cat "$RESULT_DIR/$i.elapsed" 2>/dev/null)s"
     echo ""
 done
 
