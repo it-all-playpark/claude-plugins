@@ -3189,8 +3189,9 @@ const TREE_DIFF_LINES = {
 const LOCALVERIFY = { type: 'object', required: ['ok', 'status'], properties: { ok: { type: 'boolean' }, status: { type: 'string', enum: ['running', 'passed', 'failed', 'timeout', 'stopped', 'unavailable', 'error'] }, exit_code: { type: ['number', 'null'] }, log_path: { type: 'string' }, log_tail: { type: 'string' }, reason: { type: 'string' }, error: { type: 'string' }, db_deleted: { type: ['boolean', 'null'] } } }
 const LOCALVERIFY_STOP = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, stopped: { type: 'boolean' }, was_running: { type: 'boolean' }, db_deleted: { type: ['boolean', 'null'] }, error: { type: 'string' } } }
 const SYNCRES = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, head: { type: 'string' }, error: { type: 'string' }, epoch: { type: 'number' } } }
-// MERGE_FACTS: merge-tier-facts.sh の応答（7 サブ結果、各 {ok, value, error?}）。required は DIFF_TRIAGE と同じ理由で
-// fail-closed の `risk` のみ。他は fail-open のまま parseMergeTierFacts で検証する。
+// MERGE_FACTS: merge-tier-facts.sh の応答（7 サブ結果、各 {ok, value, error?} と epoch）。required は script が出す最上位
+// キーの全部: script は degrade でも 8 キーを必ず出すので、欠落は haiku の転記落ち。required にしないと落ちたキーが検証を
+// 通り、再提出の機会なく hash_mismatch の維持や checks unavailable に倒れる。値の検証とキーごとの失敗ポリシーは parseMergeTierFacts が持つ。
 // サブ結果の value と中身は required にする: スクリプトは ok:true なら value、ok:false なら value:null を必ず出すので、
 // 欠落は haiku の転記落ち。required にしないと再提出の機会なく risk fail-closed（偽の danger_fail_closed HOLD）に倒れる。
 // value の required は object のときだけ効く（ok:false の value:null は通る）。
@@ -3202,7 +3203,7 @@ function mergeFactSubSchema(value) {
 }
 const MERGE_FACTS = {
   type: 'object',
-  required: ['risk'],
+  required: ['diffhash', 'risk', 'changed', 'pr', 'head_tree', 'checks', 'closes', 'epoch'],
   properties: {
     diffhash: mergeFactSubSchema({ required: ['hash'], properties: { hash: { type: 'string' } } }),
     risk: mergeFactSubSchema({ required: ['ok', 'hits'], properties: { ok: { type: 'boolean' }, hits: { type: 'array' } } }),
@@ -3233,7 +3234,7 @@ function mergeTierFactsPrompt({ wt, base, pr, repo, issue }) {
     + `（--worktree で worktree 絶対パスを渡しているため cd は不要）。\n`
     + `2. 手順 1 の stdout の JSON 1 行を **そのまま** 返せ（判定・要約・整形・省略禁止）。`
     + `各サブ結果の \`value\`（中身の object を含む。ok:false のときは null）を省略・空 object 化してはならない。`
-    + `手順 1 自体が実行できなかった、または stdout が JSON でない場合のみ \`{"risk":{"ok":false,"value":null,"error":"<stderr の要約>"}}\` を返せ。`
+    + `手順 1 自体が実行できなかった、または stdout が JSON でない場合のみ、全サブ結果（diffhash / risk / changed / pr / head_tree / checks / closes）を \`{"ok":false,"value":null,"error":"<stderr の要約>"}\` にし \`"epoch":null\` を付けた JSON を返せ（キーを省略しない）。`
     + `失敗時に ok:true を生成してはならない。原因調査はするな。再試行禁止。\n\n`
     + `## Output format\n`
     + `merge-tier-facts の stdout JSON（{diffhash, risk, changed, pr, head_tree, checks, closes, epoch}。各サブ結果は {ok, value, error?}）\n`

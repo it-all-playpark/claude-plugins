@@ -24,8 +24,12 @@
 #   full_command / files_command は shell を通さず空白で区切って argv にする（run-tests）。files_command は {files} を独立した
 #   語としてちょうど 1 回含み、run-tests がそこを再実行するテストファイル（dir からの相対パス）に置き換える。
 #
-# 出力（stdout, JSON 1 行）: コマンドファイルの中身 + {ok:true, commands_file, run_dir}（(3) は bundle_file / bundle_files も、
-# (1) の形が不正なら error も）。base の ref を解決できない・一時ディレクトリを作れないときは {ok:false, error}。
+# 出力（stdout, JSON 1 行）: どの経路でも同じ最上位キー集合 {ok, error, source, status, sources, commands, commands_file,
+# run_dir, bundle_file, bundle_files} を出す。その経路に値が無いキーは null（sources / bundle_files は []）。中継の schema
+# （_lib/test-commands.mjs の TEST_COMMANDS_PREPARE）が全キーを required にして、中継が落としたキーを検証で弾くため —
+# 経路でキー集合を変えると required にできない。キーを足す・外すときは schema の required も揃える。
+# ok:true はコマンドファイルの中身 + commands_file / run_dir（(3) は bundle_file / bundle_files も、(1) の形が不正なら error も）。
+# base の ref を解決できない・一時ディレクトリを作れないときは ok:false と error。
 # exit: JSON を出したら 0 / 引数不正は 2。
 set -uo pipefail
 
@@ -47,13 +51,16 @@ def cmd_ok: type == "string" and test("\\S") and (test("[;&|<>$`'"'"'\"\\\\\\n\\
 def files_ok: cmd_ok and ([splits("\\s+")] | map(select(. == "{files}")) | length) == 1 and ([match("\\{files\\}"; "g")] | length) == 1;
 '
 
+# stdout の最上位キー集合（値の無いキーの既定値）。各経路はこれに自分の値を重ねて出す
+JQ_OUT_DEFAULTS='{ok: false, error: null, source: null, status: null, sources: [], commands: null, commands_file: null, run_dir: null, bundle_file: null, bundle_files: []}'
+
 usage() {
-    jq -nc '{ok: false, error: "usage: test-commands-prepare <worktree> --base <branch>"}'
+    jq -nc "$JQ_OUT_DEFAULTS"' + {error: "usage: test-commands-prepare <worktree> --base <branch>"}'
     exit 2
 }
 
 fail() {
-    jq -nc --arg e "$1" '{ok: false, error: $e}'
+    jq -nc --arg e "$1" "$JQ_OUT_DEFAULTS"' + {error: $e}'
     exit 0
 }
 
@@ -70,7 +77,7 @@ COMMANDS_FILE="$RUN_DIR/commands.json"
 emit_record() {
     local record="$1"
     printf '%s\n' "$record" > "$COMMANDS_FILE" || fail "cannot write $COMMANDS_FILE"
-    jq -c --arg f "$COMMANDS_FILE" --arg d "$RUN_DIR" '{ok: true} + . + {commands_file: $f, run_dir: $d}' <<<"$record"
+    jq -c --arg f "$COMMANDS_FILE" --arg d "$RUN_DIR" "$JQ_OUT_DEFAULTS"' + {ok: true} + . + {commands_file: $f, run_dir: $d}' <<<"$record"
     exit 0
 }
 
@@ -83,7 +90,7 @@ if [[ "$tc" != "null" ]]; then
     record=$(jq -nc '{source: "user_config", status: "unresolved", sources: []}')
     printf '%s\n' "$record" > "$COMMANDS_FILE" || fail "cannot write $COMMANDS_FILE"
     jq -c --arg f "$COMMANDS_FILE" --arg d "$RUN_DIR" --arg raw "$tc" \
-        '{ok: true} + . + {commands_file: $f, run_dir: $d, error: ("user 設定の \"dev-flow\".test_commands が不正（{full_command, files_command} の object で、どちらも shell の記号・引用符を含まない 1 行、files_command は {files} を独立した語としてちょうど 1 回含む。受信: " + $raw + "）")}' <<<"$record"
+        "$JQ_OUT_DEFAULTS"' + {ok: true} + . + {commands_file: $f, run_dir: $d, error: ("user 設定の \"dev-flow\".test_commands が不正（{full_command, files_command} の object で、どちらも shell の記号・引用符を含まない 1 行、files_command は {files} を独立した語としてちょうど 1 回含む。受信: " + $raw + "）")}' <<<"$record"
     exit 0
 fi
 
@@ -136,5 +143,5 @@ done < "$RUN_DIR/bundle-candidates.txt"
 } > "$BUNDLE_FILE" || fail "cannot write $BUNDLE_FILE"
 
 jq -nc --arg f "$COMMANDS_FILE" --arg d "$RUN_DIR" --arg b "$BUNDLE_FILE" --args \
-    '{ok: true, source: "resolver", status: "unresolved", sources: [],
+    "$JQ_OUT_DEFAULTS"' + {ok: true, source: "resolver", status: "unresolved",
       commands_file: $f, run_dir: $d, bundle_file: $b, bundle_files: $ARGS.positional}' "${picked[@]+"${picked[@]}"}"

@@ -2554,12 +2554,13 @@ const DIFFHASH = {
   type: 'object', required: ['hash', 'empty'],
   properties: { hash: { type: 'string' }, empty: { type: 'boolean' }, epoch: { type: 'number' } },
 }
-// DIFF_TRIAGE: diff-triage.sh の応答。fail-closed の `risk` だけ required にし、形状不一致を契約違反として
-// retryOnContractViolation で再試行させる（required:[] だと一発で fail-closed に倒れ診断もできない）。
-// files / diffhash / lines は fail-safe / fail-open のまま parseDiffTriageFields で per-field に検証する。
+// DIFF_TRIAGE: diff-triage.sh の応答。required は script が出す最上位キーの全部: script は degrade でも 4 キーを必ず出す
+// （取れない値は null）ので、欠落は haiku の転記落ち。契約違反として retryOnContractViolation で再試行させる（required に
+// しないと落ちたキーが検証を通り、出し直しの機会なく per-field の失敗ポリシーに流れる）。
+// 値の検証とフィールド別の失敗ポリシー（risk は fail-closed、他は fail-safe / fail-open）は parseDiffTriageFields が持つ。
 const DIFF_TRIAGE = {
   type: 'object',
-  required: ['risk'],
+  required: ['risk', 'files', 'diffhash', 'lines'],
   properties: {
     risk: {
       type: 'object',

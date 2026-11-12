@@ -28,20 +28,23 @@ export const TEST_COMMAND_ENTRY = {
   properties: { dir: { type: 'string' }, full_command: { type: 'string' }, files_command: { type: 'string' } },
 }
 
-// test-commands-prepare の stdout（JSON 1 行）。値の検証は parsePreparedTestCommands が行う
+// test-commands-prepare の stdout（JSON 1 行）。値の検証は parsePreparedTestCommands が行う。
+// required は script が出す最上位キーの全部: script は全経路で同じキー集合を出す（値が無いキーは null）ので、欠落は中継の
+// 転記落ち。required にしないと落ちた応答が検証を通り、出し直しの機会なく unresolved（no_tests → HOLD）に倒れる。
 export const TEST_COMMANDS_PREPARE = {
-  type: 'object', required: ['ok'],
+  type: 'object',
+  required: ['ok', 'error', 'source', 'status', 'sources', 'commands', 'commands_file', 'run_dir', 'bundle_file', 'bundle_files'],
   properties: {
     ok: { type: 'boolean' },
-    source: { type: 'string' },
-    status: { type: 'string' },
-    commands: { type: 'array', items: TEST_COMMAND_ENTRY },
+    error: { type: ['string', 'null'] },
+    source: { type: ['string', 'null'] },
+    status: { type: ['string', 'null'] },
     sources: { type: 'array', items: { type: 'string' } },
-    commands_file: { type: 'string' },
-    run_dir: { type: 'string' },
-    bundle_file: { type: 'string' },
+    commands: { type: ['array', 'null'], items: TEST_COMMAND_ENTRY },
+    commands_file: { type: ['string', 'null'] },
+    run_dir: { type: ['string', 'null'] },
+    bundle_file: { type: ['string', 'null'] },
     bundle_files: { type: 'array', items: { type: 'string' } },
-    error: { type: 'string' },
   },
 }
 
@@ -69,7 +72,7 @@ export function testCommandsPreparePrompt(wt, base) {
   return `次のコマンドを **先頭トークンが test-commands-prepare の bare 単文** で 1 回だけ実行し、`
     + `**stdout の JSON 1 行だけ** を verbatim で返せ（判定や脚色をしない。キーの追加・削除・値の書き換えをしない）。`
     + `argv は一字一句そのまま実行する — which による絶対パス解決・絶対パスへの書き換え・cd 前置・\`bash\` 前置・環境変数代入前置・&& 連結は禁止。再実行しない。`
-    + `stdout に JSON 1 行が無い場合だけは {"ok":false,"error":"test-commands-prepare did not return JSON"} を一字一句そのまま返せ:\n`
+    + `stdout に JSON 1 行が無い場合だけは {"ok":false,"error":"test-commands-prepare did not return JSON","source":null,"status":null,"sources":[],"commands":null,"commands_file":null,"run_dir":null,"bundle_file":null,"bundle_files":[]} を一字一句そのまま返せ:\n`
     + `test-commands-prepare ${wt} --base ${base}`
 }
 

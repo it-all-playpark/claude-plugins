@@ -35,10 +35,18 @@ commit_base() {
     git -C "$WT" update-ref refs/remotes/origin/main HEAD
 }
 
+# stdout の最上位キー集合はどの経路でも同じ（中継の schema TEST_COMMANDS_PREPARE が全キーを required にする）。
+# $1 = stdout の JSON
+assert_top_level_keys() {
+    echo "$1" | jq -e 'keys == (["ok", "error", "source", "status", "sources", "commands", "commands_file", "run_dir", "bundle_file", "bundle_files"] | sort)'
+    echo "$1" | jq -e '(.sources | type) == "array" and (.bundle_files | type) == "array"'
+}
+
 prepare() {
     run --separate-stderr bash "$SCRIPT" "$WT" --base main
     [ "${#lines[@]}" -eq 1 ]
     JSON="$output"
+    assert_top_level_keys "$JSON"
 }
 
 @test "(1) user 設定の repo 別の test_commands があれば base に tests/run-*.sh があってもそれを使い、コマンドファイルに書く" {
@@ -49,7 +57,7 @@ prepare() {
     prepare
     [ "$status" -eq 0 ]
     echo "$JSON" | jq -e '.ok == true and .source == "user_config" and .status == "resolved"'
-    echo "$JSON" | jq -e '.commands == [{dir: ".", full_command: "uv run pytest", files_command: "uv run pytest {files}"}] and .sources == [] and (has("bundle_file") | not)'
+    echo "$JSON" | jq -e '.commands == [{dir: ".", full_command: "uv run pytest", files_command: "uv run pytest {files}"}] and .sources == [] and .error == null and .bundle_file == null and .bundle_files == []'
     file="$(echo "$JSON" | jq -r .commands_file)"
     jq -e '. == {source: "user_config", status: "resolved", commands: [{dir: ".", full_command: "uv run pytest", files_command: "uv run pytest {files}"}], sources: []}' "$file"
 }
@@ -64,7 +72,7 @@ prepare() {
               '"pytest"'; do
         echo "{\"dev-flow\":{\"repos\":{\"acme/demo\":{\"test_commands\":$tc}}}}" > "$SKILL_CONFIG_PATH"
         prepare
-        echo "$JSON" | jq -e '.ok == true and .source == "user_config" and .status == "unresolved" and (has("commands") | not)'
+        echo "$JSON" | jq -e '.ok == true and .source == "user_config" and .status == "unresolved" and .commands == null and .bundle_file == null and .bundle_files == []'
         echo "$JSON" | jq -e '.error | contains("test_commands が不正")'
         jq -e '.status == "unresolved"' "$(echo "$JSON" | jq -r .commands_file)"
     done
@@ -77,7 +85,7 @@ prepare() {
     chmod +x "$WT/tests/run-a.sh" "$WT/tests/run-b.sh"
     commit_base
     prepare
-    echo "$JSON" | jq -e '.ok == true and .source == "runners" and .status == "resolved" and (has("commands") | not)'
+    echo "$JSON" | jq -e '.ok == true and .source == "runners" and .status == "resolved" and .commands == null and .error == null and .bundle_file == null and .bundle_files == []'
     echo "$JSON" | jq -e '.sources == ["tests/run-a.sh", "tests/run-b.sh"]'
     jq -e '. == {source: "runners", status: "resolved", sources: ["tests/run-a.sh", "tests/run-b.sh"]}' "$(echo "$JSON" | jq -r .commands_file)"
 }
@@ -89,7 +97,7 @@ dev = ["pytest>=8"]'
     put tests/run-pr.sh 'exit 0'
     chmod +x "$WT/tests/run-pr.sh"
     prepare
-    echo "$JSON" | jq -e '.ok == true and .source == "resolver" and .status == "unresolved"'
+    echo "$JSON" | jq -e '.ok == true and .source == "resolver" and .status == "unresolved" and .sources == [] and .commands == null and .error == null'
     git -C "$WT" add -A
     git -C "$WT" commit -q -m pr
     prepare
@@ -184,7 +192,10 @@ name = "root-project"'
     run --separate-stderr bash "$SCRIPT" "$WT" --base nope
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and (.error | contains("origin/nope"))'
+    assert_top_level_keys "$output"
+    echo "$output" | jq -e '[.source, .status, .commands, .commands_file, .run_dir, .bundle_file] == [null, null, null, null, null, null] and .sources == [] and .bundle_files == []'
     run --separate-stderr bash "$SCRIPT" "$WT"
     [ "$status" -eq 2 ]
-    echo "$output" | jq -e '.ok == false'
+    echo "$output" | jq -e '.ok == false and (.error | contains("usage"))'
+    assert_top_level_keys "$output"
 }

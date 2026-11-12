@@ -4,7 +4,7 @@
 // (A) 挙動 pin（issue #636: dev-flow.js の raw ソース regex 走査から、共有 vm-sandbox.mjs
 //     （agent() mock）による VM 挙動検証へ移行）:
 //   A1. label 'danger-grep'（Diff triage）は VM 内で agentType:'dev-flow:dev-runner-haiku-ro'
-//       として観測され、opts.schema（clone）は required:['risk']
+//       として観測される（schema の required は diff-triage-schema-contract-routing AC1 が pin する）
 //   A2. 既定 run の calls に label 'realized-diff' / 'diff-hash-triage'
 //       が 0 件（統合を run 全体の呼び出し集合で実測）
 //   A3. 既定 run の全 calls の prompt に '--out' 文字列が含まれない（証跡書き込み撤去。AC1）
@@ -60,13 +60,11 @@ async function defaultRun() {
 // (A) VM 挙動 pin
 // ============================================================
 
-test("[diff-triage-routing][A1] label 'danger-grep'（Diff triage）は agentType:'dev-flow:dev-runner-haiku-ro' かつ opts.schema.required===['risk']", async () => {
+test("[diff-triage-routing][A1] label 'danger-grep'（Diff triage）は agentType:'dev-flow:dev-runner-haiku-ro'", async () => {
   const { calls } = await defaultRun();
   const call = calls.find((c) => c.label === 'danger-grep');
   assert.ok(call, "label 'danger-grep' の agent() call が見つからない");
   assert.equal(call.agentType, 'dev-flow:dev-runner-haiku-ro');
-  const schema = JSON.parse(JSON.stringify(call.opts.schema));
-  assert.deepEqual(schema.required, ['risk']);
 });
 
 test("[diff-triage-routing][A2] 既定 run に label 'realized-diff' / 'diff-hash-triage' が存在しない（統合。AC2）", async () => {

@@ -2,6 +2,7 @@
 //
 // (1) MERGE_FACTS schema はサブ結果ごとに value を required にし、value の中身にも required を与える
 //     — value 欠落を StructuredOutput の schema 契約違反として検知させる（retryOnContractViolation の対象）。
+//     最上位の required は merge-tier-facts.sh が出すキーの全部で、最上位キーの転記落ちも同じく違反になる（issue #1420）。
 // (2) 再試行しても value が得られない場合、HOLD reason は danger_fail_closed（danger-grep 実行不能）ではなく
 //     merge_facts_dropped（merge-tier-facts の転記欠落）で出る。
 // (3) PR body の danger-grep 行は Diff triage の hit を {class, file} 単位で出し、`unknown: \`?\`` を出さない。
@@ -17,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { makeDevFlowSandbox, runWorkflowCapture, assertNoCrash, mergeTierFacts, STANDARD_FILES } from './test-helpers/vm-sandbox.mjs';
+import { mergeTierFactsPrompt } from './merge-tier-facts.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const devFlowSrc = readFileSync(join(here, '..', '.claude', 'workflows', 'dev-flow.js'), 'utf8');
@@ -26,6 +28,9 @@ const DROPPED = {
   changed: { ok: true }, checks: { ok: true }, diffhash: { ok: true },
   head_tree: { ok: true }, pr: { ok: true }, risk: { ok: true }, epoch: 1790000000,
 };
+
+// merge-tier-facts.sh が出す最上位キー（7 サブ結果 + epoch）
+const MERGE_FACTS_KEYS = ['diffhash', 'risk', 'changed', 'pr', 'head_tree', 'checks', 'closes', 'epoch'];
 
 // 最小 JSON-schema チェッカ: type / required / properties(再帰) / items のみ。required / properties は
 // JSON Schema と同じく object のときだけ効く（ok:false の value:null を通すため）。
@@ -86,15 +91,15 @@ test('[merge-facts-value][AC-1] value が落ちた実測応答は MERGE_FACTS sc
   const { call, schema } = await mergeFactsSchema();
   assert.equal(call.opts.retryOnContractViolation, true);
 
-  const dropped = checkSchema(schema, DROPPED);
-  assert.equal(dropped.ok, false, 'value 欠落が schema を通ってしまう');
-  assert.match(dropped.error, /missing value/);
+  assert.equal(checkSchema(schema, DROPPED).ok, false, 'value 欠落が schema を通ってしまう');
 
   // サブ結果 1 つだけ value が落ちても違反になる
   for (const key of ['diffhash', 'risk', 'changed', 'pr', 'head_tree', 'checks']) {
     const facts = mergeTierFacts();
     delete facts[key].value;
-    assert.equal(checkSchema(schema, facts).ok, false, `${key}.value 欠落が schema を通ってしまう`);
+    const res = checkSchema(schema, facts);
+    assert.equal(res.ok, false, `${key}.value 欠落が schema を通ってしまう`);
+    assert.match(res.error, new RegExp(`\\$\\.${key}: missing value`));
   }
 
   // value の中身が空 object 化されても違反になる
@@ -106,17 +111,30 @@ test('[merge-facts-value][AC-1] value が落ちた実測応答は MERGE_FACTS sc
 
 test('[merge-facts-value][AC-1] スクリプトが出す正常形・ok:false 形・prompt の失敗時 fallback 形は schema を通る', async () => {
   const { schema } = await mergeFactsSchema();
-  assert.deepEqual(schema.required, ['risk'], 'top-level required は fail-closed の risk のみ（他は fail-open のまま）');
 
   assert.equal(checkSchema(schema, mergeTierFacts({ checks: [{ name: 'build', bucket: 'pass' }] })).ok, true);
   // merge-tier-facts.sh の emit_degrade / err_result は ok:false + value:null
   const degraded = {};
-  for (const key of ['diffhash', 'risk', 'changed', 'pr', 'head_tree', 'checks']) degraded[key] = { ok: false, value: null, error: 'jq_not_installed' };
+  for (const key of MERGE_FACTS_KEYS.filter((k) => k !== 'epoch')) degraded[key] = { ok: false, value: null, error: 'jq_not_installed' };
   assert.equal(checkSchema(schema, { ...degraded, epoch: 1 }).ok, true);
-  // mergeTierFactsPrompt の手順 1 失敗時 fallback
-  assert.equal(checkSchema(schema, { risk: { ok: false, value: null, error: 'x' } }).ok, true);
+  // mergeTierFactsPrompt の手順 1 失敗時 fallback（全サブ結果を ok:false + value:null、epoch は null）
+  assert.equal(checkSchema(schema, { ...degraded, epoch: null }).ok, true);
+  const prompt = mergeTierFactsPrompt({ wt: '/tmp/wt', base: 'main', pr: 1, repo: 'acme/skills', issue: 1 });
+  assert.ok(prompt.includes('全サブ結果（diffhash / risk / changed / pr / head_tree / checks / closes）を `{"ok":false,"value":null,"error":"<stderr の要約>"}` にし `"epoch":null` を付けた JSON を返せ'), prompt);
   // pr の値欠落は null で出る（スクリプトの `// null`）
   assert.equal(checkSchema(schema, mergeTierFacts({ pr: { mergeable: null, mergeStateStatus: null, headRefOid: null } })).ok, true);
+});
+
+test('[merge-facts-value] MERGE_FACTS の required は merge-tier-facts.sh が出す最上位キーの全部で、1 つでも落ちた応答は schema 違反になる', async () => {
+  const { schema } = await mergeFactsSchema();
+  assert.deepEqual([...schema.required].sort(), [...MERGE_FACTS_KEYS].sort());
+  for (const key of MERGE_FACTS_KEYS) {
+    const facts = mergeTierFacts();
+    delete facts[key];
+    const res = checkSchema(schema, facts);
+    assert.equal(res.ok, false, `${key} 欠落が schema を通ってしまう`);
+    assert.match(res.error, new RegExp(`\\$: missing ${key}`));
+  }
 });
 
 test('[merge-facts-value][AC-1] StructuredOutput 契約違反で 1 回目が失敗 → 同一 prompt で再試行し、2 回目の正常応答で fail-closed にならない', async () => {

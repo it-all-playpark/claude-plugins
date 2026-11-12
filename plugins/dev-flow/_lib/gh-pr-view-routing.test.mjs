@@ -9,7 +9,7 @@
 // label/agentType で stub）で以下を pin する:
 //
 //   (1) dispatch pin: label==='merge-tier-facts' の呼び出しが agentType:'dev-runner-haiku-ro'・
-//       phase:'Merge tier'・schema（MERGE_FACTS: required ['risk'], properties.pr は required [ok, value]）・prompt が
+//       phase:'Merge tier'・schema（MERGE_FACTS: properties.pr は required [ok, value]）・prompt が
 //       `merge-tier-facts ... --pr <pr番号> --issue <N>` の bare 単文で gh の単文を持たないことを検証する
 //       （PR の読み取りはスクリプトが gh pr view を 1 回実行して取る。issue #1311）。
 //   (2) conflicting(mergeable=CONFLICTING) → merge_tier HOLD、reasons に conflict 文言。
@@ -98,15 +98,13 @@ test('[gh-pr-view][1] dispatch: merge-tier-facts が agentType=dev-runner-haiku-
   assert.equal(c.agentType, 'dev-flow:dev-runner-haiku-ro', `merge-tier-facts の agentType は 'dev-flow:dev-runner-haiku-ro' のはずだが '${c.agentType}' だった`);
   assert.equal(c.phase, 'Merge tier', `merge-tier-facts の phase は 'Merge tier' のはずだが '${c.phase}' だった`);
   assert.ok(c.schema != null, 'merge-tier-facts の schema (MERGE_FACTS) が undefined/null になっている');
-  // c.schema は vm sandbox（別 realm）内で生成された配列を含むため、assert/strict の
-  // deepEqual は prototype 不一致で reference-equal 判定に落ちて誤 fail する
-  // （values same but not reference-equal）。JSON.stringify での構造比較に落として realm 差異を吸収する。
-  assert.equal(JSON.stringify(c.schema.required), JSON.stringify(['risk']), `MERGE_FACTS.required は ['risk'] のはずだが ${JSON.stringify(c.schema.required)}`);
+  // 最上位の required は merge-facts-value-contract-routing が pin する。
   assert.ok(
     'pr' in c.schema.properties && 'risk' in c.schema.properties && 'head_tree' in c.schema.properties,
     `MERGE_FACTS.properties に pr/risk/head_tree が揃っていない: ${JSON.stringify(Object.keys(c.schema.properties ?? {}))}`,
   );
-  // value 欠落を契約違反にする（issue #746）。
+  // value 欠落を契約違反にする（issue #746）。c.schema は vm sandbox（別 realm）内で生成された配列を含むため、assert/strict の
+  // deepEqual は prototype 不一致で誤 fail する。JSON.stringify での構造比較に落として realm 差異を吸収する。
   assert.equal(JSON.stringify(c.schema.properties.pr.required), JSON.stringify(['ok', 'value']), 'pr サブ結果 schema の required は [ok, value]');
   // PR の読み取り（mergeable・mergeStateStatus・headRefOid 等）はスクリプトが gh pr view を 1 回実行して取る。
   // subagent に渡すのは --pr / --issue 付きの bare 単文だけで、gh の stdout を argv に写す段を持たない（issue #1311）。

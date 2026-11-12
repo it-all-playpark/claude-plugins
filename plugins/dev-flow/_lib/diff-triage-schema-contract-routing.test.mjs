@@ -1,8 +1,8 @@
 // Issue #617: Diff triage 統合 exec-proxy 呼び出しの schema 契約強化。
 //
-// (1) DIFF_TRIAGE schema を required:['risk']（risk は ok:boolean / hits:array 必須）に締める
-//     — 部分応答ネスト等の契約外形状を StructuredOutput の schema 契約違反として検知できるように
-//     する（files / diffhash / lines は引き続き required に含めず fail-open / fail-safe を維持）。
+// (1) DIFF_TRIAGE schema の required は diff-triage.sh が出す最上位キーの全部（risk / files / diffhash / lines。
+//     risk は ok:boolean / hits:array 必須）— 部分応答ネスト・最上位キーの転記落ち等の契約外形状を StructuredOutput の
+//     schema 契約違反として検知する（script は degrade でも 4 キーを出すので、欠落は中継の転記落ち。issue #1420）。
 // (2) execDiffTriagePhase の統合呼び出しに retryOnContractViolation:true を付け、契約違反時に
 //     trackedAgent の 1 回リトライ機会を与える。
 // (3) retry 後も不正形（もしくは throw）なら risk fail-closed に維持され、fail-closed 時は
@@ -100,10 +100,10 @@ function reconcileAndClassify(risk) {
 // AC1: DIFF_TRIAGE schema shape（VM 内で観測した opts.schema の構造）
 // ============================================================
 
-test('[diff-triage-schema-contract][AC1] DIFF_TRIAGE requires risk (ok:boolean, hits:array); files/diffhash/lines stay optional', async () => {
+test('[diff-triage-schema-contract][AC1] DIFF_TRIAGE requires every top-level key diff-triage.sh emits (risk, files, diffhash, lines); risk needs ok:boolean, hits:array', async () => {
   const call = await dangerGrepCallFromDefaultRun();
   const schema = cloneSchema(call);
-  assert.deepEqual(schema.required, ['risk']);
+  assert.deepEqual([...schema.required].sort(), ['diffhash', 'files', 'lines', 'risk']);
   assert.equal(schema.properties.risk.type, 'object');
   assert.deepEqual(schema.properties.risk.required, ['ok', 'hits']);
   assert.equal(schema.properties.risk.properties.ok.type, 'boolean');
@@ -141,19 +141,26 @@ test('[diff-triage-schema-contract][AC3] nested {struct:{risk:...}} response fai
   assert.equal(nested.ok, false);
   assert.match(nested.error, /missing risk/);
 
-  const flat = checkSchema(schema, { risk: { ok: true, hits: [] } });
-  assert.equal(flat.ok, true);
+  // diff-triage.sh の emit_degrade と同形（risk 以外は null）は通る
+  const degraded = { risk: { ok: true, hits: [] }, files: null, diffhash: null, lines: null };
+  assert.equal(checkSchema(schema, degraded).ok, true);
 
-  const flatWithNulls = checkSchema(schema, {
-    risk: { ok: true, hits: [] }, files: null, diffhash: null,
-  });
-  assert.equal(flatWithNulls.ok, true);
+  // 最上位キーが 1 つでも落ちた応答は違反になる（中継の転記落ち）
+  for (const key of ['files', 'diffhash', 'lines']) {
+    const dropped = { ...degraded };
+    delete dropped[key];
+    const res = checkSchema(schema, dropped);
+    assert.equal(res.ok, false, `${key} 欠落が schema を通ってしまう`);
+    assert.match(res.error, new RegExp(`missing ${key}`));
+  }
 
-  const missingHits = checkSchema(schema, { risk: { ok: true } });
+  const missingHits = checkSchema(schema, { ...degraded, risk: { ok: true } });
   assert.equal(missingHits.ok, false);
+  assert.match(missingHits.error, /missing hits/);
 
-  const badOkType = checkSchema(schema, { risk: { ok: 'yes', hits: [] } });
+  const badOkType = checkSchema(schema, { ...degraded, risk: { ok: 'yes', hits: [] } });
   assert.equal(badOkType.ok, false);
+  assert.match(badOkType.error, /\$\.risk\.ok: type/);
 });
 
 // ============================================================

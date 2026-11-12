@@ -422,14 +422,14 @@ export function mergeTierFacts(o = {}) {
 export const TEST_COMMANDS_FILE = '/tmp/test-commands-Stub01/commands.json';
 
 /**
- * test-commands-prepare の stdout と同形の応答を返す。既定は base の tree に tests/run-*.sh がある repo（source 'runners'）。
+ * test-commands-prepare の stdout と同形（全経路で同じ最上位キー集合）の応答を返す。既定は base の tree に tests/run-*.sh がある repo（source 'runners'）。
  *
  * @param {Record<string, unknown>} [overrides={}]
  */
 export function testCommandsPrepareResponse(overrides = {}) {
   return {
-    ok: true, source: 'runners', status: 'resolved', sources: ['tests/run-unit.sh'],
-    commands_file: TEST_COMMANDS_FILE, run_dir: '/tmp/test-commands-Stub01',
+    ok: true, error: null, source: 'runners', status: 'resolved', sources: ['tests/run-unit.sh'], commands: null,
+    commands_file: TEST_COMMANDS_FILE, run_dir: '/tmp/test-commands-Stub01', bundle_file: null, bundle_files: [],
     ...overrides,
   };
 }
