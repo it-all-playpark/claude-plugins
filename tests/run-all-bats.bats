@@ -15,7 +15,8 @@ setup() {
     cp "$BATS_TEST_DIRNAME/run-all-bats.sh" "$FIXTURE/tests/"
     # dev-flow の run-tests 経由で本ファイル自体が実行されると、実 worktree の変更一覧が
     # 継承されて fixture repo の selection が狂う。各テストは必要なときだけ明示的に渡す。
-    unset DEVFLOW_CHANGED_FILES DEVFLOW_BASE DEVFLOW_TEST_FILES
+    # CI のシャード指定（RUN_ALL_BATS_SHARD）も同じく fixture repo を分割してしまうので外す。
+    unset DEVFLOW_CHANGED_FILES DEVFLOW_BASE DEVFLOW_TEST_FILES RUN_ALL_BATS_SHARD
 }
 
 # Fixture .bats content is written via printf (not a heredoc with a literal
