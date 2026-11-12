@@ -109,10 +109,17 @@ export const PR_BODY_REVIEW_POINTS_HEADING = '## 人間に見てほしい点';
 // `## 何が変わるか` の直後に出す構成の変化の図（plan.diagram。dev-implementer が描いた before / after の Mermaid）。
 // 書き手の図をそのまま載せると、実装とずれた図を人間が信じて merge するので、evaluator の diagram_check（realized diff との
 // 照合）で出し分ける: 一致なら図だけ、照合が無ければ未照合の 1 行と図、食い違いなら図を出さず食い違いの箇条書きだけ。
+// anchors は evaluator の照合の手がかりで、本文には出さない（人間が読むのは振る舞いの図）。
 export const PR_BODY_DIAGRAM_HEADING = '## 構成の変化';
 export const PR_BODY_DIAGRAM_UNVERIFIED = '⚠️ 図は diff と未照合';
 export const PR_BODY_DIAGRAM_MISMATCH = '⚠️ 図は diff と食い違ったため載せていない';
 export const PR_DIAGRAM_KINDS = ['flowchart', 'sequence', 'er'];
+// 図の anchors（[{node, ref}]。node は図のノード ID・参加者名・エンティティ名、ref は `<repo 相対パス>:<名前>`）の上限。
+// ノードのラベルは振る舞いの言葉で書かれるので、evaluator はこの anchors を手がかりに図を realized diff と照合する。
+// 上限は IMPL schema ではなく diagramOf が見る — 超えた・欠けた anchors で落とすのは図だけにする。
+export const PR_DIAGRAM_ANCHORS_MAX = 40;
+export const PR_DIAGRAM_ANCHOR_NODE_MAX = 64;
+export const PR_DIAGRAM_ANCHOR_REF_MAX = 200;
 // 判定材料を畳む `<details>` の summary。材料が空でも「（なし）」で必ず出す（verifyPrBody が構造を検証する）。
 export const PR_BODY_DETAILS = { acceptance: '受入条件', decisions: '設計判断', verification: '検証' };
 // pr_sections（IMPL が返す複数行 markdown）の合計上限。PR 本文は Evaluate / final-ac-reconcile の判定文脈に
@@ -200,8 +207,9 @@ const PR_NOTE_LABELS = { verification: '検証', measurement: '計測' };
 // 改行を保ち（CRLF の正規化と前後の空行除去のみ）、heading は 1 行に畳む（issue #815）。
 // behavior_changes（何が変わるか）/ review_points（人間に見てほしい点）は [string] を 1 行に畳んで同じ規則で
 // plan に取り込み、PR body の見える部分の材料にする（issue #928）。
-// diagram（{kind, before, after}。構成の変化の図）は最後に返された有効な 1 件を plan.diagram に取り込む。null・kind が
-// enum 外・before / after が空の報告は前回分を保持する。
+// diagram（{kind, before, after, anchors}。構成の変化の図）は最後に返された有効な 1 件を plan.diagram に取り込む。null・kind が
+// enum 外・before / after が空・anchors が不備（diagramAnchorsOf）の報告は前回分を保持する。採らないのは図だけで、
+// 同じ報告の他のフィールドは上の規則で取り込む。
 export function adoptImplPrNotes(plan, results) {
   const decisions = [];
   const notes = [];
@@ -248,7 +256,19 @@ function diagramOf(d) {
   if (d == null || typeof d !== 'object' || !PR_DIAGRAM_KINDS.includes(d.kind)) return null;
   const before = sectionMarkdown(d.before);
   const after = sectionMarkdown(d.after);
-  return before && after ? { kind: d.kind, before, after } : null;
+  const anchors = diagramAnchorsOf(d.anchors);
+  return before && after && anchors ? { kind: d.kind, before, after, anchors } : null;
+}
+
+// anchors の正規化。node か ref が空白だけの項目は落とす。照合の手がかりが無い図（anchors が無い・落とした結果 0 件）と、
+// 上限を超えた図（件数・node / ref の字数。前後の空白を除いた code point 数）は null = 図ごと採らない。
+function diagramAnchorsOf(v) {
+  const anchors = arr(v)
+    .map((a) => ({ node: str(a?.node).trim(), ref: str(a?.ref).trim() }))
+    .filter((a) => a.node && a.ref);
+  if (anchors.length === 0 || anchors.length > PR_DIAGRAM_ANCHORS_MAX) return null;
+  const tooLong = anchors.some((a) => [...a.node].length > PR_DIAGRAM_ANCHOR_NODE_MAX || [...a.ref].length > PR_DIAGRAM_ANCHOR_REF_MAX);
+  return tooLong ? null : anchors;
 }
 
 function textItems(v) {

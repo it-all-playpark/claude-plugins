@@ -289,7 +289,10 @@ test('[pr-body-sync-routing] ac-checkbox-sync が edited:false を返しても r
 
 // ---- 9. 構成の変化の図: Evaluate の diagram_check を PR phase と修正後の作り直しまで渡す（issue #1366） ----
 
-const DIAGRAM = { kind: 'flowchart', before: 'flowchart LR\n  A --> B', after: 'flowchart LR\n  A --> B\n  C --> B' };
+const DIAGRAM = {
+  kind: 'flowchart', before: 'flowchart LR\n  A --> B', after: 'flowchart LR\n  A --> B\n  C --> B',
+  anchors: [{ node: 'A', ref: 'src/a.mjs:a' }, { node: 'B', ref: 'src/b.mjs:b' }, { node: 'C', ref: 'src/c.mjs:c' }],
+};
 const IMPL_DIAGRAM = { 'impl:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: [...STANDARD_FILES], summary: 's', concerns: [], diagram: DIAGRAM } };
 const withDiagramCheck = (diagram_check) => ({ ...IMPL_DIAGRAM, 'eval#1': { ...EVAL_AC, diagram_check } });
 const CONSISTENT = { consistent: true, mismatches: [] };

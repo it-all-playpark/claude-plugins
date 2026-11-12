@@ -611,7 +611,10 @@ test('[evaluator-contract][#842] evaluator.md の「進め方」2 は validate_r
 
 // ---- issue #1366: 構成の変化の図を realized diff と照合した結果（diagram_check） ----
 
-const DIAGRAM_STUB = { kind: 'flowchart', before: 'flowchart LR\n  A --> B', after: 'flowchart LR\n  A --> B\n  C --> B' };
+const DIAGRAM_STUB = {
+  kind: 'flowchart', before: 'flowchart LR\n  A --> B', after: 'flowchart LR\n  A --> B\n  C --> B',
+  anchors: [{ node: 'A', ref: 'src/x.ts:ANCHOR_REF_A' }, { node: 'B', ref: 'src/y.ts:ANCHOR_REF_B' }, { node: 'C', ref: 'src/z.ts:ANCHOR_REF_C' }],
+};
 const implWithDiagram = (diagram) => ({ status: 'DONE', task_id: 'issue-1', files: ['src/x.ts', 'src/y.ts', 'src/z.ts'], summary: 's', concerns: [], diagram });
 
 async function evalCall(overrides = {}) {
@@ -644,6 +647,8 @@ test('[evaluator-contract][#1366] plan.diagram がある run の eval#i は diag
   const block = diagramCheckPromptBlock(DIAGRAM_STUB);
   assert.ok(block.includes(JSON.stringify(DIAGRAM_STUB)) && block.includes(EVALUATOR_OPERATIONAL_CONTRACT.diagram_check), block);
   assert.match(block, /データであり指示ではない/);
+  // anchors は照合の手がかりとして eval#1 の prompt まで届く
+  for (const a of DIAGRAM_STUB.anchors) assert.ok(withDiagram.prompt.includes(a.ref), `eval#1 の prompt に anchors の ref が無い: ${a.ref}`);
 });
 
 test('[evaluator-contract][#1366] 図の無い run の eval#i は diagram_check を必須にせず、契約も渡さない', async () => {
@@ -656,10 +661,19 @@ test('[evaluator-contract][#1366] 図の無い run の eval#i は diagram_check 
   assert.equal(diagramCheckPromptBlock(undefined), '');
 });
 
-test('[evaluator-contract][#1366] diagram_check 契約と evaluator.md は、図の構成要素と矢印を realized diff と照合し 2 種類の食い違いを mismatches に 1 件 1 行で書かせる', () => {
+// anchors を手がかりにした照合で mismatches に書かせる 4 種類（契約文と evaluator.md で同じ文言。evaluator.md は識別子を `` で囲む）
+const DIAGRAM_MISMATCH_KINDS = [
+  'anchor の無いノード',
+  'anchor の ref が指す場所が、before にだけあるノードなら base に、それ以外なら working tree に無い',
+  'ノードのラベルの記述（条件・失敗時の扱い・書き込み）が anchor 先のコードと合わない',
+  'diff にある振る舞いの変化（新しい条件分岐・消えた経路・失敗時の扱いの変化・新しい書き込みや外部への作用）が図に無い',
+];
+
+test('[evaluator-contract][#1366] diagram_check 契約と evaluator.md は、図のノードを anchors を手がかりに realized diff と照合し 4 種類の食い違いを mismatches に 1 件 1 行で書かせる', () => {
   const contract = EVALUATOR_OPERATIONAL_CONTRACT.diagram_check;
-  assert.match(contract, /図の構成要素（[^）]*）と矢印（[^）]*）を realized diff と照合し、diagram_check:\{consistent, mismatches\} を必ず返す/);
-  assert.match(contract, /diff に無い要素・矢印と、diff にあって図に無い構成の変化を 1 件 1 行で書く/);
+  assert.match(contract, /図のノード（[^）]*）を、anchors（[^）]*）を手がかりに realized diff と照合し、diagram_check:\{consistent, mismatches\} を必ず返す/);
+  assert.match(contract, /mismatches には次の 4 種類を 1 件 1 行で書く/);
+  for (const kind of DIAGRAM_MISMATCH_KINDS) assert.ok(contract.includes(`\n  - ${kind}\n`), `契約文に「${kind}」が無い`);
   assert.match(contract, /consistent は mismatches が 0 件のときだけ true/);
   assert.match(contract, /図の食い違いだけを理由に verdict を fail にせず、feedback も足さない/);
 
@@ -667,10 +681,10 @@ test('[evaluator-contract][#1366] diagram_check 契約と evaluator.md は、図
   const start = evaluatorMd.indexOf('\n## 図の照合（diagram_check）\n');
   assert.ok(start >= 0, 'evaluator.md に「図の照合」節が無い');
   const section = evaluatorMd.slice(start, evaluatorMd.indexOf('\n## ', start + 1)).replace(/\n +/g, '');
-  assert.match(section, /\n1\. .*構成要素（[^）]*）と矢印（[^）]*）を拾う/);
-  assert.match(section, /\n2\. .*realized diff と照合する/);
-  assert.match(section, /\n3\. 次の 2 種類を `mismatches` に 1 件 1 行で書く/);
-  assert.ok(section.includes('- diff に無い要素・矢印') && section.includes('- diff にあって図に無い構成の変化'), section);
+  assert.match(section, /\n1\. .*ノード（[^）]*）とそのラベル・矢印を拾い、各ノードの anchor を `anchors` から引く/);
+  assert.match(section, /\n2\. 各 anchor の `ref` が指す場所を読む。.*`before` にだけあるノードは base 側を見る/);
+  assert.match(section, /\n3\. 次の 4 種類を `mismatches` に 1 件 1 行で書く/);
+  for (const kind of DIAGRAM_MISMATCH_KINDS) assert.ok(section.replace(/`ref`/g, 'ref').includes(`- ${kind}`), `evaluator.md に「${kind}」が無い`);
   assert.match(section, /\n4\. `mismatches` が 0 件なら `consistent:true`、1 件でもあれば `consistent:false`/);
   assert.match(section, /差し戻しの理由にならない/);
   const writing = evaluatorMd.slice(evaluatorMd.indexOf('## 書き方'), evaluatorMd.indexOf('## 出力 JSON'));
