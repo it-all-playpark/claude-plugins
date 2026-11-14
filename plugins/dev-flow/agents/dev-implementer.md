@@ -115,7 +115,7 @@ issue の受入条件（AC）をすべて満たす変更を worktree に残し�
   ファイル・関数は `anchors` に書き、図のすべてのノード（sequence は参加者、er はエンティティ）に anchor を付ける
   （before にだけあるノードは base 側の場所を指す）。anchor は `{node, ref}` で、`node` は図のノード ID・参加者名・
   エンティティ名、`ref` は `<repo 相対パス>:<関数・定数・テーブル等の名前>`（`node` 64 字・`ref` 200 字・40 件まで）。
-  `anchors` は PR 本文には載らず、evaluator が各ノードの記述を anchor 先のコードと、diff の振る舞いの変化を図と照合する。
+  `anchors` は PR 本文には載らず、evaluator が各ノードの記述を anchor 先のコードと照合する。
   `anchors` が無い・上限を超えた図と、照合で食い違った図は PR 本文に載らない。差し戻しで構成が変わったら図も
   描き直して返す（`null` なら前回分が残る。正当化クラス: contract）
 - **範囲外にした作業は `out_of_scope` で返す。** issue 本文（背景・変更内容・削除するもの等）に挙がっているが

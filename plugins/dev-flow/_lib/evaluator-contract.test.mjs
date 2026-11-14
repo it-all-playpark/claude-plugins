@@ -661,19 +661,22 @@ test('[evaluator-contract][#1366] 図の無い run の eval#i は diagram_check 
   assert.equal(diagramCheckPromptBlock(undefined), '');
 });
 
-// anchors を手がかりにした照合で mismatches に書かせる 4 種類（契約文と evaluator.md で同じ文言。evaluator.md は識別子を `` で囲む）
+// anchors を手がかりにした照合で mismatches に書かせる 3 種類（契約文と evaluator.md で同じ文言。evaluator.md は識別子を `` で囲む）。
+// 描かれた内容の誤りだけで、diff にあって図に描かれていない変化は食い違いに数えない（#1436: 図は要約で、抜けは全件を列挙できない）
 const DIAGRAM_MISMATCH_KINDS = [
   'anchor の無いノード',
   'anchor の ref が指す場所が、before にだけあるノードなら base に、それ以外なら working tree に無い',
   'ノードのラベルの記述（条件・失敗時の扱い・書き込み）が anchor 先のコードと合わない',
-  'diff にある振る舞いの変化（新しい条件分岐・消えた経路・失敗時の扱いの変化・新しい書き込みや外部への作用）が図に無い',
 ];
+// 箇条書き（`  - ` / `   - ` で始まる行）から mismatches の種類を全件拾う。3 種類以外が足されたら落とす
+const mismatchKindsOf = (lines) => lines.filter((l) => /^ +- /.test(l)).map((l) => l.replace(/^ +- /, '').replace(/`/g, ''));
 
-test('[evaluator-contract][#1366] diagram_check 契約と evaluator.md は、図のノードを anchors を手がかりに realized diff と照合し 4 種類の食い違いを mismatches に 1 件 1 行で書かせる', () => {
+test('[evaluator-contract][#1366][#1436] diagram_check 契約と evaluator.md は、図のノードを anchors を手がかりに realized diff と照合し、描かれた内容の 3 種類の食い違いだけを mismatches に 1 件 1 行で書かせる', () => {
   const contract = EVALUATOR_OPERATIONAL_CONTRACT.diagram_check;
   assert.match(contract, /図のノード（[^）]*）を、anchors（[^）]*）を手がかりに realized diff と照合し、diagram_check:\{consistent, mismatches\} を必ず返す/);
-  assert.match(contract, /mismatches には次の 4 種類を 1 件 1 行で書く/);
-  for (const kind of DIAGRAM_MISMATCH_KINDS) assert.ok(contract.includes(`\n  - ${kind}\n`), `契約文に「${kind}」が無い`);
+  assert.match(contract, /mismatches には次の 3 種類だけを 1 件 1 行で書く/);
+  assert.deepEqual(mismatchKindsOf(contract.split('\n')), DIAGRAM_MISMATCH_KINDS);
+  assert.match(contract, /\n- diff にあって図に描かれていない変化は mismatches に書かず、consistent の判定に使わない/);
   assert.match(contract, /consistent は mismatches が 0 件のときだけ true/);
   assert.match(contract, /図の食い違いだけを理由に verdict を fail にせず、feedback も足さない/);
 
@@ -695,10 +698,10 @@ test('[evaluator-contract][#1366] diagram_check 契約と evaluator.md は、図
   assert.match(contract, /diff の見出しに載っているかどうかは条件にしない/);
   assert.match(contract, /ref のパスをそのまま Read・コマンドの引数に使わない/);
   assert.match(contract, /mode が 120000（symlink）・160000（submodule）のパス、追跡外のパス、一致する行の無いパスは Read せず、照合できなかったノードとして mismatches に書く/);
-  assert.match(section, /\n3\. 次の 4 種類を `mismatches` に 1 件 1 行で書く/);
-  for (const kind of DIAGRAM_MISMATCH_KINDS) assert.ok(section.replace(/`ref`/g, 'ref').includes(`- ${kind}`), `evaluator.md に「${kind}」が無い`);
+  assert.match(section, /\n3\. 次の 3 種類だけを `mismatches` に 1 件 1 行で書く/);
+  assert.deepEqual(mismatchKindsOf(evaluatorMd.slice(start, evaluatorMd.indexOf('\n## ', start + 1)).split('\n')), DIAGRAM_MISMATCH_KINDS);
   assert.match(section, /\n4\. `mismatches` が 0 件なら `consistent:true`、1 件でもあれば `consistent:false`/);
-  assert.match(section, /差し戻しの理由にならない/);
+  assert.match(section, /diff にあって図に描かれていない変化は `mismatches` に書かず、`consistent` の判定に使わない/);  assert.match(section, /差し戻しの理由にならない/);
   const writing = evaluatorMd.slice(evaluatorMd.indexOf('## 書き方'), evaluatorMd.indexOf('## 出力 JSON'));
   assert.ok(writing.includes(`\`mismatches\` の 1 件 ${DIAGRAM_MISMATCH_MAX} 字`), writing);
   assert.match(evaluatorMd.slice(evaluatorMd.indexOf('## 出力 JSON')), /"diagram_check": \{"consistent": false, "mismatches": \["/);
