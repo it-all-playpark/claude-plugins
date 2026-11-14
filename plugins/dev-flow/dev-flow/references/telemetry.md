@@ -49,6 +49,7 @@ object literal（成功・失敗・abort）と VM 実行の handoff の両方で
 | `security_review_status` | dev-flow / pr-iterate | `health-report.sh` が読む | pr-iterate の security review の結果（返り値の `security_review`）。非 LGTM の signature の細目 |
 | `security_review_stop_reason` | dev-flow / pr-iterate | `health-report.sh` が読む | security review を前提チェックで止めた理由。ハーネスで止まった run を本物の指摘と別の signature にする |
 | `fix_terminal_reason` | dev-flow / pr-iterate | `health-report.sh` が読む | pr-iterate の fix が失敗で終わったときの分岐（`.claude/workflows/pr-iterate.js` の `fixTerminalReason`）。非 LGTM の signature の細目 |
+| `push_hook_reimpl` | dev-flow | dev-flow-health の手読みだけ | PR phase の push の pre-push hook 失敗を dev-implementer に差し戻した run の印（`_lib/pre-push-hook.mjs` の `runPushHookReimpl`）。差し戻していない run には無い |
 | `iterate_caller` | pr-iterate | `health-report.sh` が読む | pr-iterate の起動元。dev-flow から起動された entry は dev-flow entry の側で数える |
 
 nested pr-iterate を起動した dev-flow run は pr-iterate と dev-flow の entry が 1 件ずつ残る。集計は dev-flow entry を使う。

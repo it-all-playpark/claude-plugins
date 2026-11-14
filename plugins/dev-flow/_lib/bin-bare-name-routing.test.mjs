@@ -5,7 +5,7 @@
 // AC1: 絶対パス literal が 0 箇所。
 // AC2: workflow が使う call site が bare 名で配線されている。
 // [first-token]: bash 前置の bare 名呼び出しや拡張子付き呼び出しの残存が無い。
-// [bin]: workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 30 本（人が起動する CLI を含む）に分割一致する。
+// [bin]: workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 31 本（人が起動する CLI を含む）に分割一致する。
 //
 // AC1 の検査文字列自体が禁止パターンの literal を含むと自己矛盾するため、
 // join() で組み立てる（_lib/*.mjs は本テストファイル自身も走査対象に含むため）。
@@ -50,6 +50,7 @@ const BARE = [
   'workspace-prebuild',
   'run-tests',
   'pre-commit-hook',
+  'pre-push-hook',
   'pr-iterate-prerun',
   'local-verify',
   'conflict-autoresolve',
@@ -116,6 +117,10 @@ const DEV_FLOW_CALL_SITES = [
   ['test#1', '\nrun-tests start /tmp/wt', {}],
   ['commit-hook#1', '\npre-commit-hook /tmp/wt', {}],
   ['pr#', '`pr-push start /tmp/wt/.devflow-tmp/push-output.log`', {}],
+  ['push-hook-start', '\npre-push-hook start /tmp/wt', {
+    'pr#1': { pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: '', push_result: { status: 'failed', exit_code: 1, log: '/tmp/wt/.devflow-tmp/push-output.log', tail: 'x' } },
+    'push-hook-start': { hook: 'passed', exit: 0, log: '' },
+  }],
   ['redgreen', "\nredgreen-verify start --state-dir /tmp/rg-state --commands /tmp/test-commands-Stub01/commands.json /tmp/wt 't.test.mjs' 'src/x.ts'", { 'eval#1': PASS_EVAL_TEST_AC, redgreen: { results: [{ index: 0, red: true, green: true }] } }],
   ['cross-repo-artifacts', 'cross-repo-artifacts /tmp/wt ', {
     'diff-gate': { hash: 'EMPTY', empty: true },
@@ -192,15 +197,15 @@ for (const [name, src] of [
   });
 }
 
-// ---- [bin] workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 30 本（人が起動する CLI を含む）に分割一致する ----
+// ---- [bin] workflow / wrapper skill が使う bare 名は全て bin/ に存在し、bin/ は core 1 本 + dev-flow 31 本（人が起動する CLI を含む）に分割一致する ----
 
 // 人が起動する CLI（workflow・exec-proxy・subagent からは呼ばない）。BARE には入れない
 const HUMAN_ONLY = ['security-review-isolated'];
 
-test('[bin-bare-name-routing][bin] plugins/dev-flow/bin は BARE から journal を除いた 29 名 + 人が起動する CLI 1 名に完全一致する', () => {
+test('[bin-bare-name-routing][bin] plugins/dev-flow/bin は BARE から journal を除いた 30 名 + 人が起動する CLI 1 名に完全一致する', () => {
   const actual = readdirSync(binDir).sort();
   const expected = [...BARE.filter((name) => name !== 'journal'), ...HUMAN_ONLY].sort();
-  assert.deepEqual(actual, expected, `plugins/dev-flow/bin の内容が期待 30 名と一致しない: actual=${JSON.stringify(actual)}`);
+  assert.deepEqual(actual, expected, `plugins/dev-flow/bin の内容が期待 31 名と一致しない: actual=${JSON.stringify(actual)}`);
 });
 
 test("[bin-bare-name-routing][bin] plugins/playpark-core/bin は ['journal'] に完全一致する", () => {

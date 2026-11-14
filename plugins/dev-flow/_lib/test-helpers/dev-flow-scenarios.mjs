@@ -35,6 +35,12 @@ const REDGREEN_EVAL = {
   security_clearance: [], concern_resolutions: [],
 };
 
+// PR phase の push が pr-push の failed で終わった応答（pre-push hook の失敗）
+const PUSH_HOOK_PR_FAILED = {
+  pr_url: '', pr_number: 0, committed: true, head_sha: 'a'.repeat(40), failed_step: 'push', failure_reason: '',
+  push_result: { status: 'failed', exit_code: 1, log: '/tmp/wt/.devflow-tmp/push-output.log', tail: 'error: failed to push some refs' },
+};
+
 const VISUAL_SNAPSHOTS = { command: 'pnpm test:visual', db: { engine: 'postgres', version: '17' }, env: 'E2E_EXTERNAL_DATABASE_URL', timeout_seconds: 900, paths: ['tests/visual'] };
 
 export const DEV_FLOW_SCENARIOS = {
@@ -246,6 +252,23 @@ export const DEV_FLOW_SCENARIOS = {
       'impl:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: ['/tmp/other-repo/bar.ts'], summary: 's', concerns: [] },
       'cross-repo-artifacts': { ok: true, found: 1, artifacts: [{ path: '/tmp/other-repo/bar.ts', exists: true, repo_root: '/tmp/other-repo', dirty: true }] },
     },
+  },
+  // PR phase の push が pre-push hook で失敗 → hook を push せずに単体実行（push-hook-start / wait）→ exit 非 0 →
+  // dev-implementer へ 1 回差し戻し（reimpl-push-hook）→ 未コミットの変更の確認（diff-hash-push-hook）→ Validate のやり直し →
+  // PR phase のやり直し（pr#1.repush）。fixes_applied=0 でも Final reconcile が最終 tree を再検証する（issue #1435）
+  'push-hook-reimpl': {
+    overrides: {
+      'pr#1': PUSH_HOOK_PR_FAILED,
+      'push-hook-start': { hook: 'running', exit: null, log: '/tmp/pre-push-hook-Stub01/hook.log' },
+      'push-hook-wait-1': { hook: 'failed', exit: 1, log: '/tmp/pre-push-hook-Stub01/hook.log' },
+      'pr#1.repush': { pr_url: 'http://x/pull/1', pr_number: 1, committed: true, head_sha: 'b'.repeat(40), failed_step: '', failure_reason: '' },
+      'reconcile-sync': { ok: true, head: 'b'.repeat(40) },
+      'changed-files-final': { files: [...STANDARD_FILES] },
+    },
+  },
+  // 単体実行の応答が無い → push-hook-stop → 差し戻さず pr_phase_failed（issue #1435）
+  'push-hook-stop': {
+    overrides: { 'pr#1': PUSH_HOOK_PR_FAILED, 'push-hook-start': null, 'push-hook-stop': { ok: true, stopped: false, was_running: false } },
   },
   // empty-diff で fail-fast → writeFailureTelemetry（journal-log-failure）
   'empty-diff': {

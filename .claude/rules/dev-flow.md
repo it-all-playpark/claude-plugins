@@ -22,7 +22,7 @@ paths:
 - `exec-proxy.md` — exec-proxy の失敗ポリシー表
 - `analyze-issue.md` — analyze の出力キー
 - `capability-bound.md` — 能力しだいの判断と sunset トリガ
-- `jev.md` — analyze の意味判定（Jev）の前提条件とインターフェース
+- `jev.md` — analyze の意味判定（Jev）の前提とインターフェース
 - `justification-classes.md` — 正当化クラスごとの機構の一覧
 
 ## 構造
@@ -32,7 +32,7 @@ paths:
 - `dev-flow.js` が持つ phase は `phase('Setup')`・`phase('Implement')`・`phase('Validate')`・`phase('PR')`（lite review を含む）、起動する工程の workflow は `workflow('dev-flow:dev-flow-test-commands-run')`・`workflow('dev-flow:dev-flow-evaluate-run')`・`workflow('dev-flow:pr-iterate-run')`・`workflow('dev-flow:dev-flow-finalize-run')`。新しい処理（agent の起動・prompt の組み立て・判定）は既存の工程 workflow か新しく切り出す工程 workflow に書き、`dev-flow.js` に足してよいのは工程の起動・state の受け渡し・ゲートの分岐だけ（script 上限はファイルごと）。phase・workflow を増減したらこの行を直す
 - `meta.name` は `dev-flow-run` でも telemetry handoff の `skill` は `'dev-flow'` 固定（集計連続性）
 - `agent()` の agentType は `nsAgentOpts()` でのみ namespace 付与（bare 名は起動直後 abort）。dev-flow-canary.js のみ namespaced id 直書き
-- 1 issue = 1 PR。Implement は全 shape で `dev-implementer` を単一 worktree に 1 spawn。BLOCKED 再実装・green-fix・Evaluate 差し戻しも同じ agent
+- 1 issue = 1 PR。Implement は全 shape で `dev-implementer` を単一 worktree に 1 spawn。BLOCKED 再実装・green-fix・差し戻しも同じ agent
 - model 既定は frontmatter。override は green-fix（`'sonnet'`）のみ（pr-iterate の fix は `pr-fixer` の frontmatter）。品質ゲート agent には渡さない — gate の判定モデルを credit で黙って変えない
 - merge は常に人間（全 tier）
 - 後方互換 scaffolding を作らない — out-of-enum は明示 error
@@ -63,9 +63,9 @@ paths:
 
 - script は `bin/` の bare 名を**先頭トークン**にする。絶対パス・`bash`/`cd`/env 前置は書かない。人が起動する `security-review-isolated` は workflow・subagent から呼ばない
 - dev-flow の `bin/` は sandbox 内で動かし excludedCommands に登録しない（子の hook・テストが sandbox 外で走る。blast-radius）。sandbox で揃わない pre-push の前提は hook で skip。prerun は repo の任意コードを実行しない
-- 起動元 repo の `.git/config` を書く git / gh（`push -u`・`--track`・`gh pr checkout`）を使わない（sandbox 内で書けない）。push は `pr-push`（`git push origin HEAD`）、済みかは `origin/<branch>` と比べる。`redgreen-verify` / `run-tests` は index を書く git も使わない
+- 起動元 repo の `.git/config` を書く git / gh（`push -u`・`--track`・`gh pr checkout`）を使わない（sandbox 内で書けない）。push は `pr-push`（`git push origin HEAD`）、済みかは `origin/<branch>` と比べる。hook 失敗と確定した push だけ 1 回差し戻す。`redgreen-verify` / `run-tests` は index を書く git も使わない
 
-> GitHub I/O の規範の適用範囲は workflow の subagent が起動する `bin/` のスクリプト（skill wrapper の preflight の `dev-flow-prerun`・`pr-iterate-prerun` は範囲の外）。スクリプトが持てる認証付き network I/O は、読み取り専用の gh を 1 回（snapshot 1 枚。失敗は error / ok:false に倒し成功を合成しない）と、`pr-push` の push（`start` / `wait` / `stop` で切り離す。lock 1800 秒・待機累計 3600 秒。全文は log、末尾を返す）の 2 つに限り、その外に**例外はない**。書き込み系の gh は subagent の bare 単文に置く（先頭トークンが gh・--repo 付き、cd &&・bash・env 前置禁止）。prompt に sandbox / excludedCommands / 特定パス起動の理由を書いてはならない — exec-proxy prompt は決定論スクリプトへの verbatim 転写契約であり、起動形の正しさは設定側（`bin/` の PATH・isolation guard）の不変条件。設定の正当化は本ファイルにだけ置き、per-prompt で再説明しない（再説明は転写契約に判断余地を持ち込み、下流の prompt へ引用・増幅される）
+> GitHub I/O の規範の適用範囲は workflow の subagent が起動する `bin/` のスクリプト（skill wrapper の preflight の `dev-flow-prerun`・`pr-iterate-prerun` は範囲の外）。スクリプトが持てる認証付き network I/O は、読み取り専用の gh を 1 回（snapshot 1 枚。失敗は error / ok:false に倒し成功を合成しない）と、`pr-push` の push（`start` / `wait` / `stop` で切り離す。lock 1800 秒・待機累計 3600 秒）の 2 つに限り、その外に**例外はない**。書き込み系の gh は subagent の bare 単文に置く（先頭トークンが gh・--repo 付き、cd &&・bash・env 前置禁止）。prompt に sandbox / excludedCommands / 特定パス起動の理由を書いてはならない — exec-proxy prompt は決定論スクリプトへの verbatim 転写契約であり、起動形の正しさは設定側（`bin/` の PATH・isolation guard）の不変条件。設定の正当化は本ファイルにだけ置き、per-prompt で再説明しない（再説明は転写契約に判断余地を持ち込み、下流の prompt へ引用・増幅される）
 
 ## inline 生成区間
 

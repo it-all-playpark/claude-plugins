@@ -1,15 +1,15 @@
 // telemetry-keys.test.mjs — dev-flow.js / pr-iterate.js が journal handoff に書く telemetry キーの集合を pin する（issue #789）。
 //
-// telemetry の読み手は dev-flow-health だけで、残すキーは dev-flow/references/telemetry.md の 23 個。
+// telemetry の読み手は dev-flow-health だけで、残すキーは dev-flow/references/telemetry.md の 24 個。
 // それ以外のキーを書くと、読まれない値を計算・転記するコードが再び増える。
 //
 //   (1) 静的 pin: 両 workflow の inline 生成区間の外にある `telemetry: { … }` object literal を全部拾い、
-//       直下のキーと spread（`...(cond ? { k: v } : {})`）内のキーが 23 キーの部分集合であること。
+//       直下のキーと spread（`...(cond ? { k: v } : {})`）内のキーが 24 キーの部分集合であること。
 //       成功・失敗（writeFailureTelemetry）・abort の各組み立て口が literal として存在すること、
 //       telemetry を literal 以外（変数・shorthand）で渡す箇所が無いことも pin する。
 //   (2) 挙動 pin: DEV_FLOW_SCENARIOS（成功 / lite / abort / empty-diff / cross-repo / needs_clarification …）と
-//       pr-iterate.js の成功・abort を VM 実行し、journal handoff payload の telemetry キーが 23 キーの部分集合であること。
-//   (3) telemetry.md のキー一覧が 23 キーと一致すること。entry 列が (1) の literal と、読み手列が health-report.sh が
+//       pr-iterate.js の成功・abort を VM 実行し、journal handoff payload の telemetry キーが 24 キーの部分集合であること。
+//   (3) telemetry.md のキー一覧が 24 キーと一致すること。entry 列が (1) の literal と、読み手列が health-report.sh が
 //       実際に読むキーと一致し、表すもの列が 1〜2 文で、signature にする値の列挙・要素の形を写していないこと。
 
 import { test } from 'vitest';
@@ -36,6 +36,7 @@ const KEPT_TELEMETRY_KEYS = [
   'hold_reason_codes', 'hold_ac_human_judged',
   'security_review_target', 'security_review_rounds',
   'security_review_status', 'security_review_stop_reason', 'fix_terminal_reason', 'iterate_caller',
+  'push_hook_reimpl',
 ];
 
 // ---- 静的走査 ----
@@ -107,13 +108,13 @@ function telemetryLiterals(src) {
 }
 
 for (const [name, src, minLiterals] of [['dev-flow.js', devFlowSrc, 3], ['pr-iterate.js', prIterateSrc, 2]]) {
-  test(`[telemetry-keys] 静的: ${name} の telemetry object literal のキーは残す 23 キーの部分集合`, () => {
+  test(`[telemetry-keys] 静的: ${name} の telemetry object literal のキーは残す 24 キーの部分集合`, () => {
     const literals = telemetryLiterals(src);
     // dev-flow.js: 成功 handoff / writeFailureTelemetry / abort、pr-iterate.js: 成功 / abort
     assert.ok(literals.length >= minLiterals, `${name}: telemetry literal が ${literals.length} 件しか見つからない（成功・失敗・abort の組み立て口が literal でない可能性）`);
     for (const { line, keys } of literals) {
       const extra = keys.filter((k) => !KEPT_TELEMETRY_KEYS.includes(k));
-      assert.deepEqual(extra, [], `${name} line ~${line}: 残す 23 キー以外の telemetry キー ${JSON.stringify(extra)}`);
+      assert.deepEqual(extra, [], `${name} line ~${line}: 残す 24 キー以外の telemetry キー ${JSON.stringify(extra)}`);
     }
   });
 
@@ -124,7 +125,7 @@ for (const [name, src, minLiterals] of [['dev-flow.js', devFlowSrc, 3], ['pr-ite
   });
 }
 
-test('[telemetry-keys] 静的: 走査器は 23 キー外のキー（直下・条件付き spread 内）と literal 以外の渡し方を検出する', () => {
+test('[telemetry-keys] 静的: 走査器は 24 キー外のキー（直下・条件付き spread 内）と literal 以外の渡し方を検出する', () => {
   const fake = [
     'const a = buildJournalHandoffPayload({ telemetry: { merge_tier: x, gate_policy: y, ...(c ? { guard_id: z } : {}), route } })',
     'const b = buildAbortHandoffPayload({ telemetry: someVar })',
@@ -146,14 +147,14 @@ function handoffTelemetry(calls) {
 }
 
 for (const [name, sc] of Object.entries(DEV_FLOW_SCENARIOS)) {
-  test(`[telemetry-keys] 挙動: dev-flow.js[${name}] の journal handoff telemetry キーは残す 23 キーの部分集合`, async () => {
+  test(`[telemetry-keys] 挙動: dev-flow.js[${name}] の journal handoff telemetry キーは残す 24 キーの部分集合`, async () => {
     const { ctx, calls } = makeDevFlowSandbox({ overrides: sc.overrides ?? {}, workflow: sc.workflow, extra: sc.extra ?? {} });
     const { error } = await runWorkflowCapture(devFlowSrc, ctx);
     assertNoCrash(error, name);
     const telemetry = handoffTelemetry(calls);
     assert.ok(telemetry, `[${name}] journal handoff が呼ばれていない: ${calls.map((c) => c.label).join(', ')}`);
     const extra = Object.keys(telemetry).filter((k) => !KEPT_TELEMETRY_KEYS.includes(k));
-    assert.deepEqual(extra, [], `[${name}] 残す 23 キー以外の telemetry キー: ${JSON.stringify(telemetry)}`);
+    assert.deepEqual(extra, [], `[${name}] 残す 24 キー以外の telemetry キー: ${JSON.stringify(telemetry)}`);
     assert.ok('plugin_version' in telemetry && 'plugin_commit' in telemetry, `[${name}] 世代キーが無い: ${JSON.stringify(telemetry)}`);
   });
 }
@@ -264,21 +265,21 @@ for (const [name, overrides] of [
   ['lgtm', {}],
   ['abort（isolation probe fail-closed）', { 'isolation-probe': { written: false } }],
 ]) {
-  test(`[telemetry-keys] 挙動: pr-iterate.js[${name}] の journal handoff telemetry キーは残す 23 キーの部分集合`, async () => {
+  test(`[telemetry-keys] 挙動: pr-iterate.js[${name}] の journal handoff telemetry キーは残す 24 キーの部分集合`, async () => {
     const { ctx, calls } = makePrIterateSandbox({ overrides });
     const { error } = await runWorkflowCapture(prIterateSrc, ctx, '.claude/workflows/pr-iterate.js');
     assertNoCrash(error, `pr-iterate ${name}`);
     const telemetry = handoffTelemetry(calls);
     assert.ok(telemetry, `journal handoff が呼ばれていない: ${calls.map((c) => c.label).join(', ')}`);
     const extra = Object.keys(telemetry).filter((k) => !KEPT_TELEMETRY_KEYS.includes(k));
-    assert.deepEqual(extra, [], `残す 23 キー以外の telemetry キー: ${JSON.stringify(telemetry)}`);
+    assert.deepEqual(extra, [], `残す 24 キー以外の telemetry キー: ${JSON.stringify(telemetry)}`);
     assert.equal(telemetry.merge_tier, 'PR_ITERATE');
   });
 }
 
 // ---- ドキュメント ----
 
-test('[telemetry-keys] telemetry.md のキー一覧が残す 23 キーと一致する', () => {
+test('[telemetry-keys] telemetry.md のキー一覧が残す 24 キーと一致する', () => {
   const md = readFileSync(TELEMETRY_MD, 'utf8');
   const section = md.split(/^## /m).find((s) => s.startsWith('キー一覧'));
   assert.ok(section, 'telemetry.md に「## キー一覧」節が無い');

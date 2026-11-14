@@ -176,18 +176,18 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
   commit・push・`gh pr create` させる。PR 本文の見える部分は人間向けの要約（`behavior_changes` / `review_points` / `out_of_scope` と
   `Closes #N`）に限り、受入条件・設計判断・検証・`pr_sections` は `<details>` に畳む。ci AC がある run は PR に `ci_verify.label` を付ける。
   - push は `pr-push start <log>` → `wait <log> --wait-sec <n>`（lock 上限 1800 秒）
-  - **micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.evalForced && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target`
+  - push が `failed` で `pre-push-hook`（push しない）も `failed` なら 1 回だけ差し戻し、Validate と PR phase をやり直す（`runPushHookReimpl`）
+  - **micro lite route**: `state.EFFECTIVE_SHAPE === 'micro' && !state.evalForced && state.dangerHits.length === 0 && CI_AC_INDEXES.length === 0 && !state.securityReview.target && !state.pushHookReimpl`
     の run は、フル pr-iterate の代わりに `pr-review-lite`（pr-reviewer の 1-pass review）→ `ci-check-lite`（CI の 1 回判定）の 2 spawn で
     終える。review が null・blocking（critical/major）なら CI を読まずに、CI が passed / no_checks でなければフル pr-iterate へ昇格する
   - それ以外の run は nested の `workflow('dev-flow:pr-iterate-run')`（`prIterateArgs()`。`nested.caller: 'dev-flow'`）
 - **失敗の扱い**:
-  - commit・push・PR 作成の中断（`committed:false`・PR 番号なし）は throw せず `pr_phase_failed` の failure で終える（fail-closed。
-    nested pr-iterate・Merge tier は走らせない。成果物・所要・回収コマンドを返り値と journal に残し、回収は wrapper が issue コメントで渡す。
-    push の再発行・force push 等の fallback は持たない）
+  - commit・push・PR 作成の中断（`committed:false`・PR 番号なし）は throw せず `pr_phase_failed` で終える（fail-closed。pr-iterate・Merge tier は
+    走らせず、成果物・回収コマンドを返り値と journal に残して wrapper が issue コメントで渡す。同じ tree の再 push・force push はしない）
   - push の待機累計 3600 秒・読めない結果・throw は `pr-push stop`
   - lite の review・CI が判定できないときはフル pr-iterate へ昇格する（fail-safe）
-- **コード**: `phase('PR')`・`prPhasePrompt`・`prPhaseFailure`・`prIterateArgs`（`.claude/workflows/dev-flow.js`）、`buildPrBody`・
-  `buildCommitMessage`・`prPhaseJob`（`_lib/pr-artifacts.mjs`）、`classifyLiteReview`（`_lib/lite-route.mjs`）、`ciRelayResult`（`_lib/ci-check.mjs`）
+- **コード**: `phase('PR')`・`prPhasePrompt`・`prPhaseFailure`・`prIterateArgs`（`.claude/workflows/dev-flow.js`）、
+  `prPhaseJob`（`_lib/pr-artifacts.mjs`）、`classifyLiteReview`（`_lib/lite-route.mjs`）、`ciRelayResult`（`_lib/ci-check.mjs`）
 
 ## pr-iterate
 
@@ -226,7 +226,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
 
 ## Final reconcile
 
-- **判定**: pr-iterate が fix を適用した run（`fixes_applied > 0`）だけ、fix 後の最終 tree で確かめ直す:
+- **判定**: `fixes_applied > 0` か push hook 差し戻しの run だけ、最終 tree で確かめ直す:
   - worktree を PR の最終 HEAD に同期し、Validate と同じ start / wait を 1 回だけ実行する（green-fix はしない）。red で
     落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake 候補として開示する（HOLD・`EVAL-*` は外さない。
     PR が書いたテストの出力。`_lib/final-test-rerun.mjs`）
