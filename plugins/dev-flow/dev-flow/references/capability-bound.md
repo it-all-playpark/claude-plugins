@@ -46,18 +46,6 @@ report と比べて読む。
   判断（直した / そのまま merge した）を突き合わせる。精度が実証されるまで major を advisory にしない。実証できたら pr-iterate の
   major blocking を `gateLane` 連動にする issue を立てる
 
-### redgreen vdelta の deny-only
-
-- **何をするか**: redgreen の R1↔R2 で `_lib/vdelta-transitions.mjs` の `vdeltaDenies` が veridelta の verdict から deny を
-  出し、red&&green の決定論昇格に deny の `&&` 節としてだけ効かせる。blocking gate にはしない。verdict 不明は fail-open、
-  `comparability` が `exact` でなければ abstain
-- **なぜ**: test 変更込みの勝利宣言を見抜く信号だが、veridelta の record_integrity は advisory で、verdict の precision が
-  blocking に耐えると示されていない
-- **sunset トリガ**: major モデルリリースごとの dry-run
-- **次のモデル世代での測り直し方**: 過去 run の redgreen を replay して `vdeltaDenies` の `status`（`deny` / `clean` /
-  `abstain` / `fail_open`）を集計し、deny が実際に test 変更込みの勝利宣言だったかを人が確かめる。precision が実証され、
-  veridelta が record_integrity を advisory 以外で返すなら blocking gate 化を issue にする
-
 ### exec-proxy の橋
 
 - **何をするか**: workflow script から決定論 script を直接実行できないため、`agents/` の dev-runner 系 subagent に `bin/` の

@@ -23,7 +23,7 @@
 #   ペア間の並列化は不可で、Evaluate の全 AC を 1 呼び出しにまとめるのは spawn 数削減のため(issue #683)。
 # テストは repo の任意コードなので sandbox 内で走らせる(bin/redgreen-verify を excludedCommands に登録しない。
 # .claude/rules/dev-flow.md)。そのため index を書く git は使わない(write_head_blob)。
-# テストの実行の形(起動するコマンド・実行する script・vdelta で包むか)は、Setup が base の tree から解決したコマンドファイル
+# テストの実行の形(起動するコマンド・実行する script)は、Setup が base の tree から解決したコマンドファイル
 # (--commands。中身の形は test-commands-prepare.sh)と base($BASE)の tree だけで決める。worktree 側で欠けた・変わったものは
 # 入力エラーにして昇格させず、PR 側の形では実行しない(PR が自分のテストの起動の形を選べると、red→green を作れる)。
 # テストファイル自体とランナーの設定ファイルは worktree(PR)の内容のまま実行する。言語別に決め打ちした判定は持たない。
@@ -41,20 +41,15 @@
 #     "test runner script not in base: <path>" の入力エラー(script 自身の出力を red→green の根拠にしない)
 #   - --commands 無し・ファイルが無い・JSON として読めない・status "unresolved"・{files} の語がちょうど 1 つ無い:
 #     全ペアが reason "test command unresolved (<理由>)" の入力エラー
-# vdelta 経路: $BASE の tree の package.json の dependencies / devDependencies に vdelta があり(worktree の package.json は
-# 読まない)、選んだ entry の dir が "." で files_command に vitest の語があるときだけ、コマンドを `<PM の exec> vdelta run --report json -- <コマンド>` で包み、
-# green 後に `<PM の exec> vdelta compare --report json` の出力を verdict として載せる(PM の exec は files_command の
-# vitest より前の語)。それ以外は解決したコマンドのまま実行する。
 # 出力(stdout, JSON 1行。results は引数順の配列。root を object にするのは workflow の agent() schema が
 # root object を要求するため — haiku proxy に配列を包み直させず verbatim 転写で済ませる):
-#   {"results":[{"index":N,"red":bool,"green":bool,"reason":"...","testcmd_ran":bool[,"headdiff":{new,modified,unchanged,total}][,"verdict":{...}]}, ...]}
-# testcmd_ran は当該ペアで vdelta run 経路を実行したか。
-# 入力・分離エラーのペアは {"index":N,"red":false,"green":false,"reason":"..."} で続行する(testcmd_ran なし)。
+#   {"results":[{"index":N,"red":bool,"green":bool,"reason":"..."[,"headdiff":{new,modified,unchanged,total}]}, ...]}
+# 入力・分離エラーのペアは {"index":N,"red":false,"green":false,"reason":"..."} で続行する(headdiff なし)。
 # red / green どちらの test 実行の前にも workspace-prebuild.sh で pnpm ワークスペースのビルド成果物を
 # その時点のソースから作り直す(issue #754。red は impl 退避後・green は復元後でソースが違うため両方で呼ぶ)。
 # ビルドが失敗した phase ではテストを実行せず、当該ペアを reason "workspace build failed: <pkgs> (red|green)"
 # の入力・分離エラーと同じ形で返す(テスト未実行を red / green と判定しない)。
-# headdiff は vdelta run 経路が走らなかったペア(testcmd_ran=false)でのみ付く。
+# headdiff は判定が完了し(reason "ok")、base を解決できたペアに付く。
 # test_files を base(既定 HEAD)基準で new(base に無い)/modified(base にあり差分あり)/unchanged(base と同一)
 # に三分類した件数で、runner の種類・拡張子に依存しない fallback 信号。red/green の判定には影響しない。
 # exit 0 = 1 ペア以上が判定完了(red/green は JSON 参照) / exit 2 = 全ペアが入力・分離エラー、
@@ -86,8 +81,6 @@ paths() {
 # impl の退避・headdiff の比較先(commit)。--base 無しは HEAD(run が決める)
 BASE_REF=""
 BASE="HEAD"
-# vdelta 経路の有効化は $BASE の tree の package.json の依存だけで決める(dev-flow 専用の設定ファイルは読まない。run が決める)
-VDELTA=false
 # テストの起動の形(run が load_test_command で決める)。RUN_MODE は "command"(FILES_WORDS を実行)・"runners"(BASE_RUNNERS を
 # 実行)・""(RUN_ERROR を reason にした入力エラー)
 RUN_MODE=""
@@ -108,13 +101,6 @@ TEST_FILES_LIST=""
 # --- ペア単位の状態(verify_pair の冒頭で毎回リセットする) ---
 TESTS=()
 IMPLS=()
-# vdelta compare は当該ペアで vdelta run 経路が実際に実行された
-# 場合のみ起動する。bats-only 等 vdelta run 未実行のペアでは RunStore に
-# 当該 red/green の run pair が存在せず、無条件実行すると spurious な
-# baseline-missing/malformed verdict を招くため。
-VDELTA_TESTCMD_RAN=false
-# vdelta run 経路で使った PM の exec prefix(vdelta compare も同じ prefix で起動する)
-VDELTA_PREFIX=()
 # impl ファイルを $BASE(既定 HEAD)基準で三分類する。共有 stash スタック(main checkout・全 worktree・
 # 全セッションで共有)には一切読み書きしない — 位置指定 pop は「自分が積んだ entry」を
 # 保証せず、他セッションの WIP を worktree に適用する(issue #630)。
@@ -131,7 +117,7 @@ PAIR_JSON=""
 BUILD_FAILURE=""
 
 run_tests() {
-  local rc=0 pb_out a w path argv prefix
+  local rc=0 pb_out w path argv
   BUILD_FAILURE=""
   if ! pb_out="$(bash "$PREBUILD" "$PWD" 2>/dev/null)"; then
     BUILD_FAILURE="$(jq -r '.reason // empty' <<< "$pb_out" 2>/dev/null)"
@@ -149,15 +135,6 @@ run_tests() {
   for w in "${FILES_WORDS[@]}"; do
     if [ "$w" = "{files}" ]; then argv+=("${PAIR_TESTS[@]}"); else argv+=("$w"); fi
   done
-  if [ "$VDELTA" = true ] && [ "$PAIR_DIR" = "." ] && [[ " ${FILES_WORDS[*]} " == *" vitest "* ]]; then
-    prefix=()
-    for a in "${FILES_WORDS[@]}"; do [ "$a" = vitest ] && break; prefix+=("$a"); done
-    VDELTA_PREFIX=(${prefix[@]+"${prefix[@]}"})
-    argv=(${prefix[@]+"${prefix[@]}"} vdelta run --report json -- "${argv[@]}")
-    # vdelta run 経路を実行した事実を記録する(rc とは独立。
-    # red phase の失敗は期待値であり vdelta run 未実行を意味しない)。
-    VDELTA_TESTCMD_RAN=true
-  fi
   ( cd "$PAIR_DIR" || exit 1; "${argv[@]}" ) >/dev/null 2>&1 < /dev/null || rc=1
   return $rc
 }
@@ -333,7 +310,6 @@ verify_pair() {
   TESTS=(); IMPLS=()
   UNTRACKED_IMPLS=(); TRACKED_IMPLS=(); UNCHANGED_IMPLS=()
   UNTRACKED_SAVED=false; TRACKED_SAVED=false
-  VDELTA_TESTCMD_RAN=false; VDELTA_PREFIX=()
   FILES_WORDS=(); PAIR_DIR="."; PAIR_TESTS=()
   PAIR_JSON=""
 
@@ -454,10 +430,9 @@ verify_pair() {
     PAIR_JSON="\"red\":false,\"green\":false,\"reason\":\"$build_failure\""; return 2
   fi
 
-  # headdiff: vdelta run 経路が走らなかったペア(VDELTA_TESTCMD_RAN=false)でのみ、
-  # test_files を $BASE(既定 HEAD)基準で三分類する(拡張子非依存の fallback 信号。判定には使わない)。
+  # headdiff: test_files を $BASE(既定 HEAD)基準で三分類する(拡張子非依存の fallback 信号。判定には使わない)。
   local headdiff_json="" hd_new=0 hd_mod=0 hd_unch=0
-  if [ "$VDELTA_TESTCMD_RAN" = false ] && git rev-parse --verify -q "$BASE" >/dev/null 2>&1; then
+  if git rev-parse --verify -q "$BASE" >/dev/null 2>&1; then
     for t in "${TESTS[@]}"; do
       if git cat-file -e "$BASE:$t" >/dev/null 2>&1; then
         if git diff --quiet "$BASE" -- "$t"; then hd_unch=$((hd_unch+1)); else hd_mod=$((hd_mod+1)); fi
@@ -468,22 +443,7 @@ verify_pair() {
     headdiff_json=",\"headdiff\":{\"new\":$hd_new,\"modified\":$hd_mod,\"unchanged\":$hd_unch,\"total\":${#TESTS[@]}}"
   fi
 
-  PAIR_JSON="\"red\":$red,\"green\":$green,\"reason\":\"ok\",\"testcmd_ran\":$VDELTA_TESTCMD_RAN$headdiff_json"
-
-  # post-green verdict(fail-open): red/green 判定が確定した後にのみ走る。
-  # 非ゼロ exit・空出力・不正 JSON・jq 不在のいずれでも PAIR_JSON をそのまま返す。
-  # 当該ペアで vdelta run 経路が実行されていない場合(vitest 以外のコマンド・tests/run-*.sh 等)は
-  # RunStore に run pair が存在しないため起動しない(VDELTA_TESTCMD_RAN guard)。
-  if [ "$VDELTA_TESTCMD_RAN" = true ] && command -v jq >/dev/null 2>&1; then
-    local hook_json hook_rc merged
-    hook_json="$(${VDELTA_PREFIX[@]+"${VDELTA_PREFIX[@]}"} vdelta compare --report json 2>/dev/null)"
-    hook_rc=$?
-    if [ "$hook_rc" -eq 0 ] && [ -n "$hook_json" ] && jq -c . >/dev/null 2>&1 <<< "$hook_json"; then
-      merged="$(jq -c --argjson v "$hook_json" '. + {verdict: $v}' <<< "{$PAIR_JSON}")"
-      PAIR_JSON="${merged#\{}"
-      PAIR_JSON="${PAIR_JSON%\}}"
-    fi
-  fi
+  PAIR_JSON="\"red\":$red,\"green\":$green,\"reason\":\"ok\"$headdiff_json"
   return 0
 }
 
@@ -549,10 +509,6 @@ cmd_run() {
       write_results '{"results":[]}'
       exit 2
     fi
-  fi
-  if git cat-file --filters "$BASE:package.json" 2>/dev/null \
-      | jq -e '((.dependencies // {}) + (.devDependencies // {})) | has("vdelta")' >/dev/null 2>&1; then
-    VDELTA=true
   fi
   load_test_command
   # 呼び出し元の環境の同名変数は継がない(入れ子の run-tests の一覧を tests/run-*.sh に渡さない)

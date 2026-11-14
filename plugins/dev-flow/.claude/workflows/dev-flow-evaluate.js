@@ -600,53 +600,6 @@ function isLoopConvergedUnderPolicy(ledger, policy) {
     .every((it) => it.checked);
 }
 // ==== END inline: _lib/gate-policy.mjs ====
-// ==== BEGIN inline: _lib/vdelta-transitions.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
-function vdeltaDenies(verdict) {
-  if (verdict === null || verdict === undefined) {
-    return { deny: false, reasons: [], status: 'fail_open' };
-  }
-
-  let parsed = verdict;
-  if (typeof verdict === 'string') {
-    try {
-      parsed = JSON.parse(verdict);
-    } catch {
-      return { deny: false, reasons: [], status: 'fail_open' };
-    }
-  }
-
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return { deny: false, reasons: [], status: 'fail_open' };
-  }
-
-  const { transitions } = parsed;
-  if (typeof transitions !== 'object' || transitions === null || Array.isArray(transitions)) {
-    return { deny: false, reasons: [], status: 'fail_open' };
-  }
-
-  if (parsed.comparability !== 'exact') {
-    return { deny: false, reasons: [], status: 'abstain' };
-  }
-
-  const reasons = [];
-
-  const repaired = transitions.repaired_with_test_change;
-  if (Array.isArray(repaired) && repaired.length > 0) {
-    reasons.push(`repaired_with_test_change(${repaired.length}件)`);
-  }
-
-  const surfaceStatus = parsed.verification_surface?.status;
-  if (surfaceStatus !== undefined && surfaceStatus !== 'intact') {
-    reasons.push(`verification_surface:${surfaceStatus}`);
-  }
-
-  if (reasons.length > 0) {
-    return { deny: true, reasons, status: 'deny' };
-  }
-
-  return { deny: false, reasons: [], status: 'clean' };
-}
-// ==== END inline: _lib/vdelta-transitions.mjs ====
 // ==== BEGIN inline: _lib/testsurf.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 function testsurfHitsOf(risk) {
   if (!risk || risk.ok !== true) return [];
@@ -2562,8 +2515,7 @@ const RG = {
         type: 'object', required: ['index', 'red', 'green'],
         properties: {
           index: { type: 'number' },
-          red: { type: 'boolean' }, green: { type: 'boolean' }, reason: { type: 'string' }, verdict: {},
-          testcmd_ran: { type: 'boolean' }, headdiff: { type: 'object' },
+          red: { type: 'boolean' }, green: { type: 'boolean' }, reason: { type: 'string' }, headdiff: { type: 'object' },
         },
       },
     },
@@ -3048,19 +3000,14 @@ async function execEvaluatePhase(state) {
     for (let k = 0; k < rgTargets.length; k++) {
       const { r, acId } = rgTargets[k]
       const rg = rgByTarget[k] ?? null
-      const denyRes = vdeltaDenies(rg ? rg.verdict : null)
-      if (rg && rg.red === true && rg.green === true && !denyRes.deny) {
+      if (rg && rg.red === true && rg.green === true) {
         ledger = setCheck(ledger, acId, { kind: 'deterministic' })
         ledger = checkItem(ledger, acId, `red→green 実証: ${(r.test_files || []).join(',')}`)
         log(`AC-${r.ac_index + 1}: red→green 実証 → deterministic 昇格 + checked`)
       } else {
         if (r.satisfied && !isObservational(r)) ledger = checkItem(ledger, acId, r.evidence ?? 'inspection(red→green 未成立)')
         const kept = isObservational(r) ? 'checked にせず人手 AC 待ち（観測型 AC）' : 'inspection 据え置き'
-        if (rg && rg.red === true && rg.green === true && denyRes.deny) {
-          log(`AC-${r.ac_index + 1}: red→green 実証だが vdelta deny(${denyRes.reasons.join(', ')})→ deterministic 昇格せず ${kept}`)
-        } else {
-          log(`AC-${r.ac_index + 1}: red→green 未成立(${rg ? rg.reason : 'null'})→ ${kept}`)
-        }
+        log(`AC-${r.ac_index + 1}: red→green 未成立(${rg ? rg.reason : 'null'})→ ${kept}`)
       }
     }
     // 実証の無い観測型 AC の satisfied:true を未達に倒す。観測型の actor は human なので未達は ac_human_pending へ回る

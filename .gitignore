@@ -32,9 +32,6 @@ __pycache__/
 *.pyc
 *.pyo
 
-# veridelta run records (redgreen-verify.sh の vdelta run 経路の出力)
-.veridelta/
-
 # dev-flow ephemeral handoff files (must not be committed)
 .devflow-tmp/
 

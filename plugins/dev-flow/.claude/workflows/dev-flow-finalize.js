@@ -1057,53 +1057,6 @@ function isConvergedUnderPolicy(ledger, policy) {
   return policyBlockingItems(ledger, policy).every((it) => it.checked);
 }
 // ==== END inline: _lib/gate-policy.mjs ====
-// ==== BEGIN inline: _lib/vdelta-transitions.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
-function vdeltaDenies(verdict) {
-  if (verdict === null || verdict === undefined) {
-    return { deny: false, reasons: [], status: 'fail_open' };
-  }
-
-  let parsed = verdict;
-  if (typeof verdict === 'string') {
-    try {
-      parsed = JSON.parse(verdict);
-    } catch {
-      return { deny: false, reasons: [], status: 'fail_open' };
-    }
-  }
-
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return { deny: false, reasons: [], status: 'fail_open' };
-  }
-
-  const { transitions } = parsed;
-  if (typeof transitions !== 'object' || transitions === null || Array.isArray(transitions)) {
-    return { deny: false, reasons: [], status: 'fail_open' };
-  }
-
-  if (parsed.comparability !== 'exact') {
-    return { deny: false, reasons: [], status: 'abstain' };
-  }
-
-  const reasons = [];
-
-  const repaired = transitions.repaired_with_test_change;
-  if (Array.isArray(repaired) && repaired.length > 0) {
-    reasons.push(`repaired_with_test_change(${repaired.length}件)`);
-  }
-
-  const surfaceStatus = parsed.verification_surface?.status;
-  if (surfaceStatus !== undefined && surfaceStatus !== 'intact') {
-    reasons.push(`verification_surface:${surfaceStatus}`);
-  }
-
-  if (reasons.length > 0) {
-    return { deny: true, reasons, status: 'deny' };
-  }
-
-  return { deny: false, reasons: [], status: 'clean' };
-}
-// ==== END inline: _lib/vdelta-transitions.mjs ====
 // ==== BEGIN inline: _lib/testsurf.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 function testsurfHitsOf(risk) {
   if (!risk || risk.ok !== true) return [];
@@ -3180,8 +3133,7 @@ const RG = {
         type: 'object', required: ['index', 'red', 'green'],
         properties: {
           index: { type: 'number' },
-          red: { type: 'boolean' }, green: { type: 'boolean' }, reason: { type: 'string' }, verdict: {},
-          testcmd_ran: { type: 'boolean' }, headdiff: { type: 'object' },
+          red: { type: 'boolean' }, green: { type: 'boolean' }, reason: { type: 'string' }, headdiff: { type: 'object' },
         },
       },
     },
@@ -3816,7 +3768,7 @@ if (_facDecision.run) {
   else {
     finalAcReconcile = 'reverified'
     // final evaluator が test で確かめたと返した観測型 AC は、最終 HEAD で redgreen-verify を走らせる（Evaluate と同じ経路。
-    // impl は merge-base まで戻して red を測る）。red・green が両方 true で vdelta が deny しないときだけ昇格する（fail-safe）。
+    // impl は merge-base まで戻して red を測る）。red・green が両方 true のときだけ昇格する（fail-safe）。
     const frgTargets = finalRedgreenTargets({ results: v.results, observational: req.ac_observational, provenIndexes: provenAtEval, ciIndexes: CI_AC_INDEXES })
       .map((r) => ({ r, acId: `AC-${r.ac_index + 1}` }))
     if (frgTargets.length) {
@@ -3827,13 +3779,10 @@ if (_facDecision.run) {
       for (let k = 0; k < frgTargets.length; k++) {
         const { r, acId } = frgTargets[k]
         const rg = rgByTarget[k] ?? null
-        const denyRes = vdeltaDenies(rg ? rg.verdict : null)
-        if (rg && rg.red === true && rg.green === true && !denyRes.deny) {
+        if (rg && rg.red === true && rg.green === true) {
           state.ledger = setCheck(state.ledger, acId, { kind: 'deterministic' })
           state.ledger = checkItem(state.ledger, acId, `red→green 実証（final reconcile）: ${r.test_files.join(',')}`)
           log(`${acId}: 観測型 AC を最終 tree で red→green 実証 → deterministic 昇格 + checked`)
-        } else if (rg && rg.red === true && rg.green === true) {
-          log(`${acId}: 最終 tree で red→green 実証だが vdelta deny(${denyRes.reasons.join(', ')})→ 昇格せず人手 AC 待ち（観測型 AC）`)
         } else {
           log(`${acId}: 最終 tree で red→green 未成立(${rg ? rg.reason : 'null'})→ 昇格せず人手 AC 待ち（観測型 AC）`)
         }

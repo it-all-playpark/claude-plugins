@@ -73,7 +73,7 @@ export const DEV_FLOW_SCENARIOS = {
   redgreen: {
     overrides: {
       'eval#1': REDGREEN_EVAL,
-      redgreen: { results: [{ index: 0, red: true, green: true, reason: 'ok', testcmd_ran: true }] },
+      redgreen: { results: [{ index: 0, red: true, green: true, reason: 'ok' }] },
     },
   },
   // start が running → wait で結果（issue #1226。stop は呼ばない）
@@ -81,7 +81,7 @@ export const DEV_FLOW_SCENARIOS = {
     overrides: {
       'eval#1': REDGREEN_EVAL,
       redgreen: { status: 'running', results: [] },
-      'redgreen-wait#1': { results: [{ index: 0, red: true, green: true, reason: 'ok', testcmd_ran: true }] },
+      'redgreen-wait#1': { results: [{ index: 0, red: true, green: true, reason: 'ok' }] },
     },
   },
   // wait の応答が読めない → stop（issue #1226）

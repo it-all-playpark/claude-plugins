@@ -38,7 +38,7 @@ use_commands() {
   jq -nc --arg f "$1" '{source: "user_config", status: "resolved", commands: [{dir: ".", full_command: ($f | sub(" *\\{files\\}"; "")), files_command: $f}], sources: []}' > "$COMMANDS_FILE"
 }
 
-# fixture の package.json を差し替えて commit する(vdelta で包むかの判定元は base の tree の package.json)
+# fixture の package.json を差し替えて commit する
 use_package_json() {
   echo "$1" > "$REPO/package.json"
   git -C "$REPO" add package.json && git -C "$REPO" commit -q -m "package.json"
@@ -169,138 +169,42 @@ EOF
 }
 
 # -----------------------------------------------------------------------
-# F: vdelta 経路(issue #881 / #1279)。base の tree の package.json の dependencies / devDependencies に vdelta があり、
-# files_command に vitest の語があるときだけコマンドを `<PM の exec> vdelta run --report json --` で包み、green 後の
-# `<PM の exec> vdelta compare --report json` を verdict に載せる。.claude/redgreen.conf は読まない。
+# F: files_command は解決した形のまま実行する(包まない。.claude/redgreen.conf も読まない)。
 # -----------------------------------------------------------------------
 
-# make_mock_pm <name> <compare 応答> [<impl>]: PM の exec(npx / pnpm)の stub。argv を "<name> <argv>" で
-# calls.log に記録し、`vdelta compare` には <compare 応答> を返し(空なら exit 1)、それ以外は <impl>
-# (既定 impl.ts)があるときだけ pass する
+# make_mock_pm <name> [<impl>]: PM の exec(npx / pnpm)の stub。argv を "<name> <argv>" で calls.log に記録し、
+# <impl>(既定 impl.ts)があるときだけ pass する
 make_mock_pm() {
   mkdir -p "$REPO/mockbin"
   cat > "$REPO/mockbin/$1" <<EOF
 #!/usr/bin/env bash
 echo "$1 \$*" >> "$REPO/calls.log"
-case "\$*" in
-  *"vdelta compare"*) [ -n '$2' ] || exit 1; echo '$2' ;;
-  *) [ -f "$REPO/${3:-impl.ts}" ] ;;
-esac
+[ -f "$REPO/${2:-impl.ts}" ]
 EOF
   chmod +x "$REPO/mockbin/$1"
 }
 
-# vdelta と vitest を devDependencies に持つ repo(files_command は npx vitest run {files})+ impl.ts / feature.test.ts
-use_vdelta_vitest() {
-  use_package_json '{"devDependencies":{"vitest":"^3.0.0","vdelta":"^0.10.0"}}'
-  use_commands 'npx vitest run {files}'
-  echo "export const ok = true;" > "$REPO/impl.ts"
-  echo "// feature test" > "$REPO/feature.test.ts"
-}
-
-@test "F1: devDependencies に vdelta がある vitest の repo は vdelta run 経由で実行し verdict を載せる(PM の exec で起動)" {
-  use_vdelta_vitest
-  make_mock_pm npx '{"comparability":"exact","verdict":"improved"}'
-
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
-  [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(printf '%s' "$output" | jq -c '.results[0].verdict')" = '{"comparability":"exact","verdict":"improved"}' ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].testcmd_ran')" = "true" ]
-  # vdelta run 経路が走ったペアは headdiff を出力しない
-  [ "$(printf '%s' "$output" | jq -r '.results[0] | has("headdiff")')" = "false" ]
-  [ "$(cat "$REPO/calls.log")" = "$(printf '%s\n' \
-    'npx vdelta run --report json -- npx vitest run feature.test.ts' \
-    'npx vdelta run --report json -- npx vitest run feature.test.ts' \
-    'npx vdelta compare --report json')" ]
-
-  # files_command が pnpm exec vitest の repo(vdelta は dependencies)では pnpm exec で包み、compare も pnpm exec で起動する
-  rm "$REPO/calls.log"
-  use_package_json '{"dependencies":{"vdelta":"^0.10.0"},"devDependencies":{"vitest":"^3.0.0"}}'
-  use_commands 'pnpm exec vitest run {files}'
-  make_mock_pm pnpm '{"comparability":"exact"}'
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
-  [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -c '.results[0].verdict')" = '{"comparability":"exact"}' ]
-  [ "$(cat "$REPO/calls.log")" = "$(printf '%s\n' \
-    'pnpm exec vdelta run --report json -- pnpm exec vitest run feature.test.ts' \
-    'pnpm exec vdelta run --report json -- pnpm exec vitest run feature.test.ts' \
-    'pnpm exec vdelta compare --report json')" ]
-}
-
-@test "F2: vdelta compare の非ゼロ exit / 不正 JSON は fail-open で verdict を載せず red→green は変わらない" {
-  use_vdelta_vitest
-  make_mock_pm npx ''
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
-  [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0] | has("verdict")')" = "false" ]
-
-  make_mock_pm npx 'not-json'
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
-  [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0] | has("verdict")')" = "false" ]
-  grep -q 'vdelta compare' "$REPO/calls.log"
-}
-
-@test "F3: vdelta が依存に無い vitest の repo は素の vitest で実行し vdelta を呼ばず verdict を載せない" {
+# vitest を devDependencies に持つ repo(files_command は npx vitest run {files})+ impl.ts / feature.test.ts
+use_vitest() {
   use_package_json '{"devDependencies":{"vitest":"^3.0.0"}}'
   use_commands 'npx vitest run {files}'
   echo "export const ok = true;" > "$REPO/impl.ts"
   echo "// feature test" > "$REPO/feature.test.ts"
-  make_mock_pm npx '{"comparability":"exact"}'
+}
+
+@test "F3: vitest の repo は files_command のまま red / green の 2 回実行し、ok のペアは index・red・green・reason・headdiff だけを返す" {
+  use_vitest
+  make_mock_pm npx
 
   run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0] | has("verdict")')" = "false" ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].testcmd_ran')" = "false" ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0]')" = '{"index":0,"red":true,"green":true,"reason":"ok","headdiff":{"new":1,"modified":0,"unchanged":0,"total":1}}' ]
   [ "$(cat "$REPO/calls.log")" = "$(printf '%s\n' 'npx vitest run feature.test.ts' 'npx vitest run feature.test.ts')" ]
 }
 
-@test "F4: vdelta が依存にあっても vitest 以外のコマンド(jest)はそのまま実行し vdelta を呼ばず verdict を載せない" {
-  use_package_json '{"devDependencies":{"jest":"^29.0.0","vdelta":"^0.10.0"}}'
-  use_commands 'npx jest {files}'
-  echo "export const ok = true;" > "$REPO/impl.ts"
-  echo "// feature test" > "$REPO/feature.test.ts"
-  make_mock_pm npx '{"comparability":"exact"}'
-
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
-  [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0] | has("verdict")')" = "false" ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].testcmd_ran')" = "false" ]
-  [ "$(cat "$REPO/calls.log")" = "$(printf '%s\n' 'npx jest feature.test.ts' 'npx jest feature.test.ts')" ]
-}
-
-@test "F5: vdelta が依存にあっても files_command が bats の repo は vdelta を呼ばず verdict を載せない" {
-  use_vdelta_vitest
-  use_commands 'bats {files}'
-  # NOTE: heredoc でこの .bats ファイルのソース行頭に "@test" を直書きすると、
-  # このファイル(redgreen-verify.bats)自身を静的スキャンする bats のテスト発見
-  # ロジックが nested な行まで誤って test 宣言として拾ってしまう
-  # (bats: unknown test name エラーで plan count がずれる。bats のバージョンに
-  # よっては行頭インデントだけでは回避できない)。printf で1行ずつ書き出し、
-  # ソース行が "@test" で始まらないようにして誤検出を避ける。
-  {
-    printf '%s\n' '#!/usr/bin/env bats'
-    printf '%s\n' '@test "impl exists" {'
-    printf '  [ -f "%s/impl.ts" ]\n' "$REPO"
-    printf '%s\n' '}'
-  } > "$REPO/feature.bats"
-  make_mock_pm npx '{"comparability":"exact"}'
-
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.bats" "impl.ts"
-  [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0] | has("verdict")')" = "false" ]
-  [ ! -f "$REPO/calls.log" ]
-}
-
 @test "F6: .claude/redgreen.conf を置いても読まれず結果も起動コマンドも変わらない" {
-  use_vdelta_vitest
-  make_mock_pm npx '{"comparability":"exact"}'
+  use_vitest
+  make_mock_pm npx
   run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
   [ "$status" -eq 0 ]
   without_conf="$output"
@@ -318,21 +222,6 @@ use_vdelta_vitest() {
   [ "$output" = "$without_conf" ]
   [ "$(cat "$REPO/calls.log")" = "$calls_without_conf" ]
   [ ! -e "$REPO/conf-called" ]
-}
-
-@test "F7: base の package.json に vdelta があれば、worktree の package.json から vdelta を外しても vdelta で包む" {
-  use_vdelta_vitest
-  echo '{"devDependencies":{"vitest":"^3.0.0"}}' > "$REPO/package.json"
-  make_mock_pm npx '{"comparability":"exact"}'
-
-  run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.ts" "impl.ts"
-  [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0].red and .results[0].green')" = "true" ]
-  [ "$(printf '%s' "$output" | jq -c '.results[0].verdict')" = '{"comparability":"exact"}' ]
-  [ "$(cat "$REPO/calls.log")" = "$(printf '%s\n' \
-    'npx vdelta run --report json -- npx vitest run feature.test.ts' \
-    'npx vdelta run --report json -- npx vitest run feature.test.ts' \
-    'npx vdelta compare --report json')" ]
 }
 
 # -----------------------------------------------------------------------
@@ -370,7 +259,7 @@ use_vdelta_vitest() {
   git -C "$REPO" stash push -q -m "other-session" -- .gitkeep
   make_test
   use_commands 'npx vitest run {files}'
-  make_mock_pm npx '' impl.mjs
+  make_mock_pm npx impl.mjs
   before_status="$(git -C "$REPO" status --porcelain)"
   before_n="$(git -C "$REPO" stash list | wc -l | tr -d ' ')"
   before_sha="$(git -C "$REPO" rev-parse 'stash@{0}')"
@@ -428,7 +317,7 @@ use_vdelta_vitest() {
   rm "$REPO/impl.mjs"
   make_test
   use_commands 'npx vitest run {files}'
-  make_mock_pm npx '' impl.mjs
+  make_mock_pm npx impl.mjs
 
   run env PATH="$REPO/mockbin:$PATH" bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 2 ]
@@ -486,10 +375,9 @@ EOF
 }
 
 # -----------------------------------------------------------------------
-# I: testcmd_ran / headdiff (issue #654 AC-1/AC-2)
-# vdelta run 経路が走らなかった invocation で testcmd_ran:false と headdiff が
-# 常時出力されること、vdelta run 経路が走った invocation では headdiff が
-# 出力されないことを pin する。
+# I: headdiff (issue #654 AC-1/AC-2)
+# 判定が完了した(reason "ok")ペアには、ランナーの種類によらず headdiff が付くこと、
+# 入力エラーのペアには付かないことを pin する。
 # -----------------------------------------------------------------------
 
 make_feature_bats() {
@@ -502,7 +390,7 @@ make_feature_bats() {
   use_commands 'bats {files}'
 }
 
-@test "I1: bats-only, untracked feature.bats は testcmd_ran:false と headdiff new:1 を出力する" {
+@test "I1: bats-only, untracked feature.bats は headdiff new:1 を出力する" {
   echo "export const ok = true;" > "$REPO/impl.mjs"
   make_feature_bats
 
@@ -510,7 +398,6 @@ make_feature_bats() {
   [ "$status" -eq 0 ]
   [[ "$output" == *'"red":true'* ]]
   [[ "$output" == *'"green":true'* ]]
-  [[ "$output" == *'"testcmd_ran":false'* ]]
   [[ "$output" == *'"headdiff":{"new":1,"modified":0,"unchanged":0,"total":1}'* ]]
 }
 
@@ -535,18 +422,16 @@ make_feature_bats() {
   [[ "$output" == *'"headdiff":{"new":0,"modified":0,"unchanged":1,"total":1}'* ]]
 }
 
-# vdelta run 経路が走った 1 ペアの testcmd_ran:true / headdiff なしは F1 が同じ実行で見る
-@test "I6: node --test 直接経路も testcmd_ran:false と headdiff を出力する(拡張子非依存)" {
+@test "I6: node --test 直接経路の ok のペアは index・red・green・reason・headdiff だけを出力する(拡張子非依存)" {
   echo "export const ok = true;" > "$REPO/impl.mjs"
   make_test
 
   run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
-  [[ "$output" == *'"testcmd_ran":false'* ]]
-  [[ "$output" == *'"headdiff":{"new":1,"modified":0,"unchanged":0,"total":1}'* ]]
+  [ "$(printf '%s' "$output" | jq -c '.results[0]')" = '{"index":0,"red":true,"green":true,"reason":"ok","headdiff":{"new":1,"modified":0,"unchanged":0,"total":1}}' ]
 }
 
-@test "I7: exit 2 経路(入力エラー)の出力は testcmd_ran を含まない(不変)" {
+@test "I7: exit 2 経路(入力エラー)のペアは index・red・green・reason だけを持つ(headdiff なし)" {
   echo "export const ok = true;" > "$REPO/impl.mjs"
   git -C "$REPO" add impl.mjs && git -C "$REPO" commit -q -m "add impl"
   make_test
@@ -554,7 +439,7 @@ make_feature_bats() {
   run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 2 ]
   [[ "$output" == *'"reason":"no impl changed vs HEAD'* ]]
-  [[ "$output" != *'"testcmd_ran"'* ]]
+  [ "$(printf '%s' "$output" | jq -c '.results[0] | keys')" = '["green","index","reason","red"]' ]
 }
 
 # -----------------------------------------------------------------------
@@ -632,7 +517,7 @@ EOF
   [ "$(printf '%s' "$output" | jq -r '.results | length')" -eq 2 ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].red or .results[0].green')" = "false" ]
   [ "$(printf '%s' "$output" | jq -r '.results[0].reason')" = "file is both test and impl: impl1.mjs" ]
-  [ "$(printf '%s' "$output" | jq -r '.results[0] | has("testcmd_ran")')" = "false" ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0] | keys')" = '["green","index","reason","red"]' ]
   [ "$(printf '%s' "$output" | jq -r '.results[1].red and .results[1].green')" = "true" ]
   # pair0 の入力エラーで pair1 の判定が走っている(退避・復元も完了)
   [ "$(grep -c 't2.test.mjs' "$REPO/calls.log")" -eq 2 ]
@@ -726,7 +611,7 @@ EOF
   echo "export const ok = true;" > "$REPO/impl.mjs"
   make_test
   use_commands 'npx vitest run {files}'
-  make_mock_pm npx '' impl.mjs
+  make_mock_pm npx impl.mjs
 
   run env PATH="$REPO/mockbin:$PATH" bash "$RGV" --base no-such-ref "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 2 ]
@@ -1030,7 +915,7 @@ use_runners() {
 
   run bash "$RGV" "$REPO" "feature.test.mjs" "impl.mjs"
   [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -c '.results[0] | {red, green, reason, testcmd_ran}')" = '{"red":true,"green":true,"reason":"ok","testcmd_ran":false}' ]
+  [ "$(printf '%s' "$output" | jq -c '.results[0]')" = '{"index":0,"red":true,"green":true,"reason":"ok","headdiff":{"new":1,"modified":0,"unchanged":0,"total":1}}' ]
   [ "$(cat "$REPO/calls.log")" = "$(printf 'run-unit feature.test.mjs \nrun-unit feature.test.mjs ')" ]
 }
 

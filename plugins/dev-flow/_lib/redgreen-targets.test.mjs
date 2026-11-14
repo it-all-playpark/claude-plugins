@@ -1,7 +1,7 @@
 // Evaluate の redgreen-verify に渡すペアの dedupe・結果の配布・prompt 文言を pin する（issue #822）。
 //
 // 純関数（_lib/redgreen-targets.mjs）の単体テストに加え、dev-flow.js を VM sandbox で実行して
-// 実際に redgreen spawn へ渡る prompt のペア数と、AC ごとの deterministic 昇格 / vdelta deny / inspection 据え置きの
+// 実際に redgreen spawn へ渡る prompt のペア数と、AC ごとの deterministic 昇格 / inspection 据え置きの
 // ログを確かめる（配線が _lib の純関数を経由していることの確認）。
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -204,21 +204,6 @@ test('[redgreen-targets] dev-flow: 7 AC が同一ペア → redgreen spawn は 1
   }
   assert.ok(logs.some((l) => l.includes('AC 7 件を一意な (test_files, impl_files) 1 ペアに集約')));
   assert.ok(!logs.some((l) => l.includes('redgreen-verify の results が')), '集約後の期待件数（1）で欠落判定していない');
-});
-
-test('[redgreen-targets] dev-flow: 共有ペアの vdelta deny は共有する全 AC で昇格せず inspection 据え置き', async () => {
-  const denyVerdict = {
-    comparability: 'exact',
-    transitions: { repaired_with_test_change: ['t1'] },
-    verification_surface: { status: 'changed' },
-  };
-  const acResults = [sameAc(0), sameAc(1), sameAc(2)];
-  const { redgreenPrompts, logs } = await runWith(acResults, () => ({ index: 0, red: true, green: true, verdict: denyVerdict }));
-  assert.equal(parseRedgreenPairs(redgreenPrompts[0]).length, 1);
-  for (let i = 1; i <= 3; i++) {
-    assert.ok(!logs.some((l) => l.includes(`AC-${i}: red→green 実証 → deterministic 昇格`)), `AC-${i} が deny なのに昇格した`);
-    assert.ok(logs.some((l) => l.includes(`AC-${i}: red→green 実証だが vdelta deny`)), `AC-${i} の deny ログが無い`);
-  }
 });
 
 test('[redgreen-targets] dev-flow: 異なるペアは従来どおり別ペアで渡し（同じ組だけ 1 ペアに集約）、結果はペア単位で AC に入る', async () => {

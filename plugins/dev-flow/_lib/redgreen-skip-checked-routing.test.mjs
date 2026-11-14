@@ -1,10 +1,9 @@
 // Issue #444: Evaluate ループ内 per-AC redgreen-verify 起動ガードに、deterministic 昇格済み
 // AC への skip 条件を追加する回帰テスト。
 //
-// _lib/redgreen-vdelta-deny-routing.test.mjs（VM sandbox で dev-flow.js を読み込み、agent() を
-// label/agentType で stub、log() 捕捉、journal-log prompt から telemetry handoff JSON を抽出する
-// makeSandbox パターン）と _lib/eval-convergence.test.mjs（shape:'complex' で evaluator 応答を
-// 呼び出し回数 index で切り替える responses 配列パターン）を組み合わせる。
+// VM sandbox で dev-flow.js を読み込み、agent() を label/agentType で stub、log() 捕捉、journal-log prompt から
+// telemetry handoff JSON を抽出する makeSandbox パターンと、_lib/eval-convergence.test.mjs（shape:'complex' で
+// evaluator 応答を呼び出し回数 index で切り替える responses 配列パターン）を組み合わせる。
 //
 // このテストファイルは TDD red として作成された。dev-flow.js の W4 ac_results ループ先頭ガードに
 // 「acItem.checked === true && acItem.check?.kind === 'deterministic' なら skip」条件を追加する

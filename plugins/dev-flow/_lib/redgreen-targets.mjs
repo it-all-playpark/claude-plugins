@@ -8,7 +8,7 @@
 // （1 本のテストファイルで全 AC を守る形）。redgreen-verify はペアごとに impl を退避して red → 復元して green を
 // 走らせるので、同じ組を AC の数だけ渡すと同一の red/green を AC 数倍実行するだけになる。よって組を
 // 順序正規化（重複除去 + sort）したキーで dedupe し、一意なペアだけを渡して結果を同じ組の全 AC に配る。
-// deterministic 昇格・checked・vdelta deny の判定は呼び出し側が AC ごとに行う（ここは配布まで）。
+// deterministic 昇格・checked の判定は呼び出し側が AC ごとに行う（ここは配布まで）。
 // argv に載せるファイル列は最初に現れた AC の申告順のまま — 組が全部異なる run の prompt は dedupe 前と同じ byte 列。
 //
 // start / wait / stop: 全ペアの red/green は 1 回の Bash の上限（600 秒）を超えうるので、start で切り離して起動し、
