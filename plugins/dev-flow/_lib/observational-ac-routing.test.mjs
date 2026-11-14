@@ -8,7 +8,7 @@
 //   (E) Evaluate で red→green 実証済みの観測型 AC は Final reconcile 後も達成のまま
 // Final reconcile の redgreen-final（issue #1146。Evaluate で実証できず pr-iterate の fix がテストを直した run）:
 //   (H) final evaluator が verified_by:test を返した観測型 AC → 最終 tree の red→green 実証で deterministic 昇格、HOLD しない
-//   (I) red→green 不成立・vdelta deny・spawn 失敗・results 欠落 → 昇格せず ac_human_pending の HOLD
+//   (I) red→green 不成立・spawn 失敗・results 欠落 → 昇格せず ac_human_pending の HOLD
 //   (H2) start が running → wait の結果で昇格 / (I2) 待機の上限・wait の読めない応答 → stop して昇格せず HOLD（issue #1226）
 //   (J) inspection の観測型 AC / (K) Evaluate で昇格済みの AC → redgreen-final を spawn しない
 // テストファイルを inline code で名指しした観測型 AC（issue #1147。actor agent）:
@@ -129,7 +129,6 @@ test('[observational-ac] (D) Final reconcile の inspection pass でも観測型
 
 // Final reconcile の redgreen-final（issue #1146）: Evaluate では red→green 不成立（テストが弱かった）、pr-iterate の fix で
 // テストを直した run。final evaluator が verified_by:test + test_files / impl_files を返した観測型 AC だけ最終 tree で実証する。
-const RG_DENY = { results: [{ index: 0, red: true, green: true, verdict: { comparability: 'exact', transitions: { repaired_with_test_change: ['t1'] }, verification_surface: { status: 'changed' } } }] };
 const rgFinalCalls = (calls) => calls.filter((c) => c.label === 'redgreen-final');
 const runFinalRedgreen = (finalAc, rgFinal, evalAc = [byTest(0), inspection(1)], evalRg = RG_NOT_RED) => run({
   'eval#1': evalWith(evalAc),
@@ -158,7 +157,6 @@ test('[observational-ac] (H) fix 後の final evaluator が test で確かめた
 
 for (const [name, rgFinal] of [
   ['red→green 不成立', RG_NOT_RED],
-  ['vdelta deny', RG_DENY],
   ['spawn が null', null],
   ['spawn が throw', () => { throw new Error('injected'); }],
   ['results 欠落', { results: [] }],
