@@ -8,31 +8,37 @@
 #
 # Usage: pr-iterate-prerun <PR> [--repo owner/name] [--direction <file>]
 #
-# --direction <file>: /pr-iterate を起動した人が決めた修正方針のファイル。wrapper が EnterWorktree する前（launch dir）に
-# 実行されるこの prerun が読み、本文を加工せずに出力の fix_direction に載せる（workflow が全 fix#i の prompt に入れる）。
+# --direction <file>: /pr-iterate を起動した人が決めた修正方針のファイル。この prerun が読み、本文を加工せずに出力の
+# fix_direction に載せる（workflow が全 fix#i の prompt に入れる）。wrapper は起動元の cwd を基準に絶対パスへ直して渡す
+# （EnterWorktree の後の再実行では cwd が PR の worktree なので、相対パスをそこから解決させない）。
 # PR の作者が書けるファイルを人の方針として fix に届けないよう、実体（symlink は辿る）が PR の worktree の中にあれば拒否する。
 # 読めない・空（空白だけを含む）・FIX_DIRECTION_MAX_CHARS 字を超えるときも拒否する。拒否は引数不正と同じ exit 2・stdout 空。
 #
+# worktree は作らない（sandbox 内からは起動元 repo の .git/worktrees に書けない。git worktree add / remove / prune を呼ばない）。
+# 使う worktree を決めた後、cwd がその worktree の中でなければ ok:false・worktree_status:"enter_required"・worktree・
+# worktree_registered（登録済みか）を返して止まる（worktree の中には書かない）。wrapper が EnterWorktree で入って
+# （未登録なら Claude Code が branch `worktree-<ディレクトリ名>` で作る）同じ引数で再実行すると先へ進む。
+#
 # 行う処理: gh pr view で url / headRefName / baseRefName / headRefOid / comments / title / body を取得（comments からは直前の
 # dev-flow サマリーと最後の終端サマリーの marker を読み、title・body は pr_intent に載せる）→ git fetch origin →
-# origin/<head> が PR の headRefOid と一致することを検証 → PR head の worktree を用意（既存なら再利用、
-# 無ければ origin/<head> から作成。作成時は取り出せないパスに skip-worktree を付け、再利用時は未ステージの
-# 削除が残っていれば fail-closed — worktree-checkout.sh）→ worktree の HEAD を PR head に合わせる（遅れていて未コミット変更が
-# 無ければ fast-forward、独自コミット・分岐があれば fail-closed）→ 書き込み probe →
+# origin/<head> が PR の headRefOid と一致することを検証 → 使う worktree を決める（下の規則）→（cwd がその中なら）
+# Claude Code が作った直後の branch `worktree-<ディレクトリ名>` を PR の head branch へ `git switch` で付け替える（local に
+# あればそのまま、無ければ origin/<head> から track なしで作る。取り出せないパスには skip-worktree を付け、再利用時は
+# 未ステージの削除が残っていれば fail-closed — worktree-checkout.sh）→ 書き込み probe → worktree の HEAD を PR head に合わせる
+# （遅れていて未コミット変更が無ければ fast-forward、独自コミット・分岐があれば fail-closed）→
 # `.devflow-tmp/.isolation-probe*` の git clean（前 run の probe 残置物。workflow の isolation-cleanup の代替）→
 # `.devflow-tmp/` を worktree 共有の info/exclude に足す（対象 repo が ignore していなければ）。
 #
-# worktree の置き場所は dev-flow-prerun と同じ規則: 候補は既定 `<repo>/.claude/worktrees/pr-<N>` と
-# repo 外 `<repo>-wt/pr-<N>`。既定候補が存在すればそれ、無ければ repo 外候補が存在すればそれ、どちらも
-# 無ければ既定候補。PR の head branch を既に checkout している worktree（dev-flow の df-<N> 等）があれば
-# 候補より優先して再利用する（git は同じ branch の二重 checkout を許さない）。
-# 書き込めない場合の退避も同じ規則: この呼び出しで作った worktree が書けなければ remove して repo 外候補で
-# 1 回だけ作り直す（skills repo の repo 内 worktree は index.lock が EPERM になる既知の問題があるため）。
-# 再利用した worktree が書けない場合は退避しない（branch がそこで checkout 済み）— ok:false で人間に返す。
+# 使う worktree: PR の head branch を既に checkout している worktree（dev-flow の df-<N> 等）があればそれを再利用する
+# （git は同じ branch の二重 checkout を許さない）。無ければ dev-flow-prerun と同じ規則の候補 — 既定
+# `<repo>/.claude/worktrees/pr-<N>` が存在すればそれ、無ければ repo 外 `<repo>-wt/pr-<N>` が存在すればそれ、どちらも
+# 無ければ既定候補（新しく作られるのは既定候補だけ。EnterWorktree は repo の外に作れない）。候補が別の branch・detached HEAD の
+# worktree、未登録のディレクトリ、未コミットの変更がある `worktree-<ディレクトリ名>` なら付け替えずに ok:false。
+# 書き込み probe が失敗したら ok:false で人間に返す（退避先は無い）。
 # 再利用する worktree の basename が git / git-* のときも ok:false で人間に返す（worktree 分離ガードの拒否。移動はしない）。
 #
 # Output (stdout, JSON 1 行):
-#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_reviewer, visual_snapshots, plugin_commit, pr_intent?, fix_direction?, error?}
+#   {ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_registered?, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_reviewer, visual_snapshots, plugin_commit, pr_intent?, fix_direction?, error?}
 #   plugin_commit: 実行中の dev-flow plugin の commit（12 桁 hex）。dev-flow-prerun と同じ dev-flow/scripts/plugin-commit.sh で
 #     plugin root から決める（telemetry 記録専用で gate の入力にしない）。決められなければ null（ok:false でも載せる）
 #   fix_direction: --direction のファイルの本文（ok:true で --direction を渡したときだけ載せる）
@@ -40,8 +46,10 @@
 #     指摘を含む fix#i にだけ「PR の意図（保つ要件）」としてデータで渡す。body が FIX_DIRECTION_MAX_CHARS 字を超えたら切らずに
 #     渡さず（body:null）、body_omitted:"over_limit"（上限を超えたので渡していない）を載せる。それ以外の body_omitted は null。
 #     title・body が空（空白だけ）なら null
-#   worktree_status: created / reused / unwritable / error / skipped
-#   skip_worktree: 作成時に取り出せず skip-worktree を付けたパス（worktree-checkout.sh。full checkout できれば []）
+#   worktree_status: created（head branch へ付け替えた）/ reused / enter_required / unwritable / error / skipped
+#   worktree_registered: 使う worktree が登録済みか（enter_required のときだけ載せる。wrapper は true なら
+#     EnterWorktree({path})、false なら EnterWorktree({name}) で入る）
+#   skip_worktree: 付け替えで取り出せず skip-worktree を付けたパス（worktree-checkout.sh。git switch が通れば []）
 #   prior_devflow: PR コメントのうち `<!-- dev-flow:<tier>[ codes=<code>,...][ head=<sha>] -->` marker を持つ最後のもの
 #     {tier, codes, url, head_sha}（codes は HOLD 理由の code。HOLD 以外は []。head_sha は marker の head（小文字）、
 #     無ければ null）。marker を持つコメントが無ければ null
@@ -62,10 +70,10 @@
 #     宣言のある run で、各 review の前に基準画像を撮り直す
 #   不明な値は null。ok:false でも exit 0（引数不正と --direction の拒否のみ exit 2、stdout 空）。
 #
-# GitHub I/O は `gh pr view` と `gh run list`（PR で走った成功 run。いずれも読み取り）のみ。push / comment / worktree の削除（この呼び出しで作った
-# 書けない worktree の退避を除く）はしない — 単体起動の worktree は回収後も人間が確認できるよう残す。
+# GitHub I/O は `gh pr view` と `gh run list`（PR で走った成功 run。いずれも読み取り）のみ。push / comment / worktree の削除は
+# しない — 単体起動の worktree は回収後も人間が確認できるよう残す。
 #
-# sandbox 内で動く。起動元 repo の .git/config は sandbox 内から書けないので、worktree は --no-track で作る
+# sandbox 内で動く。起動元 repo の .git/config は sandbox 内から書けないので、head branch は --no-track で作る
 # （upstream を書かない。呼び出し側の push は remote と HEAD を明示して同名 branch へ送る）。
 
 set -euo pipefail
@@ -122,8 +130,8 @@ if [[ -n "$REPO_ARG" ]]; then
     }
 fi
 
-# --direction: launch dir（EnterWorktree の前）で読み、本文を JSON 文字列で保持する。PR の worktree の中かどうかは
-# worktree を決めた後（Segment 3 の後）に、ここで取った実体の物理パスで判定する。
+# --direction: 本文を JSON 文字列で保持する。PR の worktree の中かどうかは worktree を決めた後（Segment 3 の中。
+# enter_required を返す前）に、ここで取った実体の物理パスで判定する。
 direction_reject() {
     echo "--direction ${DIRECTION_ARG}: $1" >&2
     exit 2
@@ -170,7 +178,7 @@ base_ref=""
 head_sha=""
 WT=""
 worktree_status="skipped"
-worktree_removed=false
+worktree_registered=false
 prior_devflow="null"
 prior_summary="null"
 pr_intent="null"
@@ -193,7 +201,7 @@ emit() {
         --arg repo "$repo" \
         --argjson epoch "$epoch" \
         --arg worktree_status "$worktree_status" \
-        --argjson worktree_removed "$worktree_removed" \
+        --argjson worktree_registered "$worktree_registered" \
         --argjson skip_worktree "$(skip_worktree_json)" \
         --argjson prior_devflow "$prior_devflow" \
         --argjson prior_summary "$prior_summary" \
@@ -208,10 +216,11 @@ emit() {
         def nz: if . == "" then null else . end;
         {ok: $ok, pr: $pr, worktree: ($worktree | nz), head_ref: ($head_ref | nz), base_ref: ($base_ref | nz),
          head_sha: ($head_sha | nz), repo: ($repo | nz), epoch: $epoch,
-         worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree,
+         worktree_status: $worktree_status, skip_worktree: $skip_worktree,
          prior_devflow: $prior_devflow, prior_summary: $prior_summary, ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds,
          security_reviewer: $security_reviewer, visual_snapshots: $visual_snapshots,
          plugin_commit: (if ($plugin_commit | test("^[0-9a-f]{12}$")) then $plugin_commit else null end)}
+        + (if $worktree_status == "enter_required" then {worktree_registered: $worktree_registered} else {} end)
         + (if $ok and $pr_intent != null then {pr_intent: $pr_intent} else {} end)
         + (if $ok and $fix_direction != null then {fix_direction: $fix_direction} else {} end)
         + (if $error == "" then {} else {error: $error} end)
@@ -307,10 +316,10 @@ fi
 head_sha="$PR_HEAD_OID"
 
 # ============================================================================
-# Segment 3: worktree 用意（再利用 / 作成 / 書けない場合の退避）
+# Segment 3: 使う worktree の決定 → enter_required / head branch への付け替え → 書き込み probe → HEAD 合わせ
 # ============================================================================
 
-# 登録済み worktree を「path<TAB>branch<TAB>prunable」で列挙する（detached は branch 空）
+# 登録済み worktree を「path<TAB>branch<TAB>prunable」で列挙する（detached は branch が "-"。空にすると read が連続する TAB を 1 つに畳む）
 list_worktrees() {
     git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '
         BEGIN { RS=""; FS="\n" }
@@ -321,18 +330,18 @@ list_worktrees() {
                 else if ($i ~ /^branch refs\/heads\//) { b=$i; sub(/^branch refs\/heads\//, "", b); branch=b }
                 else if ($i ~ /^prunable/) prunable=1
             }
-            print path "\t" branch "\t" prunable
+            print path "\t" (branch == "" ? "-" : branch) "\t" prunable
         }
     '
 }
 
 CANON_ROOT="$(canon_path "$ROOT")"
 REUSE_PATH=""
-NEED_PRUNE=false
+STALE_PATH=""
 while IFS=$'\t' read -r p b pr_flag; do
     [[ -n "$p" && "$b" == "$head_ref" ]] || continue
     if [[ "$pr_flag" == "1" ]]; then
-        NEED_PRUNE=true
+        STALE_PATH="$p"
         continue
     fi
     if [[ "$p" == "$CANON_ROOT" ]]; then
@@ -340,8 +349,11 @@ while IFS=$'\t' read -r p b pr_flag; do
     fi
     REUSE_PATH="$p"
 done <<<"$(list_worktrees)"
-if [[ "$NEED_PRUNE" == true ]]; then
-    git -C "$ROOT" worktree prune >/dev/null 2>&1 || true
+if [[ -z "$REUSE_PATH" && -n "$STALE_PATH" ]]; then
+    # 実体の無い登録（prunable）が head branch を掴んだままだと、別の worktree でその branch へ付け替えられない。
+    # sandbox 内からは登録を消せないので人間に返す
+    worktree_status="error"
+    fail "PR の head branch ${head_ref} を checkout した worktree ${STALE_PATH} の登録が残っているが実体が無い（prunable）。git worktree prune を実行して登録を消してから再実行する"
 fi
 
 DEFAULT_WT="${ROOT}/.claude/worktrees/pr-${PR}"
@@ -378,20 +390,26 @@ align_head() {
     return 0
 }
 
-# 未登録パスに worktree を作る。成功で 0（WT は呼び出し側が設定済み）
-create_at() {
-    local wt="$1"
-    if [[ -e "$wt" ]]; then
-        error="path exists but is not a registered git worktree: ${wt}"
-        return 1
+# --direction の実体が PR の worktree の中なら拒否する（PR の作者が書けるファイルを人の方針として fix に届けない）。
+# enter_required を返す前にも判定する（1 回目と、worktree に入った後の再実行で結果を変えない）
+reject_direction_in_worktree() {
+    [[ -n "$DIRECTION_REAL" ]] || return 0
+    if [[ "$DIRECTION_REAL" == "$(canon_path "$WT")"/* ]]; then
+        direction_reject "PR の worktree（${WT}）の中のファイルは方針として読まない（PR の作者が書ける）。launch dir 側のファイルを渡す"
     fi
-    worktree_add "$ROOT" "$wt" "$head_ref" "origin/${head_ref}" || { error="$WT_ADD_ERR"; return 1; }
-    return 0
+}
+
+# cwd が使う worktree の中でなければ enter_required を返して止まる（sandbox 内からは入っていない worktree に書けない）
+require_entered() {
+    [[ "$(worktree_toplevel_of_cwd)" == "$(canon_path "$WT")" ]] && return 0
+    worktree_status="enter_required"
+    emit false
 }
 
 if [[ -n "$REUSE_PATH" ]]; then
     WT="$REUSE_PATH"
     worktree_status="reused"
+    worktree_registered=true
     # basename が git / git-* の worktree は、パスを operand に取る exec-proxy（security-review-scope 等）を
     # worktree 分離ガードが git サブコマンドとみなして拒否し、security review が diff_unavailable で止まる。
     # 人の session の worktree かもしれないので移動・削除せず、起動前に人間へ返す
@@ -399,11 +417,13 @@ if [[ -n "$REUSE_PATH" ]]; then
     if [[ "$wt_base" == "git" || "$wt_base" == git-* ]]; then
         fail "再利用する worktree ${WT} の名前（${wt_base}）が git / git- で始まるため、worktree パスを渡す exec-proxy（security-review-scope 等）が worktree 分離ガードに git コマンドとみなされて拒否される。git worktree move ${WT} <git- で始まらない別名のパス> で移すか、その worktree で ${head_ref} の checkout を外して（別 branch へ切り替えて）から再実行する"
     fi
+    reject_direction_in_worktree
+    PARTIAL_ERR="$(partial_checkout_error "$WT")" || fail "$PARTIAL_ERR"
+    require_entered
     if ! PROBE_ERR="$(write_probe "$WT")"; then
         worktree_status="unwritable"
-        fail "${PROBE_ERR}（再利用した worktree は ${head_ref} を checkout 済みのため退避しない。git worktree remove ${WT} で削除してから再実行する）"
+        fail "${PROBE_ERR}（再利用した worktree は ${head_ref} を checkout 済み。git worktree remove ${WT} で削除してから再実行する）"
     fi
-    PARTIAL_ERR="$(partial_checkout_error "$WT")" || fail "$PARTIAL_ERR"
     align_head "$WT" || fail "$error"
 else
     if [[ -e "$DEFAULT_WT" ]]; then
@@ -413,48 +433,49 @@ else
     else
         WT="$DEFAULT_WT"
     fi
-    # 候補パスが別 branch の worktree として登録済みなら、上書きせず止める
+    # 候補パスが登録済みなら、Claude Code が作った直後の branch（worktree-<ディレクトリ名>）のときだけ head branch へ
+    # 付け替える。別の branch・detached HEAD の worktree は上書きせず止める
     CANON_WT="$(canon_path "$WT")"
-    while IFS=$'\t' read -r p b _; do
-        if [[ "$p" == "$CANON_WT" ]]; then
-            worktree_status="error"
-            fail "worktree ${WT} は別の branch（${b:-detached HEAD}）を checkout している。git worktree remove ${WT} で削除してから再実行する"
+    FRESH_BRANCH="$(worktree_fresh_branch "$WT")"
+    while IFS=$'\t' read -r p b pr_flag; do
+        [[ "$p" == "$CANON_WT" ]] || continue
+        worktree_status="error"
+        if [[ "$pr_flag" == "1" ]]; then
+            fail "worktree ${WT} の登録が残っているが実体が無い（prunable）。git worktree prune を実行して登録を消してから再実行する"
         fi
+        if [[ "$b" != "$FRESH_BRANCH" ]]; then
+            fail "worktree ${WT} は別の branch（${b/#-/detached HEAD}）を checkout している。git worktree remove ${WT} で削除してから再実行する"
+        fi
+        worktree_registered=true
     done <<<"$(list_worktrees)"
 
+    if [[ "$worktree_registered" == true ]]; then
+        # 付け替えは作業ツリーを書き換える。未コミットの変更があれば誰かの作業中とみなして触らない
+        FRESH_DIRTY="$(git -C "$WT" status --porcelain --untracked-files=all -- . ':(exclude).devflow-tmp' 2>&1)" || {
+            worktree_status="error"
+            fail "worktree ${WT} の未コミット変更を判定できなかった: ${FRESH_DIRTY}"
+        }
+        if [[ -n "$FRESH_DIRTY" ]]; then
+            worktree_status="error"
+            fail "worktree ${WT} の branch ${FRESH_BRANCH}（Claude Code が作った直後の branch）に未コミットの変更があるため、${head_ref} へ付け替えずに止めた。変更を commit するか退避してから再実行する"
+        fi
+    elif [[ -e "$WT" ]]; then
+        worktree_status="error"
+        fail "path exists but is not a registered git worktree: ${WT}"
+    fi
+
     worktree_status="created"
-    create_at "$WT" || { worktree_status="error"; fail "$error"; }
+    reject_direction_in_worktree
+    require_entered
+    if ! worktree_switch "$WT" "$head_ref" "origin/${head_ref}"; then
+        worktree_status="error"
+        fail "$WT_SWITCH_ERR"
+    fi
     if ! PROBE_ERR="$(write_probe "$WT")"; then
-        # この呼び出しで作った worktree だけを remove し、repo 外候補で 1 回だけ作り直す（二重 checkout にならない）
-        if REMOVE_ERR="$(git -C "$ROOT" worktree remove --force "$WT" 2>&1)"; then
-            worktree_removed=true
-        else
-            worktree_status="unwritable"
-            fail "${PROBE_ERR}; worktree remove failed: ${REMOVE_ERR}"
-        fi
-        if [[ "$WT" == "$OUTSIDE_WT" || -e "$OUTSIDE_WT" ]]; then
-            worktree_status="unwritable"
-            fail "$PROBE_ERR"
-        fi
-        FIRST_ERR="$PROBE_ERR"
-        WT="$OUTSIDE_WT"
-        mkdir -p "$(dirname "$WT")" 2>/dev/null || true
-        create_at "$WT" || { worktree_status="error"; fail "${FIRST_ERR}; 退避先 ${WT} の作成に失敗: ${error}"; }
-        if ! PROBE_ERR="$(write_probe "$WT")"; then
-            worktree_status="unwritable"
-            git -C "$ROOT" worktree remove --force "$WT" >/dev/null 2>&1 || true
-            fail "${FIRST_ERR}; 退避先 ${WT} も書き込めない: ${PROBE_ERR}"
-        fi
+        worktree_status="unwritable"
+        fail "$PROBE_ERR"
     fi
     align_head "$WT" || fail "$error"
-fi
-
-# --direction の実体が PR の worktree の中なら拒否する（PR の作者が書けるファイルを人の方針として fix に届けない）
-if [[ -n "$DIRECTION_REAL" ]]; then
-    CANON_WT_FINAL="$(canon_path "$WT")"
-    if [[ "$DIRECTION_REAL" == "$CANON_WT_FINAL"/* ]]; then
-        direction_reject "PR の worktree（${WT}）の中のファイルは方針として読まない（PR の作者が書ける）。launch dir 側のファイルを渡す"
-    fi
 fi
 
 # ============================================================================

@@ -4,7 +4,8 @@ bats_require_minimum_version 1.5.0
 # Tests for _shared/scripts/pr-iterate-prerun.sh (issue #828)
 #
 # pr-iterate-prerun は /pr-iterate 単体起動の isolation preflight（gh pr view → fetch → PR head 一致検証 →
-# worktree 作成/再利用 → HEAD 合わせ → 書き込み probe → 書けない場合の repo 外退避）を 1 コマンドで行う。
+# 使う worktree の決定 → head branch への付け替え → 書き込み probe → HEAD 合わせ）を 1 コマンドで行う。
+# worktree は作らず、cwd が使う worktree の中でなければ enter_required を返す（issue #1423）。
 # fixture は bare origin（main + PR head の feature/x）+ clone した ROOT。gh は stub する。
 
 SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/pr-iterate-prerun.sh"
@@ -35,6 +36,26 @@ setup() {
     # git worktree list --porcelain は物理パスを返す（macOS の /var → /private/var）
     ROOT_P="$(cd "$ROOT" && pwd -P)"
     HEAD_SHA="$(git -C "$SEED" rev-parse feature/x)"
+
+    # wrapper（SKILL.md の preflight）の代役。prerun を実行し、enter_required なら EnterWorktree の代わりにその worktree へ
+    # cd して（未登録なら Claude Code と同じく branch worktree-<ディレクトリ名> で、起動元の HEAD から作る）同じ引数で
+    # 再実行する。enter_required 以外の出力・終了コードはそのまま返す。prerun 単体の 1 回目の出力は "$SCRIPT" を直接実行して見る。
+    FLOW="$BATS_TEST_TMPDIR/flow.sh"
+    cat >"$FLOW" <<'FLOW_SH'
+#!/usr/bin/env bash
+out="$(bash "${PRERUN_UNDER_TEST}" "$@")" || exit $?
+if [[ "$(jq -r '.worktree_status' <<<"$out")" != "enter_required" ]]; then
+    printf '%s\n' "$out"
+    exit 0
+fi
+wt="$(jq -r '.worktree' <<<"$out")"
+if [[ "$(jq -r '.worktree_registered' <<<"$out")" != "true" ]]; then
+    git worktree add -q -b "worktree-$(basename "$wt")" "$wt" HEAD >&2 || exit 1
+fi
+cd "$wt" && exec bash "${PRERUN_UNDER_TEST}" "$@"
+FLOW_SH
+    chmod +x "$FLOW"
+    export PRERUN_UNDER_TEST="$SCRIPT"
 
     STUB_DIR="$BATS_TEST_TMPDIR/stub-bin"
     mkdir -p "$STUB_DIR"
@@ -104,13 +125,13 @@ advance_origin_head() {
 
 # ---- (1) 新規作成 ----
 
-@test "(1) worktree が無い -> origin の head から既定候補 .claude/worktrees/pr-<N> に作成し JSON 1 行を出す" {
+@test "(1) worktree が無い -> 既定候補 .claude/worktrees/pr-<N> に入った後、origin の head から head branch を作って付け替え JSON 1 行を出す" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 1 ]
     echo "$output" | jq -e '.ok == true'
-    echo "$output" | jq -e '.worktree_status == "created" and .worktree_removed == false'
+    echo "$output" | jq -e '.worktree_status == "created" and (has("worktree_registered") | not)'
     echo "$output" | jq -e --arg wt "$ROOT_P/.claude/worktrees/pr-5" '.worktree == $wt'
     echo "$output" | jq -e '.head_ref == "feature/x" and .base_ref == "main" and .repo == "acme/skills" and .pr == 5'
     echo "$output" | jq -e --arg h "$HEAD_SHA" '.head_sha == $h'
@@ -119,18 +140,24 @@ advance_origin_head() {
     wt="$(echo "$output" | jq -r '.worktree')"
     [ "$(git -C "$wt" rev-parse HEAD)" = "$HEAD_SHA" ]
     [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" = "feature/x" ]
+    # 起点は Claude Code が作った commit（起動元の main）ではなく origin/<head>
+    [ "$HEAD_SHA" != "$(git -C "$ROOT" rev-parse main)" ]
+    [ "$(git -C "$ROOT" log -g --format=%gs refs/heads/feature/x -- | tail -n 1)" = "branch: Created from origin/feature/x" ]
+    [ -z "$(git -C "$wt" status --porcelain)" ]
+    # Claude Code が作った branch は消さない
+    git -C "$ROOT" show-ref --verify --quiet refs/heads/worktree-pr-5
     grep -qx "pr view 5 --json url,headRefName,baseRefName,headRefOid,comments,title,body" "$GH_STUB_LOG"
-    # 書けないパスが無ければ full checkout で、skip-worktree を付けない
+    # 書けないパスが無ければ git switch が通り、skip-worktree を付けない
     echo "$output" | jq -e '.skip_worktree == []'
     [ -z "$(git -C "$wt" ls-files -v | grep '^S' || true)" ]
 }
 
 # sandbox 内からは起動元 repo の .git/config を書けない。config.lock で config の書き込みを全て失敗させても
-# worktree を作れること（upstream を書かない）を確かめる。
-@test "(1c) .git/config に書けなくても worktree を作り、upstream を書かない" {
+# head branch を作って付け替えられること（upstream を書かない）を確かめる。
+@test "(1c) .git/config に書けなくても head branch を作って付け替え、upstream を書かない" {
     : >"$ROOT/.git/config.lock"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "created"'
     wt="$(echo "$output" | jq -r '.worktree')"
@@ -139,9 +166,119 @@ advance_origin_head() {
     [ "$status" -ne 0 ]
 }
 
+# ---- (1d-h) worktree を作らずに、入るべき worktree を返す（enter_required。issue #1423）----
+# sandbox 内からは起動元 repo の .git/worktrees に書けない。prerun は worktree を作らず、cwd が使う worktree の中でなければ
+# worktree のパスと登録済みかを返して止まる。wrapper が EnterWorktree で入って同じ引数で再実行する（"$FLOW" がその代役）。
+
+@test "(1d) 未登録の worktree を cwd の外から -> 作らずに ok:false・enter_required・worktree_registered:false" {
+    cd "$ROOT"
+    before="$(git -C "$ROOT" worktree list --porcelain)"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 1 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "enter_required" and .worktree_registered == false'
+    echo "$output" | jq -e --arg wt "$ROOT_P/.claude/worktrees/pr-5" '.worktree == $wt'
+    echo "$output" | jq -e --arg h "$HEAD_SHA" '.head_ref == "feature/x" and .head_sha == $h and (has("error") | not) and (has("pr_intent") | not)'
+    # worktree も head branch も作らない
+    [ ! -e "$ROOT/.claude/worktrees/pr-5" ]
+    [ "$(git -C "$ROOT" worktree list --porcelain)" = "$before" ]
+    run git -C "$ROOT" show-ref --verify --quiet refs/heads/feature/x
+    [ "$status" -ne 0 ]
+}
+
+@test "(1e) 登録済みの worktree（Claude Code が作った直後・head branch を checkout 済みで遅れている）を cwd の外から -> enter_required・worktree_registered:true で、中に書き込まない" {
+    cd "$ROOT"
+    WT5="$ROOT/.claude/worktrees/pr-5"
+    git worktree add -q -b worktree-pr-5 "$WT5" HEAD
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "enter_required" and .worktree_registered == true'
+    echo "$output" | jq -e --arg wt "$ROOT_P/.claude/worktrees/pr-5" '.worktree == $wt'
+    # 付け替えは入ってから行う
+    [ "$(git -C "$WT5" rev-parse --abbrev-ref HEAD)" = "worktree-pr-5" ]
+    [ ! -e "$WT5/.devflow-tmp" ]
+
+    # head branch を checkout 済みで PR head より遅れた worktree: 外からは fast-forward も probe の除去もしない
+    run bash "$FLOW" 5
+    [ "$status" -eq 0 ]
+    old_head="$(git -C "$WT5" rev-parse HEAD)"
+    advance_origin_head
+    echo ok > "$WT5/.devflow-tmp/.isolation-probe-111"
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "enter_required" and .worktree_registered == true'
+    [ "$(git -C "$WT5" rev-parse HEAD)" = "$old_head" ]
+    [ -f "$WT5/.devflow-tmp/.isolation-probe-111" ]
+}
+
+@test "(1f) cwd が worktree-<ディレクトリ名> の worktree で local に head branch がある -> 作り直さずにその branch へ switch し、PR head へ fast-forward する" {
+    cd "$ROOT"
+    git branch -q --no-track feature/x main
+    WT5="$ROOT/.claude/worktrees/pr-5"
+    git worktree add -q -b worktree-pr-5 "$WT5" HEAD
+    cd "$WT5"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .skip_worktree == []'
+    [ "$(git -C "$WT5" rev-parse --abbrev-ref HEAD)" = "feature/x" ]
+    [ "$(git -C "$WT5" rev-parse HEAD)" = "$HEAD_SHA" ]
+    # local の branch を作り直していない（作成記録が元のまま）
+    [ "$(git -C "$ROOT" log -g --format=%gs refs/heads/feature/x -- | tail -n 1)" = "branch: Created from main" ]
+}
+
+@test "(1g) 候補パスの worktree-<ディレクトリ名> に未コミットの変更がある -> 付け替えずに ok:false、変更を残す" {
+    cd "$ROOT"
+    WT5="$ROOT/.claude/worktrees/pr-5"
+    git worktree add -q -b worktree-pr-5 "$WT5" HEAD
+    echo "wip" > "$WT5/wip.txt"
+    cd "$WT5"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.error | test("worktree-pr-5") and test("未コミットの変更")'
+    [ "$(git -C "$WT5" rev-parse --abbrev-ref HEAD)" = "worktree-pr-5" ]
+    [ -f "$WT5/wip.txt" ]
+    run git -C "$ROOT" show-ref --verify --quiet refs/heads/feature/x
+    [ "$status" -ne 0 ]
+}
+
+@test "(1h) 候補パスが別の branch・detached HEAD の worktree -> 付け替えずに ok:false" {
+    cd "$ROOT"
+    WT5="$ROOT/.claude/worktrees/pr-5"
+    git worktree add -q -b other-branch "$WT5" HEAD
+    cd "$WT5"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error" and (.error | test("別の branch（other-branch）"))'
+    [ "$(git -C "$WT5" rev-parse --abbrev-ref HEAD)" = "other-branch" ]
+
+    git -C "$WT5" switch -q --detach
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and (.error | test("detached HEAD"))'
+    [ "$(git -C "$WT5" rev-parse --abbrev-ref HEAD)" = "HEAD" ]
+}
+
+@test "(1i) head branch を checkout した worktree の実体が無い（prunable）-> 登録を消さずに ok:false、error に git worktree prune" {
+    cd "$ROOT"
+    run bash "$FLOW" 5
+    [ "$status" -eq 0 ]
+    wt="$(echo "$output" | jq -r '.worktree')"
+    rm -rf "$wt"
+    before="$(git -C "$ROOT" worktree list --porcelain)"
+
+    cd "$ROOT"
+    run bash "$SCRIPT" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error" and (.error | test("prunable") and test("git worktree prune"))'
+    [ ! -e "$wt" ]
+    [ "$(git -C "$ROOT" worktree list --porcelain)" = "$before" ]
+}
+
 @test "(1b) --repo を gh pr view に渡し、出力の repo はその値" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5 --repo other/name
+    run bash "$FLOW" 5 --repo other/name
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .repo == "other/name"'
     grep -qx "pr view 5 --repo other/name --json url,headRefName,baseRefName,headRefOid,comments,title,body" "$GH_STUB_LOG"
@@ -155,7 +292,7 @@ advance_origin_head() {
     git worktree add -q --no-track -b feature/x "$DF" origin/feature/x
     DF_P="$(cd "$DF" && pwd -P)"
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused"'
     echo "$output" | jq -e --arg wt "$DF_P" '.worktree == $wt'
@@ -170,7 +307,7 @@ advance_origin_head() {
     git worktree add -q --no-track -b feature/x "$GW" origin/feature/x
     GW_P="$(cd "$GW" && pwd -P)"
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "reused"'
     echo "$output" | jq -e --arg wt "$GW_P" '.worktree == $wt and (.error | contains($wt))'
@@ -186,7 +323,7 @@ advance_origin_head() {
     git worktree add -q --no-track -b feature/x "$GW" origin/feature/x
     GW_P="$(cd "$GW" && pwd -P)"
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg wt "$GW_P" '.ok == false and .worktree == $wt and (.error | test("worktree 分離ガード"))'
     [ -d "$GW" ]
@@ -198,7 +335,7 @@ advance_origin_head() {
         WT_DIR="$BATS_TEST_TMPDIR/wt-$name/$name"
         git worktree add -q --no-track -b feature/x "$WT_DIR" origin/feature/x
         WT_DIR_P="$(cd "$WT_DIR" && pwd -P)"
-        run bash "$SCRIPT" 5
+        run bash "$FLOW" 5
         [ "$status" -eq 0 ]
         echo "$output" | jq -e --arg wt "$WT_DIR_P" '.ok == true and .worktree_status == "reused" and .worktree == $wt'
         git worktree remove --force "$WT_DIR"
@@ -208,11 +345,11 @@ advance_origin_head() {
 
 @test "(2b) 同じ PR で 2 回目 -> 1 回目に作った worktree を reused で返し、epoch は新しく採る" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     first_wt="$(echo "$output" | jq -r '.worktree')"
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused"'
     echo "$output" | jq -e --arg wt "$first_wt" '.worktree == $wt'
@@ -220,12 +357,12 @@ advance_origin_head() {
 
 @test "(2c) 再利用 worktree が PR head より遅れていて未コミット変更なし -> PR head へ fast-forward する" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     wt="$(echo "$output" | jq -r '.worktree')"
     advance_origin_head
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused"'
     echo "$output" | jq -e --arg h "$HEAD_SHA" '.head_sha == $h'
@@ -234,13 +371,13 @@ advance_origin_head() {
 
 @test "(2d) 前 run の isolation probe 残置物だけを除去し、.devflow-tmp の他のファイルは残す" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     wt="$(echo "$output" | jq -r '.worktree')"
     mkdir -p "$wt/.devflow-tmp"
     echo ok > "$wt/.devflow-tmp/.isolation-probe-111"
     echo body > "$wt/.devflow-tmp/pr-body.md"
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     [ ! -e "$wt/.devflow-tmp/.isolation-probe-111" ]
     [ -f "$wt/.devflow-tmp/pr-body.md" ]
@@ -253,7 +390,7 @@ advance_origin_head() {
 
 @test "(2h) .devflow-tmp/ を ignore しない repo -> fix の stage・status に .devflow-tmp/ 配下が載らず、fix の新規ファイルは載る" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     wt="$(echo "$output" | jq -r '.worktree')"
     [ ! -e "$wt/.gitignore" ]
@@ -273,7 +410,7 @@ advance_origin_head() {
 @test "(3) origin の head が PR の headRefOid と一致しない -> ok:false、worktree を作らない" {
     write_pr_fixture "0123456789abcdef0123456789abcdef01234567"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false'
     echo "$output" | jq -e '.error | test("PR head 不一致")'
@@ -283,13 +420,13 @@ advance_origin_head() {
 
 @test "(3b) 再利用 worktree に PR head に無い未 push のコミット -> ok:false、HEAD を動かさない" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     wt="$(echo "$output" | jq -r '.worktree')"
     echo "local" >> "$wt/README.md"
     git -C "$wt" commit -q -am "local only"
     local_head="$(git -C "$wt" rev-parse HEAD)"
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "reused"'
     echo "$output" | jq -e '.error | test("PR head（.*）に無いコミット")'
@@ -298,13 +435,13 @@ advance_origin_head() {
 
 @test "(3c) 再利用 worktree が遅れていて未コミット変更あり -> ok:false、fast-forward しない" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     wt="$(echo "$output" | jq -r '.worktree')"
     old_head="$(git -C "$wt" rev-parse HEAD)"
     echo "wip" > "$wt/wip.txt"
     advance_origin_head
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false'
     echo "$output" | jq -e '.error | test("未コミット変更")'
@@ -313,14 +450,14 @@ advance_origin_head() {
 
 @test "(3d) PR head と一致する再利用 worktree の未コミット変更は残したまま ok:true（fix_failed 回収）" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     # 1 回目が失敗すると wt が空になり wip.txt を / に書く別の失敗に化けるので、ここで原因を出して止める
     [ "$status" -eq 0 ] || { echo "1 回目の prerun が失敗: $output" >&2; return 1; }
     echo "$output" | jq -e '.ok == true' >/dev/null || { echo "1 回目の prerun が ok:false: $output" >&2; return 1; }
     wt="$(echo "$output" | jq -r '.worktree')"
     echo "wip" > "$wt/wip.txt"
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused"'
     [ -f "$wt/wip.txt" ]
@@ -329,53 +466,30 @@ advance_origin_head() {
 @test "(3e) origin に head branch が無い（fork の PR 等） -> ok:false" {
     jq -n '{url: "https://github.com/acme/skills/pull/5", headRefName: "fork-only", baseRefName: "main", headRefOid: "0123456789abcdef0123456789abcdef01234567"}' >"$GH_STUB_FIXTURE"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .head_ref == "fork-only"'
     echo "$output" | jq -e '.error | test("origin に PR の head branch fork-only が無い")'
 }
 
-# ---- (4) 書き込めない場合の退避 ----
+# ---- (4) 書き込めない worktree ----
+# EnterWorktree は repo の外に worktree を作れないので退避先は無い。書き込み probe が失敗したら ok:false で人間に返す
 
-@test "(4) 既定候補に作った worktree が書けない -> remove して repo 外 <repo>-wt/pr-<N> に作り直す" {
-    # post-checkout hook で repo 内 worktree の .devflow-tmp だけを書き込み不可にする（skills repo の EPERM の再現）
-    HOOKS="$BATS_TEST_TMPDIR/hooks"
-    mkdir -p "$HOOKS"
-    cat >"$HOOKS/post-checkout" <<'HOOK'
-#!/usr/bin/env bash
-case "$PWD" in
-    */.claude/worktrees/*) mkdir -p .devflow-tmp && chmod a-w .devflow-tmp ;;
-esac
-HOOK
-    chmod +x "$HOOKS/post-checkout"
-    git -C "$ROOT" config core.hooksPath "$HOOKS"
-
+@test "(4b) 再利用 worktree が書けない -> ok:false、worktree_status=unwritable で、worktree を消さず repo の外にも作らない" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
-    [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .worktree_removed == true'
-    echo "$output" | jq -e --arg wt "$ROOT_P-wt/pr-5" '.worktree == $wt'
-    echo "$output" | jq -e --arg h "$HEAD_SHA" '.head_sha == $h'
-    [ ! -e "$ROOT/.claude/worktrees/pr-5" ]
-    [ "$(git -C "$ROOT_P-wt/pr-5" rev-parse HEAD)" = "$HEAD_SHA" ]
-    run git -C "$ROOT" worktree list --porcelain
-    [[ "$output" != *"/.claude/worktrees/pr-5"* ]]
-}
-
-@test "(4b) 再利用 worktree が書けない -> 退避せず ok:false、worktree_status=unwritable、worktree_removed=false" {
-    cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     wt="$(echo "$output" | jq -r '.worktree')"
     rm -rf "$wt/.devflow-tmp"
     chmod a-w "$wt"
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     status_after="$status"
     output_after="$output"
     chmod u+w "$wt"
 
     [ "$status_after" -eq 0 ]
-    echo "$output_after" | jq -e '.ok == false and .worktree_status == "unwritable" and .worktree_removed == false'
+    echo "$output_after" | jq -e '.ok == false and .worktree_status == "unwritable"'
+    [ -d "$wt" ]
     echo "$output_after" | jq -e '.error | ascii_downcase | test("permission|not permitted")'
     echo "$output_after" | jq -e '.error | test("git worktree remove")'
     [ ! -e "$ROOT/../root-wt/pr-5" ]
@@ -385,19 +499,21 @@ HOOK
     mkdir -p "$ROOT/.claude/worktrees/pr-5"
     mkdir -p "$ROOT-wt/pr-5"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
     echo "$output" | jq -e --arg wt "$ROOT_P/.claude/worktrees/pr-5" '.worktree == $wt'
     echo "$output" | jq -e '.error | test("not a registered git worktree")'
 }
 
-@test "(4d) 既定候補が無く repo 外候補が存在すればそれを使う" {
+@test "(4d) 既定候補が無く repo 外候補が存在すればそれを使う — 未登録ディレクトリなら ok:false で、既定候補に作らせない" {
     mkdir -p "$ROOT-wt/pr-5"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e --arg wt "$ROOT_P-wt/pr-5" '.worktree == $wt'
+    echo "$output" | jq -e --arg wt "$ROOT_P-wt/pr-5" '.ok == false and .worktree_status == "error" and .worktree == $wt'
+    echo "$output" | jq -e '.error | test("not a registered git worktree")'
+    [ ! -e "$ROOT/.claude/worktrees/pr-5" ]
 }
 
 # ---- (5) その他の fail-closed ----
@@ -405,7 +521,7 @@ HOOK
 @test "(5a) gh pr view が失敗 -> ok:false、error に gh の出力" {
     export GH_STUB_FAIL=1
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "skipped"'
     echo "$output" | jq -e '.error | test("HTTP 404")'
@@ -414,7 +530,7 @@ HOOK
 @test "(5b) head branch が main checkout で checkout 済み -> ok:false（main checkout を worktree として返さない）" {
     cd "$ROOT"
     git checkout -q -b feature/x origin/feature/x
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false'
     echo "$output" | jq -e '.error | test("main checkout")'
@@ -422,24 +538,24 @@ HOOK
 
 @test "(5c) 引数不正 -> exit 2、stdout 空" {
     cd "$ROOT"
-    run --separate-stderr bash "$SCRIPT"
+    run --separate-stderr bash "$FLOW"
     [ "$status" -eq 2 ]
     [ -z "$output" ]
-    run --separate-stderr bash "$SCRIPT" abc
+    run --separate-stderr bash "$FLOW" abc
     [ "$status" -eq 2 ]
     [ -z "$output" ]
-    run --separate-stderr bash "$SCRIPT" 5 --repo 'not a repo'
+    run --separate-stderr bash "$FLOW" 5 --repo 'not a repo'
     [ "$status" -eq 2 ]
     [ -z "$output" ]
-    run --separate-stderr bash "$SCRIPT" 5 --unknown
+    run --separate-stderr bash "$FLOW" 5 --unknown
     [ "$status" -eq 2 ]
     [ -z "$output" ]
 }
 
 # ---- 書けないパスを追跡する repo（issue #875） ----
-# sandbox は `.githooks` の作成を EPERM で拒み、git は full checkout を fatal で中断して作りかけの worktree を片付ける。
+# sandbox は `.githooks` の作成を EPERM で拒み、git は取り出し（git switch）を fatal で中断する。
 # テストでは同じ「git が .githooks 配下を取り出せない」状態を、失敗する required smudge filter で作る
-# （attributes は .git/info に置くので全 worktree に効き、main checkout の main には .githooks が無い）。
+# （attributes は .git/info に置くので全 worktree に効き、Claude Code が worktree を作る main には .githooks が無い）。
 track_unwritable_githooks() {
     git -C "$SEED" checkout -q feature/x
     mkdir -p "$SEED/.githooks"
@@ -456,15 +572,15 @@ track_unwritable_githooks() {
     git -C "$ROOT" config filter.deny.required true
 }
 
-@test "(5d) .githooks を取り出せない repo -> ok:true で作成し、取り出せないパスに skip-worktree を付けて status が空" {
+@test "(5d) .githooks を取り出せない repo -> git switch が失敗しても部分 checkout で付け替え、取り出せないパスに skip-worktree を付けて status が空" {
     track_unwritable_githooks
     cd "$ROOT"
     run git worktree add -q --detach "$BATS_TEST_TMPDIR/full" "$HEAD_SHA"
     [ "$status" -ne 0 ]
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .worktree_removed == false'
+    echo "$output" | jq -e '.ok == true and .worktree_status == "created"'
     echo "$output" | jq -e '.skip_worktree == [".githooks/pre-commit", ".githooks/pre-push"]'
     wt="$(echo "$output" | jq -r '.worktree')"
     [ "$(git -C "$wt" rev-parse HEAD)" = "$HEAD_SHA" ]
@@ -473,8 +589,8 @@ track_unwritable_githooks() {
     [ -z "$(git -C "$wt" status --porcelain)" ]
     [ -z "$(git -C "$wt" add -A --dry-run)" ]
 
-    # 作り直した worktree の再利用は ok:true（skip-worktree のパスは未ステージの削除に数えない）
-    run bash "$SCRIPT" 5
+    # 付け替えた worktree の再利用は ok:true（skip-worktree のパスは未ステージの削除に数えない）
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused" and .skip_worktree == []'
 }
@@ -485,7 +601,7 @@ track_unwritable_githooks() {
     git worktree add -q --no-checkout --no-track -b feature/x "$PART" origin/feature/x
     git -C "$PART" read-tree HEAD
 
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "reused"'
     echo "$output" | jq -e '.error | test("未ステージの削除が 1 件") and test("README.md") and test("git worktree remove")'
@@ -499,7 +615,7 @@ comment_json() {
     jq -n --arg body "$1" --arg url "$2" '{author: {login: "bot"}, body: $body, url: $url}'
 }
 
-@test "(5f) dev-flow marker を持つ最後のコメントから prior_devflow {tier, codes, url, head_sha} を出し、gh pr view は 1 回だけ" {
+@test "(5f) dev-flow marker を持つ最後のコメントから prior_devflow {tier, codes, url, head_sha} を出し、gh pr view は prerun 1 回につき 1 回だけ" {
     local hold_old hold_new iterate comments
     hold_old="$(comment_json $'## dev-flow\n<!-- gate_policy: llm-major-advisory -->\n<!-- dev-flow:HOLD codes=escalate -->' "https://github.com/acme/skills/pull/5#issuecomment-1")"
     # AC の引用で本文中に marker と同じ形の文字列があっても、末尾の marker を採る
@@ -508,11 +624,12 @@ comment_json() {
     comments="$(jq -cn --argjson a "$hold_old" --argjson b "$hold_new" --argjson c "$iterate" '[$a, $b, $c]')"
     write_pr_fixture "$HEAD_SHA" "$comments"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e '.prior_devflow == {tier: "HOLD", codes: ["iterate_non_lgtm", "ci_checks_failed"], url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: null}'
-    [ "$(grep -c '^pr ' "$GH_STUB_LOG")" -eq 1 ]
+    # enter_required を返す 1 回目と、worktree に入った後の 2 回目
+    [ "$(grep -c '^pr ' "$GH_STUB_LOG")" -eq 2 ]
     grep -qx "pr view 5 --json url,headRefName,baseRefName,headRefOid,comments,title,body" "$GH_STUB_LOG"
 }
 
@@ -523,7 +640,7 @@ comment_json() {
     comments="$(jq -cn --argjson a "$hold" --argjson b "$review" '[$a, $b]')"
     write_pr_fixture "$HEAD_SHA" "$comments"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.prior_devflow == {tier: "REVIEW", codes: [], url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: null}'
 }
@@ -532,7 +649,7 @@ comment_json() {
 @test "(5g2) 過去の PR コメントの dev-flow:AUTO marker は tier をそのまま読み、HOLD 以外（codes:[]）になる" {
     write_pr_fixture "$HEAD_SHA" "[$(comment_json '<!-- dev-flow:AUTO -->' "https://github.com/acme/skills/pull/5#issuecomment-1")]"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.prior_devflow == {tier: "AUTO", codes: [], url: "https://github.com/acme/skills/pull/5#issuecomment-1", head_sha: null}'
     echo "$output" | jq -e '.prior_devflow.tier != "HOLD"'
@@ -541,7 +658,7 @@ comment_json() {
 @test "(5h) dev-flow marker を持つコメントが無ければ prior_devflow は null" {
     write_pr_fixture "$HEAD_SHA" "[$(comment_json $'## PR #5 — pr-iterate 終了レポート\n<!-- pr-iterate:lgtm:1 -->' "https://github.com/acme/skills/pull/5#issuecomment-1")]"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and has("prior_devflow") and .prior_devflow == null'
 }
@@ -550,7 +667,7 @@ comment_json() {
     local hold_head="0123456789abcdef0123456789abcdef01234567"
     write_pr_fixture "$HEAD_SHA" "[$(comment_json "<!-- dev-flow:HOLD codes=escalate,final_test_red head=${hold_head} -->" "https://github.com/acme/skills/pull/5#issuecomment-1")]"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg h "$hold_head" '.prior_devflow == {tier: "HOLD", codes: ["escalate", "final_test_red"], url: "https://github.com/acme/skills/pull/5#issuecomment-1", head_sha: $h}'
 }
@@ -565,7 +682,7 @@ comment_json() {
     comments="$(jq -cn --argjson a "$devflow" --argjson b "$iterate" '[$a, $b]')"
     write_pr_fixture "$HEAD_SHA" "$comments"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg old "$old_head" '.ok == true and .prior_summary == {source: "pr-iterate", url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: $old, head_mismatch: true}'
 }
@@ -577,7 +694,7 @@ comment_json() {
     comments="$(jq -cn --argjson a "$iterate" --argjson b "$devflow" '[$a, $b]')"
     write_pr_fixture "$HEAD_SHA" "$comments"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg head "$HEAD_SHA" '.prior_summary == {source: "dev-flow", url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: $head, head_mismatch: false}'
 }
@@ -585,12 +702,12 @@ comment_json() {
 @test "(5h5) marker に head が無い終端サマリーは head_sha:null・head_mismatch:true" {
     write_pr_fixture "$HEAD_SHA" "[$(comment_json $'## PR #5 — pr-iterate 終了レポート\n<!-- pr-iterate:lgtm:1 -->' "https://github.com/acme/skills/pull/5#issuecomment-1")]"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.prior_summary == {source: "pr-iterate", url: "https://github.com/acme/skills/pull/5#issuecomment-1", head_sha: null, head_mismatch: true}'
 
     write_pr_fixture "$HEAD_SHA" "[$(comment_json '<!-- dev-flow:AUTO -->' "https://github.com/acme/skills/pull/5#issuecomment-2")]"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.prior_summary == {source: "dev-flow", url: "https://github.com/acme/skills/pull/5#issuecomment-2", head_sha: null, head_mismatch: true}'
 }
@@ -598,7 +715,7 @@ comment_json() {
 @test "(5h6) 終端サマリーの marker を持つコメントが無ければ prior_summary は null" {
     write_pr_fixture "$HEAD_SHA" "[$(comment_json 'LGTM っぽい人のコメント' "https://github.com/acme/skills/pull/5#issuecomment-1")]"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and has("prior_summary") and .prior_summary == null'
 }
@@ -611,7 +728,7 @@ comment_json() {
     export GH_RUN_STUB_FIXTURE="$BATS_TEST_TMPDIR/runs.json"
     jq -nc '[range(5) | {workflowName: "CI", startedAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:07:35Z"}]' >"$GH_RUN_STUB_FIXTURE"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .ci_wait_ceiling_seconds == 515'
     grep -qx "run list --event pull_request --status success --limit 50 --json workflowName,startedAt,updatedAt --repo acme/skills" "$GH_STUB_LOG"
@@ -619,12 +736,12 @@ comment_json() {
 
 @test "(5j) gh run list の失敗・PR を読めない ok:false でも ci_wait_ceiling_seconds は 300" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .ci_wait_ceiling_seconds == 300'
 
     export GH_STUB_FAIL=1
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .ci_wait_ceiling_seconds == 300'
 }
@@ -642,7 +759,7 @@ comment_json() {
     git -C "$SEED" push -q origin feature/x
     write_pr_fixture "$(git -C "$SEED" rev-parse feature/x)"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and has("security_review") == false and .security_reviewer == "claude"'
     # スクリプトは security-review-scope を起動しない
@@ -650,7 +767,7 @@ comment_json() {
     [ "$output" = "0" ]
 
     export GH_STUB_FAIL=1
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and has("security_review") == false and .security_reviewer == null'
 }
@@ -659,7 +776,7 @@ comment_json() {
 
 @test "(8a) base branch にも user 設定にも opt-in が無ければ security_reviewer は claude" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .security_reviewer == "claude"'
 }
@@ -667,7 +784,7 @@ comment_json() {
 @test "(8b) base branch の skill-config.json / .claude/skill-config.json の opt-in を読む" {
     commit_reviewer_config main skill-config.json codex
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .security_reviewer == "codex"'
 
@@ -676,7 +793,7 @@ comment_json() {
     git -C "$SEED" commit -q -m "drop root config"
     git -C "$SEED" push -q origin main
     commit_reviewer_config main .claude/skill-config.json codex
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .security_reviewer == "codex"'
 }
@@ -685,7 +802,7 @@ comment_json() {
     commit_reviewer_config feature/x skill-config.json codex
     commit_reviewer_config feature/x .claude/skill-config.json codex
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .security_reviewer == "claude"'
     # worktree（PR head）には codex と書いてある
@@ -695,7 +812,7 @@ comment_json() {
     # base が codex なら、PR head が claude に書き換えても codex のまま
     commit_reviewer_config main skill-config.json codex
     commit_reviewer_config feature/x skill-config.json claude
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .security_reviewer == "codex"'
 }
@@ -703,23 +820,23 @@ comment_json() {
 @test "(8d) base branch に無ければ user 設定（SKILL_CONFIG_PATH / ~/.config/skills/config.json / ~/.claude/skill-config.json）を読み、base の値を優先する" {
     cd "$ROOT"
     write_user_reviewer_config .claude/skill-config.json codex
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .security_reviewer == "codex"'
 
     write_user_reviewer_config .config/skills/config.json claude
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.security_reviewer == "claude"'
 
     jq -n '{"dev-flow": {security_reviewer: "codex"}}' > "$BATS_TEST_TMPDIR/explicit.json"
-    SKILL_CONFIG_PATH="$BATS_TEST_TMPDIR/explicit.json" run bash "$SCRIPT" 5
+    SKILL_CONFIG_PATH="$BATS_TEST_TMPDIR/explicit.json" run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.security_reviewer == "codex"'
 
     # repo（base branch）の宣言は user 設定より優先する
     commit_reviewer_config main skill-config.json claude
-    SKILL_CONFIG_PATH="$BATS_TEST_TMPDIR/explicit.json" run bash "$SCRIPT" 5
+    SKILL_CONFIG_PATH="$BATS_TEST_TMPDIR/explicit.json" run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.security_reviewer == "claude"'
 }
@@ -727,7 +844,7 @@ comment_json() {
 @test "(8e) opt-in の値は検証せずそのまま渡す（out-of-enum は workflow が明示 error にする）" {
     commit_reviewer_config main skill-config.json gemini
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .security_reviewer == "gemini"'
 }
@@ -741,7 +858,7 @@ comment_json() {
     jq -n '{"dev-flow": {repos: {"acme/other": {security_reviewer: "gemini"}, "acme/app": {security_reviewer: "codex"}}}}' \
         > "$HOME/.claude/skill-config.json"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .security_reviewer == "codex"'
 }
@@ -765,17 +882,17 @@ commit_visual_config() {
 
 @test "(12a) 宣言が無ければ visual_snapshots は null、base branch の宣言は検証した形で載せる（ok:false の早期終端では null）" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and has("visual_snapshots") and .visual_snapshots == null'
 
     commit_visual_config main "$(jq -c '. + {extra: "落とすキー"}' <<<"$VISUAL_DECL")"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --argjson want "$VISUAL_DECL" '.ok == true and .visual_snapshots == $want'
 
     export GH_STUB_FAIL=1
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .visual_snapshots == null'
 }
@@ -783,7 +900,7 @@ commit_visual_config() {
 @test "(12b) PR head（worktree）の設定ファイルに書かれた宣言は読まない（base の宣言・未設定のまま）" {
     commit_visual_config feature/x "$(jq -c '.command = "echo from-pr-head" | .paths = ["src"]' <<<"$VISUAL_DECL")"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .visual_snapshots == null'
     # worktree（PR head）には宣言が書いてある
@@ -792,7 +909,7 @@ commit_visual_config() {
 
     # base に宣言があれば、PR head が書き換えても base の宣言のまま
     commit_visual_config main "$VISUAL_DECL"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --argjson want "$VISUAL_DECL" '.ok == true and .visual_snapshots == $want'
 }
@@ -801,7 +918,7 @@ commit_visual_config() {
     mkdir -p "$HOME/.claude"
     jq -n --argjson v "$VISUAL_DECL" '{"dev-flow": {visual_snapshots: $v}}' > "$HOME/.claude/skill-config.json"
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --argjson want "$VISUAL_DECL" '.ok == true and .visual_snapshots == $want'
 }
@@ -809,75 +926,87 @@ commit_visual_config() {
 @test "(12d) 不正な宣言（paths が空・.. を含む・command が無い）は ok:false で止め、error にどのキーがなぜ不正かを出す" {
     cd "$ROOT"
     commit_visual_config main "$(jq -c '.paths = []' <<<"$VISUAL_DECL")"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .visual_snapshots == null and (.error | contains("visual_snapshots が不正") and contains("paths が空でない配列でない"))'
 
     commit_visual_config main "$(jq -c '.paths = ["../outside"]' <<<"$VISUAL_DECL")"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and (.error | contains("paths に .. を含むものがある"))'
 
     commit_visual_config main "$(jq -c 'del(.command)' <<<"$VISUAL_DECL")"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and (.error | contains("command が空でない文字列でない"))'
 }
 
 # ---- (9) 人が決めた修正方針（--direction。issue #1122）----
 
-@test "(9a) --direction のファイルを launch dir で読み、本文を加工せずに fix_direction に載せる（無ければ・ok:false では載せない）" {
+@test "(9a) --direction のファイルを読み、本文を加工せずに fix_direction に載せる（無ければ・ok:false・enter_required では載せない）" {
     cd "$ROOT"
     printf '方針: 指摘 A は入力を受け取らない形で塞ぐ。\n  B は直さない。\n' > "$BATS_TEST_TMPDIR/direction.md"
-    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/direction.md"
+    run --separate-stderr bash "$FLOW" 5 --direction "$BATS_TEST_TMPDIR/direction.md"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e --rawfile d "$BATS_TEST_TMPDIR/direction.md" '.fix_direction == $d'
 
-    # launch dir からの相対パスも読む
+    # 起動元（main checkout）のファイルは、wrapper が絶対パスに直して渡せば worktree に入った後の再実行でも読める
     cp "$BATS_TEST_TMPDIR/direction.md" "$ROOT/direction.md"
-    run --separate-stderr bash "$SCRIPT" 5 --direction direction.md
+    run --separate-stderr bash "$FLOW" 5 --direction "$ROOT/direction.md"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e --rawfile d "$BATS_TEST_TMPDIR/direction.md" '.fix_direction == $d'
+    echo "$output" | jq -e --rawfile d "$BATS_TEST_TMPDIR/direction.md" '.ok == true and .fix_direction == $d'
 
-    run bash "$SCRIPT" 5
+    # enter_required の出力には載せない
+    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/direction.md"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.worktree_status == "enter_required" and has("fix_direction") == false'
+
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and has("fix_direction") == false'
 
-    GH_STUB_FAIL=1 run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/direction.md"
+    GH_STUB_FAIL=1 run --separate-stderr bash "$FLOW" 5 --direction "$BATS_TEST_TMPDIR/direction.md"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and has("fix_direction") == false'
 }
 
 @test "(9b) --direction の実体が PR の worktree の中（symlink 経由を含む）なら exit 2・stdout 空" {
     cd "$ROOT"
-    run bash "$SCRIPT" 5
+    run bash "$FLOW" 5
     [ "$status" -eq 0 ]
     wt="$(echo "$output" | jq -r '.worktree')"
     echo "PR の作者が書いた方針" > "$wt/direction.md"
 
-    run --separate-stderr bash "$SCRIPT" 5 --direction "$wt/direction.md"
+    run --separate-stderr bash "$FLOW" 5 --direction "$wt/direction.md"
     [ "$status" -eq 2 ]
     [ -z "$output" ]
     [[ "$stderr" == *"PR の worktree"* ]]
 
     ln -s "$wt/direction.md" "$BATS_TEST_TMPDIR/link.md"
-    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/link.md"
+    run --separate-stderr bash "$FLOW" 5 --direction "$BATS_TEST_TMPDIR/link.md"
     [ "$status" -eq 2 ]
     [ -z "$output" ]
+
+    # worktree に入った後の cwd から解決される相対パスも PR の worktree の中なので拒否する
+    cd "$wt"
+    run --separate-stderr bash "$SCRIPT" 5 --direction direction.md
+    [ "$status" -eq 2 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"PR の worktree"* ]]
 }
 
 @test "(9c) --direction のファイルが読めない（無い・ディレクトリ・パス無し）なら exit 2・stdout 空で gh を呼ばない" {
     cd "$ROOT"
-    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/missing.md"
+    run --separate-stderr bash "$FLOW" 5 --direction "$BATS_TEST_TMPDIR/missing.md"
     [ "$status" -eq 2 ]
     [ -z "$output" ]
     [[ "$stderr" == *"読めない"* ]]
     mkdir -p "$BATS_TEST_TMPDIR/dir.md"
-    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/dir.md"
+    run --separate-stderr bash "$FLOW" 5 --direction "$BATS_TEST_TMPDIR/dir.md"
     [ "$status" -eq 2 ]
     [ -z "$output" ]
-    run --separate-stderr bash "$SCRIPT" 5 --direction
+    run --separate-stderr bash "$FLOW" 5 --direction
     [ "$status" -eq 2 ]
     [ -z "$output" ]
     [ ! -e "$GH_STUB_LOG" ]
@@ -886,12 +1015,12 @@ commit_visual_config() {
 @test "(9d) --direction のファイルが空・空白だけなら exit 2・stdout 空" {
     cd "$ROOT"
     : > "$BATS_TEST_TMPDIR/empty.md"
-    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/empty.md"
+    run --separate-stderr bash "$FLOW" 5 --direction "$BATS_TEST_TMPDIR/empty.md"
     [ "$status" -eq 2 ]
     [ -z "$output" ]
     [[ "$stderr" == *"空"* ]]
     printf ' \n\t\n' > "$BATS_TEST_TMPDIR/blank.md"
-    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/blank.md"
+    run --separate-stderr bash "$FLOW" 5 --direction "$BATS_TEST_TMPDIR/blank.md"
     [ "$status" -eq 2 ]
     [ -z "$output" ]
 }
@@ -899,12 +1028,12 @@ commit_visual_config() {
 @test "(9e) --direction の本文が 4000 字を超えれば exit 2・stdout 空（4000 字ちょうどは通す。字数はバイトでなく文字で数える）" {
     cd "$ROOT"
     printf 'あ%.0s' $(seq 4000) > "$BATS_TEST_TMPDIR/max.md"
-    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/max.md"
+    run --separate-stderr bash "$FLOW" 5 --direction "$BATS_TEST_TMPDIR/max.md"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and (.fix_direction | length) == 4000'
 
     printf 'あ%.0s' $(seq 4001) > "$BATS_TEST_TMPDIR/over.md"
-    run --separate-stderr bash "$SCRIPT" 5 --direction "$BATS_TEST_TMPDIR/over.md"
+    run --separate-stderr bash "$FLOW" 5 --direction "$BATS_TEST_TMPDIR/over.md"
     [ "$status" -eq 2 ]
     [ -z "$output" ]
     [[ "$stderr" == *"4001 字"* ]]
@@ -923,7 +1052,7 @@ write_pr_fixture_with_intent() {
     cd "$ROOT"
     printf '.husky の denyWrite を深さ固定にする\n\n- node_modules 内の `.husky` を展開できるようにする\n' > "$BATS_TEST_TMPDIR/body.md"
     write_pr_fixture_with_intent 'fix(sandbox): .husky の deny を深さ固定にする' "$BATS_TEST_TMPDIR/body.md"
-    run --separate-stderr bash "$SCRIPT" 5
+    run --separate-stderr bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e '.pr_intent.title == "fix(sandbox): .husky の deny を深さ固定にする"'
@@ -931,11 +1060,11 @@ write_pr_fixture_with_intent() {
 
     printf 'あ%.0s' $(seq 4000) > "$BATS_TEST_TMPDIR/max.md"
     write_pr_fixture_with_intent 't' "$BATS_TEST_TMPDIR/max.md"
-    run --separate-stderr bash "$SCRIPT" 5
+    run --separate-stderr bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '(.pr_intent.body | length) == 4000 and .pr_intent.body_omitted == null'
 
-    GH_STUB_FAIL=1 run --separate-stderr bash "$SCRIPT" 5
+    GH_STUB_FAIL=1 run --separate-stderr bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and has("pr_intent") == false'
 }
@@ -944,7 +1073,7 @@ write_pr_fixture_with_intent() {
     cd "$ROOT"
     printf 'あ%.0s' $(seq 4001) > "$BATS_TEST_TMPDIR/over.md"
     write_pr_fixture_with_intent 'title は渡す' "$BATS_TEST_TMPDIR/over.md"
-    run --separate-stderr bash "$SCRIPT" 5
+    run --separate-stderr bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e '.pr_intent == {title: "title は渡す", body: null, body_omitted: "over_limit"}'
@@ -956,7 +1085,7 @@ write_pr_fixture_with_intent() {
     cd "$ROOT"
     printf ' \n\t\n' > "$BATS_TEST_TMPDIR/blank.md"
     write_pr_fixture_with_intent '' "$BATS_TEST_TMPDIR/blank.md"
-    run --separate-stderr bash "$SCRIPT" 5
+    run --separate-stderr bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .pr_intent == {title: null, body: null, body_omitted: null}'
 }
@@ -967,7 +1096,7 @@ write_pr_fixture_with_intent() {
     plugin_root="$(cd "$(dirname "$SCRIPT")/../.." && pwd)"
     expected="$(git -C "$plugin_root" rev-parse HEAD)"
     cd "$ROOT"
-    run --separate-stderr bash "$SCRIPT" 5
+    run --separate-stderr bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg c "${expected:0:12}" '.ok == true and .plugin_commit == $c'
 }
@@ -980,7 +1109,7 @@ write_pr_fixture_with_intent() {
         ln -s "$plugin_root/$d" "$cache_root/$d"
     done
     cd "$ROOT"
-    run --separate-stderr bash "$cache_root/_shared/scripts/pr-iterate-prerun.sh" 5
+    PRERUN_UNDER_TEST="$cache_root/_shared/scripts/pr-iterate-prerun.sh" run --separate-stderr bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .plugin_commit == "1ef2e0ab6254"'
 }
@@ -993,11 +1122,11 @@ write_pr_fixture_with_intent() {
         ln -s "$plugin_root/$d" "$cache_root/$d"
     done
     cd "$ROOT"
-    GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR" run --separate-stderr bash "$cache_root/_shared/scripts/pr-iterate-prerun.sh" 5
+    GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR" PRERUN_UNDER_TEST="$cache_root/_shared/scripts/pr-iterate-prerun.sh" run --separate-stderr bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and has("plugin_commit") and .plugin_commit == null'
 
-    GH_STUB_FAIL=1 run --separate-stderr bash "$SCRIPT" 5
+    GH_STUB_FAIL=1 run --separate-stderr bash "$FLOW" 5
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and (.plugin_commit | test("^[0-9a-f]{12}$"))'
 }

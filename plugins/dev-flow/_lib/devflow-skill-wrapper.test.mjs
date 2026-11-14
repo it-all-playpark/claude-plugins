@@ -3,9 +3,9 @@
 //
 // 背景: bg 起動セッションが isolation preflight を踏まずに Workflow('dev-flow-run') を直接叩くと、
 // Setup 直後の isolation probe が written:false で fail-closed abort する（AGENTS.md /
-// .claude/rules/dev-flow.md 参照）。dev-flow/SKILL.md は (1) base 解決、(2) worktree 作成/再利用、
-// (3) EnterWorktree、(4) Workflow('dev-flow-run') 起動の 4 手順を明記し、直列複数 issue 実行時の
-// worktree 切替も記述する必要がある。
+// .claude/rules/dev-flow.md 参照）。dev-flow/SKILL.md は (1) worktree パスの決定、(2) dev-flow-prerun、
+// (3) enter_required なら EnterWorktree → prerun の再実行、(4) deps install、(5) Workflow('dev-flow-run') 起動の
+// 5 手順を明記し、直列複数 issue 実行時の worktree 切替も記述する必要がある。
 //
 // このテストは SKILL.md の存在と必須内容を source-string で assert する（決定論的 pin）。
 
@@ -79,23 +79,52 @@ test('[devflow-skill-wrapper] namespaced 名 dev-flow:dev-flow-run で起動す�
   );
 });
 
-// (h) 自前の git worktree add 記述が残存していない（worktree 作成は dev-flow-prerun に吸収済み）
-test('[devflow-skill-wrapper] git worktree add を含まない（prerun に吸収済み）', () => {
+// (h) 自前の git worktree add 記述が無い（worktree を作るのは EnterWorktree で、wrapper も prerun も git では作らない）
+test('[devflow-skill-wrapper] git worktree add を含まない（worktree は EnterWorktree が作る）', () => {
   assert.ok(
     !src.includes('git worktree add'),
-    'dev-flow/SKILL.md に `git worktree add` が残存している（worktree 作成は dev-flow-prerun に一本化すること）',
+    'dev-flow/SKILL.md に `git worktree add` が残存している（worktree の作成は EnterWorktree に一本化すること）',
   );
 });
 
-// (i) args.setup 転記と unwritable 退避分岐を明記する
-test('[devflow-skill-wrapper] args.setup 転記と unwritable 退避分岐を明記する', () => {
+// (p) issue #1423: sandbox 内の prerun は worktree を作れない。preflight は prerun → enter_required なら
+//     （別の worktree にいれば ExitWorktree keep →）EnterWorktree（登録済みなら path、未登録なら name）→ prerun を同じ引数で
+//     再実行、の順。deps install と Workflow 起動は 2 回目の prerun（ok:true）の後
+test('[devflow-skill-wrapper] preflight は prerun → enter_required なら EnterWorktree（path / name）→ prerun 再実行 → deps install → Workflow の順', () => {
+  const steps = src.slice(src.indexOf('## Preflight 手順'), src.indexOf('## 完了後の返り値の読み方'));
+  const at = (needle) => {
+    const i = steps.indexOf(needle);
+    assert.ok(i >= 0, `dev-flow/SKILL.md の Preflight 手順に「${needle}」が無い`);
+    return i;
+  };
+  const order = [
+    at('2. **prerun 実行**'),
+    at('(b) `worktree_status:"enter_required"` → 手順3 へ進む'),
+    at('3. **EnterWorktree → prerun の再実行**（手順2 が `enter_required` を返したときだけ）'),
+    at('`ExitWorktree({action: "keep"})`'),
+    at("`worktree_registered` が true なら `EnterWorktree({ path: '<prerun 出力の worktree>' })`"),
+    at("false なら\n   `EnterWorktree({ name: 'df-<N>' })`"),
+    at('`dev-flow-prerun` を**同じ引数で**もう一度実行し'),
+    at('4. **deps install**'),
+    at('5. **Workflow 起動**'),
+  ];
+  for (let i = 1; i < order.length; i++) {
+    assert.ok(order[i - 1] < order[i], `Preflight 手順の順序が違う（${i} 番目）: ${JSON.stringify(order)}`);
+  }
+  // prerun は worktree を作らず、入る前の worktree に書かない
+  const step2 = steps.slice(order[0], order[2]);
+  assert.ok(step2.includes('worktree は作らない') && step2.includes('worktree の中には何も書かず'), '手順2 に「prerun は worktree を作らず、入る前は書かない」が無い');
+});
+
+// (i) args.setup 転記と、書き込めない worktree（unwritable）は退避せず人間へ返すことを明記する
+test('[devflow-skill-wrapper] args.setup 転記と unwritable の停止を明記する', () => {
   assert.ok(
     src.includes('setup:'),
     'dev-flow/SKILL.md に `args.setup` への転記記述（`setup:`）が見つからない',
   );
   assert.ok(
     src.includes('unwritable'),
-    'dev-flow/SKILL.md に worktree_status:"unwritable" の退避分岐が見つからない',
+    'dev-flow/SKILL.md に worktree_status:"unwritable" の扱いが見つからない',
   );
   assert.ok(
     src.includes('--worktree'),
@@ -135,15 +164,15 @@ test('[devflow-skill-wrapper] needs_clarification 節に clarify_questions の�
 // (m) issue #868: deps install は prerun（repo の任意コードを実行しない）の子ではなく、wrapper が別の Bash 呼び出しで
 //     `ensure-worktree-deps --setup <worktree>/.devflow-tmp/prerun-setup.json` として回し、その stdout を setup に渡す。
 //     needs_clarification の再起動でも同じ段を通す（prerun 出力は deps / epoch_end を持たない）。
-test('[devflow-skill-wrapper] deps install は手順2b の別 Bash 呼び出し（ensure-worktree-deps --setup）で回し、その stdout を setup に渡す', () => {
+test('[devflow-skill-wrapper] deps install は手順4 の別 Bash 呼び出し（ensure-worktree-deps --setup）で回し、その stdout を setup に渡す', () => {
   const cmd = 'ensure-worktree-deps --setup <prerun 出力の worktree>/.devflow-tmp/prerun-setup.json';
-  const step2b = src.slice(src.indexOf('2b. **deps install**'), src.indexOf('3. **EnterWorktree**'));
-  assert.ok(step2b.includes(cmd), `dev-flow/SKILL.md 手順2b に \`${cmd}\` が無い`);
-  assert.ok(step2b.includes('別の'), 'dev-flow/SKILL.md 手順2b に「手順2 とは別の Bash 呼び出し」の指示が無い');
-  const step4 = src.slice(src.indexOf('4. **Workflow 起動**'));
-  assert.ok(step4.includes('setup: <手順2bの'), 'dev-flow/SKILL.md 手順4 の setup が手順2b の stdout になっていない');
+  const step4 = src.slice(src.indexOf('4. **deps install**'), src.indexOf('5. **Workflow 起動**'));
+  assert.ok(step4.includes(cmd), `dev-flow/SKILL.md 手順4 に \`${cmd}\` が無い`);
+  assert.ok(step4.includes('別の'), 'dev-flow/SKILL.md 手順4 に「手順2 とは別の Bash 呼び出し」の指示が無い');
+  const step5 = src.slice(src.indexOf('5. **Workflow 起動**'));
+  assert.ok(step5.includes('setup: <手順4の'), 'dev-flow/SKILL.md 手順5 の setup が手順4 の stdout になっていない');
   const section = src.slice(src.indexOf('## needs_clarification'));
-  assert.ok(section.includes('ensure-worktree-deps --setup'), 'needs_clarification 節の再起動手順に deps 段（手順2b）が無い');
+  assert.ok(section.includes('ensure-worktree-deps --setup'), 'needs_clarification 節の再起動手順に deps 段（手順4）が無い');
 });
 
 // (n) issue #898: Jev の要否・効かないときの挙動・設定方法を、作者環境（jev-broker / Keychain）に依らず書く。

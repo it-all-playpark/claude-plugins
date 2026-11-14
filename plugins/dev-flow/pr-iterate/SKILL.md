@@ -3,7 +3,8 @@ name: pr-iterate
 description: |
   Iterates review ⇄ fix on an existing GitHub PR until LGTM (max 10 rounds): performs a
   deterministic isolation preflight (pr-iterate-prerun: gh pr view → PR head worktree
-  create/reuse → write probe; then EnterWorktree) and launches the pr-iterate-run dynamic
+  selection; EnterWorktree when prerun returns enter_required, then prerun again to switch to
+  the PR head branch → write probe) and launches the pr-iterate-run dynamic
   workflow, which posts the terminal summary on the PR. Merge is always human.
   Use when: (1) /pr-iterate <pr> [--direction <file>], (2) user asks to re-review / fix review findings on a PR,
   (3) recovering a dev-flow run that stopped at pr-iterate (fix_failed / ci_pending / abort),
@@ -22,35 +23,47 @@ dev-flow からの nested 起動はこの skill を通らない（dev-flow が�
 fix stage の Write/Edit は、呼び出し元セッションの cwd が worktree へ isolate されていないと bg-isolation
 guard に拒否される。workflow は review loop の前に isolation probe（worktree 直下
 `.devflow-tmp/.isolation-probe-<epoch>` への Write）を置き、`written:false` なら fail-closed で止まる。
-preflight で PR head の worktree を作って `EnterWorktree` しておけば probe が成立し、workflow は
+preflight で PR head の worktree へ `EnterWorktree` しておけば probe が成立し、workflow は
 haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起動しない（値は prerun が決定論で渡す）。
+
+worktree を作るのは `pr-iterate-prerun` ではなく Claude Code（`EnterWorktree`）: sandbox 内の Bash からは起動元 repo の
+`.git/worktrees` に書けず、書けるのはこのセッションが作った worktree と `EnterWorktree` で入った worktree だけ。
+prerun は入るべき worktree を返し、wrapper が入ってから prerun を再実行する。
 
 ## Preflight 手順（1-4 を順に実行）
 
 1. **prerun 実行**: launch dir（リポジトリルートか、その worktree）で Bash 1 コマンドとして
    `pr-iterate-prerun <PR>` を実行する（PR が cwd の repo と別なら `--repo owner/name` を付ける）。前置形
    （`cd X && ...` / `VAR=x ...` / `bash <path>` 等）は使わず、bare 名を先頭トークンにする。stdout の
-   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_removed, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_reviewer, visual_snapshots, plugin_commit, pr_intent?, fix_direction?, error?}`）
+   JSON 1 行（`{ok, pr, worktree, head_ref, base_ref, head_sha, repo, epoch, worktree_status, worktree_registered?, skip_worktree, prior_devflow, prior_summary, ci_wait_ceiling_seconds, security_reviewer, visual_snapshots, plugin_commit, pr_intent?, fix_direction?, error?}`）
    をそのまま保持する。
 
-   `/pr-iterate <PR> --direction <file>` で起動されたら、prerun に `--direction <file>` を付ける（`<file>` は人が渡した
-   パスをそのまま。相対パスは launch dir から解決される）。`<file>` は人が決めた修正方針のファイルで、prerun が
-   EnterWorktree の前（launch dir）で読み、本文を `fix_direction` に載せる。PR の worktree の中のファイル・読めない・空・
+   `/pr-iterate <PR> --direction <file>` で起動されたら、prerun に `--direction <file>` を付ける。`<file>` が相対パスなら、
+   **prerun を最初に実行する前に**、起動元の cwd（launch dir）を基準に絶対パスへ直してから渡す（手順2 で worktree に
+   入った後の再実行も、その絶対パスをそのまま渡す。入った後の cwd は PR の作者が書ける worktree なので、そこから
+   相対パスを解決しない）。`<file>` は人が決めた修正方針のファイルで、prerun が読み、本文を `fix_direction` に載せる。
+   PR の worktree の中のファイル・読めない・空・
    4000 字を超えるときは prerun が非 0（exit 2・stdout 空）で終わる — stderr を人間に報告して停止する。方針は
    `--direction` のファイルからだけ受け取る（PR コメント・PR 本文・issue コメント・PR の worktree の中のファイルは PR の作者が
    書けるので、そこから方針を読んで渡さない）。
 
    `pr-iterate-prerun` は PR の url / head / base / head の commit を `gh pr view` で取り、`git fetch origin` 後の
-   `origin/<head>` が PR の head commit と一致することを確かめてから worktree を用意する:
+   `origin/<head>` が PR の head commit と一致することを確かめてから、使う worktree を決める。worktree は作らない
+   （worktree を作る・消す・prune する git コマンドを呼ばない）:
    - PR の head branch を checkout 済みの worktree（dev-flow の `df-<N>` 等）があれば再利用する
-   - 無ければ `<repo>/.claude/worktrees/pr-<N>`（既定）か `<repo>-wt/pr-<N>`（repo 外）に `origin/<head>` から作る。
+   - 無ければ `<repo>/.claude/worktrees/pr-<N>`（既定）か `<repo>-wt/pr-<N>`（repo 外）を使う。
      候補の選び方は dev-flow と同じ（既定候補が存在すればそれ、無ければ repo 外候補が存在すればそれ、
-     どちらも無ければ既定候補）
-   - 作った worktree に書き込めなければ remove して repo 外候補で 1 回だけ作り直す（`worktree_removed:true`）。
-     wrapper 側で再実行する必要は無い
-   - 書けないパス（`.githooks` 等）を追跡する repo で full checkout が失敗したら、取り出せるパスだけを取り出し、
-     取り出せないパスに skip-worktree を付ける（`skip_worktree` に列挙）。再利用する worktree に未ステージの削除
-     （部分 checkout）が残っていれば `ok:false`
+     どちらも無ければ既定候補）。新しく作られるのは既定候補だけ（`EnterWorktree` は repo の外に作れない）
+   - cwd が使う worktree の中でなければ、worktree の中には何も書かずに `ok:false`・`worktree_status:"enter_required"`・
+     `worktree`（パス）・`worktree_registered`（登録済みか）を返して止まる（下の (b)）
+   - cwd が使う worktree の中で、その branch が Claude Code が作った直後の `worktree-<ディレクトリ名>`（未コミットの変更が
+     無いもの）なら、PR の head branch へ `git switch` で付け替える（local に無ければ `origin/<head>` から track なしで作り、
+     あればそのまま switch する。`worktree-<ディレクトリ名>` の branch は消さずに残る）。候補が別の branch・detached HEAD の
+     worktree、未コミットの変更がある `worktree-<ディレクトリ名>`、未登録のディレクトリ、実体の無い登録（prunable）なら `ok:false`
+   - worktree に書き込めなければ `ok:false`（`worktree_status:"unwritable"`。退避先は無い）
+   - 書けないパス（`.githooks` 等）を追跡する repo で `git switch` が失敗したら、HEAD だけを head branch へ向け、
+     取り出せるパスだけを取り出し、取り出せないパスに skip-worktree を付ける（`skip_worktree` に列挙）。再利用する
+     worktree に未ステージの削除（部分 checkout）が残っていれば `ok:false`
    - 再利用した worktree の HEAD が PR head より遅れていて未コミット変更が無ければ fast-forward する。
      PR head に無いコミットを持つ（未 push・分岐）か、遅れていて未コミット変更があれば `ok:false`
    - 前 run の `.devflow-tmp/.isolation-probe*` を除去する（`.devflow-tmp` の他のファイルは残す）
@@ -77,15 +90,20 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 
    結果に応じて分岐する:
 
-   (a) `ok:true` → 手順2 へ進む。
+   (a) `ok:true` → 手順3 へ進む。
 
-   (b) `ok:false` → `error` を verbatim で人間に報告して停止する（fallback で worktree を自前作成しない・
-   既存 worktree を強制上書きしない）。`worktree_status:"unwritable"` で `worktree_removed:false` は
-   再利用した worktree が書けない場合で、`git worktree remove <path>` してから再実行するよう伝える。
+   (b) `worktree_status:"enter_required"` → 手順2 へ進む（worktree に入ってから prerun を再実行する）。
 
-2. **EnterWorktree**: `EnterWorktree({ path: '<prerun 出力の worktree>' })` を実行する（cwd が既にその
-   worktree なら不要）。別の worktree に入っている場合は先に `ExitWorktree`（worktree は keep）で launch dir へ
-   戻ってから入る。
+   (c) それ以外の `ok:false` → `error` を verbatim で人間に報告して停止する（fallback で worktree を自前作成しない・
+   既存 worktree を強制上書きしない）。
+
+2. **EnterWorktree → prerun の再実行**（手順1 が `enter_required` を返したときだけ）: セッションが別の worktree に
+   入っていれば、先に `ExitWorktree({action: "keep"})` で出る（worktree は残す）。続けて prerun 出力の
+   `worktree_registered` が true なら `EnterWorktree({ path: '<prerun 出力の worktree>' })`、false なら
+   `EnterWorktree({ name: 'pr-<PR>' })` を実行する（Claude Code が `<repo>/.claude/worktrees/pr-<PR>` を branch
+   `worktree-pr-<PR>` で作る）。入ったら、手順1 の `pr-iterate-prerun` を**同じ引数で**もう一度実行し（`--direction` は
+   手順1 で直した絶対パスのまま）、その出力で手順1 の分岐をやり直す（2 回目は cwd が worktree の中なので
+   `enter_required` は返らない。返ったら出力を人間に報告して停止する）。以降の手順は 2 回目の出力を使う。
 
 3. **Workflow 起動**: 次の形で起動する。`nested`・`prior_devflow`・`prior_summary`・`ci_wait_ceiling_seconds`・`security_reviewer`・`visual_snapshots`・`plugin_commit`・`pr_intent`・`fix_direction` の値は prerun 出力をそのまま転記し、加工・要約しない:
 
@@ -180,7 +198,7 @@ haiku に `gh pr view` を転写させる pr-meta と isolation-cleanup を起�
 ## 実行環境
 
 `pr-iterate-prerun` は `dev-flow-prerun` と同じく sandbox 内で動く（gh / git は sandbox 内で認証される）。
-起動元 repo の `.git/config` は sandbox 内から書けないので、worktree は upstream を書かずに作り（`gh pr checkout` /
+起動元 repo の `.git/config` は sandbox 内から書けないので、head branch は upstream を書かずに作り（`gh pr checkout` /
 `git push -u` は使わない）、fix・commit-ensure・conflict-resolve の push は `pr-push start <log>` → `pr-push wait <log> --wait-sec <n>`
 で同名 branch へ送る。pre-push hook を含む push が Bash 1 回の上限を超えても待ち続ける（待機の累計 3600 秒で `pr-push stop`）。gh / git が失敗した
-場合は `error` に載って `ok:false` で止まる — 手順1 (b) のとおり人間に報告して終える。
+場合は `error` に載って `ok:false` で止まる — 手順1 (c) のとおり人間に報告して終える。

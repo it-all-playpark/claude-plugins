@@ -2,9 +2,10 @@
 name: dev-flow
 description: |
   Runs the issue-to-LGTM dev-flow pipeline for a GitHub issue: performs isolation
-  preflight (dev-flow-prerun: base resolution, worktree creation, the deterministic issue
-  analyze (analyze-issue --contract + bounded Jev judgement); then deps install via
-  ensure-worktree-deps --setup as a separate Bash call; then EnterWorktree) then launches the dev-flow-run dynamic workflow
+  preflight (dev-flow-prerun: base resolution, worktree selection, the deterministic issue
+  analyze (analyze-issue --contract + bounded Jev judgement); EnterWorktree when prerun returns
+  enter_required, then prerun again to switch to the work branch; then deps install via
+  ensure-worktree-deps --setup as a separate Bash call) then launches the dev-flow-run dynamic workflow
   (analyze gate (no LLM spawn on the normal path) → implement → validate → diff
   triage (effective shape from the realized diff) → evaluate → PR → pr-iterate → merge
   tier). Merge is always human.
@@ -23,30 +24,41 @@ workflow `dev-flow-run`（`plugins/dev-flow/.claude/workflows/dev-flow.js`）が
 bg 起動セッションで、呼び出し元 cwd が共有 checkout のまま `Workflow({ name: 'dev-flow:dev-flow-run' })`
 を直接起動すると、Setup phase 直後の isolation probe（worktree 直下 `.devflow-tmp/.isolation-probe`
 への Write 検証）が `written:false` となり run 全体が fail-closed abort する。preflight で先に
-worktree を作り `EnterWorktree` しておくことで probe が成立する。
+worktree へ `EnterWorktree` しておくことで probe が成立する。
 
-## Preflight 手順（issue ごとに 1-4 を実行）
+worktree を作るのは `dev-flow-prerun` ではなく Claude Code（`EnterWorktree`）: sandbox 内の Bash からは起動元 repo の
+`.git/worktrees` に書けず、書けるのはこのセッションが作った worktree と `EnterWorktree` で入った worktree だけ。
+prerun は入るべき worktree を返し、wrapper が入ってから prerun を再実行する。
+
+## Preflight 手順（issue ごとに 1-5 を実行）
 
 1. **worktree パスの決定**: worktree dir の候補は 2 つ — 既定 `<repo>/.claude/worktrees/df-<N>`、
    repo 外 `<repo>-wt/df-<N>`（`<repo>` の sibling ディレクトリ。例: `/path/to/repo` に対し
    `/path/to/repo-wt/df-<N>`）。既定候補が存在すればそれを使う。既定候補が無ければ repo 外候補が
    存在すればそれを使う。どちらも存在しなければ既定候補を使う。**worktree ディレクトリ名は
-   `df-<N>` 固定**（配置が既定/repo 外いずれでも共通）。
+   `df-<N>` 固定**（配置が既定/repo 外いずれでも共通）。新しく作られるのは既定候補だけ（`EnterWorktree` は
+   repo の外に作れない。repo 外候補は以前の run が残したものを再利用するときだけ使う）。
 
 2. **prerun 実行**: まず作業ブランチ名の `{slug}`（下の `branch_format`）に入れる slug を作る。
    `gh issue view <N> --json title --jq .title` で issue タイトルを読み、作業の中身を表す 2〜5 語の英語を小文字・
    ハイフン区切りにした slug（`^[a-z0-9]+(-[a-z0-9]+)*$`・40 文字以内。例: 「ログインのタイムアウトを直す」→
    `fix-login-timeout`）を自分で作る（subagent は起動しない。タイトルが日本語でも訳して作る）。
-   次にリポジトリルート（launch dir）で Bash 1 コマンドとして
+   次に今の cwd（launch dir。リポジトリルートか、その worktree）で Bash 1 コマンドとして
    `dev-flow-prerun --issue <N> --worktree <手順1で決めた絶対パス> --slug <slug>` を実行する（`args.base` を
    明示する場合のみ `--base <ref>` を付ける）。`--slug` は書式に `{slug}` があり新しいブランチ名を作るときだけ使われ、
    書式に `{slug}` が無い・書式に合う既存ブランチを使うときは無視される。前置形（`cd X && ...` / `VAR=x ...` /
    `bash <path>` 等）は使わず、bare 名を先頭トークンにする。stdout の JSON 1 行で分岐する
-   （`{ok, issue, base, worktree, worktree_status, stack, analyze, epoch, ...}`）。
-   `dev-flow-prerun` は base 解決・worktree 作成/再利用・起点一致検証（独自コミット・未コミット変更の無い再利用 worktree は base へ fast-forward）・worktree 直下への
+   （`{ok, issue, base, worktree, worktree_status, worktree_registered?, stack, analyze, epoch, ...}`）。
+   `dev-flow-prerun` は base 解決・使う worktree と作業ブランチの判定・起点一致検証を行い、worktree は作らない
+   （worktree を作る・消す・prune する git コマンドを呼ばない）。cwd が使う worktree の中でなければ、worktree の中には何も書かず
+   issue analyze もせずに `ok:false`・`worktree_status:"enter_required"`・`worktree`（パス）・`worktree_registered`
+   （登録済みか）を返して止まる（下の (b)）。cwd が使う worktree の中なら、Claude Code が作った直後の branch
+   `worktree-<ディレクトリ名>`（未コミットの変更が無いもの）を作業ブランチへ `git switch` で付け替え（新しい branch は
+   `origin/<base>` から track なしで作り、local の既存 branch はそのまま switch する。`worktree-<ディレクトリ名>` の branch は
+   消さずに残る）、独自コミット・未コミット変更の無い再利用 worktree は base へ fast-forward し、worktree 直下への
    書き込み probe・`.devflow-tmp` の clean・issue analyze（`analyze-issue --contract` の
-   決定論 parse + Jev 有界判定）・framework 検出を 1 コマンドで行い、`ok:true` なら同じ JSON を
-   `<worktree>/.devflow-tmp/prerun-setup.json` にも書く。deps install はしない（手順2b）。
+   決定論 parse + Jev 有界判定）・framework 検出まで 1 コマンドで行い、`ok:true` なら同じ JSON を
+   `<worktree>/.devflow-tmp/prerun-setup.json` にも書く。deps install はしない（手順4）。
    repo 設定（`"dev-flow"` の `ci_verify` / `local_verify` / `visual_snapshots` / `pr_title_format` / `security_reviewer` / `branch_format`）は、すべて
    `pr-iterate-prerun` と共通の `_shared/scripts/devflow-config.sh` で、キーごとに (1) user 設定の repo 別の節
    `"dev-flow".repos["<owner>/<repo>"].<key>` → (2) 解決した base の `origin/<base>` の `skill-config.json` →
@@ -75,16 +87,19 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
    `branch_format` は作業ブランチ名の書式（`"dev-flow".branch_format`）。既定は `feature/issue-{issue}`、例
    `"issue-{issue}-{slug}"`（ブランチ名に `issue-<番号>-<名前>` を求める repo 向け）。差し込みは `{issue}`（必須・1 回）と
    `{slug}`（1 回まで。`--slug` の値）で、文字は `A-Za-z0-9._/-`、展開した名前は `git check-ref-format --branch` を
-   通らなければならない。不正な値は `dev-flow-prerun` が worktree を作らずに `"dev-flow".branch_format` を名指しした
+   通らなければならない。不正な値は `dev-flow-prerun` が branch を変えずに `"dev-flow".branch_format` を名指しした
    `ok:false` で止める（手順 (c)）。既存ブランチは名前の完全一致でなく、書式の `{slug}` を任意の名前とみなし issue 番号で
    探して再利用する（slug は run ごとに作り直すので変わりうる）: 書式に合う branch を checkout した worktree は再利用、
-   local branch だけあればその branch で worktree を作り、origin にだけあれば止める。書式に合う branch が local・origin
+   local branch だけあればその branch へ付け替え、origin にだけあれば止める。書式に合う branch が local・origin
    合わせて 2 本以上あればどれも使わずに止める。どれも無いときだけ `--slug` で新しい名前を作り、書式に `{slug}` が
    あるのに `--slug` が無い・不正なら止める（別の名前には切り替えない）。`dev-flow-ready-set` も同じ書式で実行中の
    issue を探す。
-   書けないパス（`.githooks` 等）を追跡する repo で full checkout が失敗したら、取り出せるパスだけを取り出して
-   取り出せないパスに skip-worktree を付ける（`skip_worktree` に列挙）。再利用する worktree に未ステージの削除
-   （部分 checkout）が残っていれば `ok:false`（手順 (c)）。
+   書けないパス（`.githooks` 等）を追跡する repo で `git switch` が失敗したら、HEAD だけを作業ブランチへ向け、
+   取り出せるパスだけを取り出して取り出せないパスに skip-worktree を付ける（`skip_worktree` に列挙）。再利用する
+   worktree に未ステージの削除（部分 checkout）が残っていれば `ok:false`（手順 (c)）。
+   使う worktree の branch が `worktree-<ディレクトリ名>` でも作業ブランチでもない・detached HEAD・
+   `worktree-<ディレクトリ名>` に未コミットの変更がある・実体の無い登録（prunable）が残っているときも、付け替えずに
+   `ok:false`（手順 (c)）。
    `hooks_not_running` は repo が追跡している git hook のうち worktree で動かない event 名の配列（無ければ `[]`）。
    run を止めず、merge tier にも使わず、終端サマリーの「参考」に載るだけ。
    `analyze` 段が失敗（GitHub 到達不能 / JSON 不正）しても prerun は `ok:true` のまま
@@ -100,36 +115,37 @@ worktree を作り `EnterWorktree` しておくことで probe が成立する�
 
    結果に応じて分岐する:
 
-   (a) `ok:true` → 手順2b へ進む。
+   (a) `ok:true` → 手順4 へ進む。
 
-   (b) `worktree_status:"unwritable"`（`worktree_error` に `Permission denied` /
-   `Operation not permitted` 等の permission 文言が載る）: 対象 repo の checkout 先が
-   書き込み不可の場合の退避。`worktree_removed:true` なら、`--worktree <repo>-wt/df-<N>`
-   （repo 外候補）を付けて手順2 をもう一度だけ実行する（作成直後の worktree は
-   `dev-flow-prerun` が既に remove 済みなので二重 checkout にならない）。`worktree_removed:false`
-   （既存 worktree を再利用したが書けない）なら、そこで停止し `git worktree remove <path>` を
-   実行してから再実行するよう人間に報告する。
+   (b) `worktree_status:"enter_required"` → 手順3 へ進む（worktree に入ってから prerun を再実行する）。
 
    (c) それ以外の `ok:false`: `base_error` / `worktree_error` を verbatim で人間に報告して
-   停止する（fallback で worktree を自前作成しない）。
+   停止する（fallback で worktree を自前作成しない）。`worktree_status:"unwritable"` は worktree 直下への書き込み probe の
+   失敗（`worktree_error` に `Permission denied` / `Operation not permitted` 等）で、退避先は無い — これも
+   そのまま報告して停止する。
 
    `clean.ok:false` / `stack.error` / `analyze.ok:false` は advisory なので停止しない
    （Workflow 起動後、run 内で implementer への警告 / needs_clarification として扱われる）。
 
-2b. **deps install**: 手順2 とは**別の** Bash 呼び出しで、bare 名を先頭トークンにして
+3. **EnterWorktree → prerun の再実行**（手順2 が `enter_required` を返したときだけ）: セッションが別の worktree に
+   入っていれば、先に `ExitWorktree({action: "keep"})` で出る（worktree は残す）。続けて prerun 出力の
+   `worktree_registered` が true なら `EnterWorktree({ path: '<prerun 出力の worktree>' })`、false なら
+   `EnterWorktree({ name: 'df-<N>' })` を実行する（Claude Code が `<repo>/.claude/worktrees/df-<N>` を branch
+   `worktree-df-<N>` で作る）。bg 起動セッションからも成立する。
+   入ったら、手順2 の `dev-flow-prerun` を**同じ引数で**もう一度実行し、その出力で手順2 の分岐をやり直す
+   （2 回目は cwd が worktree の中なので `enter_required` は返らない。返ったら出力を人間に報告して停止する）。
+
+4. **deps install**: 手順2 とは**別の** Bash 呼び出しで、bare 名を先頭トークンにして
    `ensure-worktree-deps --setup <prerun 出力の worktree>/.devflow-tmp/prerun-setup.json` を 1 回実行する
    （前置形は使わない。手順2 のコマンドに `&&` / `;` / パイプで繋がない）。stdout の JSON 1 行が prerun の出力に
    `deps`（`{ok, note}`）と `epoch_end`（install 完了後の時刻）を足し、`hooks_not_running` を install 後の状態で
-   上書きした **setup** で、手順4 にこれを渡す。
+   上書きした **setup** で、手順5 にこれを渡す。
    install は依存の postinstall（対象 repo の任意コード）を走らせるので、`dev-flow-prerun`（repo の
    任意コードを実行しない）の子にせず、この呼び出しで回す。`deps.ok:false` は advisory なので停止しない
    （run 内で implementer への警告になる）。exit 2（stdout 空）は setup ファイルが読めない場合で、
    stderr を verbatim で人間に報告して停止する。
 
-3. **EnterWorktree**: `EnterWorktree({ path: '<prerun 出力の worktree>' })` を実行する。
-   bg 起動セッションからも成立する。
-
-4. **Workflow 起動**: `Workflow({ name: 'dev-flow:dev-flow-run', args: { issue: <N>, setup: <手順2bの
+5. **Workflow 起動**: `Workflow({ name: 'dev-flow:dev-flow-run', args: { issue: <N>, setup: <手順4の
    stdout JSON を parse した object> } })`。`setup` は加工・要約・キー削除をせずそのまま渡す（手順2 の
    prerun 出力は `deps` / `epoch_end` を持たないので、渡すと `dev-flow-run` が即 throw する）。
    `args.base` は渡さない（base は `dev-flow-prerun` が解決済みで、渡すと `dev-flow-run` が
@@ -197,9 +213,9 @@ realized diff の file 数 + AC 数 / issue_type / 構造化 breaking_change か
 
 ## 直列複数 issue 実行時の worktree 切替
 
-複数 issue を直列に処理する場合は、**issue ごとに手順1-4 を繰り返し**、必ず
-`EnterWorktree({ path: '<選択した worktree の絶対パス>' })` で当該 issue の worktree（既定
-`<repo>/.claude/worktrees/df-<N>` または repo 外 `<repo>-wt/df-<N>`）へ切り替えてから手順4 の
+複数 issue を直列に処理する場合は、**issue ごとに手順1-5 を繰り返し**、必ず手順3（前 issue の worktree から
+`ExitWorktree({action: "keep"})` で出て、`EnterWorktree` で当該 issue の worktree — 既定
+`<repo>/.claude/worktrees/df-<N>` または repo 外 `<repo>-wt/df-<N>` — へ入る）で切り替えてから手順5 の
 Workflow を起動する。前 issue の worktree に入ったまま次の issue の Workflow を起動すると、
 isolation probe が fail-closed abort する。
 
@@ -271,8 +287,8 @@ local branch・worktree → in_flight / それ以外 → ready。作業ブラン
 
 それ以外の `needs_clarification` は、AskUserQuestion で人間に確認したうえで、
 **同じ worktree を保持したまま手順2 から**やり直す（`dev-flow-prerun` を同じ `--worktree` で
-再実行 → 手順2b の `ensure-worktree-deps --setup` を再実行 → その新しい stdout JSON を `setup` として
-手順4 を起動。手順3 は既に入っているので不要）。
+再実行 → 手順4 の `ensure-worktree-deps --setup` を再実行 → その新しい stdout JSON を `setup` として
+手順5 を起動。その worktree に入ったままなので prerun は `enter_required` を返さず、手順3 は不要）。
 
 `source: "analyze"` の返り値には `missing_context` と並んで `clarify_questions`
 （`[{question, interpretations: [{label, description, preview}]}]`）が入る。質問ごとに聞き方を決める:

@@ -36,6 +36,38 @@ test('[priterate-skill-wrapper] prerun → EnterWorktree → Workflow 起動の�
   assert.ok(prerun < enter && enter < launch, `順序が prerun → EnterWorktree → Workflow でない: ${prerun}, ${enter}, ${launch}`);
 });
 
+// issue #1423: sandbox 内の prerun は worktree を作れない。preflight は prerun → enter_required なら
+// （別の worktree にいれば ExitWorktree keep →）EnterWorktree（登録済みなら path、未登録なら name）→ prerun を同じ引数で再実行。
+// --direction は最初の prerun の前に、起動元の cwd を基準に絶対パスへ直す（入った後の cwd は PR の作者が書ける worktree）
+test('[priterate-skill-wrapper] enter_required なら EnterWorktree（path / name）で入って prerun を同じ引数で再実行し、--direction は先に絶対パスへ直す', () => {
+  const at = (needle) => {
+    const i = steps.indexOf(needle);
+    assert.ok(i >= 0, `pr-iterate/SKILL.md の Preflight 手順に「${needle}」が無い`);
+    return i;
+  };
+  const order = [
+    at('1. **prerun 実行**'),
+    at('**prerun を最初に実行する前に**、起動元の cwd（launch dir）を基準に絶対パスへ直してから渡す'),
+    at('(b) `worktree_status:"enter_required"` → 手順2 へ進む'),
+    at('2. **EnterWorktree → prerun の再実行**（手順1 が `enter_required` を返したときだけ）'),
+    at('`ExitWorktree({action: "keep"})`'),
+    at("`worktree_registered` が true なら `EnterWorktree({ path: '<prerun 出力の worktree>' })`"),
+    at("false なら\n   `EnterWorktree({ name: 'pr-<PR>' })`"),
+    at('`pr-iterate-prerun` を**同じ引数で**もう一度実行し'),
+    at('3. **Workflow 起動**'),
+  ];
+  for (let i = 1; i < order.length; i++) {
+    assert.ok(order[i - 1] < order[i], `Preflight 手順の順序が違う（${i} 番目）: ${JSON.stringify(order)}`);
+  }
+  assert.ok(steps.includes('入った後の cwd は PR の作者が書ける worktree なので、そこから\n   相対パスを解決しない'), '入った後の cwd から相対パスを解決しない理由が無い');
+  const prerunOutput = steps.match(/JSON 1 行（`\{([^}]*)\}`）/);
+  const keys = prerunOutput ? prerunOutput[1].split(/,\s*/) : [];
+  assert.ok(keys.includes('worktree_registered?'), `prerun 出力の一覧: ${prerunOutput?.[1]}`);
+  const prerunSrc = readFileSync(join(pluginRoot, '_shared/scripts/pr-iterate-prerun.sh'), 'utf8');
+  const contract = prerunSrc.match(/^#\s+\{ok, pr, ([^}]*)\}$/m);
+  assert.ok(contract && contract[1].split(/,\s*/).includes('worktree_registered?'), `pr-iterate-prerun.sh の Output 欄: ${contract?.[1]}`);
+});
+
 test('[priterate-skill-wrapper] Workflow の nested に prerun の値（cwd, head_ref, head_sha, repo, epoch）と caller:standalone を渡す', () => {
   const launch = steps.slice(steps.indexOf("Workflow({ name: 'dev-flow:pr-iterate-run'"));
   const nested = launch.slice(launch.indexOf('nested: {'), launch.indexOf('}', launch.indexOf('nested: {')));
@@ -127,12 +159,12 @@ test('[priterate-skill-wrapper] Workflow の args に prerun の pr_intent（PR 
 
 test('[priterate-skill-wrapper] 旧名 pr-iterate での Workflow 起動・自前の git worktree add・前回 prerun 出力の使い回しを書かない', () => {
   assert.doesNotMatch(src, /Workflow\(\{ name: '(dev-flow:)?pr-iterate'/, '旧名 pr-iterate での起動記述が残っている（alias は作らない）');
-  assert.ok(!src.includes('git worktree add'), 'worktree 作成は pr-iterate-prerun に一本化する');
+  assert.ok(!src.includes('git worktree add'), 'worktree の作成は EnterWorktree に一本化する');
   const rerun = src.slice(src.indexOf('## 再実行'));
   assert.ok(rerun.includes('手順1 からやり直す') && rerun.includes('epoch'), '再実行で prerun をやり直す（新しい epoch）指示が無い');
 });
 
 test('[priterate-skill-wrapper] ok:false は error を人間に報告して停止し、worktree を自動削除しない', () => {
-  assert.ok(steps.includes('(b) `ok:false` → `error` を verbatim で人間に報告して停止する'), 'ok:false の停止分岐が無い');
+  assert.ok(steps.includes('(c) それ以外の `ok:false` → `error` を verbatim で人間に報告して停止する'), 'ok:false の停止分岐が無い');
   assert.ok(src.includes('worktree は削除しない'), '単体起動の worktree を残す記述が無い');
 });

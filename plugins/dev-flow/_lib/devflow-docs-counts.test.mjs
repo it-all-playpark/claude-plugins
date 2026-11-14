@@ -176,7 +176,7 @@ test('atlas: prerun の段列は prerun.sh と同じく deps install を含ま�
 
 test('atlas: 再利用 worktree の起点検証は実装と同じく --no-track 作成 + reflog の作成記録で書く', () => {
   const checkout = readFileSync(join(pluginRoot, '_shared/scripts/worktree-checkout.sh'), 'utf8');
-  assert.match(checkout, /^\s*[^#\n]*worktree add --no-track/m, 'worktree-checkout.sh が --no-track で worktree を作っていない — atlas を見直す');
+  assert.match(checkout, /^\s*[^#\n]*switch --no-track -c/m, 'worktree-checkout.sh が --no-track で作業ブランチを作っていない — atlas を見直す');
   assert.ok(prerunCode.includes('branch: Created from '), 'prerun.sh が reflog の作成記録で起点を判定していない — atlas を見直す');
   const setup = sectionOf(atlasSrc, '### 1.2 Setup');
   assert.ok(setup.includes('`--no-track`'), 'atlas Setup に --no-track 作成が無い');

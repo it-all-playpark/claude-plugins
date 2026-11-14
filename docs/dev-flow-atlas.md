@@ -25,8 +25,8 @@ GitHub issue から LGTM までを 8 phase で駆動する `dev-flow` の実処�
 
 ## 1. パイプライン全体
 
-wrapper skill が worktree を用意して `EnterWorktree` した上で、dynamic workflow `dev-flow-run` を
-起動する。phase 遷移とループは workflow script が JS で保持し、中間 state は外部 JSON ではなく
+wrapper skill が worktree へ `EnterWorktree` で入り（無ければ Claude Code が作る）、その中で `dev-flow-prerun` が
+作業ブランチへ付け替えた上で、dynamic workflow `dev-flow-run` を起動する。phase 遷移とループは workflow script が JS で保持し、中間 state は外部 JSON ではなく
 script 変数と `workflow()` の引数・返り値に持つ。`dev-flow.js` が持つ phase・起動する工程の workflow と新しい処理の
 置き場所は [`.claude/rules/dev-flow.md`](../.claude/rules/dev-flow.md) に従う。4〜5（Evaluate 後の Validate と green-fix の再評価を含む）は
 `workflow('dev-flow:dev-flow-evaluate-run')`（`dev-flow-evaluate.js`）が持ち、親はその返り値の state で 6 に進む。
@@ -40,7 +40,7 @@ Validate と共有する実装 spawn・test ⇄ green-fix ループは `_lib/imp
 
 ```mermaid
 flowchart TD
-    U["/dev-flow ISSUE"] --> PF["wrapper preflight<br/>dev-flow-prerun（base → worktree → clean → analyze ‖ stack）<br/>→ ensure-worktree-deps --setup（deps install）<br/>→ EnterWorktree"]
+    U["/dev-flow ISSUE"] --> PF["wrapper preflight<br/>dev-flow-prerun → enter_required なら EnterWorktree → 同じ引数で再実行<br/>（base → worktree → clean → analyze ‖ stack）<br/>→ ensure-worktree-deps --setup（deps install）"]
     PF --> W["Workflow: dev-flow-run<br/>args.setup = ensure-worktree-deps の JSON<br/>（prerun の出力 + deps / epoch_end）"]
     W --> S["1. Setup"]
     S --> I["2. Implement"]
@@ -66,9 +66,12 @@ flowchart TD
 
 ### 1.2 Setup
 
-決定論処理（base 解決・worktree 作成/再利用と起点検証・`.devflow-tmp` clean・
+決定論処理（base 解決・使う worktree と作業ブランチの判定と起点検証・作業ブランチへの付け替え・`.devflow-tmp` clean・
 issue analyze・stack 検出）は run 前に wrapper skill が top-level の Bash 1 コマンド
-`dev-flow-prerun` で済ませる。prerun は deps install をしない。install は依存の postinstall（対象 repo の
+`dev-flow-prerun` で済ませる。prerun は worktree を作らない（sandbox 内からは起動元 repo の `.git/worktrees` に書けない）。
+cwd が使う worktree の中でなければ `worktree_status:"enter_required"` と worktree のパス・登録済みか
+（`worktree_registered`）を返して止まり、wrapper が `EnterWorktree`（登録済みなら path、未登録なら name。Claude Code が
+branch `worktree-<ディレクトリ名>` で作る）で入ってから同じ引数で再実行する。prerun は deps install をしない。install は依存の postinstall（対象 repo の
 任意コード）を走らせるので、repo の任意コードを実行しない prerun の子にせず、wrapper が別の Bash 呼び出し
 `ensure-worktree-deps --setup <worktree>/.devflow-tmp/prerun-setup.json` で回す。その stdout JSON（prerun の出力に
 `deps` / `epoch_end` を足したもの）を `args.setup` として渡す。analyze 段（`prerun-analyze.sh`:
@@ -78,22 +81,29 @@ Setup phase の spawn は末尾の analyze ゲート判定後だけ: ゲート�
 
 ```mermaid
 flowchart TD
-    PR["wrapper: dev-flow-prerun<br/>base → worktree → clean → analyze ‖ stack<br/>→ 別の Bash 呼び出しで ensure-worktree-deps --setup（deps install）<br/>JSON 1 行を args.setup へ"] --> IN["Workflow 起動"]
+    P0["wrapper: dev-flow-prerun<br/>（起動元の cwd）"] -->|"enter_required"| EW["EnterWorktree<br/>登録済みなら path / 未登録なら name"]
+    EW --> PR
+    P0 -->|"cwd が worktree の中"| PR["dev-flow-prerun（worktree の中）<br/>base → worktree → clean → analyze ‖ stack<br/>→ 別の Bash 呼び出しで ensure-worktree-deps --setup（deps install）<br/>JSON 1 行を args.setup へ"]
+    PR --> IN["Workflow 起動"]
     IN --> S1["validatePrerunSetup(args.setup)<br/>純関数・spawn なし"]
     S1 --> OUT["Setup 末尾の analyze ゲートへ（下図）"]
 
-    PR -.->|"ok:false"| STOP["wrapper が停止し人間へ報告"]
+    P0 -.->|"それ以外の ok:false"| STOP["wrapper が停止し人間へ報告"]
+    PR -.->|"ok:false"| STOP
     S1 -.->|"setup 欠落 / ok:false<br/>必須キー欠落"| AB["throw / abort"]
 ```
 
 `dev-flow-prerun` の各段は独立に `ok:false` を報告し後続段を巻き込まない。base は明示指定なら
-origin に存在するか検証、未指定なら `origin/dev` → `origin/HEAD` の順。worktree は `--no-track` で作る
-（upstream を持たない）。既存 worktree を再利用するときは、branch の reflog の作成記録
+origin に存在するか検証、未指定なら `origin/dev` → `origin/HEAD` の順。Claude Code が作った直後の branch
+`worktree-<ディレクトリ名>`（未コミットの変更が無いもの）は、作業ブランチへ `git switch` で付け替える。新しい作業ブランチは
+`origin/BASE` から `--no-track` で作り（upstream を持たない）、local の既存 branch はそのまま switch する。それ以外の
+branch・detached HEAD・未コミットの変更がある `worktree-<ディレクトリ名>` は付け替えずに `ok:false`。
+既存 worktree を再利用するときは、branch の reflog の作成記録
 （`branch: Created from <ref>`）が `origin/BASE`（または pr-iterate-prerun が作った `origin/feature/issue-N`）かで
 起点を検証する。`args.setup` が無い・`ok:false`・必須キー欠落は workflow が
 即 throw し、workflow 内 proxy への fallback は置かない（後方互換 scaffolding 禁止）。
-worktree は repo 内 `.claude/worktrees/df-N` を優先し、書き込めない
-（`worktree_status:"unwritable"`）場合のみ wrapper が repo 外 `repo-wt/df-N` で prerun を再実行する。
+新しく作られる worktree は repo 内 `.claude/worktrees/df-N` だけで（`EnterWorktree` は repo の外に作れない）、書き込めない
+（`worktree_status:"unwritable"`）場合は `ok:false` で人間に返す。
 isolation probe は wrapper で代替しない — subagent の Write 経路が通ることの検証であり、
 top-level の Bash では意味が変わる。
 
@@ -338,7 +348,8 @@ pr-reviewer 1-pass と CI green だけで終端する。blocking finding か CI 
 ## 3. pr-iterate ループ
 
 `pr-iterate`（workflow 名 `pr-iterate-run`）は dev-flow から入れ子で呼ばれるほか、`/pr-iterate` の wrapper skill
-（`pr-iterate-prerun` で PR head の worktree を用意 → EnterWorktree）から単体でも起動できる。どちらも `args.nested` を
+（`pr-iterate-prerun` が PR head の worktree を決める → `enter_required` なら EnterWorktree → 同じ引数で再実行して
+head branch へ付け替え）から単体でも起動できる。どちらも `args.nested` を
 渡すので pr-meta / isolation-cleanup は起動しない（終端サマリーの投稿は単体起動だけ）。approve が出ても
 CI gate を通らなければ LGTM にならず、**CI pending を成功扱いすることは決してない**。
 同じ topic が `REVIEW_STUCK` 回繰り返された時点で stuck と判定して人間へ渡す。
