@@ -1,0 +1,21 @@
+# 依存更新の PR は Dependabot だけが出す。
+# github-actions は workflow の `uses:` の版だけを追う。lint.yml の `node-version:` は対象外なので手動で上げる。
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      timezone: "Asia/Tokyo"
+    # prefix + scope で commit と PR タイトルが `chore(deps): ...` / `chore(deps-dev): ...` になる。
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      timezone: "Asia/Tokyo"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
