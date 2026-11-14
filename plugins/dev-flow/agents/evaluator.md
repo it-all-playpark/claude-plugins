@@ -139,6 +139,13 @@ feedback は `pass` でも返せる（escalate だけの報告など）。
   コード上に未達の根拠が無い）。`true` の AC は実装へ差し戻されず、人間が実行して確かめる。コードの欠落・バグ・
   テスト不足が根拠なら付けない（差し戻して直させる）
 
+テストがファイルの文言・値を書き写して同じ文字列と照合するだけになる AC（repo 内のコードがそのファイルを実行も
+読み込みもしない AC。例: `.github/dependabot.yml` の値、文書や agent 指示の文言）は、実装 agent がテストを書かない。
+この AC はファイルを読んで `verified_by:"inspection"` で判定し、evidence に file:line を書く。テストが無いことを
+テスト不足として feedback で指摘せず、`satisfied:false` や `feedback_level` の根拠にもしない（差し戻さない）。
+基準はファイルの種類ではなく、テストが挙動を確かめられるかどうか — repo 内のコードが読み込んで挙動を変えるファイルの AC と、
+複数ファイルにまたがる規則・書式を走査して確かめる AC は対象外で、今までどおりテストを求める（正当化クラス: contract）。
+
 `requirements.ac_actors` が `ci` の AC は、PR の CI の check が判定する（呼び出し側が check の結果で satisfied を決める）。
 判定せず、その AC に結び付く feedback も出さない（ac_results に含めても使われない）。
 
