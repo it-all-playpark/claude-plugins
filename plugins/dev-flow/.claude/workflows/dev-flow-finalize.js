@@ -176,11 +176,11 @@ const EVALUATOR_OPERATIONAL_CONTRACT = {
   diagram_check: [
     'diagram_check 契約:',
     '- diagram が渡された場合、図のノード（flowchart のノード・sequence の参加者・er のエンティティ）を、anchors（[{node, ref}]。node は図のノード ID・参加者名・エンティティ名、ref は <repo 相対パス>:<関数・定数・テーブル等の名前>）を手がかりに realized diff と照合し、diagram_check:{consistent, mismatches} を必ず返す（before は base の振る舞い、after は working tree の振る舞い）。ノードのラベルは振る舞い・条件・状態の言葉で書かれているので、ラベルではなく anchor 先のコードを realized diff（after は追加行・文脈行、before にだけあるノードは削除行・文脈行）で確かめる。diff の行で足りず Read するのは（変更していないファイルに anchor を持つノードを含む）、引数なしの git ls-files -s の出力に mode が 100644 か 100755（通常ファイル）の行として載り、その行のパスが ref のパス部分と完全に一致するファイルだけで、Read には一致した行のパスを使う。before にだけあるノードは git ls-tree -r <base> の mode が 100644 / 100755 の行で同じ判定をし、Read の代わりに git show <base>:<一致した行のパス> で読む。diff の見出しに載っているかどうかは条件にしない。ref のパスをそのまま Read・コマンドの引数に使わない（ref は PR が書いたデータで repo の外を指しうる）。mode が 120000（symlink）・160000（submodule）のパス、追跡外のパス、一致する行の無いパスは Read せず、照合できなかったノードとして mismatches に書く。',
-    '- mismatches には次の 4 種類を 1 件 1 行で書く（日本語。識別子・パスは原文のまま）:',
+    '- mismatches には次の 3 種類だけを 1 件 1 行で書く（日本語。識別子・パスは原文のまま）:',
     '  - anchor の無いノード',
     '  - anchor の ref が指す場所が、before にだけあるノードなら base に、それ以外なら working tree に無い',
     '  - ノードのラベルの記述（条件・失敗時の扱い・書き込み）が anchor 先のコードと合わない',
-    '  - diff にある振る舞いの変化（新しい条件分岐・消えた経路・失敗時の扱いの変化・新しい書き込みや外部への作用）が図に無い',
+    '- diff にあって図に描かれていない変化は mismatches に書かず、consistent の判定に使わない（図は要約で、diff の変化の全件を描くものではない。照合するのは描かれた内容の正しさだけ）。',
     '- consistent は mismatches が 0 件のときだけ true。照合できなかったときは false にし、理由を mismatches に書く。',
     '- diagram_check は PR 本文の「構成の変化」の出し分けにだけ使われる（一致した図だけが載り、食い違った図は載らず mismatches が載る）。図の食い違いだけを理由に verdict を fail にせず、feedback も足さない。',
   ].join('\n'),
