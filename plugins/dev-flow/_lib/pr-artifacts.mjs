@@ -792,15 +792,15 @@ export function prCreatePrompt({ wt, base, branch, repo, issue, commitMessage, l
  *   - 待機の累計が PR_PUSH_MAX_WAIT_SEC に達した: stop を呼び、failed_step:"push" を返す。
  *   - 結果が読めない（null・schema に合わない応答・proxy の固定 JSON）: push がまだ走っているかもしれないので stop を呼ぶ。
  *   - spawn の throw: stop を呼んで投げ直す（runTestsJob と同じ。throw の扱いは呼び出し側が持つ）。
- * @param {{wt: string, issue: number|string, prompt: string, createPrompt: string, schema: object,
+ * @param {{wt: string, issue: number|string, label?: string, prompt: string, createPrompt: string, schema: object,
  *   waitJob: Function, spawn: (prompt: string, opts: object) => Promise<unknown>,
  *   spawnStop: (prompt: string, opts: object) => Promise<unknown>}} opts
+ *   label: spawn の label の頭（既定 `pr#<issue>`。pre-push hook の失敗を差し戻した後のやり直しは別の label で呼ぶ）/
  *   schema: `pr#<issue>` / `.create` の応答の schema / waitJob: bg-job-wait.mjs の waitBgJob（inline 先で共有するので引数で受ける）
  *   / spawn: stop 以外の spawn / spawnStop: stop の spawn（throw しない経路を渡す）
  * @returns {Promise<object|null>} null は `pr#<issue>` か `.create` が null を返したとき（呼び出し側の need が abort にする）
  */
-export async function prPhaseJob({ wt, issue, prompt, createPrompt, schema, waitJob, spawn, spawnStop }) {
-  const label = `pr#${issue}`;
+export async function prPhaseJob({ wt, issue, label = `pr#${issue}`, prompt, createPrompt, schema, waitJob, spawn, spawnStop }) {
   const stop = () => spawnStop(prPushStopPrompt(wt), { schema: PR_PUSH_STOP_SCHEMA, label: `${label}.stop` });
   try {
     const first = await spawn(prompt, { schema, label });
@@ -851,10 +851,13 @@ export async function prPhaseJob({ wt, issue, prompt, createPrompt, schema, wait
 // ただし push_result（pr-push の stdout の JSON）が無い push 失敗は、proxy が pr-push を経ずに push した（issue #852）か
 // 出力を転写しなかった形で、log が存在する保証が無い。failure_reason を固定文言 PR_PUSH_NOT_INVOKED_REASON にし
 // push_log を載せない — 存在しない log を「出力全文」と案内すると、人間は空振りの調査に向かう。
+// pushHook は push の失敗を pre-push hook の単体実行（_lib/pre-push-hook.mjs）で確かめた run だけが渡す
+// {result, exit_code, log, reimpl}。単体実行の結果と dev-implementer へ差し戻したかを push_hook に載せる
+// （実行していない run はキーごと持たない）。
 export const PR_FAILED_STEP_VALUES = ['commit', 'push', 'pr-create'];
 export const PR_PHASE_FAILED_CATEGORY = 'pr_phase_failed';
 
-export function prPhaseFailureFacts(pr, { pushLog } = {}) {
+export function prPhaseFailureFacts(pr, { pushLog, pushHook = null } = {}) {
   const prUrl = str(pr?.pr_url).trim();
   const prNumber = Number(pr?.pr_number);
   const failed = pr?.committed === false || prUrl === '' || !(Number.isInteger(prNumber) && prNumber > 0);
@@ -872,6 +875,7 @@ export function prPhaseFailureFacts(pr, { pushLog } = {}) {
     committed: pr?.committed === true,
     ...(headSha ? { head_sha: headSha } : {}),
     ...(step === 'push' && log ? { push_log: log } : {}),
+    ...(pushHook ? { push_hook: { result: pushHook.result, exit_code: pushHook.exit_code ?? null, log: str(pushHook.log), reimpl: pushHook.reimpl === true } } : {}),
   };
 }
 
@@ -921,6 +925,23 @@ function prPhaseProgressLine(facts) {
   return `**進み具合**: ${PR_FAILED_STEP_VALUES.map((step, i) => `${step} ${marks[i]}`).join(' → ')}`;
 }
 
+// pre-push hook の単体実行の結果の表記（_lib/pre-push-hook.mjs の PUSH_HOOK_RESULTS と同じ値）
+const PUSH_HOOK_RESULT_TEXT = {
+  failed: '失敗（hook が exit 非 0）',
+  passed: '成功（hook は exit 0 — push の失敗は hook の失敗と確定していない）',
+  none: 'pre-push hook が無い',
+  error: '結果を取得できなかった',
+  wait_capped: '待機上限に達して hook を止めた',
+};
+
+function pushHookLines(hook) {
+  if (!hook) return '';
+  const exit = hook.exit_code != null ? `、exit code: ${hook.exit_code}` : '';
+  return `- pre-push hook の単体実行（push なし）: ${PUSH_HOOK_RESULT_TEXT[hook.result] ?? hook.result}${exit}\n`
+    + (hook.log ? `- pre-push hook の出力全文: \`${hook.log}\`\n` : '')
+    + `- dev-implementer への差し戻し: ${hook.reimpl ? '行った（1 回）' : '行っていない'}\n`;
+}
+
 export function prPhaseFailureComment({ worktree, branch, facts, commands }) {
   const reasonFence = fenceFor(facts.failure_reason);
   const cmdText = commands.join('\n');
@@ -928,12 +949,15 @@ export function prPhaseFailureComment({ worktree, branch, facts, commands }) {
   const commit = facts.committed ? `済み${facts.head_sha ? `（\`${facts.head_sha}\`）` : ''}` : '未（worktree の変更は未 commit のまま残っている）';
   return `## dev-flow: PR phase で停止（step: ${facts.failed_step}）\n\n`
     + `${prPhaseProgressLine(facts)}\n\n`
-    + `Implement〜Evaluate は完了済み。run は push / PR 作成を再試行せずに終了した。\n\n`
+    + (facts.push_hook?.reimpl
+      ? `Implement〜Evaluate は完了済み。run は pre-push hook の失敗を dev-implementer に 1 回差し戻したが、PR を作れずに終了した（これ以上の再試行はしていない）。\n\n`
+      : `Implement〜Evaluate は完了済み。run は push / PR 作成を再試行せずに終了した。\n\n`)
     + `- 失敗段: \`${facts.failed_step}\`\n`
     + `- commit: ${commit}\n`
     + `- branch: \`${branch}\`\n`
     + `- worktree: \`${worktree}\`\n`
     + (facts.push_log ? `- push 出力全文: \`${facts.push_log}\`\n` : '')
+    + pushHookLines(facts.push_hook)
     + `\n### 理由\n\n${reasonFence}\n${facts.failure_reason}\n${reasonFence}\n\n`
     + `### 回収手順（worktree で上から順に実行）\n\n${cmdFence}\n${cmdText}\n${cmdFence}\n\n`
     + `commit message と PR body は \`.devflow-tmp/commit-msg.txt\` / \`.devflow-tmp/pr-body.md\` に保存済みのものを使う（再生成しない）。`

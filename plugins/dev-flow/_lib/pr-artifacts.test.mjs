@@ -1246,6 +1246,39 @@ test('[pr-artifacts] prPhaseFailureComment: 失敗段・理由・commit 状態�
   assert.ok(!uncommitted.includes('push 出力全文'), uncommitted);
 });
 
+// pre-push hook の単体実行（issue #1435）: 実行した run だけ push_hook を返り値に持ち、issue コメントに結果と差し戻しの有無を出す
+test('[pr-artifacts] prPhaseFailureFacts / prPhaseFailureComment: pre-push hook を単体実行した run は結果・exit code・ログのパス・差し戻しの有無を載せ、実行していない run は今と同じ', () => {
+  const pr = { pr_url: '', pr_number: 0, committed: true, failed_step: 'push', failure_reason: '', push_result: { status: 'failed', exit_code: 1, log: '/wt/.devflow-tmp/push-output.log', tail: 'error: failed to push some refs' } };
+  const opts = { pushLog: '/wt/.devflow-tmp/push-output.log' };
+  const hookLog = '/tmp/pre-push-hook-a1B2c3/hook.log';
+  const plain = prPhaseFailureFacts(pr, opts);
+  assert.ok(!('push_hook' in plain));
+  assert.deepEqual(prPhaseFailureFacts(pr, { ...opts, pushHook: null }), plain);
+  const plainBody = prPhaseFailureComment({ worktree: '/wt', branch: 'b', facts: plain, commands: ['git push origin HEAD'] });
+  assert.ok(!plainBody.includes('pre-push hook') && !plainBody.includes('差し戻し'), plainBody);
+  assert.ok(plainBody.includes('run は push / PR 作成を再試行せずに終了した。'));
+
+  for (const [pushHook, lines, absent] of [
+    [{ result: 'failed', exit_code: 1, log: hookLog, reimpl: true },
+      ['- pre-push hook の単体実行（push なし）: 失敗（hook が exit 非 0）、exit code: 1', `- pre-push hook の出力全文: \`${hookLog}\``, '- dev-implementer への差し戻し: 行った（1 回）', 'dev-implementer に 1 回差し戻したが、PR を作れずに終了した'],
+      ['run は push / PR 作成を再試行せずに終了した。']],
+    [{ result: 'passed', exit_code: 0, log: hookLog, reimpl: false },
+      ['- pre-push hook の単体実行（push なし）: 成功（hook は exit 0', '、exit code: 0', '- dev-implementer への差し戻し: 行っていない', 'run は push / PR 作成を再試行せずに終了した。'], []],
+    [{ result: 'none', exit_code: null, log: '', reimpl: false },
+      ['- pre-push hook の単体実行（push なし）: pre-push hook が無い\n- dev-implementer への差し戻し: 行っていない'], ['exit code:', 'pre-push hook の出力全文']],
+    [{ result: 'error', exit_code: null, log: '', reimpl: false }, ['- pre-push hook の単体実行（push なし）: 結果を取得できなかった\n'], ['exit code:']],
+    [{ result: 'wait_capped', exit_code: null, log: hookLog, reimpl: false }, ['- pre-push hook の単体実行（push なし）: 待機上限に達して hook を止めた\n', `\`${hookLog}\``], ['exit code:']],
+  ]) {
+    const facts = prPhaseFailureFacts(pr, { ...opts, pushHook });
+    assert.deepEqual(facts, { ...plain, push_hook: pushHook });
+    const body = prPhaseFailureComment({ worktree: '/wt', branch: 'b', facts, commands: ['git push origin HEAD'] });
+    for (const s of lines) assert.ok(body.includes(s), `comment に '${s}' が無い:\n${body}`);
+    for (const s of absent) assert.ok(!body.includes(s), `comment に '${s}' がある:\n${body}`);
+    // hook の行は push log の行と理由の間に置く
+    assert.ok(body.indexOf('- push 出力全文') < body.indexOf('- pre-push hook の単体実行') && body.indexOf('- pre-push hook の単体実行') < body.indexOf('### 理由'), body);
+  }
+});
+
 test('[pr-artifacts] prPhaseFailureComment: 見出しの直後に commit → push → pr-create の進み具合を 1 行で出す（issue #1359）', () => {
   const progressOf = (failed_step, committed) => {
     const body = prPhaseFailureComment({ worktree: '/wt', branch: 'b', facts: { failed_step, failure_reason: 'x', committed }, commands: ['git push origin HEAD'] });

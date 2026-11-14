@@ -98,6 +98,8 @@ const DF_LITE = DEV_FLOW_SCENARIOS['lite'];
 const DF_CROSS_REPO = DEV_FLOW_SCENARIOS['cross-repo'];
 const DF_LOCAL_VERIFY = DEV_FLOW_SCENARIOS['local-verify'];
 const DF_LOCAL_VERIFY_REIMPL = DEV_FLOW_SCENARIOS['local-verify-reimpl'];
+const DF_PUSH_HOOK_REIMPL = DEV_FLOW_SCENARIOS['push-hook-reimpl'];
+const DF_PUSH_HOOK_STOP = DEV_FLOW_SCENARIOS['push-hook-stop'];
 const DF_VISUAL_SNAPSHOTS = DEV_FLOW_SCENARIOS['visual-snapshots'];
 const DF_VISUAL_SNAPSHOTS_LOST = DEV_FLOW_SCENARIOS['visual-snapshots-lost'];
 // journal-log-abort は top-level abort catch 内でのみ呼ばれる — DEV_FLOW_SCENARIOS['abort'] の
@@ -371,6 +373,15 @@ const EXPECTED_DEV_FLOW = {
       assert.equal(result?.journal_log_status, 'save_failed', "journal-log-failure throw 時は journal_log_status が 'save_failed' になるべき");
     },
   },
+  // PR phase の push の pre-push hook 失敗の差し戻し（issue #1435）
+  'push-hook-start': { config: DF_PUSH_HOOK_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。単体実行の応答が無ければhookの失敗と確定せず、差し戻さずpr_phase_failedで終える' },
+  'push-hook-wait-1': { config: DF_PUSH_HOOK_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。waitの応答が無ければhookを止め、差し戻さずpr_phase_failedで終える' },
+  'push-hook-stop': { config: DF_PUSH_HOOK_STOP, policy: 'continue', reason: 'failOpenAgent経由。停止確認の失敗は吸収し、hookはscript側の打ち切りで止まる' },
+  'reimpl-push-hook:serial:issue-1': { config: DF_PUSH_HOOK_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。差し戻しのdev-implementer失敗はnullとしてdropし、未コミットの変更の有無で続きを決める' },
+  'diff-hash-push-hook': { config: DF_PUSH_HOOK_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。未コミットの変更を確かめられなければpushし直さずpr_phase_failedで終える' },
+  'commit-hook#push-hook-1': { config: DF_PUSH_HOOK_REIMPL, policy: 'continue', reason: 'failOpenAgent経由。差し戻し後の回でhookの結果が取れなければgreen条件に足さず継続する' },
+  'test#push-hook-1': { config: DF_PUSH_HOOK_REIMPL, policy: 'continue', reason: 'try/catchで合成redへ変換しgreen-fixループへ継続する既存のfail-safe経路（push hook差し戻し後）' },
+  'pr#1.repush': { config: DF_PUSH_HOOK_REIMPL, policy: 'abort', reason: 'need()包み。やり直しのPR phaseも1回目と同じくPR作成失敗のまま継続しない致命契約' },
   'journal-log-abort': {
     config: DF_JOURNAL_ABORT_BASE,
     policy: 'continue-in-abort',

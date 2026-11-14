@@ -9,13 +9,14 @@
 // Final AC reconcile を実行すべきかを判定する純粋関数。
 //
 // 判定順（最初に該当した reason を返す）:
-//   1. fixesApplied が数値でない/<=0        → no_fixes
+//   1. fixesApplied が数値でない/<=0        → no_fixes。ただし treeChangedAfterEval（pr-iterate の fix 以外で Evaluate の後に
+//      tree が変わった run — PR phase の pre-push hook の失敗を差し戻して commit を足した run）は fix 適用 run と同じに扱う
 //   2. acCount が正整数でない                → no_ac（AC 0 件で agent を起動しない）
 //   3. finalReconcile が 'reverified' でない → final_test_unavailable
 //   4. finalTestGreen === false              → final_test_red
 //   5. それ以外（true または null=no_tests） → run:true
-export function shouldRunFinalAcReconcile({ fixesApplied, finalReconcile, finalTestGreen, acCount }) {
-  if (typeof fixesApplied !== 'number' || !Number.isFinite(fixesApplied) || fixesApplied <= 0) {
+export function shouldRunFinalAcReconcile({ fixesApplied, finalReconcile, finalTestGreen, acCount, treeChangedAfterEval = false }) {
+  if (treeChangedAfterEval !== true && (typeof fixesApplied !== 'number' || !Number.isFinite(fixesApplied) || fixesApplied <= 0)) {
     return { run: false, reason: 'no_fixes' };
   }
   if (!(Number.isInteger(acCount) && acCount > 0)) {

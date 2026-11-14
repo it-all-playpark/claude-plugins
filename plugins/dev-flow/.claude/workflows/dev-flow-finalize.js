@@ -920,8 +920,8 @@ async function waitBgJob({ start, wait, maxPolls, schema }) {
 }
 // ==== END inline: _lib/bg-job-wait.mjs ====
 // ==== BEGIN inline: _lib/final-ac-reconcile.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
-function shouldRunFinalAcReconcile({ fixesApplied, finalReconcile, finalTestGreen, acCount }) {
-  if (typeof fixesApplied !== 'number' || !Number.isFinite(fixesApplied) || fixesApplied <= 0) {
+function shouldRunFinalAcReconcile({ fixesApplied, finalReconcile, finalTestGreen, acCount, treeChangedAfterEval = false }) {
+  if (treeChangedAfterEval !== true && (typeof fixesApplied !== 'number' || !Number.isFinite(fixesApplied) || fixesApplied <= 0)) {
     return { run: false, reason: 'no_fixes' };
   }
   if (!(Number.isInteger(acCount) && acCount > 0)) {
@@ -2998,6 +2998,11 @@ const iterate = ARGS.iterate
 const visualSnapshotsFinal = visualSnapshotsAfterIterate(state.visualSnapshots, iterate?.visual_snapshots)
 const route = ARGS.route
 let evalStaleness = ARGS.eval_staleness
+// Evaluate の後で PR の tree が変わった run: pr-iterate が fix を適用した run と、PR phase の push の pre-push hook 失敗を
+// dev-implementer に差し戻して commit を足した run（state.pushHookReimpl。pr-iterate の fixes_applied は 0 でも tree は
+// Evaluate が判定した tree と違う）。どちらも最終 tree の全件テストと Final AC reconcile をやり直し、Evaluate の判定を
+// 最終 tree の AC の達成の根拠にしない。
+const treeChangedAfterEval = (iterate?.fixes_applied ?? 0) > 0 || state.pushHookReimpl === true
 
 // trackedAgent / failOpenAgent は dev-flow.js と同型（abort の記録先は親が持つので ABORT_CTX は持たない）。
 async function trackedAgent(prompt, opts) {
@@ -3569,8 +3574,8 @@ function treeDiffNumstatPrompt(from, to) {
     + `git -C ${WT} diff --numstat ${from} ${to}`
 }
 
-// Phase Final reconcile: fixes_applied>0 の run だけ PR 最終 HEAD へ ff-sync → test 再実行 → 宣言外パス再判定。
-// fixes_applied=0 は Validate red の落ちたファイルの単体再実行だけで、他の spawn は 0。
+// Phase Final reconcile: Evaluate の後で tree が変わった run（treeChangedAfterEval）だけ PR 最終 HEAD へ ff-sync → test 再実行 →
+// 宣言外パス再判定。それ以外は Validate red の落ちたファイルの単体再実行だけで、他の spawn は 0。
 phase('Final reconcile')
 
 // 落ちたテストファイルだけを 1 回流し直す。flaky は flake 候補の開示専用で、holdCode の HOLD は再実行の結果に依らない。
@@ -3610,7 +3615,7 @@ let finalEpochRes = null
 let finalSyncOk = false    // reconcile-sync が成功し worktree が PR の最終 HEAD にある（local-verify の最終 tree 突合に使う）
 let finalRecheckTargets = []   // pr-iterate fix 適用 run の LLM 判断の解消済み item 全件（Final AC reconcile で再検証）
 let finalRecheckFiles = []     // pr-iterate fix が触ったファイル（再検証の判断材料として Final AC reconcile に渡す）
-if ((iterate?.fixes_applied ?? 0) > 0) {
+if (treeChangedAfterEval) {
   // Step1 sync（fail-safe）。cwd が共有 checkout のままだと無関係な worktree を書き換えるので、手順 0 で branch を照合する。
   const sync = await trackedAgent(
     `次を順に bare 単文（先頭トークンが git。cd 前置・bash 前置・env 代入前置・&& 連結・パイプ・リダイレクト禁止。cwd は ${WT}）で実行し **JSON object のみ** 返せ（判定や脚色をしない。失敗時に ok:true を生成してはならない）:\n`
@@ -3705,7 +3710,7 @@ if ((iterate?.fixes_applied ?? 0) > 0) {
     }
   }
 } else {
-  log('Final reconcile: fixes_applied=0 — skip（最終 tree は Validate の tree のまま）')
+  log('Final reconcile: Evaluate の後で tree が変わっていない（fixes_applied=0）— skip（最終 tree は Validate の tree のまま）')
   // Validate の red（tests:'failed' / green:false）のまま PR へ進んだ run だけ、落ちたファイルを 1 回流し直して
   // flake 候補を validate_test_red の HOLD に添える（HOLD は外さない）。ENV で green にした run・error・green は対象外。
   if (state.val?.tests === 'failed' && state.val.green === false) {
@@ -3724,7 +3729,7 @@ state.finalAcResults = null
 state.finalUnsatisfiedAc = null
 state.finalUnsatisfiedAcByActor = null
 const _acCount = (req.acceptance_criteria ?? []).length
-const _facDecision = shouldRunFinalAcReconcile({ fixesApplied: iterate?.fixes_applied ?? 0, finalReconcile, finalTestGreen, acCount: _acCount })
+const _facDecision = shouldRunFinalAcReconcile({ fixesApplied: iterate?.fixes_applied ?? 0, finalReconcile, finalTestGreen, acCount: _acCount, treeChangedAfterEval })
 if (_facDecision.run) {
   // final 再評価対象 item: 未解消 ESCALATE / 未 checked かつ triage 未済の advisory item。
   // 表示専用（checkItem は呼ばない）— escalateCount / 収束判定 / classifyMergeTier の入力は不変（軸A 不変）。
@@ -3881,7 +3886,7 @@ if (finalRecheckTargets.length) {
 // 構成の変化の図は修正後の tree と照合していないので、Evaluate で一致した図も未照合として出し、食い違った図は出さないままにする。
 // 表示専用のため失敗は fail-open（終端サマリーの「あなたが確かめること」に本文が修正前のままである旨を出す）。
 let prBodySynced = null
-if ((iterate?.fixes_applied ?? 0) > 0) {
+if (treeChangedAfterEval) {
   const acReverified = finalAcReconcile === 'reverified'
   const prBodyFinal = buildPrBody({
     issue: ISSUE, req, plan: state.plan, testsurfHits: state.testsurfHits, dangerHits: secHitsOf(state.risk),
@@ -4141,7 +4146,7 @@ if (ciTargets.length > 0) {
 // 開示する（testRunAcDisclosures）。fix 適用 run は test#final の結果だけを使い（Validate は最終 tree と異なる tree の結果）、
 // test#final が無い（sync 失敗・throw）なら開示しない。開示だけで、AC の達成判定・merge tier は変えない — 入口とテストは PR が
 // 書き換えられ、run-tests の選択実行の green は AC が求める全件 green より弱い。変更ファイルは pipeline が base との差分から求めた changed.files。
-const testRunAcFinal = (iterate?.fixes_applied ?? 0) > 0
+const testRunAcFinal = treeChangedAfterEval
 const testRunAc = testRunAcDisclosures({
   acceptanceCriteria: req.acceptance_criteria,
   result: testRunAcFinal ? finalTestRun : state.val,

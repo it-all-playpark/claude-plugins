@@ -182,6 +182,15 @@ PR phase（commit / push / `gh pr create`）が失敗した run は throw せず
 pr-push を経ずに push した場合は載らず、`failure_reason` が `pr-push not invoked` で始まる固定文言になる）・`branch`・
 `worktree`・`shape`・`eval_verdict`・`phase_durations`・`recovery_commands`・`issue_comment` が載る。
 
+push が pr-push の `failed` で終わった run だけ、workflow が `pre-push-hook start <worktree>` → `wait` で対象 repo の pre-push hook を
+push せずに単体実行する。結果が `failed`（hook が exit 非 0）なら exit code とログのパスを渡して dev-implementer に 1 回だけ差し戻し、
+Validate をやり直してから stage → commit → push → `gh pr create` をもう 1 回行う。2 回目の push が通った run は PR を作って
+pr-iterate に進み、`pr_phase_failed` にならない（lite route には入らず、Final reconcile が最終 tree の全件テストと AC の再判定を行う）。
+単体実行の結果が `passed` / `none` / `error` / 待機上限の run、差し戻しても未コミットの変更が無い run、2 回目の push も失敗した run は
+今までどおり `failed_step: "push"` の `pr_phase_failed` で終わる。push の失敗が待機上限・lock_timeout・pr-push を経ない応答の run と、
+commit・`gh pr create` の失敗は単体実行もしない。単体実行した run の返り値には `push_hook`（`result`: `failed` / `passed` / `none` /
+`error` / `wait_capped`、`exit_code`、`log`: hook の出力全文のパス、`reimpl`: 差し戻したか）が載り、`issue_comment` にも同じ内容が載る。
+
 呼び出し元セッションは次の 2 手順で失敗段・理由と回収コマンドを issue に残す:
 
 1. 返り値の `issue_comment` を **Write tool** で `<worktree>/.devflow-tmp/pr-phase-failure-comment.md` へ
@@ -194,7 +203,7 @@ pr-push を経ずに push した場合は載らず、`failure_reason` が `pr-pu
 pr-create で止まった run は `gh pr create --draft --body-file .devflow-tmp/pr-body.md ...` から始まり、最後は
 `/pr-iterate <N>`。commit message と PR body は run が `.devflow-tmp/` に保存済みのものを使い、再生成しない
 （run が決定論で組んだ Closes 行・AC・設計判断と食い違うため）。wrapper は回収コマンドを自分で実行しない —
-push / PR 作成は run 内でも wrapper でも再試行せず（pre-push hook の失敗等は原因を人間が判断する）、
+push / PR 作成を wrapper は再試行せず、run 内の再試行も上の pre-push hook の失敗の差し戻し 1 回だけ（それ以外の失敗は原因を人間が判断する）で、
 コメント投稿の後に失敗段・理由と issue コメントの URL を人間に報告して終える。
 
 ## Implement 経路（全 shape で dev-implementer 一本）

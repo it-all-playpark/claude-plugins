@@ -58,6 +58,8 @@ const EXPECTED_DEV_FLOW = {
   'diff-hash-snapshot#*': RO,
   'diff-hash-snapshot-after#*': RO,
   'visual-snapshots-list': RO,
+  // pre-push hook の失敗を差し戻した後に未コミットの変更があるか（issue #1435。worktree-diff-hash を HEAD と比べる）
+  'diff-hash-push-hook': RO,
   'merge-tier-facts': RO,
   'changed-files-final': RO,
   'tree-diff-numstat': RO,
@@ -76,6 +78,10 @@ const EXPECTED_DEV_FLOW = {
   'test#final': RW,
   // Validate の各回の pre-commit hook（hook が working tree を書き換えうる formatter のため write tier）
   'commit-hook#*': RW,
+  // push が失敗した run の pre-push hook の単体実行（issue #1435）。hook は repo のコードを実行するので sandbox 内の write tier で動かす
+  'push-hook-start': RW,
+  'push-hook-wait-*': RW,
+  'push-hook-stop': RW,
   // ci の AC のローカル実行（issue #863）。local-verify は worktree のコマンドを実行するので sandbox 内で動かす
   // （excludedCommands に登録しない）。起動形は bin/ の bare 名 `local-verify start|wait|stop`
   'local-verify-start#*': RW,
