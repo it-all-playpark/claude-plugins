@@ -176,6 +176,48 @@ assert_not_pushed() {
     [ "$(wc -l < "$OUT/runs" | tr -d ' ')" -eq 1 ]
 }
 
+# hook は pr-push と同じ repo 単位の push lock（git-common-dir 配下の dev-flow-pr-push.lock/）の下で起動する。
+# 並行 run の push hook と同時に走ると CPU を奪い合って両方が落ちるため。
+
+@test "同じ repo の 2 つの worktree から同時に起動すると、2 つ目の hook は 1 つ目の終了後に始まり、lock を残さない" {
+    events="$OUT/hook-events"
+    put_hook "echo \"start \$(date +%s)\" >>'$events'; sleep 2; echo \"end \$(date +%s)\" >>'$events'; exit 0"
+    export PR_PUSH_LOCK_POLL_SECONDS=0.2
+    REPO2="$ROOT/repo2"
+    git -C "$REPO" worktree add -q -b feature/y "$REPO2"
+
+    first="$(bash "$SCRIPT" start "$REPO")"
+    second="$(bash "$SCRIPT" start "$REPO2")"
+    [ "$(json_field "$first" .hook)" = "running" ]
+    [ "$(json_field "$second" .hook)" = "running" ]
+    r1="$(bash "$SCRIPT" wait "$REPO" --wait-sec 30)"
+    r2="$(bash "$SCRIPT" wait "$REPO2" --wait-sec 30)"
+    bash "$SCRIPT" stop "$REPO2" --timeout-sec 20 >/dev/null 2>&1 || true
+    [ "$(json_field "$r1" .hook)" = "passed" ]
+    [ "$(json_field "$r2" .hook)" = "passed" ]
+    # hook の start / end は交互に並び（重ならない）、2 つ目の start 時刻は 1 つ目の end 時刻以降
+    [ "$(cut -d' ' -f1 "$events" | tr '\n' ' ')" = "start end start end " ]
+    [ "$(sed -n 3p "$events" | cut -d' ' -f2)" -ge "$(sed -n 2p "$events" | cut -d' ' -f2)" ]
+    [ ! -e "$REPO/.git/dev-flow-pr-push.lock" ]
+}
+
+@test "生きているプロセスが push lock を持ったまま待ち上限を超えると、hook を起動せず error（lock_timeout）を返し lock を消さない" {
+    put_hook "touch '$OUT/hook-ran'; exit 0"
+    sleep 30 >/dev/null 2>&1 &
+    holder=$!
+    mkdir -p "$REPO/.git/dev-flow-pr-push.lock/pid-$holder"
+    export PR_PUSH_LOCK_WAIT_SECONDS=1
+    export PR_PUSH_LOCK_POLL_SECONDS=0.2
+
+    run_to_end 5
+    kill "$holder"
+    [ "$(json_field "$RESULT" .hook)" = "error" ]
+    [ "$(json_field "$RESULT" .exit)" = "null" ]
+    [[ "$(json_field "$RESULT" .error)" == lock_timeout* ]]
+    [ ! -e "$OUT/hook-ran" ]
+    [ -d "$REPO/.git/dev-flow-pr-push.lock/pid-$holder" ]
+}
+
 @test "引数が不正 -> exit 2 と hook error" {
     run bash "$SCRIPT"
     [ "$status" -eq 2 ]

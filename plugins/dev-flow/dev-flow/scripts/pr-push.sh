@@ -36,10 +36,8 @@
 # その repo の hook 側で skip する（E2E は CI が回す）。
 #
 # push は repo 単位の排他 lock（git-common-dir 配下の dev-flow-pr-push.lock/、worktree 間で共有）を取ってから行う。
-# 同じ repo の並行 run の pre-push hook が同時に走ると、テストが CPU を奪い合って落ちるため。
-# lock は mkdir / rmdir だけで取得・解放する（sandbox 内から書ける場所。$TMPDIR はセッションごとに別なので使えない）。
-# 保持者は lock 内の pid-<PID>/ で記録し、`kill -0` が ESRCH のときだけ stale として奪う — sandbox 内の
-# `kill -0` は生きている他プロセスにも EPERM を返すので、EPERM は生きている扱い。
+# 同じ repo の並行 run の pre-push hook が同時に走ると、テストが CPU を奪い合って落ちるため。lock の取得・解放・
+# stale 判定は _lib/scripts/push-lock.sh が持つ（pre-push-hook の単体実行も同じ lock の下で hook を起動する）。
 # PR_PUSH_LOCK_WAIT_SECONDS 秒待っても取れなければ push せず、log に `pr-push: lock_timeout ...` を書いて
 # exit LOCK_TIMEOUT_EXIT で終了する（hook 失敗の exit 1 と区別する）。待ち上限は workflow の待機の累計上限
 # （PR_PUSH_MAX_WAIT_SEC）の半分に置き、残りを push 自体に充てる。
@@ -177,49 +175,14 @@ case "$SUBCOMMAND" in
         ;;
 esac
 
-common_dir="$(git rev-parse --path-format=absolute --git-common-dir)" || exit 2
-lock="${common_dir}/dev-flow-pr-push.lock"
-held=0
-
-release_lock() {
-    [[ "$held" -eq 1 ]] || return 0
-    rmdir "${lock}/pid-$$" "$lock" 2>/dev/null
-    held=0
-}
-trap release_lock EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-# 保持者の PID が ESRCH（存在しない）なら、その pid-<PID>/ のパスを出して 0 を返す。
-# 保持者の記録がまだ無い（mkdir 直後）・生きている・EPERM のときは 1。
-stale_holder() {
-    local entry pid err
-    for entry in "$lock"/pid-*; do
-        [[ -d "$entry" ]] || continue
-        pid="${entry##*/pid-}"
-        err="$(export LC_ALL=C; kill -0 "$pid" 2>&1)" && return 1
-        [[ "$err" == *"No such process"* ]] || return 1
-        echo "$entry"
-        return 0
-    done
-    return 1
-}
-
-wait_start=$SECONDS
-while ! mkdir "$lock" 2>/dev/null; do
-    # pid-<PID>/ を消せた 1 プロセスだけが lock 本体を消す（同時に奪いに来た側は rmdir に失敗して待ちに戻る）
-    if stale="$(stale_holder)" && rmdir "$stale" 2>/dev/null && rmdir "$lock" 2>/dev/null; then
-        continue
-    fi
-    if (( SECONDS - wait_start >= PUSH_LOCK_WAIT_SECONDS )); then
-        echo "pr-push: lock_timeout waited=${PUSH_LOCK_WAIT_SECONDS}s lock=${lock} (another push in this repo still holds the lock; not pushed)"
-        exit "$LOCK_TIMEOUT_EXIT"
-    fi
-    sleep "$PUSH_LOCK_POLL_SECONDS"
-done
-held=1
-mkdir "${lock}/pid-$$"
+# shellcheck source=../../_lib/scripts/push-lock.sh
+source "$SCRIPT_DIR/../../_lib/scripts/push-lock.sh"
+push_lock_acquire "$PUSH_LOCK_WAIT_SECONDS" "$PUSH_LOCK_POLL_SECONDS" pr-push
+case $? in
+    0) ;;
+    1) exit "$LOCK_TIMEOUT_EXIT" ;;
+    *) exit 2 ;;
+esac
 
 git push origin HEAD
 exit $?

@@ -5,7 +5,7 @@
 #   pre-push-hook start <worktree>
 #   pre-push-hook wait  <worktree> [--wait-sec <n=450>]
 #   pre-push-hook stop  <worktree> [--timeout-sec <n=60>]
-#   （内部）pre-push-hook supervise --state-dir <dir>
+#   （内部）pre-push-hook supervise --state-dir <dir> / pre-push-hook run <log-dir> <url>
 #
 # PR phase の push（pr-push）が失敗したとき、原因が対象 repo の pre-push hook かを workflow が確かめるために使う。
 # push・fetch はしない（network I/O を持たない）。remote の ref・HEAD・実 index は書かない。
@@ -23,6 +23,8 @@
 # state dir は <worktree>/.devflow-tmp/pre-push-hook.job。同じ worktree の hook が走っている間の start は新しく起動せず
 # running を返す。止まらないまま残らないよう PRE_PUSH_HOOK_TIMEOUT_SEC で打ち切る（workflow の待機の累計上限より長くして、
 # 普段は workflow の stop で止まる）。
+# hook は pr-push と同じ repo 単位の push lock（_lib/scripts/push-lock.sh）を取ってから起動する — 並行 run の push hook と
+# 同時に走ると CPU を奪い合って相手の push も自分の結果も落ちるため。待ち上限を超えたら hook を起動せず error（lock_timeout）。
 #
 # 出力（stdout, JSON 1 行。呼び出し側 agent は verbatim で転写するだけ）:
 #   {"hook":"none|passed|failed|error|running","exit":N|null,"log":"...","error":"..."}
@@ -40,6 +42,10 @@ set -uo pipefail
 
 HOOK_TIMEOUT_SEC="${PRE_PUSH_HOOK_TIMEOUT_SEC:-4200}"
 WAIT_SEC_DEFAULT=450
+# pr-push と同じ lock を同じ待ち上限で取る（_lib/scripts/push-lock.sh）
+LOCK_WAIT_SEC="${PR_PUSH_LOCK_WAIT_SECONDS:-1800}"
+LOCK_POLL_SEC="${PR_PUSH_LOCK_POLL_SECONDS:-2}"
+LOCK_TIMEOUT_EXIT=75
 USAGE="usage: pre-push-hook start <worktree> | wait <worktree> [--wait-sec <n>] | stop <worktree> [--timeout-sec <n>]"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,7 +91,13 @@ emit_job_response() {
     case "$status" in
         running) emit running null "" ;;
         passed) emit passed 0 "" ;;
-        failed) emit failed "$(jq -c '.exit_code // null' <<<"$res")" "" ;;
+        failed)
+            if [[ -n "$log" && -e "${log%/*}/lock_timeout" ]]; then
+                emit error null "lock_timeout: another push in this repo still holds the push lock; hook not run"
+            else
+                emit failed "$(jq -c '.exit_code // null' <<<"$res")" ""
+            fi
+            ;;
         *) emit error null "${status:-no status}: $(jq -r '.error // .reason // "hook did not finish"' <<<"$res" 2>/dev/null)" ;;
     esac
 }
@@ -124,7 +136,7 @@ cmd_start() {
     log="$log_dir/hook.log"
     : >"$log"
     BG_JOB_CMD_LOG="$log"
-    printf -v cmd '%q ' git hook run pre-push "--to-stdin=$log_dir/stdin" -- origin "$url"
+    printf -v cmd '%q ' bash "$BG_JOB_SELF" run "$log_dir" "$url"
     bg_job_write_json "$BG_JOB_SPEC" --arg cwd "$PWD" --arg cmd "$cmd" --argjson timeout "$HOOK_TIMEOUT_SEC" --arg log "$log" \
         '{cwd: $cwd, command: $cmd, timeout_seconds: $timeout, log: $log}'
     emit_job_response "$(bg_job_start)"
@@ -153,6 +165,21 @@ case "$SUBCOMMAND" in
         [[ $# -eq 2 && "$1" == "--state-dir" ]] || fail "$USAGE"
         job_paths "$2"
         bg_job_supervise
+        ;;
+    run)
+        # supervisor が cwd を worktree に移し、stdout / stderr を hook の log に向けて起動する中身。
+        # pr-push と同じ repo 単位の lock の下で hook を起動する（並行 run の push hook と CPU を奪い合わない）
+        [[ $# -eq 2 ]] || exit 2
+        # shellcheck source=../../_lib/scripts/push-lock.sh
+        source "$SCRIPT_DIR/../../_lib/scripts/push-lock.sh"
+        push_lock_acquire "$LOCK_WAIT_SEC" "$LOCK_POLL_SEC" pre-push-hook
+        case $? in
+            0) ;;
+            1) : >"$1/lock_timeout"; exit "$LOCK_TIMEOUT_EXIT" ;;
+            *) exit 2 ;;
+        esac
+        git hook run pre-push "--to-stdin=$1/stdin" -- origin "$2"
+        exit $?
         ;;
     *)
         fail "$USAGE"
