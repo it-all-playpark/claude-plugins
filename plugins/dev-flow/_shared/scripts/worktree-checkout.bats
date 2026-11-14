@@ -97,6 +97,28 @@ deny_husky_checkout() {
     [ -z "$(partial_checkout_error "$WT")" ]
 }
 
+@test "worktree_switch: 付け替え先がディレクトリを symlink に置き換えた -> 付け替え前のパスを消すときに symlink の先のファイルを消さない" {
+    mkdir -p "$ROOT/legacy" "$ROOT/tests"
+    echo "legacy" >"$ROOT/legacy/check.test.mjs"
+    echo "tests" >"$ROOT/tests/check.test.mjs"
+    git -C "$ROOT" add legacy tests
+    git -C "$ROOT" commit -q -m "tests"
+    INIT="$(git -C "$ROOT" rev-parse HEAD)"
+    git -C "$ROOT" rm -q -r legacy
+    ln -s tests "$ROOT/legacy"
+    git -C "$ROOT" add legacy
+    git -C "$ROOT" commit -q -m "legacy -> tests"
+    track_husky_hooks
+    deny_husky_checkout
+    enter_fresh_worktree
+
+    worktree_switch "$WT" feature/issue-1 main
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "feature/issue-1" ]
+    [ -L "$WT/legacy" ]
+    [ "$(cat "$WT/tests/check.test.mjs")" = "tests" ]
+    [ -z "$(git -C "$WT" status --porcelain)" ]
+}
+
 # Claude Code は sandbox の外で full checkout するので、書けないパスは古い中身で作業ツリーに既にある。git は置き換えられない
 # 既存ファイルで fatal にならないことがある（`unable to unlink old ...`）。そのときも同じ結果にする
 @test "worktree_switch: 書けないディレクトリに古い中身で既にあるパス -> 付け替え、そのパスに skip-worktree を付けて status が空" {

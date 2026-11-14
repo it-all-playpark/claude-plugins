@@ -50,6 +50,19 @@ worktree_toplevel_of_cwd() {
     canon_path "$top"
 }
 
+# worktree_has_symlink_leading_path <wt> <path>
+#   <wt> からの相対パス <path> の親ディレクトリのどれかが symlink か、ディレクトリでなければ 0
+worktree_has_symlink_leading_path() {
+    local wt="$1" d="$2"
+    while [[ "$d" == */* ]]; do
+        d="${d%/*}"
+        if [[ -L "$wt/$d" || ! -d "$wt/$d" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # worktree_switch <wt> <branch> <start>
 #   worktree <wt>（cwd がその中にある）を branch へ付け替える。branch が無ければ <start> から --no-track で作り
 #   （起動元 repo の .git/config に upstream を書かない）、あればそのまま switch する。成功で 0。WT_SKIP_WORKTREE に
@@ -105,10 +118,13 @@ worktree_switch() {
     while IFS= read -r -d '' p; do
         git -C "$wt" checkout-index -f -- "$p" >/dev/null 2>&1 || WT_SKIP_WORKTREE+=("$p")
     done <"$list"
-    # 付け替え前の commit にだけあるパスは作業ツリーから消す（残すと untracked になり、commit 時の `git add -A` が stage する）
+    # 付け替え前の commit にだけあるパスは作業ツリーから消す（残すと untracked になり、commit 時の `git add -A` が stage する）。
+    # 親ディレクトリのどれかが symlink（付け替え後の tree が置いたもの）なら、そのパスは作業ツリーに無いので消さない
+    # （辿ると symlink の先の別のファイルを消す。git も symlink を辿って消さない）
     git -C "$wt" diff --name-only --no-renames --diff-filter=D -z "$old" HEAD >"$list" 2>/dev/null || : >"$list"
     out=""
     while IFS= read -r -d '' p; do
+        worktree_has_symlink_leading_path "$wt" "$p" && continue
         rm -f -- "$wt/$p" 2>/dev/null || out="${out:+${out}, }${p}"
     done <"$list"
     rm -f "$list"
