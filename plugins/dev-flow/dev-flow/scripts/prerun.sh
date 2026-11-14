@@ -6,13 +6,19 @@
 # `ensure-worktree-deps --setup <そのファイル>` を実行して、その stdout（deps / epoch_end を足した setup）を
 # `Workflow({ args: { issue, setup: <JSON> } })` の args.setup へそのまま渡す。
 #
-# 行う処理: base 解決 (origin/dev → origin/HEAD フォールバック) → worktree 作成/再利用 +
+# worktree は作らない（sandbox 内からは起動元 repo の .git/worktrees に書けない。git worktree add / remove / prune を呼ばない）。
+# base・作業ブランチ・使う worktree を判定した後、cwd がその worktree の中でなければ ok:false・
+# worktree_status:"enter_required"・worktree・worktree_registered（登録済みか）を返して止まる（worktree の中への書き込み・
+# analyze・detect-stack はしない）。wrapper が EnterWorktree で入って（未登録なら Claude Code が branch
+# `worktree-<ディレクトリ名>` で作る）同じ引数で再実行すると、その branch を作業ブランチへ `git switch` で付け替えて先へ進む。
+#
+# 行う処理: base 解決 (origin/dev → origin/HEAD フォールバック) → 使う worktree と作業ブランチの判定 +
 # 起点(base)一致検証 + 既存 branch の判定（独自コミット無しなら base へ fast-forward、squash / rebase で merge 済みなら
-# ok:false）+ 書き込み probe →.devflow-tmp を info/exclude に足す
+# ok:false）→（cwd が worktree の中なら）作業ブランチへの付け替え + 書き込み probe →.devflow-tmp を info/exclude に足す
 # （対象 repo が ignore していなければ）→ .devflow-tmp の git clean -fdx → analyze
 # （issue 取得 + 本文全文を .devflow-tmp/issue-body.md へ書く + contract parse + Jev 有界判定。prerun-analyze.sh。detect-stack と並列）‖
 # detect-stack。各段は独立に ok/error を報告し、後続段を巻き込まない。
-# worktree 作成で取り出せないパスには skip-worktree を付け（出力の skip_worktree）、未ステージの削除が残る再利用 worktree は
+# 付け替えで取り出せないパスには skip-worktree を付け（出力の skip_worktree）、未ステージの削除が残る再利用 worktree は
 # ok:false で止める（_shared/scripts/worktree-checkout.sh）。repo が追跡している hook のうち worktree で動かない event を
 # 出力の hooks_not_running に載せる（終端サマリーへの開示だけで、run を止めず gate の入力にもしない。deps 段が install 後の状態で上書きする）。
 #
@@ -20,7 +26,7 @@
 # このスクリプトは repo の任意コードを実行しない — install は wrapper が別の Bash 呼び出しで回す。
 #
 # sandbox 内で動く。起動元 repo の .git/config は sandbox 内から書けないので、config を書く git を使わない:
-# worktree は --no-track で作り（upstream を書かない）、再利用 worktree の起点は upstream ではなく
+# 作業ブランチは --no-track で作り（upstream を書かない）、再利用 worktree の起点は upstream ではなく
 # branch の reflog の作成記録（`branch: Created from <ref>`）で判定する。
 #
 # GitHub I/O は analyze 段の `analyze-issue`（GitHub CLI の issue 取得を内蔵）と blocker 判定
@@ -221,7 +227,9 @@ if [[ -n "$BRANCH_FORMAT" ]]; then
 fi
 worktree_status=""
 worktree_error=""
-worktree_removed=false
+# 使う worktree が登録済みか（enter_required のときだけ出力する。wrapper が EnterWorktree の path / name を選ぶ）
+worktree_registered=false
+ENTER_REQUIRED=false
 head=""
 SEG2_OK=false
 
@@ -257,8 +265,8 @@ EXISTING_BRANCH_FF=false
 
 judge_existing_branch() {
     # judge_existing_branch <branch> [<既存 worktree>]
-    # 既存 branch で run を始めてよいかを判定する。再利用経路（既存 worktree を渡す）と local branch 経路（worktree を
-    # 作る前。渡さない）の両方がこれを呼ぶ — 片方だけが判定すると、merge 済みの branch がもう片方から古い tree のまま run に入る。
+    # 既存 branch で run を始めてよいかを判定する。再利用経路（既存 worktree を渡す）と local branch 経路（その branch へ
+    # 付け替える前。渡さない）の両方がこれを呼ぶ — 片方だけが判定すると、merge 済みの branch がもう片方から古い tree のまま run に入る。
     #   未コミット変更あり（既存 worktree のみ）        -> 作業中とみなし触らない
     #   独自コミット 0 件で origin/<base> より遅れている -> EXISTING_BRANCH_FF=true（古い起点のまま始めると、その間に base へ
     #                                                      入った変更と conflict した PR を作る。merge commit / ff で merge 済みの
@@ -322,6 +330,60 @@ fast_forward_existing() {
     return 0
 }
 
+# decide_switch_branch の結果: 付け替え先が新しい branch ならその起点（origin/<base>）、local の既存 branch なら空
+SWITCH_START=""
+
+decide_switch_branch() {
+    # 作業ブランチへ付け替える worktree（未登録か、Claude Code が作った直後の branch のもの）の付け替え先を決める。
+    # 成功で 0（BRANCH と SWITCH_START を設定）、止めるときは worktree_error を入れて 1。何も書き換えない。
+    # 書式に合う同じ issue 番号の既存 branch（slug は問わない）を local と origin から探し、あれば新しい名前を作らず
+    # それを使う。origin は ls-remote に書式の glob（{slug} → *）を渡して読み、書式の正規表現で絞る。
+    # ls-remote が届かないときは base 解決と同じく先へ進めない（branch の有無を決められない）
+    local remote_rc=0 remote_heads local_heads local_matches remote_matches matches match_count=0
+    SWITCH_START=""
+    remote_heads="$(git -C "$ROOT" ls-remote --heads origin "refs/heads/$(devflow_branch_name "$BRANCH_FORMAT" "$ISSUE" '*')" 2>/dev/null)" || remote_rc=$?
+    local_heads="$(git -C "$ROOT" for-each-ref --format='%(refname:lstrip=2)' refs/heads/)" || local_heads=""
+    local_matches="$(grep -E -- "$BRANCH_RE" <<<"$local_heads" || true)"
+    remote_matches="$(awk '{ sub(/^refs\/heads\//, "", $2); print $2 }' <<<"$remote_heads" | grep -E -- "$BRANCH_RE" || true)"
+    matches="$(printf '%s\n%s\n' "$local_matches" "$remote_matches" | sed '/^$/d' | sort -u)"
+    [[ -z "$matches" ]] || match_count="$(wc -l <<<"$matches" | tr -d ' ')"
+    if [[ "$remote_rc" -ne 0 ]]; then
+        worktree_error="origin に書式 ${BRANCH_SHAPE} の branch があるかを git ls-remote で判定できなかった（exit ${remote_rc}）"
+        return 1
+    fi
+    if [[ "$match_count" -ge 2 ]]; then
+        # どれがこの issue の作業か決められない。黙って 1 本を選ぶと別の作業の上に実装を積む
+        worktree_error="書式 ${BRANCH_SHAPE} に合う issue #${ISSUE} の branch が local・origin に ${match_count} 本ある（$(tr '\n' ' ' <<<"$matches" | sed 's/ $//')）。どれを使うか決められないため worktree を作らずに止めた。使わない branch を消して 1 本にしてから dev-flow を再実行せよ。"
+        return 1
+    fi
+    if [[ "$match_count" -eq 1 ]]; then
+        BRANCH="$matches"
+        if grep -qxF -- "$BRANCH" <<<"$local_matches"; then
+            # 判定は付け替える前に行う（merge 済みの branch・起点の違う branch へは付け替えずに止める）
+            judge_existing_branch "$BRANCH" && validate_start_point "$BRANCH"
+            return
+        fi
+        # origin にだけ branch（close 済み PR の head 等）が残っていると、origin/<base> から作った branch は
+        # 履歴を共有せず、PR phase の push（force なし）が non-fast-forward で必ず拒否される。remote の branch は
+        # 人の作業・PR の履歴なので消さず、付け替える前に止めて回復手順を返す。
+        # (15b) の静的 pin（push を呼ばない）に掛からないよう、表示用コマンドの subcommand は引数で渡す
+        worktree_error="$(printf 'origin に branch %s が残っている（close 済み PR の head 等）。origin/%s から作り直すと履歴を共有せず PR の push が non-fast-forward で拒否されるため worktree を作らずに止めた。次のどちらかで回復せよ: (1) この branch の open な PR があれば /pr-iterate <PR> で続ける、(2) 無ければ git %s origin --delete %s で remote の branch を消してから dev-flow を再実行する。' "$BRANCH" "$base" push "$BRANCH")"
+        return 1
+    fi
+    if [[ "$BRANCH_FORMAT" == *'{slug}'* && -z "$SLUG" ]]; then
+        # 新しい名前の slug は wrapper が作って渡す。prerun はタイトルから作らず、別の名前にも切り替えない
+        worktree_error="書式 ${BRANCH_SHAPE} の新しい branch 名を作るのに --slug が要るが渡されていない。issue タイトルから英語の slug（^[a-z0-9]+(-[a-z0-9]+)*\$・40 文字以内）を作り、dev-flow-prerun に --slug <slug> を付けて再実行せよ。"
+        return 1
+    fi
+    if [[ "$BRANCH_FORMAT" == *'{slug}'* ]] && ! slug_ok "$SLUG"; then
+        worktree_error="--slug が不正（受信: ${SLUG}）。^[a-z0-9]+(-[a-z0-9]+)*\$ に合う 40 文字以内の英語の slug を渡して再実行せよ。"
+        return 1
+    fi
+    BRANCH="$(devflow_branch_name "$BRANCH_FORMAT" "$ISSUE" "$SLUG")"
+    SWITCH_START="origin/${base}"
+    return 0
+}
+
 if [[ "$BASE_OK" == true && -n "$branch_format_error" ]]; then
     worktree_status="error"
     worktree_error="$branch_format_error"
@@ -330,7 +392,7 @@ elif [[ "$BASE_OK" == true && -n "$visual_snapshots_error" ]]; then
     worktree_error="$visual_snapshots_error"
 elif [[ "$BASE_OK" == true ]]; then
     WTLIST2="$(git -C "$ROOT" worktree list --porcelain 2>&1)" || WTLIST2=""
-    # --worktree は raw のまま JSON へ出力する契約なので、物理パスは既存 worktree ブロックとの突合せにだけ使う
+    # --worktree は raw のまま JSON へ出力する契約なので、物理パスは既存 worktree ブロックと cwd との突合せにだけ使う
     CANON_WT="$(canon_path "$WT")"
     BLOCK_INFO="$(printf '%s\n' "$WTLIST2" | awk -v target="worktree ${CANON_WT}" '
         BEGIN { RS=""; FS="\n"; found=0; prunable=0; branch=""; detached=0 }
@@ -362,117 +424,82 @@ elif [[ "$BASE_OK" == true ]]; then
         esac
     done <<<"$BLOCK_INFO"
 
-    CREATED_THIS_CALL=false
-    SEG2_CORE_OK=false
+    # 判定（ここまでは何も書き換えない）の結果。reuse = 作業ブランチを checkout 済みの worktree をそのまま使う、
+    # switch = Claude Code が作った直後の branch（未登録なら wrapper が EnterWorktree で作らせる）を作業ブランチへ付け替える。
+    # 空のままなら worktree_error で止める
+    PLAN=""
+    FRESH_BRANCH="$(worktree_fresh_branch "$WT")"
 
     if [[ "$FOUND" == "1" && "$PRUNABLE" == "0" ]]; then
-        # (a) 既存 worktree を再利用
+        worktree_registered=true
         worktree_status="reused"
         if [[ -z "$BRANCH_FOUND" ]]; then
             worktree_error="既存 worktree の起点を判定できなかった（detached HEAD）。$(RECOVERY_STEPS_FOR "$WT" "$base")"
-        elif [[ ! "$BRANCH_FOUND" =~ $BRANCH_RE ]]; then
-            # 出力の branch は下流（pr-iterate の head_ref / fetch）が信頼する。書式に合わない別 branch を
-            # checkout した worktree を ok:true で返すとこの issue の branch でないものを指すので fail-closed
-            worktree_error="既存 worktree の checkout branch が ${BRANCH_SHAPE} の形でない（実際: ${BRANCH_FOUND}）。$(RECOVERY_STEPS_FOR "$WT" "$base")"
-        else
-            # 書式に合う branch（slug は問わない）を checkout していれば、その名前のまま使う
+        elif [[ "$BRANCH_FOUND" =~ $BRANCH_RE ]]; then
+            # (a) 書式に合う branch（slug は問わない）を checkout していれば、その名前のまま再利用する
             BRANCH="$BRANCH_FOUND"
             if validate_start_point "$BRANCH_FOUND" \
                 && worktree_error="$(partial_checkout_error "$WT")" \
-                && judge_existing_branch "$BRANCH_FOUND" "$WT" \
-                && fast_forward_existing; then
-                SEG2_CORE_OK=true
+                && judge_existing_branch "$BRANCH_FOUND" "$WT"; then
+                PLAN="reuse"
             fi
-        fi
-    else
-        if [[ "$FOUND" == "1" && "$PRUNABLE" == "1" ]]; then
-            git -C "$ROOT" worktree prune >/dev/null 2>&1 || true
-        fi
-        # (c) 未登録: 新規作成経路
-        if [[ -d "$WT" ]]; then
+        elif [[ "$BRANCH_FOUND" == "$FRESH_BRANCH" ]]; then
+            # (b) Claude Code が作った直後の branch。未コミットの変更が無いときだけ作業ブランチへ付け替える
+            # （付け替えは作業ツリーを書き換える。変更があれば誰かの作業中とみなして触らない）
             worktree_status="error"
-            worktree_error="path exists but is not a registered git worktree: ${WT}"
-        else
-            # 書式に合う同じ issue 番号の既存 branch（slug は問わない）を local と origin から探し、あれば新しい名前を作らず
-            # それを使う。origin は ls-remote に書式の glob（{slug} → *）を渡して読み、書式の正規表現で絞る。
-            # ls-remote が届かないときは base 解決と同じく先へ進めない（branch の有無を決められない）
-            remote_rc=0
-            remote_heads="$(git -C "$ROOT" ls-remote --heads origin "refs/heads/$(devflow_branch_name "$BRANCH_FORMAT" "$ISSUE" '*')" 2>/dev/null)" || remote_rc=$?
-            local_heads="$(git -C "$ROOT" for-each-ref --format='%(refname:lstrip=2)' refs/heads/)" || local_heads=""
-            local_matches="$(grep -E -- "$BRANCH_RE" <<<"$local_heads" || true)"
-            remote_matches="$(awk '{ sub(/^refs\/heads\//, "", $2); print $2 }' <<<"$remote_heads" | grep -E -- "$BRANCH_RE" || true)"
-            matches="$(printf '%s\n%s\n' "$local_matches" "$remote_matches" | sed '/^$/d' | sort -u)"
-            match_count=0
-            [[ -z "$matches" ]] || match_count="$(wc -l <<<"$matches" | tr -d ' ')"
-            if [[ "$remote_rc" -ne 0 ]]; then
-                worktree_status="error"
-                worktree_error="origin に書式 ${BRANCH_SHAPE} の branch があるかを git ls-remote で判定できなかった（exit ${remote_rc}）"
-            elif [[ "$match_count" -ge 2 ]]; then
-                # どれがこの issue の作業か決められない。黙って 1 本を選ぶと別の作業の上に実装を積む
-                worktree_status="error"
-                worktree_error="書式 ${BRANCH_SHAPE} に合う issue #${ISSUE} の branch が local・origin に ${match_count} 本ある（$(tr '\n' ' ' <<<"$matches" | sed 's/ $//')）。どれを使うか決められないため worktree を作らずに止めた。使わない branch を消して 1 本にしてから dev-flow を再実行せよ。"
-            elif [[ "$match_count" -eq 1 ]]; then
-                BRANCH="$matches"
-                if grep -qxF -- "$BRANCH" <<<"$local_matches"; then
-                    # 判定は worktree を作る前に行う（merge 済みの branch では worktree を作らずに止める）
-                    if ! judge_existing_branch "$BRANCH"; then
-                        worktree_status="error"
-                    elif worktree_add "$ROOT" "$WT" "$BRANCH" ""; then
-                        worktree_status="created"
-                        CREATED_THIS_CALL=true
-                        if validate_start_point "$BRANCH" && fast_forward_existing; then
-                            SEG2_CORE_OK=true
-                        fi
-                    else
-                        worktree_status="error"
-                        worktree_error="$WT_ADD_ERR"
-                    fi
-                else
-                    # origin にだけ branch（close 済み PR の head 等）が残っていると、origin/<base> から作った branch は
-                    # 履歴を共有せず、PR phase の push（force なし）が non-fast-forward で必ず拒否される。remote の branch は
-                    # 人の作業・PR の履歴なので消さず、worktree を作る前に止めて回復手順を返す。
-                    worktree_status="error"
-                    # (15b) の静的 pin（push を呼ばない）に掛からないよう、表示用コマンドの subcommand は引数で渡す
-                    worktree_error="$(printf 'origin に branch %s が残っている（close 済み PR の head 等）。origin/%s から作り直すと履歴を共有せず PR の push が non-fast-forward で拒否されるため worktree を作らずに止めた。次のどちらかで回復せよ: (1) この branch の open な PR があれば /pr-iterate <PR> で続ける、(2) 無ければ git %s origin --delete %s で remote の branch を消してから dev-flow を再実行する。' "$BRANCH" "$base" push "$BRANCH")"
-                fi
-            elif [[ "$BRANCH_FORMAT" == *'{slug}'* && -z "$SLUG" ]]; then
-                # 新しい名前の slug は wrapper が作って渡す。prerun はタイトルから作らず、別の名前にも切り替えない
-                worktree_status="error"
-                worktree_error="書式 ${BRANCH_SHAPE} の新しい branch 名を作るのに --slug が要るが渡されていない。issue タイトルから英語の slug（^[a-z0-9]+(-[a-z0-9]+)*\$・40 文字以内）を作り、dev-flow-prerun に --slug <slug> を付けて再実行せよ。"
-            elif [[ "$BRANCH_FORMAT" == *'{slug}'* ]] && ! slug_ok "$SLUG"; then
-                worktree_status="error"
-                worktree_error="--slug が不正（受信: ${SLUG}）。^[a-z0-9]+(-[a-z0-9]+)*\$ に合う 40 文字以内の英語の slug を渡して再実行せよ。"
-            else
-                BRANCH="$(devflow_branch_name "$BRANCH_FORMAT" "$ISSUE" "$SLUG")"
-                if worktree_add "$ROOT" "$WT" "$BRANCH" "origin/${base}"; then
-                    worktree_status="created"
-                    CREATED_THIS_CALL=true
-                    SEG2_CORE_OK=true
-                else
-                    worktree_status="error"
-                    worktree_error="$WT_ADD_ERR"
-                fi
+            if ! FRESH_DIRTY="$(git -C "$WT" status --porcelain --untracked-files=all -- . ':(exclude).devflow-tmp' 2>&1)"; then
+                worktree_error="worktree ${WT} の未コミット変更を判定できなかった: ${FRESH_DIRTY}"
+            elif [[ -n "$FRESH_DIRTY" ]]; then
+                worktree_error="worktree ${WT} の branch ${FRESH_BRANCH}（Claude Code が作った直後の branch）に未コミットの変更があるため、作業ブランチへ付け替えずに止めた。変更を commit するか退避してから dev-flow を再実行せよ。"
+            elif decide_switch_branch; then
+                worktree_status="created"
+                PLAN="switch"
             fi
+        else
+            # 出力の branch は下流（pr-iterate の head_ref / fetch）が信頼する。書式に合わない別 branch を
+            # checkout した worktree を ok:true で返すとこの issue の branch でないものを指すので fail-closed
+            worktree_error="既存 worktree の checkout branch が ${BRANCH_SHAPE} の形でない（実際: ${BRANCH_FOUND}）。$(RECOVERY_STEPS_FOR "$WT" "$base")"
+        fi
+    elif [[ "$FOUND" == "1" ]]; then
+        # 実体の無い登録（prunable）が残っていると、同じパスに worktree を作れない。sandbox 内からは登録を消せないので人間に返す
+        worktree_status="error"
+        worktree_error="worktree ${WT} の登録が残っているが実体が無い（prunable）。git worktree prune を実行して登録を消してから dev-flow を再実行せよ。"
+    elif [[ -d "$WT" ]]; then
+        worktree_status="error"
+        worktree_error="path exists but is not a registered git worktree: ${WT}"
+    else
+        # (c) 未登録: wrapper が EnterWorktree({name}) で Claude Code に作らせる
+        worktree_status="error"
+        if decide_switch_branch; then
+            worktree_status="created"
+            PLAN="switch"
         fi
     fi
 
+    SEG2_CORE_OK=false
+    if [[ -n "$PLAN" && "$(worktree_toplevel_of_cwd)" != "$CANON_WT" ]]; then
+        # cwd が使う worktree の中でない。sandbox 内からは入っていない worktree に書けないので、ここで止めて wrapper に入らせる
+        ENTER_REQUIRED=true
+        worktree_status="enter_required"
+    elif [[ "$PLAN" == "switch" ]]; then
+        if ! worktree_switch "$WT" "$BRANCH" "$SWITCH_START"; then
+            worktree_status="error"
+            worktree_error="$WT_SWITCH_ERR"
+        elif fast_forward_existing; then
+            SEG2_CORE_OK=true
+        fi
+    elif [[ "$PLAN" == "reuse" ]]; then
+        fast_forward_existing && SEG2_CORE_OK=true
+    fi
+
     if [[ "$SEG2_CORE_OK" == true ]]; then
-        # (d) 書き込み probe
+        # (d) 書き込み probe。書けなければ ok:false で止める（EnterWorktree は repo の外に作れないので退避先は無い）
         if PROBE_ERR="$( { mkdir -p "$WT/.devflow-tmp" && touch "$WT/.devflow-tmp/.prerun-write-probe" && rm -f "$WT/.devflow-tmp/.prerun-write-probe"; } 2>&1 )"; then
             SEG2_OK=true
             head="$(git -C "$WT" rev-parse HEAD)"
         else
             worktree_status="unwritable"
             worktree_error="$PROBE_ERR"
-            if [[ "$CREATED_THIS_CALL" == true ]]; then
-                # wrapper は worktree_removed:true を見て repo 外パスで再実行する（二重 checkout 無しの前提）。
-                # remove に失敗したのに true を返すと再実行が「already checked out」で落ちるので実結果を載せる
-                if REMOVE_ERR="$(git -C "$ROOT" worktree remove --force "$WT" 2>&1)"; then
-                    worktree_removed=true
-                else
-                    worktree_error="${worktree_error}; worktree remove failed: ${REMOVE_ERR}"
-                fi
-            fi
         fi
     fi
 else
@@ -508,12 +535,17 @@ fi
 # 失敗（GitHub 到達不能 / JSON 不正）は analyze.ok:false + reason で報告し、Workflow が
 # needs_clarification（source=analyze_prerun）に倒す。所要は duration_seconds に載せ、Workflow の
 # telemetry では prerun_durations.analyze として記録する（Workflow 側のゲートは phase_durations に区間を持たない）。
+# enter_required のときは走らせない（wrapper が worktree に入って再実行する。その 2 回目だけが issue 取得と Jev 判定を行う）
 ANALYZE_OUT="$(mktemp "${TMPDIR:-/tmp}/dev-flow-prerun-analyze-out.XXXXXX")"
 ANALYZE_ARGS=(--issue "$ISSUE")
 [[ -n "$repo" ]] && ANALYZE_ARGS+=(--repo "$repo")
 # Segment 3 の clean の後に書くので、再利用 worktree の再実行でも最新の本文になる。worktree が無ければ書き先も無い（ok:false）
 [[ "$SEG2_OK" == true ]] && ANALYZE_ARGS+=(--body-file "$WT/.devflow-tmp/issue-body.md")
 (
+    if [[ "$ENTER_REQUIRED" == true ]]; then
+        printf '%s' '{"ok":false,"reason":"skipped: enter_required","analyze_path":"contract","duration_seconds":0}'
+        exit 0
+    fi
     a_start="$(date +%s)"
     if ANALYZE_RAW="$("$PLUGIN_ROOT/dev-flow/scripts/prerun-analyze.sh" "${ANALYZE_ARGS[@]}" 2>/dev/null)" \
         && printf '%s' "$ANALYZE_RAW" | jq -e 'type == "object" and (.ok | type == "boolean")' >/dev/null 2>&1; then
@@ -591,7 +623,8 @@ OUT_JSON="$(jq -n \
     --arg worktree_status "$worktree_status" \
     --arg worktree_error "$worktree_error" \
     --argjson have_worktree_error "$HAVE_WT_ERROR" \
-    --argjson worktree_removed "$worktree_removed" \
+    --argjson enter_required "$ENTER_REQUIRED" \
+    --argjson worktree_registered "$worktree_registered" \
     --argjson clean "$clean_json" \
     --argjson stack "$stack_json" \
     --argjson analyze "$analyze_json" \
@@ -612,7 +645,9 @@ OUT_JSON="$(jq -n \
     + {worktree: $worktree, branch: $branch, branch_format: $branch_format}
     + (if $have_head then {head: $head} else {} end)
     + (if $have_worktree_error then {worktree_error: $worktree_error} else {} end)
-    + {worktree_status: $worktree_status, worktree_removed: $worktree_removed, skip_worktree: $skip_worktree, hooks_not_running: $hooks_not_running}
+    + {worktree_status: $worktree_status}
+    + (if $enter_required then {worktree_registered: $worktree_registered} else {} end)
+    + {skip_worktree: $skip_worktree, hooks_not_running: $hooks_not_running}
     + {clean: $clean, stack: $stack, analyze: $analyze, ci_verify: $ci_verify, local_verify: $local_verify, visual_snapshots: $visual_snapshots, pr_title_format: $pr_title_format, epoch: $epoch}
     + {ci_wait_ceiling_seconds: $ci_wait_ceiling_seconds, security_reviewer: $security_reviewer}
     + {plugin_commit: (if ($plugin_commit | test("^[0-9a-f]{12}$")) then $plugin_commit else null end)}
@@ -624,7 +659,8 @@ SETUP_FILE="$WT/.devflow-tmp/prerun-setup.json"
 if [[ "$OK_JSON" == true ]]; then
     # Segment 3 の clean は .devflow-tmp ごと消すので作り直す
     { mkdir -p "$WT/.devflow-tmp" && printf '%s\n' "$OUT_JSON" >"$SETUP_FILE"; } || echo "prerun: failed to write $SETUP_FILE" >&2
-elif [[ -f "$SETUP_FILE" ]]; then
+elif [[ "$ENTER_REQUIRED" != true && -f "$SETUP_FILE" ]]; then
+    # enter_required では worktree の中に書かない（再実行が書き直すか消す）。
     # 書けない worktree（unwritable）では消せない。ok:false なので wrapper はどのみち deps 段へ進まない
     rm -f "$SETUP_FILE" 2>/dev/null || true
 fi

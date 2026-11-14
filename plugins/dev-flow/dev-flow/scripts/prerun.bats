@@ -3,9 +3,10 @@ bats_require_minimum_version 1.5.0
 
 # Tests for dev-flow/scripts/prerun.sh (issue #641)
 #
-# prerun.sh は dev-flow Setup phase の決定論処理 (base 解決 / worktree 作成・再利用+起点検証+
-# 書き込み probe / .devflow-tmp の git clean / analyze / detect-stack) を 1 コマンドに
-# 集約する。deps install は持たない (issue #868。ensure-worktree-deps --setup の bats 参照)。
+# prerun.sh は dev-flow Setup phase の決定論処理 (base 解決 / 使う worktree と作業ブランチの判定+起点検証 /
+# 作業ブランチへの付け替え+書き込み probe / .devflow-tmp の git clean / analyze / detect-stack) を 1 コマンドに
+# 集約する。worktree は作らず、cwd が使う worktree の中でなければ enter_required を返す (issue #1423)。
+# deps install は持たない (issue #868。ensure-worktree-deps --setup の bats 参照)。
 # fixture は bare origin + clone した ROOT リポジトリ (main/dev の2ブランチ)。
 
 SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/prerun.sh"
@@ -35,6 +36,26 @@ setup() {
     git -C "$ROOT" config user.email "test@example.com"
 
     WT="$BATS_TEST_TMPDIR/wt/df-1"
+
+    # wrapper（SKILL.md の preflight）の代役。prerun を実行し、enter_required なら EnterWorktree の代わりにその worktree へ
+    # cd して（未登録なら Claude Code と同じく branch worktree-<ディレクトリ名> で、起動元の HEAD から作る）同じ引数で
+    # 再実行する。enter_required 以外の出力・終了コードはそのまま返す。prerun 単体の 1 回目の出力は "$SCRIPT" を直接実行して見る。
+    FLOW="$BATS_TEST_TMPDIR/flow.sh"
+    cat >"$FLOW" <<'FLOW_SH'
+#!/usr/bin/env bash
+out="$(bash "${PRERUN_UNDER_TEST}" "$@")" || exit $?
+if [[ "$(jq -r '.worktree_status' <<<"$out")" != "enter_required" ]]; then
+    printf '%s\n' "$out"
+    exit 0
+fi
+wt="$(jq -r '.worktree' <<<"$out")"
+if [[ "$(jq -r '.worktree_registered' <<<"$out")" != "true" ]]; then
+    git worktree add -q -b "worktree-$(basename "$wt")" "$wt" HEAD >&2 || exit 1
+fi
+cd "$wt" && exec bash "${PRERUN_UNDER_TEST}" "$@"
+FLOW_SH
+    chmod +x "$FLOW"
+    export PRERUN_UNDER_TEST="$SCRIPT"
 
     # analyze 段（Segment 6）が内蔵する gh を stub する。GH_STUB_FIXTURE 未設定なら失敗
     # （analyze.ok:false 経路）。dependencies API（blocked_by）は依存なし（[]）を返す。
@@ -99,7 +120,7 @@ make_issue_fixture() {
 
 @test "(1) base 未指定 + origin/dev あり -> dev を起点に新規作成" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e '.base == "dev"'
@@ -120,18 +141,18 @@ make_issue_fixture() {
 
 # ---- (1c) 起動元 repo の .git/config に書かない ----
 # sandbox 内からは起動元 repo の .git/config を書けない。config.lock を置いて config の書き込みを全て失敗させ、
-# それでも worktree を作れること（upstream を書かない）と、再利用時の起点判定が通ることを確かめる。
+# それでも作業ブランチを作って付け替えられること（upstream を書かない）と、再利用時の起点判定が通ることを確かめる。
 
 @test "(1c) .git/config に書けなくても新規作成・再利用とも ok:true で、upstream を書かない" {
     : >"$ROOT/.git/config.lock"
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "created"'
     run git -C "$ROOT" config --get "branch.feature/issue-1.merge"
     [ "$status" -ne 0 ]
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused"'
 }
@@ -144,14 +165,14 @@ make_issue_fixture() {
     export GH_RUN_STUB_FIXTURE="$BATS_TEST_TMPDIR/runs.json"
     jq -nc '[range(5) | {workflowName: "CI", startedAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:10:00Z"}]' >"$GH_RUN_STUB_FIXTURE"
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .base == "dev" and .ci_wait_ceiling_seconds == 660'
     grep -qx "run list --event pull_request --status success --limit 50 --json workflowName,startedAt,updatedAt" "$GH_RUN_STUB_LOG"
     jq -e '.ci_wait_ceiling_seconds == 660' "$WT/.devflow-tmp/prerun-setup.json"
 
     unset GH_RUN_STUB_FIXTURE
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .ci_wait_ceiling_seconds == 300'
 }
@@ -161,7 +182,7 @@ make_issue_fixture() {
 
 @test "(1e) 解決した base にも user 設定にも opt-in が無ければ security_reviewer は claude" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .security_reviewer == "claude"'
     jq -e '.security_reviewer == "claude"' "$WT/.devflow-tmp/prerun-setup.json"
@@ -172,27 +193,27 @@ make_issue_fixture() {
     jq -n '{"dev-flow": {security_reviewer: "claude"}}' > "$HOME/.claude/skill-config.json"
     commit_reviewer_config dev codex
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .base == "dev" and .security_reviewer == "codex"'
     jq -e '.security_reviewer == "codex"' "$WT/.devflow-tmp/prerun-setup.json"
 
     # base に宣言が無い issue では user 設定の値になる
     jq -n '{"dev-flow": {security_reviewer: "codex"}}' > "$HOME/.claude/skill-config.json"
-    run --separate-stderr "$SCRIPT" --issue 2 --worktree "$BATS_TEST_TMPDIR/wt/df-2" --base main
+    run --separate-stderr "$FLOW" --issue 2 --worktree "$BATS_TEST_TMPDIR/wt/df-2" --base main
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .base == "main" and .security_reviewer == "codex"'
 }
 
 @test "(1e) worktree（と起動元 checkout の作業ツリー）にだけある opt-in は読まない" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     jq -n '{"dev-flow": {security_reviewer: "codex"}}' > "$WT/skill-config.json"
     mkdir -p "$WT/.claude"
     jq -n '{"dev-flow": {security_reviewer: "codex"}}' > "$WT/.claude/skill-config.json"
     jq -n '{"dev-flow": {security_reviewer: "codex"}}' > "$ROOT/skill-config.json"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused" and .security_reviewer == "claude"'
 }
@@ -219,7 +240,7 @@ make_issue_fixture() {
     git -C "$ROOT2" config user.email "test@example.com"
 
     cd "$ROOT2"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$BATS_TEST_TMPDIR/wt2/df-1"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$BATS_TEST_TMPDIR/wt2/df-1"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.base == "main"'
     echo "$output" | jq -e '.base_source == "origin/HEAD"'
@@ -235,7 +256,7 @@ make_issue_fixture() {
     git -C "$SEED" commit -q -am "closed pr commit"
     git -C "$SEED" push -q origin feature/issue-1
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
     echo "$output" | jq -e '.worktree_error | contains("feature/issue-1")'
@@ -253,7 +274,7 @@ make_issue_fixture() {
     printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ "$a" == refs/heads/feature/issue-1 ]] && exit 128; done\nexec "%s" "$@"\n' "$REAL_GIT" >"$STUB_DIR/git"
     chmod +x "$STUB_DIR/git"
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
     echo "$output" | jq -e '.worktree_error | test("ls-remote")'
@@ -264,7 +285,7 @@ make_issue_fixture() {
 
 @test "(3) --base release (origin に無い) -> ok:false, worktree skipped" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --base release
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --base release
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false'
     echo "$output" | jq -e '.base_error | test("origin/release")'
@@ -277,7 +298,7 @@ make_issue_fixture() {
 
 @test "(4) --base main -> explicit" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --base main
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --base main
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.base == "main"'
     echo "$output" | jq -e '.base_source == "explicit"'
@@ -287,14 +308,14 @@ make_issue_fixture() {
 
 @test "(5) 同じ WT で2回目実行 -> reused, head同一, .devflow-tmpがcleanされる" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     first_head="$(echo "$output" | jq -r '.head')"
 
     mkdir -p "$WT/.devflow-tmp"
     echo "stale" > "$WT/.devflow-tmp/stale.txt"
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e '.worktree_status == "reused"'
@@ -308,7 +329,7 @@ make_issue_fixture() {
 
 @test "(5b) .devflow-tmp/ を ignore しない repo -> info/exclude に 1 行だけ足し、prerun-setup.json 等が status・stage に載らない" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     [ -f "$WT/.devflow-tmp/prerun-setup.json" ]
@@ -318,7 +339,7 @@ make_issue_fixture() {
     [ -z "$(git -C "$WT" status --porcelain --untracked-files=all)" ]
     [ -z "$(git -C "$WT" add -A --dry-run)" ]
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     [ "$(grep -cxF '/.devflow-tmp/' "$excl")" -eq 1 ]
 }
@@ -330,7 +351,7 @@ make_issue_fixture() {
     git -C "$SEED" commit -q -m "ignore scratch"
     git -C "$SEED" push -q origin dev
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     excl="$(git -C "$WT" rev-parse --path-format=absolute --git-path info/exclude)"
@@ -344,7 +365,7 @@ make_issue_fixture() {
     cd "$ROOT"
     git worktree add -q --no-track -b feature/issue-1 "$WT" origin/main
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false'
     echo "$output" | jq -e '.worktree_status == "reused"'
@@ -361,7 +382,7 @@ make_issue_fixture() {
     cd "$ROOT"
     git worktree add -q --no-track -b other-branch "$WT" origin/dev
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false'
     echo "$output" | jq -e '.worktree_status == "reused"'
@@ -374,7 +395,7 @@ make_issue_fixture() {
 @test "(6c) epoch は script 開始時の時刻（出力直前ではない）" {
     cd "$ROOT"
     before="$(date +%s)"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     after="$(date +%s)"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --argjson b "$before" --argjson a "$after" '.epoch >= $b and .epoch <= $a'
@@ -403,7 +424,7 @@ make_issue_fixture() {
     export DEVFLOW_DEPS_CACHE_DIR="$BATS_TEST_TMPDIR/deps-cache"
 
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e 'has("deps") | not'
@@ -415,10 +436,10 @@ make_issue_fixture() {
 
 @test "(6e) ok:false のときは .devflow-tmp/prerun-setup.json を書かない" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     [ -f "$WT/.devflow-tmp/prerun-setup.json" ]
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --base main
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --base main
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false'
     [ ! -f "$WT/.devflow-tmp/prerun-setup.json" ]
@@ -433,7 +454,7 @@ make_issue_fixture() {
     git fetch -q origin
     git worktree add -q --no-track -b feature/issue-1 "$WT" origin/feature/issue-1
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused"'
 }
@@ -445,25 +466,30 @@ make_issue_fixture() {
     git -c core.logAllRefUpdates=false branch --no-track feature/issue-1 origin/dev
     git worktree add -q "$WT" feature/issue-1
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false'
     echo "$output" | jq -e '.worktree_error | test("reflog")'
 }
 
-# ---- (9) prunable (実体削除) からの再作成 ----
+# ---- (9) prunable (実体削除) ----
+# 実体の無い登録が残ると同じパスに worktree を作れず、その branch へ付け替えることもできない。prerun は登録を消さない
+# （sandbox 内からは .git/worktrees に書けない）ので、消し方を返して止まる
 
-@test "(9) 実体を rm -rf した stale worktree -> prune後に既存branchをcheckoutしてcreated" {
+@test "(9) 実体を rm -rf した stale worktree -> 登録を消さずに ok:false、worktree_error に git worktree prune" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
 
     rm -rf "$WT"
+    before="$(git -C "$ROOT" worktree list --porcelain)"
 
     run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == true'
-    echo "$output" | jq -e '.worktree_status == "created"'
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | test("prunable") and test("git worktree prune")'
+    [ ! -e "$WT" ]
+    [ "$(git -C "$ROOT" worktree list --porcelain)" = "$before" ]
 }
 
 # ---- (9b-d) 再利用 worktree が origin/<base> より遅れている（issue #776）----
@@ -478,7 +504,7 @@ advance_origin_dev() {
 
 @test "(9b) 独自コミット0件・未コミット変更なしで遅れた再利用worktree -> origin/devへfast-forward、headも進めた後の値" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     old_head="$(echo "$output" | jq -r '.head')"
 
@@ -487,7 +513,7 @@ advance_origin_dev() {
     mkdir -p "$WT/.devflow-tmp"
     echo "stale" > "$WT/.devflow-tmp/stale.txt"
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e '.worktree_status == "reused"'
@@ -499,7 +525,7 @@ advance_origin_dev() {
 
 @test "(9c) 独自コミットがある再利用worktree -> origin/devが進んでもHEADは変わらない" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
 
     git -C "$WT" config user.name "Test"
@@ -511,7 +537,7 @@ advance_origin_dev() {
 
     advance_origin_dev
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     [ "$(git -C "$WT" rev-parse HEAD)" = "$own_head" ]
@@ -520,7 +546,7 @@ advance_origin_dev() {
 
 @test "(9d) 未コミット変更がある再利用worktree -> origin/devが進んでもHEADは変わらない" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     old_head="$(echo "$output" | jq -r '.head')"
 
@@ -528,7 +554,7 @@ advance_origin_dev() {
 
     advance_origin_dev
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     [ "$(git -C "$WT" rev-parse HEAD)" = "$old_head" ]
@@ -537,9 +563,9 @@ advance_origin_dev() {
 }
 
 # ---- (9e-f) 書けないパスを追跡する repo（issue #875）----
-# sandbox は `.githooks` の作成を EPERM で拒み、git は full checkout を fatal で中断して作りかけの worktree を片付ける。
+# sandbox は `.githooks` の作成を EPERM で拒み、git は取り出し（git switch）を fatal で中断する。
 # テストでは同じ「git が .githooks 配下を取り出せない」状態を、失敗する required smudge filter で作る
-# （attributes は .git/info に置くので全 worktree に効き、main checkout の main には .githooks が無い）。
+# （attributes は .git/info に置くので全 worktree に効き、Claude Code が worktree を作る main には .githooks が無い）。
 track_unwritable_githooks() {
     git -C "$SEED" checkout -q dev
     mkdir -p "$SEED/.githooks"
@@ -554,14 +580,19 @@ track_unwritable_githooks() {
     git -C "$ROOT" config filter.deny.required true
 }
 
-@test "(9e) .githooks を取り出せない repo -> ok:true で作成し、取り出せないパスに skip-worktree を付けて status が空" {
+@test "(9e) .githooks を取り出せない repo -> git switch が失敗しても部分 checkout で付け替え、取り出せないパスに skip-worktree を付けて status が空" {
     track_unwritable_githooks
     cd "$ROOT"
     git fetch -q origin
+    # Claude Code が worktree を作る commit（起動元の main）にだけあるファイル。付け替え後の作業ツリーに残さない
+    echo "main only" > "$ROOT/main-only.txt"
+    git -C "$ROOT" add main-only.txt
+    git -C "$ROOT" commit -q -m "main only"
+    # full checkout（git switch と同じ取り出し）はこの repo では失敗する
     run git worktree add -q --detach "$BATS_TEST_TMPDIR/full" origin/dev
     [ "$status" -ne 0 ]
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "created"'
     echo "$output" | jq -e '.skip_worktree == [".githooks/pre-commit", ".githooks/pre-push"]'
@@ -569,12 +600,15 @@ track_unwritable_githooks() {
     echo "$output" | jq -e '.hooks_not_running == ["pre-commit", "pre-push"]'
     echo "$output" | jq -e --arg h "$(git -C "$ROOT" rev-parse origin/dev)" '.head == $h'
     [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "feature/issue-1" ]
-    [ -f "$WT/README.md" ]
+    [ "$(git -C "$WT" rev-parse HEAD)" = "$(git -C "$ROOT" rev-parse origin/dev)" ]
+    [ "$(cat "$WT/README.md")" = "$(git -C "$ROOT" show origin/dev:README.md)" ]
+    [ ! -e "$WT/main-only.txt" ]
+    [ ! -e "$WT/.githooks/pre-commit" ]
     [ -z "$(git -C "$WT" status --porcelain)" ]
     [ -z "$(git -C "$WT" add -A --dry-run)" ]
 
-    # 作り直した worktree の再利用は ok:true（skip-worktree のパスは未ステージの削除に数えない）
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    # 付け替えた worktree の再利用は ok:true（skip-worktree のパスは未ステージの削除に数えない）
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused" and .skip_worktree == []'
 }
@@ -585,7 +619,7 @@ track_unwritable_githooks() {
     git worktree add -q --no-checkout --no-track -b feature/issue-1 "$WT" origin/dev
     git -C "$WT" read-tree HEAD
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "reused"'
     echo "$output" | jq -e '.worktree_error | test("未ステージの削除が 1 件") and test("README.md") and test("git worktree remove")'
@@ -609,7 +643,7 @@ JSON
     git -C "$SEED" push -q origin dev
 
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.stack.frameworks | index("next") != null'
 }
@@ -619,7 +653,7 @@ JSON
 
 @test "(10c) origin/<base> の .claude/skill-config.json の \"dev-flow\".ci_verify / local_verify / pr_title_format -> 同名キーに verbatim、無ければ null" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e 'has("ci_verify") and .ci_verify == null'
     echo "$output" | jq -e 'has("local_verify") and .local_verify == null'
@@ -633,7 +667,7 @@ JSON
     git -C "$SEED" push -q origin dev
 
     WT2="$BATS_TEST_TMPDIR/wt/df-2"
-    run --separate-stderr "$SCRIPT" --issue 2 --worktree "$WT2"
+    run --separate-stderr "$FLOW" --issue 2 --worktree "$WT2"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ci_verify == {"label":"full-ci","checks":["e2e"],"commands":["pnpm test:e2e:local"],"wait_ceiling_seconds":1500}'
     echo "$output" | jq -e '.local_verify == {"command":"pnpm test:e2e:local","db":{"engine":"postgres","version":"17"},"env":"E2E_EXTERNAL_DATABASE_URL","timeout_seconds":1500}'
@@ -648,7 +682,7 @@ JSON
     git -C "$SEED" push -q origin dev
 
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "created"'
 
@@ -659,7 +693,7 @@ JSON
     cp "$WT/skill-config.json" "$WT/.claude/skill-config.json"
     cp "$WT/skill-config.json" "$ROOT/skill-config.json"
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused"'
     jq -e '."dev-flow".ci_verify.label == "none"' "$WT/skill-config.json"
@@ -682,7 +716,7 @@ JSON
         > "$HOME/.claude/skill-config.json"
 
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .repo == "acme/app" and .base == "dev"'
     echo "$output" | jq -e '.security_reviewer == "codex"'
@@ -694,7 +728,7 @@ JSON
 
 @test "(10f) origin/<base> の \"dev-flow\".visual_snapshots -> 検証した宣言を visual_snapshots に入れ（無ければ null）、不正なら worktree を作らずに ok:false" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e 'has("visual_snapshots") and .visual_snapshots == null'
 
@@ -705,7 +739,7 @@ JSON
     git -C "$SEED" push -q origin dev
 
     WT2="$BATS_TEST_TMPDIR/wt/df-2"
-    run --separate-stderr "$SCRIPT" --issue 2 --worktree "$WT2"
+    run --separate-stderr "$FLOW" --issue 2 --worktree "$WT2"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .visual_snapshots == {"command":"pnpm test:visual","db":{"engine":"postgres","version":"17"},"env":"E2E_EXTERNAL_DATABASE_URL","timeout_seconds":900,"paths":["tests/visual"]}'
 
@@ -714,7 +748,7 @@ JSON
     git -C "$SEED" push -q origin dev
 
     WT3="$BATS_TEST_TMPDIR/wt/df-3"
-    run --separate-stderr "$SCRIPT" --issue 3 --worktree "$WT3"
+    run --separate-stderr "$FLOW" --issue 3 --worktree "$WT3"
     echo "$output" | jq -e '.ok == false and .worktree_status == "error" and (.worktree_error | contains("\"dev-flow\".visual_snapshots が不正")) and (.worktree_error | contains("paths に .. を含むものがある"))'
     [ ! -e "$WT3" ]
 }
@@ -723,28 +757,28 @@ JSON
 
 @test "(11a) --issue 欠落 -> exit 2, stdout空" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --worktree "$WT"
+    run --separate-stderr "$FLOW" --worktree "$WT"
     [ "$status" -eq 2 ]
     [ -z "$output" ]
 }
 
 @test "(11b) --issue が数値でない -> exit 2, stdout空" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue abc --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue abc --worktree "$WT"
     [ "$status" -eq 2 ]
     [ -z "$output" ]
 }
 
 @test "(11c) --worktree が相対パス -> exit 2, stdout空" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "relative/path"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "relative/path"
     [ "$status" -eq 2 ]
     [ -z "$output" ]
 }
 
 @test "(11d) 未知オプション -> exit 2, stdout空" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --bogus
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --bogus
     [ "$status" -eq 2 ]
     [ -z "$output" ]
 }
@@ -754,29 +788,29 @@ JSON
 @test "(12a) https origin -> repo キーが owner/name" {
     git -C "$ROOT" remote set-url origin https://github.com/acme/skills.git
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --base main
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --base main
     echo "$output" | jq -e '.repo == "acme/skills"'
     echo "$output" | jq -e '(.epoch | type) == "number"'
 }
 
 @test "(12b) file:// origin -> repo キーが無い" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --base main
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --base main
     echo "$output" | jq -e 'has("repo") == false'
     echo "$output" | jq -e '(.epoch | type) == "number"'
 }
 
 # ---- (13) 既存 worktree が unwritable ----
 
-@test "(13) 既存worktreeがunwritable -> ok:false, worktree_status=unwritable, worktree_removed=false" {
+@test "(13) 既存worktreeがunwritable -> ok:false, worktree_status=unwritable、worktree を消さない" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
 
     # 1 回目の ok:true は .devflow-tmp/prerun-setup.json を残すので、.devflow-tmp ごと書けなくする
     chmod a-w "$WT" "$WT/.devflow-tmp"
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     status_after_chmod="$status"
     output_after_chmod="$output"
 
@@ -786,31 +820,209 @@ JSON
     echo "$output_after_chmod" | jq -e '.ok == false'
     echo "$output_after_chmod" | jq -e '.worktree_status == "unwritable"'
     echo "$output_after_chmod" | jq -e '.worktree_error | ascii_downcase | test("permission|not permitted")'
-    echo "$output_after_chmod" | jq -e '.worktree_removed == false'
+    [ -d "$WT" ]
+    git -C "$ROOT" worktree list --porcelain | grep -qxF "branch refs/heads/feature/issue-1"
 }
 
-# ---- (14) 新規作成先の親ディレクトリが unwritable ----
+# ---- (14) worktree を作らずに、入るべき worktree を返す（enter_required。issue #1423）----
+# sandbox 内からは起動元 repo の .git/worktrees に書けない。prerun は worktree を作らず、cwd が使う worktree の中でなければ
+# worktree のパスと登録済みかを返して止まる。wrapper が EnterWorktree で入って同じ引数で再実行する（"$FLOW" がその代役）。
 
-@test "(14) 新規worktreeの親ディレクトリがunwritable -> git worktree add失敗でworktree_status=error" {
+# Claude Code が EnterWorktree({name}) で作った直後の worktree（branch worktree-<ディレクトリ名>）を、第 1 引数の commit
+# （省略時は起動元の HEAD = main。origin/dev とは別の commit）から作る
+enter_fresh_worktree() {
+    git -C "$ROOT" worktree add -q -b "worktree-$(basename "$WT")" "$WT" "${1:-HEAD}"
+}
+
+@test "(14a) 未登録の worktree を cwd の外から -> 作らずに ok:false・enter_required・worktree_registered:false、analyze も走らせない" {
+    make_issue_fixture
     cd "$ROOT"
-    PARENT="$BATS_TEST_TMPDIR/roparent"
-    mkdir -p "$PARENT"
-    chmod a-w "$PARENT"
-
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$PARENT/df-1"
-    chmod u+w "$PARENT"
-
+    before="$(git -C "$ROOT" worktree list --porcelain)"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.ok == false'
-    echo "$output" | jq -e '.worktree_status == "error"'
+    echo "$output" | jq -e '.ok == false and .worktree_status == "enter_required" and .worktree_registered == false'
+    echo "$output" | jq -e --arg wt "$WT" '.worktree == $wt and .branch == "feature/issue-1"'
+    echo "$output" | jq -e 'has("worktree_error") | not'
+    echo "$output" | jq -e '.analyze.ok == false and .analyze.reason == "skipped: enter_required"'
+    # worktree も作業ブランチも作らない
+    [ ! -e "$WT" ]
+    [ "$(git -C "$ROOT" worktree list --porcelain)" = "$before" ]
+    run git -C "$ROOT" show-ref --verify --quiet refs/heads/feature/issue-1
+    [ "$status" -ne 0 ]
 }
 
-@test "(14b) 静的pin: worktree remove --force 呼び出しが存在する" {
-    count="$(grep -c 'worktree remove --force' "$SCRIPT")"
-    [ "$count" -ge 1 ]
+@test "(14b) 登録済みの worktree（Claude Code が作った直後・作業ブランチを checkout 済み）を cwd の外から -> enter_required・worktree_registered:true で、中に書き込まない" {
+    cd "$ROOT"
+    enter_fresh_worktree
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "enter_required" and .worktree_registered == true'
+    # 付け替えは入ってから行う
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "worktree-df-1" ]
+    [ ! -e "$WT/.devflow-tmp" ]
+
+    # 作業ブランチを checkout 済みで origin/dev より遅れた worktree: 外からは fast-forward も clean もしない
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    old_head="$(echo "$output" | jq -r '.head')"
+    advance_origin_dev
+    echo "stale" > "$WT/.devflow-tmp/stale.txt"
+    cd "$ROOT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "enter_required" and .worktree_registered == true'
+    [ "$(git -C "$WT" rev-parse HEAD)" = "$old_head" ]
+    [ -f "$WT/.devflow-tmp/stale.txt" ]
+    [ -f "$WT/.devflow-tmp/prerun-setup.json" ]
 }
 
-# ---- (15) 静的 pin: gh / git push を呼ばない ----
+# ---- (14c-d) worktree の中で、Claude Code が作った直後の branch を作業ブランチへ付け替える ----
+
+@test "(14c) cwd が worktree-<ディレクトリ名> の worktree で作業ブランチが無い -> origin/<base> から track なしで作って付け替える" {
+    enter_fresh_worktree
+    cd "$WT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .branch == "feature/issue-1" and .skip_worktree == []'
+    echo "$output" | jq -e 'has("worktree_registered") | not'
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "feature/issue-1" ]
+    # 起点は Claude Code が作った commit（main）ではなく origin/dev
+    expected_head="$(git -C "$ROOT" rev-parse origin/dev)"
+    [ "$expected_head" != "$(git -C "$ROOT" rev-parse main)" ]
+    echo "$output" | jq -e --arg h "$expected_head" '.head == $h'
+    [ "$(git -C "$WT" rev-parse HEAD)" = "$expected_head" ]
+    [ "$(git -C "$ROOT" log -g --format=%gs refs/heads/feature/issue-1 -- | tail -n 1)" = "branch: Created from origin/dev" ]
+    run git -C "$ROOT" config --get "branch.feature/issue-1.merge"
+    [ "$status" -ne 0 ]
+    [ -z "$(git -C "$WT" status --porcelain)" ]
+    # Claude Code が作った branch は消さない
+    git -C "$ROOT" show-ref --verify --quiet refs/heads/worktree-df-1
+}
+
+@test "(14d) cwd が worktree-<ディレクトリ名> の worktree で local に作業ブランチがある -> 作り直さずにその branch へ switch する" {
+    tip="$(commit_on_local_branch work)"
+    enter_fresh_worktree
+    cd "$WT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e --arg h "$tip" '.ok == true and .worktree_status == "created" and .branch == "feature/issue-1" and .head == $h'
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "feature/issue-1" ]
+    [ "$(git -C "$ROOT" rev-parse feature/issue-1)" = "$tip" ]
+}
+
+# ---- (14e-i) 付け替えずに止める ----
+# どのケースも cwd は worktree の中。止めた後も branch は Claude Code が作ったまま（HEAD も動かさない）
+
+assert_not_switched() {
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "worktree-df-1" ]
+    [ "$(git -C "$WT" rev-parse HEAD)" = "$(git -C "$ROOT" rev-parse main)" ]
+}
+
+@test "(14e) cwd の worktree の branch が worktree-<ディレクトリ名> でも作業ブランチでもない・detached HEAD -> 付け替えずに worktree_error" {
+    cd "$ROOT"
+    git worktree add -q --no-track -b other-branch "$WT" origin/dev
+    cd "$WT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "reused"'
+    echo "$output" | jq -e '.worktree_error | test("feature/issue-1") and test("other-branch")'
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "other-branch" ]
+
+    # 別の worktree の名前から作られた worktree-<別名> も付け替えない
+    git -C "$WT" switch -q -c worktree-df-2
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and (.worktree_error | test("worktree-df-2"))'
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "worktree-df-2" ]
+
+    git -C "$WT" switch -q --detach
+    detached="$(git -C "$WT" rev-parse HEAD)"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "reused"'
+    echo "$output" | jq -e '.worktree_error | test("detached HEAD")'
+    [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "HEAD" ]
+    [ "$(git -C "$WT" rev-parse HEAD)" = "$detached" ]
+    run git -C "$ROOT" show-ref --verify --quiet refs/heads/feature/issue-1
+    [ "$status" -ne 0 ]
+}
+
+@test "(14f) worktree-<ディレクトリ名> に未コミットの変更（追跡ファイルの変更・untracked）がある -> 付け替えずに worktree_error、変更を残す" {
+    enter_fresh_worktree
+    cd "$WT"
+    echo "wip" >> "$WT/README.md"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | test("worktree-df-1") and test("未コミットの変更")'
+    assert_not_switched
+    grep -qx wip "$WT/README.md"
+
+    git -C "$WT" checkout -q -- README.md
+    echo "new" > "$WT/untracked.txt"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and (.worktree_error | test("未コミットの変更"))'
+    assert_not_switched
+    [ -f "$WT/untracked.txt" ]
+    run git -C "$ROOT" show-ref --verify --quiet refs/heads/feature/issue-1
+    [ "$status" -ne 0 ]
+}
+
+@test "(14g) 不正な branch_format・--slug が無い / 不正 -> worktree の中でも付け替えない" {
+    set_branch_format 'issue-{slug}'
+    enter_fresh_worktree
+    cd "$WT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error" and (.worktree_error | contains("\"dev-flow\".branch_format"))'
+    assert_not_switched
+
+    set_branch_format 'issue-{issue}-{slug}'
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error" and (.worktree_error | test("--slug"))'
+    assert_not_switched
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug 'Bad_Slug'
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and (.worktree_error | test("--slug が不正"))'
+    assert_not_switched
+    [ -z "$(git -C "$ROOT" for-each-ref --format='%(refname)' 'refs/heads/issue-*')" ]
+}
+
+@test "(14h) 同じ issue の branch が 2 本以上・origin にだけある -> worktree の中でも付け替えない" {
+    set_branch_format 'issue-{issue}-{slug}'
+    push_origin_branch issue-1-old-name
+    enter_fresh_worktree
+    cd "$WT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | contains("issue-1-old-name") and contains("/pr-iterate <PR>")'
+    assert_not_switched
+
+    git -C "$ROOT" branch -q --no-track issue-1-local-name origin/dev
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | test("2 本") and contains("issue-1-old-name") and contains("issue-1-local-name")'
+    assert_not_switched
+}
+
+@test "(14i) squash / rebase で merge 済みの local branch -> worktree の中でも付け替えない" {
+    use_github_origin
+    tip="$(commit_on_local_branch work)"
+    advance_origin_dev
+    set_merged_prs "$(jq -nc --arg oid "$tip" '[{number: 7, headRefOid: $oid}]')"
+    enter_fresh_worktree
+    cd "$WT"
+    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
+    echo "$output" | jq -e '.worktree_error | test("feature/issue-1") and test("PR #7") and test("merge 済み")'
+    assert_not_switched
+    [ "$(git -C "$ROOT" rev-parse feature/issue-1)" = "$tip" ]
+}
 
 @test "(15a) 静的pin: gh を呼ばない" {
     run grep -E '(^|[^A-Za-z0-9_-])gh ' "$SCRIPT"
@@ -827,7 +1039,7 @@ JSON
 @test "(16a) analyze 段: issue 取得成功 -> analyze キーに contract 経路の結果が載る" {
     make_issue_fixture
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e '.analyze.ok == true and .analyze.analyze_path == "contract"'
@@ -839,7 +1051,7 @@ JSON
 
 @test "(16b) analyze 段: issue 取得失敗 -> analyze.ok:false + reason、他段は影響を受けない" {
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .clean.ok == true'
     echo "$output" | jq -e '.analyze.ok == false and (.analyze.reason | test("gh stub: no fixture")) and .analyze.analyze_path == "contract"'
@@ -849,7 +1061,7 @@ JSON
 @test "(16c) analyze 段は base 未解決（ok:false）でも走る" {
     make_issue_fixture
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --base release
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --base release
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .analyze.ok == true'
 }
@@ -881,7 +1093,7 @@ body_fixture() {
     printf '## 受け入れ基準\r\n\r\n- [ ] AC one\r\n\r\n初回の本文\n\n' >"$body"
     body_fixture "$body"
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .analyze.ok == true and .worktree_status == "created"'
     cmp "$body" "$WT/.devflow-tmp/issue-body.md"
@@ -889,7 +1101,7 @@ body_fixture() {
 
     printf '## 受け入れ基準\n\n- [ ] AC one\n\n編集後の本文\n' >"$body"
     body_fixture "$body"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .analyze.ok == true and .worktree_status == "reused"'
     cmp "$body" "$WT/.devflow-tmp/issue-body.md"
@@ -904,7 +1116,7 @@ body_fixture() {
     body_fixture "$body"
     jq -e '.body | length == 65536' "$GH_STUB_FIXTURE"
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .analyze.ok == true and .analyze.acceptance_criteria == ["AC one"]'
     cmp "$body" "$WT/.devflow-tmp/issue-body.md"
@@ -920,7 +1132,7 @@ body_fixture() {
     git -C "$SEED" push -q origin dev
     make_issue_fixture
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .clean.ok == true'
     echo "$output" | jq -e '.analyze.ok == false and (.analyze.reason | test("issue 本文を .*issue-body.md に書けない")) and .analyze.analyze_path == "contract"'
@@ -932,7 +1144,7 @@ body_fixture() {
     plugin_root="$(cd "$(dirname "$SCRIPT")/../.." && pwd)"
     expected="$(git -C "$plugin_root" rev-parse HEAD)"
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg c "${expected:0:12}" '.plugin_commit == $c'
 }
@@ -945,7 +1157,7 @@ body_fixture() {
         ln -s "$plugin_root/$d" "$cache_root/$d"
     done
     cd "$ROOT"
-    run --separate-stderr "$cache_root/dev-flow/scripts/prerun.sh" --issue 1 --worktree "$WT"
+    PRERUN_UNDER_TEST="$cache_root/dev-flow/scripts/prerun.sh" run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true'
     echo "$output" | jq -e '.plugin_commit == "1ef2e0ab6254"'
@@ -959,7 +1171,7 @@ body_fixture() {
         ln -s "$plugin_root/$d" "$cache_root/$d"
     done
     cd "$ROOT"
-    GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR" run --separate-stderr "$cache_root/dev-flow/scripts/prerun.sh" --issue 1 --worktree "$WT"
+    GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR" PRERUN_UNDER_TEST="$cache_root/dev-flow/scripts/prerun.sh" run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "created"'
     echo "$output" | jq -e 'has("plugin_commit") and .plugin_commit == null'
@@ -992,7 +1204,7 @@ issue1_local_branches() {
 @test "(18a) branch_format \"issue-{issue}-{slug}\" で同じ issue の branch が無い -> --slug を埋めた名前で作り、worktree はその branch" {
     set_branch_format 'issue-{issue}-{slug}'
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login-timeout
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --slug fix-login-timeout
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .base == "dev"'
     echo "$output" | jq -e '.branch == "issue-1-fix-login-timeout" and .branch_format == "issue-{issue}-{slug}"'
@@ -1004,7 +1216,7 @@ issue1_local_branches() {
 @test "(18b) 新しい名前が要るのに --slug が無い・不正 -> worktree も branch も作らず、--slug を名指しした ok:false" {
     set_branch_format 'issue-{issue}-{slug}'
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
     echo "$output" | jq -e '.worktree_error | contains("--slug が要るが渡されていない")'
@@ -1012,7 +1224,7 @@ issue1_local_branches() {
     [ -z "$(issue1_local_branches)" ]
 
     for slug in Fix_Login ログイン fix-login- "$(printf 'a%.0s' {1..41})"; do
-        run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug "$slug"
+        run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --slug "$slug"
         [ "$status" -eq 0 ]
         echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
         echo "$output" | jq -e --arg s "$slug" '.worktree_error | contains("--slug が不正（受信: " + $s + "）")'
@@ -1022,7 +1234,7 @@ issue1_local_branches() {
 
     # 40 文字は受理する
     slug40="$(printf 'a%.0s' {1..40})"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug "$slug40"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --slug "$slug40"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg b "issue-1-$slug40" '.ok == true and .branch == $b'
 }
@@ -1030,7 +1242,7 @@ issue1_local_branches() {
 @test "(18c) 書式に {slug} が無ければ --slug は使わない（不正な値でも止めない）" {
     set_branch_format 'issue-{issue}-dev-flow'
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug Fix_Login
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --slug Fix_Login
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .branch == "issue-1-dev-flow"'
     [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "issue-1-dev-flow" ]
@@ -1043,7 +1255,7 @@ issue1_local_branches() {
     git fetch -q origin
     git worktree add -q --no-track -b issue-1-old-name "$WT" origin/issue-1-old-name
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login-timeout
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --slug fix-login-timeout
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "reused" and .branch == "issue-1-old-name"'
     [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "issue-1-old-name" ]
@@ -1057,7 +1269,7 @@ issue1_local_branches() {
     # 番号の違う issue の branch は数えない
     git branch --no-track issue-10-other origin/dev
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug Fix_Login
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --slug Fix_Login
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .branch == "issue-1-old-name"'
     [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "issue-1-old-name" ]
@@ -1068,7 +1280,7 @@ issue1_local_branches() {
     set_branch_format 'issue-{issue}-{slug}'
     push_origin_branch issue-1-old-name
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login-timeout
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --slug fix-login-timeout
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
     echo "$output" | jq -e '.worktree_error | contains("origin に branch issue-1-old-name が残っている")'
@@ -1083,7 +1295,7 @@ issue1_local_branches() {
     push_origin_branch issue-1-remote-name
     cd "$ROOT"
     git branch --no-track issue-1-local-name origin/dev
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login-timeout
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --slug fix-login-timeout
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
     echo "$output" | jq -e '.worktree_error | contains("2 本") and contains("issue-1-local-name") and contains("issue-1-remote-name")'
@@ -1094,7 +1306,7 @@ issue1_local_branches() {
 @test "(18h) 不正な branch_format -> worktree を作らずに ok:false、worktree_error に \"dev-flow\".branch_format と理由" {
     set_branch_format 'issue-{slug}'
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT" --slug fix-login-timeout
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT" --slug fix-login-timeout
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
     echo "$output" | jq -e '.worktree_error | contains("\"dev-flow\".branch_format が不正") and contains("{issue} が無い")'
@@ -1143,7 +1355,7 @@ set_merged_prs() {
     merge_local_branch_into_origin_dev
     advance_origin_dev
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .worktree_status == "created" and .branch == "feature/issue-1"'
     new_base="$(git -C "$ROOT" rev-parse origin/dev)"
@@ -1158,7 +1370,7 @@ set_merged_prs() {
     advance_origin_dev
     set_merged_prs "$(jq -nc --arg o "$tip" '[{number: 42, headRefOid: $o}]')"
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "error" and has("head") == false'
     echo "$output" | jq -e '.worktree_error | contains("branch feature/issue-1 は PR #42 で merge 済み") and contains("git branch -D feature/issue-1")'
@@ -1169,7 +1381,7 @@ set_merged_prs() {
 @test "(19c) 再利用経路: merged PR の head が branch の tip の祖先で origin/dev の祖先でない -> ok:false、worktree と HEAD を変えない" {
     use_github_origin
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == true and .repo == "acme/app"'
 
@@ -1184,7 +1396,7 @@ set_merged_prs() {
     advance_origin_dev
     set_merged_prs "$(jq -nc --arg o "$pr_head" '[{number: 7, headRefOid: $o}]')"
 
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "reused"'
     echo "$output" | jq -e '.worktree_error | contains("branch feature/issue-1 は PR #7 で merge 済み") and contains("git branch -D feature/issue-1") and contains("git worktree remove")'
@@ -1193,17 +1405,18 @@ set_merged_prs() {
     [ -z "$(git -C "$WT" status --porcelain)" ]
 }
 
-@test "(19d) local branch 経路: 独自コミットがあり merged PR が無い -> ok:true で head は branch の sha。読み取りは gh pr list の 1 回" {
+@test "(19d) local branch 経路: 独自コミットがあり merged PR が無い -> ok:true で head は branch の sha。読み取りは prerun 1 回につき gh pr list の 1 回" {
     use_github_origin
     tip="$(commit_on_local_branch work)"
     advance_origin_dev
     set_merged_prs '[]'
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg h "$tip" '.ok == true and .worktree_status == "created" and .head == $h'
     [ "$(git -C "$WT" rev-parse HEAD)" = "$tip" ]
-    [ "$(wc -l <"$GH_PR_STUB_LOG" | tr -d ' ')" = "1" ]
+    # enter_required を返す 1 回目と、worktree に入った後の 2 回目
+    [ "$(wc -l <"$GH_PR_STUB_LOG" | tr -d ' ')" = "2" ]
     grep -qx -- 'pr list --repo acme/app --head feature/issue-1 --state merged --limit 100 --json number,headRefOid' "$GH_PR_STUB_LOG"
 }
 
@@ -1215,7 +1428,7 @@ set_merged_prs() {
     tip="$(commit_on_local_branch followup)"
     set_merged_prs "$(jq -nc --arg o "$merged" '[{number: 42, headRefOid: $o}]')"
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg h "$tip" '.ok == true and .worktree_status == "created" and .head == $h'
     [ "$(git -C "$WT" rev-parse HEAD)" = "$tip" ]
@@ -1226,14 +1439,14 @@ set_merged_prs() {
     commit_on_local_branch work
     cd "$ROOT"
     # gh の失敗（GH_PR_STUB_FIXTURE 未設定）
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
     echo "$output" | jq -e '.worktree_error | contains("branch feature/issue-1 を head にした merged PR を読み取れなかった")'
     [ ! -e "$WT" ]
 
     set_merged_prs 'not json'
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "error"'
     echo "$output" | jq -e '.worktree_error | contains("merged PR を読み取れなかった")'
@@ -1244,7 +1457,7 @@ set_merged_prs() {
     tip="$(commit_on_local_branch work)"
     advance_origin_dev
     cd "$ROOT"
-    run --separate-stderr "$SCRIPT" --issue 1 --worktree "$WT"
+    run --separate-stderr "$FLOW" --issue 1 --worktree "$WT"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e --arg h "$tip" '.ok == true and has("repo") == false and .head == $h'
     [ ! -e "$GH_PR_STUB_LOG" ]
