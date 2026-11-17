@@ -241,6 +241,40 @@ EOF
     jq -e '.status == "passed" and .exit_code == 0' "$STATE_DIR/result.json"
 }
 
+# $1 = /proc/self/ns/pid の readlink が返す値。PATH の先頭に置く偽 readlink を作り、その bin dir を stdout に出す
+fake_pid_ns_bin() {
+    local real_readlink dir="$BATS_TEST_TMPDIR/ns-bin"
+    real_readlink="$(command -v readlink)"
+    mkdir -p "$dir"
+    cat > "$dir/readlink" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = /proc/self/ns/pid ]; then echo '$1'; exit 0; fi
+exec "$real_readlink" "\$@"
+EOF
+    chmod +x "$dir/readlink"
+    echo "$dir"
+}
+
+@test "BG_JOB_CALL_SCOPED が無ければ、初期でない PID namespace（呼び出しの終了で消える環境）を判定して結果まで待つ" {
+    local bin
+    bin="$(fake_pid_ns_bin 'pid:[4026532422]')"
+    call_mark
+    run env -u BG_JOB_CALL_SCOPED "$CALL_MARK" PATH="$bin:$PATH" bash "$HOST" start "$STATE_DIR" "$CWD" 60 20 'sleep 1; echo hello' 3>&-
+    kill_call
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .status == "passed" and .exit_code == 0'
+    jq -e '.status == "passed" and .exit_code == 0' "$STATE_DIR/result.json"
+}
+
+@test "BG_JOB_CALL_SCOPED が無ければ、初期の PID namespace（4026531836）を判定して待たずに running を返す" {
+    local bin
+    bin="$(fake_pid_ns_bin 'pid:[4026531836]')"
+    run env -u BG_JOB_CALL_SCOPED PATH="$bin:$PATH" bash "$HOST" start "$STATE_DIR" "$CWD" 60 20 'sleep 5; echo hello' 3>&-
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .status == "running"'
+    [ ! -e "$STATE_DIR/result.json" ]
+}
+
 @test "wait / stop: 別の呼び出しから pid が見えない（kill -0 が ESRCH）だけの動いている supervisor を、居ないと判定しない" {
     export BG_JOB_CALL_SCOPED=1
     # 終わっていない start の呼び出しを残す（＝別の呼び出しの PID namespace で supervisor が動いている）
