@@ -66,8 +66,10 @@ function failedOutputOf(command) {
   return null
 }
 
-// command を実行した最後の Bash の実 stdout の 1 行目の JSON object（実行していない・失敗した・JSON でなければ null）。
-// tool_result の本文は stdout の後に stderr が続くので、1 行目だけを stdout として読む（script は JSON 1 行を stdout に出す）
+// command を実行した最後の Bash の実 stdout の JSON object（実行していない・失敗した・JSON object の行がちょうど 1 行でなければ null）。
+// tool_result の本文は stdout と stderr が混ざり、stderr の行（node が起動時に出す ERROR 行など）が JSON より前に来ることもあるので、
+// 位置ではなく「JSON object として読める唯一の行」を stdout とする（script は JSON 1 行を stdout に出す）。2 行以上あるときは
+// どれが stdout か決められないので null（失敗時の JSON だけ通す）— stderr に JSON の行を混ぜても成功の値の差し替えにはならない
 function stdoutJsonOf(entries, command) {
   let id = null
   for (const e of entries) {
@@ -89,12 +91,15 @@ function stdoutJsonOf(entries, command) {
     : Array.isArray(result.content) ? result.content.filter((x) => x?.type === 'text' && typeof x.text === 'string').map((x) => x.text).join('\n')
     : null
   if (text == null) return null
-  try {
-    const v = JSON.parse(text.split('\n')[0])
-    return v !== null && typeof v === 'object' && !Array.isArray(v) ? v : null
-  } catch {
-    return null
-  }
+  const objects = text.split('\n').flatMap((line) => {
+    try {
+      const v = JSON.parse(line)
+      return v !== null && typeof v === 'object' && !Array.isArray(v) ? [v] : []
+    } catch {
+      return []
+    }
+  })
+  return objects.length === 1 ? objects[0] : null
 }
 
 // key の順に依らない JSON の一致

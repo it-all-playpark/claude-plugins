@@ -175,7 +175,7 @@ pr-iterate      → security-pr-head#i → security-pr-fetch#i → security-scop
 - 同じ hook（matcher `Bash` と `StructuredOutput`。入力の `agent_type` が `dev-flow:security-codex-relay` のときだけ判定）は、
   `_lib/scripts/security-relay-bind.mjs` で中継の入出力をその spawn の transcript（`<transcript_path から .jsonl を除いたもの>/subagents/`
   配下の `agent-<agent_id>.jsonl`）に縛る（R1・R2）: Bash は最初の user 行の harness の枠の後の最終行（2 字下げを外したもの）と完全一致、
-  返り値は直前にそのコマンドを実行した Bash の実 stdout の 1 行目の JSON か、prompt が定める失敗時の JSON（`SECURITY_SCOPE_RELAY_FAILED` 等。
+  返り値は直前にそのコマンドを実行した Bash の出力で JSON object として読める唯一の行（stderr の行が前後に混ざっても位置に依らない。2 行以上なら成功の値は通さない）か、prompt が定める失敗時の JSON（`SECURITY_SCOPE_RELAY_FAILED` 等。
   Bash を実行していなくてよい。codex の起動は `{"done":true}` だけ）と一致するときだけ通す。transcript は Claude Code の設定ディレクトリに
   harness が書き、sandbox の中の中継・PR のプロセスからは書けない。transcript・prompt が無い・枠の形が違う・コマンド行が取れないときは deny
 - review する head と base は GitHub の PR の値（縛った `gh pr view` の stdout）で決まる。手元の HEAD・`origin/<base>` は PR の worktree で
