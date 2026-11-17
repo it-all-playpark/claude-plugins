@@ -116,19 +116,13 @@ emit_job_response() {
     emit "${status:-error}" "${code:-null}" "$tail"
 }
 
-push_running() {
-    [[ -f "$BG_JOB_STATE" ]] || return 1
-    bg_job_is_alive "$(bg_job_read_field "$BG_JOB_STATE" .supervisor_pid)" \
-        && [[ "$(bg_job_read_field "$BG_JOB_STATE" .phase)" != done ]]
-}
-
 cmd_start() {
     local reset cmd
     if ! git rev-parse --path-format=absolute --git-common-dir >/dev/null 2>&1; then
         emit error null "not a git repository: $PWD"
         exit 2
     fi
-    if push_running; then
+    if bg_job_running; then
         emit running null ""
         return
     fi

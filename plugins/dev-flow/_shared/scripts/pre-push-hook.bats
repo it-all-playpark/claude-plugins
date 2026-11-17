@@ -10,6 +10,9 @@ setup() {
     SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/pre-push-hook.sh"
     export GIT_CONFIG_GLOBAL=/dev/null
     export GIT_CONFIG_NOSYSTEM=1
+    # bats は start と wait を同じ Bash 呼び出しの中で叩く。bats を走らせる環境の判定に任せず、切り離した実行が
+    # start の後も残る側に固定する（残れない環境は bg-job.bats が再現する）
+    export BG_JOB_CALL_SCOPED=0
 
     ROOT="$(cd "$(mktemp -d)" && pwd -P)"
     REMOTE="$ROOT/remote.git"
@@ -203,19 +206,25 @@ assert_not_pushed() {
 
 @test "生きているプロセスが push lock を持ったまま待ち上限を超えると、hook を起動せず error（lock_timeout）を返し lock を消さない" {
     put_hook "touch '$OUT/hook-ran'; exit 0"
-    sleep 30 >/dev/null 2>&1 &
+    # push-lock.sh で lock を取って持ち続けるプロセス（TERM で解放して終わる。来なければ 60 秒で終わる）
+    bash -c 'cd "$1" && source "$2" && push_lock_acquire 5 0.1 holder && for i in $(seq 1 300); do sleep 0.2; done' \
+        _ "$REPO" "$(dirname "$SCRIPT")/../../_lib/scripts/push-lock.sh" >/dev/null 2>&1 3>&- &
     holder=$!
-    mkdir -p "$REPO/.git/dev-flow-pr-push.lock/pid-$holder"
+    for _ in $(seq 1 100); do
+        record="$(ls -d "$REPO/.git/dev-flow-pr-push.lock"/holder-* 2>/dev/null)" && break
+        sleep 0.1
+    done
+    [ -n "$record" ]
     export PR_PUSH_LOCK_WAIT_SECONDS=1
     export PR_PUSH_LOCK_POLL_SECONDS=0.2
 
     run_to_end 5
+    [ -e "$record" ] || { kill "$holder"; false; }
     kill "$holder"
     [ "$(json_field "$RESULT" .hook)" = "error" ]
     [ "$(json_field "$RESULT" .exit)" = "null" ]
     [[ "$(json_field "$RESULT" .error)" == lock_timeout* ]]
     [ ! -e "$OUT/hook-ran" ]
-    [ -d "$REPO/.git/dev-flow-pr-push.lock/pid-$holder" ]
 }
 
 @test "引数が不正 -> exit 2 と hook error" {

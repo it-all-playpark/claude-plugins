@@ -12,6 +12,9 @@ setup() {
   SCRIPT="$BATS_TEST_DIRNAME/redgreen-verify.sh"
   STATE_DIR="$BATS_TEST_TMPDIR/state"
   export REDGREEN_VERIFY_POLL_SEC=0.1
+  # bats は start と wait を同じ Bash 呼び出しの中で叩く。bats を走らせる環境の判定に任せず、切り離した実行が
+  # start の後も残る側に固定する(残れない環境は bg-job.bats が再現する)
+  export BG_JOB_CALL_SCOPED=0
   export COMMANDS_FILE="$BATS_TEST_TMPDIR/commands.json"
   use_commands 'node --test {files}'
   RGV="$BATS_TEST_TMPDIR/rgv.sh"

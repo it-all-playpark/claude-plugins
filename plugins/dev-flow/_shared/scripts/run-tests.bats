@@ -24,6 +24,9 @@ setup() {
     STUB_DIR="$TMP_DIR/.stubbin"
     mkdir -p "$STUB_DIR"
     export BG_JOB_POLL_SEC=0.1
+    # bats は start と wait を同じ Bash 呼び出しの中で叩く。bats を走らせる環境の判定に任せず、切り離した実行が
+    # start の後も残る側に固定する（残れない環境は bg-job.bats が再現する）
+    export BG_JOB_CALL_SCOPED=0
 }
 
 teardown() {
