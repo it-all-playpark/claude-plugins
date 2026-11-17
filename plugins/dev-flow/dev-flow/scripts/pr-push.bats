@@ -13,6 +13,9 @@ setup() {
     export GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR"
     export BG_JOB_POLL_SEC=0.1
     export PR_PUSH_LOCK_POLL_SECONDS=0.2
+    # bats は start と wait を同じ Bash 呼び出しの中で叩く。bats を走らせる環境の判定に任せず、切り離した実行が
+    # start の後も残る側に固定する（残れない環境は bg-job.bats が再現する）
+    export BG_JOB_CALL_SCOPED=0
     REMOTE="$BATS_TEST_TMPDIR/remote.git"
     WT="$BATS_TEST_TMPDIR/wt"
     LOG="$WT/.devflow-tmp/push-output.log"
@@ -66,6 +69,20 @@ push_and_wait() {
 
 remote_has_branch() {
     git -C "$REMOTE" rev-parse --verify --quiet refs/heads/feature/issue-1 >/dev/null
+}
+
+# push-lock.sh で lock を取って持ち続けるプロセスを起こす（TERM で解放して終わる。来なければ 60 秒で終わる）。
+# lock を取り終えるまで待ち、pid を $holder、保持者の記録のパスを $record に残す
+hold_lock() {
+    bash -c 'cd "$1" && source "$2" && push_lock_acquire 5 0.1 holder && for i in $(seq 1 300); do sleep 0.2; done' \
+        _ "$WT" "$(dirname "$SCRIPT")/../../_lib/scripts/push-lock.sh" >/dev/null 2>&1 3>&- &
+    holder=$!
+    local i
+    for ((i = 0; i < 100; i++)); do
+        record="$(ls -d "$LOCK"/holder-* 2>/dev/null)" && return 0
+        sleep 0.1
+    done
+    return 1
 }
 
 @test "start は pre-push hook の完了を待たずに返り、1 回の wait より長い hook を wait の反復で待ち切って remote に届く" {
@@ -312,11 +329,11 @@ exit 1'
 
 @test "生きているプロセスが lock を持ったまま待ち上限を超えると、push せず exit_code 75 と pr-push: lock_timeout 行を返す" {
     install_hook "touch '$BATS_TEST_TMPDIR/hook-ran'; exit 0"
-    sleep 30 >/dev/null 2>&1 3>&- &
-    holder=$!
-    mkdir -p "$LOCK/pid-$holder"
+    hold_lock
     export PR_PUSH_LOCK_WAIT_SECONDS=1
     push_and_wait
+    # 他のプロセスの lock は消さない
+    [ -e "$record" ] || { kill "$holder"; false; }
     kill "$holder"
     [ "$(field .status)" = failed ]
     [ "$(field .exit_code)" = 75 ]
@@ -325,8 +342,6 @@ exit 1'
     [ ! -e "$BATS_TEST_TMPDIR/hook-ran" ]
     run git -C "$REMOTE" rev-parse --verify --quiet refs/heads/feature/issue-1
     [ "$status" -ne 0 ]
-    # 他のプロセスの lock は消さない
-    [ -d "$LOCK/pid-$holder" ]
 }
 
 @test "記録した PID が生きていない stale lock は奪って push し、push 後に lock を残さない" {
@@ -342,17 +357,40 @@ exit 1'
     [ ! -e "$LOCK" ]
 }
 
-@test "kill -0 が EPERM を返す PID の lock は生きている扱いで奪わない" {
-    # 非 root からの kill -0 1（init / launchd）は EPERM
-    [ "$(id -u)" -ne 0 ] || skip "root では kill -0 1 が EPERM にならない"
+@test "別の呼び出しから pid が見えない（kill -0 が ESRCH）だけの生きた保持者の lock は奪わない" {
     install_hook 'exit 0'
-    mkdir -p "$LOCK/pid-1"
+    hold_lock
+    # この後に起こすプロセスから見た保持者の pid への kill -0 を ESRCH にする（Bash 呼び出しごとに PID namespace を切る
+    # sandbox で、別の呼び出しの保持者の pid が見えない状況の再現。起動済みの保持者には効かない）
+    export HIDDEN_PID="$holder"
+    kill() {
+        if [ "$1" = -0 ] && [ "$2" = "$HIDDEN_PID" ]; then
+            echo "kill: ($2) - No such process" >&2
+            return 1
+        fi
+        builtin kill "$@"
+    }
+    export -f kill
     export PR_PUSH_LOCK_WAIT_SECONDS=1
     push_and_wait
+    unset -f kill
+    [ -e "$record" ] || { kill "$holder"; false; }
+    kill "$holder"
     [ "$(field .exit_code)" = 75 ]
     run git -C "$REMOTE" rev-parse --verify --quiet refs/heads/feature/issue-1
     [ "$status" -ne 0 ]
-    [ -d "$LOCK/pid-1" ]
+}
+
+@test "解放せずに居なくなった保持者（heartbeat が途絶えた）の lock は奪って push し、push 後に lock を残さない" {
+    install_hook 'exit 0'
+    hold_lock
+    kill -KILL "$holder"
+    export PUSH_LOCK_STALE_SEC=2
+    export PR_PUSH_LOCK_WAIT_SECONDS=20
+    push_and_wait
+    [ "$(field .exit_code)" = 0 ]
+    [ "$(git -C "$REMOTE" rev-parse refs/heads/feature/issue-1)" = "$(git -C "$WT" rev-parse HEAD)" ]
+    [ ! -e "$LOCK" ]
 }
 
 @test "exec-proxy.md の失敗ポリシー表の lock_timeout 行は exit code を実装の定数名で指し、fail-closed にする" {

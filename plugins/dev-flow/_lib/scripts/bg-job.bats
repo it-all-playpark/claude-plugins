@@ -36,6 +36,9 @@ case "$sub" in
 esac
 EOF
     export BG_JOB_POLL_SEC=0.1
+    # bats は start と wait を同じ Bash 呼び出しの中で叩くので、切り離した supervisor は start の後も残る。
+    # bats を走らせる環境の判定に任せず「残れる環境」に固定し、「残れない環境」は run_call_scoped で再現する
+    export BG_JOB_CALL_SCOPED=0
 }
 
 teardown() {
@@ -72,6 +75,51 @@ wait_file() {
 }
 
 supervisor_pid() { jq -r '.supervisor_pid' "$STATE_DIR/state.json"; }
+
+# Bash 呼び出しごとに PID namespace を切る sandbox の再現: 呼び出しが終わると、その呼び出しから起きたプロセスが
+# （nohup・setsid・disown で切り離したものも含めて）すべて消える。呼び出しの環境変数に印を付け（子孫は切り離しても
+# 環境変数を引き継ぐ）、印を持つプロセスが居なくなるまで KILL する。
+# call_mark は印を $CALL_MARK に作る。kill_call は $CALL_MARK の呼び出しから起きたプロセスを消す
+call_mark() {
+    [ -r /proc/self/environ ] || skip "プロセスの環境変数を /proc から読めない OS では再現できない"
+    CALL_MARK="BG_JOB_BATS_CALL=$BATS_TEST_NUMBER.$RANDOM"
+}
+
+kill_call() {
+    local environ pids
+    while :; do
+        pids=()
+        for environ in /proc/[0-9]*/environ; do
+            if grep -qzxF -- "$CALL_MARK" "$environ" 2>/dev/null; then
+                environ="${environ#/proc/}"
+                pids+=("${environ%/environ}")
+            fi
+        done
+        [ "${#pids[@]}" -gt 0 ] || return 0
+        kill -KILL "${pids[@]}" 2>/dev/null || true
+    done
+}
+
+# $@ = コマンド。残れない環境の 1 回の呼び出しとして実行し、返った後にその呼び出しのプロセスを消す
+run_call_scoped() {
+    call_mark
+    run env "$CALL_MARK" BG_JOB_CALL_SCOPED=1 "$@" 3>&-
+    kill_call
+}
+
+# $1 = pid。この後に起こすプロセスから見た $1 への kill -0 を ESRCH にする（別の PID namespace に居て見えない pid の再現）。
+# 起動済みのプロセスには効かない
+hide_pid() {
+    export HIDDEN_PID="$1"
+    kill() {
+        if [ "$1" = -0 ] && [ "$2" = "$HIDDEN_PID" ]; then
+            echo "kill: ($2) - No such process" >&2
+            return 1
+        fi
+        builtin kill "$@"
+    }
+    export -f kill
+}
 
 @test "start: command の終了を待たずに JSON 1 行を返し、呼び出し元の shell が終わった後に結果ファイルができる" {
     # command は gate ができるまで終わらないので、start が返った時点の未完了を秒数に頼らず確かめられる。
@@ -175,6 +223,56 @@ EOF
     rm -f "$STATE_DIR/state.json"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .status == "running"'
+}
+
+@test "呼び出しの終了でプロセスが全部消える環境: start が返った後にプロセスを消しても、別プロセスの wait が結果を受け取る" {
+    # command の sleep は「running で返る start」を確実に落とすためのもの（返った時点で command が終わっておらず、
+    # 消されて結果が残らない）。結果まで待つ start は sleep の長さによらず通る
+    run_call_scoped bash "$HOST" start "$STATE_DIR" "$CWD" 60 20 'sleep 1; echo hello'
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 1 ]
+    # start が running 以外を返せば、workflow は wait せずにこの応答を結果として使う
+    echo "$output" | jq -e '.ok == true and .status == "passed" and .exit_code == 0'
+
+    BG_JOB_CALL_SCOPED=1 wait_job
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .status == "passed" and .exit_code == 0'
+    echo "$output" | jq -e '.log_tail | contains("hello")'
+    jq -e '.status == "passed" and .exit_code == 0' "$STATE_DIR/result.json"
+}
+
+@test "wait / stop: 別の呼び出しから pid が見えない（kill -0 が ESRCH）だけの動いている supervisor を、居ないと判定しない" {
+    export BG_JOB_CALL_SCOPED=1
+    # 終わっていない start の呼び出しを残す（＝別の呼び出しの PID namespace で supervisor が動いている）
+    bash "$HOST" start "$STATE_DIR" "$CWD" 60 20 'echo $$ > "$PWD/cmd.pid"; exec sleep 30' >/dev/null 2>&1 3>&- &
+    wait_file "$CWD/cmd.pid"
+    hide_pid "$(supervisor_pid)"
+
+    wait_job 1
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .status == "running"'
+    # stop（bg_job_reset も同じ判定で前の実行を止める）は居ないものとして片付けず、stop file で止める
+    run bash "$HOST" stop "$STATE_DIR" 15
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .stopped == true and .was_running == true'
+    wait_job
+    echo "$output" | jq -e '.ok == false and .status == "stopped"'
+    unset -f kill
+    wait_gone "$(cat "$CWD/cmd.pid")"
+}
+
+@test "wait: 呼び出しごと消えた supervisor（heartbeat が途絶えた）には、--wait-sec を待ち切らずに status:error を返す" {
+    export BG_JOB_STALE_SEC=2
+    call_mark
+    env "$CALL_MARK" BG_JOB_CALL_SCOPED=1 bash "$HOST" start "$STATE_DIR" "$CWD" 60 20 'echo $$ > "$PWD/cmd.pid"; exec sleep 30' >/dev/null 2>&1 3>&- &
+    wait_file "$CWD/cmd.pid"
+    kill_call
+
+    local began=$SECONDS
+    BG_JOB_CALL_SCOPED=1 wait_job 60
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == false and .status == "error" and (.error | contains("結果を残さず"))'
+    [ $(( SECONDS - began )) -lt 30 ]
 }
 
 @test "上限秒数を超えたら command の process group（孫まで）を止めて status:timeout にする" {

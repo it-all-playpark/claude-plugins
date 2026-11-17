@@ -1,10 +1,17 @@
 # bg-job.sh - exec-proxy の command を切り離して実行し、Bash 1 回の上限（600 秒）を超えて待てるようにする共有ライブラリ（source 専用。単体では実行しない）
 #
 # プロセスモデル:
-#   別の Bash 呼び出しからは kill できない（sandbox が別実体への signal を EPERM にする）ので、start は
-#   detached な supervisor を 1 本起こし、command の起動・停止・後片付けはすべて supervisor が行う。
-#   止めるときは state dir に stop file を置く。結果は supervisor が result.json に atomic に書く。
-#   生存確認は kill -0 だけで行う（pgrep 等のプロセス一覧は sandbox 内で失敗する）。
+#   start は supervisor を 1 本起こし、command の起動・停止・後片付けはすべて supervisor が行う。別の Bash 呼び出しとの
+#   やり取りは state dir のファイルだけで行う（signal は届かない）: 止めるときは stop file を置き、結果は supervisor が
+#   result.json に atomic に書き、supervisor は動いている間 heartbeat に時刻を書き続ける。
+#   Bash 呼び出しが終わった後に supervisor が残れるかは環境で決まるので、start の待ち方を bg_job_call_scoped で分ける:
+#   - 残れる環境（PID namespace の無い sandbox・sandbox の外）: supervisor を切り離し、start は phase が running に
+#     なったら返る。結果は後の呼び出しの wait が受け取る（Bash 1 回の上限を超えるジョブも完走する）。
+#   - 残れない環境（Bash 呼び出しごとに PID namespace を切る sandbox）: namespace の pid 1 は呼び出しの終了で終わり、
+#     kernel が namespace 内の全プロセスを SIGKILL する。nohup・setsid・disown では逃げられないので、start が同じ呼び出しの
+#     中で結果まで待って返す（最大 BG_JOB_CALL_WAIT_SEC）。それまでに終わらないジョブは running を返した後に
+#     呼び出しごと消え、次の wait が heartbeat の途絶で status:"error" を返す（pass にはならない）。
+#   supervisor の生存確認（bg_job_supervisor_alive）も同じ区別に従う。pgrep 等のプロセス一覧は sandbox 内で失敗する。
 #   sandbox 内で動かすので、source するスクリプトを excludedCommands に入れない。認証付きの network I/O は、PR の push を
 #   切り離す pr-push（`pr-push start <log>` / `wait <log> --wait-sec <n>` / `stop <log>`。lock の待ち上限 1800 秒・workflow の
 #   待機の累計上限 3600 秒）だけが例外で持ち、source する他のスクリプトは持たない。
@@ -22,15 +29,21 @@
 #   start は bg_job_reset <cwd>（失敗時は JSON を出し済み）→ $BG_JOB_SPEC に {cwd, command, timeout_seconds} を
 #   bg_job_write_json で書く → bg_job_start の順に呼ぶ。spec の他のキーは hook が読むためのもので、この中では読まない。
 #
-# BG_JOB_POLL_SEC は状態確認の間隔（bats が短くするための上書き口）。
+# BG_JOB_POLL_SEC は状態確認と heartbeat の間隔、BG_JOB_STALE_SEC は heartbeat が途絶えたとみなす秒数、
+# BG_JOB_CALL_SCOPED（1 / 0）は bg_job_call_scoped の判定の上書き（どれも bats が環境を再現するための上書き口）。
 
 : "${BG_JOB_POLL_SEC:=1}"
+: "${BG_JOB_STALE_SEC:=15}"
+# 呼び出しをまたいで残れない環境で start が結果を待つ上限。Bash 1 回の上限（600 秒）から、前の実行の停止
+# （bg_job_reset の 30 秒）と起動・応答の分を引いた値
+BG_JOB_CALL_WAIT_SEC=520
 BG_JOB_STOP_GRACE_SEC=10
 # wait が返す log の末尾（dev-implementer への差し戻しに添える）。行数と文字数の両方で切る。
 BG_JOB_TAIL_LINES=60
 BG_JOB_TAIL_BYTES=4000
 
 _BG_JOB_CMD_PID=''
+_BG_JOB_BEAT_PID=''
 
 # ---------------------------------------------------------------------------
 # hook（source する側が上書きする。既定は何もしない）
@@ -60,6 +73,7 @@ bg_job_paths() {
     BG_JOB_STATE="$BG_JOB_STATE_DIR/state.json"
     BG_JOB_RESULT="$BG_JOB_STATE_DIR/result.json"
     BG_JOB_STOP_FILE="$BG_JOB_STATE_DIR/stop"
+    BG_JOB_HEARTBEAT="$BG_JOB_STATE_DIR/heartbeat"
     BG_JOB_LOG_DIR="$BG_JOB_STATE_DIR/logs"
     BG_JOB_CMD_LOG="$BG_JOB_LOG_DIR/command.log"
     BG_JOB_SUP_LOG="$BG_JOB_LOG_DIR/supervisor.log"
@@ -78,12 +92,42 @@ bg_job_read_field() { jq -r "$2 // empty" "$1" 2>/dev/null; }
 
 bg_job_emit() { jq -nc "$@"; }
 
-# 別 sandbox 実体のプロセスへの kill -0 は EPERM になる。EPERM は「存在する」と読む。
-bg_job_is_alive() {
-    local pid="$1" err
+# この Bash 呼び出しが終わると、ここから起こしたプロセスが残れない環境か。
+# 初期の PID namespace（inode は kernel の定数 4026531836）の外に居れば残れないとみなす。/proc の無い OS は残れる側。
+bg_job_call_scoped() {
+    case "${BG_JOB_CALL_SCOPED:-}" in
+        1) return 0 ;;
+        0) return 1 ;;
+    esac
+    local ns
+    ns="$(readlink /proc/self/ns/pid 2>/dev/null)" || return 1
+    [[ -n "$ns" && "$ns" != 'pid:[4026531836]' ]]
+}
+
+# state.json を書いた supervisor が動いているか。
+# 呼び出しごとに PID namespace が違う環境では、記録した pid は別の呼び出しから見えない（ESRCH）か、namespace ごとに
+# 小さい番号から振り直された無関係のプロセスを指す。namespace の inode も呼び出しをまたいで再利用されるので、pid を
+# 照合できる相手かは見分けられない。supervisor か自分のどちらかがその環境に居れば pid は見ず、heartbeat が
+# BG_JOB_STALE_SEC 以内に更新されているかだけで判定する（heartbeat は namespace をまたいで同じファイルに見える）。
+# どちらも PID namespace を共有する環境では pid を照合できるので kill -0 で即時に判定する。別 sandbox 実体の
+# プロセスへの kill -0 は EPERM になるので、EPERM は「存在する」と読む。
+bg_job_supervisor_alive() {
+    local pid beat err
+    if bg_job_call_scoped || [[ "$(bg_job_read_field "$BG_JOB_STATE" .call_scoped)" == true ]]; then
+        beat="$(cat "$BG_JOB_HEARTBEAT" 2>/dev/null)"
+        [[ "$beat" =~ ^[0-9]+$ ]] && (( $(_bg_job_now) - beat < BG_JOB_STALE_SEC ))
+        return
+    fi
+    pid="$(bg_job_read_field "$BG_JOB_STATE" .supervisor_pid)"
     [[ "$pid" =~ ^[0-9]+$ ]] || return 1
     err="$(kill -0 "$pid" 2>&1)" && return 0
     [[ "$err" == *"not permitted"* ]]
+}
+
+# 起動済みの実行がまだ終わっていないか（supervisor が動いていて phase が done でない）。
+bg_job_running() {
+    [[ -f "$BG_JOB_STATE" ]] || return 1
+    [[ "$(bg_job_read_field "$BG_JOB_STATE" .phase)" != done ]] && bg_job_supervisor_alive
 }
 
 _bg_job_log_tail() {
@@ -92,15 +136,16 @@ _bg_job_log_tail() {
 }
 
 # ---------------------------------------------------------------------------
-# supervise（detached。prepare → command の実行 → 停止 → 後片付け）
+# supervise（prepare → command の実行 → 停止 → 後片付け）
 # ---------------------------------------------------------------------------
 
 bg_job_set_phase() {
     local phase="$1"; shift
-    local prev='{}'
+    local prev='{}' scoped=false
     [[ -f "$BG_JOB_STATE" ]] && prev="$(cat "$BG_JOB_STATE")"
-    bg_job_write_json "$BG_JOB_STATE" --argjson prev "$prev" --arg phase "$phase" --argjson pid "$$" "$@" \
-        '$prev + {phase: $phase, supervisor_pid: $pid} + ($ARGS.named | del(.prev, .phase, .pid))'
+    bg_job_call_scoped && scoped=true
+    bg_job_write_json "$BG_JOB_STATE" --argjson prev "$prev" --arg phase "$phase" --argjson pid "$$" --argjson scoped "$scoped" "$@" \
+        '$prev + {phase: $phase, supervisor_pid: $pid, call_scoped: $scoped} + ($ARGS.named | del(.prev, .phase, .pid, .scoped))'
 }
 
 # prepare で command を起動せずに終える。start は phase に置いた status と reason を返す。
@@ -121,11 +166,28 @@ _bg_job_kill_command() {
     return 0
 }
 
+_bg_job_beat() { date +%s > "$BG_JOB_HEARTBEAT.tmp" && mv "$BG_JOB_HEARTBEAT.tmp" "$BG_JOB_HEARTBEAT"; }
+
+# supervisor が動いている間 heartbeat を更新し続ける子を起こす。supervisor が trap を走らせずに消えても、
+# 親（同じ呼び出しの中の自分の親なので pid は確かに見える）が居なくなった次の周回で止まり、heartbeat が途絶える。
+_bg_job_start_beat() {
+    _bg_job_beat
+    ( while kill -0 "$$" 2>/dev/null; do sleep "$BG_JOB_POLL_SEC"; _bg_job_beat; done ) </dev/null >/dev/null 2>&1 &
+    _BG_JOB_BEAT_PID=$!
+}
+
+_bg_job_stop_beat() {
+    [[ -n "$_BG_JOB_BEAT_PID" ]] || return 0
+    kill "$_BG_JOB_BEAT_PID" 2>/dev/null
+    _BG_JOB_BEAT_PID=''
+}
+
 _bg_job_on_exit() {
     _bg_job_kill_command
     bg_job_hook_cleanup
     [[ -f "$BG_JOB_RESULT" ]] || bg_job_write_json "$BG_JOB_RESULT" '{status: "stopped", exit_code: null}'
     bg_job_set_phase done
+    _bg_job_stop_beat
 }
 
 bg_job_supervise() {
@@ -133,6 +195,7 @@ bg_job_supervise() {
     trap 'exit 143' TERM
     trap 'exit 130' INT
     trap '' HUP  # 起動元の shell が終わっても生き続ける
+    _bg_job_start_beat  # 読み手が state.json を見た時点で heartbeat があるよう、phase を書く前に始める
 
     local cwd cmd timeout rc
     cwd="$(bg_job_read_field "$BG_JOB_SPEC" .cwd)"
@@ -176,6 +239,7 @@ bg_job_supervise() {
         '{status: $status, exit_code: $code} + (if $reason != "" then {reason: $reason} else {} end)'
     trap - EXIT
     bg_job_set_phase done
+    _bg_job_stop_beat
 }
 
 # ---------------------------------------------------------------------------
@@ -195,18 +259,15 @@ _bg_job_emit_result() {
 bg_job_stop() {
     local timeout_sec="${1:-60}"
     [[ -f "$BG_JOB_STATE" ]] || { bg_job_emit '{ok: true, stopped: false, was_running: false}'; return; }
-    local pid phase was_running=false
+    local pid was_running=false
     pid="$(bg_job_read_field "$BG_JOB_STATE" .supervisor_pid)"
-    phase="$(bg_job_read_field "$BG_JOB_STATE" .phase)"
-    if bg_job_is_alive "$pid" && [[ "$phase" != done ]]; then
+    if bg_job_running; then
         was_running=true
         date +%s > "$BG_JOB_STOP_FILE"
         local until=$(( $(_bg_job_now) + timeout_sec ))
-        while bg_job_is_alive "$pid" && [[ "$(bg_job_read_field "$BG_JOB_STATE" .phase)" != done ]] && (( $(_bg_job_now) < until )); do sleep "$BG_JOB_POLL_SEC"; done
+        while bg_job_running && (( $(_bg_job_now) < until )); do sleep "$BG_JOB_POLL_SEC"; done
     fi
-    local alive=false
-    bg_job_is_alive "$pid" && [[ "$(bg_job_read_field "$BG_JOB_STATE" .phase)" != done ]] && alive=true
-    if [[ "$alive" == true ]]; then
+    if bg_job_running; then
         bg_job_emit --argjson was "$was_running" --argjson extra "$(bg_job_hook_extra_fields)" --arg error "supervisor (pid $pid) が ${timeout_sec}s 以内に止まらなかった。stop file は残すので timeout_seconds で止まる" \
             '{ok: false, stopped: false, was_running: $was} + $extra + {error: $error}'
     else
@@ -220,11 +281,10 @@ bg_job_stop() {
 bg_job_wait() {
     local wait_sec="${1:-480}"
     [[ -f "$BG_JOB_SPEC" ]] || { bg_job_emit --arg error "$BG_JOB_NAME が起動していない（先に start する）" '{ok: false, status: "error", error: $error}'; return; }
-    local until=$(( $(_bg_job_now) + wait_sec )) pid
+    local until=$(( $(_bg_job_now) + wait_sec ))
     while :; do
         _bg_job_emit_result && return
-        pid="$(bg_job_read_field "$BG_JOB_STATE" .supervisor_pid)"
-        if [[ -n "$pid" ]] && ! bg_job_is_alive "$pid"; then
+        if [[ -f "$BG_JOB_STATE" ]] && ! bg_job_supervisor_alive; then
             _bg_job_emit_result && return
             bg_job_emit --arg error 'supervisor が結果を残さず終了した' --arg log_path "$BG_JOB_SUP_LOG" '{ok: false, status: "error", error: $error, log_path: $log_path}'
             return
@@ -257,9 +317,14 @@ bg_job_reset() {
 }
 
 # bg_job_reset と spec の書き込みの後に呼ぶ。supervisor を起こして phase が running になるまで待つ。
+# 呼び出しをまたいで残れない環境（bg_job_call_scoped）では running で返らず、結果が出るまで待って結果を返す。
 # bg_job_start [wait_sec=300]
 bg_job_start() {
-    local wait_sec="${1:-300}"
+    local wait_sec="${1:-300}" scoped=false
+    if bg_job_call_scoped; then
+        scoped=true
+        wait_sec="$BG_JOB_CALL_WAIT_SEC"
+    fi
     set -m
     nohup bash "$BG_JOB_SELF" supervise --state-dir "$BG_JOB_STATE_DIR" </dev/null >>"$BG_JOB_SUP_LOG" 2>&1 &
     local sup=$!
@@ -271,14 +336,15 @@ bg_job_start() {
     while :; do
         phase="$(bg_job_read_field "$BG_JOB_STATE" .phase)"
         case "$phase" in
-            running) bg_job_emit --arg log_path "$BG_JOB_CMD_LOG" '{ok: true, status: "running", log_path: $log_path}'; return ;;
+            running) [[ "$scoped" == true ]] || { bg_job_emit --arg log_path "$BG_JOB_CMD_LOG" '{ok: true, status: "running", log_path: $log_path}'; return; } ;;
             done) _bg_job_emit_result || bg_job_emit --arg error 'supervisor が結果を残さず終了した' '{ok: false, status: "error", error: $error}'; return ;;
             ''|preparing) ;;
             *) bg_job_emit --arg status "$phase" --arg reason "$(bg_job_read_field "$BG_JOB_STATE" .reason)" '{ok: false, status: $status, reason: $reason}'; return ;;
         esac
-        if ! bg_job_is_alive "$sup" && [[ "$(bg_job_read_field "$BG_JOB_STATE" .phase)" != done ]]; then
+        # $sup はこの呼び出しが起こした子なので、pid は確かに見える
+        if ! kill -0 "$sup" 2>/dev/null && [[ "$(bg_job_read_field "$BG_JOB_STATE" .phase)" != done ]]; then
             _bg_job_emit_result && return
-            bg_job_emit --arg error 'supervisor が起動直後に終了した' --arg log_path "$BG_JOB_SUP_LOG" '{ok: false, status: "error", error: $error, log_path: $log_path}'
+            bg_job_emit --arg error "supervisor が$([[ "$phase" == running ]] && echo '結果を残さず' || echo '起動直後に')終了した" --arg log_path "$BG_JOB_SUP_LOG" '{ok: false, status: "error", error: $error, log_path: $log_path}'
             return
         fi
         if (( $(_bg_job_now) >= until )); then bg_job_emit --arg log_path "$BG_JOB_CMD_LOG" '{ok: true, status: "running", log_path: $log_path}'; return; fi

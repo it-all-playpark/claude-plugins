@@ -102,15 +102,9 @@ emit_job_response() {
     esac
 }
 
-hook_running() {
-    [[ -f "$BG_JOB_STATE" ]] || return 1
-    bg_job_is_alive "$(bg_job_read_field "$BG_JOB_STATE" .supervisor_pid)" \
-        && [[ "$(bg_job_read_field "$BG_JOB_STATE" .phase)" != done ]]
-}
-
 cmd_start() {
     local list_rc ref sha remote_sha url log_dir reset cmd
-    if hook_running; then
+    if bg_job_running; then
         emit running null ""
         return
     fi
