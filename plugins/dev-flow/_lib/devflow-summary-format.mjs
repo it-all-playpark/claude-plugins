@@ -114,7 +114,8 @@ function conflictStoppedNote(conflictAutoresolve) {
 
 // final_test_red / validate_test_red の「現状」に全件実行で落ちたテストファイルの件数と名前（出力本文は載せない）を添える。
 // diff が原因だと示す証拠は、落ちたファイルを diff が触れたか base 再実行で base では同じように落ちなかったかだけ（issue #1248。
-// 単体再実行の green・evaluator の判断は使わない）。withBase: base 再実行の結果を持つ（Validate）
+// 単体再実行の green・evaluator の判断は使わない）。Validate も Final reconcile も base との突き合わせの件数を出す
+// （振り分けていない run は全件が「base で確かめていない」）
 const HOLD_FAILED_FILES_MAX = 20;
 function failedFilesNote(files) {
   const list = (Array.isArray(files) ? files : []).filter((f) => typeof f === 'string' && f !== '');
@@ -125,13 +126,12 @@ function failedFilesNote(files) {
 }
 const TEST_RED_UNKNOWN_ACTION = '原因未確定 — 人が確認して判断する';
 // 返り値: note は「現状」に添える文、evidence は証拠が 1 件以上あるか
-function testRedFacts(ev, withBase) {
+function testRedFacts(ev) {
   const [failed, touched, differs, same] = ['failedFiles', 'diffTouched', 'baseDiffers', 'baseSame'].map((k) => (Array.isArray(ev?.[k]) ? ev[k].length : 0));
   if (!failed) return { note: ' — 落ちたテストファイルを特定できなかった（failed_files が空）', evidence: false };
-  const parts = [ev.diffTouched ? `diff が触れた ${touched} 件` : 'diff との照合なし（一覧の取得失敗）', ...(withBase
-    ? [`base 再実行で base では同じように落ちなかった ${differs} 件`, `base でも同じように落ちた ${same} 件`, `base で確かめていない ${failed - touched - differs - same} 件`]
-    : ['base との比較はしていない'])];
-  return { note: ` — 落ちたテストファイル ${failed} 件: ${parts.join('・')}${failedFilesNote(ev.failedFiles)}`, evidence: touched + (withBase ? differs : 0) > 0 };
+  const parts = [ev.diffTouched ? `diff が触れた ${touched} 件` : 'diff との照合なし（一覧の取得失敗）',
+    `base 再実行で base では同じように落ちなかった ${differs} 件`, `base でも同じように落ちた ${same} 件`, `base で確かめていない ${failed - touched - differs - same} 件`];
+  return { note: ` — 落ちたテストファイル ${failed} 件: ${parts.join('・')}${failedFilesNote(ev.failedFiles)}`, evidence: touched + differs > 0 };
 }
 // HOLD を解く手段の区分（issue #1359）。HOLD の表の「区分」列に出し、人が PR を直すか・自分で確かめるか・dev-flow の不具合を
 // 疑うかを atlas を引かずに決められるようにする。holdReasonDisplay は HOLD_REASON_CODES の全 code にこのどれか 1 つを返す
@@ -191,9 +191,11 @@ function resolvedCell(v) {
  * @param {{files:string[], logs:string[]}|null|undefined} [opts.finalTestFlaky] - 全件実行（test#final / skip の run の
  *   Validate）が red で、落ちたファイルだけの単体再実行が green だった記録。red のテスト欄と Final reconcile 行に
  *   flake 候補であることを添える（表示専用。merge tier の開示行は disclosures 側で出る）
- * @param {{failedFiles:string[], diffTouched:string[]|null}|null|undefined} [opts.finalTestEvidence] - test#final が red のときの
- *   failed_files（normalizeTestPaths 済み）と、そのうち最終 diff が触れたファイル（null は diff 一覧の取得失敗）。final_test_red の
- *   「現状」に件数と先頭 20 件のファイル名を出し、diff が触れたファイルがあるときだけ対応列・結論行を「修正が必要」にする（表示専用）
+ * @param {{failedFiles:string[], diffTouched:string[]|null, baseDiffers?:string[], baseSame?:string[]}|null|undefined} [opts.finalTestEvidence] -
+ *   test#final が red のときの failed_files（normalizeTestPaths 済み）と、最終 diff・base 再実行との突き合わせ（形は validateTestEvidence と
+ *   同じ。diffTouched の null は diff 一覧の取得失敗、baseDiffers / baseSame の欠落は振り分けていない run）。final_test_red の「現状」に
+ *   件数と先頭 20 件のファイル名を出し、証拠（diff が触れた・base では同じように落ちなかった）があるときだけ対応列・結論行を
+ *   「修正が必要」にする。既存の失敗だけの red を green にした run（finalTestGreen:true）では baseSame の数をテスト欄の除外件数にする（表示専用）
  * @param {{failedFiles:string[], diffTouched:string[]|null, baseDiffers:string[], baseSame:string[]}|null|undefined} [opts.validateTestEvidence] -
  *   Validate の最後の全件実行の failed_files と triageBaseFailures の突き合わせ（baseDiffers: base 再実行で base では同じように
  *   落ちなかった、baseSame: base でも同じように落ちた）。validate_test_red に同じ規則で使い、baseDiffers も証拠に数える（表示専用）
@@ -213,7 +215,7 @@ function resolvedCell(v) {
  *   含まれる場合、あなたがやること に「マージ後: 対象 workflow の初回実行を確認する」を追加する
  *   （config danger class は .env / config/*.yml / secret 代入のみを判定し .github/workflows/*.yml に
  *   一致しないため、workflow 変更は別途 changedFiles から直接検出する。issue #662）
- * @param {string[]|null|undefined} [opts.baseFailingTests] - Validate が「diff と無関係で base でも同じように落ちる」と
+ * @param {string[]|null|undefined} [opts.baseFailingTests] - Validate・Final reconcile が「diff と無関係で base でも同じように落ちる」と
  *   判定し green 要件から外したテストファイル（_lib/base-failure-triage.mjs）。非空なら at-a-glance のテスト欄の
  *   green に除外件数を添え、参考セクションに「base でも失敗する既存の失敗」としてファイルを列挙する（表示専用）
  * @param {Array<{severity,topic,file,line,description,suggestion}>|null|undefined} [opts.humanFollowups] - pr-iterate が
@@ -516,7 +518,7 @@ export function buildDevflowSummaryBody({
   // ci_checks_failed（run は原因を確かめていない）は causeUnknownHold
   const testsurfUncleared = testsurfClearance.some(tc => !tc.cleared);
   const holdCodeAll = new Set((holdReasons || []).map((hr) => hr && hr.code));
-  const redFacts = { validate_test_red: testRedFacts(validateTestEvidence, true), final_test_red: testRedFacts(finalTestEvidence, false) };
+  const redFacts = { validate_test_red: testRedFacts(validateTestEvidence), final_test_red: testRedFacts(finalTestEvidence) };
   const redCodes = Object.keys(redFacts).filter((c) => holdCodeAll.has(c));
   const fixRequiredHold = ['mergeable_conflicting', 'iterate_non_lgtm', 'pr_closes_missing'].some((c) => holdCodeAll.has(c))
     || redCodes.some((c) => redFacts[c].evidence);
@@ -573,10 +575,13 @@ export function buildDevflowSummaryBody({
   const RED_CELL = flakeCandidate ? '❌ red（単体再実行は green — flake 候補）' : '❌ red';
   // 値が無いセルは中立の表示（「不明」「—」）にせず未検証と出す — 確かめていないものを確かめたように読ませない（issue #1359）
   const UNVERIFIED_CELL = '⚠️ 未検証';
+  const greenCell = (excluded) => (excluded > 0 ? `✅ green（base でも失敗する既存の失敗 ${excluded} 件を除く）` : '✅ green');
+  // test#final で落ち、Final reconcile が既存の失敗として green 要件から外した件数（Validate が外した分は最終 tree の結果に数えない）
+  const finalGreenCell = greenCell(Array.isArray(finalTestEvidence?.baseSame) ? finalTestEvidence.baseSame.length : 0);
   let testCell;
   let testUnverified = false;
   if (finalReconcile === 'reverified') {
-    testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? RED_CELL : UNVERIFIED_CELL;
+    testCell = finalTestGreen === true ? finalGreenCell : finalTestGreen === false ? RED_CELL : UNVERIFIED_CELL;
   } else if (finalReconcile === 'unavailable') {
     testCell = '⚠️ unavailable（最終 tree で再検証不能）・未検証';
     testUnverified = true;
@@ -586,7 +591,7 @@ export function buildDevflowSummaryBody({
   } else if (testGreen == null) {
     testCell = UNVERIFIED_CELL;
   } else if (testGreen === true) {
-    testCell = baseFailing.length > 0 ? `✅ green（base でも失敗する既存の失敗 ${baseFailing.length} 件を除く）` : '✅ green';
+    testCell = greenCell(baseFailing.length);
   } else {
     testCell = RED_CELL;
   }
@@ -1273,7 +1278,7 @@ export function buildDevflowSummaryBody({
   }
   referenceLines.push(...conflictResolvedLines(conflictAutoresolve));
   if (finalReconcile != null && finalReconcile !== 'skipped') {
-    const t = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? RED_CELL : '不明';
+    const t = finalTestGreen === true ? finalGreenCell : finalTestGreen === false ? RED_CELL : '不明';
     referenceLines.push(`- Final reconcile (pr-iterate fix 後の最終 tree 再検証): ${finalReconcile} — final test: ${t}` + (finalAcReconcile != null ? `, final AC: ${finalAcReconcile}` : ''));
     if (finalAcReconcile === 'reverified') {
       referenceLines.push('- ✅ AC は最終 PR tree で再検証済み（Final AC reconcile — AC テーブルは final snapshot）');

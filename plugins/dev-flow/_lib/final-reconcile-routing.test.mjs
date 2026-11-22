@@ -35,6 +35,8 @@
 //   (p) failed_files が空・欠落・安全に渡せないパスの red → 再実行せず final_test_red で HOLD（issue #865）
 //   (q) test#final の落ちたファイルと changed-files-final の突き合わせが final_test_red の行の件数と対応列に届く
 //       （diff が触れた → 修正が必要 / 触れない・取れない → 原因未確定。issue #1248）
+//   (r)〜(u) test#final の red を Validate と同じ規則で振り分ける（issue #1443）: 既知の既存の失敗だけ → green 扱い（r）/
+//       最終 diff が触れたら既知でも HOLD（s）/ 未知のファイルは base 再実行で振り分け（t）/ 単体再実行は残ったファイルだけ（u）
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -42,6 +44,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { makeRecordingSandbox, devFlowArgs, assertNoCrash, runWorkflowCapture, devFlowResponder, TEST_COMMANDS_FILE } from './test-helpers/vm-sandbox.mjs';
+import { baseRerunPrompt } from './base-failure-triage.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
@@ -371,8 +374,11 @@ const FLAKY_FIRST = {
 
 const FINAL_RED_CUR = 'fix 後の最終 tree でテスト失敗';
 const RED_UNKNOWN = '原因未確定 — 人が確認して判断する';
-// FLAKY_FIRST の 1 ファイルが落ちた final_test_red の行の「現状」（touched: 最終 diff が触れた件数）
-const finalRedNote = (touched) => `${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff が触れた ${touched} 件・base との比較はしていない`
+// 落ちたファイルと base の突き合わせの件数（differs: base では同じように落ちなかった / same: base でも同じように落ちた / unchecked: base で確かめていない）
+const baseCounts = ({ differs = 0, same = 0, unchecked = 0 }) => `base 再実行で base では同じように落ちなかった ${differs} 件・base でも同じように落ちた ${same} 件・base で確かめていない ${unchecked} 件`;
+// FLAKY_FIRST の 1 ファイルが落ちた final_test_red の行の「現状」（touched: 最終 diff が触れた件数）。base-rerun#final の既定応答は
+// 結果なしなので、diff が触れていなければ base で確かめていない 1 件になる
+const finalRedNote = (touched, counts = { unchecked: 1 - touched }) => `${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff が触れた ${touched} 件・${baseCounts(counts)}`
   + `（落ちたファイル: \`${FLAKY_FIRST.failed_files[0]}\`）`;
 
 function summaryBodyOf(calls) {
@@ -482,7 +488,7 @@ test("[final-reconcile] (p) failed_files が空（ビルド失敗・結び付か
   const currents = {
     empty: `| ${FINAL_RED_CUR} — 落ちたテストファイルを特定できなかった（failed_files が空） | ${RED_UNKNOWN} |`,
     missing: `| ${FINAL_RED_CUR} — 落ちたテストファイルを特定できなかった（failed_files が空） | ${RED_UNKNOWN} |`,
-    unsafe: `| ${FINAL_RED_CUR} — 落ちたテストファイル 2 件: diff が触れた 0 件・base との比較はしていない（落ちたファイル: \`a.bats\`, \`b c.bats\`） | ${RED_UNKNOWN} |`,
+    unsafe: `| ${FINAL_RED_CUR} — 落ちたテストファイル 2 件: diff が触れた 0 件・${baseCounts({ unchecked: 2 })}（落ちたファイル: \`a.bats\`, \`b c.bats\`） | ${RED_UNKNOWN} |`,
   };
   for (const [name, failed_files] of Object.entries({ empty: [], missing: undefined, unsafe: ['./a.bats', 'b c.bats', 'a.bats'] })) {
     const first = { tests: 'failed', green: false, summary: 'workspace build failed', ...(failed_files ? { failed_files } : {}) };
@@ -490,6 +496,8 @@ test("[final-reconcile] (p) failed_files が空（ビルド失敗・結び付か
     const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
     assertNoCrash(error, `p-${name}`);
     assert.ok(!calls.some((c) => c.label === 'test#final-rerun'), `(p-${name}) test#final-rerun を呼んではならない`);
+    // failed_files が空の red は振り分けも base 再実行もしない（issue #1443 AC-4）
+    if (name !== 'unsafe') assert.ok(!calls.some((c) => c.label === 'base-rerun#final'), `(p-${name}) base-rerun#final を呼んではならない`);
     assert.equal(result?.final_test_green, false);
     assert.equal(result?.final_test_flaky, null);
     assert.equal(result?.merge_tier, 'HOLD');
@@ -510,7 +518,7 @@ test('[final-reconcile] (q) 証拠あり / なし: 最終 diff が落ちたテ�
     untouched: { changed: { files: ['src/x.ts'] }, row: `| ${finalRedNote(0)} | ${RED_UNKNOWN} |`, conclusion: '原因未確定の失敗があり、人の確認が必要です' },
     noDiff: {
       changed: null,
-      row: `| ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff との照合なし（一覧の取得失敗）・base との比較はしていない（落ちたファイル: \`${FLAKY_FIRST.failed_files[0]}\`） | ${RED_UNKNOWN} |`,
+      row: `| ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff との照合なし（一覧の取得失敗）・${baseCounts({ unchecked: 1 })}（落ちたファイル: \`${FLAKY_FIRST.failed_files[0]}\`） | ${RED_UNKNOWN} |`,
       conclusion: '原因未確定の失敗があり、人の確認が必要です',
     },
   };
@@ -530,5 +538,141 @@ test('[final-reconcile] (q) 証拠あり / なし: 最終 diff が落ちたテ�
     assert.ok(body.split('\n').find((l) => l.startsWith('**結論: ')).includes(`。${conclusion}`), `(q-${name}) ${body}`);
     assert.equal(result?.merge_tier, 'HOLD', `(q-${name})`);
     assert.equal((result?.merge_tier_hold_reasons ?? []).map((r) => `${r.code}:${r.kind}`).join(','), 'final_test_red:human_judgment', `(q-${name})`);
+    // 最終 diff の一覧を取れない run は振り分けも base 再実行もしない（issue #1443 AC-4）。diff が触れたファイルも base で再実行しない
+    if (name !== 'untouched') assert.ok(!calls.some((c) => c.label === 'base-rerun#final'), `(q-${name}) base-rerun#final を呼んではならない`);
   }
+});
+
+// ============================================================
+// (r)〜(u) test#final の red を Validate と同じ規則で「diff が原因でありうる失敗」と「base でも失敗する既存の失敗」に分ける
+//          （issue #1443）。既存の失敗だけの red は final_test_red にせず、1 件でも残れば今までどおり HOLD する
+// ============================================================
+
+const ENV_FILE = 'plugins/x/scripts/a.bats';
+const CODE_FILE = 'plugins/y/scripts/b.bats';
+const redOf = (files) => ({ tests: 'failed', green: false, summary: `${files.join(', ')} が red`, failed_files: files });
+const baseResult = (file, over = {}) => ({ file, ran: true, base_failed: true, same_failure: true, summary: 'same', ...over });
+// Validate が ENV_FILE を base でも失敗する既存の失敗（baseFailing.env）にした run
+const VALIDATE_KNOWN_ENV = {
+  'test#1': redOf([ENV_FILE]),
+  'validate-diff#1': { ok: true, lines: ['src/x.ts'] },
+  'base-rerun#1': { results: [baseResult(ENV_FILE)] },
+};
+const holdCodes = (result) => (result?.merge_tier_hold_reasons ?? []).map((r) => `${r.code}:${r.kind}`);
+const labelCount = (calls, label) => calls.filter((c) => c.label === label).length;
+const glanceTestCell = (body) => body.split('\n').find((l) => l.startsWith('| ') && /\*\*(HOLD|REVIEW)\*\*/.test(l)).split('|').slice(1, -1).map((x) => x.trim())[2];
+const GREEN_EXCLUDING_1 = '✅ green（base でも失敗する既存の失敗 1 件を除く）';
+
+test('[final-reconcile] (r) test#final の red が Validate の既知の既存の失敗だけで最終 diff が触れていない → final_test_green true・final_test_red なし・base 再実行も単体再実行も起動しない', async () => {
+  const { ctx, calls } = makeSandbox({
+    fixesApplied: 1,
+    overrides: { ...VALIDATE_KNOWN_ENV, 'test#final': redOf([ENV_FILE]), 'changed-files-final': { files: ['src/x.ts'] } },
+  });
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
+  assertNoCrash(error, 'r');
+  assert.equal(result?.final_reconcile, 'reverified');
+  assert.equal(result?.final_test_green, true, `(r) ${JSON.stringify(result?.merge_tier_hold_reasons)}`);
+  assert.ok(!holdCodes(result).some((c) => c.startsWith('final_test_red')), `(r) ${JSON.stringify(holdCodes(result))}`);
+  assert.equal(labelCount(calls, 'base-rerun#final'), 0, '(r) 既知の既存の失敗は base で再実行しない');
+  assert.equal(labelCount(calls, 'test#final-rerun'), 0, '(r) 単体再実行を起動しない');
+  assert.equal(result?.final_test_flaky, null);
+  const body = summaryBodyOf(calls);
+  assert.equal(glanceTestCell(body), GREEN_EXCLUDING_1);
+  assert.ok(body.includes(`- base でも失敗する既存の失敗 1 件（diff と無関係のため green 要件から除外）: \`${ENV_FILE}\``), body);
+});
+
+test('[final-reconcile] (s) 落ちたファイルを最終 diff が触れている（ファイル自身 / テスト対象のソース）→ 既知の既存の失敗でも final_test_red（human_judgment）で HOLD', async () => {
+  for (const [name, touched] of Object.entries({ self: ENV_FILE, subject: 'plugins/x/scripts/a.sh' })) {
+    const { ctx, calls } = makeSandbox({
+      fixesApplied: 1,
+      overrides: { ...VALIDATE_KNOWN_ENV, 'test#final': redOf([ENV_FILE]), 'changed-files-final': { files: ['src/x.ts', touched] } },
+    });
+    const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
+    assertNoCrash(error, `s-${name}`);
+    assert.equal(result?.final_test_green, false, `(s-${name})`);
+    assert.equal(result?.merge_tier, 'HOLD', `(s-${name})`);
+    assert.ok(holdCodes(result).includes('final_test_red:human_judgment'), `(s-${name}) ${JSON.stringify(holdCodes(result))}`);
+    assert.equal(labelCount(calls, 'base-rerun#final'), 0, `(s-${name}) 最終 diff が触れたファイルは base で再実行しない`);
+    const body = summaryBodyOf(calls);
+    assert.ok(body.includes(`落ちたテストファイル 1 件: diff が触れた 1 件・${baseCounts({})}（落ちたファイル: \`${ENV_FILE}\`） | 修正が必要 |`), `(s-${name}) ${body}`);
+    // 最終 diff が触れたファイルは既存の失敗の一覧から外す
+    assert.ok(!body.includes('- base でも失敗する既存の失敗'), `(s-${name}) ${body}`);
+  }
+});
+
+test('[final-reconcile] (t) 最終 diff が触れておらず既知でもないファイルは base の tree で 1 回再実行し、env になったものだけを既存の失敗にする', async () => {
+  // base でも同じように落ちた → HOLD にしない。prompt は Validate の base 再実行と同じ文面
+  {
+    const { ctx, calls } = makeSandbox({
+      fixesApplied: 1,
+      overrides: { 'test#final': redOf([ENV_FILE]), 'changed-files-final': { files: ['src/x.ts'] }, 'base-rerun#final': { results: [baseResult(ENV_FILE)] } },
+    });
+    const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
+    assertNoCrash(error, 't-env');
+    const reruns = calls.filter((c) => c.label === 'base-rerun#final');
+    assert.equal(reruns.length, 1, '(t-env) base 再実行は 1 回');
+    assert.equal(reruns[0].agentType, 'dev-flow:dev-runner-haiku');
+    assert.ok(reruns[0].prompt.startsWith(baseRerunPrompt('/tmp/wt', 'main', [ENV_FILE])), reruns[0].prompt);
+    assert.ok(calls.findIndex((c) => c.label === 'changed-files-final') < calls.findIndex((c) => c.label === 'base-rerun#final'), '(t-env) 最終 diff の一覧を先に取る');
+    assert.equal(result?.final_test_green, true, `(t-env) ${JSON.stringify(result?.merge_tier_hold_reasons)}`);
+    assert.ok(!holdCodes(result).some((c) => c.startsWith('final_test_red')), `(t-env) ${JSON.stringify(holdCodes(result))}`);
+    assert.equal(labelCount(calls, 'test#final-rerun'), 0, '(t-env) 単体再実行を起動しない');
+    const body = summaryBodyOf(calls);
+    assert.equal(glanceTestCell(body), GREEN_EXCLUDING_1);
+    assert.ok(body.includes(`- base でも失敗する既存の失敗 1 件（diff と無関係のため green 要件から除外）: \`${ENV_FILE}\``), body);
+  }
+  // base では通った・落ち方が違う・実行できない・結果を取れない → final_test_red で HOLD
+  const variants = {
+    basePassed: { response: { results: [baseResult(ENV_FILE, { base_failed: false, same_failure: false })] }, counts: { differs: 1 }, action: '修正が必要' },
+    differentFailure: { response: { results: [baseResult(ENV_FILE, { same_failure: false })] }, counts: { differs: 1 }, action: '修正が必要' },
+    notRun: { response: { results: [baseResult(ENV_FILE, { ran: false })] }, counts: { unchecked: 1 }, action: RED_UNKNOWN },
+    missing: { response: { results: [] }, counts: { unchecked: 1 }, action: RED_UNKNOWN },
+    null: { response: null, counts: { unchecked: 1 }, action: RED_UNKNOWN },
+    throw: { response: () => { throw new Error('EPERM'); }, counts: { unchecked: 1 }, action: RED_UNKNOWN },
+  };
+  for (const [name, { response, counts, action }] of Object.entries(variants)) {
+    const { ctx, calls } = makeSandbox({
+      fixesApplied: 1,
+      overrides: { 'test#final': redOf([ENV_FILE]), 'changed-files-final': { files: ['src/x.ts'] }, 'base-rerun#final': response },
+    });
+    const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
+    assertNoCrash(error, `t-${name}`);
+    assert.equal(labelCount(calls, 'base-rerun#final'), 1, `(t-${name}) base 再実行は 1 回`);
+    assert.equal(result?.final_test_green, false, `(t-${name})`);
+    assert.equal(result?.merge_tier, 'HOLD', `(t-${name})`);
+    assert.equal(holdCodes(result).join(','), 'final_test_red:human_judgment', `(t-${name})`);
+    const body = summaryBodyOf(calls);
+    assert.ok(body.includes(`落ちたテストファイル 1 件: diff が触れた 0 件・${baseCounts(counts)}（落ちたファイル: \`${ENV_FILE}\`） | ${action} |`), `(t-${name}) ${body}`);
+    assert.ok(!body.includes('base との比較はしていない'), `(t-${name}) ${body}`);
+  }
+});
+
+test('[final-reconcile] (u) 単体再実行（test#final-rerun）は振り分け後に残ったファイルだけを対象にし、green でも HOLD は外さない', async () => {
+  const { ctx, calls } = makeSandbox({
+    fixesApplied: 1,
+    overrides: {
+      ...VALIDATE_KNOWN_ENV,
+      'test#final': redOf([ENV_FILE, CODE_FILE, 'plugins/z/c.bats']),
+      'changed-files-final': { files: ['src/x.ts'] },
+      'base-rerun#final': { results: [baseResult(CODE_FILE, { base_failed: false, same_failure: false }), baseResult('plugins/z/c.bats')] },
+      'test#final-rerun': { tests: 'passed', green: true, summary: 'passed' },
+    },
+  });
+  const { result, error } = await runWorkflowCapture(devFlowSrc, ctx);
+  assertNoCrash(error, 'u');
+  // 既知の既存の失敗（ENV_FILE）は base で再実行せず、未知の 2 件だけを渡す
+  const baseReruns = calls.filter((c) => c.label === 'base-rerun#final');
+  assert.equal(baseReruns.length, 1);
+  assert.ok(baseReruns[0].prompt.startsWith(baseRerunPrompt('/tmp/wt', 'main', [CODE_FILE, 'plugins/z/c.bats'])), baseReruns[0].prompt);
+  const reruns = calls.filter((c) => c.label === 'test#final-rerun');
+  assert.equal(reruns.length, 1, '(u) 単体再実行は 1 回');
+  assert.ok(reruns[0].prompt.split('\n').at(-1).endsWith(` --commands ${TEST_COMMANDS_FILE} --files ${CODE_FILE}`), reruns[0].prompt.split('\n').at(-1));
+  assert.ok(calls.findIndex((c) => c.label === 'base-rerun#final') < calls.findIndex((c) => c.label === 'test#final-rerun'), '(u) 振り分けの後に単体再実行');
+  assert.equal(result?.final_test_green, false, '(u) 単体再実行の green で final_test_green を true にしない');
+  assert.deepEqual(JSON.parse(JSON.stringify(result?.final_test_flaky?.files)), [CODE_FILE]);
+  assert.equal(result?.merge_tier, 'HOLD');
+  assert.equal(holdCodes(result).join(','), 'final_test_red:human_judgment');
+  const body = summaryBodyOf(calls);
+  assert.ok(body.includes(`落ちたテストファイル 3 件: diff が触れた 0 件・${baseCounts({ differs: 1, same: 2 })}`), body);
+  assert.ok(body.includes(`- base でも失敗する既存の失敗 2 件（diff と無関係のため green 要件から除外）: \`${ENV_FILE}\`, \`plugins/z/c.bats\``), body);
 });

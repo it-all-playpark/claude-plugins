@@ -9,6 +9,7 @@
 //   2. 残りは base tree で同じファイルだけを再実行し、base でも同じテストが落ちたものだけを ENV にする。
 //      再実行できなかった・base では通った・落ち方が違う、はすべて green-fix の対象に残す（ENV 判定の材料が
 //      欠けたら green 要件を緩めない — 誤って ENV に倒すと diff 起因の red が green 扱いで PR まで流れる）。
+// Final reconcile の test#final の red も同じ規則で分ける（diff は最終 diff。非 ENV が 1 件でも残れば final_test_red で HOLD）。
 //
 // INLINE COPY POLICY: workflow から参照される最上位宣言だけが tools/sync-inlines.mjs --write で inline 生成される。
 // 直接 workflow 側を編集しない。一致は _lib/workflow-inlines.sync.test.mjs が検証する。
@@ -99,4 +100,39 @@ export function classifyBaseRerun(rerunFiles, results) {
     else code.push(f);
   }
   return { env, code, ran };
+}
+
+// base-rerun#<iter> / base-rerun#final の出力: 失敗したテストファイルを base tree で同じように再実行した結果（ファイルごと）。
+export const BASE_RERUN = {
+  type: 'object', required: ['results'],
+  properties: {
+    results: {
+      type: 'array',
+      items: {
+        type: 'object', required: ['file', 'ran', 'base_failed', 'same_failure'],
+        properties: {
+          file: { type: 'string' }, ran: { type: 'boolean' }, base_failed: { type: 'boolean' },
+          same_failure: { type: 'boolean' }, summary: { type: 'string' },
+        },
+      },
+    },
+    epoch: { type: 'number' },
+  },
+};
+
+// 失敗したテストファイルを base tree で同じように再実行させる prompt（worktree は変更させない）。Validate（base-rerun#<iter>）と
+// Final reconcile（base-rerun#final）が同じ文面を使う（工程ごとに規則を書き分けない）。
+export function baseRerunPrompt(wt, base, files) {
+  return `テストで失敗した次のテストファイルが、base（origin/${base}）の tree でも同じように失敗するかを確かめよ。`
+    + `worktree のファイルは変更・stage・削除するな（修正もしない）。\n`
+    + `対象（repo 相対パス）: ${JSON.stringify(files)}\n`
+    + `手順:\n`
+    + `1. \`mktemp -d "\${TMPDIR:-/tmp}/devflow-base-XXXXXX"\` を実行し、出力パスを D とする（worktree の外に置く）。\n`
+    + `2. \`git -C ${wt} archive --format=tar -o <D>.tar origin/${base}\` を bare 単文で実行し、\`tar -xf <D>.tar -C <D>\` で base tree を D に展開せよ。`
+    + `${wt}/node_modules があれば \`ln -s ${wt}/node_modules <D>/node_modules\` で共有せよ。\n`
+    + `3. 対象ファイルごとに、そのファイルだけを実行するコマンド（*.bats は bats、*.test.mjs / *.test.ts は repo の test runner 等、repo のテスト規約に合わせる）を決め、`
+    + `worktree（${wt}）と D で同じコマンドを 1 回ずつ実行し、それぞれで失敗したテスト名を記録せよ。\n`
+    + `4. 対象ファイルごとに {"file": <対象のパス verbatim>, "ran": <worktree と D の両方でテストを実行できたか>, "base_failed": <D で 1 件以上失敗したか>, `
+    + `"same_failure": <worktree で失敗したテスト名がすべて D でも失敗したか>, "summary": <失敗したテスト名の要約>} を results に入れて返せ。`
+    + `起動失敗・D に当該ファイルが無い・テスト名を比べられない場合は ran:false または same_failure:false とせよ（判断に迷う場合は same_failure:false）。\n`;
 }

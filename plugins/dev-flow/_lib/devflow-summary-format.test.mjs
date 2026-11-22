@@ -2430,23 +2430,33 @@ test('issue #1248 AC-1 / AC-4: validate_test_red の現状に落ちたファイ�
   assert.ok(noDiff.endsWith(`| ${RED_UNKNOWN} |`), noDiff);
 });
 
-test('issue #1248 AC-2 / AC-4: final_test_red の現状に落ちたファイル数と diff が触れた数が出て base とは比べていないと書き、diff が触れたファイルがあるときだけ「修正が必要」', () => {
+test('issue #1248 AC-2 / AC-4・#1443 AC-6: final_test_red の現状に落ちたファイル数・diff が触れた数・base と比べた数が出て、証拠（diff が触れた・base では同じように落ちなかった）があるときだけ「修正が必要」', () => {
   const row = (finalTestEvidence, extra = {}) => holdRow1248(holdBody1248(['final_test_red'], { finalTestEvidence, ...extra }), 'final_test_red');
   // ファイル名は mdCell で escape（| が表の列を壊さない）
   assert.equal(
-    row({ failedFiles: ['tests/a.bats', 'x|y.test.mjs'], diffTouched: ['tests/a.bats'] }),
-    `| ${FINAL_RED_REASON} | PR を直す | ${FINAL_RED_CUR} — 落ちたテストファイル 2 件: diff が触れた 1 件・base との比較はしていない（落ちたファイル: \`tests/a.bats\`, \`x\\|y.test.mjs\`） | 修正が必要 |`,
+    row({ failedFiles: ['tests/a.bats', 'x|y.test.mjs'], diffTouched: ['tests/a.bats'], baseDiffers: [], baseSame: ['x|y.test.mjs'] }),
+    `| ${FINAL_RED_REASON} | PR を直す | ${FINAL_RED_CUR} — 落ちたテストファイル 2 件: diff が触れた 1 件・base 再実行で base では同じように落ちなかった 0 件・`
+      + `base でも同じように落ちた 1 件・base で確かめていない 0 件（落ちたファイル: \`tests/a.bats\`, \`x\\|y.test.mjs\`） | 修正が必要 |`,
   );
+  // base 再実行で base では同じように落ちなかったファイルも証拠に数える（Validate と同じ規則）
   assert.equal(
-    row({ failedFiles: ['tests/a.bats'], diffTouched: [] }),
-    `| ${FINAL_RED_REASON} | 人が確かめる | ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff が触れた 0 件・base との比較はしていない（落ちたファイル: \`tests/a.bats\`） | ${RED_UNKNOWN} |`,
+    row({ failedFiles: ['tests/a.bats', 'tests/b.bats'], diffTouched: [], baseDiffers: ['tests/a.bats'], baseSame: [] }),
+    `| ${FINAL_RED_REASON} | PR を直す | ${FINAL_RED_CUR} — 落ちたテストファイル 2 件: diff が触れた 0 件・base 再実行で base では同じように落ちなかった 1 件・`
+      + `base でも同じように落ちた 0 件・base で確かめていない 1 件（落ちたファイル: \`tests/a.bats\`, \`tests/b.bats\`） | 修正が必要 |`,
   );
+  // base の結果を取れなかった（確かめていない）だけの red は原因未確定
+  assert.equal(
+    row({ failedFiles: ['tests/a.bats'], diffTouched: [], baseDiffers: [], baseSame: [] }),
+    `| ${FINAL_RED_REASON} | 人が確かめる | ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff が触れた 0 件・base 再実行で base では同じように落ちなかった 0 件・`
+      + `base でも同じように落ちた 0 件・base で確かめていない 1 件（落ちたファイル: \`tests/a.bats\`） | ${RED_UNKNOWN} |`,
+  );
+  // 最終 diff の一覧が無く振り分けていない run は、全件を base で確かめていないと出す
   assert.equal(
     row({ failedFiles: ['tests/a.bats'], diffTouched: null }),
-    `| ${FINAL_RED_REASON} | 人が確かめる | ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff との照合なし（一覧の取得失敗）・base との比較はしていない（落ちたファイル: \`tests/a.bats\`） | ${RED_UNKNOWN} |`,
+    `| ${FINAL_RED_REASON} | 人が確かめる | ${FINAL_RED_CUR} — 落ちたテストファイル 1 件: diff との照合なし（一覧の取得失敗）・base 再実行で base では同じように落ちなかった 0 件・`
+      + `base でも同じように落ちた 0 件・base で確かめていない 1 件（落ちたファイル: \`tests/a.bats\`） | ${RED_UNKNOWN} |`,
   );
-  // test#final は base と比べないので、baseDiffers が来ても証拠にしない。Validate の入力も使わない
-  assert.ok(row({ failedFiles: ['tests/a.bats'], diffTouched: [], baseDiffers: ['tests/a.bats'] }).endsWith(`| ${RED_UNKNOWN} |`));
+  // Validate の入力は使わない
   assert.ok(row(null, { validateTestEvidence: { failedFiles: ['v.bats'], diffTouched: ['v.bats'], baseDiffers: [], baseSame: [] } }).endsWith(`| ${FINAL_RED_CUR}${NOT_IDENTIFIED} | ${RED_UNKNOWN} |`));
 });
 
@@ -2946,6 +2956,22 @@ test('baseFailingTests: テスト欄の green に除外件数を添え、参考�
   assert.equal(glanceCells(body)[2], '✅ green（base でも失敗する既存の失敗 2 件を除く）');
   const ref = sectionOf(body, '**参考（可視化のみ — merge tier 判定に不使用）**:');
   assert.ok(ref != null && ref.includes('- base でも失敗する既存の失敗 2 件（diff と無関係のため green 要件から除外）: `p/a.bats`, `p/b.bats`'), `参考セクション: ${ref}`);
+});
+
+test('issue #1443 AC-6: Final reconcile が既存の失敗だけの red を green にした run は、テスト欄に test#final で除外した件数を添え、参考の一覧に Final reconcile の分も載る', () => {
+  const final = { finalReconcile: 'reverified', finalTestGreen: true };
+  // baseFailingTests は Validate と Final reconcile の和。テスト欄の件数は test#final で落ちて除外した分（baseSame）
+  const body = buildDevflowSummaryBody({
+    ...BASE_INPUT, ...final, baseFailingTests: ['p/a.bats', 'p/b.bats', 'p/c.bats'],
+    finalTestEvidence: { failedFiles: ['p/b.bats', 'p/c.bats'], diffTouched: [], baseDiffers: [], baseSame: ['p/b.bats', 'p/c.bats'] },
+  });
+  assert.equal(glanceCells(body)[2], '✅ green（base でも失敗する既存の失敗 2 件を除く）');
+  const ref = sectionOf(body, '**参考（可視化のみ — merge tier 判定に不使用）**:');
+  assert.ok(ref.includes('- base でも失敗する既存の失敗 3 件（diff と無関係のため green 要件から除外）: `p/a.bats`, `p/b.bats`, `p/c.bats`'), `参考セクション: ${ref}`);
+  assert.ok(ref.includes('reverified — final test: ✅ green（base でも失敗する既存の失敗 2 件を除く）'), `参考セクション: ${ref}`);
+  // test#final が何も落とさず green だった run は、Validate が除外したファイルがあっても件数を添えない
+  const plain = buildDevflowSummaryBody({ ...BASE_INPUT, ...final, baseFailingTests: ['p/a.bats'] });
+  assert.equal(glanceCells(plain)[2], '✅ green');
 });
 
 test('baseFailingTests: 空・未指定ならテスト欄も参考セクションも変わらない', () => {

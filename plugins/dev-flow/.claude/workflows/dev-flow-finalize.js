@@ -1233,6 +1233,7 @@ function parseTreeDiffStat(lines) {
 }
 // ==== END inline: _lib/tree-diff-stat.mjs ====
 // ==== BEGIN inline: _lib/base-failure-triage.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
+const BASE_FAILING_LABEL = 'base でも失敗する既存の失敗';
 function normalizeTestPaths(list) {
   if (!Array.isArray(list)) return [];
   const out = [];
@@ -1285,6 +1286,58 @@ function planBaseRerun({ failedFiles, diffFiles, knownEnv = [], knownBaseRan = [
     else rerun.push(f);
   }
   return { touched, env, code, rerun };
+}
+
+function classifyBaseRerun(rerunFiles, results) {
+  const files = normalizeTestPaths(rerunFiles);
+  const byFile = new Map();
+  for (const r of (Array.isArray(results) ? results : [])) {
+    if (!r || typeof r !== 'object' || typeof r.file !== 'string') continue;
+    const key = normalizeTestPaths([r.file])[0];
+    if (key && !byFile.has(key)) byFile.set(key, r);
+  }
+  const env = [];
+  const code = [];
+  const ran = [];
+  for (const f of files) {
+    const r = byFile.get(f);
+    if (r && r.ran === true) ran.push(f);
+    if (r && r.ran === true && r.base_failed === true && r.same_failure === true) env.push(f);
+    else code.push(f);
+  }
+  return { env, code, ran };
+}
+
+const BASE_RERUN = {
+  type: 'object', required: ['results'],
+  properties: {
+    results: {
+      type: 'array',
+      items: {
+        type: 'object', required: ['file', 'ran', 'base_failed', 'same_failure'],
+        properties: {
+          file: { type: 'string' }, ran: { type: 'boolean' }, base_failed: { type: 'boolean' },
+          same_failure: { type: 'boolean' }, summary: { type: 'string' },
+        },
+      },
+    },
+    epoch: { type: 'number' },
+  },
+};
+
+function baseRerunPrompt(wt, base, files) {
+  return `テストで失敗した次のテストファイルが、base（origin/${base}）の tree でも同じように失敗するかを確かめよ。`
+    + `worktree のファイルは変更・stage・削除するな（修正もしない）。\n`
+    + `対象（repo 相対パス）: ${JSON.stringify(files)}\n`
+    + `手順:\n`
+    + `1. \`mktemp -d "\${TMPDIR:-/tmp}/devflow-base-XXXXXX"\` を実行し、出力パスを D とする（worktree の外に置く）。\n`
+    + `2. \`git -C ${wt} archive --format=tar -o <D>.tar origin/${base}\` を bare 単文で実行し、\`tar -xf <D>.tar -C <D>\` で base tree を D に展開せよ。`
+    + `${wt}/node_modules があれば \`ln -s ${wt}/node_modules <D>/node_modules\` で共有せよ。\n`
+    + `3. 対象ファイルごとに、そのファイルだけを実行するコマンド（*.bats は bats、*.test.mjs / *.test.ts は repo の test runner 等、repo のテスト規約に合わせる）を決め、`
+    + `worktree（${wt}）と D で同じコマンドを 1 回ずつ実行し、それぞれで失敗したテスト名を記録せよ。\n`
+    + `4. 対象ファイルごとに {"file": <対象のパス verbatim>, "ran": <worktree と D の両方でテストを実行できたか>, "base_failed": <D で 1 件以上失敗したか>, `
+    + `"same_failure": <worktree で失敗したテスト名がすべて D でも失敗したか>, "summary": <失敗したテスト名の要約>} を results に入れて返せ。`
+    + `起動失敗・D に当該ファイルが無い・テスト名を比べられない場合は ran:false または same_failure:false とせよ（判断に迷う場合は same_failure:false）。\n`;
 }
 // ==== END inline: _lib/base-failure-triage.mjs ====
 // ==== BEGIN inline: _lib/post-eval-recheck.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
@@ -1415,13 +1468,12 @@ function failedFilesNote(files) {
   return `（落ちたファイル: ${shown}${rest > 0 ? ` ほか ${rest} 件` : ''}）`;
 }
 const TEST_RED_UNKNOWN_ACTION = '原因未確定 — 人が確認して判断する';
-function testRedFacts(ev, withBase) {
+function testRedFacts(ev) {
   const [failed, touched, differs, same] = ['failedFiles', 'diffTouched', 'baseDiffers', 'baseSame'].map((k) => (Array.isArray(ev?.[k]) ? ev[k].length : 0));
   if (!failed) return { note: ' — 落ちたテストファイルを特定できなかった（failed_files が空）', evidence: false };
-  const parts = [ev.diffTouched ? `diff が触れた ${touched} 件` : 'diff との照合なし（一覧の取得失敗）', ...(withBase
-    ? [`base 再実行で base では同じように落ちなかった ${differs} 件`, `base でも同じように落ちた ${same} 件`, `base で確かめていない ${failed - touched - differs - same} 件`]
-    : ['base との比較はしていない'])];
-  return { note: ` — 落ちたテストファイル ${failed} 件: ${parts.join('・')}${failedFilesNote(ev.failedFiles)}`, evidence: touched + (withBase ? differs : 0) > 0 };
+  const parts = [ev.diffTouched ? `diff が触れた ${touched} 件` : 'diff との照合なし（一覧の取得失敗）',
+    `base 再実行で base では同じように落ちなかった ${differs} 件`, `base でも同じように落ちた ${same} 件`, `base で確かめていない ${failed - touched - differs - same} 件`];
+  return { note: ` — 落ちたテストファイル ${failed} 件: ${parts.join('・')}${failedFilesNote(ev.failedFiles)}`, evidence: touched + differs > 0 };
 }
 const HOLD_REMEDY_FIX_PR = 'PR を直す';
 const HOLD_REMEDY_HUMAN = '人が確かめる';
@@ -1651,7 +1703,7 @@ function buildDevflowSummaryBody({
 
   const testsurfUncleared = testsurfClearance.some(tc => !tc.cleared);
   const holdCodeAll = new Set((holdReasons || []).map((hr) => hr && hr.code));
-  const redFacts = { validate_test_red: testRedFacts(validateTestEvidence, true), final_test_red: testRedFacts(finalTestEvidence, false) };
+  const redFacts = { validate_test_red: testRedFacts(validateTestEvidence), final_test_red: testRedFacts(finalTestEvidence) };
   const redCodes = Object.keys(redFacts).filter((c) => holdCodeAll.has(c));
   const fixRequiredHold = ['mergeable_conflicting', 'iterate_non_lgtm', 'pr_closes_missing'].some((c) => holdCodeAll.has(c))
     || redCodes.some((c) => redFacts[c].evidence);
@@ -1691,10 +1743,12 @@ function buildDevflowSummaryBody({
   const flakeCandidate = Array.isArray(finalTestFlaky?.files) && finalTestFlaky.files.length > 0;
   const RED_CELL = flakeCandidate ? '❌ red（単体再実行は green — flake 候補）' : '❌ red';
   const UNVERIFIED_CELL = '⚠️ 未検証';
+  const greenCell = (excluded) => (excluded > 0 ? `✅ green（base でも失敗する既存の失敗 ${excluded} 件を除く）` : '✅ green');
+  const finalGreenCell = greenCell(Array.isArray(finalTestEvidence?.baseSame) ? finalTestEvidence.baseSame.length : 0);
   let testCell;
   let testUnverified = false;
   if (finalReconcile === 'reverified') {
-    testCell = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? RED_CELL : UNVERIFIED_CELL;
+    testCell = finalTestGreen === true ? finalGreenCell : finalTestGreen === false ? RED_CELL : UNVERIFIED_CELL;
   } else if (finalReconcile === 'unavailable') {
     testCell = '⚠️ unavailable（最終 tree で再検証不能）・未検証';
     testUnverified = true;
@@ -1704,7 +1758,7 @@ function buildDevflowSummaryBody({
   } else if (testGreen == null) {
     testCell = UNVERIFIED_CELL;
   } else if (testGreen === true) {
-    testCell = baseFailing.length > 0 ? `✅ green（base でも失敗する既存の失敗 ${baseFailing.length} 件を除く）` : '✅ green';
+    testCell = greenCell(baseFailing.length);
   } else {
     testCell = RED_CELL;
   }
@@ -2304,7 +2358,7 @@ function buildDevflowSummaryBody({
   }
   referenceLines.push(...conflictResolvedLines(conflictAutoresolve));
   if (finalReconcile != null && finalReconcile !== 'skipped') {
-    const t = finalTestGreen === true ? '✅ green' : finalTestGreen === false ? RED_CELL : '不明';
+    const t = finalTestGreen === true ? finalGreenCell : finalTestGreen === false ? RED_CELL : '不明';
     referenceLines.push(`- Final reconcile (pr-iterate fix 後の最終 tree 再検証): ${finalReconcile} — final test: ${t}` + (finalAcReconcile != null ? `, final AC: ${finalAcReconcile}` : ''));
     if (finalAcReconcile === 'reverified') {
       referenceLines.push('- ✅ AC は最終 PR tree で再検証済み（Final AC reconcile — AC テーブルは final snapshot）');
@@ -3596,13 +3650,47 @@ async function rerunFailedTestFiles(first, label, holdCode) {
   else log(`Final reconcile: ${label} も red（tests=${result?.tests ?? 'null'}）— ${holdCode}`)
   return { result, flaky }
 }
+// test#final の red を Validate と同じ規則（planBaseRerun / classifyBaseRerun / baseRerunPrompt）で、diff が原因でありうる失敗と
+// base でも失敗する既存の失敗に分ける。既知の既存の失敗（state.baseFailing.env）は最終 diff が触れていなければ再実行せず
+// 既存の失敗のまま、未知のファイルだけ base の tree で 1 回再実行する。返り値の code は既存の失敗と言えなかったファイル
+// （1 件でも残れば final_test_red）。null は振り分けていない（最終 diff の一覧が無い・failed_files が空）— 判定材料が
+// 欠けたら既存の失敗に倒さず、red のまま HOLD にする。
+async function triageFinalTestRed(ft, diffFiles) {
+  const failed = finalTestEvidence.failedFiles
+  if (ft.tests !== 'failed' || !failed.length) return null
+  if (!Array.isArray(diffFiles)) {
+    log('⚠️ Final reconcile: 最終 diff の一覧が無い — test#final の red を振り分けず base 再実行もしない（final_test_red）')
+    return null
+  }
+  const plan = planBaseRerun({ failedFiles: failed, diffFiles, knownEnv: state.baseFailing.env, knownBaseRan: state.baseFailing.ran })
+  const env = [...plan.env]
+  const code = [...plan.touched, ...plan.code]
+  const baseDiffers = [...plan.code]
+  let baseRerun = null
+  if (plan.rerun.length) {
+    baseRerun = await failOpenAgent(baseRerunPrompt(WT, BASE, plan.rerun) + EPOCH_INSTRUCTION,
+      { agentType: 'dev-runner-haiku', schema: BASE_RERUN, label: 'base-rerun#final', phase: 'Final reconcile' })
+    if (!Array.isArray(baseRerun?.results)) log(`⚠️ Final reconcile: base 再実行の結果を取得できず — ${plan.rerun.length} 件は既存の失敗にしない`)
+    const cls = classifyBaseRerun(plan.rerun, baseRerun?.results)
+    env.push(...cls.env)
+    code.push(...cls.code)
+    baseDiffers.push(...cls.ran.filter((f) => !cls.env.includes(f)))
+  }
+  // 終端サマリーの既存の失敗の一覧: 最終 diff が触れたファイルは外し（diff と無関係ではなくなった）、ここで既存の失敗としたものを足す
+  const known = state.baseFailing.env.filter((f) => !plan.touched.includes(f))
+  state.baseFailing = { ...state.baseFailing, env: [...known, ...env.filter((f) => !known.includes(f))] }
+  finalTestEvidence = { failedFiles: failed, diffTouched: plan.touched, baseDiffers, baseSame: env }
+  log(`Final reconcile: test#final で落ちたテストファイル ${failed.length} 件 — 最終 diff が触れた ${plan.touched.length} / ${BASE_FAILING_LABEL} ${env.length} / 既存の失敗と言えない ${code.length}`)
+  return { code, baseRerun }
+}
 let finalReconcile = 'skipped'   // 'skipped'|'reverified'|'unavailable'
 let finalTestGreen = null        // true|false|null（null = 未実行/no_tests/取得不能/tests:error の起動失敗）
 let finalTestNoTests = false     // test#final が tests:'no_tests'（実行対象のテストが 0 本）— merge tier の no_tests_run HOLD
 // 単体再実行が green だった記録 {files, logs}。開示専用で HOLD は変えない（単体再実行の green は PR が書いたテストの出力 —
 // 全件実行のときだけ落ちるテストを書けば決定的な失敗でも green になる）。null = 未再実行 / 再実行も red
 let finalTestFlaky = null
-// test#final red の failed_files と diff の突き合わせ（終端サマリー用。rerun では変えない）
+// test#final red の failed_files と最終 diff・base 再実行の突き合わせ（終端サマリー用。単体再実行では変えない）。
+// 既存の失敗だけの red を green にした run でも残す（テスト欄の除外件数は baseSame の数）
 let finalTestEvidence = null
 // test#final が green / no_tests のときの結果。final-ac-reconcile に渡して実行済みのテストを再実行させない。それ以外は null。
 let finalTestForEval = null
@@ -3656,19 +3744,29 @@ if (treeChangedAfterEval) {
       if (ft.tests === 'no_tests' || (ft.tests === 'passed' && ft.green === true)) finalTestForEval = ft
       if (finalTestGreen === false) finalTestEvidence = { failedFiles: normalizeTestPaths(ft.failed_files), diffTouched: null }
       log(`Final reconcile: test#final tests=${ft.tests} green=${ft.green}`)
-      // Step2b 落ちたファイルだけを 1 回流し直す（全件は並列負荷の flake が再発する）。判定は finalTestRerunVerdict だけ。
-      if (finalTestGreen === false) {
-        const rerun = await rerunFailedTestFiles(ft, 'test#final-rerun', 'final_test_red')
-        ftRerun = rerun.result
-        finalTestFlaky = rerun.flaky
-      }
     }
-    finalEpochRes = maxEpochRes([sync, ft, ftRerun])
-    // Step3〜4 は sync 成功だけに依存する（test#final の成否に依存しない）。Step3 最終 changed-files（fail-open）
+    // Step3〜4 は sync 成功だけに依存する（test#final の成否に依存しない）。Step3 最終 changed-files（fail-open）。
+    // red の振り分け（Step2b）が最終 diff を使うので、単体再実行より前に取る
     const changedFinal = await failOpenAgent(
       `次を実行し **stdout の各行(ファイルパス)を** \`{"files": [...]}\` に包んで返せ:\n`
       + `git -C ${WT} diff --name-only origin/${BASE}...HEAD`,
       { agentType: 'dev-runner-haiku-ro', schema: CHANGED, label: 'changed-files-final', phase: 'Final reconcile', retryOnContractViolation: true })
+    // Step2b red の振り分け → 既存の失敗と言えなかったファイルだけを 1 回流し直す（全件は並列負荷の flake が再発する）。
+    // 既存の失敗だけの red は最終 tree を green として扱う。単体再実行の green では HOLD を外さない（判定は finalTestRerunVerdict だけ）
+    let ftBaseRerun = null
+    if (finalTestGreen === false) {
+      const tri = await triageFinalTestRed(ft, changedFinal?.files)
+      ftBaseRerun = tri?.baseRerun ?? null
+      if (tri && !tri.code.length) {
+        finalTestGreen = true
+        log(`Final reconcile: test#final の失敗はすべて最終 diff と無関係で base でも同じように落ちる ${BASE_FAILING_LABEL}（${finalTestEvidence.baseSame.join(', ')}）— final_test_red にしない`)
+      } else {
+        const rerun = await rerunFailedTestFiles(tri ? { ...ft, failed_files: tri.code } : ft, 'test#final-rerun', 'final_test_red')
+        ftRerun = rerun.result
+        finalTestFlaky = rerun.flaky
+      }
+    }
+    finalEpochRes = maxEpochRes([sync, ft, ftBaseRerun, ftRerun])
     // 最終 diff（ephemeral 除去後）。null = 取得失敗（Step4 の宣言外再監査は skip、Step4b の再検証対象は全件のまま）
     let filesFinal = null
     if (!changedFinal?.files) {
@@ -3676,7 +3774,7 @@ if (treeChangedAfterEval) {
     } else {
       // Merge tier は raw を使うので ephemeral 除去前を渡す。
       changedFilesFinal = changedFinal.files
-      if (finalTestEvidence) finalTestEvidence.diffTouched = planBaseRerun({ failedFiles: finalTestEvidence.failedFiles, diffFiles: changedFinal.files }).touched
+      if (finalTestEvidence && finalTestEvidence.diffTouched == null) finalTestEvidence.diffTouched = planBaseRerun({ failedFiles: finalTestEvidence.failedFiles, diffFiles: changedFinal.files }).touched
       filesFinal = filterEphemeralPaths(changedFinal.files)
       // Step4 宣言外パス再監査（advisory）: Diff triage 時点の undeclared に無い新規分のみ集約 1 item
       const planAllTasksF = state.plan.serial ?? []

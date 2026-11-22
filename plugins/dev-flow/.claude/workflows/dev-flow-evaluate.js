@@ -951,6 +951,38 @@ function classifyBaseRerun(rerunFiles, results) {
   }
   return { env, code, ran };
 }
+
+const BASE_RERUN = {
+  type: 'object', required: ['results'],
+  properties: {
+    results: {
+      type: 'array',
+      items: {
+        type: 'object', required: ['file', 'ran', 'base_failed', 'same_failure'],
+        properties: {
+          file: { type: 'string' }, ran: { type: 'boolean' }, base_failed: { type: 'boolean' },
+          same_failure: { type: 'boolean' }, summary: { type: 'string' },
+        },
+      },
+    },
+    epoch: { type: 'number' },
+  },
+};
+
+function baseRerunPrompt(wt, base, files) {
+  return `テストで失敗した次のテストファイルが、base（origin/${base}）の tree でも同じように失敗するかを確かめよ。`
+    + `worktree のファイルは変更・stage・削除するな（修正もしない）。\n`
+    + `対象（repo 相対パス）: ${JSON.stringify(files)}\n`
+    + `手順:\n`
+    + `1. \`mktemp -d "\${TMPDIR:-/tmp}/devflow-base-XXXXXX"\` を実行し、出力パスを D とする（worktree の外に置く）。\n`
+    + `2. \`git -C ${wt} archive --format=tar -o <D>.tar origin/${base}\` を bare 単文で実行し、\`tar -xf <D>.tar -C <D>\` で base tree を D に展開せよ。`
+    + `${wt}/node_modules があれば \`ln -s ${wt}/node_modules <D>/node_modules\` で共有せよ。\n`
+    + `3. 対象ファイルごとに、そのファイルだけを実行するコマンド（*.bats は bats、*.test.mjs / *.test.ts は repo の test runner 等、repo のテスト規約に合わせる）を決め、`
+    + `worktree（${wt}）と D で同じコマンドを 1 回ずつ実行し、それぞれで失敗したテスト名を記録せよ。\n`
+    + `4. 対象ファイルごとに {"file": <対象のパス verbatim>, "ran": <worktree と D の両方でテストを実行できたか>, "base_failed": <D で 1 件以上失敗したか>, `
+    + `"same_failure": <worktree で失敗したテスト名がすべて D でも失敗したか>, "summary": <失敗したテスト名の要約>} を results に入れて返せ。`
+    + `起動失敗・D に当該ファイルが無い・テスト名を比べられない場合は ran:false または same_failure:false とせよ（判断に迷う場合は same_failure:false）。\n`;
+}
 // ==== END inline: _lib/base-failure-triage.mjs ====
 // ==== BEGIN inline: _lib/post-eval-recheck.mjs (生成区間 — 直接編集禁止。_lib を編集して tools/sync-inlines.mjs --write) ====
 const RECHECK_RESOLUTIONS = ['resolved', 'unresolved'];
@@ -2053,22 +2085,6 @@ const GREEN = {
     epoch: { type: 'number' },
   },
 }
-const BASE_RERUN = {
-  type: 'object', required: ['results'],
-  properties: {
-    results: {
-      type: 'array',
-      items: {
-        type: 'object', required: ['file', 'ran', 'base_failed', 'same_failure'],
-        properties: {
-          file: { type: 'string' }, ran: { type: 'boolean' }, base_failed: { type: 'boolean' },
-          same_failure: { type: 'boolean' }, summary: { type: 'string' },
-        },
-      },
-    },
-    epoch: { type: 'number' },
-  },
-}
 const TREE_DIFF_LINES = {
   type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, lines: { type: 'array', items: { type: 'string' } }, error: { type: 'string' } },
@@ -2169,22 +2185,6 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
       + `git -C ${wt} ls-files --others --exclude-standard`
   }
 
-  function baseRerunPrompt(files) {
-    return `Validate のテストで失敗した次のテストファイルが、base（origin/${base}）の tree でも同じように失敗するかを確かめよ。`
-      + `worktree のファイルは変更・stage・削除するな（修正もしない）。\n`
-      + `対象（repo 相対パス）: ${JSON.stringify(files)}\n`
-      + `手順:\n`
-      + `1. \`mktemp -d "\${TMPDIR:-/tmp}/devflow-base-XXXXXX"\` を実行し、出力パスを D とする（worktree の外に置く）。\n`
-      + `2. \`git -C ${wt} archive --format=tar -o <D>.tar origin/${base}\` を bare 単文で実行し、\`tar -xf <D>.tar -C <D>\` で base tree を D に展開せよ。`
-      + `${wt}/node_modules があれば \`ln -s ${wt}/node_modules <D>/node_modules\` で共有せよ。\n`
-      + `3. 対象ファイルごとに、そのファイルだけを実行するコマンド（*.bats は bats、*.test.mjs / *.test.ts は repo の test runner 等、repo のテスト規約に合わせる）を決め、`
-      + `worktree（${wt}）と D で同じコマンドを 1 回ずつ実行し、それぞれで失敗したテスト名を記録せよ。\n`
-      + `4. 対象ファイルごとに {"file": <対象のパス verbatim>, "ran": <worktree と D の両方でテストを実行できたか>, "base_failed": <D で 1 件以上失敗したか>, `
-      + `"same_failure": <worktree で失敗したテスト名がすべて D でも失敗したか>, "summary": <失敗したテスト名の要約>} を results に入れて返せ。`
-      + `起動失敗・D に当該ファイルが無い・テスト名を比べられない場合は ran:false または same_failure:false とせよ（判断に迷う場合は same_failure:false）。\n`
-      + EPOCH_INSTRUCTION
-  }
-
   async function triageBaseFailures(v, baseFailing, iterLabel, phaseName) {
     const failed = normalizeTestPaths(v.failed_files)
     const evidence = { failedFiles: failed, diffTouched: null }
@@ -2200,7 +2200,7 @@ function makeImplementLoop({ wt, issue, repo, base, commandsFile, spawn, spawnFa
     const code = [...plan.touched, ...plan.code]
     const baseDiffers = [...plan.code]
     if (plan.rerun.length) {
-      const br = await spawnFailOpen(baseRerunPrompt(plan.rerun),
+      const br = await spawnFailOpen(baseRerunPrompt(wt, base, plan.rerun) + EPOCH_INSTRUCTION,
         { agentType: 'dev-runner-haiku', schema: BASE_RERUN, label: `base-rerun#${iterLabel}`, phase: phaseName })
       if (!Array.isArray(br?.results)) log(`⚠️ ${phaseName}: base 再実行の結果を取得できず — ${plan.rerun.length} 件は green-fix の対象にする`)
       const cls = classifyBaseRerun(plan.rerun, br?.results)

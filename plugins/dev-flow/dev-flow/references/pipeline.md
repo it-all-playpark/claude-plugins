@@ -227,9 +227,9 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
 ## Final reconcile
 
 - **判定**: `fixes_applied > 0` か push hook 差し戻しの run だけ、最終 tree で確かめ直す:
-  - worktree を PR の最終 HEAD に同期し、Validate と同じ start / wait を 1 回だけ実行する（green-fix はしない）。red で
-    落ちたファイルが分かれば、そのファイルだけを 1 回流し直し、green なら flake 候補として開示する（HOLD・`EVAL-*` は外さない。
-    PR が書いたテストの出力。`_lib/final-test-rerun.mjs`）
+  - worktree を PR の最終 HEAD に同期し、Validate と同じ start / wait を 1 回だけ実行する（green-fix はしない）。red は Validate と
+    同じ規則で分け（`base-rerun#final`）、既存の失敗だけなら green（材料が欠ければ red）。残りを 1 回流し直し（繰り返すと本物の red を通す）、
+    green なら flake 候補として開示（HOLD・`EVAL-*` は外さない。PR が書いたテストの出力。`_lib/final-test-rerun.mjs`）
   - テストを実行できなければ `unavailable`（PR の CI の success では代えない。PR が CI を書き換えうる）
   - 最終の changed-files で宣言外変更を再監査
   - final test が green（no_tests を含む）の run（`reverified`）だけ、Final AC reconcile（evaluator）が最終 tree で AC・未解消 item・
@@ -243,8 +243,7 @@ label の一覧は書き写さず定数名かファイルで指す（値の正�
 - skip した run の PR tree のテスト状態は Validate の結果のまま: `tests:'failed'` は `validate_test_red`（上と同じ再実行で開示）、
   `tests:'error'` は `validate_tests_not_run`（PR の CI の success では解除しない）、`tests:'no_tests'` は `no_tests_run` で HOLD
 - **失敗の扱い**:
-  - 同期失敗・throw・`tests:'error'` は `unavailable`（fail-safe → HOLD `final_reconcile_unavailable`）。
-    flake の再実行は落ちたファイルだけで 1 回まで（繰り返すと本物の red を通す）
+  - 同期失敗・throw・`tests:'error'` は `unavailable`（fail-safe → HOLD `final_reconcile_unavailable`）
   - Final AC reconcile の応答が検証に通らなければ `unavailable`（fail-closed → HOLD）
   - `redgreen-final` の失敗（Evaluate と同じ + throw）・red→green 不成立は昇格せず、観測型 AC は人手 AC 待ちのまま（fail-safe）
   - changed-files の取得失敗は宣言外の再監査を skip（fail-open。test gate は維持）。PR 本文の AC checkbox の更新失敗も fail-open
