@@ -67,6 +67,17 @@ export const DEV_FLOW_SCENARIOS = {
     },
     workflow: async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }),
   },
+  // Final reconcile の test#final が最終 diff と無関係のテストファイルで red → base-rerun#final（base でも同じように落ちる）
+  // → 既存の失敗として final_test_red にせず、単体再実行（test#final-rerun）も起動しない（issue #1443）
+  'final-base-failing': {
+    overrides: {
+      'reconcile-sync': { ok: true, head: 'deadbeef' },
+      'changed-files-final': { files: [...STANDARD_FILES] },
+      'test#final': { tests: 'failed', green: false, summary: 'plugins/x/scripts/a.bats が red', failed_files: ['plugins/x/scripts/a.bats'] },
+      'base-rerun#final': { results: [{ file: 'plugins/x/scripts/a.bats', ran: true, base_failed: true, same_failure: true, summary: 'same' }] },
+    },
+    workflow: async () => ({ status: 'lgtm', iterations: 2, fixes_applied: 1 }),
+  },
   // Validate が tests:'error'（起動失敗）+ fixes_applied=0（Final reconcile skipped）→ merge tier HOLD
   // （validate_tests_not_run）・終端サマリーのテスト欄は未実行・未検証（issue #707 / #1168）
   'validate-tests-error': {

@@ -361,6 +361,14 @@ const EXPECTED_DEV_FLOW = {
       assert.ok(calls.some((c) => c.label === 'green-fix#1'), 'base-rerun#1 throw 後は green-fix#1 へ進むべき');
     },
   },
+  'base-rerun#final': {
+    config: DEV_FLOW_SCENARIOS['final-base-failing'],
+    policy: 'continue',
+    reason: 'failOpenAgent経由。base再実行の結果が無ければ既存の失敗にせずfinal_test_redでHOLDする（判定材料が欠けたらHOLD側に倒す）',
+    extra: async ({ result }) => {
+      assert.ok((result?.merge_tier_hold_reasons ?? []).some((r) => r.code === 'final_test_red'), `base-rerun#final throw 後は final_test_red で HOLD するべき: ${JSON.stringify(result?.merge_tier_hold_reasons)}`);
+    },
+  },
   'pr-review-lite': { config: DF_LITE, policy: 'abort', reason: 'bare据え置き。lite経路のレビュー呼び出し失敗は吸収機構がない' },
   'ci-check-lite': { config: DF_LITE, policy: 'continue', reason: 'failOpenAgent経由。lite経路のCI状態取得失敗はフルpr-iterateへ委譲するのみ' },
   'cross-repo-artifacts': { config: DF_CROSS_REPO, policy: 'abort', reason: 'bare据え置き。cross-repo成果物検証失敗のfail-open化は別issueの検討対象' },
