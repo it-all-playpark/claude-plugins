@@ -1650,6 +1650,12 @@ const PR_BODY_DIAGRAM_HEADING = '## 構成の変化';
 const PR_BODY_DIAGRAM_UNVERIFIED = '⚠️ 図は diff と未照合';
 const PR_BODY_DIAGRAM_MISMATCH = '⚠️ 図は diff と食い違ったため載せていない';
 const PR_DIAGRAM_KINDS = ['flowchart', 'sequence', 'er'];
+const PR_DIAGRAM_NODES_MAX = 40;
+const PR_DIAGRAM_EDGES_MAX = 60;
+const PR_DIAGRAM_LABEL_MAX = 100;
+const PR_DIAGRAM_ATTRIBUTES_MAX = 20;
+const PR_DIAGRAM_NODE_SHAPES = ['box', 'decision'];
+const PR_DIAGRAM_CARDINALITIES = ['one_to_one', 'one_to_many', 'many_to_many'];
 const PR_DIAGRAM_ANCHORS_MAX = 40;
 const PR_DIAGRAM_ANCHOR_NODE_MAX = 64;
 const PR_DIAGRAM_ANCHOR_REF_MAX = 200;
@@ -1751,10 +1757,62 @@ function adoptImplPrNotes(plan, results) {
 
 function diagramOf(d) {
   if (d == null || typeof d !== 'object' || !PR_DIAGRAM_KINDS.includes(d.kind)) return null;
-  const before = sectionMarkdown(d.before);
-  const after = sectionMarkdown(d.after);
+  const before = diagramSideOf(d.kind, d.before);
+  const after = diagramSideOf(d.kind, d.after);
   const anchors = diagramAnchorsOf(d.anchors);
   return before && after && anchors ? { kind: d.kind, before, after, anchors } : null;
+}
+
+function diagramText(v, max) {
+  if (typeof v !== 'string') return null;
+  const text = collapseWhitespace(v.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' '));
+  return text && [...text].length <= max ? text : null;
+}
+
+function diagramSideOf(kind, side) {
+  if (side == null || typeof side !== 'object' || !Array.isArray(side.nodes) || !Array.isArray(side.edges)) return null;
+  if (side.nodes.length === 0 || side.nodes.length > PR_DIAGRAM_NODES_MAX || side.edges.length > PR_DIAGRAM_EDGES_MAX) return null;
+  const nodes = [];
+  for (const n of side.nodes) {
+    const id = diagramText(n?.id, PR_DIAGRAM_ANCHOR_NODE_MAX);
+    const label = diagramText(n?.label, PR_DIAGRAM_LABEL_MAX);
+    if (!id || !label || nodes.some((x) => x.id === id)) return null;
+    const node = { id, label };
+    if (kind === 'flowchart' && n.shape != null) {
+      if (!PR_DIAGRAM_NODE_SHAPES.includes(n.shape)) return null;
+      node.shape = n.shape;
+    }
+    if (kind === 'er' && n.attributes != null) {
+      const attributes = diagramAttributesOf(n.attributes);
+      if (!attributes) return null;
+      if (attributes.length) node.attributes = attributes;
+    }
+    nodes.push(node);
+  }
+  const edges = [];
+  for (const e of side.edges) {
+    const from = diagramText(e?.from, PR_DIAGRAM_ANCHOR_NODE_MAX);
+    const to = diagramText(e?.to, PR_DIAGRAM_ANCHOR_NODE_MAX);
+    if (!nodes.some((n) => n.id === from) || !nodes.some((n) => n.id === to)) return null;
+    const edge = { from, to };
+    if (kind !== 'flowchart' || e.label != null) {
+      const label = diagramText(e.label, PR_DIAGRAM_LABEL_MAX);
+      if (!label) return null;
+      edge.label = label;
+    }
+    if (kind === 'er') {
+      if (!PR_DIAGRAM_CARDINALITIES.includes(e.cardinality)) return null;
+      edge.cardinality = e.cardinality;
+    }
+    edges.push(edge);
+  }
+  return { nodes, edges };
+}
+
+function diagramAttributesOf(v) {
+  if (!Array.isArray(v) || v.length > PR_DIAGRAM_ATTRIBUTES_MAX) return null;
+  const attributes = v.map((a) => ({ name: diagramText(a?.name, PR_DIAGRAM_LABEL_MAX), type: diagramText(a?.type, PR_DIAGRAM_LABEL_MAX) }));
+  return attributes.some((a) => !a.name || !a.type) ? null : attributes;
 }
 
 function diagramAnchorsOf(v) {
@@ -1827,6 +1885,49 @@ function outOfScopeSection(plan) {
   return excess > 0 ? `${bulletList(shown)}\n（他 ${excess} 件）` : bulletList(shown);
 }
 
+function mermaidLabel(text) {
+  return text.replace(/[^A-Za-z0-9 \u0080-\uffff]/g, (c) => `#${c.codePointAt(0)};`);
+}
+
+function mermaidErWord(text) {
+  const word = text.replace(/[^A-Za-z0-9_\u00c0-\uffff]/g, '_');
+  return /^(?:[0-9]|(?:PK|FK|UK)(?![A-Za-z0-9_]))/i.test(word) ? `_${word}` : word;
+}
+
+function diagramOutputIds(d) {
+  const ids = new Map();
+  let count = 0;
+  for (const n of [...d.before.nodes, ...d.after.nodes]) {
+    if (!ids.has(n.id)) ids.set(n.id, `n${ids.size + 1}`);
+  }
+  return ids;
+}
+
+const MERMAID_ER_CARDINALITY = { one_to_one: '||--||', one_to_many: '||--o{', many_to_many: '}o--o{' };
+function diagramMermaid(kind, side, ids) {
+  if (kind === 'sequence') {
+    return [
+      'sequenceDiagram',
+      ...side.nodes.map((n) => `  participant ${ids.get(n.id)} as ${mermaidLabel(n.label)}`),
+      ...side.edges.map((e) => `  ${ids.get(e.from)}->>${ids.get(e.to)}: ${mermaidLabel(e.label)}`),
+    ].join('\n');
+  }
+  if (kind === 'er') {
+    return [
+      'erDiagram',
+      ...side.nodes.flatMap((n) => (n.attributes
+        ? [`  ${ids.get(n.id)}["${mermaidLabel(n.label)}"] {`, ...n.attributes.map((a) => `    ${mermaidErWord(a.type)} ${mermaidErWord(a.name)}`), '  }']
+        : [`  ${ids.get(n.id)}["${mermaidLabel(n.label)}"]`])),
+      ...side.edges.map((e) => `  ${ids.get(e.from)} ${MERMAID_ER_CARDINALITY[e.cardinality]} ${ids.get(e.to)} : "${mermaidLabel(e.label)}"`),
+    ].join('\n');
+  }
+  return [
+    'flowchart LR',
+    ...side.nodes.map((n) => (n.shape === 'decision' ? `  ${ids.get(n.id)}{"${mermaidLabel(n.label)}"}` : `  ${ids.get(n.id)}["${mermaidLabel(n.label)}"]`)),
+    ...side.edges.map((e) => `  ${ids.get(e.from)} -->${e.label ? `|"${mermaidLabel(e.label)}"|` : ''} ${ids.get(e.to)}`),
+  ].join('\n');
+}
+
 function mermaidBlock(src) {
   const text = neutralizeStructure(src);
   const fence = fenceFor(text);
@@ -1844,7 +1945,8 @@ function diagramSection(plan, diagramCheck) {
     const mismatches = arr(diagramCheck.mismatches).map(mismatchLine).filter(Boolean);
     return mismatches.length ? `${PR_BODY_DIAGRAM_MISMATCH}\n${bulletList(mismatches)}` : PR_BODY_DIAGRAM_MISMATCH;
   }
-  const figures = `**before**\n\n${mermaidBlock(d.before)}\n\n**after**\n\n${mermaidBlock(d.after)}`;
+  const ids = diagramOutputIds(d);
+  const figures = `**before**\n\n${mermaidBlock(diagramMermaid(d.kind, d.before, ids))}\n\n**after**\n\n${mermaidBlock(diagramMermaid(d.kind, d.after, ids))}`;
   return diagramCheck?.consistent === true ? figures : `${PR_BODY_DIAGRAM_UNVERIFIED}\n\n${figures}`;
 }
 
@@ -2597,6 +2699,26 @@ const STAGING_CONVENTION = `一時/handoff ファイルの配置規約: `
 
 const ISSUE_BODY_FILE = '.devflow-tmp/issue-body.md'
 
+const IMPL_DIAGRAM_SIDE = {
+  type: 'object',
+  properties: {
+    nodes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' }, label: { type: 'string' }, shape: { type: 'string' },
+          attributes: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, type: { type: 'string' } } } },
+        },
+      },
+    },
+    edges: {
+      type: 'array',
+      items: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' }, label: { type: 'string' }, cardinality: { type: 'string' } } },
+    },
+  },
+}
+
 const IMPL = {
   type: 'object', required: ['status', 'task_id'],
   properties: {
@@ -2644,8 +2766,8 @@ const IMPL = {
       required: ['kind', 'before', 'after'],
       properties: {
         kind: { type: 'string', enum: ['flowchart', 'sequence', 'er'] },
-        before: { type: 'string', maxLength: 1500 },
-        after: { type: 'string', maxLength: 1500 },
+        before: IMPL_DIAGRAM_SIDE,
+        after: IMPL_DIAGRAM_SIDE,
         anchors: {
           type: 'array',
           items: { type: 'object', properties: { node: { type: 'string' }, ref: { type: 'string' } } },

@@ -612,7 +612,9 @@ test('[evaluator-contract][#842] evaluator.md の「進め方」2 は validate_r
 // ---- issue #1366: 構成の変化の図を realized diff と照合した結果（diagram_check） ----
 
 const DIAGRAM_STUB = {
-  kind: 'flowchart', before: 'flowchart LR\n  A --> B', after: 'flowchart LR\n  A --> B\n  C --> B',
+  kind: 'flowchart',
+  before: { nodes: [{ id: 'A', label: '入口' }, { id: 'B', label: '結果' }], edges: [{ from: 'A', to: 'B' }] },
+  after: { nodes: [{ id: 'A', label: '入口' }, { id: 'B', label: '結果' }, { id: 'C', label: '別の入口' }], edges: [{ from: 'A', to: 'B' }, { from: 'C', to: 'B' }] },
   anchors: [{ node: 'A', ref: 'src/x.ts:ANCHOR_REF_A' }, { node: 'B', ref: 'src/y.ts:ANCHOR_REF_B' }, { node: 'C', ref: 'src/z.ts:ANCHOR_REF_C' }],
 };
 const implWithDiagram = (diagram) => ({ status: 'DONE', task_id: 'issue-1', files: ['src/x.ts', 'src/y.ts', 'src/z.ts'], summary: 's', concerns: [], diagram });
@@ -674,6 +676,11 @@ const mismatchKindsOf = (lines) => lines.filter((l) => /^ +- /.test(l)).map((l) 
 test('[evaluator-contract][#1366][#1436] diagram_check 契約と evaluator.md は、図のノードを anchors を手がかりに realized diff と照合し、描かれた内容の 3 種類の食い違いだけを mismatches に 1 件 1 行で書かせる', () => {
   const contract = EVALUATOR_OPERATIONAL_CONTRACT.diagram_check;
   assert.match(contract, /図のノード（[^）]*）を、anchors（[^）]*）を手がかりに realized diff と照合し、diagram_check:\{consistent, mismatches\} を必ず返す/);
+  // 図は構造化データで渡り、anchors の node は nodes の id（入力の ID）を指す
+  assert.ok(contract.includes('before / after はノードと辺の構造化データ（{nodes: [{id, label}], edges: [{from, to, label}]}。'), contract);
+  assert.ok(contract.includes('図のノード（before / after の nodes の各項目）を、anchors（[{node, ref}]。node は nodes の id、'), contract);
+  assert.match(diagramCheckPromptBlock(DIAGRAM_STUB), /before \/ after はノードと辺の構造化データ/);
+  assert.ok(!/mermaid/i.test(diagramCheckPromptBlock(DIAGRAM_STUB)), 'eval#N に渡す図と契約に Mermaid の文を前提にした記述がある');
   assert.match(contract, /mismatches には次の 3 種類だけを 1 件 1 行で書く/);
   assert.deepEqual(mismatchKindsOf(contract.split('\n')), DIAGRAM_MISMATCH_KINDS);
   assert.match(contract, /\n- diff にあって図に描かれていない変化は mismatches に書かず、consistent の判定に使わない/);
@@ -681,10 +688,13 @@ test('[evaluator-contract][#1366][#1436] diagram_check 契約と evaluator.md �
   assert.match(contract, /図の食い違いだけを理由に verdict を fail にせず、feedback も足さない/);
 
   assert.ok(inputItem('diagram').includes('`diagram_check`'), 'evaluator.md の「入力」節に diagram の項目が無い');
+  assert.ok(inputItem('diagram').replace(/\n +/g, '').includes('`before` / `after` のノードと辺の構造化データ`{nodes: [{id, label}], edges: [{from, to, label}]}`'), inputItem('diagram'));
+  assert.ok(!/mermaid/i.test(evaluatorMd), 'evaluator.md に Mermaid の文を前提にした記述がある');
   const start = evaluatorMd.indexOf('\n## 図の照合（diagram_check）\n');
   assert.ok(start >= 0, 'evaluator.md に「図の照合」節が無い');
   const section = evaluatorMd.slice(start, evaluatorMd.indexOf('\n## ', start + 1)).replace(/\n +/g, '');
-  assert.match(section, /\n1\. .*ノード（[^）]*）とそのラベル・矢印を拾い、各ノードの anchor を `anchors` から引く/);
+  assert.ok(section.includes('`node`（`nodes` の `id`）と `ref`（`<repo 相対パス>:<関数・定数・テーブル等の名前>`）'), section);
+  assert.match(section, /\n1\. `before` と `after` の `nodes` からノードとそのラベルを、`edges` から矢印を拾い、各ノードの anchor を `anchors` から`id` で引く/);
   assert.match(section, /\n2\. 各 anchor の `ref` が指す場所を、「進め方」1 で取得済みの `git diff <sha>` で確かめる。/);
   // ref は PR が書いたデータで repo の外・symlink 先を指しうるので、Read は git ls-files -s の通常ファイルの行のパスに限り、
   // ref のパスをそのまま使わない。diff の見出しは条件にしない（変更していないファイルに anchor を持つノードも照合する）。

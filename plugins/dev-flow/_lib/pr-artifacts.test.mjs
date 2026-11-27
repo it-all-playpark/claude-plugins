@@ -27,6 +27,12 @@ import {
   PR_DIAGRAM_ANCHORS_MAX,
   PR_DIAGRAM_ANCHOR_NODE_MAX,
   PR_DIAGRAM_ANCHOR_REF_MAX,
+  PR_DIAGRAM_NODES_MAX,
+  PR_DIAGRAM_EDGES_MAX,
+  PR_DIAGRAM_LABEL_MAX,
+  PR_DIAGRAM_ATTRIBUTES_MAX,
+  PR_DIAGRAM_NODE_SHAPES,
+  PR_DIAGRAM_CARDINALITIES,
   PR_BODY_VISUAL_HEADING,
   PR_BODY_VISUAL_PATHS_MAX,
   PR_BODY_VISUAL_COMPARE_NOTE,
@@ -485,7 +491,7 @@ test('[pr-artifacts] prBodyEvidenceInstr / planWithoutPrBodyMaterial: evaluator 
   assert.ok(instr.includes(`<<<PR_BODY_PREVIEW_BEGIN>>>\n${body}<<<PR_BODY_PREVIEW_END>>>`), instr);
   assert.match(instr, /「PR 本文に書く」型の AC は、この本文テキスト/);
   assert.match(instr, /チェックボックス（- \[ \] \/ - \[x\]）は未確定であり、AC の充足・未達の根拠にするな/);
-  const p = plan({ pr_notes: [{ section: 'measurement', text: 'x' }], pr_sections: [{ heading: 'h', markdown: 'm' }], out_of_scope: ['o'], behavior_changes: ['b'], review_points: ['r'], diagram: { kind: 'flowchart', before: 'flowchart LR\n  A', after: 'flowchart LR\n  A-->B' } });
+  const p = plan({ pr_notes: [{ section: 'measurement', text: 'x' }], pr_sections: [{ heading: 'h', markdown: 'm' }], out_of_scope: ['o'], behavior_changes: ['b'], review_points: ['r'], diagram: { kind: 'flowchart', before: { nodes: [{ id: 'A', label: 'a' }], edges: [] }, after: { nodes: [{ id: 'A', label: 'a' }], edges: [] } } });
   const stripped = planWithoutPrBodyMaterial(p);
   for (const k of PR_BODY_PLAN_KEYS) assert.ok(!(k in stripped), `${k} が残っている`);
   assert.equal(stripped.summary, p.summary);
@@ -503,7 +509,18 @@ const DIAGRAM_ANCHORS = [
   { node: 'B', ref: 'src/anchor-only-b.mjs:ANCHOR_REF_B' },
   { node: 'E', ref: 'src/anchor-only-e.mjs:ANCHOR_REF_E' },
 ];
-const DIAGRAM = { kind: 'flowchart', before: 'flowchart LR\n  A[実装の報告] --> B[本文に図を載せる]', after: 'flowchart LR\n  A[実装の報告] --> B[本文に図を載せる]\n  E{照合で一致?} --> B', anchors: DIAGRAM_ANCHORS };
+const DIAGRAM = {
+  kind: 'flowchart',
+  before: { nodes: [{ id: 'A', label: '実装の報告' }, { id: 'B', label: '本文に図を載せる' }], edges: [{ from: 'A', to: 'B' }] },
+  after: {
+    nodes: [{ id: 'A', label: '実装の報告' }, { id: 'B', label: '本文に図を載せる' }, { id: 'E', label: '照合で一致', shape: 'decision' }],
+    edges: [{ from: 'A', to: 'B' }, { from: 'E', to: 'B' }],
+  },
+  anchors: DIAGRAM_ANCHORS,
+};
+// DIAGRAM から組み立てる Mermaid の本文（ID の振り方・エスケープ・parser を通ることは pr-diagram.test.mjs が確かめる）
+const DIAGRAM_BEFORE_SRC = 'flowchart LR\n  n1["実装の報告"]\n  n2["本文に図を載せる"]\n  n1 --> n2';
+const DIAGRAM_AFTER_SRC = 'flowchart LR\n  n1["実装の報告"]\n  n2["本文に図を載せる"]\n  n3{"照合で一致"}\n  n1 --> n2\n  n3 --> n2';
 const diagramBody = (o = {}, diagramCheck) => buildPrBody({
   issue: 1, req: req(), plan: plan({ behavior_changes: ['変わること'], review_points: ['見てほしい'], diagram: DIAGRAM, ...o }),
   testsurfHits: [], dangerHits: [], ...(diagramCheck === undefined ? {} : { diagramCheck }),
@@ -513,7 +530,7 @@ const diagramSectionOf = (body) => {
   assert.ok(start >= 0, `構成の変化の節が無い:\n${body}`);
   return body.slice(start, body.indexOf(`\n\n${PR_BODY_REVIEW_POINTS_HEADING}\n`, start));
 };
-const FIGURES = `**before**\n\n\`\`\`mermaid\n${DIAGRAM.before}\n\`\`\`\n\n**after**\n\n\`\`\`mermaid\n${DIAGRAM.after}\n\`\`\``;
+const FIGURES = `**before**\n\n\`\`\`mermaid\n${DIAGRAM_BEFORE_SRC}\n\`\`\`\n\n**after**\n\n\`\`\`mermaid\n${DIAGRAM_AFTER_SRC}\n\`\`\``;
 
 // CommonMark のフェンス規則で text を走査し、閉じていないフェンスの開き記号を返す（無ければ null）。
 function openFenceIn(text) {
@@ -539,28 +556,126 @@ function assertBodyStructureIntact(body, issue) {
   assert.equal(hasClosesLine(beforeCloses, issue), false, `中身の偽の Closes 行が数えられている:\n${body}`);
 }
 
-test('[pr-artifacts] adoptImplPrNotes: diagram を anchors ごと plan.diagram に取り込み、null・不正な報告は前回分を保持する', () => {
+test('[pr-artifacts] adoptImplPrNotes: 構造化データの diagram を正規化して anchors ごと plan.diagram に取り込み、null・不正な報告は前回分を保持する', () => {
   const anchors = [{ node: 'A', ref: 'src/a.mjs:run' }, { node: 'B', ref: 'src/b.mjs:TABLE' }];
+  const side = (to) => ({ nodes: [{ id: 'A', label: '利用者' }, { id: to, label: '相手' }], edges: [{ from: 'A', to, label: '送る' }] });
   const first = adoptImplPrNotes({ serial: [] }, [{ diagram: {
-    kind: 'sequence', before: '\r\nsequenceDiagram\r\n  A->>B: x\n\n', after: 'sequenceDiagram\n  A->>C: x', extra: 1,
+    kind: 'sequence', extra: 1,
+    // id・ラベルは前後の空白を除き、改行・連続空白を 1 空白に畳む。知らないキーと、その kind で使わないキー（shape）は落とす
+    before: { nodes: [{ id: ' A ', label: ' 利用\n者 ', extra: 1 }, { id: 'B', label: '相手', shape: 'decision' }], edges: [{ from: 'A ', to: ' B', label: '送る\r\n', extra: 1 }], extra: 1 },
+    after: side('C'),
     // node か ref が空白だけの項目は落とし、残りは前後の空白を除いて残す
     anchors: [{ node: ' A ', ref: ' src/a.mjs:run\n', extra: 1 }, { node: ' ', ref: 'src/x.mjs:x' }, { node: 'X', ref: '\t' }, { node: 'Y' }, null, anchors[1]],
   } }]);
-  assert.deepEqual(first.diagram, { kind: 'sequence', before: 'sequenceDiagram\n  A->>B: x', after: 'sequenceDiagram\n  A->>C: x', anchors });
+  assert.deepEqual(first.diagram, {
+    kind: 'sequence',
+    before: { nodes: [{ id: 'A', label: '利用 者' }, { id: 'B', label: '相手' }], edges: [{ from: 'A', to: 'B', label: '送る' }] },
+    after: side('C'), anchors,
+  });
   for (const kept of [
     adoptImplPrNotes(first, [{ diagram: null }]),
     adoptImplPrNotes(first, [{ behavior_changes: ['b'] }]),
-    adoptImplPrNotes(first, [{ diagram: { kind: 'gantt', before: 'a', after: 'b', anchors } }]),
-    adoptImplPrNotes(first, [{ diagram: { kind: 'er', before: ' ', after: 'b', anchors } }]),
+    adoptImplPrNotes(first, [{ diagram: { kind: 'gantt', before: side('B'), after: side('C'), anchors } }]),
   ]) assert.deepEqual(kept.diagram, first.diagram);
-  const replaced = adoptImplPrNotes(first, [{ diagram: { kind: 'er', before: 'erDiagram\n  A', after: 'erDiagram\n  B', anchors: [anchors[0]] } }, { diagram: null }]);
-  assert.deepEqual(replaced.diagram, { kind: 'er', before: 'erDiagram\n  A', after: 'erDiagram\n  B', anchors: [anchors[0]] });
+  const er = (label) => ({
+    nodes: [{ id: 'A', label, attributes: [{ name: 'id', type: 'uuid' }] }, { id: 'B', label: '注文', attributes: [] }],
+    edges: [{ from: 'A', to: 'B', label: '持つ', cardinality: 'one_to_many' }],
+  });
+  const erNormalized = (label) => ({ ...er(label), nodes: [er(label).nodes[0], { id: 'B', label: '注文' }] });
+  const replaced = adoptImplPrNotes(first, [{ diagram: { kind: 'er', before: er('利用者'), after: er('会員'), anchors: [anchors[0]] } }, { diagram: null }]);
+  assert.deepEqual(replaced.diagram, { kind: 'er', before: erNormalized('利用者'), after: erNormalized('会員'), anchors: [anchors[0]] });
   assert.ok(!('diagram' in adoptImplPrNotes({ serial: [] }, [{ diagram: null }])), '図の無い run は plan.diagram を持たない');
+});
+
+test('[pr-artifacts] adoptImplPrNotes: before / after が Mermaid の文の diagram は図ごと採らない（片方だけでも同じ）', () => {
+  const anchors = [{ node: 'A', ref: 'src/a.mjs:run' }];
+  const side = { nodes: [{ id: 'A', label: '利用者' }, { id: 'B', label: '相手' }], edges: [{ from: 'A', to: 'B' }] };
+  const prev = adoptImplPrNotes({ serial: [] }, [{ diagram: { kind: 'flowchart', before: side, after: side, anchors } }]);
+  assert.deepEqual(prev.diagram, { kind: 'flowchart', before: side, after: side, anchors });
+  const text = 'flowchart LR\n  A[利用者] --> B[相手]';
+  for (const diagram of [
+    { kind: 'flowchart', before: text, after: text, anchors },
+    { kind: 'flowchart', before: side, after: text, anchors },
+    { kind: 'flowchart', before: text, after: side, anchors },
+  ]) {
+    const adopted = adoptImplPrNotes({ serial: [] }, [{ diagram, behavior_changes: ['今回'] }]);
+    assert.ok(!('diagram' in adopted), `Mermaid の文の図を採っている: ${JSON.stringify(diagram)}`);
+    assert.deepEqual(adopted.behavior_changes, ['今回']);
+    assert.ok(!buildPrBody({ issue: 1, req: req(), plan: plan(adopted), testsurfHits: [], dangerHits: [] }).includes(PR_BODY_DIAGRAM_HEADING));
+    // plan.diagram に直接置かれても本文には出さない
+    assert.ok(!diagramBody({ diagram }).includes(PR_BODY_DIAGRAM_HEADING));
+    assert.deepEqual(adoptImplPrNotes(prev, [{ diagram }]).diagram, prev.diagram, '前回の有効な図は残す');
+  }
+});
+
+test('[pr-artifacts] adoptImplPrNotes: 構造化データの形が不正・上限超過の図は図だけを落として「構成の変化」を出さず、同じ報告の他のフィールドは取り込む', () => {
+  assert.deepEqual([PR_DIAGRAM_NODES_MAX, PR_DIAGRAM_EDGES_MAX, PR_DIAGRAM_LABEL_MAX, PR_DIAGRAM_ATTRIBUTES_MAX], [40, 60, 100, 20]);
+  assert.deepEqual(PR_DIAGRAM_NODE_SHAPES, ['box', 'decision']);
+  assert.deepEqual(PR_DIAGRAM_CARDINALITIES, ['one_to_one', 'one_to_many', 'many_to_many']);
+  const anchors = [{ node: 'A', ref: 'src/a.mjs:run' }];
+  const ok = { nodes: [{ id: 'A', label: '入口' }, { id: 'B', label: '結果' }], edges: [{ from: 'A', to: 'B', label: '進む' }] };
+  const nodesOf = (n) => Array.from({ length: n }, (_, i) => ({ id: `N${i}`, label: `ノード ${i}` }));
+  const edgesOf = (n) => Array.from({ length: n }, () => ({ from: 'N0', to: 'N1' }));
+  const figure = (kind, before, after = ok) => ({ kind, before, after, anchors });
+  const prev = adoptImplPrNotes({ serial: [] }, [{ diagram: figure('flowchart', ok), behavior_changes: ['前回'] }]);
+
+  // 上限ちょうどは採る（ラベルの字数は code point で数える）
+  const atLimit = {
+    nodes: [{ id: 'N0', label: '𠮷'.repeat(PR_DIAGRAM_LABEL_MAX) }, ...nodesOf(PR_DIAGRAM_NODES_MAX).slice(1)],
+    edges: [{ from: 'N0', to: 'N1', label: 'あ'.repeat(PR_DIAGRAM_LABEL_MAX) }, ...edgesOf(PR_DIAGRAM_EDGES_MAX - 1)],
+  };
+  assert.deepEqual(adoptImplPrNotes(prev, [{ diagram: figure('flowchart', atLimit) }]).diagram, figure('flowchart', atLimit));
+  const erAtLimit = {
+    nodes: [{ id: 'A', label: '利用者', attributes: Array.from({ length: PR_DIAGRAM_ATTRIBUTES_MAX }, (_, i) => ({ name: `c${i}`, type: 'text' })) }],
+    edges: [{ from: 'A', to: 'A', label: '紹介する', cardinality: 'many_to_many' }],
+  };
+  assert.deepEqual(adoptImplPrNotes(prev, [{ diagram: figure('er', erAtLimit, erAtLimit) }]).diagram, figure('er', erAtLimit, erAtLimit));
+
+  const rejected = {
+    'ノード 0 件': figure('flowchart', { nodes: [], edges: [] }),
+    'after のノード 0 件': figure('flowchart', ok, { nodes: [], edges: [] }),
+    'nodes が配列でない': figure('flowchart', { nodes: { id: 'A', label: '入口' }, edges: [] }),
+    'edges が無い': figure('flowchart', { nodes: ok.nodes }),
+    '辺の from がノード一覧に無い': figure('flowchart', { ...ok, edges: [{ from: 'X', to: 'B' }] }),
+    '辺の to がノード一覧に無い': figure('flowchart', { ...ok, edges: [{ from: 'A', to: 'X' }] }),
+    'after の辺が before にだけあるノードを指す': figure('flowchart', ok, { nodes: [{ id: 'A', label: '入口' }], edges: [{ from: 'A', to: 'B' }] }),
+    'ID が空白だけ': figure('flowchart', { nodes: [...ok.nodes, { id: ' \n', label: 'x' }], edges: [] }),
+    'ID が無い': figure('flowchart', { nodes: [...ok.nodes, { label: 'x' }], edges: [] }),
+    'ラベルが空白だけ': figure('flowchart', { nodes: [...ok.nodes, { id: 'C', label: '\t ' }], edges: [] }),
+    'ラベルが文字列でない': figure('flowchart', { nodes: [...ok.nodes, { id: 'C', label: 1 }], edges: [] }),
+    '辺のラベルが空白だけ': figure('flowchart', { ...ok, edges: [{ from: 'A', to: 'B', label: ' ' }] }),
+    'ID の重複': figure('flowchart', { nodes: [...ok.nodes, { id: 'A', label: '別の入口' }], edges: [] }),
+    'ノード 41 件': figure('flowchart', { nodes: nodesOf(PR_DIAGRAM_NODES_MAX + 1), edges: [] }),
+    '辺 61 件': figure('flowchart', { nodes: nodesOf(2), edges: edgesOf(PR_DIAGRAM_EDGES_MAX + 1) }),
+    'ノードのラベル 101 字': figure('flowchart', { nodes: [{ id: 'A', label: 'あ'.repeat(PR_DIAGRAM_LABEL_MAX + 1) }], edges: [] }),
+    '辺のラベル 101 字': figure('flowchart', { ...ok, edges: [{ from: 'A', to: 'B', label: 'x'.repeat(PR_DIAGRAM_LABEL_MAX + 1) }] }),
+    'ID 65 字': figure('flowchart', { nodes: [{ id: 'n'.repeat(PR_DIAGRAM_ANCHOR_NODE_MAX + 1), label: 'x' }], edges: [] }),
+    'enum 外の shape': figure('flowchart', { nodes: [{ id: 'A', label: '入口', shape: 'circle' }], edges: [] }),
+    'sequence のメッセージにラベルが無い': figure('sequence', { ...ok, edges: [{ from: 'A', to: 'B' }] }),
+    'er の関係に cardinality が無い': figure('er', ok),
+    'er の cardinality が enum 外': figure('er', { ...ok, edges: [{ from: 'A', to: 'B', label: '持つ', cardinality: 'one_to_two' }] }),
+    'er の属性 21 件': figure('er', { nodes: [{ id: 'A', label: '利用者', attributes: Array.from({ length: PR_DIAGRAM_ATTRIBUTES_MAX + 1 }, (_, i) => ({ name: `c${i}`, type: 'text' })) }], edges: [] }),
+    'er の属性の name が空白だけ': figure('er', { nodes: [{ id: 'A', label: '利用者', attributes: [{ name: ' ', type: 'text' }] }], edges: [] }),
+  };
+  for (const [name, diagram] of Object.entries(rejected)) {
+    const report = { diagram, behavior_changes: ['今回'], review_points: ['今回の点'], out_of_scope: ['範囲外'], pr_notes: [{ section: 'measurement', text: '計測値' }] };
+    const adopted = adoptImplPrNotes({ serial: [] }, [report]);
+    assert.ok(!('diagram' in adopted), `${name}: 不正な図を採っている`);
+    assert.deepEqual(adopted.behavior_changes, ['今回'], `${name}: 同じ報告の behavior_changes を取り込んでいない`);
+    assert.deepEqual(adopted.review_points, ['今回の点'], `${name}: 同じ報告の review_points を取り込んでいない`);
+    assert.deepEqual(adopted.out_of_scope, ['範囲外'], `${name}: 同じ報告の out_of_scope を取り込んでいない`);
+    assert.deepEqual(adopted.pr_notes, [{ section: 'measurement', text: '計測値' }], `${name}: 同じ報告の pr_notes を取り込んでいない`);
+    const body = buildPrBody({ issue: 1, req: req(), plan: plan(adopted), testsurfHits: [], dangerHits: [] });
+    assert.ok(!body.includes(PR_BODY_DIAGRAM_HEADING) && !body.includes('```mermaid'), `${name}: 構成の変化の節が出ている:\n${body}`);
+    assert.ok(body.includes(`${PR_BODY_CHANGES_HEADING}\n- 今回`), `${name}: 何が変わるかが出ていない`);
+    // 有効な図を 1 度返していれば、差し戻しの後の不正な図では前回分を残す
+    assert.deepEqual(adoptImplPrNotes(prev, [report]).diagram, prev.diagram, `${name}: 前回分の図を保持していない`);
+  }
 });
 
 test('[pr-artifacts] adoptImplPrNotes: anchors が無い・0 件・41 件以上・長すぎる node / ref を含む図は採らず前回分を保持し、同じ報告の他のフィールドは取り込む', () => {
   assert.deepEqual([PR_DIAGRAM_ANCHORS_MAX, PR_DIAGRAM_ANCHOR_NODE_MAX, PR_DIAGRAM_ANCHOR_REF_MAX], [40, 64, 200]);
-  const figure = { kind: 'flowchart', before: 'flowchart LR\n  A', after: 'flowchart LR\n  A-->B' };
+  const figure = { kind: 'flowchart', before: { nodes: [{ id: 'A', label: '入口' }], edges: [] }, after: { nodes: [{ id: 'A', label: '入口' }, { id: 'B', label: '結果' }], edges: [{ from: 'A', to: 'B' }] } };
   const many = (n) => Array.from({ length: n }, (_, i) => ({ node: `N${i}`, ref: `src/n.mjs:f${i}` }));
   const prev = adoptImplPrNotes({ serial: [] }, [{ diagram: { ...figure, anchors: [{ node: 'A', ref: 'src/prev.mjs:prev' }] }, behavior_changes: ['前回'], review_points: ['前回の点'] }]);
   // 上限ちょうどは採る（字数は code point で数える）
@@ -588,7 +703,7 @@ test('[pr-artifacts] adoptImplPrNotes: anchors が無い・0 件・41 件以上�
 test('[pr-artifacts] PR body: anchors は diagram_check が一致・未照合のどちらの本文にも出さない', () => {
   for (const check of [{ consistent: true, mismatches: [] }, undefined, null]) {
     const body = diagramBody({}, check);
-    assert.ok(body.includes(DIAGRAM.after), `図が載っていない:\n${body}`);
+    assert.ok(body.includes(DIAGRAM_AFTER_SRC), `図が載っていない:\n${body}`);
     for (const a of DIAGRAM_ANCHORS) assert.ok(!body.includes(a.ref), `anchors の ref が本文に出ている（${a.ref}）:\n${body}`);
     assert.ok(!body.includes('anchors'), body);
   }
@@ -727,19 +842,22 @@ test('[pr-artifacts] PR body: diagram_check が食い違いなら図を出さず
   assert.equal(PR_BODY_DIAGRAM_MISMATCH, '⚠️ 図は diff と食い違ったため載せていない');
   const body = diagramBody({}, { consistent: false, mismatches: ['after の E --> B は diff に無い', ' diff の\nC 追加が図に無い '] });
   assert.equal(diagramSectionOf(body), `${PR_BODY_DIAGRAM_HEADING}\n${PR_BODY_DIAGRAM_MISMATCH}\n- after の E --> B は diff に無い\n- diff の C 追加が図に無い`);
-  assert.ok(!body.includes('```mermaid') && !body.includes(DIAGRAM.after), `食い違った図が載っている:\n${body}`);
+  assert.ok(!body.includes('```mermaid') && !body.includes(DIAGRAM_AFTER_SRC), `食い違った図が載っている:\n${body}`);
   assertBodyStructureIntact(body, 1);
   assert.equal(diagramSectionOf(diagramBody({}, { consistent: false })), `${PR_BODY_DIAGRAM_HEADING}\n${PR_BODY_DIAGRAM_MISMATCH}`, 'mismatches が無くても図は出さない');
 });
 
-test('[pr-artifacts] PR body: before の ``` ・<!-- ・Closes 行は無害化し、中のバッククォートより長いフェンスで囲んで本文の構造を壊させない', () => {
-  const Z = String.fromCharCode(0x200b);
-  const hostile = 'flowchart LR\n```\n</details>\n<!-- 閉じない\nCloses #1\n````\nA-->B';
+test('[pr-artifacts] PR body: ラベルの ``` ・</details>・<!-- ・Closes 行は図のフェンスを閉じず、本文の構造を壊させない', () => {
+  const hostile = '```\n</details>\n<!-- 閉じない\nCloses #1\n````';
+  const side = { nodes: [{ id: 'A', label: hostile }, { id: 'B', label: 'Closes #1' }], edges: [{ from: 'A', to: 'B', label: hostile }] };
   for (const check of [undefined, { consistent: true, mismatches: [] }]) {
-    const body = diagramBody({ diagram: { ...DIAGRAM, before: hostile } }, check);
+    const body = diagramBody({ diagram: { ...DIAGRAM, before: side } }, check);
     const section = diagramSectionOf(body);
-    assert.ok(section.includes(`\`\`\`\`\`mermaid\nflowchart LR\n\`\`\`\n<${Z}/details>\n<!${Z}-- 閉じない\n${Z}Closes #1\n\`\`\`\`\nA-->B\n\`\`\`\`\`\n\n**after**`), `before が長いフェンスの中にコードとして収まっていない:\n${section}`);
-    assert.ok(section.endsWith(`\`\`\`mermaid\n${DIAGRAM.after}\n\`\`\``), 'after は通常のフェンスのまま');
+    // before のフェンスは開いた ``` の次の行頭の ``` で閉じ、その中に行頭のフェンス記号・Closes 行が無い
+    const before = section.slice(section.indexOf('```mermaid\n'), section.indexOf('\n\n**after**'));
+    assert.deepEqual(before.split('\n').filter((l) => /^ {0,3}(`{3,}|~{3,})/.test(l)), ['```mermaid', '```'], before);
+    assert.ok(!/^Closes #/m.test(before) && !before.includes('<'), before);
+    assert.ok(section.endsWith(`\`\`\`mermaid\n${DIAGRAM_AFTER_SRC}\n\`\`\``), 'after は入力どおりの図');
     assert.equal((body.match(/<\/details>/g) ?? []).length, 3, '閉じタグは builder が置いた 3 個だけ');
     assertBodyStructureIntact(body, 1);
   }
@@ -1439,19 +1557,38 @@ test('[pr-artifacts] dev-flow.js: IMPL schema は behavior_changes / review_poin
   for (const [v, err] of cases) assert.deepEqual(schemaErrors(schema, v), [err]);
 });
 
-test('[pr-artifacts] dev-flow.js / dev-flow-evaluate.js: IMPL schema の diagram は null か {kind, before, after, anchors?}（kind は enum、before / after は各 1500 字以内、anchors は任意で件数・長さの上限なし）', async () => {
+test('[pr-artifacts] dev-flow.js / dev-flow-evaluate.js: IMPL schema の diagram は null か {kind, before, after, anchors?}（kind は enum、before / after は {nodes, edges} の object で中の不備は schema 違反にしない、anchors は任意で件数・長さの上限なし）', async () => {
   const { ctx, calls } = makeDevFlowSandbox();
   const { error } = await runWorkflowCapture(devFlowSrc, ctx);
   assertNoCrash(error, 'impl schema diagram');
   const schema = calls.find((c) => c.label === 'impl:serial:issue-1')?.schema;
   assert.ok(schema?.properties?.diagram, 'IMPL schema に diagram が無い');
   const ok = { status: 'DONE', task_id: 'issue-1' };
-  const d = { kind: 'flowchart', before: 'あ'.repeat(1500), after: 'b'.repeat(1500) };
+  const side = { nodes: [{ id: 'A', label: '入口', shape: 'decision', attributes: [{ name: 'id', type: 'uuid' }] }, { id: 'B', label: '結果' }], edges: [{ from: 'A', to: 'B', label: '進む', cardinality: 'one_to_many' }] };
+  const d = { kind: 'flowchart', before: side, after: side };
   assert.deepEqual(schemaErrors(schema, { ...ok, diagram: null }), []);
   for (const kind of PR_DIAGRAM_KINDS) assert.deepEqual(schemaErrors(schema, { ...ok, diagram: { ...d, kind } }), []);
   assert.deepEqual(PR_DIAGRAM_KINDS, ['flowchart', 'sequence', 'er']);
-  // anchors は [{node, ref}] の任意のプロパティ。不備（無い・上限超え）で schema 違反にすると実装 agent の報告全体が落ちるので、
-  // 件数・長さは schema で縛らず adoptImplPrNotes が図だけを落とす
+  // before / after は nodes（{id, label, shape?, attributes?}）と edges（{from, to, label?, cardinality?}）の object
+  for (const k of ['before', 'after']) {
+    const s = schema.properties.diagram.properties[k];
+    assert.equal(s.type, 'object');
+    assert.deepEqual(Object.keys(s.properties), ['nodes', 'edges']);
+    assert.deepEqual(Object.keys(s.properties.nodes.items.properties), ['id', 'label', 'shape', 'attributes']);
+    assert.deepEqual(Object.keys(s.properties.edges.items.properties), ['from', 'to', 'label', 'cardinality']);
+  }
+  // 図の中身の不備（ノード 0 件・無い ID を指す辺・空白だけの ID / ラベル・上限超過・enum 外）で schema 違反にすると実装 agent の
+  // 報告全体が落ちるので、schema では縛らず adoptImplPrNotes が図だけを落とす
+  const nodesOf = (n) => Array.from({ length: n }, (_, i) => ({ id: `N${i}`, label: 'x' }));
+  for (const loose of [
+    { nodes: [], edges: [] },
+    {},
+    { nodes: [{ id: 'A', label: '入口' }], edges: [{ from: 'X', to: 'A' }] },
+    { nodes: [{ id: ' ', label: '\n' }], edges: [] },
+    { nodes: nodesOf(PR_DIAGRAM_NODES_MAX + 1), edges: Array.from({ length: PR_DIAGRAM_EDGES_MAX + 1 }, () => ({ from: 'N0', to: 'N1' })) },
+    { nodes: [{ id: 'A', label: 'あ'.repeat(PR_DIAGRAM_LABEL_MAX + 1), shape: 'circle' }], edges: [{ from: 'A', to: 'A', cardinality: 'one_to_two' }] },
+  ]) assert.deepEqual(schemaErrors(schema, { ...ok, diagram: { ...d, before: loose } }), [], JSON.stringify(loose).slice(0, 120));
+  // anchors は [{node, ref}] の任意のプロパティ。不備（無い・上限超え）も同じ理由で schema では縛らない
   assert.equal(JSON.stringify(schema.properties.diagram.properties.anchors), JSON.stringify({
     type: 'array',
     items: { type: 'object', properties: { node: { type: 'string' }, ref: { type: 'string' } } },
@@ -1464,9 +1601,10 @@ test('[pr-artifacts] dev-flow.js / dev-flow-evaluate.js: IMPL schema の diagram
   assert.deepEqual(schemaErrors(schema, { ...ok, diagram: { ...d, anchors: [{ node: 'n'.repeat(PR_DIAGRAM_ANCHOR_NODE_MAX + 1), ref: 'r'.repeat(PR_DIAGRAM_ANCHOR_REF_MAX + 1) }] } }), [], '長い node / ref');
   const cases = [
     [{ ...d, kind: 'gantt' }, '$.diagram.kind: enum'],
-    [{ ...d, before: 'あ'.repeat(1501) }, '$.diagram.before: maxLength 1500'],
-    [{ ...d, after: 'b'.repeat(1501) }, '$.diagram.after: maxLength 1500'],
-    [{ kind: 'er', before: 'x' }, '$.diagram: required after'],
+    // Mermaid の文は object ではないので schema で差し戻す
+    [{ ...d, before: 'flowchart LR\n  A --> B' }, '$.diagram.before: type string'],
+    [{ ...d, after: 'flowchart LR\n  A --> B' }, '$.diagram.after: type string'],
+    [{ kind: 'er', before: side }, '$.diagram: required after'],
     ['flowchart LR', '$.diagram: type string'],
   ];
   for (const [diagram, err] of cases) assert.deepEqual(schemaErrors(schema, { ...ok, diagram }), [err]);
@@ -1483,8 +1621,14 @@ test('[pr-artifacts] agents/dev-implementer.md: diagram を返す条件（2 フ�
   assert.ok(rule.includes('変更が 2 つ以上のファイルにまたがり、ファイル間の呼び出し・データの流れ・構成要素が増減または付け替わるときは、`diagram` に `{kind, before, after, anchors}` を返す'), rule);
   assert.match(rule, /それ以外（[^）]*）は `null` を返す/);
   for (const kind of PR_DIAGRAM_KINDS) assert.ok(rule.includes(`\`${kind}\``), `kind ${kind} の説明が無い`);
-  assert.ok(rule.includes('各 1500 字以内'), rule);
-  assert.ok(md.includes('"diagram": {"kind": "flowchart | sequence | er"'), '返す JSON の例に diagram が無い');
+  // before / after は図の文ではなく構造化データで返させ、案内する上限は取り込みの上限と同じ
+  assert.ok(rule.includes('`before` は変更前、`after` は変更後を、図の文ではなくノードと辺の構造化データ `{nodes: [{id, label}], edges: [{from, to, label}]}` で返す'), rule);
+  assert.ok(rule.includes('`edges` の `from` / `to` は同じ側の `nodes` の `id` を指し、before と after で同じノードには同じ `id` とラベルを使う'), rule);
+  assert.ok(rule.includes(`\`shape\`（${PR_DIAGRAM_NODE_SHAPES.map((x) => `\`${x}\``).join(' か ')}。省略は \`box\`）`), rule);
+  assert.ok(rule.includes(`\`cardinality\` は ${PR_DIAGRAM_CARDINALITIES.map((x) => `\`${x}\``).join(' / ')}`), rule);
+  assert.ok(rule.includes(`上限は before・after のそれぞれでノード ${PR_DIAGRAM_NODES_MAX} 件・辺 ${PR_DIAGRAM_EDGES_MAX} 件、ラベル 1 件 ${PR_DIAGRAM_LABEL_MAX} 字（\`id\` は ${PR_DIAGRAM_ANCHOR_NODE_MAX} 字、\`attributes\` は 1 エンティティ ${PR_DIAGRAM_ATTRIBUTES_MAX} 件）`), '案内する上限が取り込みの上限と違う');
+  assert.ok(!/mermaid/i.test(md), 'Mermaid の文を書かせる指示が残っている');
+  assert.ok(md.includes('"diagram": {"kind": "flowchart | sequence | er", "before": {"nodes": [{"id": '), '返す JSON の例の diagram が構造化データの形でない');
 });
 
 test('[pr-artifacts] agents/dev-implementer.md: 図は振る舞い・条件・状態の言葉で描かせ、ファイル・関数は anchors に書かせる', () => {
@@ -1495,7 +1639,7 @@ test('[pr-artifacts] agents/dev-implementer.md: 図は振る舞い・条件・�
   assert.ok(rule.includes('ノードのラベルは振る舞い・条件・状態の言葉で書き、ファイル名・関数名をラベルにしない'), rule);
   // anchors
   assert.ok(rule.includes('ファイル・関数は `anchors` に書き、図のすべてのノード（sequence は参加者、er はエンティティ）に anchor を付ける（before にだけあるノードは base 側の場所を指す）'), rule);
-  assert.ok(rule.includes('`node` は図のノード ID・参加者名・エンティティ名、`ref` は `<repo 相対パス>:<関数・定数・テーブル等の名前>`'), rule);
+  assert.ok(rule.includes('`node` は `nodes` の `id`、`ref` は `<repo 相対パス>:<関数・定数・テーブル等の名前>`'), rule);
   assert.ok(rule.includes(`\`node\` ${PR_DIAGRAM_ANCHOR_NODE_MAX} 字・\`ref\` ${PR_DIAGRAM_ANCHOR_REF_MAX} 字・${PR_DIAGRAM_ANCHORS_MAX} 件まで`), '案内する上限が取り込みの上限と違う');
   // 描く要素
   for (const element of [
