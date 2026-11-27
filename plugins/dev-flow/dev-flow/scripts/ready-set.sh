@@ -42,6 +42,8 @@ PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ISSUE_BLOCKERS="$PLUGIN_ROOT/_lib/scripts/issue-blockers.sh"
 # shellcheck source=../../_shared/scripts/devflow-config.sh
 source "$PLUGIN_ROOT/_shared/scripts/devflow-config.sh"
+# shellcheck source=../../_shared/scripts/gh-stdout.sh
+source "$PLUGIN_ROOT/_shared/scripts/gh-stdout.sh"
 
 die() {
     local code="$1" msg="$2"
@@ -75,7 +77,7 @@ REPO_ARGS=()
 [[ -n "$REPO" ]] && REPO_ARGS=(--repo "$REPO")
 
 if [[ -n "$LABEL" ]]; then
-    if ! LIST_RAW="$(gh issue list "${REPO_ARGS[@]+"${REPO_ARGS[@]}"}" --label "$LABEL" --state open --limit 1000 --json number 2>&1)"; then
+    if ! LIST_RAW="$(gh_stdout issue list "${REPO_ARGS[@]+"${REPO_ARGS[@]}"}" --label "$LABEL" --state open --limit 1000 --json number)"; then
         die 1 "label ${LABEL} の open issue 一覧を取得できない: $(oneline "$LIST_RAW")"
     fi
     LABELED="$(printf '%s' "$LIST_RAW" | jq -r '
@@ -115,7 +117,7 @@ has_branch_of() { grep -qE -- "$(devflow_branch_regex "$BRANCH_FORMAT" "$1")" <<
 USER_CANDIDATES="$(printf '%s\n' "${CANDIDATES[@]+"${CANDIDATES[@]}"}" | sort -n -u)"
 PR_HEADS=""
 if [[ "$WITH_IN_FLIGHT" == 1 ]]; then
-    if ! PR_RAW="$(gh pr list "${REPO_ARGS[@]+"${REPO_ARGS[@]}"}" --state open --limit 1000 --json headRefName 2>&1)"; then
+    if ! PR_RAW="$(gh_stdout pr list "${REPO_ARGS[@]+"${REPO_ARGS[@]}"}" --state open --limit 1000 --json headRefName)"; then
         die 1 "open PR 一覧を取得できない: $(oneline "$PR_RAW")"
     fi
     PR_HEADS="$(printf '%s' "$PR_RAW" | jq -r '
@@ -163,7 +165,7 @@ IN_FLIGHT='[]'
 WAITING='[]'
 while IFS= read -r N; do
     [[ -z "$N" ]] && continue
-    if ! VIEW_RAW="$(gh issue view "$N" "${REPO_ARGS[@]+"${REPO_ARGS[@]}"}" --json number,title,state,labels,body,url,closedByPullRequestsReferences 2>&1)"; then
+    if ! VIEW_RAW="$(gh_stdout issue view "$N" "${REPO_ARGS[@]+"${REPO_ARGS[@]}"}" --json number,title,state,labels,body,url,closedByPullRequestsReferences)"; then
         die 1 "#${N} を取得できない: $(oneline "$VIEW_RAW")"
     fi
     # closedByPullRequestsReferences は既定で close 済み PR を含まない。state が載っていれば OPEN だけ数える

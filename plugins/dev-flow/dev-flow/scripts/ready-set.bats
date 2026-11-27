@@ -23,6 +23,10 @@ setup() {
     cat >"$WORK/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$GH_LOG"
+# GH_STUB_HINT: gh 2.105.0 がエージェント環境で成功した呼び出しにも stderr へ出す案内を真似る
+if [[ -n "${GH_STUB_HINT:-}" ]]; then
+    echo "hint: if you need to wait for this pull request to be reviewed, merged, or closed before continuing, use this instead of polling:" >&2
+fi
 if [[ "$1" == "api" && "$2" == */dependencies/blocked_by* ]]; then
     if [[ -n "${GH_STUB_DEPS_FAIL:-}" ]]; then
         echo "$GH_STUB_DEPS_FAIL" >&2
@@ -59,7 +63,7 @@ STUB
     chmod +x "$WORK/bin/gh"
     export GH_LOG GH_STUB_ISSUES_DIR GH_STUB_DEPS_DIR
     unset GH_STUB_FAIL_ISSUE GH_STUB_LIST_FIXTURE GH_STUB_LIST_FAIL GH_STUB_DEPS_FAIL GIT_DIR GIT_WORK_TREE \
-        GH_STUB_PR_LIST_FIXTURE GH_STUB_PR_LIST_FAIL
+        GH_STUB_PR_LIST_FIXTURE GH_STUB_PR_LIST_FAIL GH_STUB_HINT
     export PATH="$WORK/bin:$PATH"
 
     # local branch / worktree を読む cwd の git repo
@@ -381,6 +385,18 @@ pr_heads() {
     echo "$output" | jq -e '.in_flight == [{number: 110, reason: "open_pr"}] and [.launch[].number] == [112]
         and .waiting == [{number: 111, reason: "path_conflict", detail: "#110"}]'
     grep -q '^pr list --repo acme/skills --state open --limit 1000 --json headRefName$' "$GH_LOG"
+}
+
+@test "ready-set: gh が成功して stderr に案内を出しても issue 一覧・open PR 一覧・issue を JSON として読む（stdout だけを読む）" {
+    pr_heads feature/issue-120
+    issue 120 "pkg/a"
+    issue 121 "pkg/a/x.sh"
+    issue 122 "pkg/b"
+    printf '%s' '[{"number": 121}]' >"$WORK/list.json"
+    GH_STUB_HINT=1 GH_STUB_LIST_FIXTURE="$WORK/list.json" ready_set --with-in-flight --label dev-ready 122
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and .in_flight == [{number: 120, reason: "open_pr"}] and [.launch[].number] == [122]
+        and .waiting == [{number: 121, reason: "path_conflict", detail: "#120"}]'
 }
 
 @test "ready-set: --with-in-flight は一致した head の後ろに 64KB を超える head が続いても in_flight open_pr にする" {
