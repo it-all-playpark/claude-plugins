@@ -110,12 +110,19 @@ issue の受入条件（AC）をすべて満たす変更を worktree に残し�
   描く要素は次の 5 つ: 入口（誰のどの操作）→結果／経路が分かれる条件と、旧経路が残るか／消える・止まる経路／
   失敗時の扱い（エラー・黙って skip・人間に返す）／書き込む状態・外部への作用。`kind` は、利用者の操作の流れが変わる
   変更は `sequence`、条件で経路が分かれる変更は `flowchart`、データの構造の変更は `er`。`before` は変更前、`after` は
-  変更後を、Mermaid の本文（`flowchart LR` / `sequenceDiagram` / `erDiagram` の宣言行から始まるソース。
-  コードフェンスは付けない）で各 1500 字以内に書き、before と after で同じノードには同じ ID とラベルを使う。
+  変更後を、図の文ではなくノードと辺の構造化データ `{nodes: [{id, label}], edges: [{from, to, label}]}` で返す
+  （図の文はパイプラインがこのデータから組み立てる。`id` は英数字の短い名前、`label` は 1 行の文で、記号はそのまま書いてよい）。
+  `edges` の `from` / `to` は同じ側の `nodes` の `id` を指し、before と after で同じノードには同じ `id` とラベルを使う。
+  `flowchart` はノードに `shape`（`box` か `decision`。省略は `box`）を付けられ、条件で分かれる経路は `decision` のノードで描く
+  （辺の `label` は省略できる）。`sequence` は `nodes` が参加者、`edges` がメッセージ（上から順に並べ、`label` は必須）。
+  `er` は `nodes` がエンティティ（`attributes: [{name, type}]` を持てる。`name` / `type` は英数字・`_`・日本語で書く）、
+  `edges` が関係（`label` と `cardinality` は必須。`cardinality` は `one_to_one` / `one_to_many` / `many_to_many`）。
+  上限は before・after のそれぞれでノード 40 件・辺 60 件、ラベル 1 件 100 字（`id` は 64 字、`attributes` は 1 エンティティ 20 件）。
   ファイル・関数は `anchors` に書き、図のすべてのノード（sequence は参加者、er はエンティティ）に anchor を付ける
-  （before にだけあるノードは base 側の場所を指す）。anchor は `{node, ref}` で、`node` は図のノード ID・参加者名・
-  エンティティ名、`ref` は `<repo 相対パス>:<関数・定数・テーブル等の名前>`（`node` 64 字・`ref` 200 字・40 件まで）。
+  （before にだけあるノードは base 側の場所を指す）。anchor は `{node, ref}` で、`node` は `nodes` の `id`、
+  `ref` は `<repo 相対パス>:<関数・定数・テーブル等の名前>`（`node` 64 字・`ref` 200 字・40 件まで）。
   `anchors` は PR 本文には載らず、evaluator が各ノードの記述を anchor 先のコードと照合する。
+  形が不正な図（ノード 0 件・辺が `nodes` に無い `id` を指す・`id` かラベルが空白だけ・上限超過）、
   `anchors` が無い・上限を超えた図と、照合で食い違った図は PR 本文に載らない。差し戻しで構成が変わったら図も
   描き直して返す（`null` なら前回分が残る。正当化クラス: contract）
 - **範囲外にした作業は `out_of_scope` で返す。** issue 本文（背景・変更内容・削除するもの等）に挙がっているが
@@ -181,7 +188,7 @@ status は正直に付ける。動かないものを `DONE` にしない（正�
   "pr_notes": [{"section": "measurement | verification", "text": "PR 本文「検証」に載せる計測値・検証結果（条件と数値を書く。234 字以内）"}],
   "pr_sections": [{"heading": "PR 本文の折りたたみ見出し（80 字以内）", "markdown": "対応表など複数行の markdown（改行保持・切られない。合計 3000 字以内）"}],
   "out_of_scope": ["PR 本文・終端サマリー「この PR に含めなかったもの」に載せる、issue 本文にあるが実施しなかった作業と理由（1 項目 1 文・198 字以内）"],
-  "diagram": {"kind": "flowchart | sequence | er", "before": "変更前の振る舞いの Mermaid 本文（1500 字以内）", "after": "変更後の振る舞いの Mermaid 本文（1500 字以内）", "anchors": [{"node": "図のノード ID・参加者名・エンティティ名", "ref": "<repo 相対パス>:<関数・定数・テーブル等の名前>"}]},
+  "diagram": {"kind": "flowchart | sequence | er", "before": {"nodes": [{"id": "変更前のノードの id", "label": "振る舞い・条件・状態の言葉（100 字以内）"}], "edges": [{"from": "nodes の id", "to": "nodes の id", "label": "矢印に添える言葉（100 字以内）"}]}, "after": {"nodes": [{"id": "変更後のノードの id", "label": "振る舞い・条件・状態の言葉（100 字以内）", "shape": "box | decision"}], "edges": [{"from": "nodes の id", "to": "nodes の id", "label": "矢印に添える言葉（100 字以内）"}]}, "anchors": [{"node": "nodes の id", "ref": "<repo 相対パス>:<関数・定数・テーブル等の名前>"}]},
   "blocking_reason": null,
   "missing_context": null
 }

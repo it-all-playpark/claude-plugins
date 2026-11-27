@@ -106,7 +106,7 @@ export const PR_BODY_OUT_OF_SCOPE_MAX = 5;
 // 見える部分（`<details>` の外）の見出し。結論行と Closes 行の間にこの順で、材料が非空のときだけ出す。
 export const PR_BODY_CHANGES_HEADING = '## 何が変わるか';
 export const PR_BODY_REVIEW_POINTS_HEADING = '## 人間に見てほしい点';
-// `## 何が変わるか` の直後に出す構成の変化の図（plan.diagram。dev-implementer が描いた before / after の Mermaid）。
+// `## 何が変わるか` の直後に出す構成の変化の図（plan.diagram。dev-implementer が返した before / after の構造化データ）。
 // 書き手の図をそのまま載せると、実装とずれた図を人間が信じて merge するので、evaluator の diagram_check（realized diff との
 // 照合）で出し分ける: 一致なら図だけ、照合が無ければ未照合の 1 行と図、食い違いなら図を出さず食い違いの箇条書きだけ。
 // anchors は evaluator の照合の手がかりで、本文には出さない（人間が読むのは振る舞いの図）。
@@ -114,7 +114,18 @@ export const PR_BODY_DIAGRAM_HEADING = '## 構成の変化';
 export const PR_BODY_DIAGRAM_UNVERIFIED = '⚠️ 図は diff と未照合';
 export const PR_BODY_DIAGRAM_MISMATCH = '⚠️ 図は diff と食い違ったため載せていない';
 export const PR_DIAGRAM_KINDS = ['flowchart', 'sequence', 'er'];
-// 図の anchors（[{node, ref}]。node は図のノード ID・参加者名・エンティティ名、ref は `<repo 相対パス>:<名前>`）の上限。
+// 図の before / after は Mermaid の文ではなく構造化データ（{nodes: [{id, label}], edges: [{from, to, label}]}）で受け取り、
+// Mermaid の本文は diagramMermaid が組み立てる — 書き手の ID・ラベルをそのまま文に置くと、予約語（call・end 等）や記号で
+// 構文エラーになり図が描画されない。sequence の nodes は参加者・edges はメッセージ、er の nodes はエンティティ・edges は関係。
+// 上限は before・after のそれぞれに掛ける。ラベルの字数は空白を 1 つに畳んだ後の code point 数（er の属性の name / type も同じ）。
+// 形の不備・上限超過は IMPL schema ではなく diagramOf が見る — 落とすのは図だけにする。
+export const PR_DIAGRAM_NODES_MAX = 40;
+export const PR_DIAGRAM_EDGES_MAX = 60;
+export const PR_DIAGRAM_LABEL_MAX = 100;
+export const PR_DIAGRAM_ATTRIBUTES_MAX = 20;
+export const PR_DIAGRAM_NODE_SHAPES = ['box', 'decision'];
+export const PR_DIAGRAM_CARDINALITIES = ['one_to_one', 'one_to_many', 'many_to_many'];
+// 図の anchors（[{node, ref}]。node は構造化データのノードの id、ref は `<repo 相対パス>:<名前>`）の上限。ノードの id の字数も node と同じ。
 // ノードのラベルは振る舞いの言葉で書かれるので、evaluator はこの anchors を手がかりに図を realized diff と照合する。
 // 上限は IMPL schema ではなく diagramOf が見る — 超えた・欠けた anchors で落とすのは図だけにする。
 export const PR_DIAGRAM_ANCHORS_MAX = 40;
@@ -208,8 +219,8 @@ const PR_NOTE_LABELS = { verification: '検証', measurement: '計測' };
 // behavior_changes（何が変わるか）/ review_points（人間に見てほしい点）は [string] を 1 行に畳んで同じ規則で
 // plan に取り込み、PR body の見える部分の材料にする（issue #928）。
 // diagram（{kind, before, after, anchors}。構成の変化の図）は最後に返された有効な 1 件を plan.diagram に取り込む。null・kind が
-// enum 外・before / after が空・anchors が不備（diagramAnchorsOf）の報告は前回分を保持する。採らないのは図だけで、
-// 同じ報告の他のフィールドは上の規則で取り込む。
+// enum 外・before / after の形が不正（diagramSideOf。Mermaid の文を含む）・anchors が不備（diagramAnchorsOf）の報告は
+// 前回分を保持する。採らないのは図だけで、同じ報告の他のフィールドは上の規則で取り込む。
 export function adoptImplPrNotes(plan, results) {
   const decisions = [];
   const notes = [];
@@ -254,10 +265,68 @@ export function adoptImplPrNotes(plan, results) {
 
 function diagramOf(d) {
   if (d == null || typeof d !== 'object' || !PR_DIAGRAM_KINDS.includes(d.kind)) return null;
-  const before = sectionMarkdown(d.before);
-  const after = sectionMarkdown(d.after);
+  const before = diagramSideOf(d.kind, d.before);
+  const after = diagramSideOf(d.kind, d.after);
   const anchors = diagramAnchorsOf(d.anchors);
   return before && after && anchors ? { kind: d.kind, before, after, anchors } : null;
+}
+
+// 図の id・ラベルの正規化。制御文字と改行・連続空白を 1 空白に畳む（Mermaid の文は 1 行 1 文なので、改行を残すと文が割れる）。
+// 文字列でない・空白だけ・上限超過は null。
+function diagramText(v, max) {
+  if (typeof v !== 'string') return null;
+  const text = collapseWhitespace(v.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' '));
+  return text && [...text].length <= max ? text : null;
+}
+
+// before / after の片側の正規化。次のどれかに当たる図は null = 図ごと採らない: nodes / edges が配列でない・ノード 0 件・
+// 上限超過・id かラベルが空白だけ・id の重複・辺が nodes に無い id を指す・enum 外の shape / cardinality。
+// 辺のラベルは flowchart では省略でき、sequence（メッセージ）と er（関係）では必須（Mermaid の文がラベルを要る）。
+function diagramSideOf(kind, side) {
+  if (side == null || typeof side !== 'object' || !Array.isArray(side.nodes) || !Array.isArray(side.edges)) return null;
+  if (side.nodes.length === 0 || side.nodes.length > PR_DIAGRAM_NODES_MAX || side.edges.length > PR_DIAGRAM_EDGES_MAX) return null;
+  const nodes = [];
+  for (const n of side.nodes) {
+    const id = diagramText(n?.id, PR_DIAGRAM_ANCHOR_NODE_MAX);
+    const label = diagramText(n?.label, PR_DIAGRAM_LABEL_MAX);
+    if (!id || !label || nodes.some((x) => x.id === id)) return null;
+    const node = { id, label };
+    if (kind === 'flowchart' && n.shape != null) {
+      if (!PR_DIAGRAM_NODE_SHAPES.includes(n.shape)) return null;
+      node.shape = n.shape;
+    }
+    if (kind === 'er' && n.attributes != null) {
+      const attributes = diagramAttributesOf(n.attributes);
+      if (!attributes) return null;
+      if (attributes.length) node.attributes = attributes;
+    }
+    nodes.push(node);
+  }
+  const edges = [];
+  for (const e of side.edges) {
+    const from = diagramText(e?.from, PR_DIAGRAM_ANCHOR_NODE_MAX);
+    const to = diagramText(e?.to, PR_DIAGRAM_ANCHOR_NODE_MAX);
+    if (!nodes.some((n) => n.id === from) || !nodes.some((n) => n.id === to)) return null;
+    const edge = { from, to };
+    if (kind !== 'flowchart' || e.label != null) {
+      const label = diagramText(e.label, PR_DIAGRAM_LABEL_MAX);
+      if (!label) return null;
+      edge.label = label;
+    }
+    if (kind === 'er') {
+      if (!PR_DIAGRAM_CARDINALITIES.includes(e.cardinality)) return null;
+      edge.cardinality = e.cardinality;
+    }
+    edges.push(edge);
+  }
+  return { nodes, edges };
+}
+
+// er のエンティティの属性（[{name, type}]）。
+function diagramAttributesOf(v) {
+  if (!Array.isArray(v) || v.length > PR_DIAGRAM_ATTRIBUTES_MAX) return null;
+  const attributes = v.map((a) => ({ name: diagramText(a?.name, PR_DIAGRAM_LABEL_MAX), type: diagramText(a?.type, PR_DIAGRAM_LABEL_MAX) }));
+  return attributes.some((a) => !a.name || !a.type) ? null : attributes;
 }
 
 // anchors の正規化。node か ref が空白だけの項目は落とす。照合の手がかりが無い図（anchors が無い・落とした結果 0 件）と、
@@ -345,7 +414,58 @@ function outOfScopeSection(plan) {
   return excess > 0 ? `${bulletList(shown)}\n（他 ${excess} 件）` : bulletList(shown);
 }
 
-// 図の本文（before / after）は PR の作者が書けるデータなので、`<details>` の中と同じ無害化を掛けてから、中のバッククォートの
+// ラベルを Mermaid の文に置く形。英数字・空白・非 ASCII 以外（記号）はすべて mermaid のエンティティ記法（`#<code point>;`）にする —
+// 引用符・括弧・矢印・`;`・`#`・バッククォート・HTML タグが Mermaid の構文として読まれず、描画では入力の文字のまま見える。
+function mermaidLabel(text) {
+  return text.replace(/[^A-Za-z0-9 \u0080-\uffff]/g, (c) => `#${c.codePointAt(0)};`);
+}
+
+// er の属性の name / type は Mermaid の文で引用できず、エンティティ記法も効かないので、Mermaid が語として読める文字
+// （英数字・`_`・U+00C0 以降）以外を `_` に置き換える。数字始まりとキー指定（PK / FK / UK）に読まれる語は先頭に `_` を付ける。
+function mermaidErWord(text) {
+  const word = text.replace(/[^A-Za-z0-9_\u00c0-\uffff]/g, '_');
+  return /^(?:[0-9]|(?:PK|FK|UK)(?![A-Za-z0-9_]))/i.test(word) ? `_${word}` : word;
+}
+
+// 入力の id → Mermaid の文で使う id（n1, n2, …。before・after の順に初出で振る）。入力の id を文に置かないので予約語と衝突せず、
+// before と after で同じ入力 id は同じ出力 id になる。
+function diagramOutputIds(d) {
+  const ids = new Map();
+  let count = 0;
+  for (const n of [...d.before.nodes, ...d.after.nodes]) {
+    if (!ids.has(n.id)) ids.set(n.id, `n${ids.size + 1}`);
+  }
+  return ids;
+}
+
+// 構造化データ（diagramOf で正規化済み）の片側から Mermaid の本文を組み立てる。er はエンティティの別名を宣言に付け、関係は
+// 出力 id で書く（関係の行に別名を書く形は mermaid 11 の parser を通らない）。
+const MERMAID_ER_CARDINALITY = { one_to_one: '||--||', one_to_many: '||--o{', many_to_many: '}o--o{' };
+function diagramMermaid(kind, side, ids) {
+  if (kind === 'sequence') {
+    return [
+      'sequenceDiagram',
+      ...side.nodes.map((n) => `  participant ${ids.get(n.id)} as ${mermaidLabel(n.label)}`),
+      ...side.edges.map((e) => `  ${ids.get(e.from)}->>${ids.get(e.to)}: ${mermaidLabel(e.label)}`),
+    ].join('\n');
+  }
+  if (kind === 'er') {
+    return [
+      'erDiagram',
+      ...side.nodes.flatMap((n) => (n.attributes
+        ? [`  ${ids.get(n.id)}["${mermaidLabel(n.label)}"] {`, ...n.attributes.map((a) => `    ${mermaidErWord(a.type)} ${mermaidErWord(a.name)}`), '  }']
+        : [`  ${ids.get(n.id)}["${mermaidLabel(n.label)}"]`])),
+      ...side.edges.map((e) => `  ${ids.get(e.from)} ${MERMAID_ER_CARDINALITY[e.cardinality]} ${ids.get(e.to)} : "${mermaidLabel(e.label)}"`),
+    ].join('\n');
+  }
+  return [
+    'flowchart LR',
+    ...side.nodes.map((n) => (n.shape === 'decision' ? `  ${ids.get(n.id)}{"${mermaidLabel(n.label)}"}` : `  ${ids.get(n.id)}["${mermaidLabel(n.label)}"]`)),
+    ...side.edges.map((e) => `  ${ids.get(e.from)} -->${e.label ? `|"${mermaidLabel(e.label)}"|` : ''} ${ids.get(e.to)}`),
+  ].join('\n');
+}
+
+// 図の本文（before / after）は PR の作者が書けるデータから組み立てるので、`<details>` の中と同じ無害化を掛けてから、中のバッククォートの
 // 連続より長いフェンスで囲む — 中身でフェンスを閉じさせず、後続の節と Closes 行をコードに飲み込ませない。
 function mermaidBlock(src) {
   const text = neutralizeStructure(src);
@@ -368,7 +488,8 @@ function diagramSection(plan, diagramCheck) {
     const mismatches = arr(diagramCheck.mismatches).map(mismatchLine).filter(Boolean);
     return mismatches.length ? `${PR_BODY_DIAGRAM_MISMATCH}\n${bulletList(mismatches)}` : PR_BODY_DIAGRAM_MISMATCH;
   }
-  const figures = `**before**\n\n${mermaidBlock(d.before)}\n\n**after**\n\n${mermaidBlock(d.after)}`;
+  const ids = diagramOutputIds(d);
+  const figures = `**before**\n\n${mermaidBlock(diagramMermaid(d.kind, d.before, ids))}\n\n**after**\n\n${mermaidBlock(diagramMermaid(d.kind, d.after, ids))}`;
   return diagramCheck?.consistent === true ? figures : `${PR_BODY_DIAGRAM_UNVERIFIED}\n\n${figures}`;
 }
 

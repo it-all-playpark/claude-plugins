@@ -34,6 +34,28 @@ export const STAGING_CONVENTION = `一時/handoff ファイルの配置規約: `
 // 実装中に書き換えられるので判定系の prompt には渡さない（採点軸は acceptance_criteria）。
 export const ISSUE_BODY_FILE = '.devflow-tmp/issue-body.md'
 
+// IMPL schema の diagram.before / diagram.after（構成の変化の図の片側）。nodes は flowchart のノード・sequence の参加者・er の
+// エンティティ、edges は矢印・メッセージ・関係。中の値は縛らない（理由は IMPL の diagram のコメント）。
+export const IMPL_DIAGRAM_SIDE = {
+  type: 'object',
+  properties: {
+    nodes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' }, label: { type: 'string' }, shape: { type: 'string' },
+          attributes: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, type: { type: 'string' } } } },
+        },
+      },
+    },
+    edges: {
+      type: 'array',
+      items: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' }, label: { type: 'string' }, cardinality: { type: 'string' } } },
+    },
+  },
+}
+
 export const IMPL = {
   type: 'object', required: ['status', 'task_id'],
   properties: {
@@ -84,17 +106,19 @@ export const IMPL = {
     },
     // PR 本文と終端サマリーの「この PR に含めなかったもの」に転記する（concerns だけでは人間の目に届かない）。
     out_of_scope: { type: 'array', items: { type: 'string', maxLength: 198 } },
-    // 構成の変化の before / after 図（Mermaid の本文）。PR 本文の「構成の変化」に載り、evaluator が realized diff と照合する。
+    // 構成の変化の before / after 図（ノードと辺の構造化データ。Mermaid の本文は pr-artifacts が組み立てる）。PR 本文の
+    // 「構成の変化」に載り、evaluator が realized diff と照合する。
     // kind の enum は pr-artifacts の PR_DIAGRAM_KINDS と同値（literal の理由は上と同じ）。
-    // anchors（図のノード → コード上の場所。evaluator の照合の手がかり）は必須にせず、件数・長さの上限も付けない —
-    // schema 違反は spawnFailOpen で報告全体を落とすので、anchors の不備は pr-artifacts の diagramOf が図だけを落とす。
+    // before / after の中（件数・字数の上限、空の id / ラベル、辺が指す id、shape / cardinality の enum）と、anchors（図のノード →
+    // コード上の場所。evaluator の照合の手がかり）の有無・件数・長さは schema で縛らない — schema 違反は spawnFailOpen で
+    // 報告全体を落とすので、図の不備は pr-artifacts の diagramOf が図だけを落とす。
     diagram: {
       type: ['object', 'null'],
       required: ['kind', 'before', 'after'],
       properties: {
         kind: { type: 'string', enum: ['flowchart', 'sequence', 'er'] },
-        before: { type: 'string', maxLength: 1500 },
-        after: { type: 'string', maxLength: 1500 },
+        before: IMPL_DIAGRAM_SIDE,
+        after: IMPL_DIAGRAM_SIDE,
         anchors: {
           type: 'array',
           items: { type: 'object', properties: { node: { type: 'string' }, ref: { type: 'string' } } },

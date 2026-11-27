@@ -290,7 +290,9 @@ test('[pr-body-sync-routing] ac-checkbox-sync が edited:false を返しても r
 // ---- 9. 構成の変化の図: Evaluate の diagram_check を PR phase と修正後の作り直しまで渡す（issue #1366） ----
 
 const DIAGRAM = {
-  kind: 'flowchart', before: 'flowchart LR\n  A --> B', after: 'flowchart LR\n  A --> B\n  C --> B',
+  kind: 'flowchart',
+  before: { nodes: [{ id: 'A', label: '入口' }, { id: 'B', label: '結果' }], edges: [{ from: 'A', to: 'B' }] },
+  after: { nodes: [{ id: 'A', label: '入口' }, { id: 'B', label: '結果' }, { id: 'C', label: '別の入口' }], edges: [{ from: 'A', to: 'B' }, { from: 'C', to: 'B' }] },
   anchors: [{ node: 'A', ref: 'src/a.mjs:a' }, { node: 'B', ref: 'src/b.mjs:b' }, { node: 'C', ref: 'src/c.mjs:c' }],
 };
 const IMPL_DIAGRAM = { 'impl:serial:issue-1': { status: 'DONE', task_id: 'issue-1', files: [...STANDARD_FILES], summary: 's', concerns: [], diagram: DIAGRAM } };
@@ -298,7 +300,9 @@ const withDiagramCheck = (diagram_check) => ({ ...IMPL_DIAGRAM, 'eval#1': { ...E
 const CONSISTENT = { consistent: true, mismatches: [] };
 const MISMATCHED = { consistent: false, mismatches: ['after の C --> B は diff に無い'] };
 const MERMAID_FENCE = '```mermaid';
-const FIGURES = `**before**\n\n${MERMAID_FENCE}\n${DIAGRAM.before}\n\`\`\`\n\n**after**\n\n${MERMAID_FENCE}\n${DIAGRAM.after}\n\`\`\``;
+const BEFORE_SRC = 'flowchart LR\n  n1["入口"]\n  n2["結果"]\n  n1 --> n2';
+const AFTER_SRC = 'flowchart LR\n  n1["入口"]\n  n2["結果"]\n  n3["別の入口"]\n  n1 --> n2\n  n3 --> n2';
+const FIGURES = `**before**\n\n${MERMAID_FENCE}\n${BEFORE_SRC}\n\`\`\`\n\n**after**\n\n${MERMAID_FENCE}\n${AFTER_SRC}\n\`\`\``;
 const FIXED_RUNS = {
   lgtm: [
     {
