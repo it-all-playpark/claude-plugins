@@ -62,6 +62,10 @@ FLOW_SH
     cat >"$STUB_DIR/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$GH_STUB_LOG"
+# GH_STUB_HINT: gh 2.105.0 がエージェント環境で成功した gh pr view にも stderr へ出す案内を真似る
+if [[ -n "${GH_STUB_HINT:-}" ]]; then
+    echo "hint: if you need to wait for this pull request to be reviewed, merged, or closed before continuing, use this instead of polling:" >&2
+fi
 if [[ -n "${GH_STUB_FAIL:-}" ]]; then
     echo "gh stub: HTTP 404" >&2
     exit 1
@@ -78,7 +82,7 @@ STUB
     export PATH="$STUB_DIR:$PATH"
     export GH_STUB_LOG="$BATS_TEST_TMPDIR/gh.log"
     export GH_STUB_FIXTURE="$BATS_TEST_TMPDIR/pr.json"
-    unset GH_STUB_FAIL GH_RUN_STUB_FIXTURE
+    unset GH_STUB_FAIL GH_RUN_STUB_FIXTURE GH_STUB_HINT
     write_pr_fixture "$HEAD_SHA"
     # user 設定（"dev-flow".security_reviewer の読み先）を実行者の環境から切り離す
     export HOME="$BATS_TEST_TMPDIR/home"
@@ -525,6 +529,15 @@ advance_origin_head() {
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.ok == false and .worktree_status == "skipped"'
     echo "$output" | jq -e '.error | test("HTTP 404")'
+}
+
+@test "(5a2) gh pr view が成功して stderr に案内を出しても ok:true（JSON は stdout だけから読む）" {
+    export GH_STUB_HINT=1
+    cd "$ROOT"
+    run --separate-stderr bash "$FLOW" 5
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.ok == true and has("error") == false'
+    echo "$output" | jq -e --arg h "$HEAD_SHA" '.head_sha == $h and .head_ref == "feature/x"'
 }
 
 @test "(5b) head branch が main checkout で checkout 済み -> ok:false（main checkout を worktree として返さない）" {

@@ -86,6 +86,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/worktree-checkout.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/ci-wait-ceiling.sh"
 # shellcheck source=security-reviewer-config.sh
 source "$(dirname "${BASH_SOURCE[0]}")/security-reviewer-config.sh"
+# shellcheck source=gh-stdout.sh
+source "$(dirname "${BASH_SOURCE[0]}")/gh-stdout.sh"
 
 usage() {
     echo "Usage: pr-iterate-prerun <PR> [--repo owner/name] [--direction <file>]" >&2
@@ -241,7 +243,7 @@ GH_ARGS=(pr view "$PR")
 [[ -n "$REPO_ARG" ]] && GH_ARGS+=(--repo "$REPO_ARG")
 GH_ARGS+=(--json url,headRefName,baseRefName,headRefOid,comments,title,body)
 
-if ! VIEW_RAW="$(gh "${GH_ARGS[@]}" 2>&1)"; then
+if ! VIEW_RAW="$(gh_stdout "${GH_ARGS[@]}")"; then
     fail "gh pr view ${PR} failed: ${VIEW_RAW}"
 fi
 if ! printf '%s' "$VIEW_RAW" | jq -e 'type == "object"' >/dev/null 2>&1; then

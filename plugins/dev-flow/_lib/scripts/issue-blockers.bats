@@ -20,6 +20,10 @@ setup() {
     cat >"$WORK/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$GH_LOG"
+# GH_STUB_HINT: gh 2.105.0 がエージェント環境で成功した呼び出しにも stderr へ出す案内を真似る
+if [[ -n "${GH_STUB_HINT:-}" ]]; then
+    echo "hint: if you need to wait for this pull request to be reviewed, merged, or closed before continuing, use this instead of polling:" >&2
+fi
 if [[ "$1" == "api" && "$2" == */dependencies/blocked_by* ]]; then
     if [[ -n "${GH_STUB_DEPS_FAIL:-}" ]]; then
         echo "$GH_STUB_DEPS_FAIL" >&2
@@ -37,7 +41,7 @@ exit 1
 STUB
     chmod +x "$WORK/bin/gh"
     export GH_LOG GH_STUB_ISSUES_DIR
-    unset GH_STUB_DEPS_FIXTURE GH_STUB_DEPS_FAIL
+    unset GH_STUB_DEPS_FIXTURE GH_STUB_DEPS_FAIL GH_STUB_HINT
     export PATH="$WORK/bin:$PATH"
 }
 
@@ -91,6 +95,17 @@ issue_fixture() {
     # 本文で 2 回出る #12 は 1 回だけ読む
     [ "$(grep -c '^issue view 12 ' "$GH_LOG")" -eq 1 ]
     grep -qx 'issue view 5 --repo other/lib --json number,state,url' "$GH_LOG"
+}
+
+@test "issue-blockers: gh が成功して stderr に案内を出しても 3 種の応答を JSON として読む（stdout だけを読む）" {
+    issue_fixture acme/skills 7 OPEN "Blocked by other/lib#5"
+    deps_fixture 12 open
+    issue_fixture other/lib 5 CLOSED
+    GH_STUB_HINT=1 run --separate-stderr "$SCRIPT" --issue 7 --repo acme/skills
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '. == [
+        {repo: "acme/skills", number: 12, state: "OPEN", source: "api", url: "https://github.com/acme/skills/issues/12"},
+        {repo: "other/lib", number: 5, state: "CLOSED", source: "body", url: "https://github.com/other/lib/issues/5"}]'
 }
 
 @test "issue-blockers: 行頭でない Blocked by の言及は拾わない" {
